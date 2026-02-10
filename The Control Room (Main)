@@ -1,0 +1,47 @@
+# --- THE CONTROL ROOM ---
+
+# --- THE BRAIN (Apple Silicon Optimized) ---
+import mlx.core as mx
+import mlx.nn as nn
+import mlx.optimizers as optim
+
+# --- THE PLUMBING (Schwab & Data) ---
+from core.base_trader import BaseTrader
+import pandas as pd
+import numpy as np
+
+# --- THE OPTIONS MATH ---
+from py_vollib.black_scholes import black_scholes
+from py_vollib.black_scholes.greeks.numerical import delta, theta, gamma
+import pandas_ta as ta
+
+# --- SYSTEM TOOLS ---
+import sqlite3  # To store your "Failure Logs" locally
+import datetime
+import os
+
+# Your Schwab Credentials (Keep these secret!)
+API_KEY = 'YOUR_KEY_HERE'
+SECRET = 'YOUR_SECRET_HERE'
+REDIRECT = 'https://127.0.0.1:8080'
+
+
+def start_factory():
+    # 1. Initialize the Foundation
+    # The BaseTrader handles the heavy lifting of authentication and data flow
+    mecca = BaseTrader(API_KEY, SECRET, REDIRECT)
+
+    # 2. Wake up the bot (This will trigger the browser login on first run)
+    schwab_client = mecca.authenticate()
+
+    # 3. Verify Connection
+    # If this prints, your M1 Max is successfully communicating with the market
+    try:
+        account_info = schwab_client.get_account_numbers().json()
+        print(f"Bot Factory Online. Connected to Account: {account_info[0]['accountNumber']}")
+    except Exception as e:
+        print(f"Connection established, but could not fetch account info: {e}")
+
+
+if __name__ == "__main__":
+    start_factory()
