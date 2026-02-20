@@ -153,6 +153,64 @@ def _memory_ready(min_free_pct: float, max_swap_gb: float) -> tuple[bool, str, d
     return True, "ok", snap
 
 
+def _thermal_snapshot() -> dict[str, float]:
+    snap: dict[str, float] = {}
+    try:
+        proc = subprocess.run(["/usr/bin/pmset", "-g", "therm"], capture_output=True, text=True, check=False)
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        for raw in out.splitlines():
+            line = raw.strip()
+            if "CPU_Speed_Limit" in line and "=" in line:
+                snap["cpu_speed_limit"] = float(line.split("=", 1)[1].strip())
+            if "Scheduler_Limit" in line and "=" in line:
+                snap["scheduler_limit"] = float(line.split("=", 1)[1].strip())
+    except Exception:
+        pass
+    return snap
+
+
+def _thermal_ready(min_cpu_speed_limit: float, min_scheduler_limit: float) -> tuple[bool, str, dict[str, float]]:
+    snap = _thermal_snapshot()
+    csl = snap.get("cpu_speed_limit")
+    if csl is not None and csl < min_cpu_speed_limit:
+        return False, f"cpu_speed_limit={csl:.0f} < min_cpu_speed_limit={min_cpu_speed_limit:.0f}", snap
+    sl = snap.get("scheduler_limit")
+    if sl is not None and sl < min_scheduler_limit:
+        return False, f"scheduler_limit={sl:.0f} < min_scheduler_limit={min_scheduler_limit:.0f}", snap
+    return True, "ok", snap
+
+
+def _wait_for_thermal_gate(
+    *,
+    enabled: bool,
+    min_cpu_speed_limit: float,
+    min_scheduler_limit: float,
+    poll_seconds: int,
+    max_wait_seconds: int,
+    label: str,
+    dry_run: bool,
+) -> bool:
+    if dry_run or not enabled:
+        return True
+
+    start = time.time()
+    while True:
+        ok, reason, snap = _thermal_ready(
+            min_cpu_speed_limit=min_cpu_speed_limit,
+            min_scheduler_limit=min_scheduler_limit,
+        )
+        if ok:
+            return True
+
+        waited = int(time.time() - start)
+        if max_wait_seconds > 0 and waited >= max_wait_seconds:
+            print(f"[ThermalGate] skip label={label} waited={waited}s reason={reason}")
+            return False
+
+        print(f"[ThermalGate] wait label={label} waited={waited}s reason={reason} snapshot={snap}")
+        time.sleep(max(poll_seconds, 1))
+
+
 def _wait_for_memory_gate(
     *,
     enabled: bool,
@@ -211,11 +269,14 @@ def _apply_nice(nice_value: int) -> None:
         print(f"WARN: could not apply nice={nice_value}: {exc}")
 
 
-def run_cmd(cmd: list[str], dry_run: bool, env: dict[str, str]) -> int:
-    print("$ " + " ".join(cmd))
+def run_cmd(cmd: list[str], dry_run: bool, env: dict[str, str], extra_nice: int = 0) -> int:
+    full_cmd = cmd
+    if extra_nice > 0:
+        full_cmd = ["/usr/bin/nice", "-n", str(extra_nice)] + cmd
+    print("$ " + " ".join(full_cmd))
     if dry_run:
         return 0
-    proc = subprocess.run(cmd, cwd=PROJECT_ROOT, env=env)
+    proc = subprocess.run(full_cmd, cwd=PROJECT_ROOT, env=env)
     return proc.returncode
 
 
@@ -349,6 +410,49 @@ def _filter_targets_for_efficiency(
 
 
 
+def _load_accuracy_map(registry_path: str) -> dict[str, float]:
+    if not os.path.exists(registry_path):
+        return {}
+    try:
+        with open(registry_path, "r", encoding="utf-8") as f:
+            reg = json.load(f)
+    except Exception:
+        return {}
+
+    out: dict[str, float] = {}
+    for row in reg.get("sub_bots", []):
+        bot_id = str(row.get("bot_id", "")).strip().lower()
+        if not bot_id:
+            continue
+        try:
+            out[bot_id] = float(row.get("test_accuracy", 0.0) or 0.0)
+        except Exception:
+            out[bot_id] = 0.0
+    return out
+
+
+def _apply_retrain_curriculum(targets: list[str], registry_path: str) -> list[str]:
+    if os.getenv("RETRAIN_CURRICULUM_ENABLED", "1").strip() != "1":
+        return targets
+
+    acc = _load_accuracy_map(registry_path)
+
+    def rank(path: str) -> tuple[int, float, str]:
+        bot_id = _normalized_bot_id_from_script(path)
+        a = acc.get(bot_id, 0.0)
+        # Train stronger anchors first, then weak/missing models.
+        band = 0
+        if a >= 0.58:
+            band = 0
+        elif a >= 0.50:
+            band = 1
+        else:
+            band = 2
+        return (band, -a, bot_id)
+
+    return sorted(targets, key=rank)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run all brain_refinery training scripts and refresh master bot registry.")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing.")
@@ -424,6 +528,30 @@ def main() -> int:
         default=int(os.getenv("RETRAIN_BETWEEN_TARGET_SLEEP_SECONDS", "4")),
         help="Cooldown sleep between targets to smooth memory pressure.",
     )
+    parser.add_argument(
+        "--thermal-guard",
+        action="store_true",
+        default=os.getenv("RETRAIN_THERMAL_GUARD", "1").strip() == "1",
+        help="Enable thermal gate checks before each target run.",
+    )
+    parser.add_argument(
+        "--thermal-min-cpu-speed-limit",
+        type=float,
+        default=float(os.getenv("RETRAIN_THERMAL_MIN_CPU_SPEED_LIMIT", "75")),
+        help="Minimum pmset CPU_Speed_Limit required to launch next model.",
+    )
+    parser.add_argument(
+        "--thermal-min-scheduler-limit",
+        type=float,
+        default=float(os.getenv("RETRAIN_THERMAL_MIN_SCHEDULER_LIMIT", "75")),
+        help="Minimum pmset Scheduler_Limit required to launch next model.",
+    )
+    parser.add_argument(
+        "--ops-extra-nice",
+        type=int,
+        default=int(os.getenv("RETRAIN_OPS_EXTRA_NICE", "6")),
+        help="Extra nice offset for ops tasks (master registry update + behavior jobs).",
+    )
     args = parser.parse_args()
 
     lock_path = os.getenv("MLX_RETRAIN_LOCK_PATH", os.path.join(PROJECT_ROOT, "governance", "mlx_retrain.lock"))
@@ -464,6 +592,8 @@ def main() -> int:
         targets = base_targets
         target_stats = {"pre": len(base_targets), "post": len(base_targets), "active_selected": 0}
 
+    targets = _apply_retrain_curriculum(targets, REGISTRY_PATH)
+
     child_env = _build_child_env(args.thread_cap)
     _apply_nice(args.nice)
 
@@ -482,6 +612,12 @@ def main() -> int:
         f"poll={args.memory_poll_seconds}s "
         f"max_wait={args.memory_max_wait_seconds}s "
         f"cooldown={args.between_target_sleep_seconds}s"
+    )
+    print(
+        "Thermal gate: "
+        f"enabled={args.thermal_guard} "
+        f"min_cpu_speed_limit={args.thermal_min_cpu_speed_limit:.0f} "
+        f"min_scheduler_limit={args.thermal_min_scheduler_limit:.0f}"
     )
 
     if not args.include_deleted and deleted_ids:
@@ -513,6 +649,19 @@ def main() -> int:
             dry_run=args.dry_run,
         )
         if not allowed:
+            skipped_by_memory.append(target)
+            continue
+
+        thermal_ok = _wait_for_thermal_gate(
+            enabled=args.thermal_guard,
+            min_cpu_speed_limit=args.thermal_min_cpu_speed_limit,
+            min_scheduler_limit=args.thermal_min_scheduler_limit,
+            poll_seconds=args.memory_poll_seconds,
+            max_wait_seconds=args.memory_max_wait_seconds,
+            label=target_name,
+            dry_run=args.dry_run,
+        )
+        if not thermal_ok:
             skipped_by_memory.append(target)
             continue
 
@@ -548,8 +697,16 @@ def main() -> int:
         max_wait_seconds=args.memory_max_wait_seconds,
         label="run_master_bot.py",
         dry_run=args.dry_run,
+    ) and _wait_for_thermal_gate(
+        enabled=args.thermal_guard,
+        min_cpu_speed_limit=args.thermal_min_cpu_speed_limit,
+        min_scheduler_limit=args.thermal_min_scheduler_limit,
+        poll_seconds=args.memory_poll_seconds,
+        max_wait_seconds=args.memory_max_wait_seconds,
+        label="run_master_bot.py",
+        dry_run=args.dry_run,
     ):
-        rc = run_cmd([sys.executable, MASTER_RUNNER], args.dry_run, child_env)
+        rc = run_cmd([sys.executable, MASTER_RUNNER], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
         if rc != 0:
             print(f"FAIL: master bot update (exit={rc})")
             return 1
@@ -585,7 +742,7 @@ def main() -> int:
     if enable_trade_behavior_retrain:
         print("Running trade history behavior learning step...")
         if os.path.exists(TRADE_DATASET_BUILDER):
-            rc = run_cmd([VENV_PY, TRADE_DATASET_BUILDER], args.dry_run, child_env)
+            rc = run_cmd([VENV_PY, TRADE_DATASET_BUILDER], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
             if rc != 0 and trade_behavior_strict:
                 print("FAIL: trade dataset build")
                 return 1
@@ -593,7 +750,7 @@ def main() -> int:
             print(f"WARN: trade dataset builder missing: {TRADE_DATASET_BUILDER}")
 
         if os.path.exists(TRADE_BEHAVIOR_TRAINER):
-            rc = run_cmd([VENV_PY, TRADE_BEHAVIOR_TRAINER], args.dry_run, child_env)
+            rc = run_cmd([VENV_PY, TRADE_BEHAVIOR_TRAINER], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
             if rc != 0 and trade_behavior_strict:
                 print("FAIL: trade behavior trainer")
                 return 1

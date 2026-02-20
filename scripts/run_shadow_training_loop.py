@@ -1,4 +1,5 @@
 import argparse
+import atexit
 import fcntl
 import glob
 import gzip
@@ -13,7 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import numpy as np
@@ -631,10 +632,20 @@ def _latest_trade_behavior_model(project_root: str) -> Optional[str]:
     return paths[-1]
 
 
+def _latest_trade_behavior_model_quantized(project_root: str) -> Optional[str]:
+    paths = sorted(glob.glob(os.path.join(project_root, "models", "trade_behavior_policy_*_quantized.npz")))
+    if not paths:
+        return None
+    return paths[-1]
+
+
 def _load_trade_behavior_model(project_root: str) -> Optional[Dict[str, Any]]:
     if np is None:
         return None
-    path = _latest_trade_behavior_model(project_root)
+    prefer_quantized = os.getenv("TRADE_BEHAVIOR_PREFER_QUANTIZED", "1").strip() == "1"
+    path = _latest_trade_behavior_model_quantized(project_root) if prefer_quantized else None
+    if not path:
+        path = _latest_trade_behavior_model(project_root)
     if not path:
         return None
 
@@ -643,12 +654,13 @@ def _load_trade_behavior_model(project_root: str) -> Optional[Dict[str, Any]]:
 
     try:
         arr = np.load(path, allow_pickle=False)
+        dtype = np.float16 if os.getenv("TRADE_BEHAVIOR_USE_FP16", "1").strip() == "1" else float
         model = {
             "path": path,
-            "W": arr["W"].astype(float),
-            "b": arr["b"].astype(float),
-            "mu": arr["mu"].astype(float),
-            "sigma": arr["sigma"].astype(float),
+            "W": arr["W"].astype(dtype),
+            "b": arr["b"].astype(dtype),
+            "mu": arr["mu"].astype(dtype),
+            "sigma": arr["sigma"].astype(dtype),
         }
     except Exception:
         return None
@@ -777,9 +789,90 @@ def _governance_recommendations(bots: List[SubBot]) -> List[Dict[str, Any]]:
 
 
 def _append_jsonl(path: str, row: Dict[str, Any]) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(row, ensure_ascii=True) + "\n")
+    JsonlWriteBuffer.shared().append(path, row)
+
+
+class JsonlWriteBuffer:
+    _instance: Optional["JsonlWriteBuffer"] = None
+
+    @classmethod
+    def shared(cls) -> "JsonlWriteBuffer":
+        if cls._instance is None:
+            cls._instance = cls()
+            atexit.register(cls._instance.flush_all)
+        return cls._instance
+
+    def __init__(self) -> None:
+        self.enabled = os.getenv("JSONL_BUFFER_ENABLED", "1").strip() == "1"
+        self.max_items = max(int(os.getenv("JSONL_BUFFER_MAX_ITEMS", "80")), 1)
+        self.max_age_seconds = max(float(os.getenv("JSONL_BUFFER_MAX_AGE_SECONDS", "2.5")), 0.2)
+        self._buf: Dict[str, List[str]] = {}
+        self._ts: Dict[str, float] = {}
+
+    def append(self, path: str, row: Dict[str, Any]) -> None:
+        if not self.enabled:
+            self._flush_direct(path, json.dumps(row, ensure_ascii=True) + "\n")
+            return
+        payload = json.dumps(row, ensure_ascii=True) + "\n"
+        now = time.time()
+        bucket = self._buf.setdefault(path, [])
+        if path not in self._ts:
+            self._ts[path] = now
+        bucket.append(payload)
+        if len(bucket) >= self.max_items or (now - self._ts.get(path, now)) >= self.max_age_seconds:
+            self.flush_path(path)
+
+    def flush_path(self, path: str) -> None:
+        rows = self._buf.get(path, [])
+        if not rows:
+            return
+        self._flush_direct(path, "".join(rows))
+        self._buf[path] = []
+        self._ts[path] = time.time()
+
+    def flush_all(self) -> None:
+        for path in list(self._buf.keys()):
+            self.flush_path(path)
+
+    @staticmethod
+    def _flush_direct(path: str, payload: str) -> None:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(payload)
+
+
+def _split_bot_tiers(active_bots: List[SubBot]) -> Tuple[List[SubBot], List[SubBot]]:
+    if not active_bots:
+        return [], []
+    slow_every = max(int(os.getenv("SLOW_BOT_EVERY_N_ITERS", "2")), 1)
+    min_weight_fast = float(os.getenv("FAST_BOT_MIN_WEIGHT", "0.025"))
+    min_acc_fast = float(os.getenv("FAST_BOT_MIN_ACC", "0.53"))
+    if slow_every <= 1:
+        return active_bots, []
+
+    fast: List[SubBot] = []
+    slow: List[SubBot] = []
+    for b in active_bots:
+        acc = float(b.test_accuracy or 0.5)
+        if b.bot_role == "infrastructure_sub_bot":
+            slow.append(b)
+            continue
+        if b.weight >= min_weight_fast or acc >= min_acc_fast:
+            fast.append(b)
+        else:
+            slow.append(b)
+    if not fast:
+        fast = active_bots[:]
+        slow = []
+    return fast, slow
+
+
+def _sub_bot_signal_batch(bots: List[SubBot], mkt: Dict[str, float]) -> List[Tuple[SubBot, str, float, float, List[str]]]:
+    out: List[Tuple[SubBot, str, float, float, List[str]]] = []
+    for b in bots:
+        action, score, threshold, reasons = _sub_bot_signal(b, mkt)
+        out.append((b, action, score, threshold, reasons))
+    return out
 
 
 def _file_age_days(path: str, now_ts: float) -> float:
@@ -1234,6 +1327,11 @@ def run_loop(
     enable_async_pipeline = os.getenv("ENABLE_ASYNC_PIPELINE", "1").strip() == "1" and (not simulate)
     async_workers = max(int(os.getenv("ASYNC_PIPELINE_WORKERS", "6")), 2)
 
+    feature_cache_enabled = os.getenv("FEATURE_WINDOW_CACHE_ENABLED", "1").strip() == "1"
+    feature_cache: Dict[str, Tuple[int, Dict[str, float]]] = {}
+    slow_bot_every_n_iters = max(int(os.getenv("SLOW_BOT_EVERY_N_ITERS", "2")), 1)
+    slow_bot_rows_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
     if resume_from_checkpoint:
         cp = checkpoint.load()
         cp_iter = int(cp.get("iter_count", 0) or 0)
@@ -1319,6 +1417,9 @@ def run_loop(
         active_bots = [b for b in bots if b.active]
         if not active_bots:
             active_bots = [SubBot(bot_id="fallback_master_seed", weight=1.0, active=True, reason="fallback", test_accuracy=0.50, bot_role="signal_sub_bot")]
+
+        fast_bots, slow_bots = _split_bot_tiers(active_bots)
+        evaluate_slow_this_iter = (iter_count % slow_bot_every_n_iters == 0)
 
         latest_recs: List[Dict[str, Any]] = []
         exposure_state: Dict[str, int] = {"BUY": 0, "SELL": 0}
@@ -1463,7 +1564,13 @@ def run_loop(
                 context_features[f"ctx_{k}_vol_30m"] = ctx_mkt.get("vol_30m", 0.0)
                 context_features[f"ctx_{k}_mom_5m"] = ctx_mkt.get("mom_5m", 0.0)
 
-            shared_features = {**mkt, **context_features}
+            feature_cache_key = f"f:{symbol}"
+            if feature_cache_enabled and feature_cache_key in feature_cache and feature_cache[feature_cache_key][0] == iter_count:
+                shared_features = dict(feature_cache[feature_cache_key][1])
+            else:
+                shared_features = {**mkt, **context_features}
+                if feature_cache_enabled:
+                    feature_cache[feature_cache_key] = (iter_count, dict(shared_features))
 
             mom = float(shared_features.get("mom_5m", 0.0))
             pct = float(shared_features.get("pct_from_close", 0.0))
@@ -1476,14 +1583,17 @@ def run_loop(
             symbol_regime_marker[symbol] = marker
 
             sub_rows: List[Dict[str, Any]] = []
-            for b in active_bots:
-                action, score, threshold, reasons = _sub_bot_signal(b, mkt)
-                gates = {
-                    "market_data_ok": mkt["last_price"] > 0,
-                    "session_open_assumed": True,
-                    "risk_limit_ok": True,
-                }
+            batched_rows = _sub_bot_signal_batch(fast_bots, mkt)
+            if evaluate_slow_this_iter:
+                batched_rows.extend(_sub_bot_signal_batch(slow_bots, mkt))
 
+            gates = {
+                "market_data_ok": mkt["last_price"] > 0,
+                "session_open_assumed": True,
+                "risk_limit_ok": True,
+            }
+
+            for b, action, score, threshold, reasons in batched_rows:
                 trader.execute_decision(
                     symbol=symbol,
                     action=action,
@@ -1497,16 +1607,23 @@ def run_loop(
                     metadata={"layer": "sub_bot", "snapshot_id": snapshot_id, "bot_weight": b.weight, "test_accuracy": b.test_accuracy, "bot_role": b.bot_role},
                 )
 
-                sub_rows.append(
-                    {
-                        "bot_id": b.bot_id,
-                        "action": action,
-                        "score": score,
-                        "threshold": threshold,
-                        "weight": b.weight if b.weight > 0 else 1.0 / max(len(active_bots), 1),
-                        "direction": 1.0 if action == "BUY" else (-1.0 if action == "SELL" else 0.0),
-                    }
-                )
+                row = {
+                    "bot_id": b.bot_id,
+                    "action": action,
+                    "score": score,
+                    "threshold": threshold,
+                    "weight": b.weight if b.weight > 0 else 1.0 / max(len(active_bots), 1),
+                    "direction": 1.0 if action == "BUY" else (-1.0 if action == "SELL" else 0.0),
+                }
+                sub_rows.append(row)
+                if b in slow_bots:
+                    slow_bot_rows_cache.setdefault(symbol, {})[b.bot_id] = row
+
+            if (not evaluate_slow_this_iter) and slow_bots:
+                for b in slow_bots:
+                    row = slow_bot_rows_cache.get(symbol, {}).get(b.bot_id)
+                    if row is not None:
+                        sub_rows.append(dict(row))
 
             # Broadcast flash-crash specialist signal as shared context to all higher-level decisions.
             flash_aux = _derive_flash_aux_features(sub_rows)
@@ -1840,6 +1957,7 @@ def run_loop(
             print("Reached max iterations, exiting.")
             return
 
+        JsonlWriteBuffer.shared().flush_all()
         sleep_s = max(current_interval_seconds - loop_seconds, 0.0)
         time.sleep(sleep_s)
 
