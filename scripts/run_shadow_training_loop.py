@@ -900,11 +900,11 @@ def _gzip_file(path: str) -> bool:
 def _run_log_maintenance(project_root: str, *, max_ops: int = 200) -> Dict[str, int]:
     now_ts = time.time()
 
-    retention_decisions = int(os.getenv('LOG_RETENTION_DECISIONS_DAYS', '14'))
-    retention_explanations = int(os.getenv('LOG_RETENTION_DECISION_EXPLANATIONS_DAYS', '14'))
-    retention_governance = int(os.getenv('LOG_RETENTION_GOVERNANCE_DAYS', '21'))
-    retention_exports = int(os.getenv('LOG_RETENTION_EXPORTS_DAYS', '14'))
-    compress_after_days = float(os.getenv('LOG_COMPRESS_AFTER_DAYS', '2'))
+    retention_decisions = int(os.getenv('LOG_RETENTION_DECISIONS_DAYS', '7'))
+    retention_explanations = int(os.getenv('LOG_RETENTION_DECISION_EXPLANATIONS_DAYS', '7'))
+    retention_governance = int(os.getenv('LOG_RETENTION_GOVERNANCE_DAYS', '10'))
+    retention_exports = int(os.getenv('LOG_RETENTION_EXPORTS_DAYS', '7'))
+    compress_after_days = float(os.getenv('LOG_COMPRESS_AFTER_DAYS', '1'))
 
     targets = [
         (os.path.join(project_root, 'decisions'), retention_decisions),
@@ -1362,8 +1362,8 @@ def run_loop(
     overload_mode = False
 
     log_maintenance_enabled = os.getenv('LOG_MAINTENANCE_ENABLED', '1').strip() == '1'
-    log_maintenance_every_iters = max(int(os.getenv('LOG_MAINTENANCE_EVERY_ITERS', '40')), 1)
-    log_maintenance_max_ops = max(int(os.getenv('LOG_MAINTENANCE_MAX_OPS', '200')), 10)
+    log_maintenance_every_iters = max(int(os.getenv('LOG_MAINTENANCE_EVERY_ITERS', '20')), 1)
+    log_maintenance_max_ops = max(int(os.getenv('LOG_MAINTENANCE_MAX_OPS', '300')), 10)
 
     volatile_set = {x.upper() for x in volatile_symbols}
     defensive_set = {x.upper() for x in defensive_symbols}

@@ -556,6 +556,24 @@ def main() -> int:
         help="Maximum allowed swap usage (GB) before launching next model.",
     )
     parser.add_argument(
+        "--adaptive-swap-gate",
+        action="store_true",
+        default=os.getenv("RETRAIN_ADAPTIVE_SWAP_GATE", "1").strip() == "1",
+        help="Auto-relax swap gate when swap is persistently above threshold.",
+    )
+    parser.add_argument(
+        "--adaptive-swap-step-gb",
+        type=float,
+        default=float(os.getenv("RETRAIN_ADAPTIVE_SWAP_STEP_GB", "0.4")),
+        help="Step increase for adaptive swap gate.",
+    )
+    parser.add_argument(
+        "--adaptive-swap-max-gb",
+        type=float,
+        default=float(os.getenv("RETRAIN_ADAPTIVE_SWAP_MAX_GB", "3.5")),
+        help="Upper cap for adaptive swap gate relaxation.",
+    )
+    parser.add_argument(
         "--memory-poll-seconds",
         type=int,
         default=int(os.getenv("RETRAIN_MEMORY_POLL_SECONDS", "20")),
@@ -680,6 +698,9 @@ def main() -> int:
         f"enabled={args.memory_guard} "
         f"min_free_pct={args.min_free_pct:.1f} "
         f"max_swap_gb={args.max_swap_gb:.2f} "
+        f"adaptive={args.adaptive_swap_gate} "
+        f"adaptive_step_gb={args.adaptive_swap_step_gb:.2f} "
+        f"adaptive_cap_gb={args.adaptive_swap_max_gb:.2f} "
         f"poll={args.memory_poll_seconds}s "
         f"max_wait={args.memory_max_wait_seconds}s "
         f"cooldown={args.between_target_sleep_seconds}s"
@@ -709,17 +730,40 @@ def main() -> int:
 
     failures: list[str] = []
     skipped_by_memory: list[str] = []
+    dynamic_max_swap_gb = float(args.max_swap_gb)
     for target in targets:
         target_name = os.path.basename(target)
         allowed = _wait_for_memory_gate(
             enabled=args.memory_guard,
             min_free_pct=args.min_free_pct,
-            max_swap_gb=args.max_swap_gb,
+            max_swap_gb=dynamic_max_swap_gb,
             poll_seconds=args.memory_poll_seconds,
             max_wait_seconds=args.memory_max_wait_seconds,
             label=target_name,
             dry_run=args.dry_run,
         )
+        if (not allowed) and args.adaptive_swap_gate and (not args.dry_run):
+            ok_now, reason_now, snap_now = _memory_ready(min_free_pct=args.min_free_pct, max_swap_gb=dynamic_max_swap_gb)
+            swap_now = float(snap_now.get("swap_used_gb", 0.0) or 0.0)
+            free_now = float(snap_now.get("free_pct", 0.0) or 0.0)
+            if (not ok_now) and ("swap" in reason_now) and (swap_now > dynamic_max_swap_gb) and (free_now >= args.min_free_pct):
+                next_swap = min(float(args.adaptive_swap_max_gb), max(dynamic_max_swap_gb + float(args.adaptive_swap_step_gb), swap_now + 0.10))
+                if next_swap > dynamic_max_swap_gb:
+                    print(
+                        f"[AdaptiveSwapGate] raise label={target_name} "
+                        f"from={dynamic_max_swap_gb:.2f} to={next_swap:.2f} "
+                        f"reason={reason_now}"
+                    )
+                    dynamic_max_swap_gb = next_swap
+                    allowed = _wait_for_memory_gate(
+                        enabled=args.memory_guard,
+                        min_free_pct=args.min_free_pct,
+                        max_swap_gb=dynamic_max_swap_gb,
+                        poll_seconds=args.memory_poll_seconds,
+                        max_wait_seconds=max(int(args.memory_max_wait_seconds / 2), 120),
+                        label=target_name,
+                        dry_run=args.dry_run,
+                    )
         if not allowed:
             skipped_by_memory.append(target)
             continue
@@ -764,7 +808,7 @@ def main() -> int:
     if _wait_for_memory_gate(
         enabled=args.memory_guard,
         min_free_pct=args.min_free_pct,
-        max_swap_gb=args.max_swap_gb,
+        max_swap_gb=dynamic_max_swap_gb,
         poll_seconds=args.memory_poll_seconds,
         max_wait_seconds=args.memory_max_wait_seconds,
         label="run_master_bot.py",
