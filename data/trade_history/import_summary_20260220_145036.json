@@ -1,0 +1,12 @@
+{
+  "timestamp_utc": "2026-02-20T14:50:36.572844+00:00",
+  "years_back": 4,
+  "normalized_rows": 0,
+  "kept_for_training": 0,
+  "excluded_rows": 0,
+  "excluded_reasons": {},
+  "paths": {
+    "normalized": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/data/trade_history/trades_normalized.jsonl",
+    "training_filtered": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/data/trade_history/trades_training_filtered.jsonl"
+  }
+}

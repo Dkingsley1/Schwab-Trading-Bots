@@ -1,0 +1,70 @@
+{
+  "version": 2,
+  "lookback_years": 4,
+  "account_profiles": {
+    "ROTH": {
+      "strategy_style": "long_term",
+      "prefer_tags": [
+        "quality_growth",
+        "low_turnover",
+        "trend_follow"
+      ],
+      "avoid_tags": [
+        "high_leverage",
+        "chasing",
+        "panic_exit"
+      ]
+    },
+    "INDIVIDUAL_TRADING": {
+      "strategy_style": "active_trading",
+      "prefer_tags": [
+        "momentum",
+        "breakout",
+        "risk_managed"
+      ],
+      "avoid_tags": [
+        "revenge_trade",
+        "oversized_position",
+        "illiquid_chase"
+      ]
+    },
+    "INDIVIDUAL_SWING": {
+      "strategy_style": "swing_longterm_mix",
+      "prefer_tags": [
+        "swing_pullback",
+        "multi_day_trend",
+        "risk_managed"
+      ],
+      "avoid_tags": [
+        "overtrading",
+        "signal_conflict",
+        "late_entry"
+      ]
+    }
+  },
+  "mistake_filters": {
+    "exclude_year": 2025,
+    "exclude_negative_pnl": true,
+    "exclude_zero_pnl": false,
+    "exclude_tagged_patterns": [
+      "revenge_trade",
+      "oversized_position",
+      "panic_exit"
+    ]
+  },
+  "training_filters": {
+    "min_abs_pnl": 0.0,
+    "max_hold_days": 365,
+    "require_symbol": true
+  },
+  "outcome_learning": {
+    "positive_pnl_threshold": 5.0,
+    "negative_pnl_threshold": 5.0,
+    "pnl_scale": 250.0,
+    "class_weights": {
+      "positive": 1.35,
+      "neutral": 1.15,
+      "negative": 0.9
+    }
+  }
+}

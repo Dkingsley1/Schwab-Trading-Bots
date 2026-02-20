@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Virtual envs
+.venv/
+.venv*/
+
+# IDE / OS
+.idea/
+.DS_Store
+
+# Secrets / auth
+token.json
+*.pem
+*.key
+.env
+.env.*
+
+# Runtime outputs (large / generated)
+logs/
+models/
+decisions/
+decision_explanations/
+governance/
+exports/
+
+# Optional local data dumps
+*.jsonl
+*.npz
+
+# Keep config/source under version control
+!config/
+!core/
+!scripts/
+!main.py
+!GO_LIVE_GATES.md
+!master_bot_registry.json

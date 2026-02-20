@@ -1,0 +1,1855 @@
+import argparse
+import fcntl
+import glob
+import hashlib
+import json
+import math
+import os
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
+
+try:
+    import numpy as np
+except Exception:
+    np = None
+
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from core.base_trader import BaseTrader
+from core.coinbase_market_data import CoinbaseMarketDataClient
+from core.runtime_layers import (
+    BackpressureController,
+    CanaryRollout,
+    CheckpointStore,
+    CircuitBreaker,
+    StateCache,
+    TelemetryEmitter,
+    config_hash,
+)
+
+
+@dataclass
+class SubBot:
+    bot_id: str
+    weight: float
+    active: bool
+    reason: str
+    test_accuracy: Optional[float]
+    promoted: bool = False
+    bot_role: str = "signal_sub_bot"
+
+
+def _enforce_data_only_lock() -> None:
+    market_data_only = os.getenv("MARKET_DATA_ONLY", "1").strip()
+    allow_order_execution = os.getenv("ALLOW_ORDER_EXECUTION", "0").strip()
+    if market_data_only != "1" or allow_order_execution != "0":
+        raise RuntimeError("This runner requires MARKET_DATA_ONLY=1 and ALLOW_ORDER_EXECUTION=0")
+
+
+def _load_registry(path: str) -> Dict[str, Any]:
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Master registry not found: {path}")
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _parse_sub_bots(registry: Dict[str, Any]) -> List[SubBot]:
+    bots: List[SubBot] = []
+    for row in registry.get("sub_bots", []):
+        bots.append(
+            SubBot(
+                bot_id=str(row.get("bot_id")),
+                weight=float(row.get("weight", 0.0) or 0.0),
+                active=bool(row.get("active", False)),
+                reason=str(row.get("reason", "unknown")),
+                test_accuracy=float(row["test_accuracy"]) if row.get("test_accuracy") is not None else None,
+                promoted=bool(row.get("promoted", False)),
+                bot_role=str(row.get("bot_role", "signal_sub_bot")),
+            )
+        )
+    if not bots:
+        raise RuntimeError("No sub_bots found in master registry")
+    return bots
+
+
+def _fresh_registry(registry_path: str) -> tuple[Dict[str, Any], List[SubBot]]:
+    registry = _load_registry(registry_path)
+    return registry, _parse_sub_bots(registry)
+
+
+def _apply_canary_rollout_to_bots(bots: List[SubBot], canary_max_weight: float) -> List[SubBot]:
+    if canary_max_weight <= 0.0:
+        return bots
+
+    active = [b for b in bots if b.active]
+    if not active:
+        return bots
+
+    for b in active:
+        if b.promoted:
+            b.weight = min(max(b.weight, 0.0), canary_max_weight)
+
+    total = sum(max(b.weight, 0.0) for b in active)
+    if total > 0.0:
+        for b in active:
+            b.weight = max(b.weight, 0.0) / total
+
+    return bots
+
+
+def _extract_quote_payload(raw: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+    sym = symbol.upper()
+    if sym in raw and isinstance(raw[sym], dict):
+        return raw[sym]
+    if raw and isinstance(next(iter(raw.values())), dict):
+        return next(iter(raw.values()))
+    return {}
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _is_usable_market_snapshot(mkt: Dict[str, float]) -> bool:
+    # Premarket/after-hours feeds can temporarily miss last_price; allow sane fallbacks.
+    if _to_float(mkt.get("last_price"), 0.0) > 0.0:
+        return True
+    if _to_float(mkt.get("prev_close"), 0.0) > 0.0:
+        return True
+    return False
+
+
+def _market_snapshot_from_schwab(client: Any, symbol: str) -> Dict[str, float]:
+    quote_resp = client.get_quote(symbol)
+    quote_obj = quote_resp.json() if hasattr(quote_resp, "json") else {}
+    quote = _extract_quote_payload(quote_obj if isinstance(quote_obj, dict) else {}, symbol)
+
+    now_utc = datetime.now(timezone.utc)
+    history_resp = client.get_price_history_every_minute(
+        symbol,
+        start_datetime=now_utc - timedelta(minutes=60),
+        end_datetime=now_utc,
+        need_extended_hours_data=False,
+        need_previous_close=True,
+    )
+    hist_obj = history_resp.json() if hasattr(history_resp, "json") else {}
+    candles = hist_obj.get("candles", []) if isinstance(hist_obj, dict) else []
+
+    closes = [_to_float(c.get("close")) for c in candles if _to_float(c.get("close")) > 0]
+    highs = [_to_float(c.get("high")) for c in candles if _to_float(c.get("high")) > 0]
+    lows = [_to_float(c.get("low")) for c in candles if _to_float(c.get("low")) > 0]
+
+    last_price = _to_float(quote.get("lastPrice"), 0.0)
+    if last_price <= 0:
+        last_price = _to_float(quote.get("mark"), 0.0)
+    if last_price <= 0 and closes:
+        last_price = closes[-1]
+
+    prev_close = _to_float(quote.get("closePrice"), 0.0)
+    if prev_close <= 0 and len(closes) > 1:
+        prev_close = closes[0]
+    if prev_close <= 0:
+        prev_close = max(last_price, 1.0)
+
+    pct_from_close = (last_price - prev_close) / max(prev_close, 1e-8)
+
+    ret = []
+    for i in range(1, len(closes)):
+        p0 = closes[i - 1]
+        p1 = closes[i]
+        if p0 > 0 and p1 > 0:
+            ret.append((p1 - p0) / p0)
+    vol_30m = math.sqrt(sum(r * r for r in ret[-30:]) / max(len(ret[-30:]), 1))
+
+    mom_5m = 0.0
+    if len(closes) >= 6 and closes[-6] > 0:
+        mom_5m = (closes[-1] - closes[-6]) / closes[-6]
+
+    day_high = max(highs) if highs else max(last_price, prev_close)
+    day_low = min(lows) if lows else min(last_price, prev_close)
+    range_pos = 0.5
+    if day_high > day_low:
+        range_pos = (last_price - day_low) / (day_high - day_low)
+
+    return {
+        "last_price": last_price,
+        "prev_close": prev_close,
+        "pct_from_close": pct_from_close,
+        "vol_30m": vol_30m,
+        "mom_5m": mom_5m,
+        "range_pos": range_pos,
+    }
+
+
+def _market_snapshot_from_coinbase(client: CoinbaseMarketDataClient, symbol: str) -> Dict[str, float]:
+    return client.market_snapshot(symbol)
+
+
+def _market_snapshot_simulated(last_price: float) -> Dict[str, float]:
+    t = time.time()
+    drift = 0.0004 * math.sin(t / 200.0)
+    shock = 0.0008 * math.cos(t / 31.0)
+    new_price = max(1.0, last_price * (1.0 + drift + shock))
+    prev_close = new_price * (1.0 - 0.0015)
+    pct_from_close = (new_price - prev_close) / max(prev_close, 1e-8)
+    mom_5m = 0.5 * drift + 0.5 * shock
+    vol_30m = abs(shock) * 3.0
+    range_pos = min(max(0.5 + 10.0 * drift, 0.0), 1.0)
+    return {
+        "last_price": new_price,
+        "prev_close": prev_close,
+        "pct_from_close": pct_from_close,
+        "vol_30m": vol_30m,
+        "mom_5m": mom_5m,
+        "range_pos": range_pos,
+    }
+
+
+def _hash_unit(text: str) -> float:
+    b = hashlib.sha256(text.encode("utf-8")).digest()[0]
+    return (b / 255.0) * 2.0 - 1.0
+
+
+def _calibrate_vote(raw_vote: float, scale: float = 0.9) -> float:
+    return math.tanh(scale * raw_vote)
+
+
+def _vote_to_score(vote: float) -> float:
+    # Keep confidence bounded away from extreme saturation.
+    score = 0.5 + 0.45 * vote
+    return min(max(score, 0.01), 0.99)
+
+
+def _sub_bot_signal(bot: SubBot, mkt: Dict[str, float]) -> tuple[str, float, float, List[str]]:
+    acc = bot.test_accuracy if bot.test_accuracy is not None else 0.50
+    trend_alpha = 0.9 + 0.4 * _hash_unit(bot.bot_id + "_trend")
+    mean_rev_alpha = 0.8 + 0.4 * _hash_unit(bot.bot_id + "_meanrev")
+    vol_alpha = 0.7 + 0.6 * _hash_unit(bot.bot_id + "_vol")
+
+    base = 0.5
+    base += 0.28 * trend_alpha * mkt["mom_5m"]
+    base += 0.18 * trend_alpha * mkt["pct_from_close"]
+    base -= 0.16 * mean_rev_alpha * (mkt["range_pos"] - 0.5)
+    base -= 0.08 * vol_alpha * mkt["vol_30m"]
+    base += 0.10 * (acc - 0.5)
+
+    score = min(max(base, 0.01), 0.99)
+    # Per-bot confidence calibration keeps weaker/infra bots from saturating confidence.
+    role_mult = 0.92 if bot.bot_role == "infrastructure_sub_bot" else 1.0
+    confidence_cal = min(max((0.72 + 2.2 * (acc - 0.5)) * role_mult, 0.55), 1.20)
+    score = 0.5 + (score - 0.5) * confidence_cal
+    score = min(max(score, 0.01), 0.99)
+    threshold = _shift_threshold(0.55 if acc >= 0.52 else 0.58)
+
+    if score >= threshold:
+        action = "BUY"
+        reasons = ["score_above_threshold", "trend_or_momentum_support"]
+    elif score <= (1.0 - threshold):
+        action = "SELL"
+        reasons = ["score_below_inverse_threshold", "mean_reversion_or_weak_momentum"]
+    else:
+        action = "HOLD"
+        reasons = ["inside_no_trade_band", "confidence_not_extreme"]
+
+    reasons = reasons + [f"confidence_calibration={confidence_cal:.3f}"]
+    return action, score, threshold, reasons
+
+
+def _estimate_transaction_cost(features: Dict[str, float], action: str) -> float:
+    if action == "HOLD":
+        return 0.0
+    vol = max(float(features.get("vol_30m", 0.0)), 0.0)
+    spread_proxy = min(max(0.0005 + 2.0 * vol, 0.0005), 0.0300)
+    fee_proxy = 0.0004
+    return min(max(spread_proxy + fee_proxy, 0.0), 0.0350)
+
+
+def _apply_transaction_cost_penalty(
+    *,
+    action: str,
+    score: float,
+    threshold: float,
+    reasons: List[str],
+    features: Dict[str, float],
+) -> tuple[str, float, List[str]]:
+    tx_cost = _estimate_transaction_cost(features, action)
+    if action == "HOLD" or tx_cost <= 0.0:
+        return action, score, reasons
+
+    sensitivity = float(os.getenv("TX_COST_PENALTY_SENSITIVITY", "0.85"))
+    edge = abs(score - 0.5)
+    adj_edge = max(0.0, edge - (sensitivity * tx_cost))
+    score = 0.5 + (1.0 if score >= 0.5 else -1.0) * adj_edge
+    score = min(max(score, 0.01), 0.99)
+
+    if score >= threshold:
+        action = "BUY"
+    elif score <= (1.0 - threshold):
+        action = "SELL"
+    else:
+        action = "HOLD"
+
+    return action, score, reasons + [f"tx_cost_penalty={tx_cost:.4f}"]
+
+
+def _enforce_cross_symbol_exposure_cap(
+    *,
+    action: str,
+    score: float,
+    reasons: List[str],
+    exposure_state: Dict[str, int],
+    max_long: int,
+    max_short: int,
+) -> tuple[str, float, List[str]]:
+    if action == "BUY":
+        if exposure_state.get("BUY", 0) >= max_long:
+            return "HOLD", 0.5 + 0.5 * (score - 0.5), reasons + ["exposure_cap_long_reached"]
+        exposure_state["BUY"] = exposure_state.get("BUY", 0) + 1
+    elif action == "SELL":
+        if exposure_state.get("SELL", 0) >= max_short:
+            return "HOLD", 0.5 + 0.5 * (score - 0.5), reasons + ["exposure_cap_short_reached"]
+        exposure_state["SELL"] = exposure_state.get("SELL", 0) + 1
+    return action, score, reasons
+
+
+def _event_blackout_windows() -> List[tuple[int, int]]:
+    raw = os.getenv("EVENT_BLACKOUT_WINDOWS_ET", "08:29-08:36,09:59-10:06,13:58-14:05").strip()
+    windows: List[tuple[int, int]] = []
+    if not raw:
+        return windows
+    for part in raw.split(","):
+        seg = part.strip()
+        if "-" not in seg:
+            continue
+        start_s, end_s = seg.split("-", 1)
+        try:
+            sh, sm = [int(x) for x in start_s.split(":", 1)]
+            eh, em = [int(x) for x in end_s.split(":", 1)]
+            windows.append((sh * 60 + sm, eh * 60 + em))
+        except Exception:
+            continue
+    return windows
+
+
+def _in_event_blackout(now_et: datetime, windows: List[tuple[int, int]]) -> bool:
+    if not windows:
+        return False
+    now_min = now_et.hour * 60 + now_et.minute
+    for start_min, end_min in windows:
+        if start_min <= now_min <= end_min:
+            return True
+    return False
+
+
+def _pnl_attribution_path(project_root: str) -> str:
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    return os.path.join(project_root, "governance", _shadow_profile_subdir(), f"shadow_pnl_attribution_{day}.jsonl")
+
+
+def _derive_flash_aux_features(sub_rows: List[Dict[str, Any]]) -> Dict[str, float]:
+    flash_rows = [r for r in sub_rows if "flash_crash" in str(r.get("bot_id", ""))]
+    if not flash_rows:
+        return {
+            "aux_flash_score": 0.5,
+            "aux_flash_direction": 0.0,
+            "aux_flash_active": 0.0,
+        }
+
+    lead = max(flash_rows, key=lambda x: float(x.get("weight", 0.0)))
+    action = str(lead.get("action", "HOLD"))
+    direction = 1.0 if action == "BUY" else (-1.0 if action == "SELL" else 0.0)
+    return {
+        "aux_flash_score": float(lead.get("score", 0.5)),
+        "aux_flash_direction": direction,
+        "aux_flash_active": 1.0,
+    }
+
+
+def _weighted_master_vote(decisions: List[Dict[str, Any]]) -> tuple[str, float, float, List[str], Dict[str, float]]:
+    if not decisions:
+        return "HOLD", 0.5, 0.55, ["no_active_sub_bots"], {"vote": 0.0}
+
+    net = 0.0
+    total_w = 0.0
+    for d in decisions:
+        w = float(d["weight"])
+        a = d["action"]
+        vote = 1.0 if a == "BUY" else (-1.0 if a == "SELL" else 0.0)
+        net += w * vote
+        total_w += w
+
+    net = net / max(total_w, 1e-8)
+    net = _calibrate_vote(net, scale=0.9)
+    score = _vote_to_score(net)
+    threshold = _shift_threshold(0.60)
+
+    if net > 0.22:
+        action = "BUY"
+    elif net < -0.22:
+        action = "SELL"
+    else:
+        action = "HOLD"
+
+    top = sorted(decisions, key=lambda x: abs(float(x["weight"]) * x["direction"]), reverse=True)[:3]
+    top_text = ",".join(f"{x['bot_id']}:{x['action']}" for x in top) if top else "none"
+    reasons = ["weighted_ensemble_vote", f"top_contributors={top_text}"]
+
+    return action, score, threshold, reasons, {"vote": net}
+
+
+def _master_vote_variant(
+    name: str,
+    decisions: List[Dict[str, Any]],
+    features: Dict[str, float],
+) -> tuple[str, float, float, List[str], Dict[str, float]]:
+    base_action, base_score, base_threshold, base_reasons, base_vote = _weighted_master_vote(decisions)
+
+    mom = float(features.get("mom_5m", 0.0))
+    pct = float(features.get("pct_from_close", 0.0))
+    vol = float(features.get("vol_30m", 0.0))
+    range_pos = float(features.get("range_pos", 0.5))
+    vix_pct = float(features.get("ctx_VIX_X_pct_from_close", 0.0))
+
+    vote = float(base_vote.get("vote", 0.0))
+    if name == "trend":
+        vote += 0.40 * mom + 0.25 * pct
+        reasons = base_reasons + ["trend_master_bias"]
+    elif name == "mean_revert":
+        vote += -0.45 * (range_pos - 0.5) - 0.25 * mom
+        reasons = base_reasons + ["mean_revert_master_bias"]
+    elif name == "shock":
+        vote += -0.35 * vix_pct - 0.20 * vol + 0.30 * float(features.get("aux_flash_direction", 0.0))
+        reasons = base_reasons + ["shock_master_bias"]
+    else:
+        reasons = base_reasons + ["default_master_bias"]
+
+    vote = _calibrate_vote(vote, scale=0.85)
+    score = _vote_to_score(vote)
+    threshold = _shift_threshold(0.58)
+    if vote > 0.20:
+        action = "BUY"
+    elif vote < -0.20:
+        action = "SELL"
+    else:
+        action = "HOLD"
+
+    return action, score, threshold, reasons, {"vote": vote}
+
+
+def _grand_master_weights(features: Dict[str, float]) -> Dict[str, float]:
+    trend_strength = abs(float(features.get("mom_5m", 0.0))) + abs(float(features.get("pct_from_close", 0.0)))
+    chop_strength = abs(float(features.get("range_pos", 0.5)) - 0.5)
+    shock_strength = abs(float(features.get("ctx_VIX_X_pct_from_close", 0.0))) + float(features.get("vol_30m", 0.0))
+
+    w_trend = 1.0 + 3.0 * trend_strength
+    w_mean = 1.0 + 2.0 * max(0.0, 0.5 - chop_strength)
+    w_shock = 1.0 + 4.0 * shock_strength
+
+    total = w_trend + w_mean + w_shock
+    if total <= 0.0:
+        return {"trend": 1 / 3, "mean_revert": 1 / 3, "shock": 1 / 3}
+    return {
+        "trend": w_trend / total,
+        "mean_revert": w_mean / total,
+        "shock": w_shock / total,
+    }
+
+
+def _grand_master_vote(
+    master_outputs: Dict[str, Dict[str, Any]],
+    weights: Dict[str, float],
+) -> tuple[str, float, float, List[str], Dict[str, float]]:
+    if not master_outputs:
+        return "HOLD", 0.5, _shift_threshold(0.55), ["no_master_outputs"], {"vote": 0.0}
+
+    vote = 0.0
+    details: List[str] = []
+    for name, out in master_outputs.items():
+        w = float(weights.get(name, 0.0))
+        v = float(out.get("vote", 0.0))
+        vote += w * v
+        details.append(f"{name}:{w:.2f}")
+
+    vote = _calibrate_vote(vote, scale=0.80)
+    score = _vote_to_score(vote)
+    threshold = _shift_threshold(0.60)
+
+    if vote > 0.24:
+        action = "BUY"
+    elif vote < -0.20:
+        action = "SELL"
+    else:
+        action = "HOLD"
+
+    reasons = ["grand_master_routing", "master_weights=" + ",".join(details)]
+    return action, score, threshold, reasons, {"vote": vote}
+
+
+def _options_master_signal(
+    *,
+    grand_action: str,
+    grand_score: float,
+    grand_vote: float,
+    features: Dict[str, float],
+) -> tuple[str, float, float, List[str], Dict[str, float]]:
+    vol = max(float(features.get("vol_30m", 0.0)), 0.0)
+    vix_pct = float(features.get("ctx_VIX_X_pct_from_close", 0.0))
+    dollar_mom = float(features.get("ctx_UUP_mom_5m", 0.0))
+
+    # Convert spot-level confidence into options suitability with extra regime risk penalties.
+    net = float(grand_vote)
+    net += 0.20 * (grand_score - 0.5)
+    net -= 0.25 * max(vix_pct, 0.0)
+    net -= 0.20 * vol
+    net += -0.10 * dollar_mom
+    net = _calibrate_vote(net, scale=0.75)
+
+    score = _vote_to_score(net)
+    threshold = _shift_threshold(0.62)
+
+    if net > 0.25:
+        action = "BUY"
+    elif net < -0.22:
+        action = "SELL"
+    else:
+        action = "HOLD"
+
+    reasons = [
+        "options_master_regime_filter",
+        f"from_grand={grand_action}",
+        f"vix_pct={vix_pct:.4f}",
+        f"vol_30m={vol:.4f}",
+    ]
+    return action, score, threshold, reasons, {"vote": net}
+
+
+def _build_options_plan(
+    *,
+    symbol: str,
+    mkt: Dict[str, float],
+    master_action: str,
+    master_score: float,
+    master_vote: float,
+    covered_call_shares: int,
+) -> Dict[str, Any]:
+    px = max(mkt.get("last_price", 0.0), 1.0)
+    vol = max(mkt.get("vol_30m", 0.0), 0.0)
+    range_pos = mkt.get("range_pos", 0.5)
+
+    # Conservative default: no options position when confidence is mixed.
+    action = "HOLD"
+    score = master_score
+    threshold = _shift_threshold(0.58)
+    reasons = ["options_filter_no_clear_edge"]
+    plan = {
+        "symbol": symbol,
+        "options_style": "NONE",
+        "underlying_price": px,
+        "dte_days": 21,
+        "contracts": 0,
+        "strike": None,
+    }
+
+    can_cover = covered_call_shares >= 100
+
+    if can_cover and master_action in {"HOLD", "SELL"} and range_pos > 0.62 and vol < 0.02:
+        contracts = max(covered_call_shares // 100, 1)
+        action = "SELL_TO_OPEN"
+        score = max(0.60, master_score)
+        reasons = ["covered_call_income_setup", "has_covered_shares", "price_near_range_high"]
+        plan = {
+            "symbol": symbol,
+            "options_style": "COVERED_CALL",
+            "underlying_price": px,
+            "dte_days": 21,
+            "contracts": contracts,
+            "strike": round(px * 1.03, 2),
+        }
+    elif master_action == "BUY" and master_score >= threshold:
+        action = "BUY_TO_OPEN"
+        score = master_score
+        reasons = ["bullish_master_signal", "long_call_setup"]
+        plan = {
+            "symbol": symbol,
+            "options_style": "LONG_CALL",
+            "underlying_price": px,
+            "dte_days": 30,
+            "contracts": 1,
+            "strike": round(px * 1.02, 2),
+        }
+    elif master_action == "SELL" and (1.0 - master_score) >= (threshold - 0.03):
+        action = "BUY_TO_OPEN"
+        score = max(1.0 - master_score, 0.01)
+        reasons = ["bearish_master_signal", "long_put_setup"]
+        plan = {
+            "symbol": symbol,
+            "options_style": "LONG_PUT",
+            "underlying_price": px,
+            "dte_days": 30,
+            "contracts": 1,
+            "strike": round(px * 0.98, 2),
+        }
+
+    plan["master_vote"] = master_vote
+    return {
+        "action": action,
+        "score": min(max(score, 0.01), 0.99),
+        "threshold": threshold,
+        "reasons": reasons,
+        "plan": plan,
+    }
+
+
+
+def _hash01(text: str) -> float:
+    if not text:
+        return 0.0
+    h = 2166136261
+    for ch in text:
+        h ^= ord(ch)
+        h = (h * 16777619) & 0xFFFFFFFF
+    return (h / 0xFFFFFFFF)
+
+
+def _latest_trade_behavior_model(project_root: str) -> Optional[str]:
+    paths = sorted(glob.glob(os.path.join(project_root, "models", "trade_behavior_policy_*.npz")))
+    if not paths:
+        return None
+    return paths[-1]
+
+
+def _load_trade_behavior_model(project_root: str) -> Optional[Dict[str, Any]]:
+    if np is None:
+        return None
+    path = _latest_trade_behavior_model(project_root)
+    if not path:
+        return None
+
+    min_neutral_f1 = float(os.getenv("TRADE_BEHAVIOR_MIN_NEUTRAL_F1", "0.25"))
+    strict_gate = os.getenv("TRADE_BEHAVIOR_STRICT_NEUTRAL_GATE", "1").strip() == "1"
+
+    try:
+        arr = np.load(path, allow_pickle=False)
+        model = {
+            "path": path,
+            "W": arr["W"].astype(float),
+            "b": arr["b"].astype(float),
+            "mu": arr["mu"].astype(float),
+            "sigma": arr["sigma"].astype(float),
+        }
+    except Exception:
+        return None
+
+    # Gate behavior bias on neutral-class quality to avoid overconfident directional skew.
+    try:
+        stamp = os.path.basename(path).replace("trade_behavior_policy_", "").replace(".npz", "")
+        log_path = os.path.join(project_root, "logs", f"trade_behavior_policy_{stamp}.json")
+        if os.path.exists(log_path):
+            with open(log_path, "r", encoding="utf-8") as f:
+                obj = json.load(f)
+            te = obj.get("test_metrics", {}) if isinstance(obj, dict) else {}
+            neutral_f1 = float(te.get("neutral_f1", 0.0) or 0.0)
+            model["neutral_f1"] = neutral_f1
+            if strict_gate and neutral_f1 < min_neutral_f1:
+                print(
+                    f"Trade behavior model gated off: neutral_f1={neutral_f1:.3f} "
+                    f"< min_neutral_f1={min_neutral_f1:.3f}"
+                )
+                return None
+    except Exception:
+        pass
+
+    return model
+
+
+def _behavior_feature_vector(symbol: str, action_hint: str, features: Dict[str, float]) -> Optional[Any]:
+    if np is None:
+        return None
+
+    pct = float(features.get("pct_from_close", 0.0))
+    mom = float(features.get("mom_5m", 0.0))
+    vol = float(features.get("vol_30m", 0.0))
+
+    pnl_proxy = math.tanh((pct + 0.5 * mom - 0.25 * vol) * 100.0)
+    qty_log = math.log1p(1.0)
+
+    role_raw = os.getenv("BEHAVIOR_ACCOUNT_ROLE", "INDIVIDUAL_TRADING").strip().upper()
+    if role_raw == "ROTH":
+        role_idx = 0.0
+    elif role_raw == "INDIVIDUAL_TRADING":
+        role_idx = 1.0 / 3.0
+    elif role_raw == "INDIVIDUAL_SWING":
+        role_idx = 2.0 / 3.0
+    else:
+        role_idx = 1.0
+
+    symbol_hash = _hash01(symbol.upper())
+    tx_hash = _hash01(action_hint.upper())
+
+    now = datetime.now(timezone.utc)
+    dow = now.weekday() / 6.0
+    hour = now.hour / 23.0
+
+    return np.asarray([[pnl_proxy, qty_log, role_idx, symbol_hash, tx_hash, dow, hour]], dtype=float)
+
+
+def _behavior_prior_from_model(
+    model: Optional[Dict[str, Any]],
+    *,
+    symbol: str,
+    action_hint: str,
+    features: Dict[str, float],
+) -> tuple[float, Dict[str, float]]:
+    if model is None or np is None:
+        return 0.0, {}
+
+    x = _behavior_feature_vector(symbol, action_hint, features)
+    if x is None:
+        return 0.0, {}
+
+    try:
+        mu = model["mu"]
+        sigma = model["sigma"]
+        W = model["W"]
+        b = model["b"]
+
+        xz = (x - mu) / np.where(np.abs(sigma) < 1e-8, 1.0, sigma)
+        logits = xz @ W + b
+        logits = logits - np.max(logits, axis=1, keepdims=True)
+        probs = np.exp(logits)
+        probs = probs / np.clip(np.sum(probs, axis=1, keepdims=True), 1e-8, None)
+
+        neg = float(probs[0, 0])
+        neu = float(probs[0, 1])
+        pos = float(probs[0, 2])
+        prior = pos - neg
+
+        return prior, {
+            "behavior_prob_negative": neg,
+            "behavior_prob_neutral": neu,
+            "behavior_prob_positive": pos,
+            "behavior_prior": prior,
+        }
+    except Exception:
+        return 0.0, {}
+
+
+
+def _governance_recommendations(bots: List[SubBot]) -> List[Dict[str, Any]]:
+    recs: List[Dict[str, Any]] = []
+    for b in bots:
+        if b.active:
+            continue
+        acc = b.test_accuracy
+        if acc is None:
+            decision = "RETRAIN"
+            why = "missing_classification_accuracy"
+        elif acc < 0.50:
+            decision = "REMOVE_OR_REBUILD"
+            why = "persistent_underperformance_below_0.50"
+        else:
+            decision = "RETRAIN"
+            why = "below_quality_floor"
+
+        recs.append(
+            {
+                "bot_id": b.bot_id,
+                "test_accuracy": acc,
+                "current_reason": b.reason,
+                "recommended_action": decision,
+                "why": why,
+            }
+        )
+    return recs
+
+
+def _append_jsonl(path: str, row: Dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=True) + "\n")
+
+
+def _shadow_profile_name() -> str:
+    return os.getenv("SHADOW_PROFILE", "").strip().lower()
+
+
+def _shadow_profile_subdir() -> str:
+    prof = _shadow_profile_name()
+    return "shadow" if not prof else f"shadow_{prof}"
+
+
+def _threshold_shift() -> float:
+    raw = os.getenv("SHADOW_THRESHOLD_SHIFT", "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            return 0.0
+
+    prof = _shadow_profile_name()
+    if prof == "aggressive":
+        return -0.03
+    return 0.0
+
+
+def _shift_threshold(base: float) -> float:
+    v = float(base) + _threshold_shift()
+    return min(max(v, 0.45), 0.75)
+
+
+def _governance_path(project_root: str) -> str:
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    return os.path.join(project_root, "governance", _shadow_profile_subdir(), f"master_control_{day}.jsonl")
+
+
+def _parse_symbols(value: str) -> List[str]:
+    raw_symbols = [s.strip().upper() for s in value.split(",") if s.strip()]
+
+    symbols: List[str] = []
+    for s in raw_symbols:
+        # Shells can expand "$SPX.X" into ".X" if unquoted.
+        if s == ".X":
+            s = "$SPX.X"
+        elif s.startswith(".") and len(s) > 2:
+            s = "$" + s
+        symbols.append(s)
+
+    deduped: List[str] = []
+    seen = set()
+    for s in symbols:
+        if s in seen:
+            continue
+        seen.add(s)
+        deduped.append(s)
+    if not deduped:
+        raise ValueError("No symbols provided")
+    return deduped
+
+
+def _feature_symbol_key(symbol: str) -> str:
+    key = symbol.upper().replace("$", "").replace(".", "_")
+    return key
+
+
+def _merge_symbol_groups(*groups: str) -> List[str]:
+    merged: List[str] = []
+    seen = set()
+    for group in groups:
+        if not group:
+            continue
+        for sym in _parse_symbols(group):
+            if sym in seen:
+                continue
+            seen.add(sym)
+            merged.append(sym)
+
+    if not merged:
+        raise ValueError("No symbols provided across groups")
+    return merged
+
+
+def _nth_weekday_of_month(year: int, month: int, weekday: int, n: int) -> date:
+    d = date(year, month, 1)
+    shift = (weekday - d.weekday()) % 7
+    d = d + timedelta(days=shift + 7 * (n - 1))
+    return d
+
+
+def _last_weekday_of_month(year: int, month: int, weekday: int) -> date:
+    if month == 12:
+        d = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        d = date(year, month + 1, 1) - timedelta(days=1)
+    while d.weekday() != weekday:
+        d -= timedelta(days=1)
+    return d
+
+
+def _easter_sunday(year: int) -> date:
+    # Anonymous Gregorian algorithm.
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def _observed_fixed_holiday(year: int, month: int, day: int) -> date:
+    d = date(year, month, day)
+    if d.weekday() == 5:
+        return d - timedelta(days=1)
+    if d.weekday() == 6:
+        return d + timedelta(days=1)
+    return d
+
+
+def _nyse_holidays(year: int) -> set[date]:
+    holidays = {
+        _observed_fixed_holiday(year, 1, 1),
+        _nth_weekday_of_month(year, 1, 0, 3),   # MLK Day
+        _nth_weekday_of_month(year, 2, 0, 3),   # Presidents Day
+        _easter_sunday(year) - timedelta(days=2),  # Good Friday
+        _last_weekday_of_month(year, 5, 0),      # Memorial Day
+        _observed_fixed_holiday(year, 6, 19),    # Juneteenth
+        _observed_fixed_holiday(year, 7, 4),     # Independence Day
+        _nth_weekday_of_month(year, 9, 0, 1),    # Labor Day
+        _nth_weekday_of_month(year, 11, 3, 4),   # Thanksgiving
+        _observed_fixed_holiday(year, 12, 25),   # Christmas
+    }
+    return holidays
+
+
+def _in_market_window(now_et: datetime, start_hour_et: int, end_hour_et: int) -> tuple[bool, str]:
+    if now_et.weekday() >= 5:
+        return False, "weekend"
+
+    if now_et.date() in _nyse_holidays(now_et.year):
+        return False, "holiday"
+
+    hhmm = now_et.hour + (now_et.minute / 60.0)
+    if hhmm < float(start_hour_et):
+        return False, "pre_window"
+    if hhmm >= float(end_hour_et):
+        return False, "post_window"
+    return True, "open"
+
+
+def _auto_retrain_log_path(project_root: str) -> str:
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    return os.path.join(project_root, "governance", _shadow_profile_subdir(), f"auto_retrain_events_{day}.jsonl")
+
+
+def _count_underperformers(recommendations: List[Dict[str, Any]]) -> int:
+    return sum(1 for r in recommendations if r.get("recommended_action") in {"RETRAIN", "REMOVE_OR_REBUILD"})
+
+
+def _parse_size_to_gb(value: str) -> float:
+    try:
+        s = value.strip().upper()
+        if s.endswith("G"):
+            return float(s[:-1])
+        if s.endswith("M"):
+            return float(s[:-1]) / 1024.0
+        if s.endswith("K"):
+            return float(s[:-1]) / (1024.0 * 1024.0)
+        return float(s)
+    except Exception:
+        return 0.0
+
+
+def _memory_guard_snapshot() -> Dict[str, float]:
+    snapshot: Dict[str, float] = {}
+
+    try:
+        proc = subprocess.run(["/usr/bin/memory_pressure", "-Q"], capture_output=True, text=True, check=False)
+        out = proc.stdout or ""
+        for raw in out.splitlines():
+            line = raw.strip()
+            lower = line.lower()
+            if "free percentage" in lower:
+                # Example: System-wide memory free percentage: 22%
+                rhs = line.split(":", 1)[-1].strip().replace("%", "")
+                snapshot["free_pct"] = float(rhs)
+            elif "available percentage" in lower:
+                rhs = line.split(":", 1)[-1].strip().replace("%", "")
+                snapshot["available_pct"] = float(rhs)
+    except Exception:
+        pass
+
+    try:
+        proc = subprocess.run(["/usr/sbin/sysctl", "vm.swapusage"], capture_output=True, text=True, check=False)
+        out = (proc.stdout or "").strip()
+        # Example: vm.swapusage: total = 2048.00M  used = 58.50M  free = 1989.50M  (encrypted)
+        if "used =" in out:
+            used_part = out.split("used =", 1)[1].strip().split()[0]
+            snapshot["swap_used_gb"] = _parse_size_to_gb(used_part)
+    except Exception:
+        pass
+
+    return snapshot
+
+
+def _mlx_retrain_lock_busy(project_root: str) -> tuple[bool, str]:
+    lock_path = os.getenv("MLX_RETRAIN_LOCK_PATH", os.path.join(project_root, "governance", "mlx_retrain.lock"))
+    try:
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        with open(lock_path, "a+", encoding="utf-8") as fh:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                return False, lock_path
+            except BlockingIOError:
+                return True, lock_path
+    except Exception:
+        return False, lock_path
+
+
+def _auto_retrain_memory_ok(min_free_pct: float, max_swap_gb: float) -> tuple[bool, Dict[str, float], str]:
+    snap = _memory_guard_snapshot()
+
+    free_pct = snap.get("free_pct")
+    if free_pct is not None and free_pct < min_free_pct:
+        return False, snap, f"free_pct_below_threshold free_pct={free_pct:.1f} min_free_pct={min_free_pct:.1f}"
+
+    swap_used_gb = snap.get("swap_used_gb")
+    if swap_used_gb is not None and swap_used_gb > max_swap_gb:
+        return False, snap, f"swap_above_threshold swap_used_gb={swap_used_gb:.2f} max_swap_gb={max_swap_gb:.2f}"
+
+    return True, snap, "ok"
+
+
+def _spawn_auto_retrain(
+    *,
+    project_root: str,
+    underperformers: int,
+    sample_recommendations: List[Dict[str, Any]],
+) -> subprocess.Popen:
+    venv_py = os.path.join(project_root, ".venv312", "bin", "python")
+    retrain_script = os.path.join(project_root, "scripts", "weekly_retrain.py")
+    cmd = [venv_py, retrain_script, "--continue-on-error"]
+
+    proc = subprocess.Popen(cmd, cwd=project_root)
+    event = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "event": "retrain_started",
+        "pid": proc.pid,
+        "command": cmd,
+        "underperformer_count": underperformers,
+        "sample_recommendations": sample_recommendations[:5],
+    }
+    _append_jsonl(_auto_retrain_log_path(project_root), event)
+    print(f"[AutoRetrain] started pid={proc.pid} underperformers={underperformers}")
+    return proc
+
+
+def run_loop(
+    symbols: List[str],
+    context_symbols: List[str],
+    broker: str,
+    interval_seconds: int,
+    max_iterations: int,
+    simulate: bool,
+    auto_retrain: bool,
+    retrain_cooldown_minutes: int,
+    retrain_min_underperformers: int,
+    retrain_on_simulate: bool,
+    session_start_hour: int,
+    session_end_hour: int,
+    bad_symbol_fail_limit: int,
+    bad_symbol_retry_minutes: int,
+) -> None:
+    _enforce_data_only_lock()
+
+    broker = (broker or "schwab").strip().lower()
+    if broker not in {"schwab", "coinbase"}:
+        raise RuntimeError(f"Unsupported broker: {broker}")
+
+    api_key = os.getenv("SCHWAB_API_KEY", "YOUR_KEY_HERE")
+    secret = os.getenv("SCHWAB_SECRET", "YOUR_SECRET_HERE")
+    redirect = os.getenv("SCHWAB_REDIRECT", "https://127.0.0.1:8080")
+    covered_call_shares = int(os.getenv("COVERED_CALL_SHARES", "0"))
+
+    if broker == "schwab" and (not simulate) and (api_key == "YOUR_KEY_HERE" or secret == "YOUR_SECRET_HERE"):
+        raise RuntimeError("Real credentials are required unless --simulate is used")
+
+    registry_path = os.path.join(PROJECT_ROOT, "master_bot_registry.json")
+    registry, bots = _fresh_registry(registry_path)
+    print(f"Loaded registry with {len(bots)} sub-bots")
+    print(f"Shadow profile={_shadow_profile_name() or 'default'} threshold_shift={_threshold_shift():+.3f}")
+
+    behavior_bias_enabled = os.getenv("ENABLE_TRADE_BEHAVIOR_BIAS", "1").strip() == "1"
+    behavior_bias_strength = float(os.getenv("TRADE_BEHAVIOR_BIAS_STRENGTH", "0.08"))
+    behavior_model = _load_trade_behavior_model(PROJECT_ROOT) if behavior_bias_enabled else None
+    if behavior_bias_enabled:
+        if behavior_model is not None:
+            print(f"Trade behavior bias enabled model={behavior_model.get('path')} strength={behavior_bias_strength:.3f}")
+        else:
+            print("Trade behavior bias enabled but no model found; running without behavior prior.")
+
+    trader = BaseTrader(api_key, secret, redirect, mode="shadow")
+    trader.token_path = os.path.join(PROJECT_ROOT, "token.json")
+
+    client = None
+    if not simulate:
+        if broker == "schwab":
+            client = trader.authenticate()
+            print("Shadow loop connected to Schwab market data.")
+        else:
+            client = CoinbaseMarketDataClient(timeout_seconds=float(os.getenv("COINBASE_TIMEOUT_SECONDS", "8")))
+            print("Shadow loop connected to Coinbase public market data.")
+    else:
+        print("Running in simulate mode (no external API calls).")
+
+    effective_interval_seconds = max(int(interval_seconds), 5)
+    if effective_interval_seconds != interval_seconds:
+        print(f"Adjusted interval to safe minimum: {effective_interval_seconds}s")
+
+    iter_count = 0
+    all_symbols = []
+    seen_symbols = set()
+    for s in symbols + context_symbols:
+        if s in seen_symbols:
+            continue
+        seen_symbols.add(s)
+        all_symbols.append(s)
+    sim_prices = {s: 500.0 + (10.0 * i) for i, s in enumerate(all_symbols)}
+    retrain_proc: Optional[subprocess.Popen] = None
+    last_retrain_started_at = 0.0
+    last_closed_reason: Optional[str] = None
+    symbol_fail_counts: Dict[str, int] = {}
+    symbol_quarantine_until: Dict[str, float] = {}
+    symbol_last_price: Dict[str, float] = {}
+    symbol_stale_counts: Dict[str, int] = {}
+    symbol_regime_marker: Dict[str, tuple[int, int, int]] = {}
+    symbol_regime_cooldown_until_iter: Dict[str, int] = {}
+    anomaly_fail_streak = 0
+    anomaly_kill_switch_until_ts = 0.0
+    blackout_windows = _event_blackout_windows()
+    regime_cooldown_iters = max(int(os.getenv("REGIME_COOLDOWN_ITERS", "3")), 0)
+    exposure_cap_long = max(int(os.getenv("CROSS_SYMBOL_MAX_LONG", "8")), 1)
+    exposure_cap_short = max(int(os.getenv("CROSS_SYMBOL_MAX_SHORT", "8")), 1)
+    anomaly_kill_threshold = max(int(os.getenv("ANOMALY_KILL_THRESHOLD", "10")), 1)
+    anomaly_kill_cooldown_seconds = max(int(os.getenv("ANOMALY_KILL_COOLDOWN_SECONDS", "300")), 30)
+
+    # Runtime layers: cache, circuit breaker, telemetry, checkpoint, backpressure, canary rollout.
+    state_cache = StateCache(default_ttl_seconds=float(os.getenv("RUNTIME_CACHE_TTL_SECONDS", "2.0")))
+    circuit_breaker = CircuitBreaker(
+        fail_limit=int(os.getenv("RUNTIME_CIRCUIT_FAIL_LIMIT", "5")),
+        cooldown_seconds=int(os.getenv("RUNTIME_CIRCUIT_COOLDOWN_SECONDS", "120")),
+    )
+    backpressure = BackpressureController(overload_ratio=float(os.getenv("RUNTIME_OVERLOAD_RATIO", "1.5")))
+    telemetry = TelemetryEmitter(os.path.join(PROJECT_ROOT, "governance", _shadow_profile_subdir(), "runtime_telemetry.jsonl"))
+    checkpoint = CheckpointStore(os.path.join(PROJECT_ROOT, "governance", _shadow_profile_subdir(), "runtime_checkpoint.json"))
+    canary_rollout = CanaryRollout(max_weight=float(os.getenv("CANARY_MAX_WEIGHT", "0.08")))
+
+    checkpoint_every = max(int(os.getenv("CHECKPOINT_EVERY_ITERS", "5")), 1)
+    telemetry_every = max(int(os.getenv("TELEMETRY_EVERY_ITERS", "5")), 1)
+    resume_from_checkpoint = os.getenv("RESUME_FROM_CHECKPOINT", "1").strip() == "1"
+    skip_options_on_backpressure = os.getenv("SKIP_OPTIONS_ON_BACKPRESSURE", "1").strip() == "1"
+    enable_async_pipeline = os.getenv("ENABLE_ASYNC_PIPELINE", "1").strip() == "1" and (not simulate)
+    async_workers = max(int(os.getenv("ASYNC_PIPELINE_WORKERS", "6")), 2)
+
+    if resume_from_checkpoint:
+        cp = checkpoint.load()
+        cp_iter = int(cp.get("iter_count", 0) or 0)
+        if cp_iter > 0:
+            iter_count = cp_iter
+            print(f"[Checkpoint] resumed iter_count={iter_count}")
+
+    config_payload = {
+        "symbols": symbols,
+        "context_symbols": context_symbols,
+        "interval_seconds": effective_interval_seconds,
+        "session_start_hour": session_start_hour,
+        "session_end_hour": session_end_hour,
+        "auto_retrain": auto_retrain,
+        "canary_max_weight": float(os.getenv("CANARY_MAX_WEIGHT", "0.08")),
+        "async_pipeline": enable_async_pipeline,
+    }
+    run_config_hash = config_hash(config_payload)
+    print(f"[Config] hash={run_config_hash} async={enable_async_pipeline} canary_max_weight={float(os.getenv('CANARY_MAX_WEIGHT','0.08')):.3f}")
+
+    memory_guard_enabled = os.getenv("AUTO_RETRAIN_MEMORY_GUARD", "0").strip() == "1"
+    auto_retrain_min_free_pct = float(os.getenv("AUTO_RETRAIN_MIN_FREE_PCT", "18"))
+    auto_retrain_max_swap_gb = float(os.getenv("AUTO_RETRAIN_MAX_SWAP_GB", "1.5"))
+    auto_retrain_healthy_streak_needed = max(int(os.getenv("AUTO_RETRAIN_HEALTHY_STREAK", "6")), 1)
+    auto_retrain_healthy_streak = 0
+    overload_mode = False
+
+    while True:
+        loop_started_at = time.time()
+        iter_count += 1
+
+        if retrain_proc is not None and retrain_proc.poll() is not None:
+            rc = retrain_proc.returncode
+            event = {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "event": "retrain_finished",
+                "pid": retrain_proc.pid,
+                "exit_code": rc,
+            }
+            _append_jsonl(_auto_retrain_log_path(PROJECT_ROOT), event)
+            print(f"[AutoRetrain] finished pid={retrain_proc.pid} exit={rc}")
+            retrain_proc = None
+        now_et = datetime.now(timezone.utc).astimezone().astimezone(
+            datetime.now().astimezone().tzinfo
+        )
+        # Normalize to New York market clock without external deps.
+        try:
+            from zoneinfo import ZoneInfo
+            now_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
+        except Exception:
+            pass
+
+        open_now, closed_reason = _in_market_window(now_et, session_start_hour, session_end_hour)
+        if not open_now:
+            if closed_reason != last_closed_reason:
+                print(f"[SessionGate] paused reason={closed_reason} now_et={now_et.isoformat()}")
+                last_closed_reason = closed_reason
+            time.sleep(max(effective_interval_seconds, 30))
+            continue
+        if last_closed_reason is not None:
+            print(f"[SessionGate] resumed now_et={now_et.isoformat()}")
+            last_closed_reason = None
+
+        if _in_event_blackout(now_et, blackout_windows):
+            print(f"[EventGate] paused reason=blackout_window now_et={now_et.isoformat()}")
+            time.sleep(max(effective_interval_seconds, 10))
+            continue
+
+        if time.time() < anomaly_kill_switch_until_ts:
+            rem = int(anomaly_kill_switch_until_ts - time.time())
+            print(f"[KillSwitch] paused reason=data_anomaly remaining_s={max(rem, 0)}")
+            time.sleep(max(min(rem, effective_interval_seconds), 5))
+            continue
+
+        if iter_count == 1 or iter_count % 10 == 0:
+            registry, bots = _fresh_registry(registry_path)
+            bots = _apply_canary_rollout_to_bots(bots, canary_rollout.max_weight)
+
+        active_bots = [b for b in bots if b.active]
+        if not active_bots:
+            active_bots = [SubBot(bot_id="fallback_master_seed", weight=1.0, active=True, reason="fallback", test_accuracy=0.50, bot_role="signal_sub_bot")]
+
+        latest_recs: List[Dict[str, Any]] = []
+        exposure_state: Dict[str, int] = {"BUY": 0, "SELL": 0}
+
+        context_market: Dict[str, Dict[str, float]] = {}
+
+        def _fetch_symbol_snapshot(sym: str) -> Dict[str, float]:
+            cache_key = f"mkt:{sym}"
+            cached = state_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+            cb_key = f"md:{sym}"
+            if not circuit_breaker.allow(cb_key):
+                raise RuntimeError("circuit_open")
+
+            if simulate:
+                snap = _market_snapshot_simulated(sim_prices[sym])
+                sim_prices[sym] = snap["last_price"]
+            else:
+                if broker == "schwab":
+                    snap = _market_snapshot_from_schwab(client, sym)
+                else:
+                    snap = _market_snapshot_from_coinbase(client, sym)
+
+            state_cache.set(cache_key, snap)
+            circuit_breaker.record_success(cb_key)
+            return snap
+
+        if context_symbols:
+            if enable_async_pipeline:
+                with ThreadPoolExecutor(max_workers=min(async_workers, max(len(context_symbols), 1))) as ex:
+                    fut = {ex.submit(_fetch_symbol_snapshot, s): s for s in context_symbols}
+                    for f in as_completed(fut):
+                        ctx_symbol = fut[f]
+                        try:
+                            context_market[ctx_symbol] = f.result()
+                        except Exception as exc:
+                            opened = circuit_breaker.record_failure(f"md:{ctx_symbol}")
+                            if opened:
+                                print(f"[CircuitBreaker] opened symbol={ctx_symbol} layer=context")
+                            print(f"[Context] symbol={ctx_symbol} market_data_error={exc}")
+            else:
+                for ctx_symbol in context_symbols:
+                    try:
+                        context_market[ctx_symbol] = _fetch_symbol_snapshot(ctx_symbol)
+                    except Exception as exc:
+                        opened = circuit_breaker.record_failure(f"md:{ctx_symbol}")
+                        if opened:
+                            print(f"[CircuitBreaker] opened symbol={ctx_symbol} layer=context")
+                        print(f"[Context] symbol={ctx_symbol} market_data_error={exc}")
+
+        now_ts = time.time()
+        for symbol in symbols:
+            quarantine_until = symbol_quarantine_until.get(symbol, 0.0)
+            if now_ts < quarantine_until:
+                continue
+
+            if not circuit_breaker.allow(f"md:{symbol}"):
+                continue
+
+            try:
+                mkt = _fetch_symbol_snapshot(symbol)
+            except Exception as exc:
+                symbol_fail_counts[symbol] = symbol_fail_counts.get(symbol, 0) + 1
+                anomaly_fail_streak += 1
+                if anomaly_fail_streak >= anomaly_kill_threshold:
+                    anomaly_kill_switch_until_ts = time.time() + anomaly_kill_cooldown_seconds
+                    print(f"[KillSwitch] tripped reason=market_data_errors cooldown_s={anomaly_kill_cooldown_seconds}")
+                    anomaly_fail_streak = 0
+                opened = circuit_breaker.record_failure(f"md:{symbol}")
+                if opened:
+                    print(f"[CircuitBreaker] opened symbol={symbol} layer=market_data")
+                print(f"[ShadowLoop] iter={iter_count} symbol={symbol} market_data_error={exc}")
+                if symbol_fail_counts[symbol] >= max(bad_symbol_fail_limit, 1):
+                    symbol_quarantine_until[symbol] = now_ts + max(bad_symbol_retry_minutes, 1) * 60
+                    print(
+                        f"[SymbolGuard] quarantined symbol={symbol} "
+                        f"for {max(bad_symbol_retry_minutes, 1)}m after {symbol_fail_counts[symbol]} failures"
+                    )
+                    symbol_fail_counts[symbol] = 0
+                continue
+
+            if not _is_usable_market_snapshot(mkt):
+                symbol_fail_counts[symbol] = symbol_fail_counts.get(symbol, 0) + 1
+                anomaly_fail_streak += 1
+                if anomaly_fail_streak >= anomaly_kill_threshold:
+                    anomaly_kill_switch_until_ts = time.time() + anomaly_kill_cooldown_seconds
+                    print(f"[KillSwitch] tripped reason=invalid_snapshot cooldown_s={anomaly_kill_cooldown_seconds}")
+                    anomaly_fail_streak = 0
+                print(
+                    f"[SymbolGuard] invalid_snapshot symbol={symbol} "
+                    f"count={symbol_fail_counts[symbol]}"
+                )
+                if symbol_fail_counts[symbol] >= max(bad_symbol_fail_limit, 1):
+                    symbol_quarantine_until[symbol] = now_ts + max(bad_symbol_retry_minutes, 1) * 60
+                    print(
+                        f"[SymbolGuard] quarantined symbol={symbol} "
+                        f"for {max(bad_symbol_retry_minutes, 1)}m due to repeated invalid snapshot"
+                    )
+                    symbol_fail_counts[symbol] = 0
+                continue
+
+            px = float(mkt.get("last_price", 0.0))
+            prev_px = float(symbol_last_price.get(symbol, 0.0))
+            symbol_return_1m = ((px - prev_px) / prev_px) if (px > 0.0 and prev_px > 0.0) else 0.0
+            if px > 0.0 and prev_px > 0.0 and abs(px - prev_px) < 1e-10:
+                symbol_stale_counts[symbol] = symbol_stale_counts.get(symbol, 0) + 1
+            else:
+                symbol_stale_counts[symbol] = 0
+            symbol_last_price[symbol] = px
+
+            stale_limit = max(int(os.getenv("STALE_PRICE_FAIL_LIMIT", "8")), 1)
+            if symbol_stale_counts.get(symbol, 0) >= stale_limit:
+                anomaly_fail_streak += 1
+                if anomaly_fail_streak >= anomaly_kill_threshold:
+                    anomaly_kill_switch_until_ts = time.time() + anomaly_kill_cooldown_seconds
+                    print(f"[KillSwitch] tripped reason=stale_prices cooldown_s={anomaly_kill_cooldown_seconds}")
+                    anomaly_fail_streak = 0
+                symbol_quarantine_until[symbol] = now_ts + max(bad_symbol_retry_minutes, 1) * 60
+                print(
+                    f"[SymbolGuard] stale_price symbol={symbol} count={symbol_stale_counts[symbol]} "
+                    f"quarantine={max(bad_symbol_retry_minutes, 1)}m"
+                )
+                symbol_stale_counts[symbol] = 0
+                continue
+
+            if symbol_fail_counts.get(symbol, 0) > 0:
+                symbol_fail_counts[symbol] = 0
+            anomaly_fail_streak = max(0, anomaly_fail_streak - 1)
+            circuit_breaker.record_success(f"md:{symbol}")
+
+            # One shared snapshot per symbol/iteration, reused by every sub-bot and master decision.
+            snapshot_id = f"{symbol}-{iter_count}-{int(time.time() * 1000)}"
+
+            # Attach macro regime context (e.g., VIX and dollar proxy) to every model decision.
+            context_features: Dict[str, float] = {}
+            for ctx_symbol, ctx_mkt in context_market.items():
+                k = _feature_symbol_key(ctx_symbol)
+                context_features[f"ctx_{k}_last_price"] = ctx_mkt.get("last_price", 0.0)
+                context_features[f"ctx_{k}_pct_from_close"] = ctx_mkt.get("pct_from_close", 0.0)
+                context_features[f"ctx_{k}_vol_30m"] = ctx_mkt.get("vol_30m", 0.0)
+                context_features[f"ctx_{k}_mom_5m"] = ctx_mkt.get("mom_5m", 0.0)
+
+            shared_features = {**mkt, **context_features}
+
+            mom = float(shared_features.get("mom_5m", 0.0))
+            pct = float(shared_features.get("pct_from_close", 0.0))
+            vix = float(shared_features.get("ctx_VIX_X_pct_from_close", 0.0))
+            marker = (1 if mom > 0.001 else (-1 if mom < -0.001 else 0), 1 if pct > 0.001 else (-1 if pct < -0.001 else 0), 1 if vix > 0.002 else (-1 if vix < -0.002 else 0))
+            last_marker = symbol_regime_marker.get(symbol)
+            if regime_cooldown_iters > 0 and last_marker is not None and marker != last_marker:
+                symbol_regime_cooldown_until_iter[symbol] = iter_count + regime_cooldown_iters
+                print(f"[RegimeCooldown] symbol={symbol} cooldown_iters={regime_cooldown_iters} prev={last_marker} now={marker}")
+            symbol_regime_marker[symbol] = marker
+
+            sub_rows: List[Dict[str, Any]] = []
+            for b in active_bots:
+                action, score, threshold, reasons = _sub_bot_signal(b, mkt)
+                gates = {
+                    "market_data_ok": mkt["last_price"] > 0,
+                    "session_open_assumed": True,
+                    "risk_limit_ok": True,
+                }
+
+                trader.execute_decision(
+                    symbol=symbol,
+                    action=action,
+                    quantity=1,
+                    model_score=score,
+                    threshold=threshold,
+                    features=shared_features,
+                    gates=gates,
+                    reasons=reasons + [f"bot_id={b.bot_id}", f"bot_role={b.bot_role}"],
+                    strategy=b.bot_id,
+                    metadata={"layer": "sub_bot", "snapshot_id": snapshot_id, "bot_weight": b.weight, "test_accuracy": b.test_accuracy, "bot_role": b.bot_role},
+                )
+
+                sub_rows.append(
+                    {
+                        "bot_id": b.bot_id,
+                        "action": action,
+                        "score": score,
+                        "threshold": threshold,
+                        "weight": b.weight if b.weight > 0 else 1.0 / max(len(active_bots), 1),
+                        "direction": 1.0 if action == "BUY" else (-1.0 if action == "SELL" else 0.0),
+                    }
+                )
+
+            # Broadcast flash-crash specialist signal as shared context to all higher-level decisions.
+            flash_aux = _derive_flash_aux_features(sub_rows)
+            shared_features = {**shared_features, **flash_aux}
+
+            master_outputs: Dict[str, Dict[str, Any]] = {}
+            for master_name in ("trend", "mean_revert", "shock"):
+                m_action, m_score, m_threshold, m_reasons, m_vote = _master_vote_variant(
+                    master_name,
+                    sub_rows,
+                    shared_features,
+                )
+                master_outputs[master_name] = {
+                    "action": m_action,
+                    "score": m_score,
+                    "threshold": m_threshold,
+                    "reasons": m_reasons,
+                    "vote": m_vote["vote"],
+                }
+                trader.execute_decision(
+                    symbol=symbol,
+                    action=m_action,
+                    quantity=1,
+                    model_score=m_score,
+                    threshold=m_threshold,
+                    features={**shared_features, "master_vote": m_vote["vote"], "active_sub_bots": len(active_bots)},
+                    gates={"ensemble_has_members": len(active_bots) > 0, "market_data_ok": mkt["last_price"] > 0},
+                    reasons=m_reasons,
+                    strategy=f"master_{master_name}_bot",
+                    metadata={"layer": "master_bot", "master_name": master_name, "snapshot_id": snapshot_id},
+                )
+
+            gm_weights = _grand_master_weights(shared_features)
+            gm_action, gm_score, gm_threshold, gm_reasons, gm_vote = _grand_master_vote(master_outputs, gm_weights)
+            gm_action, gm_score, gm_reasons = _apply_transaction_cost_penalty(
+                action=gm_action,
+                score=gm_score,
+                threshold=gm_threshold,
+                reasons=gm_reasons,
+                features=shared_features,
+            )
+
+            behavior_prior, behavior_meta = _behavior_prior_from_model(
+                behavior_model,
+                symbol=symbol,
+                action_hint=gm_action,
+                features=shared_features,
+            )
+            if behavior_bias_enabled and behavior_meta:
+                gm_vote["vote"] = _calibrate_vote(float(gm_vote.get("vote", 0.0)) + (behavior_bias_strength * behavior_prior), scale=0.80)
+                gm_score = _vote_to_score(gm_vote["vote"])
+                if gm_vote["vote"] > 0.24:
+                    gm_action = "BUY"
+                elif gm_vote["vote"] < -0.20:
+                    gm_action = "SELL"
+                else:
+                    gm_action = "HOLD"
+                gm_reasons = gm_reasons + [f"behavior_bias={behavior_prior:+.4f}"]
+                shared_features = {**shared_features, **behavior_meta}
+
+            if iter_count < symbol_regime_cooldown_until_iter.get(symbol, 0):
+                gm_action = "HOLD"
+                gm_score = 0.5 + 0.5 * (gm_score - 0.5)
+                gm_reasons = gm_reasons + ["regime_change_cooldown"]
+
+            gm_action, gm_score, gm_reasons = _enforce_cross_symbol_exposure_cap(
+                action=gm_action,
+                score=gm_score,
+                reasons=gm_reasons,
+                exposure_state=exposure_state,
+                max_long=exposure_cap_long,
+                max_short=exposure_cap_short,
+            )
+
+            trader.execute_decision(
+                symbol=symbol,
+                action=gm_action,
+                quantity=1,
+                model_score=gm_score,
+                threshold=gm_threshold,
+                features={**shared_features, "grand_master_vote": gm_vote["vote"], "active_sub_bots": len(active_bots)},
+                gates={"ensemble_has_members": len(active_bots) > 0, "market_data_ok": mkt["last_price"] > 0},
+                reasons=gm_reasons,
+                strategy="grand_master_bot",
+                metadata={"layer": "grand_master", "snapshot_id": snapshot_id, "master_weights": gm_weights},
+            )
+
+            optm_action, optm_score, optm_threshold, optm_reasons, optm_vote = _options_master_signal(
+                grand_action=gm_action,
+                grand_score=gm_score,
+                grand_vote=gm_vote["vote"],
+                features=shared_features,
+            )
+            optm_action, optm_score, optm_reasons = _apply_transaction_cost_penalty(
+                action=optm_action,
+                score=optm_score,
+                threshold=optm_threshold,
+                reasons=optm_reasons,
+                features=shared_features,
+            )
+            trader.execute_decision(
+                symbol=symbol,
+                action=optm_action,
+                quantity=1,
+                model_score=optm_score,
+                threshold=optm_threshold,
+                features={**shared_features, "grand_master_vote": gm_vote["vote"], "grand_master_score": gm_score, "options_master_vote": optm_vote["vote"]},
+                gates={"market_data_ok": mkt["last_price"] > 0, "options_regime_ok": True},
+                reasons=optm_reasons,
+                strategy="options_master_bot",
+                metadata={"layer": "options_master", "snapshot_id": snapshot_id},
+            )
+
+            if overload_mode and skip_options_on_backpressure:
+                options_decision = {
+                    "action": "HOLD",
+                    "score": optm_score,
+                    "threshold": 0.58,
+                    "reasons": ["backpressure_overload_skip_options"],
+                    "plan": {
+                        "symbol": symbol,
+                        "options_style": "NONE",
+                        "underlying_price": mkt.get("last_price", 0.0),
+                        "dte_days": 0,
+                        "contracts": 0,
+                        "strike": None,
+                        "master_vote": optm_vote["vote"],
+                    },
+                }
+            else:
+                options_decision = _build_options_plan(
+                    symbol=symbol,
+                    mkt=mkt,
+                    master_action=optm_action,
+                    master_score=optm_score,
+                    master_vote=optm_vote["vote"],
+                    covered_call_shares=covered_call_shares,
+                )
+            trader.execute_decision(
+                symbol=symbol,
+                action=options_decision["action"],
+                quantity=float(options_decision["plan"].get("contracts", 0) or 0),
+                model_score=options_decision["score"],
+                threshold=options_decision["threshold"],
+                features={**shared_features, "options_master_vote": optm_vote["vote"], "options_master_score": optm_score},
+                gates={"market_data_ok": mkt["last_price"] > 0, "options_plan_ready": True},
+                reasons=options_decision["reasons"],
+                strategy="master_options_bot",
+                metadata={"layer": "master_options", "snapshot_id": snapshot_id, "options_plan": options_decision["plan"]},
+            )
+
+            ret_1m = float(symbol_return_1m)
+            for row in sub_rows:
+                _append_jsonl(
+                    _pnl_attribution_path(PROJECT_ROOT),
+                    {
+                        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                        "snapshot_id": snapshot_id,
+                        "symbol": symbol,
+                        "bot_id": row.get("bot_id"),
+                        "layer": "sub_bot",
+                        "action": row.get("action"),
+                        "direction": row.get("direction"),
+                        "weight": row.get("weight"),
+                        "return_1m": ret_1m,
+                        "pnl_proxy": float(row.get("direction", 0.0)) * ret_1m * float(row.get("weight", 0.0)),
+                    },
+                )
+            _append_jsonl(
+                _pnl_attribution_path(PROJECT_ROOT),
+                {
+                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                    "snapshot_id": snapshot_id,
+                    "symbol": symbol,
+                    "bot_id": "grand_master_bot",
+                    "layer": "grand_master",
+                    "action": gm_action,
+                    "return_1m": ret_1m,
+                    "pnl_proxy": (1.0 if gm_action == "BUY" else (-1.0 if gm_action == "SELL" else 0.0)) * ret_1m,
+                },
+            )
+
+            recs = _governance_recommendations(bots)
+            latest_recs = recs
+            gov_row = {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "symbol": symbol,
+                "snapshot_id": snapshot_id,
+                "market": mkt,
+                "context_market": context_market,
+                "active_sub_bots": len([b for b in bots if b.active]),
+                "inactive_sub_bots": len([b for b in bots if not b.active]),
+                "master_action": gm_action,
+                "master_score": gm_score,
+                "master_vote": gm_vote["vote"],
+                "master_outputs": master_outputs,
+                "grand_master_weights": gm_weights,
+                "options_master": {"action": optm_action, "score": optm_score, "vote": optm_vote["vote"]},
+                "flash_aux": flash_aux,
+                "options_plan": options_decision["plan"],
+                "recommendations": recs,
+                "top_active": registry.get("summary", {}).get("top_active", []),
+            }
+            _append_jsonl(_governance_path(PROJECT_ROOT), gov_row)
+
+            print(
+                f"[ShadowLoop] iter={iter_count} symbol={symbol} price={mkt['last_price']:.2f} "
+                f"grand_action={gm_action} options_master={optm_action} options_action={options_decision['action']} "
+                f"active_bots={len(active_bots)} recs={len(recs)} snapshot_id={snapshot_id}"
+            )
+
+        if auto_retrain and latest_recs:
+            underperformers = _count_underperformers(latest_recs)
+            cooldown_seconds = max(retrain_cooldown_minutes, 1) * 60
+            cooldown_ok = (time.time() - last_retrain_started_at) >= cooldown_seconds
+            simulate_ok = (not simulate) or retrain_on_simulate
+
+            if retrain_proc is None and simulate_ok and cooldown_ok and underperformers >= retrain_min_underperformers:
+                memory_ok = True
+                memory_snapshot: Dict[str, float] = {}
+                memory_reason = "guard_disabled"
+
+                if memory_guard_enabled:
+                    memory_ok, memory_snapshot, memory_reason = _auto_retrain_memory_ok(
+                        min_free_pct=auto_retrain_min_free_pct,
+                        max_swap_gb=auto_retrain_max_swap_gb,
+                    )
+
+                if memory_ok:
+                    if memory_guard_enabled:
+                        auto_retrain_healthy_streak += 1
+                    else:
+                        auto_retrain_healthy_streak = auto_retrain_healthy_streak_needed
+
+                    if auto_retrain_healthy_streak >= auto_retrain_healthy_streak_needed:
+                        lock_busy, lock_path = _mlx_retrain_lock_busy(PROJECT_ROOT)
+                        if lock_busy:
+                            event = {
+                                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                                "event": "retrain_skipped_lock_busy",
+                                "underperformer_count": underperformers,
+                                "lock_path": lock_path,
+                            }
+                            _append_jsonl(_auto_retrain_log_path(PROJECT_ROOT), event)
+                            print(f"[AutoRetrain] skipped reason=mlx_lock_busy lock_path={lock_path}")
+                        else:
+                            retrain_proc = _spawn_auto_retrain(
+                                project_root=PROJECT_ROOT,
+                                underperformers=underperformers,
+                                sample_recommendations=latest_recs,
+                            )
+                            last_retrain_started_at = time.time()
+                            auto_retrain_healthy_streak = 0
+                    else:
+                        event = {
+                            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                            "event": "retrain_waiting_healthy_streak",
+                            "underperformer_count": underperformers,
+                            "healthy_streak": auto_retrain_healthy_streak,
+                            "healthy_streak_needed": auto_retrain_healthy_streak_needed,
+                            "snapshot": memory_snapshot,
+                        }
+                        _append_jsonl(_auto_retrain_log_path(PROJECT_ROOT), event)
+                        print(
+                            "[AutoRetrain] waiting reason=healthy_streak "
+                            f"streak={auto_retrain_healthy_streak}/{auto_retrain_healthy_streak_needed}"
+                        )
+                else:
+                    auto_retrain_healthy_streak = 0
+                    event = {
+                        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                        "event": "retrain_skipped_memory_guard",
+                        "underperformer_count": underperformers,
+                        "reason": memory_reason,
+                        "snapshot": memory_snapshot,
+                    }
+                    _append_jsonl(_auto_retrain_log_path(PROJECT_ROOT), event)
+                    print(f"[AutoRetrain] skipped reason=memory_guard details={memory_reason}")
+
+        loop_seconds = time.time() - loop_started_at
+        bp = backpressure.evaluate(loop_seconds=loop_seconds, interval_seconds=effective_interval_seconds)
+        overload_mode = bp.overloaded
+        if overload_mode:
+            print(f"[Backpressure] overloaded ratio={bp.ratio_vs_interval:.2f} loop_s={bp.loop_seconds:.2f}")
+
+        if iter_count % telemetry_every == 0:
+            telemetry.emit({
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "iter": iter_count,
+                "config_hash": run_config_hash,
+                "loop_seconds": round(bp.loop_seconds, 4),
+                "ratio_vs_interval": round(bp.ratio_vs_interval, 4),
+                "overloaded": bp.overloaded,
+                "active_bots": len([b for b in bots if b.active]),
+                "cache_size": len(state_cache._store),
+            })
+
+        if iter_count % checkpoint_every == 0:
+            checkpoint.save({
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "iter_count": iter_count,
+                "config_hash": run_config_hash,
+                "overloaded": overload_mode,
+            })
+
+        if max_iterations > 0 and iter_count >= max_iterations:
+            print("Reached max iterations, exiting.")
+            return
+
+        sleep_s = max(effective_interval_seconds - loop_seconds, 0.0)
+        time.sleep(sleep_s)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Continuous shadow loop for sub-bot + master decision logging.")
+
+    default_core = os.getenv(
+        "WATCH_SYMBOLS_CORE",
+        os.getenv("WATCH_SYMBOLS", os.getenv("WATCH_SYMBOL", "SPY,QQQ,AAPL,MSFT,NVDA")),
+    )
+    default_volatile = os.getenv(
+        "WATCH_SYMBOLS_VOLATILE",
+        "TSLA,AMD,META,PLTR,SMCI,COIN,MSTR,SOXL,IWM",
+    )
+    default_defensive = os.getenv(
+        "WATCH_SYMBOLS_DEFENSIVE",
+        "XLU,XLP,XLV,TLT,GLD,SLV,USO,UNG,DBA,PDBC,VNQ,IYR,O,PLD,SPG",
+    )
+
+    parser.add_argument(
+        "--symbols",
+        default=None,
+        help="Override full symbol list. If set, group args are ignored.",
+    )
+    parser.add_argument("--symbols-core", default=default_core)
+    parser.add_argument("--symbols-volatile", default=default_volatile)
+    parser.add_argument("--symbols-defensive", default=default_defensive)
+    parser.add_argument("--context-symbols", default=os.getenv("WATCH_CONTEXT_SYMBOLS", "$VIX.X,UUP"))
+    parser.add_argument("--broker", default=os.getenv("DATA_BROKER", "schwab"), choices=["schwab", "coinbase"])
+    parser.add_argument("--interval-seconds", type=int, default=int(os.getenv("SHADOW_LOOP_INTERVAL", "15")))
+    parser.add_argument("--max-iterations", type=int, default=int(os.getenv("SHADOW_LOOP_MAX_ITERS", "0")))
+    parser.add_argument("--simulate", action="store_true", help="Run without Schwab API calls.")
+    parser.add_argument(
+        "--auto-retrain",
+        action="store_true",
+        default=os.getenv("AUTO_RETRAIN_ON_GOVERNANCE", "0").strip() == "1",
+        help="Automatically trigger weekly retrain when underperformers exceed threshold.",
+    )
+    parser.add_argument(
+        "--retrain-cooldown-minutes",
+        type=int,
+        default=int(os.getenv("AUTO_RETRAIN_COOLDOWN_MINUTES", "240")),
+    )
+    parser.add_argument(
+        "--retrain-min-underperformers",
+        type=int,
+        default=int(os.getenv("AUTO_RETRAIN_MIN_UNDERPERFORMERS", "8")),
+    )
+    parser.add_argument(
+        "--retrain-on-simulate",
+        action="store_true",
+        default=os.getenv("AUTO_RETRAIN_ON_SIMULATE", "0").strip() == "1",
+        help="Allow auto retrain while --simulate is enabled.",
+    )
+    parser.add_argument(
+        "--session-start-hour",
+        type=int,
+        default=int(os.getenv("MARKET_SESSION_START_HOUR", "8")),
+        help="Session start hour in America/New_York (24h clock).",
+    )
+    parser.add_argument(
+        "--session-end-hour",
+        type=int,
+        default=int(os.getenv("MARKET_SESSION_END_HOUR", "20")),
+        help="Session end hour in America/New_York (24h clock).",
+    )
+    parser.add_argument(
+        "--bad-symbol-fail-limit",
+        type=int,
+        default=int(os.getenv("BAD_SYMBOL_FAIL_LIMIT", "2")),
+        help="Consecutive failures before a symbol is temporarily quarantined.",
+    )
+    parser.add_argument(
+        "--bad-symbol-retry-minutes",
+        type=int,
+        default=int(os.getenv("BAD_SYMBOL_RETRY_MINUTES", "30")),
+        help="Minutes to wait before retrying a quarantined symbol.",
+    )
+    args = parser.parse_args()
+
+    symbols = _parse_symbols(args.symbols) if args.symbols else _merge_symbol_groups(
+        args.symbols_core,
+        args.symbols_volatile,
+        args.symbols_defensive,
+    )
+
+    context_symbols = _parse_symbols(args.context_symbols)
+    if args.broker == "coinbase":
+        symbols = [CoinbaseMarketDataClient.normalize_symbol(s) for s in symbols]
+        context_symbols = [CoinbaseMarketDataClient.normalize_symbol(s) for s in context_symbols]
+        # For crypto mode, if context stayed at equity defaults, swap to crypto context.
+        if context_symbols == ["$VIX.X", "UUP"]:
+            context_symbols = ["BTC-USD", "ETH-USD", "SOL-USD"]
+
+    print(
+        f"Symbol groups: core={len(_parse_symbols(args.symbols_core))} "
+        f"volatile={len(_parse_symbols(args.symbols_volatile))} "
+        f"defensive={len(_parse_symbols(args.symbols_defensive))} total={len(symbols)} broker={args.broker}"
+    )
+
+    os.chdir(PROJECT_ROOT)
+    run_loop(
+        symbols=symbols,
+        context_symbols=context_symbols,
+        broker=args.broker,
+        interval_seconds=args.interval_seconds,
+        max_iterations=args.max_iterations,
+        simulate=args.simulate,
+        auto_retrain=args.auto_retrain,
+        retrain_cooldown_minutes=args.retrain_cooldown_minutes,
+        retrain_min_underperformers=args.retrain_min_underperformers,
+        retrain_on_simulate=args.retrain_on_simulate,
+        session_start_hour=args.session_start_hour,
+        session_end_hour=args.session_end_hour,
+        bad_symbol_fail_limit=args.bad_symbol_fail_limit,
+        bad_symbol_retry_minutes=args.bad_symbol_retry_minutes,
+    )
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("Interrupted by user, stopping shadow loop.")
