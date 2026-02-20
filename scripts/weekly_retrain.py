@@ -10,6 +10,11 @@ import sys
 import time
 from datetime import datetime, timezone
 
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
+
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 CORE_DIR = os.path.join(PROJECT_ROOT, "core")
@@ -18,6 +23,8 @@ VENV_PY = os.path.join(PROJECT_ROOT, ".venv312", "bin", "python")
 MASTER_RUNNER = os.path.join(PROJECT_ROOT, "scripts", "run_master_bot.py")
 TRADE_DATASET_BUILDER = os.path.join(PROJECT_ROOT, "scripts", "build_trade_learning_dataset.py")
 TRADE_BEHAVIOR_TRAINER = os.path.join(PROJECT_ROOT, "scripts", "train_trade_behavior_bot.py")
+PRUNE_UNDERPERFORMERS = os.path.join(PROJECT_ROOT, "scripts", "prune_underperformers.py")
+PRUNE_REDUNDANT = os.path.join(PROJECT_ROOT, "scripts", "prune_redundant_bots.py")
 
 
 _MLX_LOCK_HANDLE = None
@@ -55,6 +62,44 @@ def _normalized_bot_id_from_script(path: str) -> str:
     if name.endswith(".py"):
         name = name[:-3]
     return name.lower()
+
+
+def _market_open_now_et(start_hour: int, end_hour: int) -> bool:
+    if ZoneInfo is None:
+        return False
+    now_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
+    wd = now_et.weekday()
+    if wd >= 5:
+        return False
+    h = now_et.hour
+    return start_hour <= h < end_hour
+
+
+def _monthly_stamp_path() -> str:
+    return os.path.join(PROJECT_ROOT, "governance", "monthly_prune_stamp.json")
+
+
+def _monthly_prune_due() -> bool:
+    stamp = _monthly_stamp_path()
+    now = datetime.now(timezone.utc)
+    if not os.path.exists(stamp):
+        return True
+    try:
+        with open(stamp, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+        y = int(obj.get("year", 0))
+        m = int(obj.get("month", 0))
+        return (y, m) != (now.year, now.month)
+    except Exception:
+        return True
+
+
+def _write_monthly_prune_stamp() -> None:
+    now = datetime.now(timezone.utc)
+    path = _monthly_stamp_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"year": now.year, "month": now.month, "timestamp_utc": now.isoformat()}, f, ensure_ascii=True)
 
 
 def _load_deleted_bot_ids(registry_path: str) -> set[str]:
@@ -495,7 +540,7 @@ def main() -> int:
     parser.add_argument(
         "--memory-guard",
         action="store_true",
-        default=os.getenv("RETRAIN_MEMORY_GUARD", "0").strip() == "1",
+        default=os.getenv("RETRAIN_MEMORY_GUARD", "1").strip() == "1",
         help="Enable memory gate before each target run.",
     )
     parser.add_argument(
@@ -552,6 +597,28 @@ def main() -> int:
         default=int(os.getenv("RETRAIN_OPS_EXTRA_NICE", "6")),
         help="Extra nice offset for ops tasks (master registry update + behavior jobs).",
     )
+    parser.add_argument(
+        "--after-hours-only",
+        action="store_true",
+        default=os.getenv("RETRAIN_AFTER_HOURS_ONLY", "1").strip() == "1",
+        help="Skip retrain during market hours (ET) unless explicitly disabled.",
+    )
+    parser.add_argument(
+        "--session-start-hour",
+        type=int,
+        default=int(os.getenv("MARKET_SESSION_START_HOUR", "8")),
+    )
+    parser.add_argument(
+        "--session-end-hour",
+        type=int,
+        default=int(os.getenv("MARKET_SESSION_END_HOUR", "20")),
+    )
+    parser.add_argument(
+        "--monthly-prune",
+        action="store_true",
+        default=os.getenv("MONTHLY_PRUNE_ENABLED", "1").strip() == "1",
+        help="Run monthly underperformer/redundancy prune once per month.",
+    )
     args = parser.parse_args()
 
     lock_path = os.getenv("MLX_RETRAIN_LOCK_PATH", os.path.join(PROJECT_ROOT, "governance", "mlx_retrain.lock"))
@@ -559,6 +626,10 @@ def main() -> int:
     _MLX_LOCK_HANDLE = _acquire_mlx_lock(lock_path)
     if _MLX_LOCK_HANDLE is None:
         print("Another MLX retrain is already active. Skipping this retrain run.")
+        return 0
+
+    if args.after_hours_only and _market_open_now_et(args.session_start_hour, args.session_end_hour):
+        print("Retrain skipped: market session is open (after-hours-only enabled).")
         return 0
 
     if not os.path.exists(VENV_PY):
@@ -634,6 +705,7 @@ def main() -> int:
     started = datetime.now(timezone.utc).isoformat()
     print(f"Weekly retrain start (UTC): {started}")
     print(f"Targets: {len(targets)}")
+    print("Efficiency tip: keep streaming/video/browser load low during retrain windows.")
 
     failures: list[str] = []
     skipped_by_memory: list[str] = []
@@ -756,6 +828,14 @@ def main() -> int:
                 return 1
         else:
             print(f"WARN: trade behavior trainer missing: {TRADE_BEHAVIOR_TRAINER}")
+
+    if args.monthly_prune and (not args.dry_run) and _monthly_prune_due():
+        print("Running monthly prune pass...")
+        if os.path.exists(PRUNE_UNDERPERFORMERS):
+            _ = run_cmd([VENV_PY, PRUNE_UNDERPERFORMERS, "--min-streak", os.getenv("MONTHLY_PRUNE_MIN_STREAK", "3")], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+        if os.path.exists(PRUNE_REDUNDANT):
+            _ = run_cmd([VENV_PY, PRUNE_REDUNDANT], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+        _write_monthly_prune_stamp()
 
     if skipped_by_memory:
         print("Completed with memory-gate skips.")

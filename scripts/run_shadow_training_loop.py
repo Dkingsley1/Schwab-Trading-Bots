@@ -1225,6 +1225,8 @@ def run_loop(
     session_end_hour: int,
     bad_symbol_fail_limit: int,
     bad_symbol_retry_minutes: int,
+    volatile_symbols: List[str],
+    defensive_symbols: List[str],
 ) -> None:
     _enforce_data_only_lock()
 
@@ -1352,9 +1354,9 @@ def run_loop(
     run_config_hash = config_hash(config_payload)
     print(f"[Config] hash={run_config_hash} async={enable_async_pipeline} canary_max_weight={float(os.getenv('CANARY_MAX_WEIGHT','0.08')):.3f}")
 
-    memory_guard_enabled = os.getenv("AUTO_RETRAIN_MEMORY_GUARD", "0").strip() == "1"
-    auto_retrain_min_free_pct = float(os.getenv("AUTO_RETRAIN_MIN_FREE_PCT", "18"))
-    auto_retrain_max_swap_gb = float(os.getenv("AUTO_RETRAIN_MAX_SWAP_GB", "1.5"))
+    memory_guard_enabled = os.getenv("AUTO_RETRAIN_MEMORY_GUARD", "1").strip() == "1"
+    auto_retrain_min_free_pct = float(os.getenv("AUTO_RETRAIN_MIN_FREE_PCT", "20"))
+    auto_retrain_max_swap_gb = float(os.getenv("AUTO_RETRAIN_MAX_SWAP_GB", "2.2"))
     auto_retrain_healthy_streak_needed = max(int(os.getenv("AUTO_RETRAIN_HEALTHY_STREAK", "6")), 1)
     auto_retrain_healthy_streak = 0
     overload_mode = False
@@ -1362,6 +1364,13 @@ def run_loop(
     log_maintenance_enabled = os.getenv('LOG_MAINTENANCE_ENABLED', '1').strip() == '1'
     log_maintenance_every_iters = max(int(os.getenv('LOG_MAINTENANCE_EVERY_ITERS', '40')), 1)
     log_maintenance_max_ops = max(int(os.getenv('LOG_MAINTENANCE_MAX_OPS', '200')), 10)
+
+    volatile_set = {x.upper() for x in volatile_symbols}
+    defensive_set = {x.upper() for x in defensive_symbols}
+    core_set = {x.upper() for x in symbols if x.upper() not in volatile_set and x.upper() not in defensive_set}
+    core_every_n = max(int(os.getenv('CORE_SYMBOL_EVERY_N_ITERS', '1')), 1)
+    volatile_every_n = max(int(os.getenv('VOLATILE_SYMBOL_EVERY_N_ITERS', '1')), 1)
+    defensive_every_n = max(int(os.getenv('DEFENSIVE_SYMBOL_EVERY_N_ITERS', '2')), 1)
 
     while True:
         loop_started_at = time.time()
@@ -1474,6 +1483,16 @@ def run_loop(
 
         now_ts = time.time()
         for symbol in symbols:
+            u = symbol.upper()
+            if u in volatile_set:
+                cadence = volatile_every_n
+            elif u in defensive_set:
+                cadence = defensive_every_n
+            else:
+                cadence = core_every_n
+            if cadence > 1 and (iter_count % cadence != 0):
+                continue
+
             quarantine_until = symbol_quarantine_until.get(symbol, 0.0)
             if now_ts < quarantine_until:
                 continue
@@ -1986,21 +2005,24 @@ def main() -> None:
     parser.add_argument("--symbols-core", default=default_core)
     parser.add_argument("--symbols-volatile", default=default_volatile)
     parser.add_argument("--symbols-defensive", default=default_defensive)
+    parser.add_argument("--core-every-n-iters", type=int, default=int(os.getenv("CORE_SYMBOL_EVERY_N_ITERS", "1")))
+    parser.add_argument("--volatile-every-n-iters", type=int, default=int(os.getenv("VOLATILE_SYMBOL_EVERY_N_ITERS", "1")))
+    parser.add_argument("--defensive-every-n-iters", type=int, default=int(os.getenv("DEFENSIVE_SYMBOL_EVERY_N_ITERS", "2")))
     parser.add_argument("--context-symbols", default=os.getenv("WATCH_CONTEXT_SYMBOLS", "$VIX.X,UUP"))
     parser.add_argument("--broker", default=os.getenv("DATA_BROKER", "schwab"), choices=["schwab", "coinbase"])
-    parser.add_argument("--interval-seconds", type=int, default=int(os.getenv("SHADOW_LOOP_INTERVAL", "15")))
+    parser.add_argument("--interval-seconds", type=int, default=int(os.getenv("SHADOW_LOOP_INTERVAL", "12")))
     parser.add_argument("--max-iterations", type=int, default=int(os.getenv("SHADOW_LOOP_MAX_ITERS", "0")))
     parser.add_argument("--simulate", action="store_true", help="Run without Schwab API calls.")
     parser.add_argument(
         "--auto-retrain",
         action="store_true",
-        default=os.getenv("AUTO_RETRAIN_ON_GOVERNANCE", "0").strip() == "1",
+        default=os.getenv("AUTO_RETRAIN_ON_GOVERNANCE", "1").strip() == "1",
         help="Automatically trigger weekly retrain when underperformers exceed threshold.",
     )
     parser.add_argument(
         "--retrain-cooldown-minutes",
         type=int,
-        default=int(os.getenv("AUTO_RETRAIN_COOLDOWN_MINUTES", "240")),
+        default=int(os.getenv("AUTO_RETRAIN_COOLDOWN_MINUTES", "360")),
     )
     parser.add_argument(
         "--retrain-min-underperformers",
@@ -2058,6 +2080,9 @@ def main() -> None:
         f"volatile={len(_parse_symbols(args.symbols_volatile))} "
         f"defensive={len(_parse_symbols(args.symbols_defensive))} total={len(symbols)} broker={args.broker}"
     )
+    os.environ["CORE_SYMBOL_EVERY_N_ITERS"] = str(max(args.core_every_n_iters, 1))
+    os.environ["VOLATILE_SYMBOL_EVERY_N_ITERS"] = str(max(args.volatile_every_n_iters, 1))
+    os.environ["DEFENSIVE_SYMBOL_EVERY_N_ITERS"] = str(max(args.defensive_every_n_iters, 1))
 
     os.chdir(PROJECT_ROOT)
     run_loop(
@@ -2075,6 +2100,8 @@ def main() -> None:
         session_end_hour=args.session_end_hour,
         bad_symbol_fail_limit=args.bad_symbol_fail_limit,
         bad_symbol_retry_minutes=args.bad_symbol_retry_minutes,
+        volatile_symbols=_parse_symbols(args.symbols_volatile),
+        defensive_symbols=_parse_symbols(args.symbols_defensive),
     )
 
 
