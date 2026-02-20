@@ -1,10 +1,12 @@
 import argparse
 import fcntl
 import glob
+import gzip
 import hashlib
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -780,6 +782,78 @@ def _append_jsonl(path: str, row: Dict[str, Any]) -> None:
         f.write(json.dumps(row, ensure_ascii=True) + "\n")
 
 
+def _file_age_days(path: str, now_ts: float) -> float:
+    try:
+        return max((now_ts - os.path.getmtime(path)) / 86400.0, 0.0)
+    except Exception:
+        return 0.0
+
+
+def _gzip_file(path: str) -> bool:
+    if path.endswith('.gz'):
+        return False
+    gz_path = path + '.gz'
+    if os.path.exists(gz_path):
+        return False
+    try:
+        with open(path, 'rb') as src, gzip.open(gz_path, 'wb', compresslevel=6) as dst:
+            shutil.copyfileobj(src, dst)
+        os.remove(path)
+        return True
+    except Exception:
+        return False
+
+
+def _run_log_maintenance(project_root: str, *, max_ops: int = 200) -> Dict[str, int]:
+    now_ts = time.time()
+
+    retention_decisions = int(os.getenv('LOG_RETENTION_DECISIONS_DAYS', '14'))
+    retention_explanations = int(os.getenv('LOG_RETENTION_DECISION_EXPLANATIONS_DAYS', '14'))
+    retention_governance = int(os.getenv('LOG_RETENTION_GOVERNANCE_DAYS', '21'))
+    retention_exports = int(os.getenv('LOG_RETENTION_EXPORTS_DAYS', '14'))
+    compress_after_days = float(os.getenv('LOG_COMPRESS_AFTER_DAYS', '2'))
+
+    targets = [
+        (os.path.join(project_root, 'decisions'), retention_decisions),
+        (os.path.join(project_root, 'decision_explanations'), retention_explanations),
+        (os.path.join(project_root, 'governance'), retention_governance),
+        (os.path.join(project_root, 'exports'), retention_exports),
+    ]
+
+    ops = 0
+    compressed = 0
+    deleted = 0
+
+    for base, retention_days in targets:
+        if not os.path.isdir(base):
+            continue
+        for root, _, files in os.walk(base):
+            for name in files:
+                if ops >= max_ops:
+                    return {'compressed': compressed, 'deleted': deleted, 'ops': ops}
+
+                path = os.path.join(root, name)
+                age_days = _file_age_days(path, now_ts)
+
+                # delete old artifacts
+                if age_days >= max(float(retention_days), 1.0):
+                    try:
+                        os.remove(path)
+                        deleted += 1
+                        ops += 1
+                    except Exception:
+                        pass
+                    continue
+
+                # compress older verbose text/jsonl artifacts
+                if age_days >= compress_after_days and (name.endswith('.jsonl') or name.endswith('.log')) and (not name.endswith('.gz')):
+                    if _gzip_file(path):
+                        compressed += 1
+                        ops += 1
+
+    return {'compressed': compressed, 'deleted': deleted, 'ops': ops}
+
+
 def _shadow_profile_name() -> str:
     return os.getenv("SHADOW_PROFILE", "").strip().lower()
 
@@ -1105,6 +1179,16 @@ def run_loop(
     if effective_interval_seconds != interval_seconds:
         print(f"Adjusted interval to safe minimum: {effective_interval_seconds}s")
 
+    adaptive_interval_enabled = os.getenv('ADAPTIVE_INTERVAL_ENABLED', '1').strip() == '1'
+    adaptive_interval_min = max(int(os.getenv('ADAPTIVE_INTERVAL_MIN_SECONDS', str(effective_interval_seconds))), 5)
+    adaptive_interval_max = max(int(os.getenv('ADAPTIVE_INTERVAL_MAX_SECONDS', '30')), adaptive_interval_min)
+    adaptive_interval_step_up = max(int(os.getenv('ADAPTIVE_INTERVAL_STEP_UP_SECONDS', '2')), 1)
+    adaptive_interval_step_down = max(int(os.getenv('ADAPTIVE_INTERVAL_STEP_DOWN_SECONDS', '1')), 1)
+    adaptive_interval_recover_streak = max(int(os.getenv('ADAPTIVE_INTERVAL_RECOVER_STREAK', '3')), 1)
+    current_interval_seconds = effective_interval_seconds
+    overload_streak = 0
+    healthy_streak = 0
+
     iter_count = 0
     all_symbols = []
     seen_symbols = set()
@@ -1176,6 +1260,10 @@ def run_loop(
     auto_retrain_healthy_streak_needed = max(int(os.getenv("AUTO_RETRAIN_HEALTHY_STREAK", "6")), 1)
     auto_retrain_healthy_streak = 0
     overload_mode = False
+
+    log_maintenance_enabled = os.getenv('LOG_MAINTENANCE_ENABLED', '1').strip() == '1'
+    log_maintenance_every_iters = max(int(os.getenv('LOG_MAINTENANCE_EVERY_ITERS', '40')), 1)
+    log_maintenance_max_ops = max(int(os.getenv('LOG_MAINTENANCE_MAX_OPS', '200')), 10)
 
     while True:
         loop_started_at = time.time()
@@ -1699,10 +1787,33 @@ def run_loop(
                     print(f"[AutoRetrain] skipped reason=memory_guard details={memory_reason}")
 
         loop_seconds = time.time() - loop_started_at
-        bp = backpressure.evaluate(loop_seconds=loop_seconds, interval_seconds=effective_interval_seconds)
+        bp = backpressure.evaluate(loop_seconds=loop_seconds, interval_seconds=current_interval_seconds)
         overload_mode = bp.overloaded
         if overload_mode:
             print(f"[Backpressure] overloaded ratio={bp.ratio_vs_interval:.2f} loop_s={bp.loop_seconds:.2f}")
+
+        if adaptive_interval_enabled:
+            prev_interval = current_interval_seconds
+            if overload_mode:
+                overload_streak += 1
+                healthy_streak = 0
+                current_interval_seconds = min(current_interval_seconds + adaptive_interval_step_up, adaptive_interval_max)
+            else:
+                healthy_streak += 1
+                overload_streak = 0
+                if healthy_streak >= adaptive_interval_recover_streak:
+                    current_interval_seconds = max(current_interval_seconds - adaptive_interval_step_down, adaptive_interval_min)
+                    healthy_streak = 0
+            if current_interval_seconds != prev_interval:
+                print(f"[AdaptiveInterval] changed from={prev_interval}s to={current_interval_seconds}s")
+
+        if log_maintenance_enabled and (iter_count % log_maintenance_every_iters == 0):
+            stats = _run_log_maintenance(PROJECT_ROOT, max_ops=log_maintenance_max_ops)
+            if (stats.get('compressed', 0) + stats.get('deleted', 0)) > 0:
+                print(
+                    f"[LogMaintenance] compressed={stats.get('compressed', 0)} "
+                    f"deleted={stats.get('deleted', 0)} ops={stats.get('ops', 0)}"
+                )
 
         if iter_count % telemetry_every == 0:
             telemetry.emit({
@@ -1714,6 +1825,7 @@ def run_loop(
                 "overloaded": bp.overloaded,
                 "active_bots": len([b for b in bots if b.active]),
                 "cache_size": len(state_cache._store),
+                "current_interval_seconds": current_interval_seconds,
             })
 
         if iter_count % checkpoint_every == 0:
@@ -1728,7 +1840,7 @@ def run_loop(
             print("Reached max iterations, exiting.")
             return
 
-        sleep_s = max(effective_interval_seconds - loop_seconds, 0.0)
+        sleep_s = max(current_interval_seconds - loop_seconds, 0.0)
         time.sleep(sleep_s)
 
 

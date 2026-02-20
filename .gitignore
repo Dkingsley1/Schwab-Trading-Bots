@@ -40,3 +40,22 @@ exports/
 !main.py
 !GO_LIVE_GATES.md
 !master_bot_registry.json
+
+# Generated registry backups / datasets
+master_bot_registry.backup_*.json
+data/trade_history/import_summary_*.json
+data/trade_history/trade_learning_dataset.json
+paper_trades_*.jsonl
+
+# Legacy root duplicates
+Brain Refinery 2
+MLX Brain Refinery 1
+The Control Room (Main)
+The Genetic Code (base_trader)
+--init--.py
+brain_refinery_v*.py
+brain_refinery_V3.py
+base_trader.py
+decision_logger.py
+runtime_config.py
+daily_decision_summary.py
