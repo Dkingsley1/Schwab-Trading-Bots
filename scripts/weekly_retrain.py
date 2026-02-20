@@ -25,6 +25,7 @@ TRADE_DATASET_BUILDER = os.path.join(PROJECT_ROOT, "scripts", "build_trade_learn
 TRADE_BEHAVIOR_TRAINER = os.path.join(PROJECT_ROOT, "scripts", "train_trade_behavior_bot.py")
 PRUNE_UNDERPERFORMERS = os.path.join(PROJECT_ROOT, "scripts", "prune_underperformers.py")
 PRUNE_REDUNDANT = os.path.join(PROJECT_ROOT, "scripts", "prune_redundant_bots.py")
+ARCHIVE_OLD_MODELS = os.path.join(PROJECT_ROOT, "scripts", "archive_old_models.py")
 
 
 _MLX_LOCK_HANDLE = None
@@ -100,6 +101,38 @@ def _write_monthly_prune_stamp() -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump({"year": now.year, "month": now.month, "timestamp_utc": now.isoformat()}, f, ensure_ascii=True)
+
+
+def _weekly_archive_stamp_path() -> str:
+    return os.path.join(PROJECT_ROOT, "governance", "weekly_model_archive_stamp.json")
+
+
+def _weekly_archive_due() -> bool:
+    now = datetime.now(timezone.utc)
+    yw = now.isocalendar()
+    year = int(yw[0])
+    week = int(yw[1])
+
+    path = _weekly_archive_stamp_path()
+    if not os.path.exists(path):
+        return True
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+        y = int(obj.get("year", 0))
+        w = int(obj.get("week", 0))
+        return (y, w) != (year, week)
+    except Exception:
+        return True
+
+
+def _write_weekly_archive_stamp() -> None:
+    now = datetime.now(timezone.utc)
+    yw = now.isocalendar()
+    path = _weekly_archive_stamp_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"year": int(yw[0]), "week": int(yw[1]), "timestamp_utc": now.isoformat()}, f, ensure_ascii=True)
 
 
 def _load_deleted_bot_ids(registry_path: str) -> set[str]:
@@ -637,6 +670,22 @@ def main() -> int:
         default=os.getenv("MONTHLY_PRUNE_ENABLED", "1").strip() == "1",
         help="Run monthly underperformer/redundancy prune once per month.",
     )
+    parser.add_argument(
+        "--weekly-model-archive",
+        action="store_true",
+        default=os.getenv("WEEKLY_MODEL_ARCHIVE_ENABLED", "1").strip() == "1",
+        help="Archive old model artifacts once per ISO week.",
+    )
+    parser.add_argument(
+        "--archive-keep-per-bot",
+        type=int,
+        default=int(os.getenv("MODEL_ARCHIVE_KEEP_PER_BOT", "8")),
+    )
+    parser.add_argument(
+        "--archive-min-age-hours",
+        type=float,
+        default=float(os.getenv("MODEL_ARCHIVE_MIN_AGE_HOURS", "24")),
+    )
     args = parser.parse_args()
 
     lock_path = os.getenv("MLX_RETRAIN_LOCK_PATH", os.path.join(PROJECT_ROOT, "governance", "mlx_retrain.lock"))
@@ -880,6 +929,26 @@ def main() -> int:
         if os.path.exists(PRUNE_REDUNDANT):
             _ = run_cmd([VENV_PY, PRUNE_REDUNDANT], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
         _write_monthly_prune_stamp()
+
+    if args.weekly_model_archive and (not args.dry_run) and _weekly_archive_due():
+        print("Running weekly model archive pass...")
+        if os.path.exists(ARCHIVE_OLD_MODELS):
+            _ = run_cmd(
+                [
+                    VENV_PY,
+                    ARCHIVE_OLD_MODELS,
+                    "--keep-per-bot",
+                    str(max(args.archive_keep_per_bot, 1)),
+                    "--min-age-hours",
+                    str(max(args.archive_min_age_hours, 0.0)),
+                ],
+                args.dry_run,
+                child_env,
+                extra_nice=max(args.ops_extra_nice, 0),
+            )
+            _write_weekly_archive_stamp()
+        else:
+            print(f"WARN: archive script missing: {ARCHIVE_OLD_MODELS}")
 
     if skipped_by_memory:
         print("Completed with memory-gate skips.")

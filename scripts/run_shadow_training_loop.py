@@ -1334,6 +1334,12 @@ def run_loop(
     slow_bot_every_n_iters = max(int(os.getenv("SLOW_BOT_EVERY_N_ITERS", "2")), 1)
     slow_bot_rows_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
+    bot_cooldown_enabled = os.getenv("BOT_COOLDOWN_ENABLED", "1").strip() == "1"
+    bot_cooldown_acc_floor = float(os.getenv("BOT_COOLDOWN_ACC_FLOOR", "0.53"))
+    bot_cooldown_min_iters = max(int(os.getenv("BOT_COOLDOWN_MIN_ITERS", "2")), 1)
+    bot_cooldown_max_iters = max(int(os.getenv("BOT_COOLDOWN_MAX_ITERS", "4")), bot_cooldown_min_iters)
+    bot_next_eval_iter: Dict[str, int] = {}
+
     if resume_from_checkpoint:
         cp = checkpoint.load()
         cp_iter = int(cp.get("iter_count", 0) or 0)
@@ -1602,15 +1608,59 @@ def run_loop(
             symbol_regime_marker[symbol] = marker
 
             sub_rows: List[Dict[str, Any]] = []
-            batched_rows = _sub_bot_signal_batch(fast_bots, mkt)
+            candidate_bots = list(fast_bots)
             if evaluate_slow_this_iter:
-                batched_rows.extend(_sub_bot_signal_batch(slow_bots, mkt))
+                candidate_bots.extend(slow_bots)
+
+            eval_bots: List[SubBot] = []
+            reused_rows: List[Dict[str, Any]] = []
+            for b in candidate_bots:
+                key = f"{symbol}:{b.bot_id}"
+                if bot_cooldown_enabled and b.bot_role != "infrastructure_sub_bot":
+                    acc = float(b.test_accuracy or 0.5)
+                    if acc < bot_cooldown_acc_floor:
+                        weakness = min(max((bot_cooldown_acc_floor - acc) / max(bot_cooldown_acc_floor, 1e-6), 0.0), 1.0)
+                        cooldown_span = int(round(bot_cooldown_min_iters + weakness * (bot_cooldown_max_iters - bot_cooldown_min_iters)))
+                    else:
+                        cooldown_span = 1
+                else:
+                    cooldown_span = 1
+
+                next_iter = int(bot_next_eval_iter.get(key, 1))
+                if iter_count >= next_iter:
+                    eval_bots.append(b)
+                    bot_next_eval_iter[key] = iter_count + max(cooldown_span, 1)
+                else:
+                    cached = slow_bot_rows_cache.get(symbol, {}).get(b.bot_id)
+                    if cached is not None:
+                        row = dict(cached)
+                        row["reused"] = 1
+                        reused_rows.append(row)
+
+            batched_rows = _sub_bot_signal_batch(eval_bots, mkt)
 
             gates = {
                 "market_data_ok": mkt["last_price"] > 0,
                 "session_open_assumed": True,
                 "risk_limit_ok": True,
             }
+
+            for row in reused_rows:
+                b_id = str(row.get("bot_id", ""))
+                reasons = list(row.get("reasons", [])) + ["cooldown_reuse"]
+                trader.execute_decision(
+                    symbol=symbol,
+                    action=str(row.get("action", "HOLD")),
+                    quantity=1,
+                    model_score=float(row.get("score", 0.5)),
+                    threshold=float(row.get("threshold", 0.55)),
+                    features=shared_features,
+                    gates=gates,
+                    reasons=reasons + [f"bot_id={b_id}", f"bot_role={row.get('bot_role', 'signal_sub_bot')}"],
+                    strategy=b_id,
+                    metadata={"layer": "sub_bot", "snapshot_id": snapshot_id, "bot_weight": row.get("weight", 0.0), "test_accuracy": row.get("test_accuracy"), "bot_role": row.get("bot_role", "signal_sub_bot"), "reused": True},
+                )
+                sub_rows.append(row)
 
             for b, action, score, threshold, reasons in batched_rows:
                 trader.execute_decision(
@@ -1628,21 +1678,25 @@ def run_loop(
 
                 row = {
                     "bot_id": b.bot_id,
+                    "bot_role": b.bot_role,
                     "action": action,
                     "score": score,
                     "threshold": threshold,
                     "weight": b.weight if b.weight > 0 else 1.0 / max(len(active_bots), 1),
                     "direction": 1.0 if action == "BUY" else (-1.0 if action == "SELL" else 0.0),
+                    "reasons": reasons,
+                    "test_accuracy": b.test_accuracy,
                 }
                 sub_rows.append(row)
-                if b in slow_bots:
-                    slow_bot_rows_cache.setdefault(symbol, {})[b.bot_id] = row
+                slow_bot_rows_cache.setdefault(symbol, {})[b.bot_id] = row
 
             if (not evaluate_slow_this_iter) and slow_bots:
                 for b in slow_bots:
                     row = slow_bot_rows_cache.get(symbol, {}).get(b.bot_id)
-                    if row is not None:
-                        sub_rows.append(dict(row))
+                    if row is not None and not any(r.get("bot_id") == b.bot_id for r in sub_rows):
+                        reused = dict(row)
+                        reused["reused"] = 1
+                        sub_rows.append(reused)
 
             # Broadcast flash-crash specialist signal as shared context to all higher-level decisions.
             flash_aux = _derive_flash_aux_features(sub_rows)
