@@ -31,6 +31,9 @@ if PROJECT_ROOT not in sys.path:
 from core.base_trader import BaseTrader
 from core.execution_simulator import simulate_execution
 from core.risk_engine import apply_risk_limits
+from core.position_sizing import size_from_action
+from core.portfolio_optimizer import allocate_quantity
+from core.execution_queue import ExecutionQueue, OrderRequest
 from core.coinbase_market_data import CoinbaseMarketDataClient
 from core.runtime_layers import (
     BackpressureController,
@@ -1051,6 +1054,28 @@ def _feature_symbol_key(symbol: str) -> str:
     return key
 
 
+def _parse_symbol_budgets(raw: str) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    if not raw:
+        return out
+    for part in raw.split(','):
+        seg = part.strip()
+        if not seg or ':' not in seg:
+            continue
+        k, v = seg.split(':', 1)
+        try:
+            out[k.strip().upper()] = max(float(v.strip()), 0.0)
+        except Exception:
+            continue
+    return out
+
+
+def _queue_priority(action: str, score: float) -> int:
+    a = (action or 'HOLD').upper()
+    base = 0 if a == 'HOLD' else (2 if a == 'BUY' else 1)
+    return int(base * 100 + max(float(score), 0.0) * 100)
+
+
 def _merge_symbol_groups(*groups: str) -> List[str]:
     merged: List[str] = []
     seen = set()
@@ -1487,6 +1512,12 @@ def run_loop(
     log_maintenance_enabled = os.getenv('LOG_MAINTENANCE_ENABLED', '1').strip() == '1'
     log_maintenance_every_iters = max(int(os.getenv('LOG_MAINTENANCE_EVERY_ITERS', '20')), 1)
     log_maintenance_max_ops = max(int(os.getenv('LOG_MAINTENANCE_MAX_OPS', '300')), 10)
+
+    exec_queue = ExecutionQueue(max_depth=max(int(os.getenv("EXEC_QUEUE_MAX_DEPTH", "4000")), 100))
+    equity_proxy = float(os.getenv("ACCOUNT_EQUITY_PROXY", "100000"))
+    max_notional_pct = float(os.getenv("SIZING_MAX_NOTIONAL_PCT", "0.06"))
+    symbol_budgets = _parse_symbol_budgets(os.getenv("PORTFOLIO_SYMBOL_BUDGETS", ""))
+    portfolio_base_budget = float(os.getenv("PORTFOLIO_BASE_BUDGET", "1.0"))
 
     volatile_set = {x.upper() for x in volatile_symbols}
     defensive_set = {x.upper() for x in defensive_symbols}
@@ -1955,17 +1986,45 @@ def run_loop(
                 gm_score = 0.5 + 0.5 * (gm_score - 0.5)
                 gm_reasons = gm_reasons + [f"consecutive_loss_pause streak={consecutive_loss_streak}"]
 
+            volatility_now = float(shared_features.get("volatility_1m", shared_features.get("vol", 0.0)) or 0.0)
+            raw_qty = size_from_action(
+                action=gm_action,
+                score=gm_score,
+                threshold=gm_threshold,
+                volatility_1m=volatility_now,
+                equity_proxy=equity_proxy,
+                max_notional_pct=max_notional_pct,
+            )
+            alloc_qty = allocate_quantity(
+                raw_qty=raw_qty,
+                symbol=symbol,
+                score=gm_score,
+                volatility_1m=volatility_now,
+                base_budget=portfolio_base_budget,
+                symbol_budgets=symbol_budgets,
+            )
+            req = OrderRequest(
+                symbol=symbol,
+                action=gm_action,
+                quantity=alloc_qty,
+                priority=_queue_priority(gm_action, gm_score),
+                metadata={"snapshot_id": snapshot_id, "strategy": "grand_master_bot"},
+            )
+            enq_ok = exec_queue.enqueue(req)
+            dispatch = exec_queue.pop() if enq_ok else None
+            dispatch_qty = dispatch.quantity if dispatch is not None else 0.0
+
             trader.execute_decision(
                 symbol=symbol,
                 action=gm_action,
-                quantity=1,
+                quantity=dispatch_qty,
                 model_score=gm_score,
                 threshold=gm_threshold,
-                features={**shared_features, "grand_master_vote": gm_vote["vote"], "active_sub_bots": len(active_bots)},
-                gates={"ensemble_has_members": len(active_bots) > 0, "market_data_ok": mkt["last_price"] > 0, "risk_limit_ok": all(risk_gates.values()), **risk_gates},
+                features={**shared_features, "grand_master_vote": gm_vote["vote"], "active_sub_bots": len(active_bots), "sized_qty": dispatch_qty},
+                gates={"ensemble_has_members": len(active_bots) > 0, "market_data_ok": mkt["last_price"] > 0, "risk_limit_ok": all(risk_gates.values()), **risk_gates, "exec_queue_ok": enq_ok},
                 reasons=gm_reasons,
                 strategy="grand_master_bot",
-                metadata={"layer": "grand_master", "snapshot_id": snapshot_id, "master_weights": gm_weights},
+                metadata={"layer": "grand_master", "snapshot_id": snapshot_id, "master_weights": gm_weights, "queue_depth": exec_queue.size()},
             )
 
             optm_action, optm_score, optm_threshold, optm_reasons, optm_vote = _options_master_signal(
@@ -2042,7 +2101,7 @@ def run_loop(
                 latency_ms=float(os.getenv("EXEC_SIM_LATENCY_MS", "120")),
                 bid_size=float(shared_features.get("bid_size", 1000.0) or 1000.0),
                 ask_size=float(shared_features.get("ask_size", 1000.0) or 1000.0),
-                order_size=1.0,
+                order_size=dispatch_qty if dispatch_qty > 0 else 1.0,
             )
             for row in sub_rows:
                 _append_jsonl(
@@ -2069,6 +2128,7 @@ def run_loop(
                     "bot_id": "grand_master_bot",
                     "layer": "grand_master",
                     "action": gm_action,
+                    "quantity": dispatch_qty,
                     "return_1m": ret_1m,
                     "pnl_proxy": exec_sim.adjusted_return_1m,
                     "slippage_bps": exec_sim.slippage_bps,
@@ -2103,6 +2163,7 @@ def run_loop(
                 "flash_aux": flash_aux,
                 "options_plan": options_decision["plan"],
                 "execution_sim": {"slippage_bps": exec_sim.slippage_bps, "latency_ms": exec_sim.latency_ms, "expected_fill_price": exec_sim.expected_fill_price, "impact_bps": exec_sim.impact_bps},
+                "portfolio": {"equity_proxy": equity_proxy, "raw_qty": raw_qty, "alloc_qty": alloc_qty, "dispatch_qty": dispatch_qty, "queue_depth": exec_queue.size()},
                 "circuit_breakers": {"consecutive_loss_streak": consecutive_loss_streak, "kill_switch_active": time.time() < kill_switch_until_ts, "vol_shock_pause_active": time.time() < vol_shock_pause_until_ts, "liquidity_pause_active": time.time() < liquidity_pause_until_ts},
                 "recommendations": recs,
                 "top_active": registry.get("summary", {}).get("top_active", []),
