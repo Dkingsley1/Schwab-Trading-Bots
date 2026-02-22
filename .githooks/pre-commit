@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+max_bytes=$((50 * 1024 * 1024))
+status=0
+
+while IFS= read -r -d "" path; do
+  case "$path" in
+    *.sqlite|*.sqlite3|*.db)
+      if [[ -f "$path" ]]; then
+        size=$(wc -c < "$path" | tr -d " ")
+        if (( size > max_bytes )); then
+          echo "ERROR: '$path' is ${size} bytes (> 50MB). Use external storage or Git LFS." >&2
+          status=1
+        fi
+      fi
+      ;;
+  esac
+done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+
+if (( status != 0 )); then
+  exit 1
+fi
