@@ -1,9 +1,13 @@
 #!/bin/zsh
 set -euo pipefail
 
-THRESHOLD_CPU=120
-ON_STREAK_REQ=3
-OFF_STREAK_REQ=8
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+HEAVY_ON_SCRIPT="$PROJECT_ROOT/scripts/performance_mode_heavy_on.sh"
+HEAVY_OFF_SCRIPT="$PROJECT_ROOT/scripts/performance_mode_heavy_off.sh"
+
+THRESHOLD_CPU="${AUTO_HEAVY_THRESHOLD_CPU:-120}"
+ON_STREAK_REQ="${AUTO_HEAVY_ON_STREAK_REQ:-3}"
+OFF_STREAK_REQ="${AUTO_HEAVY_OFF_STREAK_REQ:-8}"
 
 STATE_DIR="$HOME/.local/state/schwab_perf"
 MODE_FILE="$STATE_DIR/mode"
@@ -35,20 +39,16 @@ echo "$high" > "$HIGH_FILE"
 echo "$low" > "$LOW_FILE"
 
 heavy_on() {
-  /bin/launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.dankingsley.schwab.logrefresh.plist" 2>/dev/null || true
-  /bin/launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.dankingsley.retrain.daily_small.plist" 2>/dev/null || true
-  /bin/launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.dankingsley.retrain.weekly_full.plist" 2>/dev/null || true
-  /usr/bin/pkill -f "run_parallel_aggressive_modes.py" 2>/dev/null || true
-  for p in $(/usr/bin/pgrep -f "run_parallel_shadows.py|run_shadow_training_loop.py|shadow_watchdog.py" || true); do
-    /usr/bin/renice +10 -p "$p" >/dev/null || true
-  done
+  if [[ -x "$HEAVY_ON_SCRIPT" ]]; then
+    "$HEAVY_ON_SCRIPT" >/dev/null 2>&1 || true
+  fi
   echo "heavy" > "$MODE_FILE"
 }
 
 heavy_off() {
-  /bin/launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.dankingsley.schwab.logrefresh.plist" 2>/dev/null || true
-  /bin/launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.dankingsley.retrain.daily_small.plist" 2>/dev/null || true
-  /bin/launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.dankingsley.retrain.weekly_full.plist" 2>/dev/null || true
+  if [[ -x "$HEAVY_OFF_SCRIPT" ]]; then
+    "$HEAVY_OFF_SCRIPT" >/dev/null 2>&1 || true
+  fi
   echo "normal" > "$MODE_FILE"
 }
 

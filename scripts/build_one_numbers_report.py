@@ -568,6 +568,16 @@ def main() -> int:
 
     latest_csv = out_dir / "latest.csv"
     latest_md = out_dir / "latest.md"
+    latest_json = out_dir / "one_numbers_summary.json"
+
+    metric_map = {k: v for k, v in rows}
+    summary_payload = {
+        "generated_utc": generated_utc,
+        "day_utc": day,
+        **metric_map,
+    }
+    latest_json.write_text(json.dumps(summary_payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
     if latest_csv.exists() or latest_csv.is_symlink():
         latest_csv.unlink()
     if latest_md.exists() or latest_md.is_symlink():
@@ -578,7 +588,6 @@ def main() -> int:
     # SQL register snapshot
     if not args.no_sql_write:
         _ensure_sql_snapshot_table(conn)
-        metric_map = {k: v for k, v in rows}
         conn.execute(
             """
             INSERT INTO one_numbers_snapshots (
@@ -607,6 +616,7 @@ def main() -> int:
     print(f"Wrote: {md_path}")
     print(f"Latest CSV: {latest_csv}")
     print(f"Latest MD: {latest_md}")
+    print(f"Latest JSON: {latest_json}")
     if not args.no_sql_write:
         print("Registered snapshot in SQLite table: one_numbers_snapshots")
     return 0

@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -23,10 +24,13 @@ except Exception:
 
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+HALT_FLAG_PATH = Path(PROJECT_ROOT) / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from core.base_trader import BaseTrader
+from core.execution_simulator import simulate_execution
+from core.risk_engine import apply_risk_limits
 from core.coinbase_market_data import CoinbaseMarketDataClient
 from core.runtime_layers import (
     BackpressureController,
@@ -55,7 +59,7 @@ def _env_flag(name: str, default: str = "0") -> bool:
 
 
 def _global_trading_halt_enabled() -> bool:
-    return _env_flag("GLOBAL_TRADING_HALT", "0")
+    return _env_flag("GLOBAL_TRADING_HALT", "0") or HALT_FLAG_PATH.exists()
 
 
 def _enforce_data_only_lock() -> None:
@@ -883,6 +887,20 @@ def _sub_bot_signal_batch(bots: List[SubBot], mkt: Dict[str, float]) -> List[Tup
     return out
 
 
+def _external_ingestion_extra_interval_seconds(project_root: str) -> int:
+    path = os.path.join(project_root, "governance", "health", "ingestion_backpressure_latest.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if bool(payload.get("overload", False)):
+            return max(int(payload.get("recommended_extra_interval_seconds", 0) or 0), 0)
+    except Exception:
+        return 0
+    return 0
+
+
+
+
 def _file_age_days(path: str, now_ts: float) -> float:
     try:
         return max((now_ts - os.path.getmtime(path)) / 86400.0, 0.0)
@@ -997,6 +1015,11 @@ def _shift_threshold(base: float) -> float:
 def _governance_path(project_root: str, broker: Optional[str] = None) -> str:
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
     return os.path.join(project_root, "governance", _shadow_profile_subdir(broker=broker), f"master_control_{day}.jsonl")
+
+
+def _event_bus_path(project_root: str) -> str:
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    return os.path.join(project_root, "governance", "events", f"runtime_events_{day}.jsonl")
 
 
 def _parse_symbols(value: str) -> List[str]:
@@ -1447,6 +1470,20 @@ def run_loop(
     auto_retrain_healthy_streak = 0
     overload_mode = False
 
+    consecutive_loss_streak = 0
+    intraday_pnl_proxy = 0.0
+    peak_intraday_pnl_proxy = 0.0
+    kill_switch_until_ts = 0.0
+    vol_shock_pause_until_ts = 0.0
+    liquidity_pause_until_ts = 0.0
+    max_consecutive_losses = max(int(os.getenv("RISK_MAX_CONSECUTIVE_LOSSES", "6")), 1)
+    kill_switch_cooldown_seconds = max(int(os.getenv("RISK_KILL_SWITCH_COOLDOWN_SECONDS", "300")), 30)
+    vol_shock_threshold = float(os.getenv("RISK_VOL_SHOCK_THRESHOLD", "0.05"))
+    vol_shock_pause_seconds = max(int(os.getenv("RISK_VOL_SHOCK_PAUSE_SECONDS", "120")), 30)
+    liquidity_spread_bps_threshold = float(os.getenv("RISK_LIQUIDITY_SPREAD_BPS_THRESHOLD", "35"))
+    liquidity_pause_seconds = max(int(os.getenv("RISK_LIQUIDITY_PAUSE_SECONDS", "120")), 30)
+    max_daily_loss_proxy = float(os.getenv("RISK_MAX_DAILY_LOSS_PROXY", "0.05"))
+
     log_maintenance_enabled = os.getenv('LOG_MAINTENANCE_ENABLED', '1').strip() == '1'
     log_maintenance_every_iters = max(int(os.getenv('LOG_MAINTENANCE_EVERY_ITERS', '20')), 1)
     log_maintenance_max_ops = max(int(os.getenv('LOG_MAINTENANCE_MAX_OPS', '300')), 10)
@@ -1877,6 +1914,47 @@ def run_loop(
                 max_short=exposure_cap_short,
             )
 
+            risk_action, risk_reasons, risk_gates = apply_risk_limits(
+                action=gm_action,
+                symbol=symbol,
+                exposure_state=exposure_state,
+                features={
+                    "volatility_1m": float(shared_features.get("volatility_1m", shared_features.get("vol", 0.0)) or 0.0),
+                    "drawdown_proxy": abs(float(shared_features.get("pct_from_close", 0.0) or 0.0)),
+                    "var_proxy": abs(float(shared_features.get("volatility_1m", shared_features.get("vol", 0.0)) or 0.0)) * 1.65,
+                    "factor_exposure": abs(float(shared_features.get("mom_5m", 0.0) or 0.0)) + abs(float(shared_features.get("pct_from_close", 0.0) or 0.0)),
+                    "daily_loss_proxy": abs(min(intraday_pnl_proxy, 0.0)),
+                },
+            )
+            if risk_action != gm_action:
+                gm_action = risk_action
+                gm_score = 0.5 + 0.5 * (gm_score - 0.5)
+            if risk_reasons:
+                gm_reasons = gm_reasons + risk_reasons
+
+            now_ts = time.time()
+            vol_now = float(shared_features.get("volatility_1m", shared_features.get("vol", 0.0)) or 0.0)
+            spread_now = float(shared_features.get("spread_bps", 0.0) or 0.0)
+
+            if vol_now >= vol_shock_threshold:
+                vol_shock_pause_until_ts = max(vol_shock_pause_until_ts, now_ts + vol_shock_pause_seconds)
+            if spread_now >= liquidity_spread_bps_threshold:
+                liquidity_pause_until_ts = max(liquidity_pause_until_ts, now_ts + liquidity_pause_seconds)
+            if intraday_pnl_proxy <= -abs(max_daily_loss_proxy):
+                kill_switch_until_ts = max(kill_switch_until_ts, now_ts + kill_switch_cooldown_seconds)
+
+            pause_active = (now_ts < kill_switch_until_ts) or (now_ts < vol_shock_pause_until_ts) or (now_ts < liquidity_pause_until_ts)
+            if pause_active and gm_action in {"BUY", "SELL"}:
+                gm_action = "HOLD"
+                gm_score = 0.5 + 0.5 * (gm_score - 0.5)
+                gm_reasons = gm_reasons + ["circuit_breaker_pause_active"]
+
+            if consecutive_loss_streak >= max_consecutive_losses and gm_action in {"BUY", "SELL"}:
+                kill_switch_until_ts = max(kill_switch_until_ts, now_ts + kill_switch_cooldown_seconds)
+                gm_action = "HOLD"
+                gm_score = 0.5 + 0.5 * (gm_score - 0.5)
+                gm_reasons = gm_reasons + [f"consecutive_loss_pause streak={consecutive_loss_streak}"]
+
             trader.execute_decision(
                 symbol=symbol,
                 action=gm_action,
@@ -1884,7 +1962,7 @@ def run_loop(
                 model_score=gm_score,
                 threshold=gm_threshold,
                 features={**shared_features, "grand_master_vote": gm_vote["vote"], "active_sub_bots": len(active_bots)},
-                gates={"ensemble_has_members": len(active_bots) > 0, "market_data_ok": mkt["last_price"] > 0},
+                gates={"ensemble_has_members": len(active_bots) > 0, "market_data_ok": mkt["last_price"] > 0, "risk_limit_ok": all(risk_gates.values()), **risk_gates},
                 reasons=gm_reasons,
                 strategy="grand_master_bot",
                 metadata={"layer": "grand_master", "snapshot_id": snapshot_id, "master_weights": gm_weights},
@@ -1955,6 +2033,17 @@ def run_loop(
             )
 
             ret_1m = float(symbol_return_1m)
+            exec_sim = simulate_execution(
+                action=gm_action,
+                last_price=float(mkt.get("last_price", 0.0) or 0.0),
+                return_1m=ret_1m,
+                spread_bps=float(shared_features.get("spread_bps", 8.0) or 8.0),
+                volatility_1m=float(shared_features.get("volatility_1m", shared_features.get("vol", 0.0)) or 0.0),
+                latency_ms=float(os.getenv("EXEC_SIM_LATENCY_MS", "120")),
+                bid_size=float(shared_features.get("bid_size", 1000.0) or 1000.0),
+                ask_size=float(shared_features.get("ask_size", 1000.0) or 1000.0),
+                order_size=1.0,
+            )
             for row in sub_rows:
                 _append_jsonl(
                     _pnl_attribution_path(PROJECT_ROOT, broker=broker),
@@ -1981,9 +2070,19 @@ def run_loop(
                     "layer": "grand_master",
                     "action": gm_action,
                     "return_1m": ret_1m,
-                    "pnl_proxy": (1.0 if gm_action == "BUY" else (-1.0 if gm_action == "SELL" else 0.0)) * ret_1m,
+                    "pnl_proxy": exec_sim.adjusted_return_1m,
+                    "slippage_bps": exec_sim.slippage_bps,
+                    "latency_ms": exec_sim.latency_ms,
+                    "expected_fill_price": exec_sim.expected_fill_price,
                 },
             )
+
+            intraday_pnl_proxy += float(exec_sim.adjusted_return_1m)
+            peak_intraday_pnl_proxy = max(peak_intraday_pnl_proxy, intraday_pnl_proxy)
+            if exec_sim.adjusted_return_1m < 0:
+                consecutive_loss_streak = (consecutive_loss_streak + 1) if gm_action in {"BUY", "SELL"} else consecutive_loss_streak
+            else:
+                consecutive_loss_streak = 0
 
             recs = _governance_recommendations(bots)
             latest_recs = recs
@@ -2003,10 +2102,24 @@ def run_loop(
                 "options_master": {"action": optm_action, "score": optm_score, "vote": optm_vote["vote"]},
                 "flash_aux": flash_aux,
                 "options_plan": options_decision["plan"],
+                "execution_sim": {"slippage_bps": exec_sim.slippage_bps, "latency_ms": exec_sim.latency_ms, "expected_fill_price": exec_sim.expected_fill_price, "impact_bps": exec_sim.impact_bps},
+                "circuit_breakers": {"consecutive_loss_streak": consecutive_loss_streak, "kill_switch_active": time.time() < kill_switch_until_ts, "vol_shock_pause_active": time.time() < vol_shock_pause_until_ts, "liquidity_pause_active": time.time() < liquidity_pause_until_ts},
                 "recommendations": recs,
                 "top_active": registry.get("summary", {}).get("top_active", []),
             }
             _append_jsonl(_governance_path(PROJECT_ROOT, broker=broker), gov_row)
+            _append_jsonl(_event_bus_path(PROJECT_ROOT), {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "event": "decision_made",
+                "symbol": symbol,
+                "snapshot_id": snapshot_id,
+                "broker": broker,
+                "shadow_profile": _shadow_profile_name() or "default",
+                "action": gm_action,
+                "score": gm_score,
+                "risk_limit_ok": all(risk_gates.values()),
+                "slippage_bps": exec_sim.slippage_bps,
+            })
 
             print(
                 f"[ShadowLoop] iter={iter_count} symbol={symbol} price={mkt['last_price']:.2f} "
@@ -2103,6 +2216,11 @@ def run_loop(
                     healthy_streak = 0
             if current_interval_seconds != prev_interval:
                 print(f"[AdaptiveInterval] changed from={prev_interval}s to={current_interval_seconds}s")
+
+        external_floor = effective_interval_seconds + _external_ingestion_extra_interval_seconds(PROJECT_ROOT)
+        if current_interval_seconds < external_floor:
+            print(f"[IngestionBackpressure] applying external interval floor={external_floor}s")
+            current_interval_seconds = external_floor
 
         if log_maintenance_enabled and (iter_count % log_maintenance_every_iters == 0):
             stats = _run_log_maintenance(PROJECT_ROOT, max_ops=log_maintenance_max_ops)

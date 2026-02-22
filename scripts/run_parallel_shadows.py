@@ -9,9 +9,11 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+HALT_FLAG_PATH = PROJECT_ROOT / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
 VENV_PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
 SHADOW_LOOP = PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py"
 TOKEN_PATH = PROJECT_ROOT / "token.json"
+RESOURCE_GUARD_SCRIPT = PROJECT_ROOT / "scripts" / "resource_guard.py"
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -19,7 +21,7 @@ def _env_flag(name: str, default: str = "0") -> bool:
 
 
 def _global_trading_halt_enabled() -> bool:
-    return _env_flag("GLOBAL_TRADING_HALT", "0")
+    return _env_flag("GLOBAL_TRADING_HALT", "0") or HALT_FLAG_PATH.exists()
 
 
 def _domain_for_broker(broker: str) -> str:
@@ -127,6 +129,21 @@ def _stop_processes(procs: list[subprocess.Popen]) -> None:
                 p.kill()
 
 
+def _resource_guard_ok() -> bool:
+    if os.getenv("ENABLE_RESOURCE_GUARD", "1").strip() != "1":
+        return True
+    if not RESOURCE_GUARD_SCRIPT.exists():
+        return True
+    proc = subprocess.run([str(VENV_PY), str(RESOURCE_GUARD_SCRIPT)], capture_output=True, text=True, check=False)
+    out = (proc.stdout or "").strip()
+    if out:
+        print(f"[ResourceGuard] {out}")
+    if proc.returncode != 0:
+        print("[ResourceGuard] startup blocked due to system pressure.")
+        return False
+    return True
+
+
 def _wait_for_token_or_exit(proc: subprocess.Popen, timeout_seconds: int) -> bool:
     start = time.time()
     while True:
@@ -166,6 +183,9 @@ def main() -> int:
     if _global_trading_halt_enabled():
         print("GLOBAL_TRADING_HALT=1 set; refusing to start parallel shadows.")
         return 3
+
+    if not _resource_guard_ok():
+        return 4
 
     lock_path = Path(os.getenv("PARALLEL_SHADOW_LOCK_PATH", str(PROJECT_ROOT / "governance" / "parallel_shadow.lock")))
     lock_handle = _acquire_singleton_lock(lock_path)

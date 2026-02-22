@@ -7,6 +7,11 @@ STAMP="$(date -u +%Y%m%d_%H%M%S)"
 
 cd "$PROJECT_ROOT"
 
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/resource_guard.py" || {
+  echo "retrain skipped by resource_guard"
+  exit 0
+}
+
 export RETRAIN_ACTIVE_ONLY=1
 export RETRAIN_MAX_TARGETS=0
 export RETRAIN_MIN_MODEL_AGE_HOURS=0
