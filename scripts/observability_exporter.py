@@ -33,6 +33,9 @@ def main() -> int:
     slo = _load(PROJECT_ROOT / "governance" / "health" / "slo_burn_latest.json")
     cc = _load(PROJECT_ROOT / "governance" / "champion_challenger" / "registry.json")
     regime = _load(PROJECT_ROOT / "governance" / "walk_forward" / "regime_segmented_latest.json")
+    kill = _load(PROJECT_ROOT / "governance" / "health" / "global_killswitch_latest.json")
+    dep = _load(PROJECT_ROOT / "governance" / "health" / "dependency_guard_latest.json")
+    sec = _load(PROJECT_ROOT / "governance" / "health" / "security_audit_latest.json")
 
     lines = [
         _metric("trading_health_score", float(health.get("data_quality_score", 0.0) or 0.0)),
@@ -41,6 +44,9 @@ def main() -> int:
         _metric("trading_session_ready", 1.0 if ready.get("ok", False) else 0.0),
         _metric("trading_slo_burn_score", float(slo.get("slo_burn_score", 0.0) or 0.0)),
         _metric("trading_champion_present", 1.0 if bool(cc.get("champion")) else 0.0),
+        _metric("trading_global_halt", 1.0 if bool(kill.get("halt", False)) else 0.0),
+        _metric("trading_dependency_guard_ok", 1.0 if dep.get("ok", False) else 0.0),
+        _metric("trading_security_audit_ok", 1.0 if sec.get("ok", False) else 0.0),
         _metric("trading_metrics_generated_utc", float(datetime.now(timezone.utc).timestamp())),
     ]
 

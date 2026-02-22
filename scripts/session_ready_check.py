@@ -68,13 +68,17 @@ def _sql_writable() -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Single PASS/FAIL readiness check.")
     parser.add_argument("--min-disk-gb", type=float, default=float(os.getenv("SESSION_READY_MIN_DISK_GB", "15.0")))
-    parser.add_argument("--heartbeat-max-age-sec", type=float, default=float(os.getenv("SESSION_READY_HEARTBEAT_MAX_AGE_SEC", "300.0")))
+    parser.add_argument(
+        "--heartbeat-max-age-sec",
+        type=float,
+        default=float(os.getenv("SESSION_READY_HEARTBEAT_MAX_AGE_SEC", "300.0")),
+    )
     parser.add_argument("--expected-profiles", default=os.getenv("SESSION_READY_EXPECTED_PROFILES", "conservative,aggressive"))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
     checks = []
-    disk_gb = shutil.disk_usage(PROJECT_ROOT).free / (1024 ** 3)
+    disk_gb = shutil.disk_usage(PROJECT_ROOT).free / (1024**3)
     checks.append({"name": "disk_headroom", "ok": disk_gb >= args.min_disk_gb, "details": f"disk_free_gb={disk_gb:.2f}"})
 
     sql_ok = _sql_writable()
@@ -85,6 +89,9 @@ def main() -> int:
 
     age = _latest_heartbeat_age_sec()
     checks.append({"name": "heartbeat_freshness", "ok": age <= args.heartbeat_max_age_sec, "details": f"heartbeat_age_sec={age:.1f}"})
+
+    halt_flag = PROJECT_ROOT / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
+    checks.append({"name": "global_halt_not_set", "ok": not halt_flag.exists(), "details": str(halt_flag)})
 
     expected_profiles = [x.strip() for x in str(args.expected_profiles).split(",") if x.strip()]
     for profile in expected_profiles:

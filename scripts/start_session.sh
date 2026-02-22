@@ -30,6 +30,7 @@ fi
 "$PY" "$PROJECT_ROOT/scripts/shadow_preflight.py" --broker schwab --simulate
 "$PY" "$PROJECT_ROOT/scripts/resource_guard.py"
 "$PY" "$PROJECT_ROOT/scripts/restore_state_probe.py" || true
+"$PY" "$PROJECT_ROOT/scripts/global_risk_killswitch.py" --auto-clear || true
 
 "$PY" "$PROJECT_ROOT/scripts/link_jsonl_to_sql.py" --mode sqlite
 "$PY" "$PROJECT_ROOT/scripts/build_one_numbers_report.py" --day "$DAY_UTC"

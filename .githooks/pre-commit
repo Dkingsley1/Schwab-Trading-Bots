@@ -18,6 +18,13 @@ while IFS= read -r -d "" path; do
   esac
 done < <(git diff --cached --name-only --diff-filter=ACMR -z)
 
+PY_BIN="/Users/dankingsley/PycharmProjects/schwab_trading_bot/.venv312/bin/python"
+if [[ ! -x "$PY_BIN" ]]; then
+  PY_BIN="python3"
+fi
+
+"$PY_BIN" /Users/dankingsley/PycharmProjects/schwab_trading_bot/scripts/secret_scan.py --staged >/dev/null || status=1
+
 if (( status != 0 )); then
   exit 1
 fi

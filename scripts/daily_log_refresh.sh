@@ -24,10 +24,13 @@ cd "$PROJECT_ROOT"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/regime_segmented_validate.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/champion_challenger_registry.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/data_retention_policy.py" --apply
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/dependency_guard.py" || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/secret_scan.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/daily_auto_verify.py" --day "$TODAY_UTC" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/observability_exporter.py"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/event_bus_relay.py" --day "$TODAY_UTC" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/safe_mode_guard.py" --trip-streak "${SAFE_MODE_TRIP_STREAK_REQUIRED:-3}" --clear-streak "${SAFE_MODE_CLEAR_STREAK_REQUIRED:-2}" || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/global_risk_killswitch.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/slo_burn_rate_guard.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/security_hardening_audit.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/backup_restore_verify.py" || true

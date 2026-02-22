@@ -1,6 +1,5 @@
 import argparse
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,13 +13,24 @@ def main() -> int:
 
     checks = []
 
-    key = os.getenv("SCHWAB_API_KEY", "")
-    sec = os.getenv("SCHWAB_SECRET", "")
-    checks.append({"name": "schwab_key_not_placeholder", "ok": key not in {"", "YOUR_KEY_HERE"}})
-    checks.append({"name": "schwab_secret_not_placeholder", "ok": sec not in {"", "YOUR_SECRET_HERE"}})
+    pre_commit = PROJECT_ROOT / ".githooks" / "pre-commit"
+    checks.append({"name": "pre_commit_hook_exists", "ok": pre_commit.exists()})
+
+    hook_text = pre_commit.read_text(encoding="utf-8") if pre_commit.exists() else ""
+    checks.append({"name": "pre_commit_secret_scan_enabled", "ok": "secret_scan.py --staged" in hook_text})
+
+    gitignore_text = (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8") if (PROJECT_ROOT / ".gitignore").exists() else ""
+    checks.append({"name": "token_json_ignored", "ok": "token.json" in gitignore_text})
 
     approval = PROJECT_ROOT / "governance" / "champion_challenger" / "PROMOTION_APPROVED.flag"
-    checks.append({"name": "promotion_requires_flag_file", "ok": True, "details": str(approval)})
+    approval_ok = False
+    if approval.exists():
+        try:
+            obj = json.loads(approval.read_text(encoding="utf-8"))
+            approval_ok = bool(obj.get("approved_by")) and bool(obj.get("approved_at_utc")) and bool(obj.get("ticket"))
+        except Exception:
+            approval_ok = False
+    checks.append({"name": "promotion_approval_signed_json", "ok": approval_ok or not approval.exists()})
 
     backup_dir = PROJECT_ROOT / "exports" / "env_snapshots"
     checks.append({"name": "backup_snapshot_exists", "ok": backup_dir.exists() and any(backup_dir.iterdir())})
