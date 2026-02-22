@@ -22,6 +22,7 @@ class BaseTrader:
         self.project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         self.mode = "shadow"
         self.profile = os.getenv("SHADOW_PROFILE", "").strip().lower()
+        self.shadow_domain = ""
         self.mode_label = "shadow"
         self.paper_log_path = ""
         self.live_log_path = ""
@@ -33,6 +34,14 @@ class BaseTrader:
         self.decision_logger = DecisionLogger(self.project_root)
         self.set_mode(mode)
 
+    def _resolve_shadow_domain(self) -> str:
+        raw = os.getenv("SHADOW_DOMAIN", "").strip().lower()
+        if raw in {"equities", "crypto"}:
+            return raw
+
+        broker = os.getenv("DATA_BROKER", "schwab").strip().lower()
+        return "crypto" if broker == "coinbase" else "equities"
+
     def set_mode(self, mode: str) -> None:
         mode = mode.lower().strip()
         if mode not in {"shadow", "paper", "live"}:
@@ -41,6 +50,11 @@ class BaseTrader:
         self.mode_label = self.mode
         if self.mode == "shadow" and self.profile:
             self.mode_label = f"shadow_{self.profile}"
+
+        if self.mode == "shadow":
+            self.shadow_domain = self._resolve_shadow_domain()
+            if self.shadow_domain:
+                self.mode_label = f"{self.mode_label}_{self.shadow_domain}"
 
         # Keep decisions and execution artifacts isolated by mode/profile.
         self.paper_log_path = os.path.join(self.project_root, f"paper_trades_{self.mode_label}.jsonl")

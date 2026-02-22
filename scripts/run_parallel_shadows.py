@@ -14,6 +14,16 @@ SHADOW_LOOP = PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py"
 TOKEN_PATH = PROJECT_ROOT / "token.json"
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _global_trading_halt_enabled() -> bool:
+    return _env_flag("GLOBAL_TRADING_HALT", "0")
+
+
+def _domain_for_broker(broker: str) -> str:
+    return "crypto" if (broker or "").strip().lower() == "coinbase" else "equities"
 
 
 def _acquire_singleton_lock(lock_path: Path):
@@ -64,6 +74,7 @@ def _spawn_profile(
     env["ALLOW_ORDER_EXECUTION"] = "0"
     env["SHADOW_PROFILE"] = name
     env["SHADOW_THRESHOLD_SHIFT"] = f"{threshold_shift:.3f}"
+    env["SHADOW_DOMAIN"] = _domain_for_broker(broker)
 
     cmd = [
         str(VENV_PY),
@@ -152,6 +163,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if _global_trading_halt_enabled():
+        print("GLOBAL_TRADING_HALT=1 set; refusing to start parallel shadows.")
+        return 3
+
     lock_path = Path(os.getenv("PARALLEL_SHADOW_LOCK_PATH", str(PROJECT_ROOT / "governance" / "parallel_shadow.lock")))
     lock_handle = _acquire_singleton_lock(lock_path)
     if lock_handle is None:
@@ -207,7 +222,11 @@ def main() -> int:
         max_iterations=args.max_iterations,
     )
     print(f"Started aggressive pid={aggressive.pid}")
-    print("Logs: decision_explanations/shadow_conservative and decision_explanations/shadow_aggressive")
+    domain = _domain_for_broker(args.broker)
+    print(
+        "Logs: decision_explanations/shadow_conservative_{domain} and "
+        "decision_explanations/shadow_aggressive_{domain}".format(domain=domain)
+    )
 
     t2 = threading.Thread(target=_stream, args=("aggressive", aggressive.stdout), daemon=True)
     t2.start()
@@ -215,6 +234,11 @@ def main() -> int:
     procs = [conservative, aggressive]
     try:
         while True:
+            if _global_trading_halt_enabled():
+                print("GLOBAL_TRADING_HALT=1 detected; stopping both profiles.")
+                _stop_processes(procs)
+                return 0
+
             exits = [p.poll() for p in procs]
             if any(code is not None for code in exits):
                 _stop_processes(procs)

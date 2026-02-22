@@ -230,13 +230,17 @@ class MasterBot:
     def _load_decision_correlation_map(self) -> Dict[tuple[str, str], float]:
         corr: Dict[tuple[str, str], float] = {}
         files = []
-        for sub in ("shadow", "shadow_conservative", "shadow_aggressive"):
-            d = os.path.join(self.project_root, "decision_explanations", sub)
-            if not os.path.isdir(d):
-                continue
-            cands = sorted([os.path.join(d, x) for x in os.listdir(d) if x.startswith("decision_explanations_") and x.endswith(".jsonl")])
-            if cands:
-                files.append(cands[-1])
+        decision_root = os.path.join(self.project_root, "decision_explanations")
+        if os.path.isdir(decision_root):
+            for sub in sorted(os.listdir(decision_root)):
+                if not sub.startswith("shadow"):
+                    continue
+                d = os.path.join(decision_root, sub)
+                if not os.path.isdir(d):
+                    continue
+                cands = sorted([os.path.join(d, x) for x in os.listdir(d) if x.startswith("decision_explanations_") and x.endswith(".jsonl")])
+                if cands:
+                    files.append(cands[-1])
 
         if not files:
             return corr

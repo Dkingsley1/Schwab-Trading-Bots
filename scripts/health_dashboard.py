@@ -134,9 +134,9 @@ def main() -> None:
     parser.add_argument("--json", action="store_true", help="Emit JSON only")
     args = parser.parse_args()
 
-    dec_path = _latest_file(str(PROJECT_ROOT / "decision_explanations" / "shadow" / "decision_explanations_*.jsonl"))
-    gov_path = _latest_file(str(PROJECT_ROOT / "governance" / "shadow" / "master_control_*.jsonl"))
-    retrain_path = _latest_file(str(PROJECT_ROOT / "governance" / "shadow" / "auto_retrain_events_*.jsonl"))
+    dec_path = _latest_file(str(PROJECT_ROOT / "decision_explanations" / "shadow*" / "decision_explanations_*.jsonl"))
+    gov_path = _latest_file(str(PROJECT_ROOT / "governance" / "shadow*" / "master_control_*.jsonl"))
+    retrain_path = _latest_file(str(PROJECT_ROOT / "governance" / "shadow*" / "auto_retrain_events_*.jsonl"))
 
     dec_last = _tail_last_jsonl(dec_path) if dec_path else None
     gov_last = _tail_last_jsonl(gov_path) if gov_path else None

@@ -50,6 +50,14 @@ class SubBot:
     bot_role: str = "signal_sub_bot"
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _global_trading_halt_enabled() -> bool:
+    return _env_flag("GLOBAL_TRADING_HALT", "0")
+
+
 def _enforce_data_only_lock() -> None:
     market_data_only = os.getenv("MARKET_DATA_ONLY", "1").strip()
     allow_order_execution = os.getenv("ALLOW_ORDER_EXECUTION", "0").strip()
@@ -355,9 +363,9 @@ def _in_event_blackout(now_et: datetime, windows: List[tuple[int, int]]) -> bool
     return False
 
 
-def _pnl_attribution_path(project_root: str) -> str:
+def _pnl_attribution_path(project_root: str, broker: Optional[str] = None) -> str:
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
-    return os.path.join(project_root, "governance", _shadow_profile_subdir(), f"shadow_pnl_attribution_{day}.jsonl")
+    return os.path.join(project_root, "governance", _shadow_profile_subdir(broker=broker), f"shadow_pnl_attribution_{day}.jsonl")
 
 
 def _derive_flash_aux_features(sub_rows: List[Dict[str, Any]]) -> Dict[str, float]:
@@ -951,9 +959,20 @@ def _shadow_profile_name() -> str:
     return os.getenv("SHADOW_PROFILE", "").strip().lower()
 
 
-def _shadow_profile_subdir() -> str:
+def _shadow_domain_name(broker: Optional[str] = None) -> str:
+    raw = os.getenv("SHADOW_DOMAIN", "").strip().lower()
+    if raw in {"equities", "crypto"}:
+        return raw
+
+    b = (broker or os.getenv("DATA_BROKER", "schwab")).strip().lower()
+    return "crypto" if b == "coinbase" else "equities"
+
+
+def _shadow_profile_subdir(broker: Optional[str] = None) -> str:
     prof = _shadow_profile_name()
-    return "shadow" if not prof else f"shadow_{prof}"
+    base = "shadow" if not prof else f"shadow_{prof}"
+    domain = _shadow_domain_name(broker=broker)
+    return f"{base}_{domain}" if domain else base
 
 
 def _threshold_shift() -> float:
@@ -975,9 +994,9 @@ def _shift_threshold(base: float) -> float:
     return min(max(v, 0.45), 0.75)
 
 
-def _governance_path(project_root: str) -> str:
+def _governance_path(project_root: str, broker: Optional[str] = None) -> str:
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
-    return os.path.join(project_root, "governance", _shadow_profile_subdir(), f"master_control_{day}.jsonl")
+    return os.path.join(project_root, "governance", _shadow_profile_subdir(broker=broker), f"master_control_{day}.jsonl")
 
 
 def _parse_symbols(value: str) -> List[str]:
@@ -1102,9 +1121,45 @@ def _in_market_window(now_et: datetime, start_hour_et: int, end_hour_et: int) ->
     return True, "open"
 
 
-def _auto_retrain_log_path(project_root: str) -> str:
+def _auto_retrain_log_path(project_root: str, broker: Optional[str] = None) -> str:
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
-    return os.path.join(project_root, "governance", _shadow_profile_subdir(), f"auto_retrain_events_{day}.jsonl")
+    return os.path.join(project_root, "governance", _shadow_profile_subdir(broker=broker), f"auto_retrain_events_{day}.jsonl")
+
+
+def _heartbeat_path(project_root: str, broker: str) -> str:
+    profile = _shadow_profile_name() or "default"
+    domain = _shadow_domain_name(broker=broker)
+    pid = os.getpid()
+    name = f"shadow_loop_{profile}_{domain}_{broker}_{pid}.json"
+    return os.path.join(project_root, "governance", "health", name)
+
+
+def _write_heartbeat(
+    *,
+    project_root: str,
+    broker: str,
+    iter_count: int,
+    symbols_total: int,
+    context_total: int,
+    state: str,
+) -> None:
+    payload = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "pid": os.getpid(),
+        "broker": broker,
+        "profile": _shadow_profile_name() or "default",
+        "domain": _shadow_domain_name(broker=broker),
+        "iter": int(iter_count),
+        "symbols_total": int(symbols_total),
+        "context_total": int(context_total),
+        "state": state,
+    }
+    path = _heartbeat_path(project_root, broker)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=True)
+    os.replace(tmp, path)
 
 
 def _count_underperformers(recommendations: List[Dict[str, Any]]) -> int:
@@ -1191,6 +1246,7 @@ def _spawn_auto_retrain(
     project_root: str,
     underperformers: int,
     sample_recommendations: List[Dict[str, Any]],
+    broker: Optional[str] = None,
 ) -> subprocess.Popen:
     venv_py = os.path.join(project_root, ".venv312", "bin", "python")
     retrain_script = os.path.join(project_root, "scripts", "weekly_retrain.py")
@@ -1205,7 +1261,7 @@ def _spawn_auto_retrain(
         "underperformer_count": underperformers,
         "sample_recommendations": sample_recommendations[:5],
     }
-    _append_jsonl(_auto_retrain_log_path(project_root), event)
+    _append_jsonl(_auto_retrain_log_path(project_root, broker=broker), event)
     print(f"[AutoRetrain] started pid={proc.pid} underperformers={underperformers}")
     return proc
 
@@ -1230,9 +1286,14 @@ def run_loop(
 ) -> None:
     _enforce_data_only_lock()
 
+    if _global_trading_halt_enabled():
+        raise RuntimeError("GLOBAL_TRADING_HALT=1 set; refusing to start shadow loop")
+
     broker = (broker or "schwab").strip().lower()
     if broker not in {"schwab", "coinbase"}:
         raise RuntimeError(f"Unsupported broker: {broker}")
+
+    os.environ["SHADOW_DOMAIN"] = _shadow_domain_name(broker=broker)
 
     api_key = os.getenv("SCHWAB_API_KEY", "YOUR_KEY_HERE")
     secret = os.getenv("SCHWAB_SECRET", "YOUR_SECRET_HERE")
@@ -1245,7 +1306,10 @@ def run_loop(
     registry_path = os.path.join(PROJECT_ROOT, "master_bot_registry.json")
     registry, bots = _fresh_registry(registry_path)
     print(f"Loaded registry with {len(bots)} sub-bots")
-    print(f"Shadow profile={_shadow_profile_name() or 'default'} threshold_shift={_threshold_shift():+.3f}")
+    print(
+        f"Shadow profile={_shadow_profile_name() or 'default'} domain={_shadow_domain_name(broker=broker)} "
+        f"threshold_shift={_threshold_shift():+.3f}"
+    )
 
     behavior_bias_enabled = os.getenv("ENABLE_TRADE_BEHAVIOR_BIAS", "1").strip() == "1"
     behavior_bias_strength = float(os.getenv("TRADE_BEHAVIOR_BIAS_STRENGTH", "0.08"))
@@ -1318,8 +1382,8 @@ def run_loop(
         cooldown_seconds=int(os.getenv("RUNTIME_CIRCUIT_COOLDOWN_SECONDS", "120")),
     )
     backpressure = BackpressureController(overload_ratio=float(os.getenv("RUNTIME_OVERLOAD_RATIO", "1.5")))
-    telemetry = TelemetryEmitter(os.path.join(PROJECT_ROOT, "governance", _shadow_profile_subdir(), "runtime_telemetry.jsonl"))
-    checkpoint = CheckpointStore(os.path.join(PROJECT_ROOT, "governance", _shadow_profile_subdir(), "runtime_checkpoint.json"))
+    telemetry = TelemetryEmitter(os.path.join(PROJECT_ROOT, "governance", _shadow_profile_subdir(broker=broker), "runtime_telemetry.jsonl"))
+    checkpoint = CheckpointStore(os.path.join(PROJECT_ROOT, "governance", _shadow_profile_subdir(broker=broker), "runtime_checkpoint.json"))
     canary_rollout = CanaryRollout(max_weight=float(os.getenv("CANARY_MAX_WEIGHT", "0.08")))
 
     checkpoint_every = max(int(os.getenv("CHECKPOINT_EVERY_ITERS", "5")), 1)
@@ -1366,6 +1430,14 @@ def run_loop(
         "event_blackout_enabled": event_blackout_enabled,
     }
     run_config_hash = config_hash(config_payload)
+    _write_heartbeat(
+        project_root=PROJECT_ROOT,
+        broker=broker,
+        iter_count=iter_count,
+        symbols_total=len(symbols),
+        context_total=len(context_symbols),
+        state="starting",
+    )
     print(f"[Config] hash={run_config_hash} async={enable_async_pipeline} canary_max_weight={float(os.getenv('CANARY_MAX_WEIGHT','0.08')):.3f}")
 
     memory_guard_enabled = os.getenv("AUTO_RETRAIN_MEMORY_GUARD", "1").strip() == "1"
@@ -1388,8 +1460,29 @@ def run_loop(
 
 
     while True:
+        if _global_trading_halt_enabled():
+            _write_heartbeat(
+                project_root=PROJECT_ROOT,
+                broker=broker,
+                iter_count=iter_count,
+                symbols_total=len(symbols),
+                context_total=len(context_symbols),
+                state="halted",
+            )
+            print("GLOBAL_TRADING_HALT=1 detected; stopping shadow loop.")
+            return
+
         loop_started_at = time.time()
         iter_count += 1
+
+        _write_heartbeat(
+            project_root=PROJECT_ROOT,
+            broker=broker,
+            iter_count=iter_count,
+            symbols_total=len(symbols),
+            context_total=len(context_symbols),
+            state="running",
+        )
 
         if retrain_proc is not None and retrain_proc.poll() is not None:
             rc = retrain_proc.returncode
@@ -1399,7 +1492,7 @@ def run_loop(
                 "pid": retrain_proc.pid,
                 "exit_code": rc,
             }
-            _append_jsonl(_auto_retrain_log_path(PROJECT_ROOT), event)
+            _append_jsonl(_auto_retrain_log_path(PROJECT_ROOT, broker=broker), event)
             print(f"[AutoRetrain] finished pid={retrain_proc.pid} exit={rc}")
             retrain_proc = None
         now_et = datetime.now(timezone.utc).astimezone().astimezone(
@@ -1864,7 +1957,7 @@ def run_loop(
             ret_1m = float(symbol_return_1m)
             for row in sub_rows:
                 _append_jsonl(
-                    _pnl_attribution_path(PROJECT_ROOT),
+                    _pnl_attribution_path(PROJECT_ROOT, broker=broker),
                     {
                         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                         "snapshot_id": snapshot_id,
@@ -1879,7 +1972,7 @@ def run_loop(
                     },
                 )
             _append_jsonl(
-                _pnl_attribution_path(PROJECT_ROOT),
+                _pnl_attribution_path(PROJECT_ROOT, broker=broker),
                 {
                     "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                     "snapshot_id": snapshot_id,
@@ -1913,7 +2006,7 @@ def run_loop(
                 "recommendations": recs,
                 "top_active": registry.get("summary", {}).get("top_active", []),
             }
-            _append_jsonl(_governance_path(PROJECT_ROOT), gov_row)
+            _append_jsonl(_governance_path(PROJECT_ROOT, broker=broker), gov_row)
 
             print(
                 f"[ShadowLoop] iter={iter_count} symbol={symbol} price={mkt['last_price']:.2f} "
@@ -1953,13 +2046,14 @@ def run_loop(
                                 "underperformer_count": underperformers,
                                 "lock_path": lock_path,
                             }
-                            _append_jsonl(_auto_retrain_log_path(PROJECT_ROOT), event)
+                            _append_jsonl(_auto_retrain_log_path(PROJECT_ROOT, broker=broker), event)
                             print(f"[AutoRetrain] skipped reason=mlx_lock_busy lock_path={lock_path}")
                         else:
                             retrain_proc = _spawn_auto_retrain(
                                 project_root=PROJECT_ROOT,
                                 underperformers=underperformers,
                                 sample_recommendations=latest_recs,
+                                broker=broker,
                             )
                             last_retrain_started_at = time.time()
                             auto_retrain_healthy_streak = 0
@@ -1972,7 +2066,7 @@ def run_loop(
                             "healthy_streak_needed": auto_retrain_healthy_streak_needed,
                             "snapshot": memory_snapshot,
                         }
-                        _append_jsonl(_auto_retrain_log_path(PROJECT_ROOT), event)
+                        _append_jsonl(_auto_retrain_log_path(PROJECT_ROOT, broker=broker), event)
                         print(
                             "[AutoRetrain] waiting reason=healthy_streak "
                             f"streak={auto_retrain_healthy_streak}/{auto_retrain_healthy_streak_needed}"
@@ -1986,7 +2080,7 @@ def run_loop(
                         "reason": memory_reason,
                         "snapshot": memory_snapshot,
                     }
-                    _append_jsonl(_auto_retrain_log_path(PROJECT_ROOT), event)
+                    _append_jsonl(_auto_retrain_log_path(PROJECT_ROOT, broker=broker), event)
                     print(f"[AutoRetrain] skipped reason=memory_guard details={memory_reason}")
 
         loop_seconds = time.time() - loop_started_at
@@ -2040,6 +2134,14 @@ def run_loop(
             })
 
         if max_iterations > 0 and iter_count >= max_iterations:
+            _write_heartbeat(
+                project_root=PROJECT_ROOT,
+                broker=broker,
+                iter_count=iter_count,
+                symbols_total=len(symbols),
+                context_total=len(context_symbols),
+                state="completed",
+            )
             print("Reached max iterations, exiting.")
             return
 
@@ -2127,6 +2229,10 @@ def main() -> None:
         help="Minutes to wait before retrying a quarantined symbol.",
     )
     args = parser.parse_args()
+
+    if _global_trading_halt_enabled():
+        print("GLOBAL_TRADING_HALT=1 set; refusing to start shadow loop.")
+        return
 
     symbols = _parse_symbols(args.symbols) if args.symbols else _merge_symbol_groups(
         args.symbols_core,

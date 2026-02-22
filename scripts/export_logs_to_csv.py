@@ -1,5 +1,6 @@
 import argparse
 import csv
+import glob
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,6 +9,21 @@ from typing import Dict, Iterable, List
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
+
+
+
+def _resolve_latest_path(pattern: str) -> Path | None:
+    files = [Path(x) for x in glob.glob(pattern)]
+    if not files:
+        return None
+    return max(files, key=lambda x: x.stat().st_mtime)
+
+
+def _resolve_input_path(primary: Path, fallback_pattern: str) -> Path:
+    if primary.exists():
+        return primary
+    fallback = _resolve_latest_path(fallback_pattern)
+    return fallback or primary
 
 def _load_jsonl(path: Path) -> List[Dict]:
     if not path.exists():
@@ -105,8 +121,14 @@ def main() -> None:
     day = args.date
     out_dir = Path(args.out_dir)
 
-    decision_path = PROJECT_ROOT / "decision_explanations" / "shadow" / f"decision_explanations_{day}.jsonl"
-    governance_path = PROJECT_ROOT / "governance" / "shadow" / f"master_control_{day}.jsonl"
+    decision_path = _resolve_input_path(
+        PROJECT_ROOT / "decision_explanations" / "shadow" / f"decision_explanations_{day}.jsonl",
+        str(PROJECT_ROOT / "decision_explanations" / "shadow*" / f"decision_explanations_{day}.jsonl"),
+    )
+    governance_path = _resolve_input_path(
+        PROJECT_ROOT / "governance" / "shadow" / f"master_control_{day}.jsonl",
+        str(PROJECT_ROOT / "governance" / "shadow*" / f"master_control_{day}.jsonl"),
+    )
 
     decision_rows = _decision_rows(_load_jsonl(decision_path))
     governance_rows = _governance_rows(_load_jsonl(governance_path))
