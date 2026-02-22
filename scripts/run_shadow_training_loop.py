@@ -1347,6 +1347,12 @@ def run_loop(
             iter_count = cp_iter
             print(f"[Checkpoint] resumed iter_count={iter_count}")
 
+    # Keep equities market-hours gated by default, but run crypto 24/7 by default.
+    default_session_gate = '0' if broker == 'coinbase' else '1'
+    default_blackout_gate = '0' if broker == 'coinbase' else '1'
+    session_gate_enabled = os.getenv('SESSION_GATE_ENABLED', default_session_gate).strip() == '1'
+    event_blackout_enabled = os.getenv('EVENT_BLACKOUT_ENABLED', default_blackout_gate).strip() == '1'
+
     config_payload = {
         "symbols": symbols,
         "context_symbols": context_symbols,
@@ -1356,6 +1362,8 @@ def run_loop(
         "auto_retrain": auto_retrain,
         "canary_max_weight": float(os.getenv("CANARY_MAX_WEIGHT", "0.08")),
         "async_pipeline": enable_async_pipeline,
+        "session_gate_enabled": session_gate_enabled,
+        "event_blackout_enabled": event_blackout_enabled,
     }
     run_config_hash = config_hash(config_payload)
     print(f"[Config] hash={run_config_hash} async={enable_async_pipeline} canary_max_weight={float(os.getenv('CANARY_MAX_WEIGHT','0.08')):.3f}")
@@ -1377,6 +1385,7 @@ def run_loop(
     core_every_n = max(int(os.getenv('CORE_SYMBOL_EVERY_N_ITERS', '1')), 1)
     volatile_every_n = max(int(os.getenv('VOLATILE_SYMBOL_EVERY_N_ITERS', '1')), 1)
     defensive_every_n = max(int(os.getenv('DEFENSIVE_SYMBOL_EVERY_N_ITERS', '2')), 1)
+
 
     while True:
         loop_started_at = time.time()
@@ -1403,18 +1412,22 @@ def run_loop(
         except Exception:
             pass
 
-        open_now, closed_reason = _in_market_window(now_et, session_start_hour, session_end_hour)
-        if not open_now:
-            if closed_reason != last_closed_reason:
-                print(f"[SessionGate] paused reason={closed_reason} now_et={now_et.isoformat()}")
-                last_closed_reason = closed_reason
-            time.sleep(max(effective_interval_seconds, 30))
-            continue
-        if last_closed_reason is not None:
-            print(f"[SessionGate] resumed now_et={now_et.isoformat()}")
-            last_closed_reason = None
+        if session_gate_enabled:
+            open_now, closed_reason = _in_market_window(now_et, session_start_hour, session_end_hour)
+            if not open_now:
+                if closed_reason != last_closed_reason:
+                    print(f"[SessionGate] paused reason={closed_reason} now_et={now_et.isoformat()}")
+                    last_closed_reason = closed_reason
+                time.sleep(max(effective_interval_seconds, 30))
+                continue
+            if last_closed_reason is not None:
+                print(f"[SessionGate] resumed now_et={now_et.isoformat()}")
+                last_closed_reason = None
+        else:
+            if iter_count == 1:
+                print(f"[SessionGate] disabled broker={broker} mode=24x7")
 
-        if _in_event_blackout(now_et, blackout_windows):
+        if event_blackout_enabled and _in_event_blackout(now_et, blackout_windows):
             print(f"[EventGate] paused reason=blackout_window now_et={now_et.isoformat()}")
             time.sleep(max(effective_interval_seconds, 10))
             continue
