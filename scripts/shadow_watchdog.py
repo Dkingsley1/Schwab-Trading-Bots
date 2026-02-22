@@ -14,6 +14,7 @@ from typing import Deque, Dict, Optional
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VENV_PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
 PARALLEL_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_parallel_shadows.py"
+PARALLEL_AGGRESSIVE_SCRIPT = PROJECT_ROOT / "scripts" / "run_parallel_aggressive_modes.py"
 SHADOW_LOOP_SCRIPT = PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py"
 WATCHDOG_DIR = PROJECT_ROOT / "governance" / "watchdog"
 
@@ -120,6 +121,13 @@ def _start_target(start_cmd: str, dry_run: bool) -> bool:
 
 def _build_default_schwab_cmd(simulate: bool) -> str:
     base = f"{VENV_PY} {PARALLEL_SHADOW_SCRIPT}"
+    if simulate:
+        return base + " --simulate"
+    return base
+
+
+def _build_default_aggressive_modes_cmd(simulate: bool) -> str:
+    base = f"{VENV_PY} {PARALLEL_AGGRESSIVE_SCRIPT}"
     if simulate:
         return base + " --simulate"
     return base
@@ -284,13 +292,17 @@ def main() -> int:
     parser.add_argument("--simulate-schwab", action="store_true", help="Default Schwab start command adds --simulate.")
     parser.add_argument("--schwab-start-cmd", default=None)
     parser.add_argument("--coinbase-start-cmd", default=None)
+    parser.add_argument("--aggressive-modes-start-cmd", default=None)
     parser.add_argument("--watch-coinbase", action="store_true")
+    parser.add_argument("--watch-aggressive-modes", action="store_true")
     parser.add_argument("--coinbase-optional", action="store_true")
 
     parser.add_argument("--schwab-heartbeat-stale-seconds", type=int, default=120)
     parser.add_argument("--coinbase-heartbeat-stale-seconds", type=int, default=180)
     parser.add_argument("--schwab-min-heartbeats", type=int, default=2)
     parser.add_argument("--coinbase-min-heartbeats", type=int, default=1)
+    parser.add_argument("--aggressive-modes-heartbeat-stale-seconds", type=int, default=180)
+    parser.add_argument("--aggressive-modes-min-heartbeats", type=int, default=2)
 
     parser.add_argument(
         "--event-log-path",
@@ -302,6 +314,7 @@ def main() -> int:
 
     schwab_cmd = args.schwab_start_cmd or _build_default_schwab_cmd(simulate=args.simulate_schwab)
     coinbase_cmd = args.coinbase_start_cmd or _build_default_coinbase_cmd()
+    aggressive_modes_cmd = args.aggressive_modes_start_cmd or _build_default_aggressive_modes_cmd(simulate=args.simulate_schwab)
 
     targets: list[Target] = [
         Target(
@@ -325,6 +338,19 @@ def main() -> int:
                 heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*_crypto_coinbase_*.json"),
                 heartbeat_stale_seconds=max(args.coinbase_heartbeat_stale_seconds, 30),
                 min_healthy_heartbeats=max(args.coinbase_min_heartbeats, 1),
+            )
+        )
+
+    if args.watch_aggressive_modes:
+        targets.append(
+            Target(
+                name="aggressive_modes_parallel",
+                match="scripts/run_parallel_aggressive_modes.py",
+                start_cmd=aggressive_modes_cmd,
+                required=True,
+                heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*aggressive*_equities_schwab_*.json"),
+                heartbeat_stale_seconds=max(args.aggressive_modes_heartbeat_stale_seconds, 30),
+                min_healthy_heartbeats=max(args.aggressive_modes_min_heartbeats, 1),
             )
         )
 
