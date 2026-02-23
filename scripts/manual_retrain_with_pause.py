@@ -1,8 +1,7 @@
 import argparse
+import os
 import shlex
-import signal
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -10,6 +9,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VENV_PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
 WEEKLY_RETRAIN = PROJECT_ROOT / "scripts" / "weekly_retrain.py"
+PARALLEL_SHADOWS = PROJECT_ROOT / "scripts" / "run_parallel_shadows.py"
 
 
 def _scan_processes() -> list[tuple[int, str]]:
@@ -22,7 +22,6 @@ def _scan_processes() -> list[tuple[int, str]]:
     out = proc.stdout or ""
 
     rows: list[tuple[int, str]] = []
-    me = str(Path(__file__))
     for line in out.splitlines():
         line = line.strip()
         if not line:
@@ -63,11 +62,7 @@ def _terminate_pids(pids: list[int], timeout_seconds: int) -> None:
         return
 
     for pid in pids:
-        try:
-            Path(f"/proc/{pid}")
-            subprocess.run(["kill", "-TERM", str(pid)], check=False)
-        except Exception:
-            subprocess.run(["kill", "-TERM", str(pid)], check=False)
+        subprocess.run(["kill", "-TERM", str(pid)], check=False)
 
     start = time.time()
     while time.time() - start < timeout_seconds:
@@ -99,12 +94,41 @@ def _run_retrain(dry_run: bool, continue_on_error: bool) -> int:
     return int(proc.returncode)
 
 
-def _restart_parallel(restart_cmd: str, dry_run: bool) -> None:
-    print(f"Restarting shadows with: {restart_cmd}")
+def _default_symbol_env(base_env: dict[str, str]) -> dict[str, str]:
+    env = dict(base_env)
+    env.setdefault("MARKET_DATA_ONLY", "1")
+    env.setdefault("ALLOW_ORDER_EXECUTION", "0")
+    env.setdefault("SHADOW_SYMBOLS_CORE", "SPY,QQQ,AAPL,MSFT,NVDA,DIA,IWM,MDY")
+    env.setdefault("SHADOW_SYMBOLS_VOLATILE", "SOXL,SOXS,MSTR,SMCI,COIN,TSLA,UVXY,VIXY")
+    env.setdefault(
+        "SHADOW_SYMBOLS_DEFENSIVE",
+        "TLT,GLD,XLV,XLU,XLP,HYG,LQD,UUP,XLE,XLF,XLI,XLK,XLY,IEF,SHY,TIP,TLH,JNK",
+    )
+    env.setdefault("SHADOW_SYMBOLS_COMMOD_FX_INTL", "DBC,UNG,CORN,SLV,USO,FXE,FXY,EFA,EEM,EWJ,FXI")
+    return env
+
+
+def _restart_parallel(restart_cmd: str | None, dry_run: bool) -> None:
+    env = _default_symbol_env(os.environ)
+
+    # Always restart with explicit symbols so relaunch never depends on missing shell exports.
+    cmd = [
+        str(VENV_PY),
+        str(PARALLEL_SHADOWS),
+        "--simulate",
+        "--symbols-core",
+        env["SHADOW_SYMBOLS_CORE"],
+        "--symbols-volatile",
+        env["SHADOW_SYMBOLS_VOLATILE"],
+        "--symbols-defensive",
+        f"{env['SHADOW_SYMBOLS_DEFENSIVE']},{env['SHADOW_SYMBOLS_COMMOD_FX_INTL']}",
+    ]
+
+    print("Restarting shadows with: " + " ".join(cmd))
     if dry_run:
         return
-    args = shlex.split(restart_cmd)
-    subprocess.Popen(args, cwd=str(PROJECT_ROOT))
+
+    subprocess.Popen(cmd, cwd=str(PROJECT_ROOT), env=env)
 
 
 def main() -> int:
@@ -118,7 +142,7 @@ def main() -> int:
     parser.set_defaults(continue_on_error=True)
     args = parser.parse_args()
 
-    pids, restart_cmd = _find_shadow_targets()
+    pids, _restart_cmd = _find_shadow_targets()
     if pids:
         print(f"Stopping shadow processes: {pids}")
         if not args.dry_run:
@@ -128,10 +152,8 @@ def main() -> int:
 
     rc = _run_retrain(dry_run=args.dry_run, continue_on_error=args.continue_on_error)
 
-    if not args.no_restart and restart_cmd:
-        _restart_parallel(restart_cmd, dry_run=args.dry_run)
-    elif not args.no_restart:
-        print("No parallel launcher command found to auto-restart. Start shadows manually if needed.")
+    if not args.no_restart:
+        _restart_parallel(_restart_cmd, dry_run=args.dry_run)
 
     return rc
 
