@@ -65,6 +65,77 @@ def _global_trading_halt_enabled() -> bool:
     return _env_flag("GLOBAL_TRADING_HALT", "0") or HALT_FLAG_PATH.exists()
 
 
+_SHADOW_SINGLETON_LOCK_FH: Optional[Any] = None
+
+
+def _lock_safe_token(raw: str) -> str:
+    out = []
+    for ch in (raw or ""):
+        if ch.isalnum() or ch in {"-", "_"}:
+            out.append(ch)
+        else:
+            out.append("_")
+    return "".join(out) or "default"
+
+
+def _shadow_lock_key(broker: str) -> str:
+    profile = _shadow_profile_name() or "default"
+    return f"{_lock_safe_token((broker or 'unknown').lower())}_{_lock_safe_token(profile.lower())}"
+
+
+def _release_shadow_singleton_lock() -> None:
+    global _SHADOW_SINGLETON_LOCK_FH
+    if _SHADOW_SINGLETON_LOCK_FH is None:
+        return
+    try:
+        fcntl.flock(_SHADOW_SINGLETON_LOCK_FH.fileno(), fcntl.LOCK_UN)
+    except Exception:
+        pass
+    try:
+        _SHADOW_SINGLETON_LOCK_FH.close()
+    except Exception:
+        pass
+    _SHADOW_SINGLETON_LOCK_FH = None
+
+
+def _acquire_shadow_singleton_lock(project_root: str, broker: str) -> bool:
+    if os.getenv("ENABLE_SHADOW_SINGLETON_LOCK", "1").strip() != "1":
+        return True
+
+    key = _shadow_lock_key(broker)
+    default_lock_path = os.path.join(project_root, "governance", "locks", f"shadow_loop_{key}.lock")
+    lock_path = os.getenv("SHADOW_LOOP_LOCK_PATH", default_lock_path)
+
+    try:
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        fh = open(lock_path, "a+", encoding="utf-8")
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            try:
+                fh.seek(0)
+                owner = fh.read().strip()
+            except Exception:
+                owner = "unknown"
+            fh.close()
+            print(f"[ShadowLock] busy lock_path={lock_path} owner={owner or 'unknown'}")
+            return False
+
+        fh.seek(0)
+        fh.truncate(0)
+        fh.write(f"pid={os.getpid()} started={time.time():.0f} broker={broker} profile={_shadow_profile_name() or 'default'} cmd={' '.join(sys.argv)}")
+        fh.flush()
+
+        global _SHADOW_SINGLETON_LOCK_FH
+        _SHADOW_SINGLETON_LOCK_FH = fh
+        atexit.register(_release_shadow_singleton_lock)
+        print(f"[ShadowLock] acquired lock_path={lock_path} pid={os.getpid()} broker={broker} profile={_shadow_profile_name() or 'default'}")
+        return True
+    except Exception as exc:
+        print(f"[ShadowLock] warning lock setup failed: {exc}")
+        return True
+
+
 def _enforce_data_only_lock() -> None:
     market_data_only = os.getenv("MARKET_DATA_ONLY", "1").strip()
     allow_order_execution = os.getenv("ALLOW_ORDER_EXECUTION", "0").strip()
@@ -1361,10 +1432,17 @@ def run_loop(
 
     behavior_bias_enabled = os.getenv("ENABLE_TRADE_BEHAVIOR_BIAS", "1").strip() == "1"
     behavior_bias_strength = float(os.getenv("TRADE_BEHAVIOR_BIAS_STRENGTH", "0.08"))
+    behavior_hold_neutral_min = float(os.getenv("TRADE_BEHAVIOR_HOLD_NEUTRAL_MIN", "0.62"))
+    behavior_hold_margin_min = float(os.getenv("TRADE_BEHAVIOR_HOLD_MARGIN_MIN", "0.08"))
     behavior_model = _load_trade_behavior_model(PROJECT_ROOT) if behavior_bias_enabled else None
     if behavior_bias_enabled:
         if behavior_model is not None:
-            print(f"Trade behavior bias enabled model={behavior_model.get('path')} strength={behavior_bias_strength:.3f}")
+            print(
+                f"Trade behavior bias enabled model={behavior_model.get('path')} "
+                f"strength={behavior_bias_strength:.3f} "
+                f"hold_neutral_min={behavior_hold_neutral_min:.3f} "
+                f"hold_margin_min={behavior_hold_margin_min:.3f}"
+            )
         else:
             print("Trade behavior bias enabled but no model found; running without behavior prior.")
 
@@ -1920,6 +1998,9 @@ def run_loop(
                 features=shared_features,
             )
             if behavior_bias_enabled and behavior_meta:
+                gm_action_pre_behavior = gm_action
+                gm_score_pre_behavior = gm_score
+                gm_vote_pre_behavior = float(gm_vote.get("vote", 0.0))
                 gm_vote["vote"] = _calibrate_vote(float(gm_vote.get("vote", 0.0)) + (behavior_bias_strength * behavior_prior), scale=0.80)
                 gm_score = _vote_to_score(gm_vote["vote"])
                 if gm_vote["vote"] > 0.24:
@@ -1928,7 +2009,35 @@ def run_loop(
                     gm_action = "SELL"
                 else:
                     gm_action = "HOLD"
-                gm_reasons = gm_reasons + [f"behavior_bias={behavior_prior:+.4f}"]
+
+                neutral_conf = float(behavior_meta.get("behavior_prob_neutral", 0.0) or 0.0)
+                directional_conf = max(
+                    float(behavior_meta.get("behavior_prob_positive", 0.0) or 0.0),
+                    float(behavior_meta.get("behavior_prob_negative", 0.0) or 0.0),
+                )
+                neutral_margin = neutral_conf - directional_conf
+
+                # Require strong neutral confidence before behavior bias is allowed to force HOLD.
+                if (
+                    gm_action == "HOLD"
+                    and (
+                        neutral_conf < behavior_hold_neutral_min
+                        or neutral_margin < behavior_hold_margin_min
+                    )
+                ):
+                    gm_action = gm_action_pre_behavior
+                    gm_score = gm_score_pre_behavior
+                    gm_vote["vote"] = gm_vote_pre_behavior
+                    gm_reasons = gm_reasons + [
+                        f"behavior_bias={behavior_prior:+.4f}",
+                        f"neutral_gate_revert neutral={neutral_conf:.3f} margin={neutral_margin:.3f}",
+                    ]
+                else:
+                    gm_reasons = gm_reasons + [
+                        f"behavior_bias={behavior_prior:+.4f}",
+                        f"neutral_conf={neutral_conf:.3f}",
+                        f"neutral_margin={neutral_margin:.3f}",
+                    ]
                 shared_features = {**shared_features, **behavior_meta}
 
             if iter_count < symbol_regime_cooldown_until_iter.get(symbol, 0):
@@ -2411,6 +2520,9 @@ def main() -> None:
 
     if _global_trading_halt_enabled():
         print("GLOBAL_TRADING_HALT=1 set; refusing to start shadow loop.")
+        return
+
+    if not _acquire_shadow_singleton_lock(PROJECT_ROOT, args.broker):
         return
 
     symbols = _parse_symbols(args.symbols) if args.symbols else _merge_symbol_groups(
