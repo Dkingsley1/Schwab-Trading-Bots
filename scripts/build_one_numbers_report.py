@@ -418,6 +418,28 @@ def main() -> int:
     hb_dir = PROJECT_ROOT / "governance" / "health"
     heartbeat_files = list(hb_dir.glob("shadow_loop_*.json")) if hb_dir.exists() else []
     heartbeat_recent = 0
+
+    # Bot stack status report integration (masterbots + sub-bots)
+    bot_stack_status = "unknown"
+    bot_stack_active_sub_bots = 0
+    bot_stack_watchdog_schwab_live = False
+    bot_stack_watchdog_coinbase_live = False
+    bot_stack_latest_json = PROJECT_ROOT / "exports" / "bot_stack_status" / "latest.json"
+    if bot_stack_latest_json.exists():
+        try:
+            bot_obj = json.loads(bot_stack_latest_json.read_text(encoding="utf-8"))
+            bot_stack_status = str((bot_obj.get("overall_health") or {}).get("status") or "unknown")
+            bot_stack_active_sub_bots = _safe_int(((bot_obj.get("registry") or {}).get("counts") or {}).get("active"), 0)
+            checks = ((bot_obj.get("overall_health") or {}).get("checks") or [])
+            for chk in checks:
+                name = str((chk or {}).get("name", ""))
+                ok = bool((chk or {}).get("ok"))
+                if name == "watchdog_schwab_live":
+                    bot_stack_watchdog_schwab_live = ok
+                elif name == "watchdog_coinbase_live":
+                    bot_stack_watchdog_coinbase_live = ok
+        except Exception:
+            pass
     for fp in heartbeat_files:
         try:
             obj = json.loads(fp.read_text(encoding="utf-8"))
@@ -499,6 +521,10 @@ def main() -> int:
         ("governance_last_age_sec", str(governance_last_age_sec)),
         ("heartbeat_recent_count", str(heartbeat_recent)),
         ("data_quality_score", f"{data_quality_score:.2f}"),
+        ("bot_stack_overall_status", bot_stack_status),
+        ("bot_stack_active_sub_bots", str(bot_stack_active_sub_bots)),
+        ("bot_stack_watchdog_schwab_live", str(bot_stack_watchdog_schwab_live).lower()),
+        ("bot_stack_watchdog_coinbase_live", str(bot_stack_watchdog_coinbase_live).lower()),
     ]
 
     for k, v in alerts.items():
@@ -558,6 +584,12 @@ def main() -> int:
         f"- Hold-no-edge rate: {_fmt_pct(hold_no_edge_rate)}",
         f"- Symbol concentration top3 share: {_fmt_pct(symbol_concentration_top3_share)}",
         f"- Drift abs (buy_rate 1h vs 4h): {buy_rate_drift_abs:.4f} (flag={str(model_drift_flag).lower()})",
+        "",
+        "## Bot Stack",
+        f"- Overall status: {bot_stack_status}",
+        f"- Active sub-bots: {bot_stack_active_sub_bots}",
+        f"- Watchdog live (schwab/coinbase): {str(bot_stack_watchdog_schwab_live).lower()}/{str(bot_stack_watchdog_coinbase_live).lower()}",
+        f"- Source: {bot_stack_latest_json}",
         "",
         "## Alerts",
     ]

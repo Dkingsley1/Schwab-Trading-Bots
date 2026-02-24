@@ -16,6 +16,8 @@ VENV_PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
 PARALLEL_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_parallel_shadows.py"
 PARALLEL_AGGRESSIVE_SCRIPT = PROJECT_ROOT / "scripts" / "run_parallel_aggressive_modes.py"
 SHADOW_LOOP_SCRIPT = PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py"
+DIVIDEND_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_dividend_shadow.py"
+BOND_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_bond_shadow.py"
 WATCHDOG_DIR = PROJECT_ROOT / "governance" / "watchdog"
 
 
@@ -140,6 +142,20 @@ def _build_default_coinbase_cmd() -> str:
         "--symbols BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LTC-USD,LINK-USD,DOGE-USD "
         "--interval-seconds 60"
     )
+
+
+def _build_default_dividend_cmd(simulate: bool) -> str:
+    base = f"{VENV_PY} {DIVIDEND_SHADOW_SCRIPT} --interval-seconds 60"
+    if simulate:
+        return base + " --simulate"
+    return base
+
+
+def _build_default_bond_cmd(simulate: bool) -> str:
+    base = f"{VENV_PY} {BOND_SHADOW_SCRIPT} --interval-seconds 90"
+    if simulate:
+        return base + " --simulate"
+    return base
 
 
 def _parse_ts(ts: str) -> Optional[datetime]:
@@ -293,9 +309,15 @@ def main() -> int:
     parser.add_argument("--schwab-start-cmd", default=None)
     parser.add_argument("--coinbase-start-cmd", default=None)
     parser.add_argument("--aggressive-modes-start-cmd", default=None)
+    parser.add_argument("--dividend-start-cmd", default=None)
+    parser.add_argument("--bond-start-cmd", default=None)
     parser.add_argument("--watch-coinbase", action="store_true")
     parser.add_argument("--watch-aggressive-modes", action="store_true")
+    parser.add_argument("--watch-dividend", action="store_true")
+    parser.add_argument("--watch-bond", action="store_true")
     parser.add_argument("--coinbase-optional", action="store_true")
+    parser.add_argument("--dividend-optional", action="store_true")
+    parser.add_argument("--bond-optional", action="store_true")
 
     parser.add_argument("--schwab-heartbeat-stale-seconds", type=int, default=120)
     parser.add_argument("--coinbase-heartbeat-stale-seconds", type=int, default=180)
@@ -303,6 +325,10 @@ def main() -> int:
     parser.add_argument("--coinbase-min-heartbeats", type=int, default=1)
     parser.add_argument("--aggressive-modes-heartbeat-stale-seconds", type=int, default=180)
     parser.add_argument("--aggressive-modes-min-heartbeats", type=int, default=2)
+    parser.add_argument("--dividend-heartbeat-stale-seconds", type=int, default=240)
+    parser.add_argument("--dividend-min-heartbeats", type=int, default=1)
+    parser.add_argument("--bond-heartbeat-stale-seconds", type=int, default=240)
+    parser.add_argument("--bond-min-heartbeats", type=int, default=1)
 
     parser.add_argument(
         "--event-log-path",
@@ -315,6 +341,8 @@ def main() -> int:
     schwab_cmd = args.schwab_start_cmd or _build_default_schwab_cmd(simulate=args.simulate_schwab)
     coinbase_cmd = args.coinbase_start_cmd or _build_default_coinbase_cmd()
     aggressive_modes_cmd = args.aggressive_modes_start_cmd or _build_default_aggressive_modes_cmd(simulate=args.simulate_schwab)
+    dividend_cmd = args.dividend_start_cmd or _build_default_dividend_cmd(simulate=args.simulate_schwab)
+    bond_cmd = args.bond_start_cmd or _build_default_bond_cmd(simulate=args.simulate_schwab)
 
     targets: list[Target] = [
         Target(
@@ -351,6 +379,32 @@ def main() -> int:
                 heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*aggressive*_equities_schwab_*.json"),
                 heartbeat_stale_seconds=max(args.aggressive_modes_heartbeat_stale_seconds, 30),
                 min_healthy_heartbeats=max(args.aggressive_modes_min_heartbeats, 1),
+            )
+        )
+
+    if args.watch_dividend:
+        targets.append(
+            Target(
+                name="dividend_shadow",
+                match="scripts/run_dividend_shadow.py",
+                start_cmd=dividend_cmd,
+                required=not args.dividend_optional,
+                heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*dividend*_equities_schwab_*.json"),
+                heartbeat_stale_seconds=max(args.dividend_heartbeat_stale_seconds, 30),
+                min_healthy_heartbeats=max(args.dividend_min_heartbeats, 1),
+            )
+        )
+
+    if args.watch_bond:
+        targets.append(
+            Target(
+                name="bond_shadow",
+                match="scripts/run_bond_shadow.py",
+                start_cmd=bond_cmd,
+                required=not args.bond_optional,
+                heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*bond*_equities_schwab_*.json"),
+                heartbeat_stale_seconds=max(args.bond_heartbeat_stale_seconds, 30),
+                min_healthy_heartbeats=max(args.bond_min_heartbeats, 1),
             )
         )
 

@@ -299,7 +299,7 @@ class MasterBot:
             if any(t in name for t in ("risk", "drawdown", "budget", "allocator", "sentinel")):
                 return "risk"
             return "infra"
-        if any(t in name for t in ("macro", "event", "calendar", "pmi", "ism", "pce", "cpi", "fomc", "labor", "rates")):
+        if any(t in name for t in ("macro", "event", "calendar", "pmi", "ism", "pce", "cpi", "fomc", "labor", "rates", "dividend", "yield", "payout", "compounder", "bond", "treasury", "duration", "credit_spread")):
             return "macro"
         if any(t in name for t in ("mean", "revert", "bollinger", "vwap", "keltner")):
             return "mean_revert"

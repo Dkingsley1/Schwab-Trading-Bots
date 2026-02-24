@@ -17,6 +17,7 @@ cd "$PROJECT_ROOT"
   > "$PROJECT_ROOT/exports/sql_reports/daily_runtime_summary_${TODAY_UTC}.json"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_data_center.py"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_one_numbers_report.py" --day "$TODAY_UTC"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/bot_stack_status_report.py"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/health_gates.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/canary_rollout_guard.py" --day "$TODAY_UTC" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/walk_forward_validate.py" || true

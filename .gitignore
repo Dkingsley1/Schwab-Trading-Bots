@@ -63,3 +63,7 @@ daily_decision_summary.py
 # Large local databases
 data/*.sqlite3
 data/*.db
+
+# Allow canonical core bot modules
+!core/brain_refinery_v*.py
+!core/brain_refinery_V3.py

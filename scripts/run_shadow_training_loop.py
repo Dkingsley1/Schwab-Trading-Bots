@@ -541,9 +541,21 @@ def _grand_master_weights(features: Dict[str, float]) -> Dict[str, float]:
     chop_strength = abs(float(features.get("range_pos", 0.5)) - 0.5)
     shock_strength = abs(float(features.get("ctx_VIX_X_pct_from_close", 0.0))) + float(features.get("vol_30m", 0.0))
 
-    w_trend = 1.0 + 3.0 * trend_strength
-    w_mean = 1.0 + 2.0 * max(0.0, 0.5 - chop_strength)
-    w_shock = 1.0 + 4.0 * shock_strength
+    prof = _shadow_profile_name()
+    if prof == "dividend":
+        # Dividend sleeve: favor persistent trend + valuation mean reversion, downweight shock chasing.
+        w_trend = 1.30 + 2.2 * trend_strength
+        w_mean = 1.25 + 2.0 * max(0.0, 0.5 - chop_strength)
+        w_shock = 0.70 + 1.2 * shock_strength
+    elif prof == "bond":
+        # Bond sleeve: emphasize regime persistence + carry mean reversion, but keep shock filter alive.
+        w_trend = 1.20 + 1.9 * trend_strength
+        w_mean = 1.30 + 2.2 * max(0.0, 0.5 - chop_strength)
+        w_shock = 0.90 + 1.4 * shock_strength
+    else:
+        w_trend = 1.0 + 3.0 * trend_strength
+        w_mean = 1.0 + 2.0 * max(0.0, 0.5 - chop_strength)
+        w_shock = 1.0 + 4.0 * shock_strength
 
     total = w_trend + w_mean + w_shock
     if total <= 0.0:
@@ -1078,6 +1090,12 @@ def _threshold_shift() -> float:
     prof = _shadow_profile_name()
     if prof == "aggressive":
         return -0.03
+    if prof == "dividend":
+        # Dividend sleeve should be more selective and avoid noisy overnight churn.
+        return +0.03
+    if prof == "bond":
+        # Bond sleeve: slightly stricter entry to reduce false positives in low-vol regimes.
+        return +0.02
     return 0.0
 
 

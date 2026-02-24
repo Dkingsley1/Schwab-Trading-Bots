@@ -83,6 +83,9 @@ def main() -> int:
         SourceDef("sql_reports", PROJECT_ROOT / "exports" / "sql_reports", "sql", "dir"),
         SourceDef("sql_reports_latest", PROJECT_ROOT / "exports" / "sql_reports" / "latest", "sql", "dir"),
         SourceDef("trade_history", PROJECT_ROOT / "data" / "trade_history", "data", "dir"),
+        SourceDef("bot_stack_status", PROJECT_ROOT / "exports" / "bot_stack_status", "runtime", "dir"),
+        SourceDef("bot_stack_latest_json", PROJECT_ROOT / "exports" / "bot_stack_status" / "latest.json", "runtime", "file"),
+        SourceDef("bot_stack_latest_md", PROJECT_ROOT / "exports" / "bot_stack_status" / "latest.md", "runtime", "file"),
     ]
 
     bundle_dir.mkdir(parents=True, exist_ok=True)
