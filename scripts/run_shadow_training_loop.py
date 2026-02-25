@@ -899,7 +899,7 @@ def _load_trade_behavior_model(project_root: str) -> Optional[Dict[str, Any]]:
 
 _BEHAVIOR_SHOCK_SYMBOLS = {"UVXY", "VIXY", "SOXL", "SOXS", "MSTR", "SMCI", "COIN", "TSLA"}
 _BEHAVIOR_MEAN_REVERT_SYMBOLS = {"TLT", "IEF", "SHY", "BND", "AGG", "GLD", "XLU", "XLP"}
-_BEHAVIOR_SNAPSHOT_FEATURE_NAMES = [
+_BEHAVIOR_SNAPSHOT_FEATURE_NAMES_V1 = [
     "snapshot_cov_ok",
     "snapshot_cov_log_ratio",
     "snapshot_cov_fill_ratio",
@@ -910,11 +910,66 @@ _BEHAVIOR_SNAPSHOT_FEATURE_NAMES = [
     "snapshot_triprate_ratio",
     "snapshot_queue_pressure_ratio",
 ]
+_BEHAVIOR_SNAPSHOT_FEATURE_NAMES_V2 = [
+    "snapshot_cov_ok",
+    "snapshot_cov_log_ratio",
+    "snapshot_replay_stale_ratio",
+    "snapshot_replay_drift_ratio",
+    "snapshot_divergence_ratio",
+    "snapshot_triprate_ratio",
+    "snapshot_queue_pressure_ratio",
+    "canary_weight_cap_norm",
+]
+_BEHAVIOR_FEATURE_NAMES_V2 = [
+    "pnl_proxy",
+    "qty_log",
+    "role_idx",
+    "symbol_hash",
+    "action_hash",
+    "dow",
+    "hour",
+    "regime_idx",
+    "label_confidence_proxy",
+    "pct_from_close_scaled",
+    "mom_5m_scaled",
+    "vol_30m_scaled",
+    "range_pos",
+    "spread_bps_norm",
+    "ctx_vix_pct_scaled",
+    "ctx_uup_pct_scaled",
+    "lag_slippage_bps_norm",
+    "lag_latency_ms_norm",
+    "lag_impact_bps_norm",
+    "active_sub_bots_norm",
+    "queue_depth_norm",
+    "dispatch_qty_norm",
+    "session_bucket_norm",
+    "mins_from_open_norm",
+    "mins_to_close_norm",
+    "event_window_proximity",
+    "feature_freshness_ok",
+    "feature_freshness_age_ratio",
+    "master_latency_slo_ok",
+    "master_latency_ratio",
+    "risk_pause_active",
+    "snapshot_cov_ok",
+    "snapshot_cov_log_ratio",
+    "snapshot_replay_stale_ratio",
+    "snapshot_replay_drift_ratio",
+    "snapshot_divergence_ratio",
+    "snapshot_triprate_ratio",
+    "snapshot_queue_pressure_ratio",
+    "canary_weight_cap_norm",
+]
 _BEHAVIOR_SNAPSHOT_CONTEXT_CACHE: Dict[str, Any] = {"loaded_at_ts": 0.0, "values": {}}
 
 
 def _behavior_clamp01(value: float) -> float:
     return max(0.0, min(float(value), 1.0))
+
+
+def _behavior_signed_scale(value: float, gain: float) -> float:
+    return math.tanh(float(value) * float(gain))
 
 
 def _behavior_load_json(path: str) -> Dict[str, Any]:
@@ -979,6 +1034,8 @@ def _behavior_snapshot_context(project_root: str) -> Dict[str, float]:
     breach_ratio = _behavior_clamp01(breach_rate / breach_rate_max)
     queue_pressure_ratio = _behavior_clamp01(max(depth_ratio, breach_ratio))
 
+    canary_weight_cap_norm = _behavior_clamp01(float(os.getenv('CANARY_MAX_WEIGHT', '0.08')) / 0.20)
+
     values: Dict[str, float] = {
         'snapshot_cov_ok': 1.0 if bool(coverage.get('ok', False)) else 0.0,
         'snapshot_cov_log_ratio': coverage_log_ratio,
@@ -989,6 +1046,7 @@ def _behavior_snapshot_context(project_root: str) -> Dict[str, float]:
         'snapshot_divergence_ratio': divergence_ratio,
         'snapshot_triprate_ratio': triprate_ratio,
         'snapshot_queue_pressure_ratio': queue_pressure_ratio,
+        'canary_weight_cap_norm': canary_weight_cap_norm,
     }
 
     _BEHAVIOR_SNAPSHOT_CONTEXT_CACHE['loaded_at_ts'] = now_ts
@@ -1019,7 +1077,57 @@ def _behavior_label_confidence_proxy(features: Dict[str, float]) -> float:
     return _behavior_clamp01(edge * 25.0)
 
 
-def _behavior_feature_vector(symbol: str, action_hint: str, features: Dict[str, float]) -> Optional[Any]:
+def _behavior_role_index_from_env() -> float:
+    role_raw = os.getenv('BEHAVIOR_ACCOUNT_ROLE', 'INDIVIDUAL_TRADING').strip().upper()
+    if role_raw == 'ROTH':
+        return 0.0
+    if role_raw == 'INDIVIDUAL_TRADING':
+        return 1.0 / 3.0
+    if role_raw == 'INDIVIDUAL_SWING':
+        return 2.0 / 3.0
+    return 1.0
+
+
+def _behavior_session_event_context() -> Dict[str, float]:
+    now_et = _now_eastern()
+    now_min = now_et.hour * 60 + now_et.minute
+    open_min = 9 * 60 + 30
+    close_min = 16 * 60
+
+    if now_min < open_min:
+        session_bucket_norm = 0.0
+    elif now_min <= close_min:
+        session_bucket_norm = 0.5
+    else:
+        session_bucket_norm = 1.0
+
+    mins_from_open_norm = _behavior_clamp01((now_min - open_min) / 390.0)
+    mins_to_close_norm = _behavior_clamp01((close_min - now_min) / 390.0)
+
+    event_window_proximity = 0.0
+    for start_min, end_min in _event_blackout_windows():
+        if start_min <= end_min:
+            if start_min <= now_min <= end_min:
+                event_window_proximity = 1.0
+                break
+            dist = min(abs(now_min - start_min), abs(now_min - end_min))
+        else:
+            in_window = now_min >= start_min or now_min <= end_min
+            if in_window:
+                event_window_proximity = 1.0
+                break
+            dist = min(abs(now_min - start_min), abs(now_min - end_min))
+        event_window_proximity = max(event_window_proximity, _behavior_clamp01(1.0 - (dist / 30.0)))
+
+    return {
+        'session_bucket_norm': session_bucket_norm,
+        'mins_from_open_norm': mins_from_open_norm,
+        'mins_to_close_norm': mins_to_close_norm,
+        'event_window_proximity': event_window_proximity,
+    }
+
+
+def _behavior_legacy_feature_vector(symbol: str, action_hint: str, features: Dict[str, float], snapshot_ctx: Dict[str, float]) -> Optional[Any]:
     if np is None:
         return None
 
@@ -1027,45 +1135,154 @@ def _behavior_feature_vector(symbol: str, action_hint: str, features: Dict[str, 
     mom = float(features.get('mom_5m', 0.0) or 0.0)
     vol = float(features.get('vol_30m', 0.0) or 0.0)
 
-    pnl_proxy = math.tanh((pct + 0.5 * mom - 0.25 * vol) * 100.0)
-    qty_log = math.log1p(1.0)
-
-    role_raw = os.getenv('BEHAVIOR_ACCOUNT_ROLE', 'INDIVIDUAL_TRADING').strip().upper()
-    if role_raw == 'ROTH':
-        role_idx = 0.0
-    elif role_raw == 'INDIVIDUAL_TRADING':
-        role_idx = 1.0 / 3.0
-    elif role_raw == 'INDIVIDUAL_SWING':
-        role_idx = 2.0 / 3.0
-    else:
-        role_idx = 1.0
-
-    symbol_hash = _hash01(symbol.upper())
-    tx_hash = _hash01(action_hint.upper())
-
-    now = datetime.now(timezone.utc)
-    dow = now.weekday() / 6.0
-    hour = now.hour / 23.0
-
-    regime_idx = _behavior_regime_index(symbol, features)
-    label_confidence = _behavior_label_confidence_proxy(features)
-    snapshot_ctx = _behavior_snapshot_context(PROJECT_ROOT)
-
     vec = [
-        pnl_proxy,
-        qty_log,
-        role_idx,
-        symbol_hash,
-        tx_hash,
-        dow,
-        hour,
-        regime_idx,
-        label_confidence,
+        math.tanh((pct + 0.5 * mom - 0.25 * vol) * 100.0),
+        math.log1p(1.0),
+        _behavior_role_index_from_env(),
+        _hash01(symbol.upper()),
+        _hash01(action_hint.upper()),
+        datetime.now(timezone.utc).weekday() / 6.0,
+        datetime.now(timezone.utc).hour / 23.0,
+        _behavior_regime_index(symbol, features),
+        _behavior_label_confidence_proxy(features),
     ]
-    for key in _BEHAVIOR_SNAPSHOT_FEATURE_NAMES:
+    for key in _BEHAVIOR_SNAPSHOT_FEATURE_NAMES_V1:
         vec.append(float(snapshot_ctx.get(key, 0.0) or 0.0))
 
     return np.asarray([vec], dtype=float)
+
+
+def _behavior_feature_vector_v2(symbol: str, action_hint: str, features: Dict[str, float], snapshot_ctx: Dict[str, float]) -> Optional[Any]:
+    if np is None:
+        return None
+
+    pct = float(features.get('pct_from_close', 0.0) or 0.0)
+    mom = float(features.get('mom_5m', 0.0) or 0.0)
+    vol = float(features.get('vol_30m', 0.0) or 0.0)
+    range_pos = _behavior_clamp01(float(features.get('range_pos', 0.5) or 0.5))
+    spread_bps = abs(float(features.get('spread_bps', 0.0) or 0.0))
+
+    ctx_vix_pct = float(
+        features.get('ctx_VIX_X_pct_from_close', features.get('ctx_VIX_pct_from_close', 0.0))
+        or 0.0
+    )
+    ctx_uup_pct = float(features.get('ctx_UUP_pct_from_close', 0.0) or 0.0)
+
+    lag_slippage_bps = float(
+        features.get('lag_slippage_bps', features.get('slippage_bps', features.get('execution_slippage_bps', 0.0)))
+        or 0.0
+    )
+    lag_latency_ms = float(
+        features.get('lag_latency_ms', features.get('latency_ms', features.get('execution_latency_ms', 0.0)))
+        or 0.0
+    )
+    lag_impact_bps = float(
+        features.get('lag_impact_bps', features.get('impact_bps', features.get('execution_impact_bps', 0.0)))
+        or 0.0
+    )
+
+    active_sub_bots = float(features.get('active_sub_bots', 0.0) or 0.0)
+    queue_depth = float(features.get('queue_depth', features.get('execution_queue_depth', 0.0)) or 0.0)
+    dispatch_qty = abs(float(features.get('dispatch_qty', features.get('sized_qty', 0.0)) or 0.0))
+
+    feature_freshness_enabled = os.getenv('FEATURE_FRESHNESS_GUARD_ENABLED', '1').strip() == '1'
+    feature_freshness_max_age_seconds = float(os.getenv('FEATURE_FRESHNESS_MAX_AGE_SECONDS', '20'))
+    feature_freshness_required = [
+        s.strip()
+        for s in os.getenv(
+            'FEATURE_FRESHNESS_REQUIRED_KEYS',
+            'last_price,prev_close,pct_from_close,vol_30m,mom_5m',
+        ).split(',')
+        if s.strip()
+    ]
+    freshness_ok, _, freshness_age_s = (
+        _feature_freshness_guard(
+            features,
+            max_age_seconds=feature_freshness_max_age_seconds,
+            required_keys=feature_freshness_required,
+        )
+        if feature_freshness_enabled
+        else (True, 'disabled', 0.0)
+    )
+
+    master_latency_timeout_ms = max(float(os.getenv('MASTER_LATENCY_SLO_TIMEOUT_MS', '900')), 1.0)
+    master_latency_ms = float(features.get('master_latency_ms', features.get('elapsed_ms', 0.0)) or 0.0)
+    master_latency_ratio = _behavior_clamp01(master_latency_ms / master_latency_timeout_ms)
+    if 'master_latency_slo_ok' in features:
+        master_latency_slo_ok = 1.0 if bool(features.get('master_latency_slo_ok')) else 0.0
+    else:
+        master_latency_slo_ok = 1.0 if master_latency_ratio <= 1.0 else 0.0
+
+    risk_pause_active = 1.0 if (
+        _global_trading_halt_enabled()
+        or bool(features.get('risk_pause_active', False))
+        or bool(features.get('kill_switch_active', False))
+    ) else 0.0
+
+    session_ctx = _behavior_session_event_context()
+
+    vec_map: Dict[str, float] = {
+        'pnl_proxy': _behavior_signed_scale((pct + (0.5 * mom) - (0.25 * vol)) * 100.0, 1.0),
+        'qty_log': math.log1p(1.0),
+        'role_idx': _behavior_role_index_from_env(),
+        'symbol_hash': _hash01(symbol.upper()),
+        'action_hash': _hash01(action_hint.upper()),
+        'dow': datetime.now(timezone.utc).weekday() / 6.0,
+        'hour': datetime.now(timezone.utc).hour / 23.0,
+        'regime_idx': _behavior_regime_index(symbol, features),
+        'label_confidence_proxy': _behavior_label_confidence_proxy(features),
+        'pct_from_close_scaled': _behavior_signed_scale(pct, 40.0),
+        'mom_5m_scaled': _behavior_signed_scale(mom, 120.0),
+        'vol_30m_scaled': _behavior_signed_scale(vol, 60.0),
+        'range_pos': range_pos,
+        'spread_bps_norm': _behavior_clamp01(spread_bps / 25.0),
+        'ctx_vix_pct_scaled': _behavior_signed_scale(ctx_vix_pct, 60.0),
+        'ctx_uup_pct_scaled': _behavior_signed_scale(ctx_uup_pct, 60.0),
+        'lag_slippage_bps_norm': _behavior_clamp01(abs(lag_slippage_bps) / 10.0),
+        'lag_latency_ms_norm': _behavior_clamp01(lag_latency_ms / 350.0),
+        'lag_impact_bps_norm': _behavior_clamp01(abs(lag_impact_bps) / 10.0),
+        'active_sub_bots_norm': _behavior_clamp01(active_sub_bots / 60.0),
+        'queue_depth_norm': _behavior_clamp01(queue_depth / 1000.0),
+        'dispatch_qty_norm': _behavior_clamp01(dispatch_qty / 20.0),
+        'session_bucket_norm': session_ctx['session_bucket_norm'],
+        'mins_from_open_norm': session_ctx['mins_from_open_norm'],
+        'mins_to_close_norm': session_ctx['mins_to_close_norm'],
+        'event_window_proximity': session_ctx['event_window_proximity'],
+        'feature_freshness_ok': 1.0 if freshness_ok else 0.0,
+        'feature_freshness_age_ratio': _behavior_clamp01(freshness_age_s / max(feature_freshness_max_age_seconds, 1.0)),
+        'master_latency_slo_ok': master_latency_slo_ok,
+        'master_latency_ratio': master_latency_ratio,
+        'risk_pause_active': risk_pause_active,
+        'snapshot_cov_ok': _behavior_clamp01(float(snapshot_ctx.get('snapshot_cov_ok', 1.0) or 1.0)),
+        'snapshot_cov_log_ratio': _behavior_clamp01(float(snapshot_ctx.get('snapshot_cov_log_ratio', 0.0) or 0.0)),
+        'snapshot_replay_stale_ratio': _behavior_clamp01(float(snapshot_ctx.get('snapshot_replay_stale_ratio', 0.0) or 0.0)),
+        'snapshot_replay_drift_ratio': _behavior_clamp01(float(snapshot_ctx.get('snapshot_replay_drift_ratio', 0.0) or 0.0)),
+        'snapshot_divergence_ratio': _behavior_clamp01(float(snapshot_ctx.get('snapshot_divergence_ratio', 0.0) or 0.0)),
+        'snapshot_triprate_ratio': _behavior_clamp01(float(snapshot_ctx.get('snapshot_triprate_ratio', 0.0) or 0.0)),
+        'snapshot_queue_pressure_ratio': _behavior_clamp01(float(snapshot_ctx.get('snapshot_queue_pressure_ratio', 0.0) or 0.0)),
+        'canary_weight_cap_norm': _behavior_clamp01(float(snapshot_ctx.get('canary_weight_cap_norm', 0.0) or 0.0)),
+    }
+
+    vec = [float(vec_map.get(name, 0.0) or 0.0) for name in _BEHAVIOR_FEATURE_NAMES_V2]
+    return np.asarray([vec], dtype=float)
+
+
+def _behavior_feature_vector(
+    symbol: str,
+    action_hint: str,
+    features: Dict[str, float],
+    *,
+    feature_dim_hint: Optional[int] = None,
+) -> Optional[Any]:
+    snapshot_ctx = _behavior_snapshot_context(PROJECT_ROOT)
+
+    # Preserve compatibility with older 18-feature models until retrain rolls out everywhere.
+    legacy_dim = 9 + len(_BEHAVIOR_SNAPSHOT_FEATURE_NAMES_V1)
+    if feature_dim_hint is not None and int(feature_dim_hint) <= legacy_dim:
+        return _behavior_legacy_feature_vector(symbol, action_hint, features, snapshot_ctx)
+
+    return _behavior_feature_vector_v2(symbol, action_hint, features, snapshot_ctx)
+
 
 
 def _behavior_prior_from_model(
@@ -1078,10 +1295,6 @@ def _behavior_prior_from_model(
     if model is None or np is None:
         return 0.0, {}
 
-    x = _behavior_feature_vector(symbol, action_hint, features)
-    if x is None:
-        return 0.0, {}
-
     try:
         mu = model["mu"]
         sigma = model["sigma"]
@@ -1090,6 +1303,10 @@ def _behavior_prior_from_model(
 
         expected_dim = int(np.asarray(mu).shape[0])
         if expected_dim <= 0:
+            return 0.0, {}
+
+        x = _behavior_feature_vector(symbol, action_hint, features, feature_dim_hint=expected_dim)
+        if x is None:
             return 0.0, {}
         if x.shape[1] < expected_dim:
             pad = np.zeros((x.shape[0], expected_dim - x.shape[1]), dtype=x.dtype)

@@ -21,7 +21,8 @@ CORE_DIR = os.path.join(PROJECT_ROOT, "core")
 REGISTRY_PATH = os.path.join(PROJECT_ROOT, "master_bot_registry.json")
 VENV_PY = os.path.join(PROJECT_ROOT, ".venv312", "bin", "python")
 MASTER_RUNNER = os.path.join(PROJECT_ROOT, "scripts", "run_master_bot.py")
-TRADE_DATASET_BUILDER = os.path.join(PROJECT_ROOT, "scripts", "build_trade_learning_dataset.py")
+TRADE_DATASET_BUILDER = os.path.join(PROJECT_ROOT, "scripts", "build_behavior_dataset_from_decisions.py")
+TRADE_DATASET_BUILDER_LEGACY = os.path.join(PROJECT_ROOT, "scripts", "build_trade_learning_dataset.py")
 TRADE_BEHAVIOR_TRAINER = os.path.join(PROJECT_ROOT, "scripts", "train_trade_behavior_bot.py")
 PRUNE_UNDERPERFORMERS = os.path.join(PROJECT_ROOT, "scripts", "prune_underperformers.py")
 PRUNE_REDUNDANT = os.path.join(PROJECT_ROOT, "scripts", "prune_redundant_bots.py")
@@ -1586,13 +1587,38 @@ def main() -> int:
 
     if enable_trade_behavior_retrain:
         print("Running trade history behavior learning step...")
-        if os.path.exists(TRADE_DATASET_BUILDER):
-            rc = run_cmd([VENV_PY, TRADE_DATASET_BUILDER], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
-            if rc != 0 and trade_behavior_strict:
+
+        dataset_builder_override = os.getenv("TRADE_BEHAVIOR_DATASET_BUILDER", "").strip()
+        dataset_builder_candidates: list[str] = []
+        if dataset_builder_override:
+            dataset_builder_candidates.append(dataset_builder_override)
+        else:
+            if os.path.exists(TRADE_DATASET_BUILDER):
+                dataset_builder_candidates.append(TRADE_DATASET_BUILDER)
+            if os.path.exists(TRADE_DATASET_BUILDER_LEGACY) and TRADE_DATASET_BUILDER_LEGACY not in dataset_builder_candidates:
+                dataset_builder_candidates.append(TRADE_DATASET_BUILDER_LEGACY)
+
+        dataset_build_rc = 0
+        if dataset_builder_candidates:
+            for idx, builder in enumerate(dataset_builder_candidates):
+                print(f"Trade dataset builder: {builder}")
+                dataset_build_rc = run_cmd([VENV_PY, builder], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+                if dataset_build_rc == 0:
+                    break
+                if idx < (len(dataset_builder_candidates) - 1):
+                    print(
+                        f"WARN: trade dataset builder failed (exit={dataset_build_rc}); "
+                        f"falling back to {dataset_builder_candidates[idx + 1]}"
+                    )
+
+            if dataset_build_rc != 0 and trade_behavior_strict:
                 print("FAIL: trade dataset build")
                 return 1
         else:
-            print(f"WARN: trade dataset builder missing: {TRADE_DATASET_BUILDER}")
+            print(
+                f"WARN: trade dataset builder missing: {TRADE_DATASET_BUILDER} "
+                f"(legacy: {TRADE_DATASET_BUILDER_LEGACY})"
+            )
 
         if os.path.exists(TRADE_BEHAVIOR_TRAINER):
             rc = run_cmd([VENV_PY, TRADE_BEHAVIOR_TRAINER], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
