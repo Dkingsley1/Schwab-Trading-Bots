@@ -49,6 +49,9 @@ def main() -> int:
     rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "daily_runtime_summary.py"), "--day", day, "--json"], PROJECT_ROOT)
     checks["daily_runtime_summary"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
 
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "replay_preopen_sanity_check.py"), "--hours", "24", "--json"], PROJECT_ROOT)
+    checks["replay_preopen_sanity"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
     rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "health_gates.py")], PROJECT_ROOT)
     checks["health_gates"] = {"ok": rc in {0, 2}, "rc": rc, "stdout": out, "stderr": err}
 

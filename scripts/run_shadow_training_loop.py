@@ -182,9 +182,32 @@ def _apply_canary_rollout_to_bots(bots: List[SubBot], canary_max_weight: float) 
     if not active:
         return bots
 
+    sandbox_enabled = os.getenv("CANARY_WEIGHT_SANDBOX_ENABLED", "1").strip() == "1"
+    sandbox_per_bot_cap = min(
+        max(float(os.getenv("CANARY_WEIGHT_SANDBOX_MAX", str(canary_max_weight))), 0.0),
+        max(canary_max_weight, 0.0),
+    ) if sandbox_enabled else canary_max_weight
+    sandbox_total_cap = min(
+        max(float(os.getenv("CANARY_WEIGHT_SANDBOX_TOTAL_MAX", "0.18")), 0.0),
+        1.0,
+    ) if sandbox_enabled else 1.0
+
     for b in active:
         if b.promoted:
-            b.weight = min(max(b.weight, 0.0), canary_max_weight)
+            b.weight = min(max(b.weight, 0.0), sandbox_per_bot_cap)
+
+    promoted = [b for b in active if b.promoted]
+    non_promoted = [b for b in active if not b.promoted]
+    promoted_total = sum(max(b.weight, 0.0) for b in promoted)
+    if promoted and promoted_total > sandbox_total_cap:
+        scale = sandbox_total_cap / max(promoted_total, 1e-8)
+        for b in promoted:
+            b.weight = max(b.weight, 0.0) * scale
+        remainder = max(1.0 - sandbox_total_cap, 0.0)
+        non_promoted_total = sum(max(b.weight, 0.0) for b in non_promoted)
+        if non_promoted and non_promoted_total > 0.0:
+            for b in non_promoted:
+                b.weight = max(b.weight, 0.0) / non_promoted_total * remainder
 
     total = sum(max(b.weight, 0.0) for b in active)
     if total > 0.0:
@@ -278,11 +301,16 @@ def _market_snapshot_from_schwab(client: Any, symbol: str) -> Dict[str, float]:
         "vol_30m": vol_30m,
         "mom_5m": mom_5m,
         "range_pos": range_pos,
+        "snapshot_ts_utc": now_utc.timestamp(),
     }
 
 
 def _market_snapshot_from_coinbase(client: CoinbaseMarketDataClient, symbol: str) -> Dict[str, float]:
-    return client.market_snapshot(symbol)
+    snap = client.market_snapshot(symbol)
+    out = dict(snap) if isinstance(snap, dict) else {}
+    if float(out.get("snapshot_ts_utc", 0.0) or 0.0) <= 0.0:
+        out["snapshot_ts_utc"] = time.time()
+    return out
 
 
 def _market_snapshot_simulated(last_price: float) -> Dict[str, float]:
@@ -302,6 +330,7 @@ def _market_snapshot_simulated(last_price: float) -> Dict[str, float]:
         "vol_30m": vol_30m,
         "mom_5m": mom_5m,
         "range_pos": range_pos,
+        "snapshot_ts_utc": time.time(),
     }
 
 
@@ -413,7 +442,10 @@ def _enforce_cross_symbol_exposure_cap(
 
 
 def _event_blackout_windows() -> List[tuple[int, int]]:
-    raw = os.getenv("EVENT_BLACKOUT_WINDOWS_ET", "08:29-08:36,09:59-10:06,13:58-14:05").strip()
+    raw = os.getenv(
+        "EVENT_LOCK_WINDOWS_ET",
+        os.getenv("EVENT_BLACKOUT_WINDOWS_ET", "08:29-08:36,09:59-10:06,13:58-14:05"),
+    ).strip()
     windows: List[tuple[int, int]] = []
     if not raw:
         return windows
@@ -436,9 +468,84 @@ def _in_event_blackout(now_et: datetime, windows: List[tuple[int, int]]) -> bool
         return False
     now_min = now_et.hour * 60 + now_et.minute
     for start_min, end_min in windows:
-        if start_min <= now_min <= end_min:
-            return True
+        if start_min <= end_min:
+            if start_min <= now_min <= end_min:
+                return True
+        else:
+            if now_min >= start_min or now_min <= end_min:
+                return True
     return False
+
+
+def _now_eastern() -> datetime:
+    # Normalize to New York market clock without external deps.
+    now_et = datetime.now(timezone.utc).astimezone().astimezone(datetime.now().astimezone().tzinfo)
+    try:
+        from zoneinfo import ZoneInfo
+        now_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
+    except Exception:
+        pass
+    return now_et
+
+
+def _feature_freshness_guard(
+    features: Dict[str, float],
+    *,
+    max_age_seconds: float,
+    required_keys: List[str],
+) -> tuple[bool, str, float]:
+    ts = float(features.get("snapshot_ts_utc", 0.0) or 0.0)
+    if ts <= 0.0:
+        return False, "missing_snapshot_ts", 1e9
+
+    age = max(time.time() - ts, 0.0)
+    if age > max(max_age_seconds, 0.1):
+        return False, f"stale_snapshot age={age:.2f}s>{max_age_seconds:.2f}s", age
+
+    for key in required_keys:
+        val = float(features.get(key, 0.0) or 0.0)
+        if key in {"last_price", "prev_close"}:
+            if val <= 0.0:
+                return False, f"missing_or_nonpositive_feature:{key}", age
+        elif not math.isfinite(val):
+            return False, f"non_finite_feature:{key}", age
+
+    return True, f"fresh age={age:.2f}s", age
+
+
+def _run_preopen_replay_sanity_check(
+    *,
+    project_root: str,
+    timeout_seconds: int,
+) -> tuple[bool, str]:
+    script = Path(project_root) / "scripts" / "replay_preopen_sanity_check.py"
+    if not script.exists():
+        return False, f"missing_script:{script}"
+
+    cmd = [sys.executable, str(script), "--hours", "24", "--json"]
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=max(timeout_seconds, 5),
+        )
+    except subprocess.TimeoutExpired:
+        return False, "replay_sanity_timeout"
+
+    out = (proc.stdout or "").strip()
+    if proc.returncode != 0:
+        return False, f"replay_sanity_failed rc={proc.returncode} out={out[:300]}"
+
+    try:
+        payload = json.loads(out) if out else {}
+    except Exception:
+        payload = {}
+    if not bool(payload.get("ok", False)):
+        return False, f"replay_sanity_not_ok failed={','.join(payload.get('failed_checks', []) or [])}"
+    return True, "ok"
 
 
 def _pnl_attribution_path(project_root: str, broker: Optional[str] = None) -> str:
@@ -1559,7 +1666,25 @@ def run_loop(
     default_session_gate = '0' if broker == 'coinbase' else '1'
     default_blackout_gate = '0' if broker == 'coinbase' else '1'
     session_gate_enabled = os.getenv('SESSION_GATE_ENABLED', default_session_gate).strip() == '1'
-    event_blackout_enabled = os.getenv('EVENT_BLACKOUT_ENABLED', default_blackout_gate).strip() == '1'
+    event_blackout_enabled = os.getenv('EVENT_LOCK_ENABLED', os.getenv('EVENT_BLACKOUT_ENABLED', default_blackout_gate)).strip() == '1'
+    feature_freshness_enabled = os.getenv('FEATURE_FRESHNESS_GUARD_ENABLED', '1').strip() == '1'
+    feature_freshness_max_age_seconds = float(os.getenv('FEATURE_FRESHNESS_MAX_AGE_SECONDS', '20'))
+    feature_freshness_required = [
+        x.strip() for x in os.getenv(
+            'FEATURE_FRESHNESS_REQUIRED_KEYS',
+            'last_price,prev_close,pct_from_close,vol_30m,mom_5m',
+        ).split(',') if x.strip()
+    ]
+    master_latency_slo_enabled = os.getenv('MASTER_LATENCY_SLO_GUARD_ENABLED', '1').strip() == '1'
+    master_latency_slo_timeout_ms = float(os.getenv('MASTER_LATENCY_SLO_TIMEOUT_MS', '900'))
+    preopen_replay_sanity_enabled = os.getenv(
+        'PREOPEN_REPLAY_SANITY_ENABLED',
+        '0' if broker == 'coinbase' else '1',
+    ).strip() == '1'
+    preopen_replay_sanity_timeout_seconds = max(
+        int(os.getenv('PREOPEN_REPLAY_SANITY_TIMEOUT_SECONDS', '30')),
+        5,
+    )
 
     config_payload = {
         "symbols": symbols,
@@ -1583,6 +1708,19 @@ def run_loop(
         state="starting",
     )
     print(f"[Config] hash={run_config_hash} async={enable_async_pipeline} canary_max_weight={float(os.getenv('CANARY_MAX_WEIGHT','0.08')):.3f}")
+
+    if preopen_replay_sanity_enabled and (not simulate):
+        now_et = _now_eastern()
+        open_now, closed_reason = _in_market_window(now_et, session_start_hour, session_end_hour)
+        should_run = (not open_now) and (closed_reason == 'pre_window')
+        if should_run:
+            ok, reason = _run_preopen_replay_sanity_check(
+                project_root=PROJECT_ROOT,
+                timeout_seconds=preopen_replay_sanity_timeout_seconds,
+            )
+            if not ok:
+                raise RuntimeError(f"Pre-open replay sanity check failed: {reason}")
+            print('[ReplaySanity] pre-open replay check passed (24h)')
 
     memory_guard_enabled = os.getenv("AUTO_RETRAIN_MEMORY_GUARD", "1").strip() == "1"
     auto_retrain_min_free_pct = float(os.getenv("AUTO_RETRAIN_MIN_FREE_PCT", "20"))
@@ -1659,15 +1797,7 @@ def run_loop(
             _append_jsonl(_auto_retrain_log_path(PROJECT_ROOT, broker=broker), event)
             print(f"[AutoRetrain] finished pid={retrain_proc.pid} exit={rc}")
             retrain_proc = None
-        now_et = datetime.now(timezone.utc).astimezone().astimezone(
-            datetime.now().astimezone().tzinfo
-        )
-        # Normalize to New York market clock without external deps.
-        try:
-            from zoneinfo import ZoneInfo
-            now_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
-        except Exception:
-            pass
+        now_et = _now_eastern()
 
         if session_gate_enabled:
             open_now, closed_reason = _in_market_window(now_et, session_start_hour, session_end_hour)
@@ -1685,7 +1815,7 @@ def run_loop(
                 print(f"[SessionGate] disabled broker={broker} mode=24x7")
 
         if event_blackout_enabled and _in_event_blackout(now_et, blackout_windows):
-            print(f"[EventGate] paused reason=blackout_window now_et={now_et.isoformat()}")
+            print(f"[EventGate] paused reason=event_lock_window now_et={now_et.isoformat()}")
             time.sleep(max(effective_interval_seconds, 10))
             continue
 
@@ -1867,6 +1997,12 @@ def run_loop(
                 if feature_cache_enabled:
                     feature_cache[feature_cache_key] = (iter_count, dict(shared_features))
 
+            freshness_ok, freshness_reason, freshness_age_s = _feature_freshness_guard(
+                shared_features,
+                max_age_seconds=feature_freshness_max_age_seconds,
+                required_keys=feature_freshness_required,
+            ) if feature_freshness_enabled else (True, 'disabled', 0.0)
+
             mom = float(shared_features.get("mom_5m", 0.0))
             pct = float(shared_features.get("pct_from_close", 0.0))
             vix = float(shared_features.get("ctx_VIX_X_pct_from_close", 0.0))
@@ -1971,6 +2107,7 @@ def run_loop(
             # Broadcast flash-crash specialist signal as shared context to all higher-level decisions.
             flash_aux = _derive_flash_aux_features(sub_rows)
             shared_features = {**shared_features, **flash_aux}
+            master_decision_started_at = time.perf_counter()
 
             master_outputs: Dict[str, Dict[str, Any]] = {}
             for master_name in ("trend", "mean_revert", "shock"):
@@ -2113,6 +2250,20 @@ def run_loop(
                 gm_score = 0.5 + 0.5 * (gm_score - 0.5)
                 gm_reasons = gm_reasons + [f"consecutive_loss_pause streak={consecutive_loss_streak}"]
 
+            master_latency_ms = (time.perf_counter() - master_decision_started_at) * 1000.0
+            master_latency_slo_ok = (not master_latency_slo_enabled) or (master_latency_ms <= master_latency_slo_timeout_ms)
+            if (not master_latency_slo_ok) and gm_action in {"BUY", "SELL"}:
+                gm_action = "HOLD"
+                gm_score = 0.5 + 0.5 * (gm_score - 0.5)
+                gm_reasons = gm_reasons + [
+                    f"master_latency_slo_timeout elapsed_ms={master_latency_ms:.1f} timeout_ms={master_latency_slo_timeout_ms:.1f}"
+                ]
+
+            if (not freshness_ok) and gm_action in {"BUY", "SELL"}:
+                gm_action = "HOLD"
+                gm_score = 0.5 + 0.5 * (gm_score - 0.5)
+                gm_reasons = gm_reasons + [f"feature_freshness_guard:{freshness_reason}"]
+
             volatility_now = float(shared_features.get("volatility_1m", shared_features.get("vol", 0.0)) or 0.0)
             raw_qty = size_from_action(
                 action=gm_action,
@@ -2148,7 +2299,15 @@ def run_loop(
                 model_score=gm_score,
                 threshold=gm_threshold,
                 features={**shared_features, "grand_master_vote": gm_vote["vote"], "active_sub_bots": len(active_bots), "sized_qty": dispatch_qty},
-                gates={"ensemble_has_members": len(active_bots) > 0, "market_data_ok": mkt["last_price"] > 0, "risk_limit_ok": all(risk_gates.values()), **risk_gates, "exec_queue_ok": enq_ok},
+                gates={
+                    "ensemble_has_members": len(active_bots) > 0,
+                    "market_data_ok": mkt["last_price"] > 0,
+                    "risk_limit_ok": all(risk_gates.values()),
+                    "feature_freshness_ok": freshness_ok,
+                    "master_latency_slo_ok": master_latency_slo_ok,
+                    **risk_gates,
+                    "exec_queue_ok": enq_ok,
+                },
                 reasons=gm_reasons,
                 strategy="grand_master_bot",
                 metadata={"layer": "grand_master", "snapshot_id": snapshot_id, "master_weights": gm_weights, "queue_depth": exec_queue.size()},
@@ -2290,6 +2449,19 @@ def run_loop(
                 "flash_aux": flash_aux,
                 "options_plan": options_decision["plan"],
                 "execution_sim": {"slippage_bps": exec_sim.slippage_bps, "latency_ms": exec_sim.latency_ms, "expected_fill_price": exec_sim.expected_fill_price, "impact_bps": exec_sim.impact_bps},
+                "feature_freshness": {
+                    "enabled": feature_freshness_enabled,
+                    "ok": freshness_ok,
+                    "reason": freshness_reason,
+                    "age_seconds": round(float(freshness_age_s), 4),
+                    "max_age_seconds": feature_freshness_max_age_seconds,
+                },
+                "master_latency_slo": {
+                    "enabled": master_latency_slo_enabled,
+                    "ok": master_latency_slo_ok,
+                    "elapsed_ms": round(float(master_latency_ms), 3),
+                    "timeout_ms": master_latency_slo_timeout_ms,
+                },
                 "portfolio": {"equity_proxy": equity_proxy, "raw_qty": raw_qty, "alloc_qty": alloc_qty, "dispatch_qty": dispatch_qty, "queue_depth": exec_queue.size()},
                 "circuit_breakers": {"consecutive_loss_streak": consecutive_loss_streak, "kill_switch_active": time.time() < kill_switch_until_ts, "vol_shock_pause_active": time.time() < vol_shock_pause_until_ts, "liquidity_pause_active": time.time() < liquidity_pause_until_ts},
                 "recommendations": recs,
