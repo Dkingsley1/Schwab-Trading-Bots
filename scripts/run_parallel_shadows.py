@@ -24,6 +24,20 @@ def _global_trading_halt_enabled() -> bool:
     return _env_flag("GLOBAL_TRADING_HALT", "0") or HALT_FLAG_PATH.exists()
 
 
+def _route_storage_or_fail() -> bool:
+    try:
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+        from core.storage_router import describe_storage_routing, route_runtime_storage
+
+        routing = route_runtime_storage(PROJECT_ROOT)
+        print(describe_storage_routing(routing))
+        return True
+    except Exception as exc:
+        print(f"[StorageRoute] startup blocked err={exc}")
+        return False
+
+
 def _domain_for_broker(broker: str) -> str:
     return "crypto" if (broker or "").strip().lower() == "coinbase" else "equities"
 
@@ -179,6 +193,9 @@ def main() -> int:
         help="If token.json is missing, wait this long for first profile to complete OAuth before starting second.",
     )
     args = parser.parse_args()
+
+    if not _route_storage_or_fail():
+        return 5
 
     if _global_trading_halt_enabled():
         print("GLOBAL_TRADING_HALT=1 set; refusing to start parallel shadows.")

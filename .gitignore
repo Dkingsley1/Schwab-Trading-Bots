@@ -73,3 +73,6 @@ data/*.sqlite3-wal
 data/*.sqlite3-shm
 *.sqlite3-wal
 *.sqlite3-shm
+
+# Local runtime failover storage
+local_fallback_storage/

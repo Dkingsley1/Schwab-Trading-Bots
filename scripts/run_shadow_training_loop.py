@@ -66,6 +66,18 @@ def _global_trading_halt_enabled() -> bool:
     return _env_flag("GLOBAL_TRADING_HALT", "0") or HALT_FLAG_PATH.exists()
 
 
+def _route_storage_or_fail() -> bool:
+    try:
+        from core.storage_router import describe_storage_routing, route_runtime_storage
+
+        routing = route_runtime_storage(PROJECT_ROOT)
+        print(describe_storage_routing(routing))
+        return True
+    except Exception as exc:
+        print(f"[StorageRoute] startup blocked err={exc}")
+        return False
+
+
 _SHADOW_SINGLETON_LOCK_FH: Optional[Any] = None
 
 
@@ -1658,9 +1670,22 @@ class JsonlWriteBuffer:
 
     @staticmethod
     def _flush_direct(path: str, payload: str) -> None:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(payload)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(payload)
+            return
+        except OSError as first_exc:
+            if not _route_storage_or_fail():
+                print(f"[StorageRoute] write_failed path={path} err={first_exc}")
+                return
+
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(payload)
+        except OSError as retry_exc:
+            print(f"[StorageRoute] write_retry_failed path={path} err={retry_exc}")
 
 
 def _split_bot_tiers(active_bots: List[SubBot]) -> Tuple[List[SubBot], List[SubBot]]:
@@ -3474,6 +3499,9 @@ def main() -> None:
         help="Minutes to wait before retrying a quarantined symbol.",
     )
     args = parser.parse_args()
+
+    if not _route_storage_or_fail():
+        return
 
     if _global_trading_halt_enabled():
         print("GLOBAL_TRADING_HALT=1 set; refusing to start shadow loop.")
