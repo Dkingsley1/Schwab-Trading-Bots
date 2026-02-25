@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -231,6 +232,237 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+_NEWS_FEATURE_KEYS = [
+    "news_available",
+    "news_items_30m",
+    "news_items_2h",
+    "news_items_24h",
+    "news_sentiment",
+    "news_negative_share",
+    "news_positive_share",
+    "news_shock_rate",
+    "news_recent_impact",
+]
+
+_NEWS_POSITIVE_TOKENS = {
+    "beat", "beats", "upgrade", "upgrades", "outperform", "buy", "surge", "record", "growth", "raises", "strong", "bullish", "profit", "profits", "gain", "gains"
+}
+
+_NEWS_NEGATIVE_TOKENS = {
+    "miss", "misses", "downgrade", "downgrades", "underperform", "sell", "drop", "plunge", "cut", "cuts", "weak", "bearish", "loss", "losses", "probe", "lawsuit", "bankruptcy"
+}
+
+_NEWS_SHOCK_TOKENS = {
+    "guidance", "earnings", "fda", "recall", "investigation", "sec", "merger", "acquisition", "layoff", "default"
+}
+
+
+def _default_news_features() -> Dict[str, float]:
+    return {k: 0.0 for k in _NEWS_FEATURE_KEYS}
+
+
+def _news_ts_to_epoch(raw: Any) -> Optional[float]:
+    if raw is None:
+        return None
+
+    if isinstance(raw, (int, float)):
+        v = float(raw)
+        if v > 1e12:
+            v /= 1000.0
+        if v > 1e9:
+            return v
+        return None
+
+    s = str(raw).strip()
+    if not s:
+        return None
+
+    if s.isdigit():
+        v = float(s)
+        if v > 1e12:
+            v /= 1000.0
+        if v > 1e9:
+            return v
+
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).timestamp()
+    except Exception:
+        return None
+
+
+def _extract_news_items(payload: Any, symbol: str) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+
+    def _consume(value: Any) -> None:
+        if isinstance(value, list):
+            for row in value:
+                if isinstance(row, dict):
+                    items.append(row)
+        elif isinstance(value, dict):
+            for key in ("items", "stories", "articles", "results", "headlines", "data", "news"):
+                sub = value.get(key)
+                if isinstance(sub, list):
+                    for row in sub:
+                        if isinstance(row, dict):
+                            items.append(row)
+
+    if isinstance(payload, dict):
+        for key in (symbol.upper(), symbol.lower(), "items", "stories", "articles", "results", "headlines", "data", "news"):
+            if key in payload:
+                _consume(payload.get(key))
+        if not items:
+            _consume(payload)
+    else:
+        _consume(payload)
+
+    return items
+
+
+def _headline_text(row: Dict[str, Any]) -> str:
+    chunks: List[str] = []
+    for key in ("headline", "title", "summary", "description", "content"):
+        v = row.get(key)
+        if isinstance(v, str) and v.strip():
+            chunks.append(v.strip())
+    return " ".join(chunks)
+
+
+def _headline_sentiment(text: str) -> tuple[float, bool]:
+    if not text:
+        return 0.0, False
+
+    toks = [t for t in re.split(r"[^a-z]+", text.lower()) if t]
+    if not toks:
+        return 0.0, False
+
+    pos = sum(1 for t in toks if t in _NEWS_POSITIVE_TOKENS)
+    neg = sum(1 for t in toks if t in _NEWS_NEGATIVE_TOKENS)
+    shock = any(t in _NEWS_SHOCK_TOKENS for t in toks)
+
+    if (pos + neg) <= 0:
+        return 0.0, shock
+
+    score = (pos - neg) / max(pos + neg, 1)
+    return float(max(min(score, 1.0), -1.0)), shock
+
+
+def _summarize_news_items(
+    items: List[Dict[str, Any]],
+    *,
+    now_ts: float,
+    lookback_seconds: float,
+    max_items: int,
+) -> Dict[str, float]:
+    out = _default_news_features()
+    if not items:
+        return out
+
+    rows: List[tuple[float, Dict[str, Any]]] = []
+    for row in items:
+        ts = None
+        for key in ("publishedDate", "published", "dateTime", "datetime", "timestamp", "time", "displayDate"):
+            ts = _news_ts_to_epoch(row.get(key))
+            if ts is not None:
+                break
+        if ts is None:
+            continue
+        age = max(now_ts - ts, 0.0)
+        if age > max(lookback_seconds, 60.0):
+            continue
+        rows.append((age, row))
+
+    if not rows:
+        return out
+
+    rows.sort(key=lambda x: x[0])
+    rows = rows[: max(max_items, 1)]
+
+    c30 = 0
+    c2h = 0
+    c24h = 0
+    pos_n = 0
+    neg_n = 0
+    shock_n = 0
+    weight_sum = 0.0
+    sent_sum = 0.0
+    impact_sum = 0.0
+
+    for age, row in rows:
+        if age <= 30 * 60:
+            c30 += 1
+        if age <= 2 * 60 * 60:
+            c2h += 1
+        if age <= 24 * 60 * 60:
+            c24h += 1
+
+        sent, shock = _headline_sentiment(_headline_text(row))
+        if sent > 0.0:
+            pos_n += 1
+        elif sent < 0.0:
+            neg_n += 1
+        if shock:
+            shock_n += 1
+
+        w = math.exp(-age / 3600.0)
+        weight_sum += w
+        sent_sum += w * sent
+        impact_sum += w * abs(sent)
+
+    n = len(rows)
+    denom = float(max(max_items, 1))
+    out.update(
+        {
+            "news_available": 1.0,
+            "news_items_30m": min(c30 / denom, 1.0),
+            "news_items_2h": min(c2h / denom, 1.0),
+            "news_items_24h": min(c24h / denom, 1.0),
+            "news_sentiment": (sent_sum / weight_sum) if weight_sum > 0 else 0.0,
+            "news_negative_share": neg_n / max(n, 1),
+            "news_positive_share": pos_n / max(n, 1),
+            "news_shock_rate": shock_n / max(n, 1),
+            "news_recent_impact": min(impact_sum / max(weight_sum, 1e-8), 1.0),
+        }
+    )
+    return out
+
+
+def _try_schwab_news_method(client: Any, method_name: str, symbol: str, limit: int) -> Optional[Any]:
+    method = getattr(client, method_name, None)
+    if not callable(method):
+        return None
+
+    candidates = [
+        ((symbol,), {"limit": limit}),
+        ((symbol,), {}),
+        ((), {"symbol": symbol, "limit": limit}),
+        ((), {"symbol": symbol}),
+        ((), {"symbols": symbol, "limit": limit}),
+        ((), {"symbols": symbol}),
+    ]
+
+    for args, kwargs in candidates:
+        try:
+            resp = method(*args, **kwargs)
+        except TypeError:
+            continue
+        except Exception:
+            continue
+
+        if resp is None:
+            continue
+        if hasattr(resp, "json"):
+            try:
+                return resp.json()
+            except Exception:
+                continue
+        return resp
+
+    return None
 
 
 def _is_usable_market_snapshot(mkt: Dict[str, float]) -> bool:
@@ -2044,6 +2276,17 @@ def run_loop(
     slow_bot_every_n_iters = max(int(os.getenv("SLOW_BOT_EVERY_N_ITERS", "2")), 1)
     slow_bot_rows_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
+    news_context_enabled = (
+        broker == "schwab"
+        and (not simulate)
+        and os.getenv("SCHWAB_NEWS_CONTEXT_ENABLED", "1").strip() == "1"
+    )
+    news_cache_ttl_seconds = max(float(os.getenv("SCHWAB_NEWS_CACHE_TTL_SECONDS", "180")), 15.0)
+    news_lookback_hours = max(float(os.getenv("SCHWAB_NEWS_LOOKBACK_HOURS", "24")), 1.0)
+    news_max_items = max(int(os.getenv("SCHWAB_NEWS_MAX_ITEMS", "20")), 3)
+    news_cache: Dict[str, Tuple[float, Dict[str, float]]] = {}
+    news_method_state: Dict[str, Any] = {"disabled": False, "warned": False, "method": ""}
+
     bot_cooldown_enabled = os.getenv("BOT_COOLDOWN_ENABLED", "1").strip() == "1"
     bot_cooldown_acc_floor = float(os.getenv("BOT_COOLDOWN_ACC_FLOOR", "0.53"))
     bot_cooldown_min_iters = max(int(os.getenv("BOT_COOLDOWN_MIN_ITERS", "2")), 1)
@@ -2093,6 +2336,7 @@ def run_loop(
         "async_pipeline": enable_async_pipeline,
         "session_gate_enabled": session_gate_enabled,
         "event_blackout_enabled": event_blackout_enabled,
+        "news_context_enabled": news_context_enabled,
     }
     run_config_hash = config_hash(config_payload)
     _write_heartbeat(
@@ -2279,6 +2523,49 @@ def run_loop(
             circuit_breaker.record_success(cb_key)
             return snap
 
+        def _fetch_symbol_news_features(sym: str) -> Dict[str, float]:
+            if not news_context_enabled:
+                return _default_news_features()
+            if news_method_state.get("disabled"):
+                return _default_news_features()
+
+            now_s = time.time()
+            cached = news_cache.get(sym)
+            if cached is not None and (now_s - cached[0]) <= news_cache_ttl_seconds:
+                return dict(cached[1])
+
+            payload = None
+            for method_name in (
+                "get_news",
+                "get_news_headlines",
+                "get_news_for_symbol",
+                "get_news_headlines_for_symbol",
+                "search_news",
+            ):
+                payload = _try_schwab_news_method(client, method_name, sym, news_max_items)
+                if payload is not None:
+                    news_method_state["method"] = method_name
+                    break
+
+            if payload is None:
+                if not news_method_state.get("warned"):
+                    print("[NewsFeed] schwab client has no accessible news endpoint; continuing with price-only features")
+                    news_method_state["warned"] = True
+                news_method_state["disabled"] = True
+                feats = _default_news_features()
+                news_cache[sym] = (now_s, feats)
+                return feats
+
+            items = _extract_news_items(payload, sym)
+            feats = _summarize_news_items(
+                items,
+                now_ts=now_s,
+                lookback_seconds=news_lookback_hours * 3600.0,
+                max_items=news_max_items,
+            )
+            news_cache[sym] = (now_s, feats)
+            return dict(feats)
+
         if context_symbols:
             if enable_async_pipeline:
                 with ThreadPoolExecutor(max_workers=min(async_workers, max(len(context_symbols), 1))) as ex:
@@ -2411,11 +2698,19 @@ def run_loop(
                 context_features[f"ctx_{k}_vol_30m"] = ctx_mkt.get("vol_30m", 0.0)
                 context_features[f"ctx_{k}_mom_5m"] = ctx_mkt.get("mom_5m", 0.0)
 
+            news_features = _default_news_features()
+            if news_context_enabled:
+                try:
+                    news_features = _fetch_symbol_news_features(symbol)
+                except Exception as exc:
+                    news_features = _default_news_features()
+                    _record_snapshot_debug(symbol, 'news_feed_error', error=str(exc))
+
             feature_cache_key = f"f:{symbol}"
             if feature_cache_enabled and feature_cache_key in feature_cache and feature_cache[feature_cache_key][0] == iter_count:
                 shared_features = dict(feature_cache[feature_cache_key][1])
             else:
-                shared_features = {**mkt, **context_features}
+                shared_features = {**mkt, **context_features, **news_features}
                 if feature_cache_enabled:
                     feature_cache[feature_cache_key] = (iter_count, dict(shared_features))
 
