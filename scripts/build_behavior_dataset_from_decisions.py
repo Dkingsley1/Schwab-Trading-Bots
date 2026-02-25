@@ -524,8 +524,12 @@ def main() -> int:
     parser.add_argument("--policy", default=str(PROJECT_ROOT / "config" / "trade_learning_policy.json"))
     parser.add_argument("--lookback-hours", type=int, default=int(os.getenv("BEHAVIOR_DATASET_LOOKBACK_HOURS", "96")))
     parser.add_argument("--horizon-seconds", type=int, default=int(os.getenv("BEHAVIOR_DATASET_FORWARD_HORIZON_SECONDS", "300")))
+    parser.add_argument("--aux-horizon-seconds", type=int, default=int(os.getenv("BEHAVIOR_DATASET_FORWARD_AUX_HORIZON_SECONDS", "900")))
+    parser.add_argument("--horizon-blend-alpha", type=float, default=float(os.getenv("BEHAVIOR_DATASET_HORIZON_BLEND_ALPHA", "0.65")))
     parser.add_argument("--max-examples", type=int, default=int(os.getenv("BEHAVIOR_DATASET_MAX_EXAMPLES", "120000")))
     parser.add_argument("--min-per-symbol", type=int, default=int(os.getenv("BEHAVIOR_DATASET_MIN_PER_SYMBOL", "8")))
+    parser.add_argument("--max-per-symbol", type=int, default=int(os.getenv("BEHAVIOR_DATASET_MAX_PER_SYMBOL", "3000")))
+    parser.add_argument("--max-per-symbol-regime", type=int, default=int(os.getenv("BEHAVIOR_DATASET_MAX_PER_SYMBOL_REGIME", "1200")))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -548,6 +552,11 @@ def main() -> int:
 
     class_weights = outcome_cfg.get("class_weights", {"positive": 1.35, "neutral": 1.10, "negative": 0.95})
     regime_weights = outcome_cfg.get("regime_sample_weights", {"trend": 1.0, "mean_revert": 1.10, "shock": 1.25, "other": 1.0})
+
+    horizon_primary_s = max(int(args.horizon_seconds), 30)
+    horizon_aux_s = max(int(args.aux_horizon_seconds), 0)
+    aux_enabled = horizon_aux_s >= 30
+    blend_alpha = _clamp(float(args.horizon_blend_alpha), 0.0, 1.0)
 
     decision_paths = _resolve_glob_paths(args.decision_glob, root=PROJECT_ROOT)
     if not decision_paths:
@@ -610,8 +619,13 @@ def main() -> int:
     examples: List[Dict[str, Any]] = []
     label_counts: Counter[str] = Counter()
     regime_counts: Dict[str, Counter] = defaultdict(Counter)
+    per_symbol_kept: Counter[str] = Counter()
+    per_symbol_regime_kept: Counter[Tuple[str, str]] = Counter()
+
     skipped_no_horizon = 0
     skipped_low_symbol_rows = 0
+    skipped_symbol_cap = 0
+    skipped_symbol_regime_cap = 0
 
     for symbol, rows in by_symbol.items():
         rows.sort(key=lambda r: r["ts_epoch"])
@@ -619,23 +633,50 @@ def main() -> int:
             skipped_low_symbol_rows += len(rows)
             continue
 
-        j = 1
+        j_primary = 1
+        j_aux = 1
         n = len(rows)
         for i in range(n):
             base = rows[i]
-            target_ts = base["ts_epoch"] + max(args.horizon_seconds, 30)
 
-            if j <= i:
-                j = i + 1
-            while j < n and rows[j]["ts_epoch"] < target_ts:
-                j += 1
+            ret_primary: Optional[float] = None
+            ret_aux: Optional[float] = None
 
-            if j >= n:
+            if j_primary <= i:
+                j_primary = i + 1
+            target_primary_ts = base["ts_epoch"] + horizon_primary_s
+            while j_primary < n and rows[j_primary]["ts_epoch"] < target_primary_ts:
+                j_primary += 1
+            if j_primary < n:
+                fut_primary = rows[j_primary]
+                ret_primary = (fut_primary["last_price"] - base["last_price"]) / max(base["last_price"], 1e-6)
+
+            if aux_enabled:
+                if j_aux <= i:
+                    j_aux = i + 1
+                target_aux_ts = base["ts_epoch"] + horizon_aux_s
+                while j_aux < n and rows[j_aux]["ts_epoch"] < target_aux_ts:
+                    j_aux += 1
+                if j_aux < n:
+                    fut_aux = rows[j_aux]
+                    ret_aux = (fut_aux["last_price"] - base["last_price"]) / max(base["last_price"], 1e-6)
+
+            if ret_primary is None and ret_aux is None:
                 skipped_no_horizon += 1
                 continue
 
-            fut = rows[j]
-            forward_return = (fut["last_price"] - base["last_price"]) / max(base["last_price"], 1e-6)
+            if ret_primary is not None and ret_aux is not None:
+                forward_return = (blend_alpha * ret_primary) + ((1.0 - blend_alpha) * ret_aux)
+                horizon_profile = "blend"
+                horizon_disagree = (abs(ret_primary) > 1e-8 and abs(ret_aux) > 1e-8 and ((ret_primary > 0.0) != (ret_aux > 0.0)))
+            elif ret_primary is not None:
+                forward_return = ret_primary
+                horizon_profile = "primary_only"
+                horizon_disagree = False
+            else:
+                forward_return = ret_aux if ret_aux is not None else 0.0
+                horizon_profile = "aux_only"
+                horizon_disagree = False
 
             label, label_conf = _label_from_forward(
                 action=base["action"],
@@ -658,11 +699,20 @@ def main() -> int:
                 event_windows=event_windows,
             )
 
+            if args.max_per_symbol > 0 and per_symbol_kept[symbol] >= args.max_per_symbol:
+                skipped_symbol_cap += 1
+                continue
+            if args.max_per_symbol_regime > 0 and per_symbol_regime_kept[(symbol, regime)] >= args.max_per_symbol_regime:
+                skipped_symbol_regime_cap += 1
+                continue
+
             weight = (
                 _to_float(class_weights.get(label), 1.0)
                 * _to_float(regime_weights.get(regime), 1.0)
                 * (0.5 + (0.5 * _clamp01(label_conf)))
             )
+            if horizon_disagree:
+                weight *= 0.88
 
             examples.append(
                 {
@@ -675,13 +725,21 @@ def main() -> int:
                     "label_confidence": round(label_conf, 6),
                     "label_confidence_proxy": round(label_conf_proxy, 6),
                     "forward_return": round(forward_return, 8),
-                    "horizon_seconds": int(args.horizon_seconds),
+                    "forward_return_primary": (round(ret_primary, 8) if ret_primary is not None else None),
+                    "forward_return_aux": (round(ret_aux, 8) if ret_aux is not None else None),
+                    "horizon_seconds": int(horizon_primary_s),
+                    "aux_horizon_seconds": int(horizon_aux_s if aux_enabled else 0),
+                    "horizon_blend_alpha": round(blend_alpha, 4),
+                    "horizon_profile": horizon_profile,
+                    "horizon_disagree": bool(horizon_disagree),
                     "sample_weight": round(max(weight, 0.05), 6),
                     "features": feats,
                 }
             )
             label_counts[label] += 1
             regime_counts[regime][label] += 1
+            per_symbol_kept[symbol] += 1
+            per_symbol_regime_kept[(symbol, regime)] += 1
 
             if args.max_examples > 0 and len(examples) >= args.max_examples:
                 break
@@ -691,9 +749,19 @@ def main() -> int:
 
     payload = {
         "timestamp_utc": now_utc.isoformat(),
-        "schema": "behavior_dataset_v2_forward_labels",
+        "schema": "behavior_dataset_v3_dual_horizon",
         "lookback_hours": int(args.lookback_hours),
-        "horizon_seconds": int(args.horizon_seconds),
+        "horizons": {
+            "primary_seconds": int(horizon_primary_s),
+            "aux_seconds": int(horizon_aux_s if aux_enabled else 0),
+            "blend_alpha": float(blend_alpha),
+            "aux_enabled": bool(aux_enabled),
+        },
+        "caps": {
+            "max_examples": int(args.max_examples),
+            "max_per_symbol": int(args.max_per_symbol),
+            "max_per_symbol_regime": int(args.max_per_symbol_regime),
+        },
         "source": {
             "decision_files": len(decision_paths),
             "governance_files": len(governance_paths),
@@ -720,6 +788,8 @@ def main() -> int:
         "skipped": {
             "no_horizon": int(skipped_no_horizon),
             "low_symbol_rows": int(skipped_low_symbol_rows),
+            "symbol_cap": int(skipped_symbol_cap),
+            "symbol_regime_cap": int(skipped_symbol_regime_cap),
         },
         "data": examples,
     }
@@ -734,6 +804,9 @@ def main() -> int:
         "feature_dim": payload["feature_dim"],
         "label_counts": payload["label_counts"],
         "regime_label_counts": payload["regime_label_counts"],
+        "horizons": payload["horizons"],
+        "caps": payload["caps"],
+        "skipped": payload["skipped"],
         "source": payload["source"],
         "out_file": str(out_path),
     }

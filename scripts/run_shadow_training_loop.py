@@ -865,12 +865,22 @@ def _load_trade_behavior_model(project_root: str) -> Optional[Dict[str, Any]]:
     try:
         arr = np.load(path, allow_pickle=False)
         dtype = np.float16 if os.getenv("TRADE_BEHAVIOR_USE_FP16", "1").strip() == "1" else float
+        temperature = 1.0
+        if "temperature" in arr.files:
+            try:
+                temperature = float(np.asarray(arr["temperature"]).reshape(-1)[0])
+            except Exception:
+                temperature = 1.0
+        if (not math.isfinite(temperature)) or temperature <= 0.0:
+            temperature = 1.0
+
         model = {
             "path": path,
             "W": arr["W"].astype(dtype),
             "b": arr["b"].astype(dtype),
             "mu": arr["mu"].astype(dtype),
             "sigma": arr["sigma"].astype(dtype),
+            "temperature": float(temperature),
         }
     except Exception:
         return None
@@ -1315,7 +1325,10 @@ def _behavior_prior_from_model(
             x = x[:, :expected_dim]
 
         xz = (x - mu) / np.where(np.abs(sigma) < 1e-8, 1.0, sigma)
-        logits = xz @ W + b
+        temperature = float(model.get("temperature", 1.0) or 1.0)
+        if (not math.isfinite(temperature)) or temperature <= 0.0:
+            temperature = 1.0
+        logits = (xz @ W + b) / temperature
         logits = logits - np.max(logits, axis=1, keepdims=True)
         probs = np.exp(logits)
         probs = probs / np.clip(np.sum(probs, axis=1, keepdims=True), 1e-8, None)
@@ -1330,6 +1343,7 @@ def _behavior_prior_from_model(
             "behavior_prob_neutral": neu,
             "behavior_prob_positive": pos,
             "behavior_prior": prior,
+            "behavior_temperature": temperature,
         }
     except Exception:
         return 0.0, {}
