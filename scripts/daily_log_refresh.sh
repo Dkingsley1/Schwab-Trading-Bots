@@ -18,6 +18,13 @@ cd "$PROJECT_ROOT"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_data_center.py"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_one_numbers_report.py" --day "$TODAY_UTC"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/bot_stack_status_report.py"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/sleeve_slo_guard.py" --day "$TODAY_UTC" --once || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/sleeve_allocator.py"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/portfolio_risk_ledger.py"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/execution_budgeter.py"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/distill_new_bots.py"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/daily_state_snapshot_drill.py" || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_executive_dashboard.py" --day "$TODAY_UTC"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/health_gates.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/canary_rollout_guard.py" --day "$TODAY_UTC" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/walk_forward_validate.py" || true

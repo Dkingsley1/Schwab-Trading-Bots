@@ -52,6 +52,24 @@ def main() -> int:
     rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "health_gates.py")], PROJECT_ROOT)
     checks["health_gates"] = {"ok": rc in {0, 2}, "rc": rc, "stdout": out, "stderr": err}
 
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "sleeve_slo_guard.py"), "--day", day, "--once", "--json"], PROJECT_ROOT)
+    checks["sleeve_slo_guard"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "sleeve_allocator.py"), "--json"], PROJECT_ROOT)
+    checks["sleeve_allocator"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "portfolio_risk_ledger.py"), "--json"], PROJECT_ROOT)
+    checks["portfolio_risk_ledger"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "execution_budgeter.py"), "--json"], PROJECT_ROOT)
+    checks["execution_budgeter"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "distill_new_bots.py"), "--json"], PROJECT_ROOT)
+    checks["distillation_plan"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "daily_state_snapshot_drill.py"), "--json"], PROJECT_ROOT)
+    checks["state_snapshot_drill"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
     checks["db_integrity"] = _db_check(db_path)
 
     st = os.statvfs(str(PROJECT_ROOT))

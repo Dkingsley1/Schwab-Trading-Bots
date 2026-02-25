@@ -75,6 +75,7 @@ class MasterBot:
         self.decay_guard_drop = decay_guard_drop
         self.promotion_margin = promotion_margin
         self.no_improvement_retire_streak = max(int(no_improvement_retire_streak), 1)
+        self.max_active_no_improvement_streak = max(int(os.getenv("ACTIVE_STREAK_HARD_CAP", "12")), self.no_improvement_retire_streak)
         self.min_active_bots = max(int(min_active_bots), 0)
         self.correlation_prune_threshold = float(correlation_prune_threshold)
         self.signal_group_weight_target = float(os.getenv("SIGNAL_GROUP_WEIGHT_TARGET", "0.78"))
@@ -94,6 +95,7 @@ class MasterBot:
         statuses = self._enforce_bucket_diversity(statuses)
         statuses = self._enforce_min_active_bots(statuses)
         statuses = self._apply_correlation_pruning(statuses)
+        statuses = self._enforce_active_streak_cap(statuses)
         statuses = self._assign_weights(statuses)
         payload = self._build_registry_payload(statuses)
         self._save_registry(payload)
@@ -550,7 +552,14 @@ class MasterBot:
         )
 
         revived_deleted = sorted(
-            [s for s in statuses if (not s.active) and s.deleted_from_rotation and (s.candidate_test_accuracy is not None)],
+            [
+                s
+                for s in statuses
+                if (not s.active)
+                and s.deleted_from_rotation
+                and (s.candidate_test_accuracy is not None)
+                and (not str(s.delete_reason or "").startswith("active_streak_cap_"))
+            ],
             key=rank_key,
             reverse=True,
         )
@@ -577,6 +586,34 @@ class MasterBot:
             if st.quality_score <= 0.0:
                 st.quality_score = max(st.candidate_quality_score, 0.01)
             st.preference_score = max(self._preference_score(st.test_accuracy or 0.50), 1e-6)
+
+        return statuses
+
+
+    def _enforce_active_streak_cap(self, statuses: List[BotStatus]) -> List[BotStatus]:
+        cap = self.max_active_no_improvement_streak
+        if cap <= 0:
+            return statuses
+
+        active_now = [s for s in statuses if s.active]
+        remaining = len(active_now)
+
+        candidates = sorted(
+            [s for s in active_now if s.no_improvement_streak >= cap],
+            key=lambda s: (s.quality_score, -(s.test_accuracy or 0.0), -s.no_improvement_streak),
+        )
+
+        for s in candidates:
+            # Never breach minimum active floor; stability takes priority over pruning.
+            if (remaining - 1) < self.min_active_bots:
+                break
+            s.active = False
+            s.weight = 0.0
+            s.deleted_from_rotation = True
+            s.delete_reason = f"active_streak_cap_{cap}"
+            s.reason = s.delete_reason
+            s.promotion_reason = "rotation_deleted"
+            remaining -= 1
 
         return statuses
 
@@ -650,6 +687,7 @@ class MasterBot:
                 "decay_guard_drop": self.decay_guard_drop,
                 "promotion_margin": self.promotion_margin,
                 "no_improvement_retire_streak": self.no_improvement_retire_streak,
+                "max_active_no_improvement_streak": self.max_active_no_improvement_streak,
                 "min_active_bots": self.min_active_bots,
                 "quality_score_formula": {
                     "accuracy_weight": 0.65,

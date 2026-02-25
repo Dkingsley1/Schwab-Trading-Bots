@@ -1,6 +1,8 @@
 import argparse
 import csv
+import fcntl
 import json
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -9,6 +11,27 @@ from typing import Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = PROJECT_ROOT / "data" / "jsonl_link.sqlite3"
+
+
+def _acquire_singleton_lock(lock_path: Path):
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        try:
+            fh.seek(0)
+            owner = fh.read().strip()
+        except Exception:
+            owner = "unknown"
+        fh.close()
+        raise RuntimeError(f"one_numbers lock busy lock_path={lock_path} owner={owner or 'unknown'}")
+
+    fh.seek(0)
+    fh.truncate(0)
+    fh.write(f"pid={os.getpid()} started={datetime.now(timezone.utc).isoformat()} cmd=build_one_numbers_report")
+    fh.flush()
+    return fh
 
 
 def _write_kv_csv(path: Path, rows: list[tuple[str, str]]) -> None:
@@ -103,12 +126,26 @@ def main() -> int:
     parser.add_argument("--no-sql-write", action="store_true", help="Do not persist summary snapshot into SQLite")
     args = parser.parse_args()
 
+    lock_path = Path(os.getenv("ONE_NUMBERS_LOCK_PATH", str(PROJECT_ROOT / "governance" / "locks" / "one_numbers.lock")))
+    lock_fh = None
+    try:
+        lock_fh = _acquire_singleton_lock(lock_path)
+    except Exception as exc:
+        print(f"{exc}")
+        return 1
+
     day = args.day
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     db_path = Path(args.db)
 
     if not db_path.exists():
+        try:
+            if lock_fh is not None:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+                lock_fh.close()
+        except Exception:
+            pass
         raise SystemExit(f"SQLite DB not found: {db_path}")
 
     conn = sqlite3.connect(str(db_path))
@@ -530,14 +567,14 @@ def main() -> int:
     for k, v in alerts.items():
         rows.append((k, str(v).lower()))
 
-    for i, (sym, cnt) in enumerate(stocks_top[:3], start=1):
+    for i, (sym, cnt) in enumerate(stocks_top[:5], start=1):
         rows.append((f"stocks_top_symbol_{i}", f"{sym}:{cnt}"))
-    for i in range(len(stocks_top[:3]) + 1, 4):
+    for i in range(len(stocks_top[:5]) + 1, 6):
         rows.append((f"stocks_top_symbol_{i}", "n/a"))
 
-    for i, (sym, cnt) in enumerate(crypto_top[:3], start=1):
+    for i, (sym, cnt) in enumerate(crypto_top[:5], start=1):
         rows.append((f"crypto_top_symbol_{i}", f"{sym}:{cnt}"))
-    for i in range(len(crypto_top[:3]) + 1, 4):
+    for i in range(len(crypto_top[:5]) + 1, 6):
         rows.append((f"crypto_top_symbol_{i}", "n/a"))
 
     for i, (bot_id, pnl) in enumerate(pnl_strategy_rows[:5], start=1):
@@ -550,6 +587,9 @@ def main() -> int:
     md_path = out_dir / f"one_numbers_{day}_{stamp}.md"
 
     _write_kv_csv(csv_path, rows)
+
+    stocks_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in stocks_top[:5]) if stocks_top else "n/a"
+    crypto_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in crypto_top[:5]) if crypto_top else "n/a"
 
     md_lines = [
         f"# One Numbers Report ({day})",
@@ -566,13 +606,13 @@ def main() -> int:
         f"- Rows: {stocks_decision_rows}",
         f"- Actions: BUY={stocks_actions.get('BUY',0)}, SELL={stocks_actions.get('SELL',0)}, HOLD={stocks_actions.get('HOLD',0)}",
         f"- PnL proxy: {stocks_pnl_proxy:.6f}",
-        f"- Top symbols: {rows[-11][1]}, {rows[-10][1]}, {rows[-9][1]}",
+        f"- Top symbols: {stocks_top_md}",
         "",
         "## Crypto",
         f"- Rows: {crypto_decision_rows}",
         f"- Actions: BUY={crypto_actions.get('BUY',0)}, SELL={crypto_actions.get('SELL',0)}, HOLD={crypto_actions.get('HOLD',0)}",
         f"- PnL proxy: {crypto_pnl_proxy:.6f}",
-        f"- Top symbols: {rows[-8][1]}, {rows[-7][1]}, {rows[-6][1]}",
+        f"- Top symbols: {crypto_top_md}",
         "",
         "## Stability (15m / 1h / 4h)",
         f"- Rows: {s15[0]} / {s60[0]} / {s240[0]}",
@@ -651,6 +691,13 @@ def main() -> int:
     print(f"Latest JSON: {latest_json}")
     if not args.no_sql_write:
         print("Registered snapshot in SQLite table: one_numbers_snapshots")
+
+    try:
+        if lock_fh is not None:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            lock_fh.close()
+    except Exception:
+        pass
     return 0
 
 

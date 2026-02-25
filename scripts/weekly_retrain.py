@@ -531,6 +531,45 @@ def _apply_retrain_curriculum(targets: list[str], registry_path: str) -> list[st
     return sorted(targets, key=rank)
 
 
+def _load_distillation_plan(path: str) -> dict:
+    if not path or (not os.path.exists(path)):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
+def _distillation_assignment_map(plan: dict) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    for row in plan.get("assignments", []) if isinstance(plan, dict) else []:
+        if not isinstance(row, dict):
+            continue
+        bot_id = str(row.get("student_bot_id", "")).strip().lower()
+        if not bot_id:
+            continue
+        out[bot_id] = row
+    return out
+
+
+def _prioritize_targets_for_distillation(targets: list[str], assign_map: dict[str, dict]) -> tuple[list[str], int]:
+    if not targets or not assign_map:
+        return targets, 0
+
+    student_targets: list[str] = []
+    other_targets: list[str] = []
+    for t in targets:
+        bot_id = _normalized_bot_id_from_script(t)
+        if bot_id in assign_map:
+            student_targets.append(t)
+        else:
+            other_targets.append(t)
+
+    return student_targets + other_targets, len(student_targets)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run all brain_refinery training scripts and refresh master bot registry.")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing.")
@@ -686,6 +725,23 @@ def main() -> int:
         type=float,
         default=float(os.getenv("MODEL_ARCHIVE_MIN_AGE_HOURS", "24")),
     )
+    parser.add_argument(
+        "--distillation-priority",
+        action="store_true",
+        default=os.getenv("RETRAIN_DISTILLATION_PRIORITY", "1").strip() == "1",
+        help="Prioritize student bots from distillation plan in retrain order.",
+    )
+    parser.add_argument(
+        "--distillation-plan",
+        default=os.getenv("DISTILLATION_PLAN_PATH", os.path.join(PROJECT_ROOT, "governance", "distillation", "teacher_student_plan_latest.json")),
+        help="Path to teacher-student distillation plan JSON.",
+    )
+    parser.add_argument(
+        "--distillation-student-extra-pass",
+        type=int,
+        default=int(os.getenv("RETRAIN_DISTILLATION_STUDENT_EXTRA_PASS", "0")),
+        help="Optional extra retrain passes for prioritized student bots (count).",
+    )
     args = parser.parse_args()
 
     lock_path = os.getenv("MLX_RETRAIN_LOCK_PATH", os.path.join(PROJECT_ROOT, "governance", "mlx_retrain.lock"))
@@ -732,7 +788,21 @@ def main() -> int:
 
     targets = _apply_retrain_curriculum(targets, REGISTRY_PATH)
 
+    distill_plan = _load_distillation_plan(args.distillation_plan) if args.distillation_priority else {}
+    distill_assign_map = _distillation_assignment_map(distill_plan)
+    distill_selected = 0
+    if args.distillation_priority and distill_assign_map:
+        targets, distill_selected = _prioritize_targets_for_distillation(targets, distill_assign_map)
+
+    if args.distillation_priority and distill_assign_map and int(args.distillation_student_extra_pass) > 0:
+        student_targets = [t for t in targets if _normalized_bot_id_from_script(t) in distill_assign_map]
+        extra_n = min(max(int(args.distillation_student_extra_pass), 0), len(student_targets))
+        if extra_n > 0:
+            targets = targets + student_targets[:extra_n]
+
     child_env = _build_child_env(args.thread_cap)
+    child_env["DISTILLATION_ENABLED"] = "1" if args.distillation_priority else "0"
+    child_env["DISTILLATION_PLAN_PATH"] = str(args.distillation_plan)
     _apply_nice(args.nice)
 
     print(
@@ -830,7 +900,17 @@ def main() -> int:
             skipped_by_memory.append(target)
             continue
 
-        rc = run_cmd([VENV_PY, target], args.dry_run, child_env)
+        target_env = dict(child_env)
+        dist_row = distill_assign_map.get(_normalized_bot_id_from_script(target), {}) if args.distillation_priority else {}
+        if dist_row:
+            teacher_ids = [str((t or {}).get("bot_id", "")).strip() for t in (dist_row.get("teachers", []) or []) if str((t or {}).get("bot_id", "")).strip()]
+            target_env["DISTILLATION_STUDENT"] = "1"
+            target_env["DISTILLATION_TEACHERS"] = ",".join(teacher_ids)
+            target_env["DISTILLATION_TEACHER_WEIGHT"] = str(dist_row.get("teacher_blend_weight", 0.30))
+        else:
+            target_env["DISTILLATION_STUDENT"] = "0"
+
+        rc = run_cmd([VENV_PY, target], args.dry_run, target_env)
         if rc != 0:
             failures.append(target)
             print(f"FAIL: {target} (exit={rc})")
