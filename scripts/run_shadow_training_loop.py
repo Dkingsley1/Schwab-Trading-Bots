@@ -2287,6 +2287,12 @@ def run_loop(
     news_cache: Dict[str, Tuple[float, Dict[str, float]]] = {}
     news_method_state: Dict[str, Any] = {"disabled": False, "warned": False, "method": ""}
 
+    # Keep retrain-critical logs while reducing high-volume layer noise by default.
+    log_sub_bot_decisions = os.getenv("LOG_SUB_BOT_DECISIONS", "0").strip() == "1"
+    log_master_variant_decisions = os.getenv("LOG_MASTER_VARIANT_DECISIONS", "0").strip() == "1"
+    log_grand_master_decisions = os.getenv("LOG_GRAND_MASTER_DECISIONS", "1").strip() == "1"
+    log_options_master_decisions = os.getenv("LOG_OPTIONS_MASTER_DECISIONS", "1").strip() == "1"
+
     bot_cooldown_enabled = os.getenv("BOT_COOLDOWN_ENABLED", "1").strip() == "1"
     bot_cooldown_acc_floor = float(os.getenv("BOT_COOLDOWN_ACC_FLOOR", "0.53"))
     bot_cooldown_min_iters = max(int(os.getenv("BOT_COOLDOWN_MIN_ITERS", "2")), 1)
@@ -2337,6 +2343,10 @@ def run_loop(
         "session_gate_enabled": session_gate_enabled,
         "event_blackout_enabled": event_blackout_enabled,
         "news_context_enabled": news_context_enabled,
+        "log_sub_bot_decisions": log_sub_bot_decisions,
+        "log_master_variant_decisions": log_master_variant_decisions,
+        "log_grand_master_decisions": log_grand_master_decisions,
+        "log_options_master_decisions": log_options_master_decisions,
     }
     run_config_hash = config_hash(config_payload)
     _write_heartbeat(
@@ -2348,6 +2358,13 @@ def run_loop(
         state="starting",
     )
     print(f"[Config] hash={run_config_hash} async={enable_async_pipeline} canary_max_weight={float(os.getenv('CANARY_MAX_WEIGHT','0.08')):.3f}")
+    print(
+        "[DecisionLogs] "
+        f"sub_bot={int(log_sub_bot_decisions)} "
+        f"master_variant={int(log_master_variant_decisions)} "
+        f"grand_master={int(log_grand_master_decisions)} "
+        f"options_master={int(log_options_master_decisions)}"
+    )
 
     if preopen_replay_sanity_enabled and (not simulate):
         now_et = _now_eastern()
@@ -2771,33 +2788,35 @@ def run_loop(
             for row in reused_rows:
                 b_id = str(row.get("bot_id", ""))
                 reasons = list(row.get("reasons", [])) + ["cooldown_reuse"]
-                trader.execute_decision(
-                    symbol=symbol,
-                    action=str(row.get("action", "HOLD")),
-                    quantity=1,
-                    model_score=float(row.get("score", 0.5)),
-                    threshold=float(row.get("threshold", 0.55)),
-                    features=shared_features,
-                    gates=gates,
-                    reasons=reasons + [f"bot_id={b_id}", f"bot_role={row.get('bot_role', 'signal_sub_bot')}"],
-                    strategy=b_id,
-                    metadata={"layer": "sub_bot", "snapshot_id": snapshot_id, "bot_weight": row.get("weight", 0.0), "test_accuracy": row.get("test_accuracy"), "bot_role": row.get("bot_role", "signal_sub_bot"), "reused": True},
-                )
+                if log_sub_bot_decisions:
+                    trader.execute_decision(
+                        symbol=symbol,
+                        action=str(row.get("action", "HOLD")),
+                        quantity=1,
+                        model_score=float(row.get("score", 0.5)),
+                        threshold=float(row.get("threshold", 0.55)),
+                        features=shared_features,
+                        gates=gates,
+                        reasons=reasons + [f"bot_id={b_id}", f"bot_role={row.get('bot_role', 'signal_sub_bot')}"],
+                        strategy=b_id,
+                        metadata={"layer": "sub_bot", "snapshot_id": snapshot_id, "bot_weight": row.get("weight", 0.0), "test_accuracy": row.get("test_accuracy"), "bot_role": row.get("bot_role", "signal_sub_bot"), "reused": True},
+                    )
                 sub_rows.append(row)
 
             for b, action, score, threshold, reasons in batched_rows:
-                trader.execute_decision(
-                    symbol=symbol,
-                    action=action,
-                    quantity=1,
-                    model_score=score,
-                    threshold=threshold,
-                    features=shared_features,
-                    gates=gates,
-                    reasons=reasons + [f"bot_id={b.bot_id}", f"bot_role={b.bot_role}"],
-                    strategy=b.bot_id,
-                    metadata={"layer": "sub_bot", "snapshot_id": snapshot_id, "bot_weight": b.weight, "test_accuracy": b.test_accuracy, "bot_role": b.bot_role},
-                )
+                if log_sub_bot_decisions:
+                    trader.execute_decision(
+                        symbol=symbol,
+                        action=action,
+                        quantity=1,
+                        model_score=score,
+                        threshold=threshold,
+                        features=shared_features,
+                        gates=gates,
+                        reasons=reasons + [f"bot_id={b.bot_id}", f"bot_role={b.bot_role}"],
+                        strategy=b.bot_id,
+                        metadata={"layer": "sub_bot", "snapshot_id": snapshot_id, "bot_weight": b.weight, "test_accuracy": b.test_accuracy, "bot_role": b.bot_role},
+                    )
 
                 row = {
                     "bot_id": b.bot_id,
@@ -2840,18 +2859,19 @@ def run_loop(
                     "reasons": m_reasons,
                     "vote": m_vote["vote"],
                 }
-                trader.execute_decision(
-                    symbol=symbol,
-                    action=m_action,
-                    quantity=1,
-                    model_score=m_score,
-                    threshold=m_threshold,
-                    features={**shared_features, "master_vote": m_vote["vote"], "active_sub_bots": len(active_bots)},
-                    gates={"ensemble_has_members": len(active_bots) > 0, "market_data_ok": mkt["last_price"] > 0},
-                    reasons=m_reasons,
-                    strategy=f"master_{master_name}_bot",
-                    metadata={"layer": "master_bot", "master_name": master_name, "snapshot_id": snapshot_id},
-                )
+                if log_master_variant_decisions:
+                    trader.execute_decision(
+                        symbol=symbol,
+                        action=m_action,
+                        quantity=1,
+                        model_score=m_score,
+                        threshold=m_threshold,
+                        features={**shared_features, "master_vote": m_vote["vote"], "active_sub_bots": len(active_bots)},
+                        gates={"ensemble_has_members": len(active_bots) > 0, "market_data_ok": mkt["last_price"] > 0},
+                        reasons=m_reasons,
+                        strategy=f"master_{master_name}_bot",
+                        metadata={"layer": "master_bot", "master_name": master_name, "snapshot_id": snapshot_id},
+                    )
 
             gm_weights = _grand_master_weights(shared_features)
             gm_action, gm_score, gm_threshold, gm_reasons, gm_vote = _grand_master_vote(master_outputs, gm_weights)
@@ -3009,26 +3029,27 @@ def run_loop(
             dispatch = exec_queue.pop() if enq_ok else None
             dispatch_qty = dispatch.quantity if dispatch is not None else 0.0
 
-            trader.execute_decision(
-                symbol=symbol,
-                action=gm_action,
-                quantity=dispatch_qty,
-                model_score=gm_score,
-                threshold=gm_threshold,
-                features={**shared_features, "grand_master_vote": gm_vote["vote"], "active_sub_bots": len(active_bots), "sized_qty": dispatch_qty},
-                gates={
-                    "ensemble_has_members": len(active_bots) > 0,
-                    "market_data_ok": mkt["last_price"] > 0,
-                    "risk_limit_ok": all(risk_gates.values()),
-                    "feature_freshness_ok": freshness_ok,
-                    "master_latency_slo_ok": master_latency_slo_ok,
-                    **risk_gates,
-                    "exec_queue_ok": enq_ok,
-                },
-                reasons=gm_reasons,
-                strategy="grand_master_bot",
-                metadata={"layer": "grand_master", "snapshot_id": snapshot_id, "master_weights": gm_weights, "queue_depth": exec_queue.size()},
-            )
+            if log_grand_master_decisions:
+                trader.execute_decision(
+                    symbol=symbol,
+                    action=gm_action,
+                    quantity=dispatch_qty,
+                    model_score=gm_score,
+                    threshold=gm_threshold,
+                    features={**shared_features, "grand_master_vote": gm_vote["vote"], "active_sub_bots": len(active_bots), "sized_qty": dispatch_qty},
+                    gates={
+                        "ensemble_has_members": len(active_bots) > 0,
+                        "market_data_ok": mkt["last_price"] > 0,
+                        "risk_limit_ok": all(risk_gates.values()),
+                        "feature_freshness_ok": freshness_ok,
+                        "master_latency_slo_ok": master_latency_slo_ok,
+                        **risk_gates,
+                        "exec_queue_ok": enq_ok,
+                    },
+                    reasons=gm_reasons,
+                    strategy="grand_master_bot",
+                    metadata={"layer": "grand_master", "snapshot_id": snapshot_id, "master_weights": gm_weights, "queue_depth": exec_queue.size()},
+                )
 
             optm_action, optm_score, optm_threshold, optm_reasons, optm_vote = _options_master_signal(
                 grand_action=gm_action,
@@ -3043,18 +3064,19 @@ def run_loop(
                 reasons=optm_reasons,
                 features=shared_features,
             )
-            trader.execute_decision(
-                symbol=symbol,
-                action=optm_action,
-                quantity=1,
-                model_score=optm_score,
-                threshold=optm_threshold,
-                features={**shared_features, "grand_master_vote": gm_vote["vote"], "grand_master_score": gm_score, "options_master_vote": optm_vote["vote"]},
-                gates={"market_data_ok": mkt["last_price"] > 0, "options_regime_ok": True},
-                reasons=optm_reasons,
-                strategy="options_master_bot",
-                metadata={"layer": "options_master", "snapshot_id": snapshot_id},
-            )
+            if log_options_master_decisions:
+                trader.execute_decision(
+                    symbol=symbol,
+                    action=optm_action,
+                    quantity=1,
+                    model_score=optm_score,
+                    threshold=optm_threshold,
+                    features={**shared_features, "grand_master_vote": gm_vote["vote"], "grand_master_score": gm_score, "options_master_vote": optm_vote["vote"]},
+                    gates={"market_data_ok": mkt["last_price"] > 0, "options_regime_ok": True},
+                    reasons=optm_reasons,
+                    strategy="options_master_bot",
+                    metadata={"layer": "options_master", "snapshot_id": snapshot_id},
+                )
 
             if overload_mode and skip_options_on_backpressure:
                 options_decision = {
@@ -3081,18 +3103,19 @@ def run_loop(
                     master_vote=optm_vote["vote"],
                     covered_call_shares=covered_call_shares,
                 )
-            trader.execute_decision(
-                symbol=symbol,
-                action=options_decision["action"],
-                quantity=float(options_decision["plan"].get("contracts", 0) or 0),
-                model_score=options_decision["score"],
-                threshold=options_decision["threshold"],
-                features={**shared_features, "options_master_vote": optm_vote["vote"], "options_master_score": optm_score},
-                gates={"market_data_ok": mkt["last_price"] > 0, "options_plan_ready": True},
-                reasons=options_decision["reasons"],
-                strategy="master_options_bot",
-                metadata={"layer": "master_options", "snapshot_id": snapshot_id, "options_plan": options_decision["plan"]},
-            )
+            if log_options_master_decisions:
+                trader.execute_decision(
+                    symbol=symbol,
+                    action=options_decision["action"],
+                    quantity=float(options_decision["plan"].get("contracts", 0) or 0),
+                    model_score=options_decision["score"],
+                    threshold=options_decision["threshold"],
+                    features={**shared_features, "options_master_vote": optm_vote["vote"], "options_master_score": optm_score},
+                    gates={"market_data_ok": mkt["last_price"] > 0, "options_plan_ready": True},
+                    reasons=options_decision["reasons"],
+                    strategy="master_options_bot",
+                    metadata={"layer": "master_options", "snapshot_id": snapshot_id, "options_plan": options_decision["plan"]},
+                )
 
             ret_1m = float(symbol_return_1m)
             exec_sim = simulate_execution(
