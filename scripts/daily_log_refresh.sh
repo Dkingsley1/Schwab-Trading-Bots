@@ -43,4 +43,9 @@ cd "$PROJECT_ROOT"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/security_hardening_audit.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/backup_restore_verify.py" || true
 
+# AUTO_PRUNE_STATE_SNAPSHOT_DRILLS
+if [[ -x "scripts/prune_state_snapshot_drills.sh" ]]; then
+  ./scripts/prune_state_snapshot_drills.sh "/Users/dankingsley/PycharmProjects/schwab_trading_bot" || true
+fi
 echo "daily_log_refresh complete day_utc=$TODAY_UTC"
+
