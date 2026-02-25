@@ -67,3 +67,9 @@ data/*.db
 # Allow canonical core bot modules
 !core/brain_refinery_v*.py
 !core/brain_refinery_V3.py
+
+# SQLite runtime artifacts
+data/*.sqlite3-wal
+data/*.sqlite3-shm
+*.sqlite3-wal
+*.sqlite3-shm
