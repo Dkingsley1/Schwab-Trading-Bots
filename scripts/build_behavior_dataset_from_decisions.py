@@ -241,6 +241,25 @@ def _session_event_context(ts_utc: datetime, windows: List[Tuple[int, int]]) -> 
 
 
 def _snapshot_health_context(project_root: Path) -> Tuple[Dict[str, float], Dict[str, Any]]:
+    try:
+        from snapshot_health_sql import load_snapshot_context
+
+        sqlite_override = str(os.getenv("SNAPSHOT_CONTEXT_SQLITE_PATH", "")).strip()
+        sqlite_path = Path(sqlite_override).expanduser() if sqlite_override else None
+        prefer_sql = str(os.getenv("SNAPSHOT_CONTEXT_PREFER_SQL", "1")).strip() == "1"
+        persist_sql = str(os.getenv("SNAPSHOT_CONTEXT_PERSIST_TO_SQL", "1")).strip() == "1"
+
+        context, meta = load_snapshot_context(
+            project_root=project_root,
+            sqlite_path=sqlite_path,
+            prefer_sql=prefer_sql,
+            persist_files_to_sql=persist_sql,
+        )
+        if context:
+            return context, meta
+    except Exception:
+        pass
+
     health = project_root / "governance" / "health"
 
     coverage = _safe_load_json(health / "snapshot_coverage_latest.json", default={})

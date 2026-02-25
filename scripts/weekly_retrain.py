@@ -24,6 +24,7 @@ MASTER_RUNNER = os.path.join(PROJECT_ROOT, "scripts", "run_master_bot.py")
 TRADE_DATASET_BUILDER = os.path.join(PROJECT_ROOT, "scripts", "build_behavior_dataset_from_decisions.py")
 TRADE_DATASET_BUILDER_LEGACY = os.path.join(PROJECT_ROOT, "scripts", "build_trade_learning_dataset.py")
 TRADE_BEHAVIOR_TRAINER = os.path.join(PROJECT_ROOT, "scripts", "train_trade_behavior_bot.py")
+SNAPSHOT_HEALTH_SYNC_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "sync_snapshot_health_to_sql.py")
 PRUNE_UNDERPERFORMERS = os.path.join(PROJECT_ROOT, "scripts", "prune_underperformers.py")
 PRUNE_REDUNDANT = os.path.join(PROJECT_ROOT, "scripts", "prune_redundant_bots.py")
 ARCHIVE_OLD_MODELS = os.path.join(PROJECT_ROOT, "scripts", "archive_old_models.py")
@@ -1587,6 +1588,11 @@ def main() -> int:
 
     if enable_trade_behavior_retrain:
         print("Running trade history behavior learning step...")
+
+        if os.path.exists(SNAPSHOT_HEALTH_SYNC_SCRIPT):
+            _ = run_cmd([VENV_PY, SNAPSHOT_HEALTH_SYNC_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+        else:
+            print(f"WARN: snapshot health SQL sync script missing: {SNAPSHOT_HEALTH_SYNC_SCRIPT}")
 
         dataset_builder_override = os.getenv("TRADE_BEHAVIOR_DATASET_BUILDER", "").strip()
         dataset_builder_candidates: list[str] = []

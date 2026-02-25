@@ -38,6 +38,7 @@ cd "$PROJECT_ROOT"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/weekly_gate_blocker_report.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/model_lifecycle_hygiene.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/champion_challenger_registry.py" || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/sync_snapshot_health_to_sql.py" --json || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/data_retention_policy.py" --apply
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/dependency_guard.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/secret_scan.py" || true
