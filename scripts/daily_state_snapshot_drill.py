@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import json
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,11 +27,24 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _prune_old_runs(out_root: Path, keep_runs: int) -> int:
+    keep_n = max(int(keep_runs), 0)
+    dirs = sorted([p for p in out_root.iterdir() if p.is_dir()], key=lambda p: p.name, reverse=True) if out_root.exists() else []
+    removed = 0
+    if len(dirs) <= keep_n:
+        return 0
+    for p in dirs[keep_n:]:
+        shutil.rmtree(p, ignore_errors=True)
+        removed += 1
+    return removed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Daily state snapshot + restore drill.")
     parser.add_argument("--out-root", default=str(PROJECT_ROOT / "exports" / "state_snapshot_drills"))
     parser.add_argument("--targets", nargs="*", default=[str(p) for p in DEFAULT_TARGETS])
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--keep-runs", type=int, default=int(os.getenv('SNAPSHOT_DRILLS_KEEP', '5')))
     args = parser.parse_args()
 
     out_root = Path(args.out_root)
@@ -87,6 +101,11 @@ def main() -> int:
 
     (run_dir / "manifest.json").write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
     latest = out_root / "latest.json"
+    latest.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+    pruned_runs = _prune_old_runs(out_root, args.keep_runs)
+    payload['retention'] = {'keep_runs': int(args.keep_runs), 'pruned_runs': int(pruned_runs)}
+    (run_dir / "manifest.json").write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
     latest.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
     events = PROJECT_ROOT / "governance" / "watchdog" / "state_snapshot_drill_events.jsonl"

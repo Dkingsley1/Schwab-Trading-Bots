@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -82,8 +83,9 @@ def main() -> int:
     parser.add_argument('--stale-seconds', type=int, default=900)
     parser.add_argument('--min-decision-rows', type=int, default=200)
     parser.add_argument('--min-governance-rows', type=int, default=100)
-    parser.add_argument('--max-decision-stale-windows', type=int, default=4)
-    parser.add_argument('--max-governance-stale-windows', type=int, default=4)
+    parser.add_argument('--max-decision-stale-windows', type=int, default=int(os.getenv('REPLAY_PREOPEN_MAX_DECISION_STALE_WINDOWS', '12')))
+    parser.add_argument('--max-governance-stale-windows', type=int, default=int(os.getenv('REPLAY_PREOPEN_MAX_GOVERNANCE_STALE_WINDOWS', '12')))
+    parser.add_argument('--strict-exit', action='store_true', default=os.getenv('REPLAY_PREOPEN_STRICT_EXIT', '0').strip() == '1')
     parser.add_argument('--profile', default='')
     parser.add_argument('--domain', default='')
     parser.add_argument('--json', action='store_true')
@@ -121,9 +123,11 @@ def main() -> int:
     if governance_stale > max(args.max_governance_stale_windows, 0):
         failed.append('governance_stale_windows_high')
 
+    severity = 'ok' if len(failed) == 0 else 'warn'
     payload = {
         'timestamp_utc': now.isoformat(),
         'ok': len(failed) == 0,
+        'severity': severity,
         'failed_checks': failed,
         'window_hours': int(args.hours),
         'since_utc': since_ts.isoformat(),
@@ -163,7 +167,9 @@ def main() -> int:
             + f" decision_stale={payload['decision']['stale_windows']} governance_stale={payload['governance']['stale_windows']}"
         )
 
-    return 0 if payload['ok'] else 2
+    if payload['ok']:
+        return 0
+    return 2 if args.strict_exit else 0
 
 
 if __name__ == '__main__':

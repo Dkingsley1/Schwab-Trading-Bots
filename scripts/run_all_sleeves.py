@@ -3,6 +3,7 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -39,6 +40,12 @@ def _env_flag(name: str, default: str = "0") -> bool:
 def _global_trading_halt_enabled() -> bool:
     return _env_flag("GLOBAL_TRADING_HALT", "0") or HALT_FLAG_PATH.exists()
 
+
+
+
+def _disk_free_gb(path: Path) -> float:
+    usage = shutil.disk_usage(path)
+    return usage.free / (1024 ** 3)
 
 def _safe_float(v, default: float = 0.0) -> float:
     try:
@@ -206,6 +213,8 @@ def _run_preflight(args: argparse.Namespace) -> bool:
     ]
     if args.simulate:
         cmd.append("--simulate")
+    if not getattr(args, "strict_preflight_duplicates", False):
+        cmd.append("--allow-running")
 
     proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=False)
     out = (proc.stdout or "").strip()
@@ -234,15 +243,21 @@ def main() -> int:
     parser.add_argument("--restart-delay-seconds", type=int, default=int(os.getenv("ALL_SLEEVES_RESTART_DELAY", "3")))
     parser.add_argument("--max-restarts-per-hour", type=int, default=int(os.getenv("ALL_SLEEVES_MAX_RESTARTS_PER_HOUR", "40")))
     parser.add_argument("--no-restart-on-exit", dest="restart_on_exit", action="store_false", default=True)
+    parser.add_argument(
+        "--strict-preflight-duplicates",
+        action="store_true",
+        default=os.getenv("RUN_ALL_SLEEVES_STRICT_PREFLIGHT_DUPLICATES", "0").strip() == "1",
+        help="Fail preflight when a parallel launcher is already running.",
+    )
 
     parser.add_argument("--nice-baseline", type=int, default=int(os.getenv("SLEEVE_NICE_BASELINE", "6")))
     parser.add_argument("--nice-dividend", type=int, default=int(os.getenv("SLEEVE_NICE_DIVIDEND", "10")))
     parser.add_argument("--nice-bond", type=int, default=int(os.getenv("SLEEVE_NICE_BOND", "10")))
     parser.add_argument("--nice-aggressive", type=int, default=int(os.getenv("SLEEVE_NICE_AGGRESSIVE", "5")))
-    parser.add_argument("--workers-baseline", type=int, default=int(os.getenv("SLEEVE_WORKERS_BASELINE", os.getenv("ASYNC_PIPELINE_WORKERS", "8"))))
-    parser.add_argument("--workers-dividend", type=int, default=int(os.getenv("SLEEVE_WORKERS_DIVIDEND", "4")))
-    parser.add_argument("--workers-bond", type=int, default=int(os.getenv("SLEEVE_WORKERS_BOND", "4")))
-    parser.add_argument("--workers-aggressive", type=int, default=int(os.getenv("SLEEVE_WORKERS_AGGRESSIVE", "6")))
+    parser.add_argument("--workers-baseline", type=int, default=int(os.getenv("SLEEVE_WORKERS_BASELINE", os.getenv("ASYNC_PIPELINE_WORKERS", "4"))))
+    parser.add_argument("--workers-dividend", type=int, default=int(os.getenv("SLEEVE_WORKERS_DIVIDEND", "2")))
+    parser.add_argument("--workers-bond", type=int, default=int(os.getenv("SLEEVE_WORKERS_BOND", "2")))
+    parser.add_argument("--workers-aggressive", type=int, default=int(os.getenv("SLEEVE_WORKERS_AGGRESSIVE", "3")))
 
     parser.add_argument("--disable-circuit-breakers", action="store_true")
     parser.add_argument("--breaker-one-numbers-path", default=str(PROJECT_ROOT / "exports" / "one_numbers" / "one_numbers_summary.json"))
@@ -252,6 +267,12 @@ def main() -> int:
     parser.add_argument("--breaker-min-data-quality", type=float, default=float(os.getenv("ALL_SLEEVES_BREAKER_MIN_DQ", "75")))
     parser.add_argument("--breaker-max-blocked-rate", type=float, default=float(os.getenv("ALL_SLEEVES_BREAKER_MAX_BLOCKED", "0.35")))
     parser.add_argument("--breaker-min-pnl-proxy", type=float, default=float(os.getenv("ALL_SLEEVES_BREAKER_MIN_PNL", "-0.020")))
+    parser.add_argument(
+        "--hard-min-free-gb",
+        type=float,
+        default=float(os.getenv("ALL_SLEEVES_HARD_MIN_FREE_GB", "15")),
+        help="Hard startup block if free disk is below this GB threshold.",
+    )
 
     args = parser.parse_args()
 
@@ -264,15 +285,24 @@ def main() -> int:
         print(f"ERROR: missing venv python: {VENV_PY}")
         return 2
 
-    if not _run_preflight(args):
-        print("[Preflight] startup blocked.")
-        return 4
+    free_gb = _disk_free_gb(PROJECT_ROOT)
+    if free_gb < max(float(args.hard_min_free_gb), 0.1):
+        print(
+            f"[HardDiskGate] blocked free_gb={free_gb:.2f} "
+            f"min_required_gb={float(args.hard_min_free_gb):.2f}"
+        )
+        _emit_incident_snapshot("hard_disk_gate_blocked", f"free_gb={free_gb:.2f}")
+        return 5
 
     lock_path = Path(os.getenv("ALL_SLEEVES_LOCK_PATH", str(PROJECT_ROOT / "governance" / "all_sleeves.lock")))
     lock_handle = _acquire_singleton_lock(lock_path)
     if lock_handle is None:
         _emit_incident_snapshot("all_sleeves_lock_busy", str(lock_path))
         return 1
+
+    if not _run_preflight(args):
+        print("[Preflight] startup blocked.")
+        return 4
 
     _capture_full_run_config(args)
 

@@ -81,6 +81,12 @@ class MasterBot:
         self.signal_group_weight_target = float(os.getenv("SIGNAL_GROUP_WEIGHT_TARGET", "0.78"))
         self.walk_forward_fail_penalty = float(os.getenv("WALK_FORWARD_FAIL_PENALTY", "0.82"))
         self.walk_forward_min_forward_mean = float(os.getenv("WALK_FORWARD_MIN_FORWARD_MEAN", "0.51"))
+        self.graduation_gate_enabled = os.getenv("MASTER_GRADUATION_GATE_ENABLED", "1").strip() == "1"
+        self.graduation_min_runs = max(int(os.getenv("GRADUATION_MIN_RUNS", "24")), 1)
+        self.graduation_min_forward_mean = float(os.getenv("GRADUATION_MIN_FORWARD_MEAN", "0.52"))
+        self.graduation_min_delta = float(os.getenv("GRADUATION_MIN_DELTA", "-0.02"))
+        self.min_trading_quality_score = float(os.getenv("MASTER_MIN_TRADING_QUALITY_SCORE", "0.50"))
+        self.trading_quality_weight = min(max(float(os.getenv("MASTER_TRADING_QUALITY_WEIGHT", "0.35")), 0.0), 0.8)
 
         self.prev_accuracy_by_bot = self._load_previous_accuracy_map()
         self.prev_best_accuracy_by_bot = self._load_previous_best_accuracy_map()
@@ -228,6 +234,32 @@ class MasterBot:
             return {}
         bots = obj.get("bots", {})
         return bots if isinstance(bots, dict) else {}
+
+    def _is_graduated(self, wf: Dict[str, object]) -> tuple[bool, str]:
+        if not self.graduation_gate_enabled:
+            return True, "disabled"
+
+        runs = 0
+        try:
+            runs = int(wf.get("runs", 0) or 0)
+        except Exception:
+            runs = 0
+        if runs < self.graduation_min_runs:
+            return False, f"runs<{self.graduation_min_runs}"
+
+        fwd = self._as_float(wf.get("forward_mean"))
+        if fwd is not None and fwd < self.graduation_min_forward_mean:
+            return False, f"forward_mean<{self.graduation_min_forward_mean:.3f}"
+
+        delta = self._as_float(wf.get("delta"))
+        if delta is not None and delta < self.graduation_min_delta:
+            return False, f"delta<{self.graduation_min_delta:.3f}"
+
+        status = str(wf.get("status") or "").lower()
+        if status and status not in {"pass", ""}:
+            return False, f"status={status}"
+
+        return True, "ok"
 
     def _load_decision_correlation_map(self) -> Dict[tuple[str, str], float]:
         corr: Dict[tuple[str, str], float] = {}
@@ -480,16 +512,29 @@ class MasterBot:
             wf = self.walk_forward_map.get(o.bot_id, {})
             wf_status = str(wf.get("status") or "").lower()
             wf_forward = self._as_float(wf.get("forward_mean"))
+            wf_tq = self._as_float(wf.get("trading_quality_score"))
+            graduated, grad_reason = self._is_graduated(wf)
             if wf_status == "fail" or (wf_forward is not None and wf_forward < self.walk_forward_min_forward_mean):
                 effective_quality *= self.walk_forward_fail_penalty
+
+            if wf_tq is not None:
+                tq = self._clamp(wf_tq)
+                w = self.trading_quality_weight
+                effective_quality = ((1.0 - w) * effective_quality) + (w * tq)
 
             pref = self._preference_score(effective_acc)
             deleted_from_rotation = False
             delete_reason = ""
 
-            if wf_status == "fail" and (wf_forward is not None and wf_forward < self.walk_forward_min_forward_mean):
+            if self.graduation_gate_enabled and (not graduated):
+                active = False
+                reason = f"graduation_hold:{grad_reason}"
+            elif wf_status == "fail" and (wf_forward is not None and wf_forward < self.walk_forward_min_forward_mean):
                 active = False
                 reason = "walk_forward_fail"
+            elif wf_tq is not None and wf_tq < self.min_trading_quality_score:
+                active = False
+                reason = f"trading_quality_below_{self.min_trading_quality_score:.2f}"
             elif streak >= self.no_improvement_retire_streak and not improved:
                 active = False
                 deleted_from_rotation = True
@@ -546,7 +591,7 @@ class MasterBot:
             return (s.candidate_quality_score, acc, s.quality_score)
 
         candidates = sorted(
-            [s for s in statuses if (not s.active) and (not s.deleted_from_rotation) and (s.candidate_test_accuracy is not None)],
+            [s for s in statuses if (not s.active) and (not s.deleted_from_rotation) and (s.candidate_test_accuracy is not None) and (not str(s.reason or "").startswith("graduation_hold:"))],
             key=rank_key,
             reverse=True,
         )
@@ -559,6 +604,7 @@ class MasterBot:
                 and s.deleted_from_rotation
                 and (s.candidate_test_accuracy is not None)
                 and (not str(s.delete_reason or "").startswith("active_streak_cap_"))
+                and (not str(s.reason or "").startswith("graduation_hold:"))
             ],
             key=rank_key,
             reverse=True,
@@ -689,6 +735,12 @@ class MasterBot:
                 "no_improvement_retire_streak": self.no_improvement_retire_streak,
                 "max_active_no_improvement_streak": self.max_active_no_improvement_streak,
                 "min_active_bots": self.min_active_bots,
+                "graduation_gate_enabled": self.graduation_gate_enabled,
+                "graduation_min_runs": self.graduation_min_runs,
+                "graduation_min_forward_mean": self.graduation_min_forward_mean,
+                "graduation_min_delta": self.graduation_min_delta,
+                "min_trading_quality_score": self.min_trading_quality_score,
+                "trading_quality_weight": self.trading_quality_weight,
                 "quality_score_formula": {
                     "accuracy_weight": 0.65,
                     "val_f1_weight": 0.25,

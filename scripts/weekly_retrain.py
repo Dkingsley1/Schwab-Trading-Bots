@@ -26,6 +26,18 @@ TRADE_BEHAVIOR_TRAINER = os.path.join(PROJECT_ROOT, "scripts", "train_trade_beha
 PRUNE_UNDERPERFORMERS = os.path.join(PROJECT_ROOT, "scripts", "prune_underperformers.py")
 PRUNE_REDUNDANT = os.path.join(PROJECT_ROOT, "scripts", "prune_redundant_bots.py")
 ARCHIVE_OLD_MODELS = os.path.join(PROJECT_ROOT, "scripts", "archive_old_models.py")
+CANARY_DIAGNOSTICS = os.path.join(PROJECT_ROOT, "governance", "walk_forward", "canary_diagnostics_latest.json")
+RETIRE_PERSISTENT_LOSERS = os.path.join(PROJECT_ROOT, "scripts", "retire_persistent_losers.py")
+PROMOTION_READINESS_PATH = os.path.join(PROJECT_ROOT, "governance", "walk_forward", "promotion_readiness_latest.json")
+PROMOTION_BOTTLENECK_PATH = os.path.join(PROJECT_ROOT, "governance", "walk_forward", "promotion_bottleneck_latest.json")
+WALK_FORWARD_VALIDATE_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "walk_forward_validate.py")
+WALK_FORWARD_PROMOTION_GATE_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "walk_forward_promotion_gate.py")
+PROMOTION_READINESS_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "promotion_readiness_summary.py")
+PROMOTION_BOTTLENECK_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "promotion_bottleneck_focus.py")
+NEW_BOT_GRADUATION_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "new_bot_graduation_gate.py")
+LEAK_OVERFIT_GUARD_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "leak_overfit_guard.py")
+MODEL_LIFECYCLE_HYGIENE_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "model_lifecycle_hygiene.py")
+WEEKLY_GATE_BLOCKER_REPORT_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "weekly_gate_blocker_report.py")
 
 
 _MLX_LOCK_HANDLE = None
@@ -63,6 +75,234 @@ def _normalized_bot_id_from_script(path: str) -> str:
     if name.endswith(".py"):
         name = name[:-3]
     return name.lower()
+
+
+SEGMENT_KEYWORDS = {
+    "trend": ["trend", "breakout", "donchian"],
+    "mean_revert": ["mean_revert", "vwap", "bollinger", "keltner"],
+    "shock": ["flash", "shock", "event", "crash", "anomaly"],
+    "liquidity": ["liquidity", "spread", "order_flow", "microstructure"],
+}
+
+
+def _segment_bot_id(bot_id: str) -> str:
+    b = (bot_id or "").lower()
+    for seg, keys in SEGMENT_KEYWORDS.items():
+        if any(k in b for k in keys):
+            return seg
+    return "other"
+
+
+def _apply_regime_focus(targets: list[str], regime_focus: str) -> list[str]:
+    focus = {x.strip().lower() for x in str(regime_focus or "").split(",") if x.strip()}
+    if not focus:
+        return targets
+    return [t for t in targets if _segment_bot_id(_normalized_bot_id_from_script(t)) in focus]
+
+
+def _apply_regime_balanced_order(targets: list[str]) -> list[str]:
+    if not targets:
+        return targets
+    buckets: dict[str, list[str]] = {}
+    for t in targets:
+        seg = _segment_bot_id(_normalized_bot_id_from_script(t))
+        buckets.setdefault(seg, []).append(t)
+
+    for k in buckets:
+        buckets[k] = sorted(buckets[k], key=lambda x: _normalized_bot_id_from_script(x))
+
+    ordered: list[str] = []
+    seg_order = ["trend", "mean_revert", "shock", "liquidity", "other"]
+    while True:
+        moved = False
+        for seg in seg_order:
+            rows = buckets.get(seg, [])
+            if rows:
+                ordered.append(rows.pop(0))
+                moved = True
+        if not moved:
+            break
+    return ordered
+
+
+def _load_json_file(path: str) -> dict:
+    if not path or (not os.path.exists(path)):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
+def _check_data_quality_floor(
+    *,
+    coverage_file: str,
+    divergence_file: str,
+    min_coverage_ratio: float,
+    max_divergence_spread: float,
+) -> tuple[bool, str, dict]:
+    coverage = _load_json_file(coverage_file)
+    divergence = _load_json_file(divergence_file)
+
+    coverage_ratio = float(coverage.get("coverage_ratio", 0.0) or 0.0)
+    worst_spread = float(divergence.get("worst_relative_spread", 0.0) or 0.0)
+
+    if coverage and (coverage_ratio < float(min_coverage_ratio)):
+        return False, f"snapshot_coverage_ratio={coverage_ratio:.4f} < min_coverage_ratio={float(min_coverage_ratio):.4f}", {
+            "coverage_ratio": coverage_ratio,
+            "min_coverage_ratio": float(min_coverage_ratio),
+            "worst_relative_spread": worst_spread,
+            "max_divergence_spread": float(max_divergence_spread),
+        }
+
+    if divergence and (worst_spread > float(max_divergence_spread)):
+        return False, f"worst_relative_spread={worst_spread:.4f} > max_divergence_spread={float(max_divergence_spread):.4f}", {
+            "coverage_ratio": coverage_ratio,
+            "min_coverage_ratio": float(min_coverage_ratio),
+            "worst_relative_spread": worst_spread,
+            "max_divergence_spread": float(max_divergence_spread),
+        }
+
+    return True, "ok", {
+        "coverage_ratio": coverage_ratio,
+        "min_coverage_ratio": float(min_coverage_ratio),
+        "worst_relative_spread": worst_spread,
+        "max_divergence_spread": float(max_divergence_spread),
+    }
+
+
+def _apply_canary_priority(targets: list[str], diagnostics_file: str, top_n: int) -> tuple[list[str], int]:
+    if not targets or top_n <= 0:
+        return targets, 0
+    diag = _load_json_file(diagnostics_file)
+    rows = diag.get("top_failing_bots") if isinstance(diag.get("top_failing_bots"), list) else []
+    ids = []
+    for row in rows[:max(int(top_n), 0)]:
+        bot_id = str((row or {}).get("bot_id", "")).strip().lower()
+        if bot_id:
+            ids.append(bot_id)
+    if not ids:
+        return targets, 0
+
+    wanted = set(ids)
+    front = [t for t in targets if _normalized_bot_id_from_script(t) in wanted]
+    rest = [t for t in targets if _normalized_bot_id_from_script(t) not in wanted]
+    return front + rest, len(front)
+
+
+def _registry_accuracy_map(path: str) -> dict[str, float]:
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+    except Exception:
+        return {}
+
+    out: dict[str, float] = {}
+    for row in obj.get("sub_bots", []) if isinstance(obj, dict) else []:
+        if not isinstance(row, dict):
+            continue
+        bot_id = str(row.get("bot_id", "")).strip().lower()
+        if not bot_id:
+            continue
+        try:
+            out[bot_id] = float(row.get("test_accuracy", 0.0) or 0.0)
+        except Exception:
+            out[bot_id] = 0.0
+    return out
+
+
+def _write_retrain_scorecard(
+    *,
+    started_utc: str,
+    ended_utc: str,
+    target_count: int,
+    failures: list[str],
+    skipped_by_memory: list[str],
+    target_outcomes: list[dict],
+    prev_registry_snapshot: dict[str, float],
+    curr_registry_snapshot: dict[str, float],
+    prev_acc: dict[str, float],
+    curr_acc: dict[str, float],
+    master_update_status: str,
+    data_quality_summary: dict,
+    canary_priority_selected: int,
+    distill_selected: int,
+) -> str:
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    out_dir = os.path.join(PROJECT_ROOT, "exports", "sql_reports")
+    os.makedirs(out_dir, exist_ok=True)
+
+    improved = 0
+    degraded = 0
+    unchanged = 0
+    for bot_id, old_acc in prev_acc.items():
+        if bot_id not in curr_acc:
+            continue
+        new_acc = curr_acc.get(bot_id, old_acc)
+        if new_acc > old_acc + 1e-9:
+            improved += 1
+        elif new_acc < old_acc - 1e-9:
+            degraded += 1
+        else:
+            unchanged += 1
+
+    status_counts: dict[str, int] = {}
+    for row in target_outcomes:
+        s = str((row or {}).get("status", "unknown"))
+        status_counts[s] = status_counts.get(s, 0) + 1
+
+    payload = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "started_utc": started_utc,
+        "ended_utc": ended_utc,
+        "target_count": int(target_count),
+        "status_counts": status_counts,
+        "failure_count": len(failures),
+        "skipped_by_memory_count": len(skipped_by_memory),
+        "master_update_status": master_update_status,
+        "canary_priority_selected": int(canary_priority_selected),
+        "distillation_priority_selected": int(distill_selected),
+        "data_quality": data_quality_summary,
+        "registry_before": prev_registry_snapshot,
+        "registry_after": curr_registry_snapshot,
+        "accuracy_delta": {
+            "improved": improved,
+            "degraded": degraded,
+            "unchanged": unchanged,
+        },
+        "failures": failures,
+        "skipped_by_memory": skipped_by_memory,
+    }
+
+    json_path = os.path.join(out_dir, f"retrain_scorecard_{ts}.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=True, indent=2)
+
+    latest_json = os.path.join(PROJECT_ROOT, "governance", "health", "retrain_scorecard_latest.json")
+    os.makedirs(os.path.dirname(latest_json), exist_ok=True)
+    with open(latest_json, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=True, indent=2)
+
+    md_path = os.path.join(out_dir, f"retrain_scorecard_{ts}.md")
+    lines = [
+        f"# Retrain Scorecard ({payload['timestamp_utc']})",
+        f"- Window: {started_utc} -> {ended_utc}",
+        f"- Targets: {target_count}",
+        f"- Master update: {master_update_status}",
+        f"- Failures: {len(failures)}",
+        f"- Skipped by memory/thermal: {len(skipped_by_memory)}",
+        f"- Accuracy delta: improved={improved} degraded={degraded} unchanged={unchanged}",
+        f"- Canary-priority selected: {int(canary_priority_selected)}",
+        f"- Distillation-priority selected: {int(distill_selected)}",
+    ]
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+    return json_path
 
 
 def _market_open_now_et(start_hour: int, end_hour: int) -> bool:
@@ -488,6 +728,44 @@ def _filter_targets_for_efficiency(
 
 
 
+def _load_walk_forward_runs(path: str) -> dict[str, int]:
+    obj = _load_json_file(path)
+    bots = obj.get("bots") if isinstance(obj.get("bots"), dict) else {}
+    out: dict[str, int] = {}
+    for bot_id, row in bots.items():
+        if not isinstance(row, dict):
+            continue
+        key = str(bot_id).strip().lower()
+        if not key:
+            continue
+        out[key] = int(row.get("runs", 0) or 0)
+    return out
+
+
+def _select_new_bot_targets(targets: list[str], runs_map: dict[str, int], max_runs: int) -> list[str]:
+    out: list[str] = []
+    for t in targets:
+        bid = _normalized_bot_id_from_script(t)
+        runs = int(runs_map.get(bid, 0) or 0)
+        if runs <= max(int(max_runs), 0):
+            out.append(t)
+    return out
+
+
+def _derive_regime_focus_from_readiness(path: str, top_n: int = 2) -> str:
+    obj = _load_json_file(path)
+    rows = obj.get("failed_by_segment") if isinstance(obj.get("failed_by_segment"), dict) else {}
+    if not rows:
+        return ""
+    ranked = sorted(rows.items(), key=lambda kv: (-int(kv[1] or 0), kv[0]))
+    picks = [k for k, _ in ranked if str(k).strip().lower() in {"trend", "mean_revert", "shock", "liquidity", "other"}]
+    return ",".join(picks[: max(int(top_n), 1)])
+
+
+def _effective_int(base: int, floor_value: int) -> int:
+    return int(max(int(base), int(floor_value)))
+
+
 def _load_accuracy_map(registry_path: str) -> dict[str, float]:
     if not os.path.exists(registry_path):
         return {}
@@ -742,6 +1020,174 @@ def main() -> int:
         default=int(os.getenv("RETRAIN_DISTILLATION_STUDENT_EXTRA_PASS", "0")),
         help="Optional extra retrain passes for prioritized student bots (count).",
     )
+    parser.add_argument(
+        "--require-data-quality-floor",
+        action="store_true",
+        default=os.getenv("RETRAIN_REQUIRE_DATA_QUALITY_FLOOR", "1").strip() == "1",
+        help="Block retrain start when snapshot coverage/divergence quality floor is not met.",
+    )
+    parser.add_argument(
+        "--min-snapshot-coverage-ratio",
+        type=float,
+        default=float(os.getenv("RETRAIN_MIN_SNAPSHOT_COVERAGE_RATIO", "0.75")),
+    )
+    parser.add_argument(
+        "--max-data-divergence-spread",
+        type=float,
+        default=float(os.getenv("RETRAIN_MAX_DATA_DIVERGENCE_SPREAD", "0.04")),
+    )
+    parser.add_argument(
+        "--snapshot-coverage-file",
+        default=os.getenv("SNAPSHOT_COVERAGE_FILE", os.path.join(PROJECT_ROOT, "governance", "health", "snapshot_coverage_latest.json")),
+    )
+    parser.add_argument(
+        "--data-divergence-file",
+        default=os.getenv("DATA_DIVERGENCE_FILE", os.path.join(PROJECT_ROOT, "governance", "health", "data_source_divergence_latest.json")),
+    )
+    parser.add_argument(
+        "--regime-balance",
+        action="store_true",
+        default=os.getenv("RETRAIN_REGIME_BALANCE", "1").strip() == "1",
+        help="Distribute retrain targets across regime buckets instead of clustered order.",
+    )
+    parser.add_argument(
+        "--regime-focus",
+        default=os.getenv("RETRAIN_REGIME_FOCUS", ""),
+        help="Optional comma-separated regime focus list (trend,mean_revert,shock,liquidity,other).",
+    )
+    parser.add_argument(
+        "--canary-priority-file",
+        default=os.getenv("RETRAIN_CANARY_PRIORITY_FILE", CANARY_DIAGNOSTICS),
+    )
+    parser.add_argument(
+        "--canary-priority-top-n",
+        type=int,
+        default=int(os.getenv("RETRAIN_CANARY_PRIORITY_TOP_N", "10")),
+        help="Prioritize top recurring canary-failing bots at the front of retrain queue.",
+    )
+    parser.add_argument(
+        "--retire-persistent-losers",
+        action="store_true",
+        default=os.getenv("RETRAIN_RETIRE_PERSISTENT_LOSERS", "1").strip() == "1",
+        help="Run persistent-loser retirement automation after retrain summary.",
+    )
+    parser.add_argument(
+        "--retire-apply",
+        action="store_true",
+        default=os.getenv("RETRAIN_RETIRE_APPLY", "0").strip() == "1",
+        help="Apply retirement changes to registry (otherwise report-only).",
+    )
+    parser.add_argument(
+        "--retire-lookback-days",
+        type=int,
+        default=int(os.getenv("RETRAIN_RETIRE_LOOKBACK_DAYS", "14")),
+    )
+    parser.add_argument(
+        "--retire-min-fail-days",
+        type=int,
+        default=int(os.getenv("RETRAIN_RETIRE_MIN_FAIL_DAYS", "7")),
+    )
+    parser.add_argument(
+        "--retire-min-no-improvement-streak",
+        type=int,
+        default=int(os.getenv("RETRAIN_RETIRE_MIN_NO_IMPROVEMENT_STREAK", "3")),
+    )
+    parser.add_argument(
+        "--retire-max-per-run",
+        type=int,
+        default=int(os.getenv("RETRAIN_RETIRE_MAX_PER_RUN", "4")),
+    )
+    parser.add_argument(
+        "--new-bot-boost",
+        action="store_true",
+        default=os.getenv("RETRAIN_NEW_BOT_BOOST", "1").strip() == "1",
+        help="Accelerate learning for newer bots with stronger teacher pressure and extra passes.",
+    )
+    parser.add_argument(
+        "--new-bot-max-runs",
+        type=int,
+        default=int(os.getenv("RETRAIN_NEW_BOT_MAX_RUNS", "24")),
+        help="Bots at or below this walk-forward run count are treated as newer bots.",
+    )
+    parser.add_argument(
+        "--new-bot-extra-pass",
+        type=int,
+        default=int(os.getenv("RETRAIN_NEW_BOT_EXTRA_PASS", "2")),
+        help="Extra retrain passes to apply to newer bots.",
+    )
+    parser.add_argument(
+        "--new-bot-distillation-weight",
+        type=float,
+        default=float(os.getenv("RETRAIN_NEW_BOT_DISTILLATION_WEIGHT", "0.45")),
+        help="Minimum teacher blend weight for newer bots when distillation metadata exists.",
+    )
+    parser.add_argument(
+        "--new-bot-feature-freshness-max-age-seconds",
+        type=float,
+        default=float(os.getenv("RETRAIN_NEW_BOT_FEATURE_FRESHNESS_MAX_AGE_SECONDS", "12")),
+        help="Tighter feature freshness age budget for newer bots.",
+    )
+    parser.add_argument(
+        "--new-bot-neutral-hold-min",
+        type=float,
+        default=float(os.getenv("RETRAIN_NEW_BOT_NEUTRAL_HOLD_MIN", "0.68")),
+    )
+    parser.add_argument(
+        "--new-bot-neutral-hold-margin-min",
+        type=float,
+        default=float(os.getenv("RETRAIN_NEW_BOT_NEUTRAL_HOLD_MARGIN_MIN", "0.08")),
+    )
+    parser.add_argument(
+        "--new-bot-regime-auto-focus",
+        action="store_true",
+        default=os.getenv("RETRAIN_NEW_BOT_REGIME_AUTO_FOCUS", "1").strip() == "1",
+        help="Auto-focus retrain queue on worst failing regime segments when boost mode is enabled.",
+    )
+    parser.add_argument(
+        "--walk-forward-file",
+        default=os.getenv("RETRAIN_WALK_FORWARD_FILE", os.path.join(PROJECT_ROOT, "governance", "walk_forward", "walk_forward_latest.json")),
+    )
+    parser.add_argument(
+        "--promotion-bottleneck-priority",
+        action="store_true",
+        default=os.getenv("RETRAIN_PROMOTION_BOTTLENECK_PRIORITY", "1").strip() == "1",
+        help="Use promotion bottleneck profile to bias regime focus and priority queue.",
+    )
+    parser.add_argument(
+        "--promotion-bottleneck-file",
+        default=os.getenv("RETRAIN_PROMOTION_BOTTLENECK_FILE", PROMOTION_BOTTLENECK_PATH),
+    )
+    parser.add_argument(
+        "--refresh-promotion-artifacts",
+        action="store_true",
+        default=os.getenv("RETRAIN_REFRESH_PROMOTION_ARTIFACTS", "1").strip() == "1",
+        help="Refresh walk-forward, promotion gate, graduation gate, and leak/overfit artifacts before master update.",
+    )
+    parser.add_argument(
+        "--weekly-gate-blocker-report",
+        action="store_true",
+        default=os.getenv("RETRAIN_WEEKLY_GATE_BLOCKER_REPORT", "1").strip() == "1",
+    )
+    parser.add_argument(
+        "--lifecycle-hygiene",
+        action="store_true",
+        default=os.getenv("RETRAIN_LIFECYCLE_HYGIENE", "1").strip() == "1",
+    )
+    parser.add_argument(
+        "--lifecycle-apply-prune",
+        action="store_true",
+        default=os.getenv("RETRAIN_LIFECYCLE_APPLY_PRUNE", "1").strip() == "1",
+    )
+    parser.add_argument(
+        "--lifecycle-keep-backups",
+        type=int,
+        default=int(os.getenv("RETRAIN_LIFECYCLE_KEEP_BACKUPS", "25")),
+    )
+    parser.add_argument(
+        "--lifecycle-min-free-gb",
+        type=float,
+        default=float(os.getenv("RETRAIN_LIFECYCLE_MIN_FREE_GB", "10")),
+    )
     args = parser.parse_args()
 
     lock_path = os.getenv("MLX_RETRAIN_LOCK_PATH", os.path.join(PROJECT_ROOT, "governance", "mlx_retrain.lock"))
@@ -758,6 +1204,61 @@ def main() -> int:
     if not os.path.exists(VENV_PY):
         print(f"ERROR: venv python not found at {VENV_PY}")
         return 2
+
+    data_quality_summary: dict = {}
+    if args.require_data_quality_floor:
+        dq_ok, dq_reason, dq_detail = _check_data_quality_floor(
+            coverage_file=str(args.snapshot_coverage_file),
+            divergence_file=str(args.data_divergence_file),
+            min_coverage_ratio=float(args.min_snapshot_coverage_ratio),
+            max_divergence_spread=float(args.max_data_divergence_spread),
+        )
+        data_quality_summary = {"ok": dq_ok, "reason": dq_reason, **dq_detail}
+        print(
+            "Data quality floor: "
+            f"ok={dq_ok} "
+            f"coverage={dq_detail.get('coverage_ratio', 0.0):.4f}/{dq_detail.get('min_coverage_ratio', 0.0):.4f} "
+            f"divergence={dq_detail.get('worst_relative_spread', 0.0):.4f}/{dq_detail.get('max_divergence_spread', 0.0):.4f}"
+        )
+        if not dq_ok:
+            print(f"Retrain blocked by data quality floor: {dq_reason}")
+            return 1
+
+    if args.promotion_bottleneck_priority and os.path.exists(PROMOTION_BOTTLENECK_SCRIPT):
+        _ = run_cmd([VENV_PY, PROMOTION_BOTTLENECK_SCRIPT, "--json"], args.dry_run, os.environ.copy(), extra_nice=max(args.ops_extra_nice, 0))
+
+    effective_canary_priority_top_n = int(args.canary_priority_top_n)
+    effective_distillation_extra_pass = int(args.distillation_student_extra_pass)
+    effective_regime_focus = str(args.regime_focus or "")
+
+    if args.new_bot_boost:
+        effective_canary_priority_top_n = _effective_int(effective_canary_priority_top_n, 30)
+        effective_distillation_extra_pass = _effective_int(effective_distillation_extra_pass, int(args.new_bot_extra_pass))
+        args.distillation_priority = True
+        args.regime_balance = True
+        if args.new_bot_regime_auto_focus and not effective_regime_focus:
+            auto_focus = _derive_regime_focus_from_readiness(PROMOTION_READINESS_PATH, top_n=2)
+            if auto_focus:
+                effective_regime_focus = auto_focus
+
+    bottleneck_profile = _load_json_file(str(args.promotion_bottleneck_file)) if args.promotion_bottleneck_priority else {}
+    if bottleneck_profile:
+        rec = bottleneck_profile.get("recommended_retrain_profile") if isinstance(bottleneck_profile.get("recommended_retrain_profile"), dict) else {}
+        if (not effective_regime_focus) and str(rec.get("RETRAIN_REGIME_FOCUS", "")).strip():
+            effective_regime_focus = str(rec.get("RETRAIN_REGIME_FOCUS", "")).strip()
+        try:
+            effective_canary_priority_top_n = max(
+                effective_canary_priority_top_n,
+                int(rec.get("RETRAIN_CANARY_PRIORITY_TOP_N", 0) or 0),
+            )
+        except Exception:
+            pass
+        try:
+            rec_targets = int(rec.get("RETRAIN_MAX_TARGETS", 0) or 0)
+            if rec_targets > 0:
+                args.max_targets = min(int(args.max_targets), rec_targets) if int(args.max_targets) > 0 else rec_targets
+        except Exception:
+            pass
 
     deleted_ids = _load_deleted_bot_ids(REGISTRY_PATH)
     targets = build_targets(include_deleted=args.include_deleted)
@@ -788,21 +1289,51 @@ def main() -> int:
 
     targets = _apply_retrain_curriculum(targets, REGISTRY_PATH)
 
+    if effective_regime_focus:
+        focused = _apply_regime_focus(targets, str(effective_regime_focus))
+        if focused:
+            targets = focused
+        else:
+            print(f"WARN: regime_focus produced zero targets, keeping original list: {effective_regime_focus}")
+
+    if args.regime_balance:
+        targets = _apply_regime_balanced_order(targets)
+
+    targets, canary_priority_selected = _apply_canary_priority(
+        targets,
+        diagnostics_file=str(args.canary_priority_file),
+        top_n=int(effective_canary_priority_top_n),
+    )
+
+    wf_runs = _load_walk_forward_runs(str(args.walk_forward_file))
+    new_bot_targets = _select_new_bot_targets(targets, wf_runs, int(args.new_bot_max_runs)) if args.new_bot_boost else []
+    new_bot_ids = {_normalized_bot_id_from_script(x) for x in new_bot_targets} if args.new_bot_boost else set()
+
     distill_plan = _load_distillation_plan(args.distillation_plan) if args.distillation_priority else {}
     distill_assign_map = _distillation_assignment_map(distill_plan)
     distill_selected = 0
     if args.distillation_priority and distill_assign_map:
         targets, distill_selected = _prioritize_targets_for_distillation(targets, distill_assign_map)
 
-    if args.distillation_priority and distill_assign_map and int(args.distillation_student_extra_pass) > 0:
+    if args.distillation_priority and distill_assign_map and int(effective_distillation_extra_pass) > 0:
         student_targets = [t for t in targets if _normalized_bot_id_from_script(t) in distill_assign_map]
-        extra_n = min(max(int(args.distillation_student_extra_pass), 0), len(student_targets))
+        extra_n = min(max(int(effective_distillation_extra_pass), 0), len(student_targets))
         if extra_n > 0:
             targets = targets + student_targets[:extra_n]
+
+    if args.new_bot_boost and new_bot_targets and int(args.new_bot_extra_pass) > 0:
+        extra_new_n = min(max(int(args.new_bot_extra_pass), 0), len(new_bot_targets))
+        if extra_new_n > 0:
+            targets = targets + new_bot_targets[:extra_new_n]
 
     child_env = _build_child_env(args.thread_cap)
     child_env["DISTILLATION_ENABLED"] = "1" if args.distillation_priority else "0"
     child_env["DISTILLATION_PLAN_PATH"] = str(args.distillation_plan)
+    child_env["REQUIRE_CANARY_PROMOTION_GATE"] = "1"
+    if args.new_bot_boost:
+        child_env["TRADE_BEHAVIOR_STRICT_NEUTRAL_GATE"] = "1"
+        child_env["TRADE_BEHAVIOR_HOLD_NEUTRAL_MIN"] = f"{float(args.new_bot_neutral_hold_min):.4f}"
+        child_env["TRADE_BEHAVIOR_HOLD_MARGIN_MIN"] = f"{float(args.new_bot_neutral_hold_margin_min):.4f}"
     _apply_nice(args.nice)
 
     print(
@@ -841,14 +1372,31 @@ def main() -> int:
         f"min_model_age_hours={args.min_model_age_hours:.1f} "
         f"selected={target_stats.get('post', 0)}/{target_stats.get('pre', 0)}"
     )
+    print(
+        "Queue strategy: "
+        f"regime_balance={args.regime_balance} "
+        f"regime_focus={effective_regime_focus or 'all'} "
+        f"canary_priority_selected={canary_priority_selected} "
+        f"new_bot_boost={args.new_bot_boost} "
+        f"bottleneck_profile_used={bool(bottleneck_profile)}"
+    )
 
     started = datetime.now(timezone.utc).isoformat()
     print(f"Weekly retrain start (UTC): {started}")
     print(f"Targets: {len(targets)}")
+    if args.new_bot_boost:
+        print(
+            "New-bot boost: "
+            f"new_targets={len(new_bot_targets)} "
+            f"extra_pass={args.new_bot_extra_pass} "
+            f"teacher_weight_floor={float(args.new_bot_distillation_weight):.2f} "
+            f"feature_freshness_max_age_s={float(args.new_bot_feature_freshness_max_age_seconds):.1f}"
+        )
     print("Efficiency tip: keep streaming/video/browser load low during retrain windows.")
 
     failures: list[str] = []
     skipped_by_memory: list[str] = []
+    target_outcomes: list[dict] = []
     dynamic_max_swap_gb = float(args.max_swap_gb)
     for target in targets:
         target_name = os.path.basename(target)
@@ -885,6 +1433,7 @@ def main() -> int:
                     )
         if not allowed:
             skipped_by_memory.append(target)
+            target_outcomes.append({"bot_id": _normalized_bot_id_from_script(target), "target": target, "status": "skipped_memory"})
             continue
 
         thermal_ok = _wait_for_thermal_gate(
@@ -898,24 +1447,37 @@ def main() -> int:
         )
         if not thermal_ok:
             skipped_by_memory.append(target)
+            target_outcomes.append({"bot_id": _normalized_bot_id_from_script(target), "target": target, "status": "skipped_thermal"})
             continue
 
         target_env = dict(child_env)
-        dist_row = distill_assign_map.get(_normalized_bot_id_from_script(target), {}) if args.distillation_priority else {}
+        bot_id = _normalized_bot_id_from_script(target)
+        is_new_bot = bot_id in new_bot_ids if args.new_bot_boost else False
+        if is_new_bot:
+            target_env["FEATURE_FRESHNESS_GUARD_ENABLED"] = "1"
+            target_env["FEATURE_FRESHNESS_MAX_AGE_SECONDS"] = f"{float(args.new_bot_feature_freshness_max_age_seconds):.4f}"
+            target_env["RETRAIN_NEW_BOT_MODE"] = "1"
+        dist_row = distill_assign_map.get(bot_id, {}) if args.distillation_priority else {}
         if dist_row:
             teacher_ids = [str((t or {}).get("bot_id", "")).strip() for t in (dist_row.get("teachers", []) or []) if str((t or {}).get("bot_id", "")).strip()]
             target_env["DISTILLATION_STUDENT"] = "1"
             target_env["DISTILLATION_TEACHERS"] = ",".join(teacher_ids)
-            target_env["DISTILLATION_TEACHER_WEIGHT"] = str(dist_row.get("teacher_blend_weight", 0.30))
+            base_tw = float(dist_row.get("teacher_blend_weight", 0.30) or 0.30)
+            if is_new_bot:
+                base_tw = max(base_tw, float(args.new_bot_distillation_weight))
+            target_env["DISTILLATION_TEACHER_WEIGHT"] = str(base_tw)
         else:
             target_env["DISTILLATION_STUDENT"] = "0"
 
         rc = run_cmd([VENV_PY, target], args.dry_run, target_env)
         if rc != 0:
             failures.append(target)
+            target_outcomes.append({"bot_id": _normalized_bot_id_from_script(target), "target": target, "status": "failed", "rc": rc})
             print(f"FAIL: {target} (exit={rc})")
             if not args.continue_on_error:
                 break
+        else:
+            target_outcomes.append({"bot_id": _normalized_bot_id_from_script(target), "target": target, "status": "trained"})
 
         if not args.dry_run:
             gc.collect()
@@ -923,9 +1485,12 @@ def main() -> int:
 
     if failures and not args.continue_on_error:
         print("Stopped early due to failure.")
-        return 1
 
     prev_registry_snapshot = _registry_snapshot(REGISTRY_PATH)
+    prev_acc_map = _registry_accuracy_map(REGISTRY_PATH)
+    curr_registry_snapshot = dict(prev_registry_snapshot)
+    curr_acc_map = dict(prev_acc_map)
+    master_update_status = "skipped"
     registry_backup_path = os.path.join(PROJECT_ROOT, "governance", "registry_backup_before_retrain.json")
     try:
         if os.path.exists(REGISTRY_PATH):
@@ -951,20 +1516,55 @@ def main() -> int:
         label="run_master_bot.py",
         dry_run=args.dry_run,
     ):
-        rc = run_cmd([sys.executable, MASTER_RUNNER], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
-        if rc != 0:
-            print(f"FAIL: master bot update (exit={rc})")
-            return 1
+        precheck_failures: list[str] = []
+        if args.refresh_promotion_artifacts:
+            artifact_steps = [
+                (WALK_FORWARD_VALIDATE_SCRIPT, False),
+                (WALK_FORWARD_PROMOTION_GATE_SCRIPT, True),
+                (PROMOTION_READINESS_SCRIPT, False),
+                (PROMOTION_BOTTLENECK_SCRIPT, False),
+                (NEW_BOT_GRADUATION_SCRIPT, True),
+                (LEAK_OVERFIT_GUARD_SCRIPT, True),
+            ]
+            for script_path, required_ok in artifact_steps:
+                if not os.path.exists(script_path):
+                    if required_ok:
+                        precheck_failures.append(f"missing:{os.path.basename(script_path)}")
+                    continue
+                cmd = [VENV_PY, script_path]
+                if script_path in {PROMOTION_READINESS_SCRIPT, PROMOTION_BOTTLENECK_SCRIPT, NEW_BOT_GRADUATION_SCRIPT, LEAK_OVERFIT_GUARD_SCRIPT}:
+                    cmd.append("--json")
+                rc_art = run_cmd(cmd, args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+                if rc_art != 0 and required_ok:
+                    precheck_failures.append(f"{os.path.basename(script_path)}:exit_{rc_art}")
 
-        if not args.dry_run:
-            curr_registry_snapshot = _registry_snapshot(REGISTRY_PATH)
-            rollback_bad, rollback_reason = _should_rollback_registry(prev_registry_snapshot, curr_registry_snapshot)
-            if rollback_bad and os.path.exists(registry_backup_path):
-                shutil.copy2(registry_backup_path, REGISTRY_PATH)
-                print(f"[Rollback] restored previous master registry reason={rollback_reason}")
+        if precheck_failures:
+            master_update_status = "precheck_failed"
+            print("FAIL: promotion prechecks failed")
+            for item in precheck_failures:
+                print(f" - {item}")
+        else:
+            rc = run_cmd([sys.executable, MASTER_RUNNER], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+            if rc != 0:
+                master_update_status = f"failed_exit_{rc}"
+                print(f"FAIL: master bot update (exit={rc})")
             else:
-                print(f"[Rollback] registry check status={rollback_reason}")
+                master_update_status = "updated"
+
+            if not args.dry_run and rc == 0:
+                curr_registry_snapshot = _registry_snapshot(REGISTRY_PATH)
+                curr_acc_map = _registry_accuracy_map(REGISTRY_PATH)
+                rollback_bad, rollback_reason = _should_rollback_registry(prev_registry_snapshot, curr_registry_snapshot)
+                if rollback_bad and os.path.exists(registry_backup_path):
+                    shutil.copy2(registry_backup_path, REGISTRY_PATH)
+                    curr_registry_snapshot = _registry_snapshot(REGISTRY_PATH)
+                    curr_acc_map = _registry_accuracy_map(REGISTRY_PATH)
+                    master_update_status = f"rolled_back:{rollback_reason}"
+                    print(f"[Rollback] restored previous master registry reason={rollback_reason}")
+                else:
+                    print(f"[Rollback] registry check status={rollback_reason}")
     else:
+        master_update_status = "skipped_memory_or_thermal_gate"
         print("WARN: skipped master registry update due to memory gate timeout")
 
     ended = datetime.now(timezone.utc).isoformat()
@@ -1029,6 +1629,62 @@ def main() -> int:
             _write_weekly_archive_stamp()
         else:
             print(f"WARN: archive script missing: {ARCHIVE_OLD_MODELS}")
+
+    if args.retire_persistent_losers and (not args.dry_run) and os.path.exists(RETIRE_PERSISTENT_LOSERS):
+        print("Running persistent-loser retirement scan...")
+        retire_cmd = [
+            VENV_PY,
+            RETIRE_PERSISTENT_LOSERS,
+            "--lookback-days",
+            str(max(args.retire_lookback_days, 1)),
+            "--min-fail-days",
+            str(max(args.retire_min_fail_days, 1)),
+            "--min-no-improvement-streak",
+            str(max(args.retire_min_no_improvement_streak, 1)),
+            "--max-retire-per-run",
+            str(max(args.retire_max_per_run, 0)),
+            "--json",
+        ]
+        if args.retire_apply:
+            retire_cmd.append("--apply")
+        _ = run_cmd(retire_cmd, args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+
+    if args.weekly_gate_blocker_report and os.path.exists(WEEKLY_GATE_BLOCKER_REPORT_SCRIPT):
+        _ = run_cmd([VENV_PY, WEEKLY_GATE_BLOCKER_REPORT_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+
+    scorecard_path = _write_retrain_scorecard(
+        started_utc=started,
+        ended_utc=ended,
+        target_count=len(targets),
+        failures=failures,
+        skipped_by_memory=skipped_by_memory,
+        target_outcomes=target_outcomes,
+        prev_registry_snapshot=prev_registry_snapshot,
+        curr_registry_snapshot=curr_registry_snapshot,
+        prev_acc=prev_acc_map,
+        curr_acc=curr_acc_map,
+        master_update_status=master_update_status,
+        data_quality_summary=data_quality_summary,
+        canary_priority_selected=canary_priority_selected,
+        distill_selected=distill_selected,
+    )
+    print(f"Retrain scorecard written: {scorecard_path}")
+
+    if args.lifecycle_hygiene and os.path.exists(MODEL_LIFECYCLE_HYGIENE_SCRIPT):
+        lifecycle_cmd = [
+            VENV_PY,
+            MODEL_LIFECYCLE_HYGIENE_SCRIPT,
+            "--keep-backups",
+            str(max(int(args.lifecycle_keep_backups), 1)),
+            "--min-free-gb",
+            str(max(float(args.lifecycle_min_free_gb), 0.0)),
+            "--json",
+        ]
+        if args.lifecycle_apply_prune:
+            lifecycle_cmd.append("--apply-prune")
+        if str(master_update_status).startswith("updated") or str(master_update_status).startswith("rolled_back"):
+            lifecycle_cmd.append("--update-last-known-good")
+        _ = run_cmd(lifecycle_cmd, args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
 
     if skipped_by_memory:
         print("Completed with memory-gate skips.")

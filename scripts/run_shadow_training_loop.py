@@ -548,6 +548,11 @@ def _run_preopen_replay_sanity_check(
     return True, "ok"
 
 
+def _snapshot_debug_path(project_root: str, broker: Optional[str] = None) -> str:
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    return os.path.join(project_root, "governance", _shadow_profile_subdir(broker=broker), f"snapshot_debug_{day}.jsonl")
+
+
 def _pnl_attribution_path(project_root: str, broker: Optional[str] = None) -> str:
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
     return os.path.join(project_root, "governance", _shadow_profile_subdir(broker=broker), f"shadow_pnl_attribution_{day}.jsonl")
@@ -1595,6 +1600,16 @@ def run_loop(
     adaptive_interval_step_up = max(int(os.getenv('ADAPTIVE_INTERVAL_STEP_UP_SECONDS', '2')), 1)
     adaptive_interval_step_down = max(int(os.getenv('ADAPTIVE_INTERVAL_STEP_DOWN_SECONDS', '1')), 1)
     adaptive_interval_recover_streak = max(int(os.getenv('ADAPTIVE_INTERVAL_RECOVER_STREAK', '3')), 1)
+    memory_auto_throttle_enabled = os.getenv('MEMORY_AUTO_THROTTLE_ENABLED', '1').strip() == '1'
+    memory_throttle_min_free_pct = float(os.getenv('MEMORY_THROTTLE_MIN_FREE_PCT', '12'))
+    memory_throttle_max_swap_gb = float(os.getenv('MEMORY_THROTTLE_MAX_SWAP_GB', '2.8'))
+    memory_throttle_check_every_iters = max(int(os.getenv('MEMORY_THROTTLE_CHECK_EVERY_ITERS', '2')), 1)
+    memory_throttle_step_up_seconds = max(int(os.getenv('MEMORY_THROTTLE_STEP_UP_SECONDS', '5')), 1)
+    memory_throttle_recover_streak_needed = max(int(os.getenv('MEMORY_THROTTLE_RECOVER_STREAK', '3')), 1)
+    memory_throttle_recover_streak = 0
+    memory_throttle_active = False
+    latest_memory_snapshot: Dict[str, float] = {}
+
     current_interval_seconds = effective_interval_seconds
     overload_streak = 0
     healthy_streak = 0
@@ -1685,6 +1700,7 @@ def run_loop(
         int(os.getenv('PREOPEN_REPLAY_SANITY_TIMEOUT_SECONDS', '30')),
         5,
     )
+    snapshot_debug_mode = os.getenv('SNAPSHOT_DEBUG_MODE', '0').strip() == '1'
 
     config_payload = {
         "symbols": symbols,
@@ -1760,6 +1776,22 @@ def run_loop(
     volatile_every_n = max(int(os.getenv('VOLATILE_SYMBOL_EVERY_N_ITERS', '1')), 1)
     defensive_every_n = max(int(os.getenv('DEFENSIVE_SYMBOL_EVERY_N_ITERS', '2')), 1)
 
+    def _record_snapshot_debug(symbol: str, reason: str, **extra: Any) -> None:
+        if not snapshot_debug_mode:
+            return
+        row: Dict[str, Any] = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "iter": int(iter_count),
+            "symbol": symbol,
+            "reason": reason,
+            "broker": broker,
+            "profile": _shadow_profile_name() or "default",
+            "domain": _shadow_domain_name(broker=broker),
+        }
+        if extra:
+            row.update(extra)
+        _append_jsonl(_snapshot_debug_path(PROJECT_ROOT, broker=broker), row)
+
 
     while True:
         if _global_trading_halt_enabled():
@@ -1805,6 +1837,7 @@ def run_loop(
                 if closed_reason != last_closed_reason:
                     print(f"[SessionGate] paused reason={closed_reason} now_et={now_et.isoformat()}")
                     last_closed_reason = closed_reason
+                _record_snapshot_debug('*', 'session_gate_paused', closed_reason=closed_reason, now_et=now_et.isoformat())
                 time.sleep(max(effective_interval_seconds, 30))
                 continue
             if last_closed_reason is not None:
@@ -1816,12 +1849,14 @@ def run_loop(
 
         if event_blackout_enabled and _in_event_blackout(now_et, blackout_windows):
             print(f"[EventGate] paused reason=event_lock_window now_et={now_et.isoformat()}")
+            _record_snapshot_debug('*', 'event_lock_paused', now_et=now_et.isoformat())
             time.sleep(max(effective_interval_seconds, 10))
             continue
 
         if time.time() < anomaly_kill_switch_until_ts:
             rem = int(anomaly_kill_switch_until_ts - time.time())
             print(f"[KillSwitch] paused reason=data_anomaly remaining_s={max(rem, 0)}")
+            _record_snapshot_debug('*', 'anomaly_killswitch_paused', remaining_seconds=max(rem, 0))
             time.sleep(max(min(rem, effective_interval_seconds), 5))
             continue
 
@@ -1897,13 +1932,16 @@ def run_loop(
             else:
                 cadence = core_every_n
             if cadence > 1 and (iter_count % cadence != 0):
+                _record_snapshot_debug(symbol, 'cadence_skip', cadence=cadence)
                 continue
 
             quarantine_until = symbol_quarantine_until.get(symbol, 0.0)
             if now_ts < quarantine_until:
+                _record_snapshot_debug(symbol, 'quarantine_skip', quarantine_seconds=round(max(quarantine_until - now_ts, 0.0), 3))
                 continue
 
             if not circuit_breaker.allow(f"md:{symbol}"):
+                _record_snapshot_debug(symbol, 'circuit_open_skip')
                 continue
 
             try:
@@ -1919,6 +1957,7 @@ def run_loop(
                 if opened:
                     print(f"[CircuitBreaker] opened symbol={symbol} layer=market_data")
                 print(f"[ShadowLoop] iter={iter_count} symbol={symbol} market_data_error={exc}")
+                _record_snapshot_debug(symbol, 'market_data_error', error=str(exc))
                 if symbol_fail_counts[symbol] >= max(bad_symbol_fail_limit, 1):
                     symbol_quarantine_until[symbol] = now_ts + max(bad_symbol_retry_minutes, 1) * 60
                     print(
@@ -1939,6 +1978,7 @@ def run_loop(
                     f"[SymbolGuard] invalid_snapshot symbol={symbol} "
                     f"count={symbol_fail_counts[symbol]}"
                 )
+                _record_snapshot_debug(symbol, 'invalid_snapshot', fail_count=symbol_fail_counts[symbol])
                 if symbol_fail_counts[symbol] >= max(bad_symbol_fail_limit, 1):
                     symbol_quarantine_until[symbol] = now_ts + max(bad_symbol_retry_minutes, 1) * 60
                     print(
@@ -1969,6 +2009,7 @@ def run_loop(
                     f"[SymbolGuard] stale_price symbol={symbol} count={symbol_stale_counts[symbol]} "
                     f"quarantine={max(bad_symbol_retry_minutes, 1)}m"
                 )
+                _record_snapshot_debug(symbol, 'stale_price_quarantine', stale_count=symbol_stale_counts[symbol])
                 symbol_stale_counts[symbol] = 0
                 continue
 
@@ -1979,6 +2020,7 @@ def run_loop(
 
             # One shared snapshot per symbol/iteration, reused by every sub-bot and master decision.
             snapshot_id = f"{symbol}-{iter_count}-{int(time.time() * 1000)}"
+            _record_snapshot_debug(symbol, 'snapshot_created', snapshot_id=snapshot_id)
 
             # Attach macro regime context (e.g., VIX and dollar proxy) to every model decision.
             context_features: Dict[str, float] = {}
@@ -2562,6 +2604,30 @@ def run_loop(
         if overload_mode:
             print(f"[Backpressure] overloaded ratio={bp.ratio_vs_interval:.2f} loop_s={bp.loop_seconds:.2f}")
 
+        if memory_auto_throttle_enabled and (iter_count % memory_throttle_check_every_iters == 0):
+            mem_ok, mem_snapshot, mem_reason = _auto_retrain_memory_ok(
+                min_free_pct=memory_throttle_min_free_pct,
+                max_swap_gb=memory_throttle_max_swap_gb,
+            )
+            latest_memory_snapshot = mem_snapshot
+            if not mem_ok:
+                memory_throttle_active = True
+                memory_throttle_recover_streak = 0
+                overload_mode = True
+                healthy_streak = 0
+                prev_interval = current_interval_seconds
+                current_interval_seconds = min(current_interval_seconds + memory_throttle_step_up_seconds, adaptive_interval_max)
+                print(
+                    f"[MemoryThrottle] active reason={mem_reason} "
+                    f"interval={prev_interval}s->{current_interval_seconds}s"
+                )
+            elif memory_throttle_active:
+                memory_throttle_recover_streak += 1
+                if memory_throttle_recover_streak >= memory_throttle_recover_streak_needed:
+                    memory_throttle_active = False
+                    memory_throttle_recover_streak = 0
+                    print("[MemoryThrottle] cleared")
+
         if adaptive_interval_enabled:
             prev_interval = current_interval_seconds
             if overload_mode:
@@ -2601,6 +2667,9 @@ def run_loop(
                 "active_bots": len([b for b in bots if b.active]),
                 "cache_size": len(state_cache._store),
                 "current_interval_seconds": current_interval_seconds,
+                "memory_throttle_active": memory_throttle_active,
+                "memory_free_pct": latest_memory_snapshot.get("free_pct"),
+                "memory_swap_used_gb": latest_memory_snapshot.get("swap_used_gb"),
             })
 
         if iter_count % checkpoint_every == 0:

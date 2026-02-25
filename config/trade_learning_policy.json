@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "lookback_years": 4,
   "account_profiles": {
     "ROTH": {
@@ -65,6 +65,26 @@
       "positive": 1.35,
       "neutral": 1.15,
       "negative": 0.9
+    },
+    "regime_threshold_multipliers": {
+      "trend": 1.0,
+      "mean_revert": 1.15,
+      "shock": 1.35,
+      "other": 1.0
+    },
+    "regime_sample_weights": {
+      "trend": 1.0,
+      "mean_revert": 1.1,
+      "shock": 1.25,
+      "other": 1.0
     }
+  },
+  "weak_regime_label_quality": {
+    "regimes": [
+      "mean_revert",
+      "shock"
+    ],
+    "min_confidence": 0.35,
+    "drop_ambiguous": true
   }
 }

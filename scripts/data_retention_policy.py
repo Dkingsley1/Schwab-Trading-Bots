@@ -45,11 +45,14 @@ def _vacuum_sqlite(path: Path) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prune old data artifacts by retention policy.")
-    parser.add_argument("--decisions-days", type=int, default=45)
-    parser.add_argument("--decision-explanations-days", type=int, default=45)
-    parser.add_argument("--governance-days", type=int, default=60)
-    parser.add_argument("--exports-days", type=int, default=30)
-    parser.add_argument("--backup-drills-days", type=int, default=30)
+    parser.add_argument("--decisions-days", type=int, default=int(os.getenv("RETENTION_DECISIONS_DAYS", "21")))
+    parser.add_argument("--decision-explanations-days", type=int, default=int(os.getenv("RETENTION_DECISION_EXPLANATIONS_DAYS", "21")))
+    parser.add_argument("--governance-days", type=int, default=int(os.getenv("RETENTION_GOVERNANCE_DAYS", "30")))
+    parser.add_argument("--exports-days", type=int, default=int(os.getenv("RETENTION_EXPORTS_DAYS", "14")))
+    parser.add_argument("--backup-drills-days", type=int, default=int(os.getenv("RETENTION_BACKUP_DRILLS_DAYS", "14")))
+    parser.add_argument("--csv-days", type=int, default=int(os.getenv("RETENTION_CSV_DAYS", "10")))
+    parser.add_argument("--logs-days", type=int, default=int(os.getenv("RETENTION_LOGS_DAYS", "14")))
+    parser.add_argument("--watchdog-events-days", type=int, default=int(os.getenv("RETENTION_WATCHDOG_EVENTS_DAYS", "30")))
     parser.add_argument("--sqlite-path", default=str(PROJECT_ROOT / "data" / "jsonl_link.sqlite3"))
     parser.add_argument("--sqlite-vacuum-over-gb", type=float, default=6.0)
     parser.add_argument("--apply", action="store_true")
@@ -59,8 +62,11 @@ def main() -> int:
         "decisions": (PROJECT_ROOT / "decisions", args.decisions_days),
         "decision_explanations": (PROJECT_ROOT / "decision_explanations", args.decision_explanations_days),
         "governance_watchdog": (PROJECT_ROOT / "governance" / "watchdog", args.governance_days),
+        "governance_events": (PROJECT_ROOT / "governance" / "events", args.watchdog_events_days),
         "exports_sql_reports": (PROJECT_ROOT / "exports" / "sql_reports", args.exports_days),
+        "exports_csv": (PROJECT_ROOT / "exports" / "csv", args.csv_days),
         "backup_drills": (PROJECT_ROOT / "exports" / "backup_drills", args.backup_drills_days),
+        "logs": (PROJECT_ROOT / "logs", args.logs_days),
     }
 
     to_delete = []

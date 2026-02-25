@@ -30,6 +30,13 @@ cd "$PROJECT_ROOT"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/walk_forward_validate.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/walk_forward_promotion_gate.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/regime_segmented_validate.py" || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/new_bot_graduation_gate.py" || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/leak_overfit_guard.py" || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/promotion_readiness_summary.py" || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/canary_diagnostics_loop.py" || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/promotion_bottleneck_focus.py" || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/weekly_gate_blocker_report.py" || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/model_lifecycle_hygiene.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/champion_challenger_registry.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/data_retention_policy.py" --apply
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/dependency_guard.py" || true

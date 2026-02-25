@@ -52,6 +52,48 @@ def main() -> int:
     rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "replay_preopen_sanity_check.py"), "--hours", "24", "--json"], PROJECT_ROOT)
     checks["replay_preopen_sanity"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
 
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "snapshot_coverage_sentinel.py"), "--json"], PROJECT_ROOT)
+    checks["snapshot_coverage_sentinel"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "guardrail_triprate_sentinel.py"), "--json"], PROJECT_ROOT)
+    checks["guardrail_triprate_sentinel"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "quarantine_pressure_bot.py"), "--json"], PROJECT_ROOT)
+    checks["quarantine_pressure_bot"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "data_source_divergence_bot.py"), "--json"], PROJECT_ROOT)
+    checks["data_source_divergence_bot"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "execution_queue_stress_bot.py"), "--json"], PROJECT_ROOT)
+    checks["execution_queue_stress_bot"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "preopen_replay_drift_bot.py"), "--json"], PROJECT_ROOT)
+    checks["preopen_replay_drift_bot"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "promotion_readiness_summary.py"), "--json"], PROJECT_ROOT)
+    checks["promotion_readiness_summary"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "canary_diagnostics_loop.py"), "--json"], PROJECT_ROOT)
+    checks["canary_diagnostics_loop"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "retire_persistent_losers.py"), "--json"], PROJECT_ROOT)
+    checks["retire_persistent_losers"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "promotion_bottleneck_focus.py"), "--json"], PROJECT_ROOT)
+    checks["promotion_bottleneck_focus"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "new_bot_graduation_gate.py"), "--json"], PROJECT_ROOT)
+    checks["new_bot_graduation_gate"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "leak_overfit_guard.py"), "--json"], PROJECT_ROOT)
+    checks["leak_overfit_guard"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "weekly_gate_blocker_report.py"), "--json"], PROJECT_ROOT)
+    checks["weekly_gate_blocker_report"] = {"ok": rc == 0, "rc": rc, "stdout": out[:5000], "stderr": err}
+
+    rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "model_lifecycle_hygiene.py"), "--json"], PROJECT_ROOT)
+    checks["model_lifecycle_hygiene"] = {"ok": rc in {0, 2}, "rc": rc, "stdout": out[:5000], "stderr": err}
+
     rc, out, err = _run([str(VENV_PY), str(PROJECT_ROOT / "scripts" / "health_gates.py")], PROJECT_ROOT)
     checks["health_gates"] = {"ok": rc in {0, 2}, "rc": rc, "stdout": out, "stderr": err}
 
