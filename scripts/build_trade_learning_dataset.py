@@ -4,13 +4,37 @@ import math
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 SHOCK_SYMBOLS = {"UVXY", "VIXY", "SOXL", "SOXS", "MSTR", "SMCI", "COIN", "TSLA"}
 MEAN_REVERT_SYMBOLS = {"TLT", "IEF", "SHY", "BND", "AGG", "GLD", "XLU", "XLP"}
+
+BASE_FEATURE_NAMES = [
+    "pnl_scaled",
+    "qty_log",
+    "role_idx",
+    "symbol_hash",
+    "tx_hash",
+    "dow",
+    "hour",
+    "regime_idx",
+    "label_confidence",
+]
+
+SNAPSHOT_FEATURE_NAMES = [
+    "snapshot_cov_ok",
+    "snapshot_cov_log_ratio",
+    "snapshot_cov_fill_ratio",
+    "snapshot_replay_ok",
+    "snapshot_replay_stale_ratio",
+    "snapshot_replay_drift_ratio",
+    "snapshot_divergence_ratio",
+    "snapshot_triprate_ratio",
+    "snapshot_queue_pressure_ratio",
+]
 
 
 def _safe_load_json(path: Path, default: Dict[str, Any]) -> Dict[str, Any]:
@@ -28,6 +52,10 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return default
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(float(value), 1.0))
 
 
 def _to_epoch(ts: Any) -> float:
@@ -102,7 +130,95 @@ def _sample_weight(label: str, weights: Dict[str, float], regime: str, regime_we
     return max(w, 0.05)
 
 
-def _build_features(row: Dict[str, Any], pnl_scale: float, regime: str, label_confidence: float) -> List[float]:
+def _snapshot_health_context(project_root: Path) -> Tuple[Dict[str, float], Dict[str, Any]]:
+    health = project_root / "governance" / "health"
+
+    coverage = _safe_load_json(health / "snapshot_coverage_latest.json", default={})
+    replay = _safe_load_json(health / "replay_preopen_sanity_latest.json", default={})
+    drift = _safe_load_json(health / "preopen_replay_drift_latest.json", default={})
+    divergence = _safe_load_json(health / "data_source_divergence_latest.json", default={})
+    triprate = _safe_load_json(health / "guardrail_triprate_latest.json", default={})
+    queue_stress = _safe_load_json(health / "execution_queue_stress_latest.json", default={})
+
+    coverage_ratio = _to_float(coverage.get("coverage_ratio"), 0.0)
+    coverage_log_ratio = _clamp01(math.log1p(max(coverage_ratio, 0.0)) / 6.0)
+    rows_scanned = max(_to_float(coverage.get("rows_scanned"), 0.0), 1.0)
+    rows_with_sid = _to_float(coverage.get("rows_with_snapshot_id"), 0.0)
+    coverage_fill_ratio = _clamp01(rows_with_sid / rows_scanned)
+
+    replay_decision_stale = _to_float(replay.get("decision", {}).get("stale_windows"), 0.0)
+    replay_governance_stale = _to_float(replay.get("governance", {}).get("stale_windows"), 0.0)
+    replay_max_decision_stale = max(_to_float(replay.get("thresholds", {}).get("max_decision_stale_windows"), 12.0), 1.0)
+    replay_max_governance_stale = max(_to_float(replay.get("thresholds", {}).get("max_governance_stale_windows"), 12.0), 1.0)
+    replay_stale_ratio = _clamp01(
+        (replay_decision_stale + replay_governance_stale)
+        / (replay_max_decision_stale + replay_max_governance_stale)
+    )
+
+    row_drift = max(
+        abs(_to_float(drift.get("drift", {}).get("decision_rows"), 0.0)),
+        abs(_to_float(drift.get("drift", {}).get("governance_rows"), 0.0)),
+    )
+    stale_drift = max(
+        abs(_to_float(drift.get("drift", {}).get("decision_stale"), 0.0)),
+        abs(_to_float(drift.get("drift", {}).get("governance_stale"), 0.0)),
+    )
+    max_row_drift = max(_to_float(drift.get("thresholds", {}).get("max_row_drift"), 1.2), 1e-6)
+    max_stale_drift = max(_to_float(drift.get("thresholds", {}).get("max_stale_drift"), 1.0), 1e-6)
+    replay_drift_ratio = _clamp01((0.6 * (row_drift / max_row_drift)) + (0.4 * (stale_drift / max_stale_drift)))
+
+    worst_spread = _to_float(divergence.get("worst_relative_spread"), 0.0)
+    max_spread = max(_to_float(divergence.get("max_relative_spread"), 0.03), 1e-6)
+    divergence_ratio = _clamp01(worst_spread / max_spread)
+
+    trip_rate = _to_float(triprate.get("trip_rate"), 0.0)
+    max_trip_rate = max(_to_float(triprate.get("max_trip_rate"), 0.4), 1e-6)
+    triprate_ratio = _clamp01(trip_rate / max_trip_rate)
+
+    depth_seen = _to_float(queue_stress.get("max_queue_depth_seen"), 0.0)
+    depth_max = max(_to_float(queue_stress.get("max_queue_depth"), 2000.0), 1.0)
+    depth_ratio = _clamp01(depth_seen / depth_max)
+    breach_rate = _to_float(queue_stress.get("queue_breach_rate"), 0.0)
+    breach_rate_max = max(_to_float(queue_stress.get("max_queue_breach_rate"), 0.25), 1e-6)
+    breach_ratio = _clamp01(breach_rate / breach_rate_max)
+    queue_pressure_ratio = _clamp01(max(depth_ratio, breach_ratio))
+
+    context = {
+        "snapshot_cov_ok": 1.0 if bool(coverage.get("ok", False)) else 0.0,
+        "snapshot_cov_log_ratio": coverage_log_ratio,
+        "snapshot_cov_fill_ratio": coverage_fill_ratio,
+        "snapshot_replay_ok": 1.0 if bool(replay.get("ok", False)) else 0.0,
+        "snapshot_replay_stale_ratio": replay_stale_ratio,
+        "snapshot_replay_drift_ratio": replay_drift_ratio,
+        "snapshot_divergence_ratio": divergence_ratio,
+        "snapshot_triprate_ratio": triprate_ratio,
+        "snapshot_queue_pressure_ratio": queue_pressure_ratio,
+    }
+
+    meta = {
+        "coverage_file": str(health / "snapshot_coverage_latest.json"),
+        "replay_file": str(health / "replay_preopen_sanity_latest.json"),
+        "drift_file": str(health / "preopen_replay_drift_latest.json"),
+        "divergence_file": str(health / "data_source_divergence_latest.json"),
+        "triprate_file": str(health / "guardrail_triprate_latest.json"),
+        "queue_stress_file": str(health / "execution_queue_stress_latest.json"),
+        "coverage_ts": coverage.get("timestamp_utc"),
+        "replay_ts": replay.get("timestamp_utc"),
+        "drift_ts": drift.get("timestamp_utc"),
+        "divergence_ts": divergence.get("timestamp_utc"),
+        "triprate_ts": triprate.get("timestamp_utc"),
+        "queue_stress_ts": queue_stress.get("timestamp_utc"),
+    }
+    return context, meta
+
+
+def _build_features(
+    row: Dict[str, Any],
+    pnl_scale: float,
+    regime: str,
+    label_confidence: float,
+    snapshot_context: Dict[str, float],
+) -> List[float]:
     pnl = _to_float(row.get("pnl"), 0.0)
     qty = abs(_to_float(row.get("quantity"), 0.0))
 
@@ -120,7 +236,7 @@ def _build_features(row: Dict[str, Any], pnl_scale: float, regime: str, label_co
     hour = (int(ts_epoch) // 3600) % 24 if ts_epoch > 0 else 0
     regime_idx = _regime_index(regime) / 3.0
 
-    return [
+    base_features = [
         pnl_scaled,
         qty_log,
         role_idx,
@@ -131,10 +247,12 @@ def _build_features(row: Dict[str, Any], pnl_scale: float, regime: str, label_co
         regime_idx,
         max(0.0, min(label_confidence, 1.0)),
     ]
+    snapshot_features = [float(snapshot_context.get(name, 0.0)) for name in SNAPSHOT_FEATURE_NAMES]
+    return base_features + snapshot_features
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build behavior-learning dataset from trade history (regime-aware labels).")
+    parser = argparse.ArgumentParser(description="Build behavior-learning dataset from trade history (regime-aware labels + snapshot health context).")
     parser.add_argument("--in-file", default=str(PROJECT_ROOT / "data" / "trade_history" / "trades_normalized.jsonl"))
     parser.add_argument("--out-file", default=str(PROJECT_ROOT / "data" / "trade_history" / "trade_learning_dataset.json"))
     parser.add_argument("--policy", default=str(PROJECT_ROOT / "config" / "trade_learning_policy.json"))
@@ -177,6 +295,8 @@ def main() -> int:
     min_confidence = float(weak_cfg.get("min_confidence", 0.35))
     drop_ambiguous = bool(weak_cfg.get("drop_ambiguous", True))
 
+    snapshot_context, snapshot_meta = _snapshot_health_context(PROJECT_ROOT)
+
     rows: List[Dict[str, Any]] = []
     skipped_lines = 0
     with in_path.open("r", encoding="utf-8") as f:
@@ -217,7 +337,13 @@ def main() -> int:
             skipped_ambiguous += 1
             continue
 
-        features = _build_features(row, pnl_scale=pnl_scale, regime=regime, label_confidence=label_confidence)
+        features = _build_features(
+            row,
+            pnl_scale=pnl_scale,
+            regime=regime,
+            label_confidence=label_confidence,
+            snapshot_context=snapshot_context,
+        )
         weight = _sample_weight(label, weights, regime=regime, regime_weights=regime_weights)
 
         examples.append(
@@ -256,6 +382,8 @@ def main() -> int:
     for ex in examples:
         global_counts[str(ex["label"])] += 1
 
+    feature_names = BASE_FEATURE_NAMES + SNAPSHOT_FEATURE_NAMES
+
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "rows": len(rows),
@@ -263,7 +391,12 @@ def main() -> int:
         "skipped_lines": skipped_lines,
         "skipped_ambiguous": skipped_ambiguous,
         "source": str(in_path),
-        "feature_dim": 9,
+        "feature_dim": len(feature_names),
+        "feature_names": feature_names,
+        "snapshot_context": {
+            "features": {k: round(float(v), 6) for k, v in snapshot_context.items()},
+            "meta": snapshot_meta,
+        },
         "label_space": ["negative", "neutral", "positive"],
         "label_counts": dict(global_counts),
         "regime_label_counts": {k: dict(v) for k, v in by_regime_labels.items()},
@@ -300,7 +433,19 @@ def main() -> int:
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(json.dumps({k: payload[k] for k in ("timestamp_utc", "examples", "label_counts", "regime_label_counts", "source")}, indent=2))
+    print(
+        json.dumps(
+            {
+                "timestamp_utc": payload["timestamp_utc"],
+                "examples": payload["examples"],
+                "feature_dim": payload["feature_dim"],
+                "label_counts": payload["label_counts"],
+                "regime_label_counts": payload["regime_label_counts"],
+                "source": payload["source"],
+            },
+            indent=2,
+        )
+    )
     return 0
 
 

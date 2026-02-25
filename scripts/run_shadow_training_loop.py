@@ -897,23 +897,145 @@ def _load_trade_behavior_model(project_root: str) -> Optional[Dict[str, Any]]:
     return model
 
 
+_BEHAVIOR_SHOCK_SYMBOLS = {"UVXY", "VIXY", "SOXL", "SOXS", "MSTR", "SMCI", "COIN", "TSLA"}
+_BEHAVIOR_MEAN_REVERT_SYMBOLS = {"TLT", "IEF", "SHY", "BND", "AGG", "GLD", "XLU", "XLP"}
+_BEHAVIOR_SNAPSHOT_FEATURE_NAMES = [
+    "snapshot_cov_ok",
+    "snapshot_cov_log_ratio",
+    "snapshot_cov_fill_ratio",
+    "snapshot_replay_ok",
+    "snapshot_replay_stale_ratio",
+    "snapshot_replay_drift_ratio",
+    "snapshot_divergence_ratio",
+    "snapshot_triprate_ratio",
+    "snapshot_queue_pressure_ratio",
+]
+_BEHAVIOR_SNAPSHOT_CONTEXT_CACHE: Dict[str, Any] = {"loaded_at_ts": 0.0, "values": {}}
+
+
+def _behavior_clamp01(value: float) -> float:
+    return max(0.0, min(float(value), 1.0))
+
+
+def _behavior_load_json(path: str) -> Dict[str, Any]:
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            obj = json.load(f)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
+def _behavior_snapshot_context(project_root: str) -> Dict[str, float]:
+    now_ts = time.time()
+    ttl_seconds = max(float(os.getenv('BEHAVIOR_SNAPSHOT_CONTEXT_TTL_SECONDS', '30')), 2.0)
+
+    loaded_at_ts = float(_BEHAVIOR_SNAPSHOT_CONTEXT_CACHE.get('loaded_at_ts', 0.0) or 0.0)
+    cached_values = _BEHAVIOR_SNAPSHOT_CONTEXT_CACHE.get('values')
+    if (now_ts - loaded_at_ts) <= ttl_seconds and isinstance(cached_values, dict) and cached_values:
+        return dict(cached_values)
+
+    health = os.path.join(project_root, 'governance', 'health')
+    coverage = _behavior_load_json(os.path.join(health, 'snapshot_coverage_latest.json'))
+    replay = _behavior_load_json(os.path.join(health, 'replay_preopen_sanity_latest.json'))
+    drift = _behavior_load_json(os.path.join(health, 'preopen_replay_drift_latest.json'))
+    divergence = _behavior_load_json(os.path.join(health, 'data_source_divergence_latest.json'))
+    triprate = _behavior_load_json(os.path.join(health, 'guardrail_triprate_latest.json'))
+    queue_stress = _behavior_load_json(os.path.join(health, 'execution_queue_stress_latest.json'))
+
+    coverage_ratio = float(coverage.get('coverage_ratio', 0.0) or 0.0)
+    coverage_log_ratio = _behavior_clamp01(math.log1p(max(coverage_ratio, 0.0)) / 6.0)
+    rows_scanned = max(float(coverage.get('rows_scanned', 0.0) or 0.0), 1.0)
+    rows_with_sid = float(coverage.get('rows_with_snapshot_id', 0.0) or 0.0)
+    coverage_fill_ratio = _behavior_clamp01(rows_with_sid / rows_scanned)
+
+    replay_decision_stale = float((replay.get('decision') or {}).get('stale_windows', 0.0) or 0.0)
+    replay_governance_stale = float((replay.get('governance') or {}).get('stale_windows', 0.0) or 0.0)
+    replay_max_decision_stale = max(float((replay.get('thresholds') or {}).get('max_decision_stale_windows', 12.0) or 12.0), 1.0)
+    replay_max_governance_stale = max(float((replay.get('thresholds') or {}).get('max_governance_stale_windows', 12.0) or 12.0), 1.0)
+    replay_stale_ratio = _behavior_clamp01((replay_decision_stale + replay_governance_stale) / (replay_max_decision_stale + replay_max_governance_stale))
+
+    drift_obj = drift.get('drift') or {}
+    thresholds_obj = drift.get('thresholds') or {}
+    row_drift = max(abs(float(drift_obj.get('decision_rows', 0.0) or 0.0)), abs(float(drift_obj.get('governance_rows', 0.0) or 0.0)))
+    stale_drift = max(abs(float(drift_obj.get('decision_stale', 0.0) or 0.0)), abs(float(drift_obj.get('governance_stale', 0.0) or 0.0)))
+    max_row_drift = max(float(thresholds_obj.get('max_row_drift', 1.2) or 1.2), 1e-6)
+    max_stale_drift = max(float(thresholds_obj.get('max_stale_drift', 1.0) or 1.0), 1e-6)
+    replay_drift_ratio = _behavior_clamp01((0.6 * (row_drift / max_row_drift)) + (0.4 * (stale_drift / max_stale_drift)))
+
+    worst_spread = float(divergence.get('worst_relative_spread', 0.0) or 0.0)
+    max_spread = max(float(divergence.get('max_relative_spread', 0.03) or 0.03), 1e-6)
+    divergence_ratio = _behavior_clamp01(worst_spread / max_spread)
+
+    trip_rate = float(triprate.get('trip_rate', 0.0) or 0.0)
+    max_trip_rate = max(float(triprate.get('max_trip_rate', 0.4) or 0.4), 1e-6)
+    triprate_ratio = _behavior_clamp01(trip_rate / max_trip_rate)
+
+    depth_seen = float(queue_stress.get('max_queue_depth_seen', 0.0) or 0.0)
+    depth_max = max(float(queue_stress.get('max_queue_depth', 2000.0) or 2000.0), 1.0)
+    depth_ratio = _behavior_clamp01(depth_seen / depth_max)
+    breach_rate = float(queue_stress.get('queue_breach_rate', 0.0) or 0.0)
+    breach_rate_max = max(float(queue_stress.get('max_queue_breach_rate', 0.25) or 0.25), 1e-6)
+    breach_ratio = _behavior_clamp01(breach_rate / breach_rate_max)
+    queue_pressure_ratio = _behavior_clamp01(max(depth_ratio, breach_ratio))
+
+    values: Dict[str, float] = {
+        'snapshot_cov_ok': 1.0 if bool(coverage.get('ok', False)) else 0.0,
+        'snapshot_cov_log_ratio': coverage_log_ratio,
+        'snapshot_cov_fill_ratio': coverage_fill_ratio,
+        'snapshot_replay_ok': 1.0 if bool(replay.get('ok', False)) else 0.0,
+        'snapshot_replay_stale_ratio': replay_stale_ratio,
+        'snapshot_replay_drift_ratio': replay_drift_ratio,
+        'snapshot_divergence_ratio': divergence_ratio,
+        'snapshot_triprate_ratio': triprate_ratio,
+        'snapshot_queue_pressure_ratio': queue_pressure_ratio,
+    }
+
+    _BEHAVIOR_SNAPSHOT_CONTEXT_CACHE['loaded_at_ts'] = now_ts
+    _BEHAVIOR_SNAPSHOT_CONTEXT_CACHE['values'] = dict(values)
+    return values
+
+
+def _behavior_regime_index(symbol: str, features: Dict[str, float]) -> float:
+    s = (symbol or '').upper()
+    pct = float(features.get('pct_from_close', 0.0) or 0.0)
+    mom = float(features.get('mom_5m', 0.0) or 0.0)
+    vol = float(features.get('vol_30m', 0.0) or 0.0)
+
+    if s in _BEHAVIOR_SHOCK_SYMBOLS or vol >= 0.03 or abs(pct) >= 0.04:
+        return 2.0 / 3.0
+    if s in _BEHAVIOR_MEAN_REVERT_SYMBOLS:
+        return 1.0 / 3.0
+    if abs(mom) >= 0.001 or abs(pct) >= 0.0015:
+        return 0.0
+    return 1.0
+
+
+def _behavior_label_confidence_proxy(features: Dict[str, float]) -> float:
+    pct = abs(float(features.get('pct_from_close', 0.0) or 0.0))
+    mom = abs(float(features.get('mom_5m', 0.0) or 0.0))
+    vol = abs(float(features.get('vol_30m', 0.0) or 0.0))
+    edge = pct + (0.5 * mom) + (0.25 * vol)
+    return _behavior_clamp01(edge * 25.0)
+
+
 def _behavior_feature_vector(symbol: str, action_hint: str, features: Dict[str, float]) -> Optional[Any]:
     if np is None:
         return None
 
-    pct = float(features.get("pct_from_close", 0.0))
-    mom = float(features.get("mom_5m", 0.0))
-    vol = float(features.get("vol_30m", 0.0))
+    pct = float(features.get('pct_from_close', 0.0) or 0.0)
+    mom = float(features.get('mom_5m', 0.0) or 0.0)
+    vol = float(features.get('vol_30m', 0.0) or 0.0)
 
     pnl_proxy = math.tanh((pct + 0.5 * mom - 0.25 * vol) * 100.0)
     qty_log = math.log1p(1.0)
 
-    role_raw = os.getenv("BEHAVIOR_ACCOUNT_ROLE", "INDIVIDUAL_TRADING").strip().upper()
-    if role_raw == "ROTH":
+    role_raw = os.getenv('BEHAVIOR_ACCOUNT_ROLE', 'INDIVIDUAL_TRADING').strip().upper()
+    if role_raw == 'ROTH':
         role_idx = 0.0
-    elif role_raw == "INDIVIDUAL_TRADING":
+    elif role_raw == 'INDIVIDUAL_TRADING':
         role_idx = 1.0 / 3.0
-    elif role_raw == "INDIVIDUAL_SWING":
+    elif role_raw == 'INDIVIDUAL_SWING':
         role_idx = 2.0 / 3.0
     else:
         role_idx = 1.0
@@ -925,7 +1047,25 @@ def _behavior_feature_vector(symbol: str, action_hint: str, features: Dict[str, 
     dow = now.weekday() / 6.0
     hour = now.hour / 23.0
 
-    return np.asarray([[pnl_proxy, qty_log, role_idx, symbol_hash, tx_hash, dow, hour]], dtype=float)
+    regime_idx = _behavior_regime_index(symbol, features)
+    label_confidence = _behavior_label_confidence_proxy(features)
+    snapshot_ctx = _behavior_snapshot_context(PROJECT_ROOT)
+
+    vec = [
+        pnl_proxy,
+        qty_log,
+        role_idx,
+        symbol_hash,
+        tx_hash,
+        dow,
+        hour,
+        regime_idx,
+        label_confidence,
+    ]
+    for key in _BEHAVIOR_SNAPSHOT_FEATURE_NAMES:
+        vec.append(float(snapshot_ctx.get(key, 0.0) or 0.0))
+
+    return np.asarray([vec], dtype=float)
 
 
 def _behavior_prior_from_model(
@@ -947,6 +1087,15 @@ def _behavior_prior_from_model(
         sigma = model["sigma"]
         W = model["W"]
         b = model["b"]
+
+        expected_dim = int(np.asarray(mu).shape[0])
+        if expected_dim <= 0:
+            return 0.0, {}
+        if x.shape[1] < expected_dim:
+            pad = np.zeros((x.shape[0], expected_dim - x.shape[1]), dtype=x.dtype)
+            x = np.concatenate([x, pad], axis=1)
+        elif x.shape[1] > expected_dim:
+            x = x[:, :expected_dim]
 
         xz = (x - mu) / np.where(np.abs(sigma) < 1e-8, 1.0, sigma)
         logits = xz @ W + b
