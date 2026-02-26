@@ -58,7 +58,7 @@ def timestamp_from_log_name(name: str) -> datetime:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Walk-forward style validation over historical bot training logs.")
-    parser.add_argument("--min-runs", type=int, default=4)
+    parser.add_argument("--min-runs", type=int, default=int(os.getenv("WALK_FORWARD_MIN_RUNS", "12")))
     parser.add_argument("--pass-forward-threshold", type=float, default=float(os.getenv("WALK_FORWARD_PASS_FORWARD_THRESHOLD", "0.52")))
     parser.add_argument("--pass-delta-threshold", type=float, default=float(os.getenv("WALK_FORWARD_PASS_DELTA_THRESHOLD", "-0.02")))
     parser.add_argument("--min-trading-quality-score", type=float, default=float(os.getenv("WALK_FORWARD_MIN_TRADING_QUALITY_SCORE", "0.48")))

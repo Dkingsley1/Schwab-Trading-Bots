@@ -54,8 +54,8 @@ cat > "$WEEKLY_PLIST" <<PLIST
   <string>$PROJECT_ROOT</string>
   <key>StartCalendarInterval</key>
   <dict>
-    <key>Weekday</key><integer>1</integer>
-    <key>Hour</key><integer>6</integer>
+    <key>Weekday</key><integer>6</integer>
+    <key>Hour</key><integer>20</integer>
     <key>Minute</key><integer>15</integer>
   </dict>
   <key>RunAtLoad</key><false/>
@@ -73,5 +73,5 @@ launchctl load "$WEEKLY_PLIST"
 echo "Installed: $DAILY_PLIST"
 echo "Installed: $WEEKLY_PLIST"
 echo "Daily small batch: 21:20 local"
-echo "Weekly full sweep: Sunday 06:15 local"
+echo "Weekly full sweep: Friday 20:15 local"
 echo "Logs: $LOG_DIR/retrain_daily_small.*.log and $LOG_DIR/retrain_weekly_full.*.log"

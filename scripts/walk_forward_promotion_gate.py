@@ -30,8 +30,8 @@ def main() -> int:
     parser.add_argument("--max-overfit-gap", type=float, default=float(os.getenv("PROMOTION_GATE_MAX_OVERFIT_GAP", "0.10")))
     parser.add_argument("--max-fail-share", type=float, default=float(os.getenv("PROMOTION_GATE_MAX_FAIL_SHARE", "0.25")))
     parser.add_argument("--max-severe-overfit-share", type=float, default=float(os.getenv("PROMOTION_GATE_MAX_SEVERE_OVERFIT_SHARE", "0.10")))
-    parser.add_argument("--min-runs-per-bot", type=int, default=int(os.getenv("PROMOTION_GATE_MIN_RUNS", "6")))
-    parser.add_argument("--min-considered-bots", type=int, default=int(os.getenv("PROMOTION_GATE_MIN_CONSIDERED", "8")))
+    parser.add_argument("--min-runs-per-bot", type=int, default=int(os.getenv("PROMOTION_GATE_MIN_RUNS", "12")))
+    parser.add_argument("--min-considered-bots", type=int, default=int(os.getenv("PROMOTION_GATE_MIN_CONSIDERED", "12")))
     parser.add_argument("--out-file", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "promotion_gate_latest.json"))
     args = parser.parse_args()
 

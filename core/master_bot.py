@@ -87,11 +87,14 @@ class MasterBot:
         self.graduation_min_delta = float(os.getenv("GRADUATION_MIN_DELTA", "-0.02"))
         self.min_trading_quality_score = float(os.getenv("MASTER_MIN_TRADING_QUALITY_SCORE", "0.50"))
         self.trading_quality_weight = min(max(float(os.getenv("MASTER_TRADING_QUALITY_WEIGHT", "0.35")), 0.0), 0.8)
+        self.freeze_bot_count_enabled = os.getenv("MASTER_FREEZE_BOT_COUNT", "1").strip() == "1"
+        self.strict_live_pass_only = os.getenv("MASTER_STRICT_LIVE_PASS_ONLY", "1").strip() == "1"
 
         self.prev_accuracy_by_bot = self._load_previous_accuracy_map()
         self.prev_best_accuracy_by_bot = self._load_previous_best_accuracy_map()
         self.prev_streak_by_bot = self._load_previous_streak_map()
         self.prev_status_by_bot = self._load_previous_status_map()
+        self.prev_known_bot_ids = set(self.prev_status_by_bot.keys())
         self.walk_forward_map = self._load_walk_forward_map()
         self.correlation_map = self._load_decision_correlation_map()
 
@@ -477,6 +480,32 @@ class MasterBot:
                 )
                 continue
 
+            is_new_bot = o.bot_id not in self.prev_known_bot_ids
+            if self.freeze_bot_count_enabled and is_new_bot:
+                statuses.append(
+                    BotStatus(
+                        bot_id=o.bot_id,
+                        bot_role=self._infer_bot_role(o.bot_id),
+                        active=False,
+                        reason="frozen_new_bot_count",
+                        weight=0.0,
+                        preference_score=0.0,
+                        quality_score=candidate_quality,
+                        test_accuracy=candidate_acc,
+                        candidate_test_accuracy=candidate_acc,
+                        candidate_quality_score=candidate_quality,
+                        previous_best_accuracy=prev_best,
+                        no_improvement_streak=prev_streak,
+                        deleted_from_rotation=False,
+                        delete_reason="",
+                        promoted=False,
+                        promotion_reason="frozen_new_bot_count",
+                        model_path=o.model_path,
+                        log_file=o.log_file,
+                    )
+                )
+                continue
+
             promoted = True
             promotion_reason = "promoted_new_model"
             effective_acc = candidate_acc
@@ -529,6 +558,9 @@ class MasterBot:
             if self.graduation_gate_enabled and (not graduated):
                 active = False
                 reason = f"graduation_hold:{grad_reason}"
+            elif self.strict_live_pass_only and wf_status != "pass":
+                active = False
+                reason = f"walk_forward_{wf_status}_live_hold"
             elif wf_status == "fail" and (wf_forward is not None and wf_forward < self.walk_forward_min_forward_mean):
                 active = False
                 reason = "walk_forward_fail"
@@ -590,8 +622,25 @@ class MasterBot:
             acc = s.candidate_test_accuracy if s.candidate_test_accuracy is not None else -1.0
             return (s.candidate_quality_score, acc, s.quality_score)
 
+        def _eligible_for_floor_override(s: BotStatus) -> bool:
+            reason = str(s.reason or "")
+            if reason.startswith("graduation_hold:"):
+                return False
+            if self.strict_live_pass_only and reason.startswith("walk_forward_"):
+                return False
+            if self.freeze_bot_count_enabled and reason.startswith("frozen_new_bot_count"):
+                return False
+            return True
+
         candidates = sorted(
-            [s for s in statuses if (not s.active) and (not s.deleted_from_rotation) and (s.candidate_test_accuracy is not None) and (not str(s.reason or "").startswith("graduation_hold:"))],
+            [
+                s
+                for s in statuses
+                if (not s.active)
+                and (not s.deleted_from_rotation)
+                and (s.candidate_test_accuracy is not None)
+                and _eligible_for_floor_override(s)
+            ],
             key=rank_key,
             reverse=True,
         )
@@ -604,7 +653,7 @@ class MasterBot:
                 and s.deleted_from_rotation
                 and (s.candidate_test_accuracy is not None)
                 and (not str(s.delete_reason or "").startswith("active_streak_cap_"))
-                and (not str(s.reason or "").startswith("graduation_hold:"))
+                and _eligible_for_floor_override(s)
             ],
             key=rank_key,
             reverse=True,
@@ -741,6 +790,8 @@ class MasterBot:
                 "graduation_min_delta": self.graduation_min_delta,
                 "min_trading_quality_score": self.min_trading_quality_score,
                 "trading_quality_weight": self.trading_quality_weight,
+                "freeze_bot_count_enabled": self.freeze_bot_count_enabled,
+                "strict_live_pass_only": self.strict_live_pass_only,
                 "quality_score_formula": {
                     "accuracy_weight": 0.65,
                     "val_f1_weight": 0.25,

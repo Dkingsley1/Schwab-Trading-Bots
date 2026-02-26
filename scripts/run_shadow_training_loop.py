@@ -201,7 +201,7 @@ def _apply_canary_rollout_to_bots(bots: List[SubBot], canary_max_weight: float) 
         max(canary_max_weight, 0.0),
     ) if sandbox_enabled else canary_max_weight
     sandbox_total_cap = min(
-        max(float(os.getenv("CANARY_WEIGHT_SANDBOX_TOTAL_MAX", "0.18")), 0.0),
+        max(float(os.getenv("CANARY_WEIGHT_SANDBOX_TOTAL_MAX", "0.12")), 0.0),
         1.0,
     ) if sandbox_enabled else 1.0
 
@@ -688,7 +688,7 @@ def _enforce_cross_symbol_exposure_cap(
 def _event_blackout_windows() -> List[tuple[int, int]]:
     raw = os.getenv(
         "EVENT_LOCK_WINDOWS_ET",
-        os.getenv("EVENT_BLACKOUT_WINDOWS_ET", "08:29-08:36,09:59-10:06,13:58-14:05"),
+        os.getenv("EVENT_BLACKOUT_WINDOWS_ET", "08:29-08:36,09:59-10:06,13:58-14:05,15:57-16:05"),
     ).strip()
     windows: List[tuple[int, int]] = []
     if not raw:
@@ -1440,7 +1440,7 @@ def _behavior_feature_vector_v2(symbol: str, action_hint: str, features: Dict[st
     dispatch_qty = abs(float(features.get('dispatch_qty', features.get('sized_qty', 0.0)) or 0.0))
 
     feature_freshness_enabled = os.getenv('FEATURE_FRESHNESS_GUARD_ENABLED', '1').strip() == '1'
-    feature_freshness_max_age_seconds = float(os.getenv('FEATURE_FRESHNESS_MAX_AGE_SECONDS', '20'))
+    feature_freshness_max_age_seconds = float(os.getenv('FEATURE_FRESHNESS_MAX_AGE_SECONDS', '12'))
     feature_freshness_required = [
         s.strip()
         for s in os.getenv(
@@ -1459,7 +1459,7 @@ def _behavior_feature_vector_v2(symbol: str, action_hint: str, features: Dict[st
         else (True, 'disabled', 0.0)
     )
 
-    master_latency_timeout_ms = max(float(os.getenv('MASTER_LATENCY_SLO_TIMEOUT_MS', '900')), 1.0)
+    master_latency_timeout_ms = max(float(os.getenv('MASTER_LATENCY_SLO_TIMEOUT_MS', '800')), 1.0)
     master_latency_ms = float(features.get('master_latency_ms', features.get('elapsed_ms', 0.0)) or 0.0)
     master_latency_ratio = _behavior_clamp01(master_latency_ms / master_latency_timeout_ms)
     if 'master_latency_slo_ok' in features:
@@ -1761,10 +1761,10 @@ def _gzip_file(path: str) -> bool:
 def _run_log_maintenance(project_root: str, *, max_ops: int = 200) -> Dict[str, int]:
     now_ts = time.time()
 
-    retention_decisions = int(os.getenv('LOG_RETENTION_DECISIONS_DAYS', '7'))
-    retention_explanations = int(os.getenv('LOG_RETENTION_DECISION_EXPLANATIONS_DAYS', '7'))
-    retention_governance = int(os.getenv('LOG_RETENTION_GOVERNANCE_DAYS', '10'))
-    retention_exports = int(os.getenv('LOG_RETENTION_EXPORTS_DAYS', '7'))
+    retention_decisions = int(os.getenv('LOG_RETENTION_DECISIONS_DAYS', '30'))
+    retention_explanations = int(os.getenv('LOG_RETENTION_DECISION_EXPLANATIONS_DAYS', '30'))
+    retention_governance = int(os.getenv('LOG_RETENTION_GOVERNANCE_DAYS', '45'))
+    retention_exports = int(os.getenv('LOG_RETENTION_EXPORTS_DAYS', '30'))
     compress_after_days = float(os.getenv('LOG_COMPRESS_AFTER_DAYS', '1'))
 
     targets = [
@@ -2337,7 +2337,7 @@ def run_loop(
     session_gate_enabled = os.getenv('SESSION_GATE_ENABLED', default_session_gate).strip() == '1'
     event_blackout_enabled = os.getenv('EVENT_LOCK_ENABLED', os.getenv('EVENT_BLACKOUT_ENABLED', default_blackout_gate)).strip() == '1'
     feature_freshness_enabled = os.getenv('FEATURE_FRESHNESS_GUARD_ENABLED', '1').strip() == '1'
-    feature_freshness_max_age_seconds = float(os.getenv('FEATURE_FRESHNESS_MAX_AGE_SECONDS', '20'))
+    feature_freshness_max_age_seconds = float(os.getenv('FEATURE_FRESHNESS_MAX_AGE_SECONDS', '12'))
     feature_freshness_required = [
         x.strip() for x in os.getenv(
             'FEATURE_FRESHNESS_REQUIRED_KEYS',
@@ -2345,7 +2345,7 @@ def run_loop(
         ).split(',') if x.strip()
     ]
     master_latency_slo_enabled = os.getenv('MASTER_LATENCY_SLO_GUARD_ENABLED', '1').strip() == '1'
-    master_latency_slo_timeout_ms = float(os.getenv('MASTER_LATENCY_SLO_TIMEOUT_MS', '900'))
+    master_latency_slo_timeout_ms = float(os.getenv('MASTER_LATENCY_SLO_TIMEOUT_MS', '800'))
     preopen_replay_sanity_enabled = os.getenv(
         'PREOPEN_REPLAY_SANITY_ENABLED',
         '0' if broker == 'coinbase' else '1',
@@ -3520,8 +3520,10 @@ def main() -> None:
     if args.broker == "coinbase":
         symbols = [CoinbaseMarketDataClient.normalize_symbol(s) for s in symbols]
         context_symbols = [CoinbaseMarketDataClient.normalize_symbol(s) for s in context_symbols]
-        # For crypto mode, if context stayed at equity defaults, swap to crypto context.
-        if context_symbols == ["$VIX.X", "UUP"]:
+        # For crypto mode, if context stayed at equity defaults (before or after normalization),
+        # swap to crypto context symbols to avoid repeated 404 fetches.
+        equity_context_defaults = {"$VIX.X", "UUP", "$VIX.X-USD", "UUP-USD"}
+        if context_symbols and all(s in equity_context_defaults for s in context_symbols):
             context_symbols = ["BTC-USD", "ETH-USD", "SOL-USD"]
 
     print(

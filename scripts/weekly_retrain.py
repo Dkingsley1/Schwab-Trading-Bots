@@ -1031,12 +1031,12 @@ def main() -> int:
     parser.add_argument(
         "--min-snapshot-coverage-ratio",
         type=float,
-        default=float(os.getenv("RETRAIN_MIN_SNAPSHOT_COVERAGE_RATIO", "0.75")),
+        default=float(os.getenv("RETRAIN_MIN_SNAPSHOT_COVERAGE_RATIO", "0.85")),
     )
     parser.add_argument(
         "--max-data-divergence-spread",
         type=float,
-        default=float(os.getenv("RETRAIN_MAX_DATA_DIVERGENCE_SPREAD", "0.04")),
+        default=float(os.getenv("RETRAIN_MAX_DATA_DIVERGENCE_SPREAD", "0.03")),
     )
     parser.add_argument(
         "--snapshot-coverage-file",
@@ -1076,7 +1076,7 @@ def main() -> int:
     parser.add_argument(
         "--retire-apply",
         action="store_true",
-        default=os.getenv("RETRAIN_RETIRE_APPLY", "0").strip() == "1",
+        default=os.getenv("RETRAIN_RETIRE_APPLY", "1").strip() == "1",
         help="Apply retirement changes to registry (otherwise report-only).",
     )
     parser.add_argument(
@@ -1087,17 +1087,17 @@ def main() -> int:
     parser.add_argument(
         "--retire-min-fail-days",
         type=int,
-        default=int(os.getenv("RETRAIN_RETIRE_MIN_FAIL_DAYS", "7")),
+        default=int(os.getenv("RETRAIN_RETIRE_MIN_FAIL_DAYS", "5")),
     )
     parser.add_argument(
         "--retire-min-no-improvement-streak",
         type=int,
-        default=int(os.getenv("RETRAIN_RETIRE_MIN_NO_IMPROVEMENT_STREAK", "3")),
+        default=int(os.getenv("RETRAIN_RETIRE_MIN_NO_IMPROVEMENT_STREAK", "2")),
     )
     parser.add_argument(
         "--retire-max-per-run",
         type=int,
-        default=int(os.getenv("RETRAIN_RETIRE_MAX_PER_RUN", "4")),
+        default=int(os.getenv("RETRAIN_RETIRE_MAX_PER_RUN", "6")),
     )
     parser.add_argument(
         "--new-bot-boost",
