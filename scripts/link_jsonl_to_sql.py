@@ -5,6 +5,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,6 +93,31 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection, table: str) -> None:
     conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_ingested_at ON {table}(ingested_at)")
 
 
+def _sqlite_executemany_with_retry(
+    conn: sqlite3.Connection,
+    sql: str,
+    rows: List[Tuple[str, str, int, str, str, str]],
+    lock_retries: int,
+    lock_retry_delay_seconds: float,
+) -> sqlite3.Cursor:
+    attempt = 0
+    while True:
+        try:
+            return conn.executemany(sql, rows)
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            is_locked = ("database is locked" in msg) or ("database table is locked" in msg)
+            if (not is_locked) or attempt >= max(lock_retries, 0):
+                raise
+            sleep_s = min(max(lock_retry_delay_seconds, 0.01) * (2 ** attempt), 5.0)
+            print(
+                f"SQLite busy; retrying batch in {sleep_s:.2f}s "
+                f"(attempt {attempt + 1}/{max(lock_retries, 0)})"
+            )
+            time.sleep(sleep_s)
+            attempt += 1
+
+
 def _sync_file_to_sqlite(
     conn: sqlite3.Connection,
     table: str,
@@ -99,6 +125,8 @@ def _sync_file_to_sqlite(
     file_path: Path,
     start_line: int,
     dry_run: bool,
+    lock_retries: int,
+    lock_retry_delay_seconds: float,
 ) -> Tuple[int, int, int]:
     inserted = 0
     invalid = 0
@@ -128,9 +156,12 @@ def _sync_file_to_sqlite(
 
         if len(rows) >= 1000:
             if not dry_run:
-                cur = conn.executemany(
+                cur = _sqlite_executemany_with_retry(
+                    conn,
                     f"INSERT OR IGNORE INTO {table} (source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
                     rows,
+                    lock_retries=lock_retries,
+                    lock_retry_delay_seconds=lock_retry_delay_seconds,
                 )
                 inserted += cur.rowcount if cur.rowcount is not None else 0
             else:
@@ -139,9 +170,12 @@ def _sync_file_to_sqlite(
 
     if rows:
         if not dry_run:
-            cur = conn.executemany(
+            cur = _sqlite_executemany_with_retry(
+                conn,
                 f"INSERT OR IGNORE INTO {table} (source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
                 rows,
+                lock_retries=lock_retries,
+                lock_retry_delay_seconds=lock_retry_delay_seconds,
             )
             inserted += cur.rowcount if cur.rowcount is not None else 0
         else:
@@ -260,6 +294,9 @@ def main() -> int:
 
     parser.add_argument("--sqlite-db", default=None, help="SQLite database file path.")
     parser.add_argument("--sqlite-table", default="jsonl_records")
+    parser.add_argument("--sqlite-timeout-seconds", type=float, default=float(os.getenv("SQLITE_TIMEOUT_SECONDS", "60")))
+    parser.add_argument("--sqlite-lock-retries", type=int, default=int(os.getenv("SQLITE_LOCK_RETRIES", "8")))
+    parser.add_argument("--sqlite-lock-retry-delay-seconds", type=float, default=float(os.getenv("SQLITE_LOCK_RETRY_DELAY_SECONDS", "0.25")))
 
     parser.add_argument("--mysql-bin", default=os.getenv("MYSQL_BIN", "/opt/homebrew/bin/mysql"))
     parser.add_argument("--mysql-host", default=os.getenv("MYSQL_HOST", "127.0.0.1"))
@@ -284,6 +321,7 @@ def main() -> int:
         "decision_explanations/**/*.jsonl",
         "decisions/**/*.jsonl",
         "governance/**/*.jsonl",
+        "exports/paper_broker_bridge/**/*.jsonl",
         "data/**/*.jsonl",
     ]
     exclude_parts = ["/.git/", "/.venv", "/models/archive/"]
@@ -302,9 +340,10 @@ def main() -> int:
         sqlite_db = Path(args.sqlite_db).resolve() if args.sqlite_db else (project_root / "data" / "jsonl_link.sqlite3")
         if not args.dry_run:
             sqlite_db.parent.mkdir(parents=True, exist_ok=True)
-            sqlite_conn = sqlite3.connect(str(sqlite_db))
+            sqlite_conn = sqlite3.connect(str(sqlite_db), timeout=max(float(args.sqlite_timeout_seconds), 1.0))
             sqlite_conn.execute("PRAGMA journal_mode=WAL")
             sqlite_conn.execute("PRAGMA synchronous=NORMAL")
+            sqlite_conn.execute(f"PRAGMA busy_timeout={int(max(float(args.sqlite_timeout_seconds), 1.0) * 1000)}")
             _ensure_sqlite_schema(sqlite_conn, args.sqlite_table)
         print(f"SQLite target: {sqlite_db} table={args.sqlite_table}")
 
@@ -332,7 +371,11 @@ def main() -> int:
     try:
         for fp in files:
             rel = str(fp.relative_to(project_root))
-            mtime = fp.stat().st_mtime
+            try:
+                mtime = fp.stat().st_mtime
+            except FileNotFoundError:
+                print(f"Skipping vanished file before sync: {rel}")
+                continue
             print(f"Syncing: {rel}")
 
             if args.mode in {"sqlite", "both"}:
@@ -340,14 +383,20 @@ def main() -> int:
                 start_line = int(progress.get("last_line", 0) or 0)
                 if mtime < float(progress.get("mtime", 0.0) or 0.0):
                     start_line = 0
-                ins, bad, last_line = _sync_file_to_sqlite(
-                    sqlite_conn,
-                    args.sqlite_table,
-                    project_root,
-                    fp,
-                    start_line,
-                    args.dry_run,
-                )
+                try:
+                    ins, bad, last_line = _sync_file_to_sqlite(
+                        sqlite_conn,
+                        args.sqlite_table,
+                        project_root,
+                        fp,
+                        start_line,
+                        args.dry_run,
+                        lock_retries=max(args.sqlite_lock_retries, 0),
+                        lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+                    )
+                except FileNotFoundError:
+                    print(f"  sqlite skipped vanished file during sync: {rel}")
+                    continue
                 if not args.dry_run and sqlite_conn is not None:
                     sqlite_conn.commit()
                 total_inserted["sqlite"] += ins
@@ -360,20 +409,24 @@ def main() -> int:
                 start_line = int(progress.get("last_line", 0) or 0)
                 if mtime < float(progress.get("mtime", 0.0) or 0.0):
                     start_line = 0
-                ins, bad, last_line = _sync_file_to_mysql(
-                    args.mysql_bin,
-                    args.mysql_host,
-                    args.mysql_port,
-                    args.mysql_user,
-                    args.mysql_password,
-                    args.mysql_database,
-                    args.mysql_table,
-                    project_root,
-                    fp,
-                    start_line,
-                    args.mysql_batch_size,
-                    args.dry_run,
-                )
+                try:
+                    ins, bad, last_line = _sync_file_to_mysql(
+                        args.mysql_bin,
+                        args.mysql_host,
+                        args.mysql_port,
+                        args.mysql_user,
+                        args.mysql_password,
+                        args.mysql_database,
+                        args.mysql_table,
+                        project_root,
+                        fp,
+                        start_line,
+                        args.mysql_batch_size,
+                        args.dry_run,
+                    )
+                except FileNotFoundError:
+                    print(f"  mysql skipped vanished file during sync: {rel}")
+                    continue
                 total_inserted["mysql"] += ins
                 total_invalid["mysql"] += bad
                 state["mysql"][rel] = {"last_line": float(last_line), "mtime": mtime}

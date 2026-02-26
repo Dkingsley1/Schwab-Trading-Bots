@@ -2358,7 +2358,7 @@ def run_loop(
     paper_mirror_profiles = {
         x.strip().lower() for x in paper_mirror_profiles_raw.split(",") if x.strip()
     }
-    current_profile = (_shadow_profile_name() or "").strip().lower()
+    current_profile = (_shadow_profile_name() or "default").strip().lower()
     paper_profile_ok = (not paper_mirror_profiles) or (current_profile in paper_mirror_profiles)
     paper_selected_ids: set[str] = set()
 

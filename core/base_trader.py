@@ -3,6 +3,7 @@
 
 import json
 import os
+import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -26,6 +27,15 @@ class BaseTrader:
         self.mode_label = "shadow"
         self.paper_log_path = ""
         self.live_log_path = ""
+        self.paper_bridge_enabled = os.getenv("PAPER_BROKER_BRIDGE_ENABLED", "0").strip() == "1"
+        self.paper_bridge_mode = os.getenv("PAPER_BROKER_BRIDGE_MODE", "jsonl").strip().lower()
+        if self.paper_bridge_mode not in {"jsonl", "webhook", "both"}:
+            self.paper_bridge_mode = "jsonl"
+        self.paper_bridge_url = os.getenv("PAPER_BROKER_BRIDGE_URL", "").strip()
+        self.paper_bridge_timeout_seconds = max(float(os.getenv("PAPER_BROKER_BRIDGE_TIMEOUT_SECONDS", "4.0")), 0.5)
+        self.paper_bridge_source = os.getenv("PAPER_BROKER_BRIDGE_SOURCE", "local_paper_mirror").strip() or "local_paper_mirror"
+        self.paper_bridge_log_dir = ""
+        self._paper_bridge_warned_missing_url = False
 
         # Safety defaults: no order execution unless explicitly enabled.
         self.execution_enabled = os.getenv("ALLOW_ORDER_EXECUTION", "0").strip() == "1"
@@ -59,6 +69,7 @@ class BaseTrader:
         # Keep decisions and execution artifacts isolated by mode/profile.
         self.paper_log_path = os.path.join(self.project_root, f"paper_trades_{self.mode_label}.jsonl")
         self.live_log_path = os.path.join(self.project_root, f"live_orders_{self.mode_label}.jsonl")
+        self.paper_bridge_log_dir = os.path.join(self.project_root, "exports", "paper_broker_bridge", self.mode_label)
         self.decision_logger = DecisionLogger(self.project_root, subdir=os.path.join("decisions", self.mode_label))
 
     def authenticate(self):
@@ -98,6 +109,74 @@ class BaseTrader:
         jsonl_path = os.path.join(base_dir, f"decision_explanations_{day}.jsonl")
         text_path = os.path.join(base_dir, "latest_decisions.log")
         return jsonl_path, text_path
+
+    def _paper_bridge_paths(self) -> tuple[str, str]:
+        day = datetime.now(timezone.utc).strftime("%Y%m%d")
+        os.makedirs(self.paper_bridge_log_dir, exist_ok=True)
+        daily_jsonl = os.path.join(self.paper_bridge_log_dir, f"paper_bridge_orders_{day}.jsonl")
+        latest_json = os.path.join(self.paper_bridge_log_dir, "latest_order.json")
+        return daily_jsonl, latest_json
+
+    def _bridge_paper_order(self, *, paper_order: Dict[str, Any], result_status: str) -> Dict[str, Any]:
+        bridge_result: Dict[str, Any] = {
+            "enabled": self.paper_bridge_enabled,
+            "mode": self.paper_bridge_mode,
+            "webhook_configured": bool(self.paper_bridge_url),
+            "jsonl_written": False,
+            "webhook_sent": False,
+            "webhook_status_code": 0,
+            "error": "",
+        }
+        if not self.paper_bridge_enabled:
+            return bridge_result
+
+        payload = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "bridge_source": self.paper_bridge_source,
+            "bridge_mode_label": self.mode_label,
+            "status": result_status,
+            "symbol": str(paper_order.get("symbol", "")),
+            "action": str(paper_order.get("action", "")),
+            "quantity": float(paper_order.get("quantity", 0.0) or 0.0),
+            "model_score": float(paper_order.get("model_score", 0.0) or 0.0),
+            "threshold": float(paper_order.get("threshold", 0.0) or 0.0),
+            "strategy": str(paper_order.get("strategy", "")),
+            "metadata": paper_order.get("metadata", {}) if isinstance(paper_order.get("metadata"), dict) else {},
+        }
+
+        try:
+            if self.paper_bridge_mode in {"jsonl", "both"}:
+                daily_jsonl, latest_json = self._paper_bridge_paths()
+                self._record_jsonl(daily_jsonl, payload)
+                with open(latest_json, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=True, indent=2)
+                bridge_result["jsonl_written"] = True
+
+            if self.paper_bridge_mode in {"webhook", "both"}:
+                if not self.paper_bridge_url:
+                    if not self._paper_bridge_warned_missing_url:
+                        print("[PaperBridge] webhook mode enabled but PAPER_BROKER_BRIDGE_URL is empty")
+                        self._paper_bridge_warned_missing_url = True
+                    bridge_result["error"] = "missing_webhook_url"
+                    return bridge_result
+
+                body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+                req = urllib.request.Request(
+                    url=self.paper_bridge_url,
+                    data=body,
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=self.paper_bridge_timeout_seconds) as resp:
+                    status_code = int(getattr(resp, "status", 0) or resp.getcode() or 0)
+                bridge_result["webhook_status_code"] = status_code
+                bridge_result["webhook_sent"] = 200 <= status_code < 300
+                if not bridge_result["webhook_sent"]:
+                    bridge_result["error"] = f"webhook_non_2xx:{status_code}"
+        except Exception as exc:
+            bridge_result["error"] = str(exc)
+
+        return bridge_result
 
     def _emit_decision_explanation(
         self,
@@ -238,6 +317,9 @@ class BaseTrader:
                 "decision": decision_entry,
                 "paper_order": paper,
             }
+            if self._is_trade_action(action):
+                bridge = self._bridge_paper_order(paper_order=paper, result_status=status)
+                result["paper_bridge"] = bridge
         else:
             # live mode
             if self.client is None:
