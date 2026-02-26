@@ -1714,6 +1714,32 @@ def _split_bot_tiers(active_bots: List[SubBot]) -> Tuple[List[SubBot], List[SubB
     return fast, slow
 
 
+def _top_paper_mirror_bots(
+    active_bots: List[SubBot],
+    *,
+    top_n: int,
+    min_accuracy: float,
+) -> List[SubBot]:
+    if top_n <= 0:
+        return []
+    ranked = sorted(
+        [
+            b for b in active_bots
+            if b.active and b.bot_role != "infrastructure_sub_bot"
+        ],
+        key=lambda b: (float(b.test_accuracy or 0.0), float(b.weight or 0.0), b.bot_id),
+        reverse=True,
+    )
+    out: List[SubBot] = []
+    for b in ranked:
+        if float(b.test_accuracy or 0.0) < min_accuracy:
+            continue
+        out.append(b)
+        if len(out) >= top_n:
+            break
+    return out
+
+
 def _sub_bot_signal_batch(bots: List[SubBot], mkt: Dict[str, float]) -> List[Tuple[SubBot, str, float, float, List[str]]]:
     out: List[Tuple[SubBot, str, float, float, List[str]]] = []
     for b in bots:
@@ -2324,6 +2350,35 @@ def run_loop(
     bot_cooldown_max_iters = max(int(os.getenv("BOT_COOLDOWN_MAX_ITERS", "4")), bot_cooldown_min_iters)
     bot_next_eval_iter: Dict[str, int] = {}
 
+
+    paper_mirror_enabled = os.getenv("TOP_BOT_PAPER_TRADING_ENABLED", "0").strip() == "1"
+    paper_mirror_top_n = max(int(os.getenv("TOP_BOT_PAPER_TRADING_TOP_N", "2")), 0)
+    paper_mirror_min_accuracy = float(os.getenv("TOP_BOT_PAPER_TRADING_MIN_ACC", "0.0"))
+    paper_mirror_profiles_raw = os.getenv("TOP_BOT_PAPER_TRADING_PROFILES", "").strip()
+    paper_mirror_profiles = {
+        x.strip().lower() for x in paper_mirror_profiles_raw.split(",") if x.strip()
+    }
+    current_profile = (_shadow_profile_name() or "").strip().lower()
+    paper_profile_ok = (not paper_mirror_profiles) or (current_profile in paper_mirror_profiles)
+    paper_selected_ids: set[str] = set()
+
+    if paper_mirror_enabled and (not paper_profile_ok):
+        print(
+            f"[PaperMirror] disabled profile={current_profile or 'default'} "
+            f"allowed={sorted(paper_mirror_profiles)}"
+        )
+
+    paper_trader: Optional[BaseTrader] = None
+    if paper_mirror_enabled and paper_profile_ok and paper_mirror_top_n > 0:
+        paper_trader = BaseTrader(api_key, secret, redirect, mode="paper")
+        paper_trader.execution_enabled = True
+        paper_trader.market_data_only = False
+        print(
+            f"[PaperMirror] enabled top_n={paper_mirror_top_n} "
+            f"min_acc={paper_mirror_min_accuracy:.3f} "
+            f"profile={current_profile or 'default'}"
+        )
+
     if resume_from_checkpoint:
         cp = checkpoint.load()
         cp_iter = int(cp.get("iter_count", 0) or 0)
@@ -2533,6 +2588,22 @@ def run_loop(
         active_bots = [b for b in bots if b.active]
         if not active_bots:
             active_bots = [SubBot(bot_id="fallback_master_seed", weight=1.0, active=True, reason="fallback", test_accuracy=0.50, bot_role="signal_sub_bot")]
+
+        if paper_trader is not None:
+            top_paper_bots = _top_paper_mirror_bots(
+                active_bots,
+                top_n=paper_mirror_top_n,
+                min_accuracy=paper_mirror_min_accuracy,
+            )
+            new_selected_ids = {b.bot_id for b in top_paper_bots}
+            if new_selected_ids != paper_selected_ids:
+                paper_selected_ids = new_selected_ids
+                selected_text = ",".join(
+                    f"{b.bot_id}:{float(b.test_accuracy or 0.0):.3f}"
+                    for b in top_paper_bots
+                ) or "none"
+                print(f"[PaperMirror] selected={selected_text}")
+
 
         fast_bots, slow_bots = _split_bot_tiers(active_bots)
         evaluate_slow_this_iter = (iter_count % slow_bot_every_n_iters == 0)
@@ -2865,6 +2936,35 @@ def run_loop(
                         reused["reused"] = 1
                         sub_rows.append(reused)
 
+            if paper_trader is not None and paper_selected_ids:
+                for row in sub_rows:
+                    bot_id = str(row.get("bot_id", ""))
+                    action = str(row.get("action", "HOLD")).upper()
+                    if bot_id not in paper_selected_ids or action not in {"BUY", "SELL"}:
+                        continue
+                    try:
+                        paper_trader.execute_decision(
+                            symbol=symbol,
+                            action=action,
+                            quantity=1,
+                            model_score=float(row.get("score", 0.5)),
+                            threshold=float(row.get("threshold", 0.55)),
+                            features=shared_features,
+                            gates=gates,
+                            reasons=list(row.get("reasons", [])) + [f"paper_mirror_top_n={paper_mirror_top_n}", f"bot_id={bot_id}"],
+                            strategy=f"paper_mirror::{bot_id}",
+                            metadata={
+                                "layer": "sub_bot_paper_mirror",
+                                "snapshot_id": snapshot_id,
+                                "source_profile": _shadow_profile_name() or "default",
+                                "bot_weight": row.get("weight", 0.0),
+                                "test_accuracy": row.get("test_accuracy"),
+                            },
+                        )
+                    except Exception as exc:
+                        print(f"[PaperMirror] order_failed symbol={symbol} bot_id={bot_id} err={exc}")
+
+
             # Broadcast flash-crash specialist signal as shared context to all higher-level decisions.
             flash_aux = _derive_flash_aux_features(sub_rows)
             shared_features = {**shared_features, **flash_aux}
@@ -2962,6 +3062,9 @@ def run_loop(
                 gm_score = 0.5 + 0.5 * (gm_score - 0.5)
                 gm_reasons = gm_reasons + ["regime_change_cooldown"]
 
+            gm_intent_action = gm_action
+            gm_intent_score = gm_score
+
             gm_action, gm_score, gm_reasons = _enforce_cross_symbol_exposure_cap(
                 action=gm_action,
                 score=gm_score,
@@ -3054,6 +3157,53 @@ def run_loop(
             dispatch = exec_queue.pop() if enq_ok else None
             dispatch_qty = dispatch.quantity if dispatch is not None else 0.0
 
+            grand_features = {
+                **shared_features,
+                "grand_master_vote": gm_vote["vote"],
+                "active_sub_bots": len(active_bots),
+                "sized_qty": dispatch_qty,
+            }
+            grand_gates = {
+                "ensemble_has_members": len(active_bots) > 0,
+                "market_data_ok": mkt["last_price"] > 0,
+                "risk_limit_ok": all(risk_gates.values()),
+                "feature_freshness_ok": freshness_ok,
+                "master_latency_slo_ok": master_latency_slo_ok,
+                **risk_gates,
+                "exec_queue_ok": enq_ok,
+            }
+            guard_blocked_intent = gm_intent_action in {"BUY", "SELL"} and gm_action != gm_intent_action
+
+            if guard_blocked_intent and log_grand_master_decisions:
+                trader.execute_decision(
+                    symbol=symbol,
+                    action=gm_intent_action,
+                    quantity=0.0,
+                    model_score=gm_intent_score,
+                    threshold=gm_threshold,
+                    features={
+                        **grand_features,
+                        "intent_only": 1,
+                        "final_action": gm_action,
+                    },
+                    gates={
+                        **grand_gates,
+                        "intent_matches_final": False,
+                    },
+                    reasons=gm_reasons + [f"intent_logged final_action={gm_action}"],
+                    strategy="grand_master_intent_bot",
+                    metadata={
+                        "layer": "grand_master",
+                        "snapshot_id": snapshot_id,
+                        "master_weights": gm_weights,
+                        "queue_depth": exec_queue.size(),
+                        "intent_action": gm_intent_action,
+                        "intent_score": gm_intent_score,
+                        "final_action": gm_action,
+                        "intent_only": True,
+                    },
+                )
+
             if log_grand_master_decisions:
                 trader.execute_decision(
                     symbol=symbol,
@@ -3061,19 +3211,19 @@ def run_loop(
                     quantity=dispatch_qty,
                     model_score=gm_score,
                     threshold=gm_threshold,
-                    features={**shared_features, "grand_master_vote": gm_vote["vote"], "active_sub_bots": len(active_bots), "sized_qty": dispatch_qty},
-                    gates={
-                        "ensemble_has_members": len(active_bots) > 0,
-                        "market_data_ok": mkt["last_price"] > 0,
-                        "risk_limit_ok": all(risk_gates.values()),
-                        "feature_freshness_ok": freshness_ok,
-                        "master_latency_slo_ok": master_latency_slo_ok,
-                        **risk_gates,
-                        "exec_queue_ok": enq_ok,
-                    },
+                    features=grand_features,
+                    gates=grand_gates,
                     reasons=gm_reasons,
                     strategy="grand_master_bot",
-                    metadata={"layer": "grand_master", "snapshot_id": snapshot_id, "master_weights": gm_weights, "queue_depth": exec_queue.size()},
+                    metadata={
+                        "layer": "grand_master",
+                        "snapshot_id": snapshot_id,
+                        "master_weights": gm_weights,
+                        "queue_depth": exec_queue.size(),
+                        "intent_action": gm_intent_action,
+                        "intent_score": gm_intent_score,
+                        "guard_blocked_intent": guard_blocked_intent,
+                    },
                 )
 
             optm_action, optm_score, optm_threshold, optm_reasons, optm_vote = _options_master_signal(
@@ -3208,6 +3358,9 @@ def run_loop(
                 "master_action": gm_action,
                 "master_score": gm_score,
                 "master_vote": gm_vote["vote"],
+                "master_intent_action": gm_intent_action,
+                "master_intent_score": gm_intent_score,
+                "master_guard_blocked_intent": guard_blocked_intent,
                 "master_outputs": master_outputs,
                 "grand_master_weights": gm_weights,
                 "options_master": {"action": optm_action, "score": optm_score, "vote": optm_vote["vote"]},
@@ -3241,14 +3394,17 @@ def run_loop(
                 "broker": broker,
                 "shadow_profile": _shadow_profile_name() or "default",
                 "action": gm_action,
+                "intent_action": gm_intent_action,
+                "intent_blocked": guard_blocked_intent,
                 "score": gm_score,
                 "risk_limit_ok": all(risk_gates.values()),
                 "slippage_bps": exec_sim.slippage_bps,
             })
 
+            intent_suffix = f" intent_action={gm_intent_action}" if guard_blocked_intent else ""
             print(
                 f"[ShadowLoop] iter={iter_count} symbol={symbol} price={mkt['last_price']:.2f} "
-                f"grand_action={gm_action} options_master={optm_action} options_action={options_decision['action']} "
+                f"grand_action={gm_action}{intent_suffix} options_master={optm_action} options_action={options_decision['action']} "
                 f"active_bots={len(active_bots)} recs={len(recs)} snapshot_id={snapshot_id}"
             )
 

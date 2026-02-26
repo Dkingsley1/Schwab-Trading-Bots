@@ -21,7 +21,16 @@ def _run_link(timeout_s: int, lock_retries: int, retry_delay_s: float) -> tuple[
         '--sqlite-lock-retries', str(max(lock_retries, 0)),
         '--sqlite-lock-retry-delay-seconds', str(max(retry_delay_s, 0.1)),
     ]
-    p = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=False)
+    # Some launchd/watchdog contexts can leave stdin as an invalid descriptor.
+    # Force a stable stdin handle so child Python does not fail at init_sys_streams.
+    p = subprocess.run(
+        cmd,
+        cwd=str(PROJECT_ROOT),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     return p.returncode, (p.stdout or '').strip(), (p.stderr or '').strip()
 
 
