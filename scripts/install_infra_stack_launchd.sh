@@ -41,6 +41,7 @@ launchctl load "$ALL_SLEEVES_PLIST"
 [[ -x "$PROJECT_ROOT/scripts/install_daily_auto_verify_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_daily_auto_verify_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/install_retrain_schedule_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_retrain_schedule_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/install_daily_retirement_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_daily_retirement_launchd.sh"
+[[ -x "$PROJECT_ROOT/scripts/ops/install_ops_automation_launchd.sh" ]] && "$PROJECT_ROOT/scripts/ops/install_ops_automation_launchd.sh"
 
 echo "Installed all-sleeves launchd stack"
 echo "Main: $ALL_SLEEVES_PLIST"
