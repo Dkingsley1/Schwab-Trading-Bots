@@ -45,10 +45,10 @@ def _vacuum_sqlite(path: Path) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prune old data artifacts by retention policy.")
-    parser.add_argument("--decisions-days", type=int, default=int(os.getenv("RETENTION_DECISIONS_DAYS", "21")))
-    parser.add_argument("--decision-explanations-days", type=int, default=int(os.getenv("RETENTION_DECISION_EXPLANATIONS_DAYS", "21")))
-    parser.add_argument("--governance-days", type=int, default=int(os.getenv("RETENTION_GOVERNANCE_DAYS", "30")))
-    parser.add_argument("--exports-days", type=int, default=int(os.getenv("RETENTION_EXPORTS_DAYS", "14")))
+    parser.add_argument("--decisions-days", type=int, default=int(os.getenv("RETENTION_DECISIONS_DAYS", "30")))
+    parser.add_argument("--decision-explanations-days", type=int, default=int(os.getenv("RETENTION_DECISION_EXPLANATIONS_DAYS", "30")))
+    parser.add_argument("--governance-days", type=int, default=int(os.getenv("RETENTION_GOVERNANCE_DAYS", "45")))
+    parser.add_argument("--exports-days", type=int, default=int(os.getenv("RETENTION_EXPORTS_DAYS", "30")))
     parser.add_argument("--backup-drills-days", type=int, default=int(os.getenv("RETENTION_BACKUP_DRILLS_DAYS", "14")))
     parser.add_argument("--csv-days", type=int, default=int(os.getenv("RETENTION_CSV_DAYS", "10")))
     parser.add_argument("--logs-days", type=int, default=int(os.getenv("RETENTION_LOGS_DAYS", "14")))

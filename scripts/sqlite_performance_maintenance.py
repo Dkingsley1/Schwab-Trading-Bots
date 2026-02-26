@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,6 +15,32 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return row is not None
 
 
+def _sqlite_exec_with_retry(
+    conn: sqlite3.Connection,
+    sql: str,
+    params: tuple = (),
+    *,
+    lock_retries: int,
+    lock_retry_delay_seconds: float,
+):
+    attempt = 0
+    while True:
+        try:
+            return conn.execute(sql, params)
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            is_locked = ("database is locked" in msg) or ("database table is locked" in msg)
+            if (not is_locked) or attempt >= max(lock_retries, 0):
+                raise
+            sleep_s = min(max(lock_retry_delay_seconds, 0.01) * (2 ** attempt), 5.0)
+            print(
+                f"SQLite busy during maintenance; retrying in {sleep_s:.2f}s "
+                f"(attempt {attempt + 1}/{max(lock_retries, 0)})"
+            )
+            time.sleep(sleep_s)
+            attempt += 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Apply SQLite performance tuning and maintenance.")
     parser.add_argument("--db", default=str(DEFAULT_DB))
@@ -21,18 +48,22 @@ def main() -> int:
     parser.add_argument("--auto-vacuum-over-gb", type=float, default=float(os.getenv("SQLITE_AUTO_VACUUM_OVER_GB", "24")))
     parser.add_argument("--vacuum-min-interval-hours", type=float, default=float(os.getenv("SQLITE_VACUUM_MIN_INTERVAL_HOURS", "24")))
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--sqlite-timeout-seconds", type=float, default=float(os.getenv("SQLITE_TIMEOUT_SECONDS", "60")))
+    parser.add_argument("--sqlite-lock-retries", type=int, default=int(os.getenv("SQLITE_LOCK_RETRIES", "8")))
+    parser.add_argument("--sqlite-lock-retry-delay-seconds", type=float, default=float(os.getenv("SQLITE_LOCK_RETRY_DELAY_SECONDS", "0.25")))
     args = parser.parse_args()
 
     db_path = Path(args.db)
     if not db_path.exists():
         raise SystemExit(f"SQLite DB not found: {db_path}")
 
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), timeout=max(float(args.sqlite_timeout_seconds), 1.0))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA temp_store=MEMORY")
     conn.execute("PRAGMA cache_size=-20000")
     conn.execute("PRAGMA mmap_size=268435456")
+    conn.execute(f"PRAGMA busy_timeout={int(max(float(args.sqlite_timeout_seconds), 1.0) * 1000)}")
 
     created_indexes = 0
     if _table_exists(conn, "jsonl_records"):
@@ -43,10 +74,11 @@ def main() -> int:
             "CREATE INDEX IF NOT EXISTS idx_jsonl_ts_expr ON jsonl_records((json_extract(payload_json, '$.timestamp_utc')))",
         ]
         for sql in idx_sql:
-            conn.execute(sql)
+            _sqlite_exec_with_retry(conn, sql, lock_retries=max(args.sqlite_lock_retries, 0), lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01))
             created_indexes += 1
 
-    conn.execute(
+    _sqlite_exec_with_retry(
+        conn,
         """
         CREATE TABLE IF NOT EXISTS db_maintenance_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,19 +88,24 @@ def main() -> int:
             indexes_touched INTEGER NOT NULL,
             notes TEXT NOT NULL
         )
-        """
+        """,
+        lock_retries=max(args.sqlite_lock_retries, 0),
+        lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
     )
 
-    conn.execute("ANALYZE")
-    conn.execute("PRAGMA optimize")
-    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    _sqlite_exec_with_retry(conn, "ANALYZE", lock_retries=max(args.sqlite_lock_retries, 0), lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01))
+    _sqlite_exec_with_retry(conn, "PRAGMA optimize", lock_retries=max(args.sqlite_lock_retries, 0), lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01))
+    _sqlite_exec_with_retry(conn, "PRAGMA wal_checkpoint(TRUNCATE)", lock_retries=max(args.sqlite_lock_retries, 0), lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01))
 
     size_gb_before = db_path.stat().st_size / (1024 ** 3)
 
     last_vacuum_ts = None
     try:
-        row = conn.execute(
-            "SELECT timestamp_utc FROM db_maintenance_events WHERE vacuum_ran=1 ORDER BY id DESC LIMIT 1"
+        row = _sqlite_exec_with_retry(
+            conn,
+            "SELECT timestamp_utc FROM db_maintenance_events WHERE vacuum_ran=1 ORDER BY id DESC LIMIT 1",
+            lock_retries=max(args.sqlite_lock_retries, 0),
+            lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
         ).fetchone()
         if row and row[0]:
             last_vacuum_ts = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00")).astimezone(timezone.utc)
@@ -84,11 +121,16 @@ def main() -> int:
             do_vacuum = elapsed_h >= float(args.vacuum_min_interval_hours)
 
     if do_vacuum:
-        conn.execute("VACUUM")
+        _sqlite_exec_with_retry(conn, "VACUUM", lock_retries=max(args.sqlite_lock_retries, 0), lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01))
 
     total_rows = 0
     if _table_exists(conn, "jsonl_records"):
-        row = conn.execute("SELECT COUNT(*) FROM jsonl_records").fetchone()
+        row = _sqlite_exec_with_retry(
+            conn,
+            "SELECT COUNT(*) FROM jsonl_records",
+            lock_retries=max(args.sqlite_lock_retries, 0),
+            lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+        ).fetchone()
         total_rows = int(row[0] if row else 0)
 
     size_gb_after = db_path.stat().st_size / (1024 ** 3)
@@ -104,9 +146,12 @@ def main() -> int:
         "vacuum_min_interval_hours": float(args.vacuum_min_interval_hours),
     }
 
-    conn.execute(
+    _sqlite_exec_with_retry(
+        conn,
         "INSERT INTO db_maintenance_events(timestamp_utc, db_path, vacuum_ran, indexes_touched, notes) VALUES (?, ?, ?, ?, ?)",
         (payload["timestamp_utc"], payload["db_path"], 1 if do_vacuum else 0, created_indexes, "auto_maintenance"),
+        lock_retries=max(args.sqlite_lock_retries, 0),
+        lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
     )
     conn.commit()
     conn.close()

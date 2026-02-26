@@ -50,9 +50,26 @@ nohup "${CMD[@]}" > "$LOG_ALL" 2>&1 & disown
 echo "all_sleeves_log=$LOG_ALL"
 
 if [[ "$WITH_COINBASE" == "1" ]]; then
-  LOG_CB="logs/coinbase_live_$(date -u +%Y%m%d_%H%M%S).log"
-  nohup "$PY" "$PROJECT_ROOT/scripts/run_shadow_training_loop.py"     --broker coinbase     --symbols "${COINBASE_WATCH_SYMBOLS:-BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LTC-USD,LINK-USD,DOGE-USD}"     --interval-seconds "${COINBASE_WATCH_INTERVAL_SECONDS:-20}"     --max-iterations 0     --simulate     > "$LOG_CB" 2>&1 & disown
-  echo "coinbase_log=$LOG_CB"
+  if ps -axo command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v grep >/dev/null 2>&1; then
+    EXISTING_PID="$(ps -axo pid,command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v grep | awk 'NR==1{print $1}')"
+    echo "coinbase_loop=already_running pid=$EXISTING_PID"
+  else
+    LOG_CB="logs/coinbase_live_$(date -u +%Y%m%d_%H%M%S).log"
+    ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-0}" nohup "$PY" "$PROJECT_ROOT/scripts/run_shadow_training_loop.py" \
+      --broker coinbase \
+      --symbols "${COINBASE_WATCH_SYMBOLS:-BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LTC-USD,LINK-USD,DOGE-USD}" \
+      --interval-seconds "${COINBASE_WATCH_INTERVAL_SECONDS:-20}" \
+      --max-iterations 0 \
+      --simulate \
+      > "$LOG_CB" 2>&1 & disown
+    sleep 2
+    if ps -axo command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v grep >/dev/null 2>&1; then
+      echo "coinbase_log=$LOG_CB"
+    else
+      echo "coinbase_loop=failed_to_start log=$LOG_CB"
+      tail -n 40 "$LOG_CB" || true
+    fi
+  fi
 fi
 
 "$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py" --json >/dev/null 2>&1 || true

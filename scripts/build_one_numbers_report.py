@@ -641,6 +641,9 @@ def main() -> int:
     latest_csv = out_dir / "latest.csv"
     latest_md = out_dir / "latest.md"
     latest_json = out_dir / "one_numbers_summary.json"
+    health_latest_json = PROJECT_ROOT / "governance" / "health" / "one_numbers_latest.json"
+    legacy_latest_dir = out_dir / "latest"
+    legacy_latest_json = legacy_latest_dir / "one_numbers_summary.json"
 
     metric_map = {k: v for k, v in rows}
     summary_payload = {
@@ -648,7 +651,14 @@ def main() -> int:
         "day_utc": day,
         **metric_map,
     }
-    latest_json.write_text(json.dumps(summary_payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    payload_text = json.dumps(summary_payload, ensure_ascii=True, indent=2)
+    latest_json.write_text(payload_text, encoding="utf-8")
+
+    health_latest_json.parent.mkdir(parents=True, exist_ok=True)
+    health_latest_json.write_text(payload_text, encoding="utf-8")
+
+    legacy_latest_dir.mkdir(parents=True, exist_ok=True)
+    legacy_latest_json.write_text(payload_text, encoding="utf-8")
 
     if latest_csv.exists() or latest_csv.is_symlink():
         latest_csv.unlink()

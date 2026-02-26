@@ -33,13 +33,47 @@ case "$cmd" in
     exec "$PY" "$PROJECT_ROOT/scripts/daily_auto_verify.py" --json "$@"
     ;;
   coinbase-start)
+    if ps -axo command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v grep >/dev/null 2>&1; then
+      PID="$(ps -axo pid,command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v grep | awk 'NR==1{print $1}')"
+      LATEST_LOG="$(ls -1t "$PROJECT_ROOT"/logs/coinbase_live_*.log 2>/dev/null | head -n 1)"
+      echo "coinbase_loop already running pid=$PID"
+      [[ -n "$LATEST_LOG" ]] && echo "$LATEST_LOG"
+      exit 0
+    fi
+
+    "$PY" "$PROJECT_ROOT/scripts/ops/lock_watchdog.py" --apply --json >/dev/null 2>&1 || true
+
     LOG="$PROJECT_ROOT/logs/coinbase_live_$(date -u +%Y%m%d_%H%M%S).log"
-    nohup "$PY" "$PROJECT_ROOT/scripts/run_shadow_training_loop.py" --broker coinbase --symbols "${COINBASE_WATCH_SYMBOLS:-BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LTC-USD,LINK-USD,DOGE-USD}" --interval-seconds "${COINBASE_WATCH_INTERVAL_SECONDS:-20}" --max-iterations 0 --simulate > "$LOG" 2>&1 & disown
-    echo "$LOG"
+    ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-0}" nohup "$PY" "$PROJECT_ROOT/scripts/run_shadow_training_loop.py" \
+      --broker coinbase \
+      --symbols "${COINBASE_WATCH_SYMBOLS:-BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LTC-USD,LINK-USD,DOGE-USD}" \
+      --interval-seconds "${COINBASE_WATCH_INTERVAL_SECONDS:-20}" \
+      --max-iterations 0 \
+      --simulate \
+      > "$LOG" 2>&1 & disown
+
+    sleep 2
+    if ps -axo command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v grep >/dev/null 2>&1; then
+      echo "$LOG"
+      "$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py" --require-coinbase --json >/dev/null 2>&1 || true
+    else
+      echo "coinbase_loop failed_to_start"
+      tail -n 40 "$LOG" || true
+      exit 1
+    fi
     ;;
   coinbase-stop)
     pkill -f "scripts/run_shadow_training_loop.py --broker coinbase" || true
     echo "coinbase loop stopped"
+    ;;
+  coinbase-tail)
+    LOG="$(ls -1t "$PROJECT_ROOT"/logs/coinbase_live_*.log 2>/dev/null | head -n 1)"
+    if [[ -z "$LOG" ]]; then
+      echo "no coinbase_live log found"
+      exit 1
+    fi
+    echo "tailing: $LOG"
+    exec tail -f "$LOG"
     ;;
   help|*)
     cat <<'EOF'
@@ -52,6 +86,7 @@ opsctl commands:
   health
   coinbase-start
   coinbase-stop
+  coinbase-tail
 EOF
     ;;
 esac

@@ -155,8 +155,11 @@ def main() -> int:
     }
 
     out = PROJECT_ROOT / 'governance' / 'health' / 'replay_preopen_sanity_latest.json'
+    compat = PROJECT_ROOT / 'governance' / 'health' / 'preopen_replay_sanity_latest.json'
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding='utf-8')
+    encoded = json.dumps(payload, ensure_ascii=True, indent=2)
+    out.write_text(encoded, encoding='utf-8')
+    compat.write_text(encoded, encoding='utf-8')
 
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))

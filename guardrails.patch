@@ -1,0 +1,1287 @@
+diff --git a/core/storage_router.py b/core/storage_router.py
+index 875709c..3ba4427 100644
+--- a/core/storage_router.py
++++ b/core/storage_router.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import os
++import shutil
+ from dataclasses import dataclass
+ from pathlib import Path
+ from typing import Iterable
+@@ -26,6 +27,9 @@ class StorageRoutingResult:
+     active_root: Path
+     switched_links: tuple[str, ...]
+     passthrough_paths: tuple[str, ...]
++    autosync_copied_files: int = 0
++    autosync_copy_errors: int = 0
++    autosync_pruned_files: int = 0
+ 
+ 
+ def _resolve_link_target(link_path: Path) -> Path | None:
+@@ -56,6 +60,77 @@ def _external_project_root() -> Path:
+     return mount_root / project_dir
+ 
+ 
++def _env_flag(name: str, default: str = "0") -> bool:
++    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
++
++
++def _auto_sync_local_to_external(
++    local_root: Path,
++    external_root: Path,
++    link_dirs: Iterable[str],
++    *,
++    prune_local: bool,
++    max_copy_files: int,
++) -> tuple[int, int, int]:
++    copied = 0
++    errors = 0
++    pruned = 0
++
++    if max_copy_files <= 0:
++        return 0, 0, 0
++
++    try:
++        same_root = local_root.resolve(strict=False) == external_root.resolve(strict=False)
++    except Exception:
++        same_root = False
++    if same_root:
++        return 0, 0, 0
++
++    for rel_name in link_dirs:
++        name = str(rel_name).strip().strip("/")
++        if not name:
++            continue
++
++        src_dir = local_root / name
++        dst_dir = external_root / name
++        if not src_dir.exists() or not src_dir.is_dir():
++            continue
++
++        for root, _, files in os.walk(src_dir):
++            root_path = Path(root)
++            rel_dir = root_path.relative_to(src_dir)
++            dst_base = dst_dir / rel_dir
++            try:
++                dst_base.mkdir(parents=True, exist_ok=True)
++            except Exception:
++                errors += len(files)
++                continue
++
++            for fname in files:
++                if copied >= max_copy_files:
++                    return copied, errors, pruned
++
++                src_file = root_path / fname
++                dst_file = dst_base / fname
++
++                if dst_file.exists():
++                    continue
++
++                try:
++                    shutil.copy2(src_file, dst_file)
++                    copied += 1
++                    if prune_local:
++                        try:
++                            src_file.unlink()
++                            pruned += 1
++                        except Exception:
++                            pass
++                except Exception:
++                    errors += 1
++
++    return copied, errors, pruned
++
++
+ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = DEFAULT_LINK_DIRS) -> StorageRoutingResult:
+     root = Path(project_root).resolve()
+     external_root = _external_project_root()
+@@ -76,8 +151,24 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
+ 
+     switched: list[str] = []
+     passthrough: list[str] = []
++    autosync_copied = 0
++    autosync_errors = 0
++    autosync_pruned = 0
++
++    link_dirs_tuple = tuple(link_dirs)
++
++    if mode == "external" and _env_flag("BOT_LOGS_AUTO_SYNC_ON_RECONNECT", "1"):
++        prune_local = _env_flag("BOT_LOGS_AUTO_SYNC_PRUNE_LOCAL", "1")
++        max_copy_files = max(int(os.getenv("BOT_LOGS_AUTO_SYNC_MAX_FILES", "50000") or 50000), 1)
++        autosync_copied, autosync_errors, autosync_pruned = _auto_sync_local_to_external(
++            local_root=local_root,
++            external_root=external_root,
++            link_dirs=link_dirs_tuple,
++            prune_local=prune_local,
++            max_copy_files=max_copy_files,
++        )
+ 
+-    for rel_name in link_dirs:
++    for rel_name in link_dirs_tuple:
+         name = str(rel_name).strip().strip("/")
+         if not name:
+             continue
+@@ -103,18 +194,29 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
+ 
+     os.environ["BOT_LOGS_ACTIVE_MODE"] = mode
+     os.environ["BOT_LOGS_ACTIVE_ROOT"] = str(active_root)
++    os.environ["BOT_LOGS_AUTOSYNC_COPIED_FILES"] = str(autosync_copied)
++    os.environ["BOT_LOGS_AUTOSYNC_COPY_ERRORS"] = str(autosync_errors)
++    os.environ["BOT_LOGS_AUTOSYNC_PRUNED_FILES"] = str(autosync_pruned)
+     return StorageRoutingResult(
+         mode=mode,
+         active_root=active_root,
+         switched_links=tuple(sorted(switched)),
+         passthrough_paths=tuple(sorted(passthrough)),
++        autosync_copied_files=int(autosync_copied),
++        autosync_copy_errors=int(autosync_errors),
++        autosync_pruned_files=int(autosync_pruned),
+     )
+ 
+ 
+ def describe_storage_routing(result: StorageRoutingResult) -> str:
+     switched = ",".join(result.switched_links) if result.switched_links else "none"
+     passthrough = ",".join(result.passthrough_paths) if result.passthrough_paths else "none"
++    autosync = (
++        f"copied={result.autosync_copied_files} "
++        f"errors={result.autosync_copy_errors} "
++        f"pruned={result.autosync_pruned_files}"
++    )
+     return (
+         f"[StorageRoute] mode={result.mode} active_root={result.active_root} "
+-        f"switched={switched} passthrough={passthrough}"
++        f"switched={switched} passthrough={passthrough} autosync={autosync}"
+     )
+diff --git a/scripts/build_one_numbers_report.py b/scripts/build_one_numbers_report.py
+index 5eaa2d2..211580f 100644
+--- a/scripts/build_one_numbers_report.py
++++ b/scripts/build_one_numbers_report.py
+@@ -641,6 +641,9 @@ def main() -> int:
+     latest_csv = out_dir / "latest.csv"
+     latest_md = out_dir / "latest.md"
+     latest_json = out_dir / "one_numbers_summary.json"
++    health_latest_json = PROJECT_ROOT / "governance" / "health" / "one_numbers_latest.json"
++    legacy_latest_dir = out_dir / "latest"
++    legacy_latest_json = legacy_latest_dir / "one_numbers_summary.json"
+ 
+     metric_map = {k: v for k, v in rows}
+     summary_payload = {
+@@ -648,7 +651,14 @@ def main() -> int:
+         "day_utc": day,
+         **metric_map,
+     }
+-    latest_json.write_text(json.dumps(summary_payload, ensure_ascii=True, indent=2), encoding="utf-8")
++    payload_text = json.dumps(summary_payload, ensure_ascii=True, indent=2)
++    latest_json.write_text(payload_text, encoding="utf-8")
++
++    health_latest_json.parent.mkdir(parents=True, exist_ok=True)
++    health_latest_json.write_text(payload_text, encoding="utf-8")
++
++    legacy_latest_dir.mkdir(parents=True, exist_ok=True)
++    legacy_latest_json.write_text(payload_text, encoding="utf-8")
+ 
+     if latest_csv.exists() or latest_csv.is_symlink():
+         latest_csv.unlink()
+diff --git a/scripts/daily_log_refresh.sh b/scripts/daily_log_refresh.sh
+index 2f4d7ad..6388d6d 100755
+--- a/scripts/daily_log_refresh.sh
++++ b/scripts/daily_log_refresh.sh
+@@ -13,8 +13,12 @@ cd "$PROJECT_ROOT"
+ "$PYTHON_BIN" "$PROJECT_ROOT/scripts/sqlite_performance_maintenance.py"
+ "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ingestion_backpressure_guard.py"
+ "$PYTHON_BIN" "$PROJECT_ROOT/scripts/sql_runtime_report.py" --day "$TODAY_UTC"
++DAILY_RUNTIME_SUMMARY_JSON="$PROJECT_ROOT/exports/sql_reports/daily_runtime_summary_${TODAY_UTC}.json"
+ "$PYTHON_BIN" "$PROJECT_ROOT/scripts/daily_runtime_summary.py" --day "$TODAY_UTC" --json \
+-  > "$PROJECT_ROOT/exports/sql_reports/daily_runtime_summary_${TODAY_UTC}.json"
++  > "$DAILY_RUNTIME_SUMMARY_JSON"
++cp "$DAILY_RUNTIME_SUMMARY_JSON" "$PROJECT_ROOT/exports/sql_reports/daily_runtime_summary_latest.json" || true
++mkdir -p "$PROJECT_ROOT/governance/health"
++cp "$DAILY_RUNTIME_SUMMARY_JSON" "$PROJECT_ROOT/governance/health/daily_runtime_summary_latest.json" || true
+ "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_data_center.py"
+ "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_one_numbers_report.py" --day "$TODAY_UTC"
+ "$PYTHON_BIN" "$PROJECT_ROOT/scripts/bot_stack_status_report.py"
+diff --git a/scripts/data_retention_policy.py b/scripts/data_retention_policy.py
+index 6d17f4b..727d9ec 100644
+--- a/scripts/data_retention_policy.py
++++ b/scripts/data_retention_policy.py
+@@ -45,10 +45,10 @@ def _vacuum_sqlite(path: Path) -> bool:
+ 
+ def main() -> int:
+     parser = argparse.ArgumentParser(description="Prune old data artifacts by retention policy.")
+-    parser.add_argument("--decisions-days", type=int, default=int(os.getenv("RETENTION_DECISIONS_DAYS", "21")))
+-    parser.add_argument("--decision-explanations-days", type=int, default=int(os.getenv("RETENTION_DECISION_EXPLANATIONS_DAYS", "21")))
+-    parser.add_argument("--governance-days", type=int, default=int(os.getenv("RETENTION_GOVERNANCE_DAYS", "30")))
+-    parser.add_argument("--exports-days", type=int, default=int(os.getenv("RETENTION_EXPORTS_DAYS", "14")))
++    parser.add_argument("--decisions-days", type=int, default=int(os.getenv("RETENTION_DECISIONS_DAYS", "30")))
++    parser.add_argument("--decision-explanations-days", type=int, default=int(os.getenv("RETENTION_DECISION_EXPLANATIONS_DAYS", "30")))
++    parser.add_argument("--governance-days", type=int, default=int(os.getenv("RETENTION_GOVERNANCE_DAYS", "45")))
++    parser.add_argument("--exports-days", type=int, default=int(os.getenv("RETENTION_EXPORTS_DAYS", "30")))
+     parser.add_argument("--backup-drills-days", type=int, default=int(os.getenv("RETENTION_BACKUP_DRILLS_DAYS", "14")))
+     parser.add_argument("--csv-days", type=int, default=int(os.getenv("RETENTION_CSV_DAYS", "10")))
+     parser.add_argument("--logs-days", type=int, default=int(os.getenv("RETENTION_LOGS_DAYS", "14")))
+diff --git a/scripts/global_risk_killswitch.py b/scripts/global_risk_killswitch.py
+index 184fc6f..6529705 100644
+--- a/scripts/global_risk_killswitch.py
++++ b/scripts/global_risk_killswitch.py
+@@ -3,6 +3,7 @@ import json
+ import os
+ from datetime import datetime, timezone
+ from pathlib import Path
++from typing import List, Tuple
+ 
+ PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ 
+@@ -11,82 +12,98 @@ def _load(path: Path) -> dict:
+     if not path.exists():
+         return {}
+     try:
+-        return json.loads(path.read_text(encoding="utf-8"))
++        return json.loads(path.read_text(encoding='utf-8'))
+     except Exception:
+         return {}
+ 
+ 
++def _first_non_empty(paths: List[Path]) -> Tuple[dict, str]:
++    for p in paths:
++        payload = _load(p)
++        if payload:
++            return payload, str(p)
++    return {}, ''
++
++
+ def main() -> int:
+-    parser = argparse.ArgumentParser(description="Account-level global risk kill-switch.")
+-    parser.add_argument("--max-blocked-rate", type=float, default=float(os.getenv("GLOBAL_KILL_BLOCKED_RATE_MAX", "0.45")))
+-    parser.add_argument("--max-abs-pnl-proxy", type=float, default=float(os.getenv("GLOBAL_KILL_ABS_PNL_PROXY_MAX", "0.03")))
+-    parser.add_argument("--max-stale-windows", type=int, default=int(os.getenv("GLOBAL_KILL_STALE_WINDOWS_MAX", "2")))
+-    parser.add_argument("--max-watchdog-restarts", type=int, default=int(os.getenv("GLOBAL_KILL_WATCHDOG_RESTARTS_MAX", "5")))
+-    parser.add_argument("--auto-clear", action="store_true")
++    parser = argparse.ArgumentParser(description='Account-level global risk kill-switch.')
++    parser.add_argument('--max-blocked-rate', type=float, default=float(os.getenv('GLOBAL_KILL_BLOCKED_RATE_MAX', '0.45')))
++    parser.add_argument('--max-abs-pnl-proxy', type=float, default=float(os.getenv('GLOBAL_KILL_ABS_PNL_PROXY_MAX', '0.03')))
++    parser.add_argument('--max-stale-windows', type=int, default=int(os.getenv('GLOBAL_KILL_STALE_WINDOWS_MAX', '2')))
++    parser.add_argument('--max-watchdog-restarts', type=int, default=int(os.getenv('GLOBAL_KILL_WATCHDOG_RESTARTS_MAX', '5')))
++    parser.add_argument('--auto-clear', action='store_true')
+     args = parser.parse_args()
+ 
+-    one = _load(PROJECT_ROOT / "governance" / "health" / "one_numbers_latest.json")
+-    if not one:
+-        one = _load(PROJECT_ROOT / "exports" / "one_numbers" / "latest" / "one_numbers_summary.json")
+-    health = _load(PROJECT_ROOT / "governance" / "health" / "health_gates_latest.json")
++    one, one_src = _first_non_empty(
++        [
++            PROJECT_ROOT / 'governance' / 'health' / 'one_numbers_latest.json',
++            PROJECT_ROOT / 'exports' / 'one_numbers' / 'one_numbers_summary.json',
++            PROJECT_ROOT / 'exports' / 'one_numbers' / 'latest' / 'one_numbers_summary.json',
++        ]
++    )
++    health = _load(PROJECT_ROOT / 'governance' / 'health' / 'health_gates_latest.json')
+ 
+-    blocked_rate = float(one.get("combined_blocked_rate", 0.0) or 0.0)
+-    pnl_proxy = float(one.get("combined_pnl_proxy", one.get("crypto_pnl_proxy", 0.0) or 0.0) or 0.0)
+-    stale = int(one.get("decision_stale_windows_4h", one.get("decision_stale_windows", 0) or 0) or 0)
+-    restarts = int(one.get("watchdog_restarts", 0) or 0)
++    blocked_rate = float(one.get('combined_blocked_rate', 0.0) or 0.0)
++    pnl_proxy = float(one.get('combined_pnl_proxy', one.get('crypto_pnl_proxy', 0.0) or 0.0) or 0.0)
++    stale = int(one.get('decision_stale_windows_4h', one.get('decision_stale_windows', 0) or 0) or 0)
++    restarts = int(one.get('watchdog_restarts', 0) or 0)
+ 
+     reasons = []
+     if blocked_rate > args.max_blocked_rate:
+-        reasons.append(f"blocked_rate>{args.max_blocked_rate}")
++        reasons.append(f'blocked_rate>{args.max_blocked_rate}')
+     if abs(pnl_proxy) > args.max_abs_pnl_proxy:
+-        reasons.append(f"abs_pnl_proxy>{args.max_abs_pnl_proxy}")
++        reasons.append(f'abs_pnl_proxy>{args.max_abs_pnl_proxy}')
+     if stale > args.max_stale_windows:
+-        reasons.append(f"stale_windows>{args.max_stale_windows}")
++        reasons.append(f'stale_windows>{args.max_stale_windows}')
+     if restarts > args.max_watchdog_restarts:
+-        reasons.append(f"watchdog_restarts>{args.max_watchdog_restarts}")
+-    if bool(health.get("hard_gate_triggered", False)):
+-        reasons.append("health_hard_gate_triggered")
++        reasons.append(f'watchdog_restarts>{args.max_watchdog_restarts}')
++    if bool(health.get('hard_gate_triggered', False)):
++        reasons.append('health_hard_gate_triggered')
+ 
+-    halt_flag = PROJECT_ROOT / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
++    halt_flag = PROJECT_ROOT / 'governance' / 'health' / 'GLOBAL_TRADING_HALT.flag'
+     now = datetime.now(timezone.utc).isoformat()
+-    action = "none"
++    action = 'none'
+ 
+     if reasons:
+         halt_flag.parent.mkdir(parents=True, exist_ok=True)
+         halt_flag.write_text(
+-            json.dumps({"timestamp_utc": now, "reason": "global_risk_killswitch", "details": reasons}, ensure_ascii=True),
+-            encoding="utf-8",
++            json.dumps({'timestamp_utc': now, 'reason': 'global_risk_killswitch', 'details': reasons}, ensure_ascii=True),
++            encoding='utf-8',
+         )
+-        action = "halt_set"
++        action = 'halt_set'
+     elif args.auto_clear and halt_flag.exists():
+         halt_flag.unlink()
+-        action = "halt_cleared"
++        action = 'halt_cleared'
+ 
+     payload = {
+-        "timestamp_utc": now,
+-        "action": action,
+-        "halt": halt_flag.exists(),
+-        "reasons": reasons,
+-        "metrics": {
+-            "blocked_rate": blocked_rate,
+-            "pnl_proxy": pnl_proxy,
+-            "stale_windows": stale,
+-            "watchdog_restarts": restarts,
++        'timestamp_utc': now,
++        'action': action,
++        'halt': halt_flag.exists(),
++        'source_files': {
++            'one_numbers': one_src,
++            'health_gates': str(PROJECT_ROOT / 'governance' / 'health' / 'health_gates_latest.json'),
++        },
++        'reasons': reasons,
++        'metrics': {
++            'blocked_rate': blocked_rate,
++            'pnl_proxy': pnl_proxy,
++            'stale_windows': stale,
++            'watchdog_restarts': restarts,
+         },
+     }
+ 
+-    out = PROJECT_ROOT / "governance" / "health" / "global_killswitch_latest.json"
++    out = PROJECT_ROOT / 'governance' / 'health' / 'global_killswitch_latest.json'
+     out.parent.mkdir(parents=True, exist_ok=True)
+-    out.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
++    out.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding='utf-8')
+ 
+-    events = PROJECT_ROOT / "governance" / "watchdog" / "global_killswitch_events.jsonl"
++    events = PROJECT_ROOT / 'governance' / 'watchdog' / 'global_killswitch_events.jsonl'
+     events.parent.mkdir(parents=True, exist_ok=True)
+-    with events.open("a", encoding="utf-8") as f:
+-        f.write(json.dumps(payload, ensure_ascii=True) + "\n")
++    with events.open('a', encoding='utf-8') as f:
++        f.write(json.dumps(payload, ensure_ascii=True) + '\n')
+ 
+     print(json.dumps(payload, ensure_ascii=True))
+     return 2 if reasons else 0
+ 
+ 
+-if __name__ == "__main__":
++if __name__ == '__main__':
+     raise SystemExit(main())
+diff --git a/scripts/health_gates.py b/scripts/health_gates.py
+index c734e8f..3ca0d48 100644
+--- a/scripts/health_gates.py
++++ b/scripts/health_gates.py
+@@ -1,8 +1,9 @@
+ import argparse
+-import os
+ import json
++import os
+ from datetime import datetime, timezone
+ from pathlib import Path
++from typing import Dict, List, Tuple
+ 
+ PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ 
+@@ -11,33 +12,66 @@ def _load_json(path: Path) -> dict:
+     if not path.exists():
+         return {}
+     try:
+-        return json.loads(path.read_text(encoding="utf-8"))
++        return json.loads(path.read_text(encoding='utf-8'))
+     except Exception:
+         return {}
+ 
+ 
++def _first_non_empty_json(paths: List[Path]) -> Tuple[dict, str]:
++    for p in paths:
++        payload = _load_json(p)
++        if payload:
++            return payload, str(p)
++    return {}, ''
++
++
++def _latest_match(root: Path, pattern: str) -> Path:
++    try:
++        files = [p for p in root.glob(pattern) if p.is_file()]
++    except Exception:
++        return Path('')
++    if not files:
++        return Path('')
++    files.sort(key=lambda p: p.stat().st_mtime)
++    return files[-1]
++
++
+ def main() -> int:
+-    parser = argparse.ArgumentParser(description="Compute single health score and hard gate flags.")
+-    parser.add_argument("--project-root", default=str(PROJECT_ROOT))
+-    parser.add_argument("--stale-window-limit", type=int, default=int(os.getenv("HEALTH_GATE_STALE_WINDOW_LIMIT", "0")))
+-    parser.add_argument("--blocked-rate-limit", type=float, default=float(os.getenv("HEALTH_GATE_BLOCKED_RATE_LIMIT", "0.30")))
+-    parser.add_argument("--watchdog-restarts-limit", type=int, default=int(os.getenv("HEALTH_GATE_WATCHDOG_RESTARTS_LIMIT", "3")))
+-    parser.add_argument("--json", action="store_true")
++    parser = argparse.ArgumentParser(description='Compute single health score and hard gate flags.')
++    parser.add_argument('--project-root', default=str(PROJECT_ROOT))
++    parser.add_argument('--stale-window-limit', type=int, default=int(os.getenv('HEALTH_GATE_STALE_WINDOW_LIMIT', '0')))
++    parser.add_argument('--blocked-rate-limit', type=float, default=float(os.getenv('HEALTH_GATE_BLOCKED_RATE_LIMIT', '0.30')))
++    parser.add_argument('--watchdog-restarts-limit', type=int, default=int(os.getenv('HEALTH_GATE_WATCHDOG_RESTARTS_LIMIT', '3')))
++    parser.add_argument('--json', action='store_true')
+     args = parser.parse_args()
+ 
+     project_root = Path(args.project_root).resolve()
+-    one_numbers = _load_json(project_root / "governance" / "health" / "one_numbers_latest.json")
+-    if not one_numbers:
+-        one_numbers = _load_json(project_root / "exports" / "one_numbers" / "latest" / "one_numbers_summary.json")
++    day = datetime.now(timezone.utc).strftime('%Y%m%d')
++
++    one_numbers_paths = [
++        project_root / 'governance' / 'health' / 'one_numbers_latest.json',
++        project_root / 'exports' / 'one_numbers' / 'one_numbers_summary.json',
++        project_root / 'exports' / 'one_numbers' / 'latest' / 'one_numbers_summary.json',
++    ]
++    one_numbers, one_numbers_source = _first_non_empty_json(one_numbers_paths)
++
++    daily_summary_paths = [
++        project_root / 'governance' / 'health' / 'daily_runtime_summary_latest.json',
++        project_root / 'exports' / 'sql_reports' / 'daily_runtime_summary_latest.json',
++        project_root / 'exports' / 'sql_reports' / f'daily_runtime_summary_{day}.json',
++    ]
++    daily_summary, daily_summary_source = _first_non_empty_json(daily_summary_paths)
+ 
+-    daily_summary = _load_json(project_root / "governance" / "health" / "daily_runtime_summary_latest.json")
+     if not daily_summary:
+-        day = datetime.now(timezone.utc).strftime("%Y%m%d")
+-        daily_summary = _load_json(project_root / "exports" / "sql_reports" / f"daily_runtime_summary_{day}.json")
++        latest_daily = _latest_match(project_root / 'exports' / 'sql_reports', 'daily_runtime_summary_*.json')
++        if latest_daily:
++            daily_summary = _load_json(latest_daily)
++            if daily_summary:
++                daily_summary_source = str(latest_daily)
+ 
+-    blocked_rate = float(one_numbers.get("combined_blocked_rate", 0.0) or 0.0)
+-    stale_windows = int(one_numbers.get("decision_stale_windows_4h", 0) or one_numbers.get("decision_stale_windows", 0) or 0)
+-    watchdog_restarts = int((daily_summary.get("watchdog", {}) or {}).get("restarts", one_numbers.get("watchdog_restarts", 0) or 0))
++    blocked_rate = float(one_numbers.get('combined_blocked_rate', 0.0) or 0.0)
++    stale_windows = int(one_numbers.get('decision_stale_windows_4h', 0) or one_numbers.get('decision_stale_windows', 0) or 0)
++    watchdog_restarts = int((daily_summary.get('watchdog', {}) or {}).get('restarts', one_numbers.get('watchdog_restarts', 0) or 0))
+ 
+     gate_stale = stale_windows > args.stale_window_limit
+     gate_blocked = blocked_rate > args.blocked_rate_limit
+@@ -50,24 +84,28 @@ def main() -> int:
+     score = max(score, 0.0)
+ 
+     payload = {
+-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+-        "data_quality_score": round(score, 2),
+-        "inputs": {
+-            "blocked_rate": blocked_rate,
+-            "stale_windows": stale_windows,
+-            "watchdog_restarts": watchdog_restarts,
++        'timestamp_utc': datetime.now(timezone.utc).isoformat(),
++        'data_quality_score': round(score, 2),
++        'source_files': {
++            'one_numbers': one_numbers_source,
++            'daily_runtime_summary': daily_summary_source,
++        },
++        'inputs': {
++            'blocked_rate': blocked_rate,
++            'stale_windows': stale_windows,
++            'watchdog_restarts': watchdog_restarts,
+         },
+-        "hard_gates": {
+-            "stale_windows": gate_stale,
+-            "blocked_rate": gate_blocked,
+-            "watchdog_restart_spike": gate_restarts,
++        'hard_gates': {
++            'stale_windows': gate_stale,
++            'blocked_rate': gate_blocked,
++            'watchdog_restart_spike': gate_restarts,
+         },
+-        "hard_gate_triggered": bool(gate_stale or gate_blocked or gate_restarts),
++        'hard_gate_triggered': bool(gate_stale or gate_blocked or gate_restarts),
+     }
+ 
+-    out = project_root / "governance" / "health" / "health_gates_latest.json"
++    out = project_root / 'governance' / 'health' / 'health_gates_latest.json'
+     out.parent.mkdir(parents=True, exist_ok=True)
+-    out.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
++    out.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding='utf-8')
+ 
+     if args.json:
+         print(json.dumps(payload, ensure_ascii=True))
+@@ -77,8 +115,8 @@ def main() -> int:
+             f"stale_windows={stale_windows} blocked_rate={blocked_rate:.4f} watchdog_restarts={watchdog_restarts}"
+         )
+ 
+-    return 2 if payload["hard_gate_triggered"] else 0
++    return 2 if payload['hard_gate_triggered'] else 0
+ 
+ 
+-if __name__ == "__main__":
++if __name__ == '__main__':
+     raise SystemExit(main())
+diff --git a/scripts/ops/opsctl.sh b/scripts/ops/opsctl.sh
+index 49d12b5..1e68a2a 100755
+--- a/scripts/ops/opsctl.sh
++++ b/scripts/ops/opsctl.sh
+@@ -33,14 +33,48 @@ case "$cmd" in
+     exec "$PY" "$PROJECT_ROOT/scripts/daily_auto_verify.py" --json "$@"
+     ;;
+   coinbase-start)
++    if ps -axo command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v grep >/dev/null 2>&1; then
++      PID="$(ps -axo pid,command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v grep | awk 'NR==1{print $1}')"
++      LATEST_LOG="$(ls -1t "$PROJECT_ROOT"/logs/coinbase_live_*.log 2>/dev/null | head -n 1)"
++      echo "coinbase_loop already running pid=$PID"
++      [[ -n "$LATEST_LOG" ]] && echo "$LATEST_LOG"
++      exit 0
++    fi
++
++    "$PY" "$PROJECT_ROOT/scripts/ops/lock_watchdog.py" --apply --json >/dev/null 2>&1 || true
++
+     LOG="$PROJECT_ROOT/logs/coinbase_live_$(date -u +%Y%m%d_%H%M%S).log"
+-    nohup "$PY" "$PROJECT_ROOT/scripts/run_shadow_training_loop.py" --broker coinbase --symbols "${COINBASE_WATCH_SYMBOLS:-BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LTC-USD,LINK-USD,DOGE-USD}" --interval-seconds "${COINBASE_WATCH_INTERVAL_SECONDS:-20}" --max-iterations 0 --simulate > "$LOG" 2>&1 & disown
+-    echo "$LOG"
++    ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-0}" nohup "$PY" "$PROJECT_ROOT/scripts/run_shadow_training_loop.py" \
++      --broker coinbase \
++      --symbols "${COINBASE_WATCH_SYMBOLS:-BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LTC-USD,LINK-USD,DOGE-USD}" \
++      --interval-seconds "${COINBASE_WATCH_INTERVAL_SECONDS:-20}" \
++      --max-iterations 0 \
++      --simulate \
++      > "$LOG" 2>&1 & disown
++
++    sleep 2
++    if ps -axo command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v grep >/dev/null 2>&1; then
++      echo "$LOG"
++      "$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py" --require-coinbase --json >/dev/null 2>&1 || true
++    else
++      echo "coinbase_loop failed_to_start"
++      tail -n 40 "$LOG" || true
++      exit 1
++    fi
+     ;;
+   coinbase-stop)
+     pkill -f "scripts/run_shadow_training_loop.py --broker coinbase" || true
+     echo "coinbase loop stopped"
+     ;;
++  coinbase-tail)
++    LOG="$(ls -1t "$PROJECT_ROOT"/logs/coinbase_live_*.log 2>/dev/null | head -n 1)"
++    if [[ -z "$LOG" ]]; then
++      echo "no coinbase_live log found"
++      exit 1
++    fi
++    echo "tailing: $LOG"
++    exec tail -f "$LOG"
++    ;;
+   help|*)
+     cat <<'EOF'
+ opsctl commands:
+@@ -52,6 +86,7 @@ opsctl commands:
+   health
+   coinbase-start
+   coinbase-stop
++  coinbase-tail
+ EOF
+     ;;
+ esac
+diff --git a/scripts/ops/process_watchdog.py b/scripts/ops/process_watchdog.py
+index 1bb989b..b68cc78 100644
+--- a/scripts/ops/process_watchdog.py
++++ b/scripts/ops/process_watchdog.py
+@@ -1,10 +1,12 @@
+ import argparse
+ import json
+ import os
++import shutil
+ import subprocess
+ import time
+ from datetime import datetime, timezone
+ from pathlib import Path
++from typing import Any, Dict, List, Tuple
+ 
+ PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ PY = PROJECT_ROOT / '.venv312' / 'bin' / 'python'
+@@ -13,94 +15,273 @@ OUT_PATH = PROJECT_ROOT / 'governance' / 'health' / 'process_watchdog_latest.jso
+ SNAPSHOT_SCRIPT = PROJECT_ROOT / 'scripts' / 'collect_debug_snapshot.sh'
+ 
+ 
++def _env_flag(name: str, default: str = '0') -> bool:
++    return os.getenv(name, default).strip().lower() in {'1', 'true', 'yes', 'on'}
++
++
++def _split_csv(raw: str) -> List[str]:
++    return [x.strip() for x in (raw or '').split(',') if x.strip()]
++
++
+ def _proc_running(pattern: str) -> int:
+     p = subprocess.run(['ps', '-axo', 'command'], capture_output=True, text=True, check=False)
+     out = p.stdout or ''
+     return sum(1 for line in out.splitlines() if pattern in line)
+ 
+ 
+-def _spawn(cmd: list[str], log_path: Path) -> int:
++def _spawn(cmd: List[str], log_path: Path) -> int:
+     log_path.parent.mkdir(parents=True, exist_ok=True)
+     fh = open(log_path, 'a', encoding='utf-8')
+     p = subprocess.Popen(cmd, cwd=str(PROJECT_ROOT), stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
+     return int(p.pid)
+ 
+ 
+-def _load_state() -> dict:
++def _run(cmd: List[str]) -> Tuple[int, str, str]:
++    p = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=False)
++    return p.returncode, (p.stdout or '').strip(), (p.stderr or '').strip()
++
++
++def _load_state() -> Dict[str, Any]:
+     try:
+         return json.loads(STATE_PATH.read_text(encoding='utf-8'))
+     except Exception:
+         return {'events': []}
+ 
+ 
+-def _save_state(state: dict) -> None:
++def _save_state(state: Dict[str, Any]) -> None:
+     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+     STATE_PATH.write_text(json.dumps(state, ensure_ascii=True, indent=2), encoding='utf-8')
+ 
+ 
+-def _within_budget(events: list[dict], name: str, max_per_hour: int) -> bool:
++def _within_budget(events: List[Dict[str, Any]], name: str, max_per_hour: int) -> bool:
+     cutoff = time.time() - 3600
+     recent = [e for e in events if e.get('name') == name and float(e.get('ts_epoch', 0)) >= cutoff]
+     return len(recent) < max(max_per_hour, 1)
+ 
+ 
++def _file_age_seconds(path: Path) -> float:
++    try:
++        return max(time.time() - path.stat().st_mtime, 0.0)
++    except Exception:
++        return 1e12
++
++
++def _copy_if_exists(src: Path, dst: Path) -> bool:
++    if not src.exists():
++        return False
++    dst.parent.mkdir(parents=True, exist_ok=True)
++    shutil.copy2(src, dst)
++    return True
++
++
++def _refresh_runtime_reports(max_age_seconds: int) -> Dict[str, Any]:
++    day = datetime.now(timezone.utc).strftime('%Y%m%d')
++    one_numbers = PROJECT_ROOT / 'exports' / 'one_numbers' / 'one_numbers_summary.json'
++    one_numbers_health = PROJECT_ROOT / 'governance' / 'health' / 'one_numbers_latest.json'
++    daily_summary = PROJECT_ROOT / 'exports' / 'sql_reports' / f'daily_runtime_summary_{day}.json'
++    daily_summary_health = PROJECT_ROOT / 'governance' / 'health' / 'daily_runtime_summary_latest.json'
++
++    out: Dict[str, Any] = {
++        'one_numbers': {
++            'path': str(one_numbers),
++            'refreshed': False,
++            'age_seconds_before': round(_file_age_seconds(one_numbers), 2),
++            'rc': 0,
++            'error': '',
++            'synced_health': False,
++        },
++        'daily_runtime_summary': {
++            'path': str(daily_summary),
++            'refreshed': False,
++            'age_seconds_before': round(_file_age_seconds(daily_summary), 2),
++            'rc': 0,
++            'error': '',
++            'synced_health': False,
++        },
++    }
++
++    if _file_age_seconds(one_numbers) > float(max_age_seconds):
++        if _proc_running('scripts/build_one_numbers_report.py') > 0:
++            out['one_numbers']['error'] = 'refresh_already_running'
++        else:
++            rc, _stdout, err = _run([str(PY), str(PROJECT_ROOT / 'scripts' / 'build_one_numbers_report.py'), '--day', day])
++            out['one_numbers']['refreshed'] = rc == 0
++            out['one_numbers']['rc'] = int(rc)
++            out['one_numbers']['error'] = err[-500:] if err else ''
++
++    out['one_numbers']['synced_health'] = _copy_if_exists(one_numbers, one_numbers_health)
++    out['one_numbers']['age_seconds_after'] = round(_file_age_seconds(one_numbers), 2)
++
++    if _file_age_seconds(daily_summary) > float(max_age_seconds):
++        rc, stdout, err = _run([str(PY), str(PROJECT_ROOT / 'scripts' / 'daily_runtime_summary.py'), '--day', day, '--json'])
++        out['daily_runtime_summary']['refreshed'] = rc == 0
++        out['daily_runtime_summary']['rc'] = int(rc)
++        out['daily_runtime_summary']['error'] = err[-500:] if err else ''
++        if rc == 0 and stdout:
++            try:
++                payload = json.loads(stdout)
++                daily_summary.parent.mkdir(parents=True, exist_ok=True)
++                daily_summary.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding='utf-8')
++            except Exception as exc:
++                out['daily_runtime_summary']['error'] = f'parse_or_write_failed:{exc}'
++
++    out['daily_runtime_summary']['synced_health'] = _copy_if_exists(daily_summary, daily_summary_health)
++    out['daily_runtime_summary']['age_seconds_after'] = round(_file_age_seconds(daily_summary), 2)
++    return out
++
++
++def _all_sleeves_start_ready(broker: str, simulate: bool) -> Tuple[bool, str]:
++    missing = []
++    if not _split_csv(os.getenv('SHADOW_SYMBOLS_CORE', '')):
++        missing.append('SHADOW_SYMBOLS_CORE')
++    if not _split_csv(os.getenv('SHADOW_SYMBOLS_VOLATILE', '')):
++        missing.append('SHADOW_SYMBOLS_VOLATILE')
++    if not _split_csv(os.getenv('SHADOW_SYMBOLS_DEFENSIVE', '')) and not _split_csv(os.getenv('SHADOW_SYMBOLS_COMMOD_FX_INTL', '')):
++        missing.append('SHADOW_SYMBOLS_DEFENSIVE_or_SHADOW_SYMBOLS_COMMOD_FX_INTL')
++    if missing:
++        return False, 'missing_symbol_env:' + ','.join(missing)
++
++    if broker == 'schwab' and (not simulate):
++        key = os.getenv('SCHWAB_API_KEY', '').strip()
++        secret = os.getenv('SCHWAB_SECRET', '').strip()
++        if key in {'', 'YOUR_KEY_HERE'} or secret in {'', 'YOUR_SECRET_HERE'}:
++            return False, 'missing_schwab_credentials'
++
++    return True, 'ready'
++
++
++def _build_all_sleeves_target() -> Dict[str, Any]:
++    broker = os.getenv('DATA_BROKER', 'schwab').strip().lower()
++    if broker not in {'schwab', 'coinbase'}:
++        broker = 'schwab'
++
++    simulate = _env_flag('OPS_WATCHDOG_ALL_SLEEVES_SIMULATE', '0')
++    with_aggressive = _env_flag('OPS_WATCHDOG_ALL_SLEEVES_WITH_AGGRESSIVE', '1')
++
++    cmd: List[str] = [str(PY), str(PROJECT_ROOT / 'scripts' / 'run_all_sleeves.py')]
++    if with_aggressive:
++        cmd.append('--with-aggressive-modes')
++    cmd.extend(['--broker', broker])
++    if simulate:
++        cmd.append('--simulate')
++
++    arg_env = [
++        ('--symbols-core', 'SHADOW_SYMBOLS_CORE'),
++        ('--symbols-volatile', 'SHADOW_SYMBOLS_VOLATILE'),
++        ('--symbols-defensive', 'SHADOW_SYMBOLS_DEFENSIVE'),
++        ('--dividend-symbols', 'DIVIDEND_SYMBOLS'),
++        ('--bond-symbols', 'BOND_SYMBOLS'),
++    ]
++    for arg, env_name in arg_env:
++        val = os.getenv(env_name, '').strip()
++        if val:
++            cmd.extend([arg, val])
++
++    return {
++        'name': 'all_sleeves',
++        'pattern': 'scripts/run_all_sleeves.py',
++        'alt_patterns': [
++            'scripts/run_parallel_shadows.py',
++            'scripts/run_dividend_shadow.py',
++            'scripts/run_bond_shadow.py',
++            'scripts/run_parallel_aggressive_modes.py',
++        ],
++        'cmd': cmd,
++        'log': PROJECT_ROOT / 'logs' / 'watchdog_all_sleeves.log',
++        'broker': broker,
++        'simulate': simulate,
++    }
++
++
+ def main() -> int:
+     parser = argparse.ArgumentParser(description='Watchdog: restart key loops with bounded backoff.')
+     parser.add_argument('--max-restarts-per-hour', type=int, default=int(os.getenv('OPS_WATCHDOG_MAX_RESTARTS_PER_HOUR', '6')))
++    parser.add_argument('--require-all-sleeves', action='store_true', default=os.getenv('OPS_WATCHDOG_REQUIRE_ALL_SLEEVES', '1') == '1')
+     parser.add_argument('--require-coinbase', action='store_true', default=os.getenv('OPS_WATCHDOG_REQUIRE_COINBASE', '1') == '1')
++    parser.add_argument('--refresh-reports', action='store_true', default=os.getenv('OPS_WATCHDOG_REFRESH_REPORTS', '1') == '1')
++    parser.add_argument('--refresh-max-age-seconds', type=int, default=int(os.getenv('OPS_WATCHDOG_REFRESH_MAX_AGE_SECONDS', '7200')))
+     parser.add_argument('--json', action='store_true')
+     args = parser.parse_args()
+ 
+     state = _load_state()
+     events = state.get('events') if isinstance(state.get('events'), list) else []
+ 
+-    targets = [
+-        {
+-            'name': 'all_sleeves',
+-            'pattern': 'scripts/run_all_sleeves.py --with-aggressive-modes',
+-            'cmd': [str(PY), str(PROJECT_ROOT / 'scripts' / 'run_all_sleeves.py'), '--with-aggressive-modes'],
+-            'log': PROJECT_ROOT / 'logs' / 'watchdog_all_sleeves.log',
+-        },
++    maintenance: List[Dict[str, Any]] = []
++    for name, cmd in [
++        ('lock_watchdog', [str(PY), str(PROJECT_ROOT / 'scripts' / 'ops' / 'lock_watchdog.py'), '--apply', '--json']),
++        ('storage_failback_sync', [str(PY), str(PROJECT_ROOT / 'scripts' / 'ops' / 'storage_failback_sync.py'), '--json']),
++        ('canary_auto_tuner', [str(PY), str(PROJECT_ROOT / 'scripts' / 'ops' / 'canary_auto_tuner.py'), '--json']),
++    ]:
++        rc, out, err = _run(cmd)
++        maintenance.append(
++            {
++                'name': name,
++                'ok': rc == 0,
++                'rc': int(rc),
++                'stdout_tail': '\n'.join((out or '').splitlines()[-6:]),
++                'stderr_tail': '\n'.join((err or '').splitlines()[-6:]),
++            }
++        )
++
++    refresh_payload: Dict[str, Any] = {}
++    if args.refresh_reports:
++        refresh_payload = _refresh_runtime_reports(max_age_seconds=max(int(args.refresh_max_age_seconds), 60))
++
++    targets: List[Dict[str, Any]] = [
+         {
+             'name': 'sql_link_writer',
+             'pattern': 'scripts/ops/sql_link_writer_service.py',
+             'cmd': [str(PY), str(PROJECT_ROOT / 'scripts' / 'ops' / 'sql_link_writer_service.py')],
+             'log': PROJECT_ROOT / 'logs' / 'watchdog_sql_link_writer.log',
++            'alt_patterns': [],
+         },
+     ]
+ 
++    if args.require_all_sleeves:
++        targets.append(_build_all_sleeves_target())
++
+     if args.require_coinbase:
++        coinbase_cmd: List[str] = [
++            str(PY), str(PROJECT_ROOT / 'scripts' / 'run_shadow_training_loop.py'),
++            '--broker', 'coinbase',
++            '--symbols', os.getenv('COINBASE_WATCH_SYMBOLS', 'BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LTC-USD,LINK-USD,DOGE-USD'),
++            '--interval-seconds', os.getenv('COINBASE_WATCH_INTERVAL_SECONDS', '20'),
++            '--max-iterations', '0',
++        ]
++        if _env_flag('OPS_WATCHDOG_COINBASE_SIMULATE', '0'):
++            coinbase_cmd.append('--simulate')
+         targets.append(
+             {
+                 'name': 'coinbase_loop',
+                 'pattern': 'scripts/run_shadow_training_loop.py --broker coinbase',
+-                'cmd': [
+-                    str(PY), str(PROJECT_ROOT / 'scripts' / 'run_shadow_training_loop.py'),
+-                    '--broker', 'coinbase',
+-                    '--symbols', os.getenv('COINBASE_WATCH_SYMBOLS', 'BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LTC-USD,LINK-USD,DOGE-USD'),
+-                    '--interval-seconds', os.getenv('COINBASE_WATCH_INTERVAL_SECONDS', '20'),
+-                    '--max-iterations', '0',
+-                    '--simulate',
+-                ],
++                'cmd': coinbase_cmd,
+                 'log': PROJECT_ROOT / 'logs' / 'watchdog_coinbase_loop.log',
++                'alt_patterns': [],
+             }
+         )
+ 
+-    restarts = []
+-    status = []
+-
+-    # Keep lock hygiene first.
+-    subprocess.run([str(PY), str(PROJECT_ROOT / 'scripts' / 'ops' / 'lock_watchdog.py'), '--apply', '--json'], cwd=str(PROJECT_ROOT), check=False)
+-    subprocess.run([str(PY), str(PROJECT_ROOT / 'scripts' / 'ops' / 'storage_failback_sync.py'), '--json'], cwd=str(PROJECT_ROOT), check=False)
+-    subprocess.run([str(PY), str(PROJECT_ROOT / 'scripts' / 'ops' / 'canary_auto_tuner.py'), '--json'], cwd=str(PROJECT_ROOT), check=False)
++    restarts: List[Dict[str, Any]] = []
++    status: List[Dict[str, Any]] = []
+ 
+     for t in targets:
+         running = _proc_running(t['pattern'])
+-        row = {'name': t['name'], 'running': int(running)}
+-        if running > 0:
++        alt_running = sum(_proc_running(p) for p in t.get('alt_patterns', []) if p)
++        row: Dict[str, Any] = {'name': t['name'], 'running': int(running)}
++        if alt_running > 0:
++            row['alt_running'] = int(alt_running)
++
++        if running > 0 or alt_running > 0:
+             status.append(row)
+             continue
+ 
++        if t['name'] == 'all_sleeves':
++            ready, reason = _all_sleeves_start_ready(str(t.get('broker', 'schwab')), bool(t.get('simulate', False)))
++            if not ready:
++                row['restart_skipped'] = 'startup_not_ready'
++                row['reason'] = reason
++                status.append(row)
++                continue
++
+         if not _within_budget(events, t['name'], args.max_restarts_per_hour):
+             row['restart_skipped'] = 'budget_exhausted'
+             status.append(row)
+@@ -117,7 +298,6 @@ def main() -> int:
+     if SNAPSHOT_SCRIPT.exists() and restarts:
+         subprocess.run([str(SNAPSHOT_SCRIPT)], cwd=str(PROJECT_ROOT), check=False)
+ 
+-    # keep last 400 events
+     events = sorted(events, key=lambda x: float(x.get('ts_epoch', 0)))[-400:]
+     state = {'events': events, 'updated_at_utc': datetime.now(timezone.utc).isoformat()}
+     _save_state(state)
+@@ -127,6 +307,8 @@ def main() -> int:
+         'status': status,
+         'restarts': restarts,
+         'max_restarts_per_hour': int(args.max_restarts_per_hour),
++        'maintenance': maintenance,
++        'refresh_reports': refresh_payload,
+     }
+     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+     OUT_PATH.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding='utf-8')
+diff --git a/scripts/ops/sql_link_writer_service.py b/scripts/ops/sql_link_writer_service.py
+index 8f41c8b..d92eed2 100644
+--- a/scripts/ops/sql_link_writer_service.py
++++ b/scripts/ops/sql_link_writer_service.py
+@@ -10,6 +10,15 @@ from pathlib import Path
+ PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ PY = PROJECT_ROOT / '.venv312' / 'bin' / 'python'
+ LINK_SCRIPT = PROJECT_ROOT / 'scripts' / 'link_jsonl_to_sql.py'
++HOT_RETENTION_SCRIPT = PROJECT_ROOT / 'scripts' / 'sql_hot_retention.py'
++SQLITE_DB_PATH = PROJECT_ROOT / 'data' / 'jsonl_link.sqlite3'
++
++
++def _db_size_gb(path: Path) -> float:
++    try:
++        return float(path.stat().st_size) / (1024.0 ** 3)
++    except Exception:
++        return 0.0
+ 
+ 
+ def _run_link(timeout_s: int, lock_retries: int, retry_delay_s: float) -> tuple[int, str, str]:
+@@ -34,6 +43,30 @@ def _run_link(timeout_s: int, lock_retries: int, retry_delay_s: float) -> tuple[
+     return p.returncode, (p.stdout or '').strip(), (p.stderr or '').strip()
+ 
+ 
++def _run_hot_retention(*, hot_days: int, batch_size: int, archive_db: str, vacuum: bool) -> tuple[int, str, str]:
++    cmd = [
++        str(PY),
++        str(HOT_RETENTION_SCRIPT),
++        '--db', str(SQLITE_DB_PATH),
++        '--archive-db', str(archive_db),
++        '--hot-days', str(max(hot_days, 1)),
++        '--batch-size', str(max(batch_size, 1000)),
++        '--json',
++    ]
++    if vacuum:
++        cmd.append('--vacuum')
++
++    p = subprocess.run(
++        cmd,
++        cwd=str(PROJECT_ROOT),
++        stdin=subprocess.DEVNULL,
++        capture_output=True,
++        text=True,
++        check=False,
++    )
++    return p.returncode, (p.stdout or '').strip(), (p.stderr or '').strip()
++
++
+ def main() -> int:
+     parser = argparse.ArgumentParser(description='Single-writer SQLite linker service with lock arbitration.')
+     parser.add_argument('--interval-seconds', type=int, default=int(os.getenv('SQL_LINK_SERVICE_INTERVAL_SECONDS', '120')))
+@@ -41,6 +74,13 @@ def main() -> int:
+     parser.add_argument('--sqlite-lock-retries', type=int, default=int(os.getenv('SQL_LINK_SERVICE_LOCK_RETRIES', '200')))
+     parser.add_argument('--sqlite-lock-retry-delay-seconds', type=float, default=float(os.getenv('SQL_LINK_SERVICE_LOCK_RETRY_DELAY_SECONDS', '0.5')))
+     parser.add_argument('--lock-path', default=str(PROJECT_ROOT / 'governance' / 'locks' / 'jsonl_sql_writer.lock'))
++    parser.add_argument('--auto-hot-retention', action='store_true', default=os.getenv('SQL_LINK_SERVICE_AUTO_HOT_RETENTION', '1') == '1')
++    parser.add_argument('--hot-retention-max-db-gb', type=float, default=float(os.getenv('SQL_LINK_SERVICE_HOT_MAX_DB_GB', '35')))
++    parser.add_argument('--hot-retention-hot-days', type=int, default=int(os.getenv('SQL_LINK_SERVICE_HOT_DAYS', '21')))
++    parser.add_argument('--hot-retention-batch-size', type=int, default=int(os.getenv('SQL_LINK_SERVICE_HOT_BATCH_SIZE', '50000')))
++    parser.add_argument('--hot-retention-min-interval-seconds', type=int, default=int(os.getenv('SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS', '1800')))
++    parser.add_argument('--hot-retention-vacuum-threshold-gb', type=float, default=float(os.getenv('SQL_LINK_SERVICE_HOT_VACUUM_THRESHOLD_GB', '70')))
++    parser.add_argument('--hot-retention-archive-db', default=os.getenv('SQL_LINK_SERVICE_HOT_ARCHIVE_DB', str(PROJECT_ROOT / 'data' / 'jsonl_link_archive.sqlite3')))
+     parser.add_argument('--once', action='store_true')
+     parser.add_argument('--json', action='store_true')
+     args = parser.parse_args()
+@@ -64,6 +104,7 @@ def main() -> int:
+     fh.flush()
+ 
+     out_path = PROJECT_ROOT / 'governance' / 'health' / 'sql_link_service_latest.json'
++    last_hot_retention_ts = 0.0
+ 
+     while True:
+         ts = datetime.now(timezone.utc).isoformat()
+@@ -72,6 +113,45 @@ def main() -> int:
+             lock_retries=int(args.sqlite_lock_retries),
+             retry_delay_s=float(args.sqlite_lock_retry_delay_seconds),
+         )
++
++        db_size = _db_size_gb(SQLITE_DB_PATH)
++        hot_retention = {
++            'enabled': bool(args.auto_hot_retention),
++            'db_size_gb_before': round(db_size, 3),
++            'max_db_gb': float(args.hot_retention_max_db_gb),
++            'ran': False,
++            'rc': 0,
++            'stdout_tail': '',
++            'stderr_tail': '',
++            'skipped_reason': '',
++        }
++
++        now_ts = time.time()
++        if args.auto_hot_retention and rc == 0 and db_size >= float(args.hot_retention_max_db_gb):
++            since_last = now_ts - float(last_hot_retention_ts)
++            if since_last >= max(int(args.hot_retention_min_interval_seconds), 60):
++                do_vacuum = db_size >= float(args.hot_retention_vacuum_threshold_gb)
++                h_rc, h_out, h_err = _run_hot_retention(
++                    hot_days=int(args.hot_retention_hot_days),
++                    batch_size=int(args.hot_retention_batch_size),
++                    archive_db=str(args.hot_retention_archive_db),
++                    vacuum=do_vacuum,
++                )
++                hot_retention['ran'] = True
++                hot_retention['rc'] = int(h_rc)
++                hot_retention['stdout_tail'] = '\n'.join(h_out.splitlines()[-12:])
++                hot_retention['stderr_tail'] = '\n'.join(h_err.splitlines()[-12:])
++                hot_retention['vacuum'] = bool(do_vacuum)
++                last_hot_retention_ts = now_ts
++            else:
++                hot_retention['skipped_reason'] = f'min_interval_not_met:{int(since_last)}s'
++        elif args.auto_hot_retention and rc != 0:
++            hot_retention['skipped_reason'] = 'link_failed'
++        elif args.auto_hot_retention:
++            hot_retention['skipped_reason'] = 'db_below_threshold'
++
++        hot_retention['db_size_gb_after'] = round(_db_size_gb(SQLITE_DB_PATH), 3)
++
+         payload = {
+             'timestamp_utc': ts,
+             'ok': rc == 0,
+@@ -79,6 +159,8 @@ def main() -> int:
+             'lock_path': str(lock_path),
+             'stdout_tail': '\n'.join(out.splitlines()[-20:]),
+             'stderr_tail': '\n'.join(err.splitlines()[-20:]),
++            'sqlite_db_size_gb': round(_db_size_gb(SQLITE_DB_PATH), 3),
++            'hot_retention': hot_retention,
+         }
+         out_path.parent.mkdir(parents=True, exist_ok=True)
+         out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding='utf-8')
+diff --git a/scripts/ops/start_stack.sh b/scripts/ops/start_stack.sh
+index 605a615..ab5e6bb 100755
+--- a/scripts/ops/start_stack.sh
++++ b/scripts/ops/start_stack.sh
+@@ -50,9 +50,26 @@ nohup "${CMD[@]}" > "$LOG_ALL" 2>&1 & disown
+ echo "all_sleeves_log=$LOG_ALL"
+ 
+ if [[ "$WITH_COINBASE" == "1" ]]; then
+-  LOG_CB="logs/coinbase_live_$(date -u +%Y%m%d_%H%M%S).log"
+-  nohup "$PY" "$PROJECT_ROOT/scripts/run_shadow_training_loop.py"     --broker coinbase     --symbols "${COINBASE_WATCH_SYMBOLS:-BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LTC-USD,LINK-USD,DOGE-USD}"     --interval-seconds "${COINBASE_WATCH_INTERVAL_SECONDS:-20}"     --max-iterations 0     --simulate     > "$LOG_CB" 2>&1 & disown
+-  echo "coinbase_log=$LOG_CB"
++  if ps -axo command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v grep >/dev/null 2>&1; then
++    EXISTING_PID="$(ps -axo pid,command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v grep | awk 'NR==1{print $1}')"
++    echo "coinbase_loop=already_running pid=$EXISTING_PID"
++  else
++    LOG_CB="logs/coinbase_live_$(date -u +%Y%m%d_%H%M%S).log"
++    ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-0}" nohup "$PY" "$PROJECT_ROOT/scripts/run_shadow_training_loop.py" \
++      --broker coinbase \
++      --symbols "${COINBASE_WATCH_SYMBOLS:-BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LTC-USD,LINK-USD,DOGE-USD}" \
++      --interval-seconds "${COINBASE_WATCH_INTERVAL_SECONDS:-20}" \
++      --max-iterations 0 \
++      --simulate \
++      > "$LOG_CB" 2>&1 & disown
++    sleep 2
++    if ps -axo command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v grep >/dev/null 2>&1; then
++      echo "coinbase_log=$LOG_CB"
++    else
++      echo "coinbase_loop=failed_to_start log=$LOG_CB"
++      tail -n 40 "$LOG_CB" || true
++    fi
++  fi
+ fi
+ 
+ "$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py" --json >/dev/null 2>&1 || true
+diff --git a/scripts/ops/storage_failback_sync.py b/scripts/ops/storage_failback_sync.py
+index 72400b3..a1ee165 100644
+--- a/scripts/ops/storage_failback_sync.py
++++ b/scripts/ops/storage_failback_sync.py
+@@ -1,5 +1,6 @@
+ import argparse
+ import json
++import sys
+ from datetime import datetime, timezone
+ from pathlib import Path
+ 
+@@ -11,6 +12,9 @@ def main() -> int:
+     parser.add_argument('--json', action='store_true')
+     args = parser.parse_args()
+ 
++    if str(PROJECT_ROOT) not in sys.path:
++        sys.path.insert(0, str(PROJECT_ROOT))
++
+     from core.storage_router import describe_storage_routing, route_runtime_storage
+ 
+     routing = route_runtime_storage(PROJECT_ROOT)
+@@ -29,8 +33,11 @@ def main() -> int:
+     }
+ 
+     out = PROJECT_ROOT / 'governance' / 'health' / 'storage_failback_sync_latest.json'
++    compat = PROJECT_ROOT / 'governance' / 'health' / 'storage_route_status_latest.json'
+     out.parent.mkdir(parents=True, exist_ok=True)
+-    out.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding='utf-8')
++    encoded = json.dumps(payload, ensure_ascii=True, indent=2)
++    out.write_text(encoded, encoding='utf-8')
++    compat.write_text(encoded, encoding='utf-8')
+ 
+     if args.json:
+         print(json.dumps(payload, ensure_ascii=True))
+diff --git a/scripts/replay_preopen_sanity_check.py b/scripts/replay_preopen_sanity_check.py
+index 6b050c6..6d2b3dc 100644
+--- a/scripts/replay_preopen_sanity_check.py
++++ b/scripts/replay_preopen_sanity_check.py
+@@ -155,8 +155,11 @@ def main() -> int:
+     }
+ 
+     out = PROJECT_ROOT / 'governance' / 'health' / 'replay_preopen_sanity_latest.json'
++    compat = PROJECT_ROOT / 'governance' / 'health' / 'preopen_replay_sanity_latest.json'
+     out.parent.mkdir(parents=True, exist_ok=True)
+-    out.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding='utf-8')
++    encoded = json.dumps(payload, ensure_ascii=True, indent=2)
++    out.write_text(encoded, encoding='utf-8')
++    compat.write_text(encoded, encoding='utf-8')
+ 
+     if args.json:
+         print(json.dumps(payload, ensure_ascii=True))
+diff --git a/scripts/sqlite_performance_maintenance.py b/scripts/sqlite_performance_maintenance.py
+index 6753aad..120db08 100644
+--- a/scripts/sqlite_performance_maintenance.py
++++ b/scripts/sqlite_performance_maintenance.py
+@@ -2,6 +2,7 @@ import argparse
+ import json
+ import os
+ import sqlite3
++import time
+ from datetime import datetime, timezone
+ from pathlib import Path
+ 
+@@ -14,6 +15,32 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+     return row is not None
+ 
+ 
++def _sqlite_exec_with_retry(
++    conn: sqlite3.Connection,
++    sql: str,
++    params: tuple = (),
++    *,
++    lock_retries: int,
++    lock_retry_delay_seconds: float,
++):
++    attempt = 0
++    while True:
++        try:
++            return conn.execute(sql, params)
++        except sqlite3.OperationalError as exc:
++            msg = str(exc).lower()
++            is_locked = ("database is locked" in msg) or ("database table is locked" in msg)
++            if (not is_locked) or attempt >= max(lock_retries, 0):
++                raise
++            sleep_s = min(max(lock_retry_delay_seconds, 0.01) * (2 ** attempt), 5.0)
++            print(
++                f"SQLite busy during maintenance; retrying in {sleep_s:.2f}s "
++                f"(attempt {attempt + 1}/{max(lock_retries, 0)})"
++            )
++            time.sleep(sleep_s)
++            attempt += 1
++
++
+ def main() -> int:
+     parser = argparse.ArgumentParser(description="Apply SQLite performance tuning and maintenance.")
+     parser.add_argument("--db", default=str(DEFAULT_DB))
+@@ -21,18 +48,22 @@ def main() -> int:
+     parser.add_argument("--auto-vacuum-over-gb", type=float, default=float(os.getenv("SQLITE_AUTO_VACUUM_OVER_GB", "24")))
+     parser.add_argument("--vacuum-min-interval-hours", type=float, default=float(os.getenv("SQLITE_VACUUM_MIN_INTERVAL_HOURS", "24")))
+     parser.add_argument("--json", action="store_true")
++    parser.add_argument("--sqlite-timeout-seconds", type=float, default=float(os.getenv("SQLITE_TIMEOUT_SECONDS", "60")))
++    parser.add_argument("--sqlite-lock-retries", type=int, default=int(os.getenv("SQLITE_LOCK_RETRIES", "8")))
++    parser.add_argument("--sqlite-lock-retry-delay-seconds", type=float, default=float(os.getenv("SQLITE_LOCK_RETRY_DELAY_SECONDS", "0.25")))
+     args = parser.parse_args()
+ 
+     db_path = Path(args.db)
+     if not db_path.exists():
+         raise SystemExit(f"SQLite DB not found: {db_path}")
+ 
+-    conn = sqlite3.connect(str(db_path))
++    conn = sqlite3.connect(str(db_path), timeout=max(float(args.sqlite_timeout_seconds), 1.0))
+     conn.execute("PRAGMA journal_mode=WAL")
+     conn.execute("PRAGMA synchronous=NORMAL")
+     conn.execute("PRAGMA temp_store=MEMORY")
+     conn.execute("PRAGMA cache_size=-20000")
+     conn.execute("PRAGMA mmap_size=268435456")
++    conn.execute(f"PRAGMA busy_timeout={int(max(float(args.sqlite_timeout_seconds), 1.0) * 1000)}")
+ 
+     created_indexes = 0
+     if _table_exists(conn, "jsonl_records"):
+@@ -43,10 +74,11 @@ def main() -> int:
+             "CREATE INDEX IF NOT EXISTS idx_jsonl_ts_expr ON jsonl_records((json_extract(payload_json, '$.timestamp_utc')))",
+         ]
+         for sql in idx_sql:
+-            conn.execute(sql)
++            _sqlite_exec_with_retry(conn, sql, lock_retries=max(args.sqlite_lock_retries, 0), lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01))
+             created_indexes += 1
+ 
+-    conn.execute(
++    _sqlite_exec_with_retry(
++        conn,
+         """
+         CREATE TABLE IF NOT EXISTS db_maintenance_events (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+@@ -56,19 +88,24 @@ def main() -> int:
+             indexes_touched INTEGER NOT NULL,
+             notes TEXT NOT NULL
+         )
+-        """
++        """,
++        lock_retries=max(args.sqlite_lock_retries, 0),
++        lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+     )
+ 
+-    conn.execute("ANALYZE")
+-    conn.execute("PRAGMA optimize")
+-    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
++    _sqlite_exec_with_retry(conn, "ANALYZE", lock_retries=max(args.sqlite_lock_retries, 0), lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01))
++    _sqlite_exec_with_retry(conn, "PRAGMA optimize", lock_retries=max(args.sqlite_lock_retries, 0), lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01))
++    _sqlite_exec_with_retry(conn, "PRAGMA wal_checkpoint(TRUNCATE)", lock_retries=max(args.sqlite_lock_retries, 0), lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01))
+ 
+     size_gb_before = db_path.stat().st_size / (1024 ** 3)
+ 
+     last_vacuum_ts = None
+     try:
+-        row = conn.execute(
+-            "SELECT timestamp_utc FROM db_maintenance_events WHERE vacuum_ran=1 ORDER BY id DESC LIMIT 1"
++        row = _sqlite_exec_with_retry(
++            conn,
++            "SELECT timestamp_utc FROM db_maintenance_events WHERE vacuum_ran=1 ORDER BY id DESC LIMIT 1",
++            lock_retries=max(args.sqlite_lock_retries, 0),
++            lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+         ).fetchone()
+         if row and row[0]:
+             last_vacuum_ts = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00")).astimezone(timezone.utc)
+@@ -84,11 +121,16 @@ def main() -> int:
+             do_vacuum = elapsed_h >= float(args.vacuum_min_interval_hours)
+ 
+     if do_vacuum:
+-        conn.execute("VACUUM")
++        _sqlite_exec_with_retry(conn, "VACUUM", lock_retries=max(args.sqlite_lock_retries, 0), lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01))
+ 
+     total_rows = 0
+     if _table_exists(conn, "jsonl_records"):
+-        row = conn.execute("SELECT COUNT(*) FROM jsonl_records").fetchone()
++        row = _sqlite_exec_with_retry(
++            conn,
++            "SELECT COUNT(*) FROM jsonl_records",
++            lock_retries=max(args.sqlite_lock_retries, 0),
++            lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
++        ).fetchone()
+         total_rows = int(row[0] if row else 0)
+ 
+     size_gb_after = db_path.stat().st_size / (1024 ** 3)
+@@ -104,9 +146,12 @@ def main() -> int:
+         "vacuum_min_interval_hours": float(args.vacuum_min_interval_hours),
+     }
+ 
+-    conn.execute(
++    _sqlite_exec_with_retry(
++        conn,
+         "INSERT INTO db_maintenance_events(timestamp_utc, db_path, vacuum_ran, indexes_touched, notes) VALUES (?, ?, ?, ?, ?)",
+         (payload["timestamp_utc"], payload["db_path"], 1 if do_vacuum else 0, created_indexes, "auto_maintenance"),
++        lock_retries=max(args.sqlite_lock_retries, 0),
++        lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+     )
+     conn.commit()
+     conn.close()
