@@ -8,6 +8,8 @@ FORCE_RESTART=0
 WITH_COINBASE=1
 SIMULATE=0
 DISABLE_BREAKERS=0
+COINBASE_PAPER=0
+COINBASE_SIMULATE="${COINBASE_START_SIMULATE:-1}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -15,6 +17,9 @@ while [[ $# -gt 0 ]]; do
     --no-coinbase) WITH_COINBASE=0 ;;
     --simulate) SIMULATE=1 ;;
     --disable-circuit-breakers) DISABLE_BREAKERS=1 ;;
+    --coinbase-paper) COINBASE_PAPER=1; COINBASE_SIMULATE=0 ;;
+    --coinbase-live-data|--coinbase-no-simulate) COINBASE_SIMULATE=0 ;;
+    --coinbase-simulate) COINBASE_SIMULATE=1 ;;
   esac
   shift
 done
@@ -55,16 +60,28 @@ if [[ "$WITH_COINBASE" == "1" ]]; then
     echo "coinbase_loop=already_running pid=$EXISTING_PID"
   else
     LOG_CB="logs/coinbase_live_$(date -u +%Y%m%d_%H%M%S).log"
-    ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-0}" nohup "$PY" "$PROJECT_ROOT/scripts/run_shadow_training_loop.py" \
-      --broker coinbase \
-      --symbols "${COINBASE_WATCH_SYMBOLS:-BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LTC-USD,LINK-USD,DOGE-USD}" \
-      --interval-seconds "${COINBASE_WATCH_INTERVAL_SECONDS:-20}" \
-      --max-iterations 0 \
-      --simulate \
-      > "$LOG_CB" 2>&1 & disown
+    CB_CMD=(
+      "$PY" "$PROJECT_ROOT/scripts/run_shadow_training_loop.py"
+      --broker coinbase
+      --symbols "${COINBASE_WATCH_SYMBOLS:-BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LTC-USD,LINK-USD,DOGE-USD}"
+      --interval-seconds "${COINBASE_WATCH_INTERVAL_SECONDS:-20}"
+      --max-iterations 0
+    )
+    if [[ "$COINBASE_SIMULATE" == "1" ]]; then
+      CB_CMD+=(--simulate)
+    fi
+
+    if [[ "$COINBASE_PAPER" == "1" ]]; then
+      echo "coinbase_paper=enabled top_n=${TOP_BOT_PAPER_TRADING_TOP_N:-2} min_acc=${TOP_BOT_PAPER_TRADING_MIN_ACC:-0.55}"
+      TOP_BOT_PAPER_TRADING_ENABLED=1       TOP_BOT_PAPER_TRADING_TOP_N="${TOP_BOT_PAPER_TRADING_TOP_N:-2}"       TOP_BOT_PAPER_TRADING_MIN_ACC="${TOP_BOT_PAPER_TRADING_MIN_ACC:-0.55}"       TOP_BOT_PAPER_TRADING_PROFILES="${TOP_BOT_PAPER_TRADING_PROFILES:-default}"       PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"       PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-0}"       nohup "${CB_CMD[@]}" > "$LOG_CB" 2>&1 & disown
+    else
+      ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-0}"       nohup "${CB_CMD[@]}" > "$LOG_CB" 2>&1 & disown
+    fi
+
     sleep 2
     if ps -axo command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v grep >/dev/null 2>&1; then
       echo "coinbase_log=$LOG_CB"
+      echo "coinbase_mode simulate=$COINBASE_SIMULATE paper=$COINBASE_PAPER"
     else
       echo "coinbase_loop=failed_to_start log=$LOG_CB"
       tail -n 40 "$LOG_CB" || true
@@ -72,4 +89,4 @@ if [[ "$WITH_COINBASE" == "1" ]]; then
   fi
 fi
 
-"$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py" --json >/dev/null 2>&1 || true
+OPS_WATCHDOG_REFRESH_REPORTS=0 "$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py" --json >/dev/null 2>&1 || true

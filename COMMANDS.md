@@ -120,3 +120,34 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 RETRAIN_AFTER_HOURS_ONLY=0 RETRAIN_DISTILLATION_PRIORITY=1 RETRAIN_DISTILLATION_STUDENT_EXTRA_PASS=2 \
 ./.venv312/bin/python scripts/weekly_retrain.py --continue-on-error
 ```
+
+## 15) One-Command Live Feed (seamless)
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh schwab-tail
+```
+
+NVDA-only:
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh schwab-tail --symbol NVDA
+```
+
+All feeds (Schwab + Coinbase):
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh feed --source all
+```
+
+## 16) Coinbase Paper Trading (new)
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh coinbase-start --paper --force-restart --top-n 2 --min-acc 0.55 --profiles default
+```
+
+Watch Coinbase paper/shadow feed:
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh coinbase-tail
+```
+
