@@ -35,6 +35,18 @@ SNAPSHOT_FEATURE_NAMES = [
     "snapshot_divergence_ratio",
     "snapshot_triprate_ratio",
     "snapshot_queue_pressure_ratio",
+    "snapshot_drill_ok",
+    "snapshot_drill_restore_fail_ratio",
+    "snapshot_drill_missing_ratio",
+    "snapshot_drill_recency_norm",
+    "snapshot_raw_sql_ingest_ratio",
+    "snapshot_raw_count_norm",
+    "snapshot_raw_file_count_norm",
+    "snapshot_raw_bytes_norm",
+    "snapshot_raw_json_ratio",
+    "snapshot_raw_event_file_ratio",
+    "snapshot_raw_lock_file_ratio",
+    "snapshot_raw_recency_norm",
 ]
 
 
@@ -159,6 +171,7 @@ def _snapshot_health_context(project_root: Path) -> Tuple[Dict[str, float], Dict
     divergence = _safe_load_json(health / "data_source_divergence_latest.json", default={})
     triprate = _safe_load_json(health / "guardrail_triprate_latest.json", default={})
     queue_stress = _safe_load_json(health / "execution_queue_stress_latest.json", default={})
+    drill = _safe_load_json(project_root / "exports" / "state_snapshot_drills" / "latest.json", default={})
 
     coverage_ratio = _to_float(coverage.get("coverage_ratio"), 0.0)
     coverage_log_ratio = _clamp01(math.log1p(max(coverage_ratio, 0.0)) / 6.0)
@@ -203,6 +216,25 @@ def _snapshot_health_context(project_root: Path) -> Tuple[Dict[str, float], Dict
     breach_ratio = _clamp01(breach_rate / breach_rate_max)
     queue_pressure_ratio = _clamp01(max(depth_ratio, breach_ratio))
 
+    drill_files_checked = max(_to_float(drill.get("files_checked"), 0.0), 0.0)
+    drill_missing_files = drill.get("missing_files") if isinstance(drill.get("missing_files"), list) else []
+    drill_missing_count = float(len(drill_missing_files))
+    drill_missing_ratio = _clamp01(drill_missing_count / max(drill_files_checked + drill_missing_count, 1.0))
+
+    drill_rows = drill.get("rows") if isinstance(drill.get("rows"), list) else []
+    drill_restore_total = float(len(drill_rows))
+    drill_restore_ok = float(
+        sum(1 for row in drill_rows if isinstance(row, dict) and bool(row.get("restore_ok", False)))
+    )
+    drill_restore_fail_ratio = _clamp01((drill_restore_total - drill_restore_ok) / max(drill_restore_total, 1.0))
+
+    drill_ts = _to_epoch(drill.get("timestamp_utc"))
+    if drill_ts > 0:
+        drill_age_hours = max((datetime.now(timezone.utc).timestamp() - drill_ts) / 3600.0, 0.0)
+        drill_recency_norm = 1.0 - _clamp01(drill_age_hours / 72.0)
+    else:
+        drill_recency_norm = 0.0
+
     context = {
         "snapshot_cov_ok": 1.0 if bool(coverage.get("ok", False)) else 0.0,
         "snapshot_cov_log_ratio": coverage_log_ratio,
@@ -213,6 +245,10 @@ def _snapshot_health_context(project_root: Path) -> Tuple[Dict[str, float], Dict
         "snapshot_divergence_ratio": divergence_ratio,
         "snapshot_triprate_ratio": triprate_ratio,
         "snapshot_queue_pressure_ratio": queue_pressure_ratio,
+        "snapshot_drill_ok": 1.0 if bool(drill.get("ok", False)) else 0.0,
+        "snapshot_drill_restore_fail_ratio": drill_restore_fail_ratio,
+        "snapshot_drill_missing_ratio": drill_missing_ratio,
+        "snapshot_drill_recency_norm": drill_recency_norm,
     }
 
     meta = {
@@ -228,6 +264,7 @@ def _snapshot_health_context(project_root: Path) -> Tuple[Dict[str, float], Dict
         "divergence_ts": divergence.get("timestamp_utc"),
         "triprate_ts": triprate.get("timestamp_utc"),
         "queue_stress_ts": queue_stress.get("timestamp_utc"),
+        "state_snapshot_drill_ts": drill.get("timestamp_utc"),
     }
     return context, meta
 
@@ -311,6 +348,23 @@ def main() -> int:
         {"trend": 1.0, "mean_revert": 1.10, "shock": 1.25, "other": 1.0},
     )
 
+    weight_shaping_cfg = outcome_cfg.get("label_weight_shaping", {}) if isinstance(outcome_cfg.get("label_weight_shaping"), dict) else {}
+    high_signal_positive_abs_pnl = float(weight_shaping_cfg.get("high_signal_positive_abs_pnl", os.getenv("TRADE_DATASET_HIGH_SIGNAL_POSITIVE_ABS_PNL", "18.0")))
+    high_signal_positive_boost = float(weight_shaping_cfg.get("high_signal_positive_boost", os.getenv("TRADE_DATASET_HIGH_SIGNAL_POSITIVE_BOOST", "1.30")))
+    high_signal_positive_regime_boost = float(weight_shaping_cfg.get("high_signal_positive_regime_boost", os.getenv("TRADE_DATASET_HIGH_SIGNAL_POSITIVE_REGIME_BOOST", "1.08")))
+    high_signal_positive_min_conf = float(weight_shaping_cfg.get("high_signal_positive_min_conf", os.getenv("TRADE_DATASET_HIGH_SIGNAL_POSITIVE_MIN_CONF", "0.55")))
+
+    neutral_noise_abs_pnl_max = float(weight_shaping_cfg.get("neutral_noise_abs_pnl_max", os.getenv("TRADE_DATASET_NEUTRAL_NOISE_ABS_PNL_MAX", "6.0")))
+    neutral_noise_downweight = float(weight_shaping_cfg.get("neutral_noise_downweight", os.getenv("TRADE_DATASET_NEUTRAL_NOISE_DOWNWEIGHT", "0.70")))
+    neutral_noisy_regime_downweight = float(weight_shaping_cfg.get("neutral_noisy_regime_downweight", os.getenv("TRADE_DATASET_NEUTRAL_NOISY_REGIME_DOWNWEIGHT", "0.82")))
+    neutral_low_conf_cutoff = float(weight_shaping_cfg.get("neutral_low_conf_cutoff", os.getenv("TRADE_DATASET_NEUTRAL_LOW_CONF_CUTOFF", "0.5")))
+    neutral_low_conf_downweight = float(weight_shaping_cfg.get("neutral_low_conf_downweight", os.getenv("TRADE_DATASET_NEUTRAL_LOW_CONF_DOWNWEIGHT", "0.78")))
+    noisy_neutral_regimes = {
+        str(x).strip().lower()
+        for x in (weight_shaping_cfg.get("noisy_neutral_regimes") or ["mean_revert", "other"])
+        if str(x).strip()
+    }
+
     weak_regimes = set(weak_cfg.get("regimes", ["mean_revert", "shock"]))
     min_confidence = float(weak_cfg.get("min_confidence", 0.35))
     drop_ambiguous = bool(weak_cfg.get("drop_ambiguous", True))
@@ -366,6 +420,20 @@ def main() -> int:
         )
         weight = _sample_weight(label, weights, regime=regime, regime_weights=regime_weights)
 
+        abs_pnl = abs(pnl)
+        if label == "positive":
+            if abs_pnl >= max(high_signal_positive_abs_pnl, 0.0):
+                weight *= max(high_signal_positive_boost, 0.2)
+            if regime in {"trend", "shock"} and label_confidence >= max(min(high_signal_positive_min_conf, 1.0), 0.0):
+                weight *= max(high_signal_positive_regime_boost, 0.2)
+        elif label == "neutral":
+            if abs_pnl <= max(neutral_noise_abs_pnl_max, 0.0):
+                weight *= max(neutral_noise_downweight, 0.05)
+            if regime in noisy_neutral_regimes:
+                weight *= max(neutral_noisy_regime_downweight, 0.05)
+            if label_confidence < max(min(neutral_low_conf_cutoff, 1.0), 0.0):
+                weight *= max(neutral_low_conf_downweight, 0.05)
+
         examples.append(
             {
                 "id": idx,
@@ -377,7 +445,7 @@ def main() -> int:
                 "label_confidence": round(label_confidence, 6),
                 "pnl": pnl,
                 "label": label,
-                "sample_weight": weight,
+                "sample_weight": round(max(weight, 0.05), 6),
                 "features": features,
             }
         )
@@ -440,6 +508,18 @@ def main() -> int:
                 "mean_revert": float(regime_weights.get("mean_revert", 1.10)),
                 "shock": float(regime_weights.get("shock", 1.25)),
                 "other": float(regime_weights.get("other", 1.0)),
+            },
+            "label_weight_shaping": {
+                "high_signal_positive_abs_pnl": float(high_signal_positive_abs_pnl),
+                "high_signal_positive_boost": float(high_signal_positive_boost),
+                "high_signal_positive_regime_boost": float(high_signal_positive_regime_boost),
+                "high_signal_positive_min_conf": float(high_signal_positive_min_conf),
+                "neutral_noise_abs_pnl_max": float(neutral_noise_abs_pnl_max),
+                "neutral_noise_downweight": float(neutral_noise_downweight),
+                "neutral_noisy_regime_downweight": float(neutral_noisy_regime_downweight),
+                "neutral_low_conf_cutoff": float(neutral_low_conf_cutoff),
+                "neutral_low_conf_downweight": float(neutral_low_conf_downweight),
+                "noisy_neutral_regimes": sorted(noisy_neutral_regimes),
             },
         },
         "weak_regime_label_quality": {

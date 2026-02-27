@@ -1118,6 +1118,15 @@ def _load_trade_behavior_model(project_root: str) -> Optional[Dict[str, Any]]:
         if (not math.isfinite(temperature)) or temperature <= 0.0:
             temperature = 1.0
 
+        class_logit_bias = np.zeros((3,), dtype=dtype)
+        if "class_logit_bias" in arr.files:
+            try:
+                raw_bias = np.asarray(arr["class_logit_bias"]).reshape(-1)
+                if raw_bias.shape[0] == 3:
+                    class_logit_bias = raw_bias.astype(dtype)
+            except Exception:
+                class_logit_bias = np.zeros((3,), dtype=dtype)
+
         model = {
             "path": path,
             "W": arr["W"].astype(dtype),
@@ -1125,6 +1134,7 @@ def _load_trade_behavior_model(project_root: str) -> Optional[Dict[str, Any]]:
             "mu": arr["mu"].astype(dtype),
             "sigma": arr["sigma"].astype(dtype),
             "temperature": float(temperature),
+            "class_logit_bias": class_logit_bias,
         }
     except Exception:
         return None
@@ -1573,6 +1583,9 @@ def _behavior_prior_from_model(
         if (not math.isfinite(temperature)) or temperature <= 0.0:
             temperature = 1.0
         logits = (xz @ W + b) / temperature
+        class_logit_bias = np.asarray(model.get("class_logit_bias", np.zeros((3,), dtype=float))).reshape(1, -1)
+        if class_logit_bias.shape[1] == logits.shape[1]:
+            logits = logits + class_logit_bias
         logits = logits - np.max(logits, axis=1, keepdims=True)
         probs = np.exp(logits)
         probs = probs / np.clip(np.sum(probs, axis=1, keepdims=True), 1e-8, None)
@@ -1588,6 +1601,9 @@ def _behavior_prior_from_model(
             "behavior_prob_positive": pos,
             "behavior_prior": prior,
             "behavior_temperature": temperature,
+            "behavior_logit_bias_negative": float(class_logit_bias[0, 0]) if class_logit_bias.shape[1] >= 1 else 0.0,
+            "behavior_logit_bias_neutral": float(class_logit_bias[0, 1]) if class_logit_bias.shape[1] >= 2 else 0.0,
+            "behavior_logit_bias_positive": float(class_logit_bias[0, 2]) if class_logit_bias.shape[1] >= 3 else 0.0,
         }
     except Exception:
         return 0.0, {}

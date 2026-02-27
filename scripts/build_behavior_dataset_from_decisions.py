@@ -58,7 +58,19 @@ FEATURE_NAMES = [
     "snapshot_divergence_ratio",
     "snapshot_triprate_ratio",
     "snapshot_queue_pressure_ratio",
+    "snapshot_drill_ok",
+    "snapshot_drill_restore_fail_ratio",
+    "snapshot_drill_missing_ratio",
+    "snapshot_drill_recency_norm",
     "canary_weight_cap_norm",
+    "snapshot_raw_sql_ingest_ratio",
+    "snapshot_raw_count_norm",
+    "snapshot_raw_file_count_norm",
+    "snapshot_raw_bytes_norm",
+    "snapshot_raw_json_ratio",
+    "snapshot_raw_event_file_ratio",
+    "snapshot_raw_lock_file_ratio",
+    "snapshot_raw_recency_norm",
 ]
 
 
@@ -268,6 +280,7 @@ def _snapshot_health_context(project_root: Path) -> Tuple[Dict[str, float], Dict
     divergence = _safe_load_json(health / "data_source_divergence_latest.json", default={})
     triprate = _safe_load_json(health / "guardrail_triprate_latest.json", default={})
     queue_stress = _safe_load_json(health / "execution_queue_stress_latest.json", default={})
+    drill = _safe_load_json(project_root / "exports" / "state_snapshot_drills" / "latest.json", default={})
 
     coverage_ratio = _to_float(coverage.get("coverage_ratio"), 0.0)
     coverage_log_ratio = _clamp01(math.log1p(max(coverage_ratio, 0.0)) / 6.0)
@@ -302,6 +315,25 @@ def _snapshot_health_context(project_root: Path) -> Tuple[Dict[str, float], Dict
     breach_ratio = _clamp01(breach_rate / breach_rate_max)
     queue_pressure_ratio = _clamp01(max(depth_ratio, breach_ratio))
 
+    drill_files_checked = max(_to_float(drill.get("files_checked"), 0.0), 0.0)
+    drill_missing_files = drill.get("missing_files") if isinstance(drill.get("missing_files"), list) else []
+    drill_missing_count = float(len(drill_missing_files))
+    drill_missing_ratio = _clamp01(drill_missing_count / max(drill_files_checked + drill_missing_count, 1.0))
+
+    drill_rows = drill.get("rows") if isinstance(drill.get("rows"), list) else []
+    drill_restore_total = float(len(drill_rows))
+    drill_restore_ok = float(
+        sum(1 for row in drill_rows if isinstance(row, dict) and bool(row.get("restore_ok", False)))
+    )
+    drill_restore_fail_ratio = _clamp01((drill_restore_total - drill_restore_ok) / max(drill_restore_total, 1.0))
+
+    drill_ts = _parse_ts(drill.get("timestamp_utc"))
+    if drill_ts is not None:
+        drill_age_hours = max((datetime.now(timezone.utc) - drill_ts).total_seconds() / 3600.0, 0.0)
+        drill_recency_norm = 1.0 - _clamp01(drill_age_hours / 72.0)
+    else:
+        drill_recency_norm = 0.0
+
     canary_weight_cap_norm = _clamp01(_to_float(os.getenv("CANARY_MAX_WEIGHT", "0.08"), 0.08) / 0.20)
 
     context = {
@@ -312,6 +344,10 @@ def _snapshot_health_context(project_root: Path) -> Tuple[Dict[str, float], Dict
         "snapshot_divergence_ratio": divergence_ratio,
         "snapshot_triprate_ratio": triprate_ratio,
         "snapshot_queue_pressure_ratio": queue_pressure_ratio,
+        "snapshot_drill_ok": 1.0 if bool(drill.get("ok", False)) else 0.0,
+        "snapshot_drill_restore_fail_ratio": drill_restore_fail_ratio,
+        "snapshot_drill_missing_ratio": drill_missing_ratio,
+        "snapshot_drill_recency_norm": drill_recency_norm,
         "canary_weight_cap_norm": canary_weight_cap_norm,
     }
     meta = {
@@ -321,6 +357,7 @@ def _snapshot_health_context(project_root: Path) -> Tuple[Dict[str, float], Dict
         "divergence_ts": divergence.get("timestamp_utc"),
         "triprate_ts": triprate.get("timestamp_utc"),
         "queue_stress_ts": queue_stress.get("timestamp_utc"),
+        "state_snapshot_drill_ts": drill.get("timestamp_utc"),
     }
     return context, meta
 
@@ -528,7 +565,19 @@ def _decision_feature_vector(
         _clamp01(_to_float(snapshot_context.get("snapshot_divergence_ratio"), 0.0)),
         _clamp01(_to_float(snapshot_context.get("snapshot_triprate_ratio"), 0.0)),
         _clamp01(_to_float(snapshot_context.get("snapshot_queue_pressure_ratio"), 0.0)),
+        _clamp01(_to_float(snapshot_context.get("snapshot_drill_ok"), 0.0)),
+        _clamp01(_to_float(snapshot_context.get("snapshot_drill_restore_fail_ratio"), 0.0)),
+        _clamp01(_to_float(snapshot_context.get("snapshot_drill_missing_ratio"), 0.0)),
+        _clamp01(_to_float(snapshot_context.get("snapshot_drill_recency_norm"), 0.0)),
         _clamp01(_to_float(snapshot_context.get("canary_weight_cap_norm"), 0.0)),
+        _clamp01(_to_float(snapshot_context.get("snapshot_raw_sql_ingest_ratio"), 0.0)),
+        _clamp01(_to_float(snapshot_context.get("snapshot_raw_count_norm"), 0.0)),
+        _clamp01(_to_float(snapshot_context.get("snapshot_raw_file_count_norm"), 0.0)),
+        _clamp01(_to_float(snapshot_context.get("snapshot_raw_bytes_norm"), 0.0)),
+        _clamp01(_to_float(snapshot_context.get("snapshot_raw_json_ratio"), 0.0)),
+        _clamp01(_to_float(snapshot_context.get("snapshot_raw_event_file_ratio"), 0.0)),
+        _clamp01(_to_float(snapshot_context.get("snapshot_raw_lock_file_ratio"), 0.0)),
+        _clamp01(_to_float(snapshot_context.get("snapshot_raw_recency_norm"), 0.0)),
     ]
 
     return vec, regime, label_confidence_proxy
@@ -571,6 +620,26 @@ def main() -> int:
 
     class_weights = outcome_cfg.get("class_weights", {"positive": 1.35, "neutral": 1.10, "negative": 0.95})
     regime_weights = outcome_cfg.get("regime_sample_weights", {"trend": 1.0, "mean_revert": 1.10, "shock": 1.25, "other": 1.0})
+
+    weight_shaping_cfg = outcome_cfg.get("label_weight_shaping", {}) if isinstance(outcome_cfg.get("label_weight_shaping"), dict) else {}
+    high_signal_positive_abs_bps = float(weight_shaping_cfg.get("high_signal_positive_abs_bps", os.getenv("BEHAVIOR_DATASET_HIGH_SIGNAL_POSITIVE_ABS_BPS", "12.0")))
+    high_signal_positive_boost = float(weight_shaping_cfg.get("high_signal_positive_boost", os.getenv("BEHAVIOR_DATASET_HIGH_SIGNAL_POSITIVE_BOOST", "1.35")))
+    high_signal_positive_event_boost = float(weight_shaping_cfg.get("high_signal_positive_event_boost", os.getenv("BEHAVIOR_DATASET_HIGH_SIGNAL_POSITIVE_EVENT_BOOST", "1.12")))
+    high_signal_positive_event_proximity = float(weight_shaping_cfg.get("high_signal_positive_event_proximity", os.getenv("BEHAVIOR_DATASET_HIGH_SIGNAL_POSITIVE_EVENT_PROX", "0.55")))
+    high_signal_positive_open_boost = float(weight_shaping_cfg.get("high_signal_positive_open_boost", os.getenv("BEHAVIOR_DATASET_HIGH_SIGNAL_POSITIVE_OPEN_BOOST", "1.08")))
+    high_signal_positive_open_window_norm = float(weight_shaping_cfg.get("high_signal_positive_open_window_norm", os.getenv("BEHAVIOR_DATASET_HIGH_SIGNAL_POSITIVE_OPEN_WINDOW", "0.18")))
+
+    neutral_noise_abs_bps_max = float(weight_shaping_cfg.get("neutral_noise_abs_bps_max", os.getenv("BEHAVIOR_DATASET_NEUTRAL_NOISE_ABS_BPS_MAX", "5.0")))
+    neutral_noise_downweight = float(weight_shaping_cfg.get("neutral_noise_downweight", os.getenv("BEHAVIOR_DATASET_NEUTRAL_NOISE_DOWNWEIGHT", "0.68")))
+    neutral_horizon_disagree_downweight = float(weight_shaping_cfg.get("neutral_horizon_disagree_downweight", os.getenv("BEHAVIOR_DATASET_NEUTRAL_HORIZON_DISAGREE_DOWNWEIGHT", "0.74")))
+    neutral_noisy_regime_downweight = float(weight_shaping_cfg.get("neutral_noisy_regime_downweight", os.getenv("BEHAVIOR_DATASET_NEUTRAL_NOISY_REGIME_DOWNWEIGHT", "0.82")))
+    neutral_event_downweight = float(weight_shaping_cfg.get("neutral_event_downweight", os.getenv("BEHAVIOR_DATASET_NEUTRAL_EVENT_DOWNWEIGHT", "0.76")))
+    neutral_event_proximity = float(weight_shaping_cfg.get("neutral_event_proximity", os.getenv("BEHAVIOR_DATASET_NEUTRAL_EVENT_PROX", "0.65")))
+    noisy_neutral_regimes = {
+        str(x).strip().lower()
+        for x in (weight_shaping_cfg.get("noisy_neutral_regimes") or ["mean_revert", "other"])
+        if str(x).strip()
+    }
 
     horizon_primary_s = max(int(args.horizon_seconds), 30)
     horizon_aux_s = max(int(args.aux_horizon_seconds), 0)
@@ -733,6 +802,30 @@ def main() -> int:
             if horizon_disagree:
                 weight *= 0.88
 
+            abs_forward_bps = abs(forward_return) * 10000.0
+            session_ctx = _session_event_context(base["ts_utc"], event_windows)
+            event_proximity = _to_float(session_ctx.get("event_window_proximity"), 0.0)
+
+            if label == "positive":
+                if abs_forward_bps >= max(high_signal_positive_abs_bps, 0.0):
+                    weight *= max(high_signal_positive_boost, 0.2)
+                if event_proximity >= max(min(high_signal_positive_event_proximity, 1.0), 0.0):
+                    weight *= max(high_signal_positive_event_boost, 0.2)
+                if (
+                    _to_float(session_ctx.get("session_bucket_norm"), 1.0) <= 0.5
+                    and _to_float(session_ctx.get("mins_from_open_norm"), 1.0) <= max(min(high_signal_positive_open_window_norm, 1.0), 0.0)
+                ):
+                    weight *= max(high_signal_positive_open_boost, 0.2)
+            elif label == "neutral":
+                if abs_forward_bps <= max(neutral_noise_abs_bps_max, 0.0):
+                    weight *= max(neutral_noise_downweight, 0.05)
+                if horizon_disagree:
+                    weight *= max(neutral_horizon_disagree_downweight, 0.05)
+                if regime in noisy_neutral_regimes:
+                    weight *= max(neutral_noisy_regime_downweight, 0.05)
+                if event_proximity >= max(min(neutral_event_proximity, 1.0), 0.0):
+                    weight *= max(neutral_event_downweight, 0.05)
+
             examples.append(
                 {
                     "id": len(examples),
@@ -793,6 +886,21 @@ def main() -> int:
             "negative_bps": negative_bps,
             "hold_positive_max_bps": hold_positive_bps,
             "hold_negative_min_bps": hold_negative_bps,
+        },
+        "sample_weight_shaping": {
+            "high_signal_positive_abs_bps": float(high_signal_positive_abs_bps),
+            "high_signal_positive_boost": float(high_signal_positive_boost),
+            "high_signal_positive_event_boost": float(high_signal_positive_event_boost),
+            "high_signal_positive_event_proximity": float(high_signal_positive_event_proximity),
+            "high_signal_positive_open_boost": float(high_signal_positive_open_boost),
+            "high_signal_positive_open_window_norm": float(high_signal_positive_open_window_norm),
+            "neutral_noise_abs_bps_max": float(neutral_noise_abs_bps_max),
+            "neutral_noise_downweight": float(neutral_noise_downweight),
+            "neutral_horizon_disagree_downweight": float(neutral_horizon_disagree_downweight),
+            "neutral_noisy_regime_downweight": float(neutral_noisy_regime_downweight),
+            "neutral_event_downweight": float(neutral_event_downweight),
+            "neutral_event_proximity": float(neutral_event_proximity),
+            "noisy_neutral_regimes": sorted(noisy_neutral_regimes),
         },
         "feature_dim": len(FEATURE_NAMES),
         "feature_names": FEATURE_NAMES,

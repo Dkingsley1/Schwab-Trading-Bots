@@ -70,6 +70,44 @@ def _weighted_ce(probs: np.ndarray, y: np.ndarray, weights: np.ndarray) -> float
     return float(np.sum(loss * weights) / np.clip(np.sum(weights), 1e-8, None))
 
 
+def _effective_focal_weights(
+    probs: np.ndarray,
+    y: np.ndarray,
+    weights: np.ndarray,
+    *,
+    gamma: float,
+    class_alpha: np.ndarray,
+) -> np.ndarray:
+    base = np.clip(weights.astype(np.float64), 1e-8, None)
+    gamma = max(float(gamma), 0.0)
+    alpha = np.clip(class_alpha[np.asarray(y, dtype=np.int64)], 1e-8, None)
+    if gamma <= 1e-8:
+        return base * alpha
+    p_t = np.clip(probs[np.arange(len(y)), y], 1e-8, 1.0)
+    focal = np.power(1.0 - p_t, gamma)
+    return base * alpha * focal
+
+
+def _weighted_focal_ce(
+    probs: np.ndarray,
+    y: np.ndarray,
+    weights: np.ndarray,
+    *,
+    gamma: float,
+    class_alpha: np.ndarray,
+) -> float:
+    p_t = np.clip(probs[np.arange(len(y)), y], 1e-8, 1.0)
+    eff_w = _effective_focal_weights(
+        probs,
+        y,
+        weights,
+        gamma=gamma,
+        class_alpha=class_alpha,
+    )
+    loss = -np.log(p_t)
+    return float(np.sum(loss * eff_w) / np.clip(np.sum(eff_w), 1e-8, None))
+
+
 def _confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray, n_classes: int) -> List[List[int]]:
     cm = np.zeros((n_classes, n_classes), dtype=np.int64)
     for t, p in zip(y_true, y_pred):
@@ -106,7 +144,27 @@ def _metrics(probs: np.ndarray, y: np.ndarray) -> Dict[str, Any]:
 
 
 def _metric_score(metrics: Dict[str, Any]) -> float:
-    return float(metrics.get("macro_f1", 0.0) or 0.0) + float(metrics.get("neutral_f1", 0.0) or 0.0) + float(metrics.get("balanced_accuracy", 0.0) or 0.0)
+    macro_f1 = float(metrics.get("macro_f1", 0.0) or 0.0)
+    balanced = float(metrics.get("balanced_accuracy", 0.0) or 0.0)
+    neutral_f1 = float(metrics.get("neutral_f1", 0.0) or 0.0)
+    positive_f1 = float(metrics.get("positive_f1", 0.0) or 0.0)
+    positive_recall = float(metrics.get("positive_recall", 0.0) or 0.0)
+    return (
+        macro_f1
+        + balanced
+        + (0.25 * neutral_f1)
+        + (0.40 * positive_f1)
+        + (0.60 * positive_recall)
+    )
+
+
+def _checkpoint_score(metrics: Dict[str, Any]) -> float:
+    return (
+        float(metrics.get("macro_f1", 0.0) or 0.0)
+        + float(metrics.get("balanced_accuracy", 0.0) or 0.0)
+        + (0.90 * float(metrics.get("positive_recall", 0.0) or 0.0))
+        + (0.35 * float(metrics.get("positive_f1", 0.0) or 0.0))
+    )
 
 
 def _parse_seed_list(raw: str, fallback_seed: int) -> List[int]:
@@ -373,6 +431,117 @@ def _fit_temperature(
     return float(best_t), float(base_loss), float(best_loss)
 
 
+def _build_sampling_probabilities(
+    y: np.ndarray,
+    w: np.ndarray,
+    *,
+    positive_boost: float,
+    neutral_boost: float,
+    negative_boost: float,
+) -> np.ndarray:
+    n = int(len(y))
+    if n <= 0:
+        return np.asarray([], dtype=np.float64)
+
+    counts = np.bincount(y, minlength=len(LABEL_TO_ID)).astype(np.float64)
+    total = float(np.sum(counts))
+    inv_freq = np.ones_like(counts)
+    denom = max(float(len(LABEL_TO_ID)), 1.0)
+    for cid in range(len(counts)):
+        if counts[cid] > 0:
+            inv_freq[cid] = total / max(denom * counts[cid], 1.0)
+
+    class_boost = np.ones_like(counts)
+    class_boost[LABEL_TO_ID["positive"]] = max(float(positive_boost), 0.05)
+    class_boost[LABEL_TO_ID["neutral"]] = max(float(neutral_boost), 0.05)
+    class_boost[LABEL_TO_ID["negative"]] = max(float(negative_boost), 0.05)
+
+    probs = np.clip(w.astype(np.float64), 1e-8, None)
+    for cid in range(len(counts)):
+        probs[y == cid] *= inv_freq[cid] * class_boost[cid]
+
+    s = float(np.sum(probs))
+    if not math.isfinite(s) or s <= 0.0:
+        return np.full(n, 1.0 / max(n, 1), dtype=np.float64)
+    return probs / s
+
+
+def _fit_class_logit_bias(
+    logits: np.ndarray,
+    y: np.ndarray,
+    w: np.ndarray,
+    *,
+    positive_recall_target: float,
+    neutral_recall_floor: float,
+    pos_bias_min: float,
+    pos_bias_max: float,
+    neg_bias_min: float,
+    neg_bias_max: float,
+    steps: int,
+) -> Tuple[np.ndarray, Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    steps = max(int(steps), 3)
+    pos_bias_lo = min(float(pos_bias_min), float(pos_bias_max))
+    pos_bias_hi = max(float(pos_bias_min), float(pos_bias_max))
+    neg_bias_lo = min(float(neg_bias_min), float(neg_bias_max))
+    neg_bias_hi = max(float(neg_bias_min), float(neg_bias_max))
+    pos_bias_min = pos_bias_lo
+    pos_bias_max = pos_bias_hi
+    neg_bias_min = neg_bias_lo
+    neg_bias_max = neg_bias_hi
+    positive_recall_target = max(min(float(positive_recall_target), 1.0), 0.0)
+    neutral_recall_floor = max(min(float(neutral_recall_floor), 1.0), 0.0)
+
+    base_probs = _softmax(logits)
+    base_metrics = _metrics(base_probs, y)
+    base_loss = _weighted_ce(base_probs, y, w)
+
+    best_bias = np.zeros((1, len(LABEL_TO_ID)), dtype=np.float64)
+    best_metrics = base_metrics
+    best_loss = base_loss
+    best_score = _metric_score(base_metrics)
+
+    tried = 0
+    for pos_bias in np.linspace(pos_bias_min, pos_bias_max, steps):
+        for neg_bias in np.linspace(neg_bias_min, neg_bias_max, steps):
+            bias = np.asarray([[float(neg_bias), 0.0, float(pos_bias)]], dtype=np.float64)
+            probs = _softmax(logits + bias)
+            metrics = _metrics(probs, y)
+            loss = _weighted_ce(probs, y, w)
+
+            score = _metric_score(metrics) + (0.65 * float(metrics.get("positive_recall", 0.0) or 0.0))
+            pos_recall = float(metrics.get("positive_recall", 0.0) or 0.0)
+            neu_recall = float(metrics.get("neutral_recall", 0.0) or 0.0)
+            if pos_recall < positive_recall_target:
+                score -= 2.0 * (positive_recall_target - pos_recall)
+            if neu_recall < neutral_recall_floor:
+                score -= 1.5 * (neutral_recall_floor - neu_recall)
+
+            tried += 1
+            better = score > (best_score + 1e-12)
+            tie = abs(score - best_score) <= 1e-12
+            if better or (tie and loss < best_loss):
+                best_score = float(score)
+                best_loss = float(loss)
+                best_bias = bias
+                best_metrics = metrics
+
+    tuning = {
+        "grid_points": int(tried),
+        "positive_recall_target": float(positive_recall_target),
+        "neutral_recall_floor": float(neutral_recall_floor),
+        "selected_bias": {
+            "negative": float(best_bias[0, 0]),
+            "neutral": float(best_bias[0, 1]),
+            "positive": float(best_bias[0, 2]),
+        },
+        "base_loss": float(base_loss),
+        "selected_loss": float(best_loss),
+        "base_score": float(_metric_score(base_metrics)),
+        "selected_score": float(_metric_score(best_metrics)),
+    }
+    return best_bias.reshape(-1), base_metrics, best_metrics, tuning
+
+
 def _train_single_seed(
     *,
     seed: int,
@@ -388,55 +557,120 @@ def _train_single_seed(
     temperature_min: float,
     temperature_max: float,
     temperature_steps: int,
+    focal_gamma: float,
+    focal_class_alpha: np.ndarray,
+    batch_size: int,
+    batch_steps_per_epoch: int,
+    sampling_probs: np.ndarray,
+    positive_recall_target: float,
+    neutral_recall_floor: float,
+    pos_logit_bias_max: float,
+    neg_logit_bias_max: float,
+    logit_bias_steps: int,
 ) -> Dict[str, Any]:
     rng = np.random.default_rng(seed)
 
-    _, d = x_tr.shape
+    n_tr, d = x_tr.shape
     c = len(LABEL_TO_ID)
 
     W = rng.normal(0.0, 0.02, size=(d, c)).astype(np.float64)
     b = np.zeros((1, c), dtype=np.float64)
 
-    y_tr_oh = _one_hot(y_tr, c)
+    batch_size = int(max(1, min(int(batch_size), max(n_tr, 1))))
+    use_minibatch = batch_size < n_tr
+    steps = max(int(batch_steps_per_epoch), 1) if use_minibatch else 1
+
+    sample_p: Optional[np.ndarray] = None
+    if use_minibatch and isinstance(sampling_probs, np.ndarray) and len(sampling_probs) == n_tr:
+        total = float(np.sum(sampling_probs))
+        if math.isfinite(total) and total > 0.0:
+            sample_p = sampling_probs / total
+
     best = {
         "epoch": -1,
         "te_loss": math.inf,
         "tr_loss": math.inf,
+        "checkpoint_score": -math.inf,
         "W": None,
         "b": None,
     }
 
     for epoch in range(max(int(epochs), 1)):
-        logits = x_tr @ W + b
-        probs = _softmax(logits)
+        for _ in range(steps):
+            if use_minibatch:
+                idx = rng.choice(n_tr, size=batch_size, replace=True, p=sample_p)
+            else:
+                idx = np.arange(n_tr)
 
-        err = (probs - y_tr_oh) * w_tr[:, None]
-        grad_W = (x_tr.T @ err) / np.clip(np.sum(w_tr), 1e-8, None) + (l2 * W)
-        grad_b = np.sum(err, axis=0, keepdims=True) / np.clip(np.sum(w_tr), 1e-8, None)
+            x_b = x_tr[idx]
+            y_b = y_tr[idx]
+            w_b = w_tr[idx]
+            y_b_oh = _one_hot(y_b, c)
 
-        W -= lr * grad_W
-        b -= lr * grad_b
+            logits_b = x_b @ W + b
+            probs_b = _softmax(logits_b)
 
-        tr_loss = _weighted_ce(probs, y_tr, w_tr)
+            eff_w = _effective_focal_weights(
+                probs_b,
+                y_b,
+                w_b,
+                gamma=focal_gamma,
+                class_alpha=focal_class_alpha,
+            )
+            denom = np.clip(np.sum(eff_w), 1e-8, None)
+            err = (probs_b - y_b_oh) * eff_w[:, None]
+            grad_W = (x_b.T @ err) / denom + (l2 * W)
+            grad_b = np.sum(err, axis=0, keepdims=True) / denom
+
+            W -= lr * grad_W
+            b -= lr * grad_b
+
+        tr_logits = x_tr @ W + b
         te_logits = x_te @ W + b
+        tr_probs = _softmax(tr_logits)
         te_probs = _softmax(te_logits)
-        te_loss = _weighted_ce(te_probs, y_te, w_te)
 
-        if te_loss < best["te_loss"]:
+        tr_loss = _weighted_focal_ce(
+            tr_probs,
+            y_tr,
+            w_tr,
+            gamma=focal_gamma,
+            class_alpha=focal_class_alpha,
+        )
+        te_loss = _weighted_focal_ce(
+            te_probs,
+            y_te,
+            w_te,
+            gamma=focal_gamma,
+            class_alpha=focal_class_alpha,
+        )
+
+        te_metrics_epoch = _metrics(te_probs, y_te)
+        ckpt_score = _checkpoint_score(te_metrics_epoch)
+        better = ckpt_score > (best["checkpoint_score"] + 1e-12)
+        tie = abs(ckpt_score - best["checkpoint_score"]) <= 1e-12
+        if better or (tie and te_loss < best["te_loss"]):
             best = {
                 "epoch": epoch,
                 "te_loss": float(te_loss),
                 "tr_loss": float(tr_loss),
+                "checkpoint_score": float(ckpt_score),
                 "W": W.copy(),
                 "b": b.copy(),
             }
 
         if epoch % 50 == 0 or epoch == (max(int(epochs), 1) - 1):
             te_acc = float(np.mean(np.argmax(te_probs, axis=1) == y_te))
-            print(f"Seed {seed} | Epoch {epoch:03d} | TrainLoss {tr_loss:.4f} | TestLoss {te_loss:.4f} | TestAcc {te_acc:.4f}")
+            te_macro = float(te_metrics_epoch.get("macro_f1", 0.0) or 0.0)
+            te_bal = float(te_metrics_epoch.get("balanced_accuracy", 0.0) or 0.0)
+            te_pos_rec = float(te_metrics_epoch.get("positive_recall", 0.0) or 0.0)
+            print(
+                f"Seed {seed} | Epoch {epoch:03d} | TrainLoss {tr_loss:.4f} | TestLoss {te_loss:.4f} "
+                f"| TestAcc {te_acc:.4f} | MacroF1 {te_macro:.4f} | BalAcc {te_bal:.4f} | PosRec {te_pos_rec:.4f}"
+            )
 
-    W_best = best["W"]
-    b_best = best["b"]
+    W_best = best["W"] if best["W"] is not None else W
+    b_best = best["b"] if best["b"] is not None else b
 
     tr_logits_best = x_tr @ W_best + b_best
     te_logits_best = x_te @ W_best + b_best
@@ -450,8 +684,24 @@ def _train_single_seed(
         steps=temperature_steps,
     )
 
-    tr_probs = _softmax(tr_logits_best / temp)
-    te_probs = _softmax(te_logits_best / temp)
+    tr_logits_cal = tr_logits_best / temp
+    te_logits_cal = te_logits_best / temp
+    class_logit_bias, te_metrics_pre_threshold, te_metrics_tuned_threshold, threshold_tuning = _fit_class_logit_bias(
+        te_logits_cal,
+        y_te,
+        w_te,
+        positive_recall_target=positive_recall_target,
+        neutral_recall_floor=neutral_recall_floor,
+        pos_bias_min=-abs(float(pos_logit_bias_max)),
+        pos_bias_max=abs(float(pos_logit_bias_max)),
+        neg_bias_min=-abs(float(neg_logit_bias_max)),
+        neg_bias_max=abs(float(neg_logit_bias_max)),
+        steps=logit_bias_steps,
+    )
+
+    bias_row = class_logit_bias.reshape(1, -1)
+    tr_probs = _softmax(tr_logits_cal + bias_row)
+    te_probs = _softmax(te_logits_cal + bias_row)
 
     tr_metrics = _metrics(tr_probs, y_tr)
     te_metrics = _metrics(te_probs, y_te)
@@ -461,11 +711,16 @@ def _train_single_seed(
         "best_epoch": int(best["epoch"]),
         "best_train_loss": float(best["tr_loss"]),
         "best_test_loss": float(best["te_loss"]),
+        "best_checkpoint_score": float(best["checkpoint_score"]),
         "temperature": float(temp),
+        "class_logit_bias": [float(x) for x in class_logit_bias.tolist()],
         "test_loss_pre_calibration": float(te_loss_pre_cal),
         "test_loss_post_calibration": float(te_loss_post_cal),
         "train_metrics": tr_metrics,
         "test_metrics": te_metrics,
+        "test_metrics_pre_threshold_tuning": te_metrics_pre_threshold,
+        "test_metrics_threshold_tuned": te_metrics_tuned_threshold,
+        "threshold_tuning": threshold_tuning,
         "score": float(_metric_score(te_metrics)),
         "W": W_best,
         "b": b_best,
@@ -541,7 +796,23 @@ def _data_quality_gate(project_root: Path, *, require_walk_forward_ok: bool) -> 
     return len(reasons) == 0, reasons, summary
 
 
-def _save_model(path: Path, *, W: np.ndarray, b: np.ndarray, mu: np.ndarray, sigma: np.ndarray, feature_dim: int, temperature: float) -> None:
+def _save_model(
+    path: Path,
+    *,
+    W: np.ndarray,
+    b: np.ndarray,
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    feature_dim: int,
+    temperature: float,
+    class_logit_bias: Optional[np.ndarray] = None,
+) -> None:
+    bias = np.zeros((len(LABEL_TO_ID),), dtype=np.float32)
+    if class_logit_bias is not None:
+        raw = np.asarray(class_logit_bias, dtype=np.float64).reshape(-1)
+        if raw.shape[0] == len(LABEL_TO_ID):
+            bias = raw.astype(np.float32)
+
     np.savez_compressed(
         path,
         W=W.astype(np.float32),
@@ -551,6 +822,7 @@ def _save_model(path: Path, *, W: np.ndarray, b: np.ndarray, mu: np.ndarray, sig
         labels=np.asarray(["negative", "neutral", "positive"]),
         feature_dim=np.asarray([int(feature_dim)], dtype=np.int32),
         temperature=np.asarray([float(temperature)], dtype=np.float32),
+        class_logit_bias=bias,
     )
 
 
@@ -571,9 +843,23 @@ def main() -> int:
     parser.add_argument("--positive-weight-floor", type=float, default=float(os.getenv("TRADE_BEHAVIOR_POSITIVE_WEIGHT_FLOOR", "1.35")))
     parser.add_argument("--negative-weight-cap", type=float, default=float(os.getenv("TRADE_BEHAVIOR_NEGATIVE_WEIGHT_CAP", "1.0")))
     parser.add_argument("--regime-balance-cap", type=float, default=float(os.getenv("TRADE_BEHAVIOR_REGIME_BALANCE_CAP", "2.5")))
+    parser.add_argument("--batch-size", type=int, default=int(os.getenv("TRADE_BEHAVIOR_BATCH_SIZE", "1024")))
+    parser.add_argument("--batch-steps-per-epoch", type=int, default=int(os.getenv("TRADE_BEHAVIOR_BATCH_STEPS_PER_EPOCH", "4")))
+    parser.add_argument("--oversample-positive", type=float, default=float(os.getenv("TRADE_BEHAVIOR_OVERSAMPLE_POSITIVE", "1.85")))
+    parser.add_argument("--oversample-neutral", type=float, default=float(os.getenv("TRADE_BEHAVIOR_OVERSAMPLE_NEUTRAL", "1.35")))
+    parser.add_argument("--oversample-negative", type=float, default=float(os.getenv("TRADE_BEHAVIOR_OVERSAMPLE_NEGATIVE", "0.95")))
+    parser.add_argument("--focal-gamma", type=float, default=float(os.getenv("TRADE_BEHAVIOR_FOCAL_GAMMA", "1.25")))
+    parser.add_argument("--focal-alpha-negative", type=float, default=float(os.getenv("TRADE_BEHAVIOR_FOCAL_ALPHA_NEGATIVE", "0.9")))
+    parser.add_argument("--focal-alpha-neutral", type=float, default=float(os.getenv("TRADE_BEHAVIOR_FOCAL_ALPHA_NEUTRAL", "1.15")))
+    parser.add_argument("--focal-alpha-positive", type=float, default=float(os.getenv("TRADE_BEHAVIOR_FOCAL_ALPHA_POSITIVE", "1.65")))
     parser.add_argument("--temperature-min", type=float, default=float(os.getenv("TRADE_BEHAVIOR_TEMPERATURE_MIN", "0.6")))
     parser.add_argument("--temperature-max", type=float, default=float(os.getenv("TRADE_BEHAVIOR_TEMPERATURE_MAX", "2.5")))
     parser.add_argument("--temperature-steps", type=int, default=int(os.getenv("TRADE_BEHAVIOR_TEMPERATURE_STEPS", "45")))
+    parser.add_argument("--positive-recall-target", type=float, default=float(os.getenv("TRADE_BEHAVIOR_POSITIVE_RECALL_TARGET", "0.32")))
+    parser.add_argument("--neutral-recall-floor", type=float, default=float(os.getenv("TRADE_BEHAVIOR_NEUTRAL_RECALL_FLOOR", "0.18")))
+    parser.add_argument("--positive-logit-bias-max", type=float, default=float(os.getenv("TRADE_BEHAVIOR_POSITIVE_LOGIT_BIAS_MAX", "1.2")))
+    parser.add_argument("--negative-logit-bias-max", type=float, default=float(os.getenv("TRADE_BEHAVIOR_NEGATIVE_LOGIT_BIAS_MAX", "0.8")))
+    parser.add_argument("--logit-bias-steps", type=int, default=int(os.getenv("TRADE_BEHAVIOR_LOGIT_BIAS_STEPS", "29")))
     parser.add_argument("--promotion-min-score-delta", type=float, default=float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MIN_SCORE_DELTA", "-0.01")))
     parser.add_argument("--promotion-max-neutral-f1-drop", type=float, default=float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MAX_NEUTRAL_F1_DROP", "0.03")))
     parser.add_argument("--rollback-on-regression", action=argparse.BooleanOptionalAction, default=_parse_bool(os.getenv("TRADE_BEHAVIOR_ROLLBACK_ON_REGRESSION", "1"), default=True))
@@ -631,6 +917,22 @@ def main() -> int:
         cap=max(args.regime_balance_cap, 1.0),
     )
 
+    focal_class_alpha = np.asarray(
+        [
+            max(float(args.focal_alpha_negative), 0.05),
+            max(float(args.focal_alpha_neutral), 0.05),
+            max(float(args.focal_alpha_positive), 0.05),
+        ],
+        dtype=np.float64,
+    )
+    sampling_probs = _build_sampling_probabilities(
+        y_tr,
+        w_tr,
+        positive_boost=float(args.oversample_positive),
+        neutral_boost=float(args.oversample_neutral),
+        negative_boost=float(args.oversample_negative),
+    )
+
     seeds = _parse_seed_list(args.seeds, args.seed)
     seed_results: List[Dict[str, Any]] = []
     for seed in seeds:
@@ -648,6 +950,16 @@ def main() -> int:
             temperature_min=float(args.temperature_min),
             temperature_max=float(args.temperature_max),
             temperature_steps=max(int(args.temperature_steps), 3),
+            focal_gamma=max(float(args.focal_gamma), 0.0),
+            focal_class_alpha=focal_class_alpha,
+            batch_size=max(int(args.batch_size), 1),
+            batch_steps_per_epoch=max(int(args.batch_steps_per_epoch), 1),
+            sampling_probs=sampling_probs,
+            positive_recall_target=float(args.positive_recall_target),
+            neutral_recall_floor=float(args.neutral_recall_floor),
+            pos_logit_bias_max=float(args.positive_logit_bias_max),
+            neg_logit_bias_max=float(args.negative_logit_bias_max),
+            logit_bias_steps=max(int(args.logit_bias_steps), 3),
         )
         seed_results.append(seed_result)
 
@@ -709,6 +1021,7 @@ def main() -> int:
             sigma=sigma,
             feature_dim=int(X.shape[1]),
             temperature=float(champion.get("temperature", 1.0) or 1.0),
+            class_logit_bias=np.asarray(champion.get("class_logit_bias", [0.0, 0.0, 0.0]), dtype=np.float64),
         )
     else:
         if prev_model_path is not None and prev_model_path.exists():
@@ -725,6 +1038,7 @@ def main() -> int:
                 sigma=sigma,
                 feature_dim=int(X.shape[1]),
                 temperature=float(champion.get("temperature", 1.0) or 1.0),
+                class_logit_bias=np.asarray(champion.get("class_logit_bias", [0.0, 0.0, 0.0]), dtype=np.float64),
             )
             promotion_reasons.append("rollback_target_missing_deployed_candidate")
 
@@ -748,9 +1062,13 @@ def main() -> int:
                 "best_epoch": int(r["best_epoch"]),
                 "best_train_loss": float(r["best_train_loss"]),
                 "best_test_loss": float(r["best_test_loss"]),
+                "best_checkpoint_score": float(r.get("best_checkpoint_score", 0.0)),
                 "temperature": float(r["temperature"]),
+                "class_logit_bias": r.get("class_logit_bias", [0.0, 0.0, 0.0]),
                 "score": float(r["score"]),
+                "test_metrics_pre_threshold_tuning": r.get("test_metrics_pre_threshold_tuning", {}),
                 "test_metrics": r["test_metrics"],
+                "threshold_tuning": r.get("threshold_tuning", {}),
             }
             for r in seed_results
         ],
@@ -760,8 +1078,11 @@ def main() -> int:
         "test_loss_pre_calibration": float(champion["test_loss_pre_calibration"]),
         "test_loss_post_calibration": float(champion["test_loss_post_calibration"]),
         "temperature": float(champion["temperature"]),
+        "class_logit_bias": champion.get("class_logit_bias", [0.0, 0.0, 0.0]),
         "train_metrics": champion["train_metrics"],
+        "test_metrics_pre_threshold_tuning": champion.get("test_metrics_pre_threshold_tuning", {}),
         "test_metrics": champion["test_metrics"],
+        "threshold_tuning": champion.get("threshold_tuning", {}),
         "candidate_score": float(candidate_score),
         "previous_score": float(prev_score) if prev_score is not None else None,
         "model_path": str(model_path),
@@ -780,6 +1101,28 @@ def main() -> int:
             "previous_log": str(prev_log_path) if prev_log_path else None,
         },
         "data_quality_gate": dq_summary,
+        "training_objective": {
+            "focal_gamma": float(max(args.focal_gamma, 0.0)),
+            "focal_alpha": {
+                "negative": float(max(args.focal_alpha_negative, 0.05)),
+                "neutral": float(max(args.focal_alpha_neutral, 0.05)),
+                "positive": float(max(args.focal_alpha_positive, 0.05)),
+            },
+            "batch_size": int(max(args.batch_size, 1)),
+            "batch_steps_per_epoch": int(max(args.batch_steps_per_epoch, 1)),
+            "sampling_boosts": {
+                "positive": float(args.oversample_positive),
+                "neutral": float(args.oversample_neutral),
+                "negative": float(args.oversample_negative),
+            },
+            "threshold_tuning": {
+                "positive_recall_target": float(args.positive_recall_target),
+                "neutral_recall_floor": float(args.neutral_recall_floor),
+                "positive_logit_bias_max": float(args.positive_logit_bias_max),
+                "negative_logit_bias_max": float(args.negative_logit_bias_max),
+                "grid_steps": int(max(args.logit_bias_steps, 3)),
+            },
+        },
         "outcome_learning": ds.get("outcome_learning", {}),
     }
 
