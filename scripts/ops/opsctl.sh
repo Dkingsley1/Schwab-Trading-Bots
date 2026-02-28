@@ -11,6 +11,12 @@ case "$cmd" in
   start)
     exec "$PROJECT_ROOT/scripts/ops/start_stack.sh" "$@"
     ;;
+  start-sim)
+    exec "$PROJECT_ROOT/scripts/ops/start_stack.sh" --profile sim --simulate "$@"
+    ;;
+  start-live)
+    exec "$PROJECT_ROOT/scripts/ops/start_stack.sh" --profile live "$@"
+    ;;
   stop)
     pkill -f "scripts/run_all_sleeves.py --with-aggressive-modes" || true
     pkill -f "scripts/run_parallel_shadows.py" || true
@@ -31,6 +37,9 @@ case "$cmd" in
     ;;
   health)
     exec "$PY" "$PROJECT_ROOT/scripts/daily_auto_verify.py" --json "$@"
+    ;;
+  doctor)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/doctor.py" "$@"
     ;;
   coinbase-start)
     FORCE_RESTART=0
@@ -112,20 +121,31 @@ case "$cmd" in
   coinbase-tail)
     exec "$PROJECT_ROOT/scripts/ops/live_feed_tail.sh" --source coinbase "$@"
     ;;
+  timeline-report)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/project_timeline_report.py" "$@"
+    ;;
+  timeline-install-autoupdate)
+    exec "$PROJECT_ROOT/scripts/install_project_timeline_autoupdate_launchd.sh" "$@"
+    ;;
   help|*)
     cat <<'EOF'
 opsctl commands:
-  start [--force-restart] [--no-coinbase] [--simulate] [--disable-circuit-breakers]
+  start [--profile sim|live] [--force-restart] [--no-coinbase] [--simulate] [--disable-circuit-breakers]
+  start-sim [--force-restart] [--no-coinbase] [--disable-circuit-breakers]
+  start-live [--force-restart] [--no-coinbase] [--disable-circuit-breakers]
   stop
   status
   retrain
   sql-sync
   health
+  doctor
   coinbase-start [--paper] [--force-restart] [--top-n N] [--min-acc X] [--profiles default]
   coinbase-stop
   feed [--source schwab|coinbase|all] [--symbol NVDA] [--lines 40] [--raw]
   schwab-tail [--symbol NVDA] [--lines 40]
   coinbase-tail [--symbol BTC-USD] [--lines 40]
+  timeline-report [--auto] [--json]
+  timeline-install-autoupdate
 EOF
     ;;
 esac

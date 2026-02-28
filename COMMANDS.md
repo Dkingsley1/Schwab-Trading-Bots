@@ -6,7 +6,7 @@ Use these exact commands as the source of truth.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot && \
 export MARKET_DATA_ONLY=1 ALLOW_ORDER_EXECUTION=0 ENABLE_RESOURCE_GUARD=0 && \
-export SHADOW_SYMBOLS_CORE="SPY,QQQ,AAPL,MSFT,NVDA,DIA,IWM,MDY" && \
+export SHADOW_SYMBOLS_CORE="SPY,QQQ,AAPL,MSFT,NVDA,NFLX,DIS,WBD,DIA,IWM,MDY" && \
 export SHADOW_SYMBOLS_VOLATILE="SOXL,SOXS,MSTR,SMCI,COIN,TSLA,UVXY,VIXY" && \
 export SHADOW_SYMBOLS_DEFENSIVE="TLT,GLD,XLV,XLU,XLP,HYG,LQD,UUP,XLE,XLF,XLI,XLK,XLY,IEF,SHY,TIP,TLH,JNK" && \
 export SHADOW_SYMBOLS_COMMOD_FX_INTL="DBC,UNG,CORN,SLV,USO,FXE,FXY,EFA,EEM,EWJ,FXI" && \
@@ -151,3 +151,26 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh coinbase-tail
 ```
 
+
+## 17) Project Timeline + Printable Auto-Update
+Generate timeline now (writes markdown + print-ready HTML):
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh timeline-report
+```
+
+Install automatic updater (refreshes every 120s and on git HEAD/index changes):
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh timeline-install-autoupdate
+```
+
+Open latest printable document (HTML):
+```bash
+open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/project_timeline/project_timeline_print_latest.html
+```
+
+Open latest printable PDF:
+```bash
+open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/project_timeline/project_timeline_latest.pdf
+```
