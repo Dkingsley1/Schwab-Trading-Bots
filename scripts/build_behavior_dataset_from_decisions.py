@@ -51,6 +51,50 @@ FEATURE_NAMES = [
     "master_latency_slo_ok",
     "master_latency_ratio",
     "risk_pause_active",
+    "options_chain_available",
+    "options_iv_atm_norm",
+    "options_iv_skew_norm",
+    "options_iv_term_structure_norm",
+    "options_put_call_oi_ratio_norm",
+    "options_negative_bias_norm",
+    "options_roll_yield_norm",
+    "options_vwap_bias_norm",
+    "options_vol_expectation_norm",
+    "calendar_event_proximity_norm",
+    "calendar_high_impact_24h_norm",
+    "calendar_options_expiry_week_norm",
+    "calendar_dividend_events_30d_norm",
+    "calendar_dividend_exdate_proximity_norm",
+    "calendar_dividend_payout_proximity_norm",
+    "calendar_dividend_recent_exdate_norm",
+    "calendar_dividend_quality_signal_norm",
+    "dividend_yield_norm",
+    "dividend_payout_ratio_norm",
+    "dividend_ex_date_proximity_norm",
+    "dividend_pay_date_proximity_norm",
+    "dividend_quality_score_norm",
+    "dividend_capture_entry_signal_norm",
+    "dividend_capture_exit_signal_norm",
+    "dividend_compound_bias_norm",
+    "dividend_compound_growth_norm",
+    "dividend_compound_drawdown_norm",
+    "dividend_compound_steps_norm",
+    "dividend_strategy_mode_capture",
+    "dividend_strategy_mode_compound",
+    "dividend_strategy_mode_hybrid",
+    "futures_order_book_imbalance_norm",
+    "futures_funding_rate_norm",
+    "futures_basis_bps_norm",
+    "futures_term_structure_norm",
+    "futures_negative_bias_norm",
+    "futures_roll_yield_norm",
+    "futures_vwap_bias_norm",
+    "options_specialist_active",
+    "futures_specialist_active",
+    "options_specialist_vote",
+    "futures_specialist_vote",
+    "active_options_sub_bots_norm",
+    "active_futures_sub_bots_norm",
     "snapshot_cov_ok",
     "snapshot_cov_log_ratio",
     "snapshot_replay_stale_ratio",
@@ -71,6 +115,21 @@ FEATURE_NAMES = [
     "snapshot_raw_event_file_ratio",
     "snapshot_raw_lock_file_ratio",
     "snapshot_raw_recency_norm",
+    "snapshot_cov_fill_ratio",
+    "snapshot_replay_ok",
+    "snapshot_e2e_replay_ok",
+    "snapshot_e2e_hash_match",
+    "snapshot_paper_replay_ok",
+    "snapshot_paper_replay_hash_match",
+    "external_feeds_ok",
+    "external_feeds_recency_norm",
+    "external_fred_unrate_norm",
+    "external_fred_cpi_mom_norm",
+    "external_fred_gdp_qoq_norm",
+    "external_bls_unrate_norm",
+    "external_bls_cpi_mom_norm",
+    "external_census_population_log_norm",
+    "external_bea_dataset_count_norm",
 ]
 
 
@@ -268,6 +327,10 @@ def _snapshot_health_context(project_root: Path) -> Tuple[Dict[str, float], Dict
             persist_files_to_sql=persist_sql,
         )
         if context:
+            context.setdefault("snapshot_e2e_replay_ok", 1.0)
+            context.setdefault("snapshot_e2e_hash_match", 1.0)
+            context.setdefault("snapshot_paper_replay_ok", 1.0)
+            context.setdefault("snapshot_paper_replay_hash_match", 1.0)
             return context, meta
     except Exception:
         pass
@@ -276,6 +339,8 @@ def _snapshot_health_context(project_root: Path) -> Tuple[Dict[str, float], Dict
 
     coverage = _safe_load_json(health / "snapshot_coverage_latest.json", default={})
     replay = _safe_load_json(health / "replay_preopen_sanity_latest.json", default={})
+    replay_e2e = _safe_load_json(health / "replay_end_to_end_latest.json", default={})
+    paper_replay = _safe_load_json(health / "paper_replay_drill_latest.json", default={})
     drift = _safe_load_json(health / "preopen_replay_drift_latest.json", default={})
     divergence = _safe_load_json(health / "data_source_divergence_latest.json", default={})
     triprate = _safe_load_json(health / "guardrail_triprate_latest.json", default={})
@@ -336,6 +401,13 @@ def _snapshot_health_context(project_root: Path) -> Tuple[Dict[str, float], Dict
 
     canary_weight_cap_norm = _clamp01(_to_float(os.getenv("CANARY_MAX_WEIGHT", "0.08"), 0.08) / 0.20)
 
+    e2e_hash_match = replay_e2e.get("hash_match")
+    if e2e_hash_match is None:
+        e2e_hash_match = True
+    paper_hash_match = paper_replay.get("hash_match")
+    if paper_hash_match is None:
+        paper_hash_match = True
+
     context = {
         "snapshot_cov_ok": 1.0 if bool(coverage.get("ok", False)) else 0.0,
         "snapshot_cov_log_ratio": coverage_log_ratio,
@@ -349,10 +421,16 @@ def _snapshot_health_context(project_root: Path) -> Tuple[Dict[str, float], Dict
         "snapshot_drill_missing_ratio": drill_missing_ratio,
         "snapshot_drill_recency_norm": drill_recency_norm,
         "canary_weight_cap_norm": canary_weight_cap_norm,
+        "snapshot_e2e_replay_ok": 1.0 if bool(replay_e2e.get("ok", True)) else 0.0,
+        "snapshot_e2e_hash_match": 1.0 if bool(e2e_hash_match) else 0.0,
+        "snapshot_paper_replay_ok": 1.0 if bool(paper_replay.get("ok", True)) else 0.0,
+        "snapshot_paper_replay_hash_match": 1.0 if bool(paper_hash_match) else 0.0,
     }
     meta = {
         "coverage_ts": coverage.get("timestamp_utc"),
         "replay_ts": replay.get("timestamp_utc"),
+        "replay_end_to_end_ts": replay_e2e.get("timestamp_utc"),
+        "paper_replay_ts": paper_replay.get("timestamp_utc"),
         "drift_ts": drift.get("timestamp_utc"),
         "divergence_ts": divergence.get("timestamp_utc"),
         "triprate_ts": triprate.get("timestamp_utc"),
@@ -360,6 +438,137 @@ def _snapshot_health_context(project_root: Path) -> Tuple[Dict[str, float], Dict
         "state_snapshot_drill_ts": drill.get("timestamp_utc"),
     }
     return context, meta
+
+
+def _try_float(value: Any) -> Optional[float]:
+    try:
+        num = float(value)
+        if math.isfinite(num):
+            return num
+    except Exception:
+        pass
+    return None
+
+
+def _latest_two_numeric(rows: Any, *, value_key: str = "value") -> Tuple[Optional[float], Optional[float]]:
+    latest: Optional[float] = None
+    prev: Optional[float] = None
+    if not isinstance(rows, list):
+        return latest, prev
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        num = _try_float(row.get(value_key))
+        if num is None:
+            continue
+        if latest is None:
+            latest = num
+            continue
+        prev = num
+        break
+    return latest, prev
+
+
+def _pct_change(latest: Optional[float], prev: Optional[float]) -> float:
+    if latest is None or prev is None:
+        return 0.0
+    if abs(prev) <= 1e-9:
+        return 0.0
+    return (latest - prev) / abs(prev)
+
+
+def _signed_pct_norm(pct_change: float, gain: float) -> float:
+    return _clamp01(0.5 + (0.5 * _signed_scale(float(pct_change), float(gain))))
+
+
+def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict[str, float], Dict[str, Any]]:
+    root = project_root / "exports" / "external_feeds"
+    status = _safe_load_json(root / "latest_status.json", default={})
+    bls = _safe_load_json(root / "bls" / "latest.json", default={})
+    census = _safe_load_json(root / "census" / "latest.json", default={})
+    fred = _safe_load_json(root / "fred" / "latest.json", default={})
+    bea = _safe_load_json(root / "bea" / "latest.json", default={})
+
+    provider_names = ("bls", "census", "fred", "bea")
+    provider_ok = {}
+    for name in provider_names:
+        node = status.get(name) if isinstance(status.get(name), dict) else {}
+        provider_ok[name] = bool(node.get("ok", False))
+
+    status_ts = _parse_ts(status.get("timestamp_utc"))
+    if status_ts is not None:
+        age_hours = max((now_utc - status_ts).total_seconds() / 3600.0, 0.0)
+        recency_norm = 1.0 - _clamp01(age_hours / 72.0)
+    else:
+        recency_norm = 0.0
+
+    fred_responses = fred.get("responses") if isinstance(fred.get("responses"), dict) else {}
+    fred_unrate_latest, _ = _latest_two_numeric((fred_responses.get("UNRATE") or {}).get("observations"))
+    fred_cpi_latest, fred_cpi_prev = _latest_two_numeric((fred_responses.get("CPIAUCSL") or {}).get("observations"))
+    fred_gdp_latest, fred_gdp_prev = _latest_two_numeric((fred_responses.get("GDP") or {}).get("observations"))
+    fred_cpi_mom = _pct_change(fred_cpi_latest, fred_cpi_prev)
+    fred_gdp_qoq = _pct_change(fred_gdp_latest, fred_gdp_prev)
+
+    bls_series = ((bls.get("response") or {}).get("Results") or {}).get("series")
+    bls_map: Dict[str, Dict[str, Any]] = {}
+    if isinstance(bls_series, list):
+        for row in bls_series:
+            if not isinstance(row, dict):
+                continue
+            sid = str(row.get("seriesID") or "").strip().upper()
+            if sid:
+                bls_map[sid] = row
+    bls_unrate_latest, _ = _latest_two_numeric((bls_map.get("LNS14000000") or {}).get("data"))
+    bls_cpi_latest, bls_cpi_prev = _latest_two_numeric((bls_map.get("CUUR0000SA0") or {}).get("data"))
+    bls_cpi_mom = _pct_change(bls_cpi_latest, bls_cpi_prev)
+
+    census_population: Optional[float] = None
+    census_rows = census.get("response")
+    if isinstance(census_rows, list) and len(census_rows) >= 2:
+        header = census_rows[0] if isinstance(census_rows[0], list) else []
+        values = census_rows[1] if isinstance(census_rows[1], list) else []
+        if header and values:
+            try:
+                idx = [str(x) for x in header].index("B01001_001E")
+                if idx < len(values):
+                    census_population = _try_float(values[idx])
+            except ValueError:
+                census_population = None
+
+    bea_dataset_rows = ((((bea.get("response") or {}).get("BEAAPI") or {}).get("Results") or {}).get("Dataset"))
+    bea_dataset_count = float(len(bea_dataset_rows)) if isinstance(bea_dataset_rows, list) else 0.0
+
+    context = {
+        "external_feeds_ok": 1.0 if all(provider_ok.get(name, False) for name in provider_names) else 0.0,
+        "external_feeds_recency_norm": recency_norm,
+        "external_fred_unrate_norm": _clamp01((_try_float(fred_unrate_latest) or 0.0) / 12.0),
+        "external_fred_cpi_mom_norm": _signed_pct_norm(fred_cpi_mom, 120.0),
+        "external_fred_gdp_qoq_norm": _signed_pct_norm(fred_gdp_qoq, 30.0),
+        "external_bls_unrate_norm": _clamp01((_try_float(bls_unrate_latest) or 0.0) / 12.0),
+        "external_bls_cpi_mom_norm": _signed_pct_norm(bls_cpi_mom, 120.0),
+        "external_census_population_log_norm": _clamp01(math.log1p(max((_try_float(census_population) or 0.0), 0.0)) / 21.0),
+        "external_bea_dataset_count_norm": _clamp01(bea_dataset_count / 30.0),
+    }
+    meta = {
+        "status_ts": status.get("timestamp_utc"),
+        "provider_ok": provider_ok,
+        "bls_ts": bls.get("timestamp_utc"),
+        "census_ts": census.get("timestamp_utc"),
+        "fred_ts": fred.get("timestamp_utc"),
+        "bea_ts": bea.get("timestamp_utc"),
+        "raw": {
+            "fred_unrate_latest": fred_unrate_latest,
+            "fred_cpi_mom": fred_cpi_mom,
+            "fred_gdp_qoq": fred_gdp_qoq,
+            "bls_unrate_latest": bls_unrate_latest,
+            "bls_cpi_mom": bls_cpi_mom,
+            "census_population": census_population,
+            "bea_dataset_count": int(bea_dataset_count),
+        },
+    }
+    return context, meta
+
+
 
 
 def _load_governance_index(paths: List[Path], since_utc: datetime) -> Dict[str, Dict[str, float]]:
@@ -377,9 +586,14 @@ def _load_governance_index(paths: List[Path], since_utc: datetime) -> Dict[str, 
         portfolio = row.get("portfolio") or {}
         cb = row.get("circuit_breakers") or {}
         exec_sim = row.get("execution_sim") or {}
+        spec_votes = row.get("specialist_votes") if isinstance(row.get("specialist_votes"), dict) else {}
 
         out[sid] = {
-            "active_sub_bots": _to_float(row.get("active_sub_bots"), 0.0),
+            "active_sub_bots": _to_float(row.get("active_sub_bots_total"), _to_float(row.get("active_sub_bots"), 0.0)),
+            "active_options_sub_bots": _to_float(row.get("active_options_sub_bots"), 0.0),
+            "active_futures_sub_bots": _to_float(row.get("active_futures_sub_bots"), 0.0),
+            "options_specialist_vote": _to_float(spec_votes.get("options"), 0.0),
+            "futures_specialist_vote": _to_float(spec_votes.get("futures"), 0.0),
             "queue_depth": _to_float(portfolio.get("queue_depth"), 0.0),
             "dispatch_qty": _to_float(portfolio.get("dispatch_qty"), 0.0),
             "feature_freshness_ok": 1.0 if bool(freshness.get("ok", True)) else 0.0,
@@ -498,6 +712,7 @@ def _decision_feature_vector(
     gov: Dict[str, float],
     lag_exec: Tuple[float, float, float],
     snapshot_context: Dict[str, float],
+    external_context: Dict[str, float],
     event_windows: List[Tuple[int, int]],
 ) -> Tuple[List[float], str, float]:
     features = row.get("features") or {}
@@ -558,6 +773,50 @@ def _decision_feature_vector(
         _clamp01(_to_float(gov.get("master_latency_slo_ok"), 1.0)),
         _clamp01(_to_float(gov.get("master_latency_ratio"), 0.0)),
         _clamp01(_to_float(gov.get("risk_pause_active"), 0.0)),
+        _clamp01(_to_float(features.get("options_chain_available"), 0.0)),
+        _clamp01(_to_float(features.get("options_iv_atm_norm"), 0.0)),
+        _clamp01(_to_float(features.get("options_iv_skew_norm"), 0.0)),
+        _clamp01(_to_float(features.get("options_iv_term_structure_norm"), 0.0)),
+        _clamp01(_to_float(features.get("options_put_call_oi_ratio_norm"), 0.0)),
+        _clamp01(_to_float(features.get("options_negative_bias_norm"), 0.0)),
+        _clamp01(_to_float(features.get("options_roll_yield_norm"), 0.0)),
+        _clamp01(_to_float(features.get("options_vwap_bias_norm"), 0.0)),
+        _clamp01(_to_float(features.get("options_vol_expectation_norm"), 0.0)),
+        _clamp01(_to_float(features.get("calendar_event_proximity_norm"), 0.0)),
+        _clamp01(_to_float(features.get("calendar_high_impact_24h_norm"), 0.0)),
+        _clamp01(_to_float(features.get("calendar_options_expiry_week_norm"), 0.0)),
+        _clamp01(_to_float(features.get("calendar_dividend_events_30d_norm"), 0.0)),
+        _clamp01(_to_float(features.get("calendar_dividend_exdate_proximity_norm"), 0.0)),
+        _clamp01(_to_float(features.get("calendar_dividend_payout_proximity_norm"), 0.0)),
+        _clamp01(_to_float(features.get("calendar_dividend_recent_exdate_norm"), 0.0)),
+        _clamp01(_to_float(features.get("calendar_dividend_quality_signal_norm"), 0.0)),
+        _clamp01(_to_float(features.get("dividend_yield_norm"), 0.0)),
+        _clamp01(_to_float(features.get("dividend_payout_ratio_norm"), 0.0)),
+        _clamp01(_to_float(features.get("dividend_ex_date_proximity_norm"), 0.0)),
+        _clamp01(_to_float(features.get("dividend_pay_date_proximity_norm"), 0.0)),
+        _clamp01(_to_float(features.get("dividend_quality_score_norm"), 0.0)),
+        _clamp01(_to_float(features.get("dividend_capture_entry_signal_norm"), 0.0)),
+        _clamp01(_to_float(features.get("dividend_capture_exit_signal_norm"), 0.0)),
+        _clamp01(_to_float(features.get("dividend_compound_bias_norm"), 0.0)),
+        _clamp01(_to_float(features.get("dividend_compound_growth_norm"), 0.0)),
+        _clamp01(_to_float(features.get("dividend_compound_drawdown_norm"), 0.0)),
+        _clamp01(_to_float(features.get("dividend_compound_steps_norm"), 0.0)),
+        _clamp01(_to_float(features.get("dividend_strategy_mode_capture"), 0.0)),
+        _clamp01(_to_float(features.get("dividend_strategy_mode_compound"), 0.0)),
+        _clamp01(_to_float(features.get("dividend_strategy_mode_hybrid"), 0.0)),
+        _clamp01(_to_float(features.get("futures_order_book_imbalance_norm"), 0.0)),
+        _clamp01(_to_float(features.get("futures_funding_rate_norm"), 0.0)),
+        _clamp01(_to_float(features.get("futures_basis_bps_norm"), 0.0)),
+        _clamp01(_to_float(features.get("futures_term_structure_norm"), 0.0)),
+        _clamp01(_to_float(features.get("futures_negative_bias_norm"), 0.0)),
+        _clamp01(_to_float(features.get("futures_roll_yield_norm"), 0.0)),
+        _clamp01(_to_float(features.get("futures_vwap_bias_norm"), 0.0)),
+        _clamp01(_to_float(features.get("options_specialist_active"), _to_float(gov.get("active_options_sub_bots"), 0.0))),
+        _clamp01(_to_float(features.get("futures_specialist_active"), _to_float(gov.get("active_futures_sub_bots"), 0.0))),
+        _signed_scale(_to_float(features.get("options_specialist_vote"), _to_float(gov.get("options_specialist_vote"), 0.0)), 1.0),
+        _signed_scale(_to_float(features.get("futures_specialist_vote"), _to_float(gov.get("futures_specialist_vote"), 0.0)), 1.0),
+        _clamp01(_to_float(features.get("active_options_sub_bots"), _to_float(gov.get("active_options_sub_bots"), 0.0)) / 20.0),
+        _clamp01(_to_float(features.get("active_futures_sub_bots"), _to_float(gov.get("active_futures_sub_bots"), 0.0)) / 20.0),
         _clamp01(_to_float(snapshot_context.get("snapshot_cov_ok"), 1.0)),
         _clamp01(_to_float(snapshot_context.get("snapshot_cov_log_ratio"), 0.0)),
         _clamp01(_to_float(snapshot_context.get("snapshot_replay_stale_ratio"), 0.0)),
@@ -578,6 +837,21 @@ def _decision_feature_vector(
         _clamp01(_to_float(snapshot_context.get("snapshot_raw_event_file_ratio"), 0.0)),
         _clamp01(_to_float(snapshot_context.get("snapshot_raw_lock_file_ratio"), 0.0)),
         _clamp01(_to_float(snapshot_context.get("snapshot_raw_recency_norm"), 0.0)),
+        _clamp01(_to_float(snapshot_context.get("snapshot_cov_fill_ratio"), 0.0)),
+        _clamp01(_to_float(snapshot_context.get("snapshot_replay_ok"), 0.0)),
+        _clamp01(_to_float(snapshot_context.get("snapshot_e2e_replay_ok"), 1.0)),
+        _clamp01(_to_float(snapshot_context.get("snapshot_e2e_hash_match"), 1.0)),
+        _clamp01(_to_float(snapshot_context.get("snapshot_paper_replay_ok"), 1.0)),
+        _clamp01(_to_float(snapshot_context.get("snapshot_paper_replay_hash_match"), 1.0)),
+        _clamp01(_to_float(external_context.get("external_feeds_ok"), 0.0)),
+        _clamp01(_to_float(external_context.get("external_feeds_recency_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("external_fred_unrate_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("external_fred_cpi_mom_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("external_fred_gdp_qoq_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("external_bls_unrate_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("external_bls_cpi_mom_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("external_census_population_log_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("external_bea_dataset_count_norm"), 0.0)),
     ]
 
     return vec, regime, label_confidence_proxy
@@ -659,6 +933,7 @@ def main() -> int:
         pnl_paths = sorted(Path(p) for p in PROJECT_ROOT.glob("governance/shadow*/shadow_pnl_attribution_*.jsonl"))
 
     snapshot_context, snapshot_meta = _snapshot_health_context(PROJECT_ROOT)
+    external_context, external_meta = _external_feeds_context(PROJECT_ROOT, now_utc=now_utc)
     event_windows = _event_windows_from_env()
 
     gov_by_snapshot = _load_governance_index(governance_paths, since_utc=since_utc)
@@ -784,6 +1059,7 @@ def main() -> int:
                 gov=gov,
                 lag_exec=lag_exec,
                 snapshot_context=snapshot_context,
+                external_context=external_context,
                 event_windows=event_windows,
             )
 
@@ -907,6 +1183,10 @@ def main() -> int:
         "snapshot_context": {
             "features": {k: round(_to_float(v), 6) for k, v in snapshot_context.items()},
             "meta": snapshot_meta,
+        },
+        "external_context": {
+            "features": {k: round(_to_float(v), 6) for k, v in external_context.items()},
+            "meta": external_meta,
         },
         "rows": len(examples),
         "label_space": ["negative", "neutral", "positive"],

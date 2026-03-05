@@ -8,7 +8,7 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot && \
 export MARKET_DATA_ONLY=1 ALLOW_ORDER_EXECUTION=0 ENABLE_RESOURCE_GUARD=0 && \
 export SHADOW_SYMBOLS_CORE="SPY,QQQ,AAPL,MSFT,NVDA,NFLX,DIS,WBD,DIA,IWM,MDY" && \
 export SHADOW_SYMBOLS_VOLATILE="SOXL,SOXS,MSTR,SMCI,COIN,TSLA,UVXY,VIXY" && \
-export SHADOW_SYMBOLS_DEFENSIVE="TLT,GLD,XLV,XLU,XLP,HYG,LQD,UUP,XLE,XLF,XLI,XLK,XLY,IEF,SHY,TIP,TLH,JNK" && \
+export SHADOW_SYMBOLS_DEFENSIVE="TLT,GLD,XLV,XLU,XLP,HYG,LQD,UUP,XLE,XLF,XLI,XLK,XLY,IEF,SHY,TIP,TLH,JNK,ITA,LMT,NOC,RTX,GD,LHX,LDOS" && \
 export SHADOW_SYMBOLS_COMMOD_FX_INTL="DBC,UNG,CORN,SLV,USO,FXE,FXY,EFA,EEM,EWJ,FXI" && \
 export DIVIDEND_SYMBOLS="SCHD,VIG,DGRO,JNJ,PG,KO,PEP,XOM,CVX,O,MAIN" && \
 export BOND_SYMBOLS="TLT,IEF,SHY,TLH,TIP,LQD,HYG,JNK,BND,AGG,MUB,IGIB,USHY,FLOT,VGIT" && \
@@ -151,6 +151,18 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh coinbase-tail
 ```
 
+### 16b) Coinbase Crypto Futures Sleeve (paper first)
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh coinbase-futures-start --paper --force-restart --top-n 10 --min-acc 0.53 --profiles crypto_futures
+```
+
+Stop only the futures sleeve:
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh coinbase-futures-stop
+```
+
 
 ## 17) Project Timeline + Printable Auto-Update
 Generate timeline now (writes markdown + print-ready HTML):
@@ -173,4 +185,17 @@ open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/proje
 Open latest printable PDF:
 ```bash
 open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/project_timeline/project_timeline_latest.pdf
+```
+
+## 15) Dividend Strategy Modes (capture vs compound)
+Capture strategy (buy ahead of ex-dividend window, then rotate out after capture window):
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./.venv312/bin/python scripts/run_dividend_shadow.py --simulate --strategy-mode capture
+```
+
+Compound strategy (quality dividend buy-and-hold with compounding metrics):
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./.venv312/bin/python scripts/run_dividend_shadow.py --simulate --strategy-mode compound
 ```
