@@ -178,17 +178,17 @@ def main() -> int:
     parser.add_argument("--intraday-interval-seconds", type=int, default=8)
     parser.add_argument("--swing-interval-seconds", type=int, default=75)
 
-    parser.add_argument("--intraday-symbols-core", default=os.getenv("SHADOW_SYMBOLS_CORE", "SPY,QQQ,AAPL,MSFT,NVDA,DIA,IWM,MDY"))
-    parser.add_argument("--intraday-symbols-volatile", default=os.getenv("SHADOW_SYMBOLS_VOLATILE", "SOXL,SOXS,TSLA,COIN,MSTR,SMCI,UVXY,VIXY"))
-    parser.add_argument("--intraday-symbols-defensive", default=os.getenv("SHADOW_SYMBOLS_DEFENSIVE", "TLT,GLD,IEF,SHY"))
+    parser.add_argument("--intraday-symbols-core", default=os.getenv("SHADOW_SYMBOLS_CORE", "SPY,QQQ,DIA,IWM,MDY,VOO,VTI,RSP,AAPL,MSFT,NVDA,AMZN,GOOGL,META,AVGO,ORCL,CRM,ADBE,NFLX,DIS,WBD,GS,JPM,BKNG,ABNB,MAR,HLT"))
+    parser.add_argument("--intraday-symbols-volatile", default=os.getenv("SHADOW_SYMBOLS_VOLATILE", "SOXL,SOXS,TQQQ,SQQQ,MSTR,SMCI,COIN,TSLA,PLTR,AMD,MRVL,ARM,IBIT,ETHA,MARA,RIOT,UVXY,VIXY,AAL,UAL,DAL,LUV,ALK,JBLU,CCL,RCL,NCLH,EXPE,JETS,XOP,OIH,OXY,SLB,HAL"))
+    parser.add_argument("--intraday-symbols-defensive", default=os.getenv("SHADOW_SYMBOLS_DEFENSIVE", "TLT,GLD,XLV,XLU,XLP,MO,HYG,LQD,UUP,XLE,XLF,XLI,XLK,XLY,IEF,SHY,TIP,TLH,JNK,AGG,BND,MUB,IGIB,USHY,FLOT,VGIT,SCHD,VIG,DGRO,HDV,NOBL,VYM,DIVO,JEPI,JEPQ,SPLV,VTV,JNJ,PG,KO,PEP,MCD,ABBV,ABT,MRK,PFE,T,VZ,O,VICI,MAIN,XOM,CVX,COP,EOG,MPC,PSX,VLO,KMI,ITA,LMT,NOC,RTX,GD,LHX,LDOS"))
     parser.add_argument("--intraday-context-symbols", default=os.getenv("WATCH_CONTEXT_SYMBOLS", "$VIX.X,UUP"))
 
-    parser.add_argument("--swing-symbols-core", default=os.getenv("SHADOW_SYMBOLS_CORE", "SPY,QQQ,AAPL,MSFT,NVDA,DIA,IWM,MDY"))
-    parser.add_argument("--swing-symbols-volatile", default=os.getenv("SHADOW_SYMBOLS_VOLATILE", "SOXL,SOXS,TSLA,COIN,MSTR,SMCI,UVXY,VIXY"))
+    parser.add_argument("--swing-symbols-core", default=os.getenv("SHADOW_SYMBOLS_CORE", "SPY,QQQ,DIA,IWM,MDY,VOO,VTI,RSP,AAPL,MSFT,NVDA,AMZN,GOOGL,META,AVGO,ORCL,CRM,ADBE,NFLX,DIS,WBD,GS,JPM,BKNG,ABNB,MAR,HLT"))
+    parser.add_argument("--swing-symbols-volatile", default=os.getenv("SHADOW_SYMBOLS_VOLATILE", "SOXL,SOXS,TQQQ,SQQQ,MSTR,SMCI,COIN,TSLA,PLTR,AMD,MRVL,ARM,IBIT,ETHA,MARA,RIOT,UVXY,VIXY,AAL,UAL,DAL,LUV,ALK,JBLU,CCL,RCL,NCLH,EXPE,JETS,XOP,OIH,OXY,SLB,HAL"))
     parser.add_argument(
         "--swing-symbols-defensive",
-        default=(os.getenv("SHADOW_SYMBOLS_DEFENSIVE", "TLT,GLD,XLV,XLU,XLP,HYG,LQD,UUP,XLE,XLF,XLI,XLK,XLY,IEF,SHY,TIP,TLH,JNK")
-                 + "," + os.getenv("SHADOW_SYMBOLS_COMMOD_FX_INTL", "DBC,UNG,CORN,SLV,USO,FXE,FXY,EFA,EEM,EWJ,FXI")).strip(","),
+        default=(os.getenv("SHADOW_SYMBOLS_DEFENSIVE", "TLT,GLD,XLV,XLU,XLP,MO,HYG,LQD,UUP,XLE,XLF,XLI,XLK,XLY,IEF,SHY,TIP,TLH,JNK,AGG,BND,MUB,IGIB,USHY,FLOT,VGIT,SCHD,VIG,DGRO,HDV,NOBL,VYM,DIVO,JEPI,JEPQ,SPLV,VTV,JNJ,PG,KO,PEP,MCD,ABBV,ABT,MRK,PFE,T,VZ,O,VICI,MAIN,XOM,CVX,COP,EOG,MPC,PSX,VLO,KMI,ITA,LMT,NOC,RTX,GD,LHX,LDOS")
+                 + "," + os.getenv("SHADOW_SYMBOLS_COMMOD_FX_INTL", "DBC,UNG,CORN,SLV,USO,FXE,FXY,EFA,EEM,EWJ,FXI,VEA,VWO,IEFA,VGK,INDA,SMH,SOXX,VGT,IGV,XOP,OIH,JETS,VNQ,IYR")).strip(","),
     )
     parser.add_argument("--swing-context-symbols", default=os.getenv("WATCH_CONTEXT_SYMBOLS", "$VIX.X,UUP"))
     args = parser.parse_args()

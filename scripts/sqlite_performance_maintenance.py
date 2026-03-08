@@ -8,6 +8,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = PROJECT_ROOT / "data" / "jsonl_link.sqlite3"
+DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "sqlite_maintenance_latest.json"
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -41,6 +42,21 @@ def _sqlite_exec_with_retry(
             attempt += 1
 
 
+def _emit(payload: dict, out_path: Path, as_json: bool) -> int:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=True))
+    else:
+        print(
+            "sqlite_maintenance "
+            f"ok={int(bool(payload.get('ok', False)))} "
+            f"vacuum_ran={int(bool(payload.get('vacuum_ran', False)))} "
+            f"size_gb_after={payload.get('size_gb_after', 'n/a')}"
+        )
+    return 0 if bool(payload.get("ok", False)) else 2
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Apply SQLite performance tuning and maintenance.")
     parser.add_argument("--db", default=str(DEFAULT_DB))
@@ -48,126 +64,189 @@ def main() -> int:
     parser.add_argument("--auto-vacuum-over-gb", type=float, default=float(os.getenv("SQLITE_AUTO_VACUUM_OVER_GB", "24")))
     parser.add_argument("--vacuum-min-interval-hours", type=float, default=float(os.getenv("SQLITE_VACUUM_MIN_INTERVAL_HOURS", "24")))
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--out-file", default=str(DEFAULT_OUT))
     parser.add_argument("--sqlite-timeout-seconds", type=float, default=float(os.getenv("SQLITE_TIMEOUT_SECONDS", "60")))
     parser.add_argument("--sqlite-lock-retries", type=int, default=int(os.getenv("SQLITE_LOCK_RETRIES", "8")))
     parser.add_argument("--sqlite-lock-retry-delay-seconds", type=float, default=float(os.getenv("SQLITE_LOCK_RETRY_DELAY_SECONDS", "0.25")))
     args = parser.parse_args()
 
     db_path = Path(args.db)
+    out_path = Path(args.out_file)
+    timestamp_utc = datetime.now(timezone.utc).isoformat()
+
     if not db_path.exists():
-        raise SystemExit(f"SQLite DB not found: {db_path}")
+        payload = {
+            "timestamp_utc": timestamp_utc,
+            "ok": False,
+            "db_path": str(db_path),
+            "error": f"db_missing:{db_path}",
+            "vacuum_ran": False,
+            "indexes_touched": 0,
+            "jsonl_records_rows": 0,
+            "size_gb_before": 0.0,
+            "size_gb_after": 0.0,
+            "auto_vacuum_over_gb": float(args.auto_vacuum_over_gb),
+            "vacuum_min_interval_hours": float(args.vacuum_min_interval_hours),
+        }
+        return _emit(payload, out_path, args.json)
 
-    conn = sqlite3.connect(str(db_path), timeout=max(float(args.sqlite_timeout_seconds), 1.0))
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA temp_store=MEMORY")
-    conn.execute("PRAGMA cache_size=-20000")
-    conn.execute("PRAGMA mmap_size=268435456")
-    conn.execute(f"PRAGMA busy_timeout={int(max(float(args.sqlite_timeout_seconds), 1.0) * 1000)}")
-
+    conn = None
     created_indexes = 0
-    if _table_exists(conn, "jsonl_records"):
-        idx_sql = [
-            "CREATE INDEX IF NOT EXISTS idx_jsonl_source_rel_ingested ON jsonl_records(source_rel, ingested_at)",
-            "CREATE INDEX IF NOT EXISTS idx_jsonl_action_expr ON jsonl_records((json_extract(payload_json, '$.action')))",
-            "CREATE INDEX IF NOT EXISTS idx_jsonl_symbol_expr ON jsonl_records((json_extract(payload_json, '$.symbol')))",
-            "CREATE INDEX IF NOT EXISTS idx_jsonl_ts_expr ON jsonl_records((json_extract(payload_json, '$.timestamp_utc')))",
-        ]
-        for sql in idx_sql:
-            _sqlite_exec_with_retry(conn, sql, lock_retries=max(args.sqlite_lock_retries, 0), lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01))
-            created_indexes += 1
-
-    _sqlite_exec_with_retry(
-        conn,
-        """
-        CREATE TABLE IF NOT EXISTS db_maintenance_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp_utc TEXT NOT NULL,
-            db_path TEXT NOT NULL,
-            vacuum_ran INTEGER NOT NULL,
-            indexes_touched INTEGER NOT NULL,
-            notes TEXT NOT NULL
-        )
-        """,
-        lock_retries=max(args.sqlite_lock_retries, 0),
-        lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
-    )
-
-    _sqlite_exec_with_retry(conn, "ANALYZE", lock_retries=max(args.sqlite_lock_retries, 0), lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01))
-    _sqlite_exec_with_retry(conn, "PRAGMA optimize", lock_retries=max(args.sqlite_lock_retries, 0), lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01))
-    _sqlite_exec_with_retry(conn, "PRAGMA wal_checkpoint(TRUNCATE)", lock_retries=max(args.sqlite_lock_retries, 0), lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01))
-
+    total_rows = 0
+    do_vacuum = False
     size_gb_before = db_path.stat().st_size / (1024 ** 3)
 
-    last_vacuum_ts = None
-    try:
-        row = _sqlite_exec_with_retry(
-            conn,
-            "SELECT timestamp_utc FROM db_maintenance_events WHERE vacuum_ran=1 ORDER BY id DESC LIMIT 1",
-            lock_retries=max(args.sqlite_lock_retries, 0),
-            lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
-        ).fetchone()
-        if row and row[0]:
-            last_vacuum_ts = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00")).astimezone(timezone.utc)
-    except Exception:
-        last_vacuum_ts = None
-
-    do_vacuum = bool(args.vacuum)
-    if (not do_vacuum) and size_gb_before >= float(args.auto_vacuum_over_gb):
-        if last_vacuum_ts is None:
-            do_vacuum = True
-        else:
-            elapsed_h = (datetime.now(timezone.utc) - last_vacuum_ts).total_seconds() / 3600.0
-            do_vacuum = elapsed_h >= float(args.vacuum_min_interval_hours)
-
-    if do_vacuum:
-        _sqlite_exec_with_retry(conn, "VACUUM", lock_retries=max(args.sqlite_lock_retries, 0), lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01))
-
-    total_rows = 0
-    if _table_exists(conn, "jsonl_records"):
-        row = _sqlite_exec_with_retry(
-            conn,
-            "SELECT COUNT(*) FROM jsonl_records",
-            lock_retries=max(args.sqlite_lock_retries, 0),
-            lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
-        ).fetchone()
-        total_rows = int(row[0] if row else 0)
-
-    size_gb_after = db_path.stat().st_size / (1024 ** 3)
     payload = {
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "timestamp_utc": timestamp_utc,
+        "ok": False,
         "db_path": str(db_path),
-        "vacuum_ran": bool(do_vacuum),
-        "indexes_touched": created_indexes,
-        "jsonl_records_rows": total_rows,
+        "vacuum_ran": False,
+        "indexes_touched": 0,
+        "jsonl_records_rows": 0,
         "size_gb_before": round(size_gb_before, 3),
-        "size_gb_after": round(size_gb_after, 3),
+        "size_gb_after": round(size_gb_before, 3),
         "auto_vacuum_over_gb": float(args.auto_vacuum_over_gb),
         "vacuum_min_interval_hours": float(args.vacuum_min_interval_hours),
     }
 
-    _sqlite_exec_with_retry(
-        conn,
-        "INSERT INTO db_maintenance_events(timestamp_utc, db_path, vacuum_ran, indexes_touched, notes) VALUES (?, ?, ?, ?, ?)",
-        (payload["timestamp_utc"], payload["db_path"], 1 if do_vacuum else 0, created_indexes, "auto_maintenance"),
-        lock_retries=max(args.sqlite_lock_retries, 0),
-        lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=max(float(args.sqlite_timeout_seconds), 1.0))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA cache_size=-20000")
+        conn.execute("PRAGMA mmap_size=268435456")
+        conn.execute(f"PRAGMA busy_timeout={int(max(float(args.sqlite_timeout_seconds), 1.0) * 1000)}")
 
-    out = PROJECT_ROOT / "governance" / "health" / "sqlite_maintenance_latest.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+        if _table_exists(conn, "jsonl_records"):
+            idx_sql = [
+                "CREATE INDEX IF NOT EXISTS idx_jsonl_source_rel_ingested ON jsonl_records(source_rel, ingested_at)",
+                "CREATE INDEX IF NOT EXISTS idx_jsonl_action_expr ON jsonl_records((json_extract(payload_json, '$.action')))",
+                "CREATE INDEX IF NOT EXISTS idx_jsonl_symbol_expr ON jsonl_records((json_extract(payload_json, '$.symbol')))",
+                "CREATE INDEX IF NOT EXISTS idx_jsonl_ts_expr ON jsonl_records((json_extract(payload_json, '$.timestamp_utc')))",
+            ]
+            for sql in idx_sql:
+                _sqlite_exec_with_retry(
+                    conn,
+                    sql,
+                    lock_retries=max(args.sqlite_lock_retries, 0),
+                    lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+                )
+                created_indexes += 1
 
-    if args.json:
-        print(json.dumps(payload, ensure_ascii=True))
-    else:
-        print(
-            f"sqlite_maintenance_ok=1 vacuum_ran={payload['vacuum_ran']} indexes_touched={created_indexes} "
-            f"jsonl_records_rows={total_rows} size_gb={payload['size_gb_after']}"
+        _sqlite_exec_with_retry(
+            conn,
+            """
+            CREATE TABLE IF NOT EXISTS db_maintenance_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp_utc TEXT NOT NULL,
+                db_path TEXT NOT NULL,
+                vacuum_ran INTEGER NOT NULL,
+                indexes_touched INTEGER NOT NULL,
+                notes TEXT NOT NULL
+            )
+            """,
+            lock_retries=max(args.sqlite_lock_retries, 0),
+            lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
         )
-    return 0
+
+        _sqlite_exec_with_retry(
+            conn,
+            "ANALYZE",
+            lock_retries=max(args.sqlite_lock_retries, 0),
+            lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+        )
+        _sqlite_exec_with_retry(
+            conn,
+            "PRAGMA optimize",
+            lock_retries=max(args.sqlite_lock_retries, 0),
+            lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+        )
+        _sqlite_exec_with_retry(
+            conn,
+            "PRAGMA wal_checkpoint(TRUNCATE)",
+            lock_retries=max(args.sqlite_lock_retries, 0),
+            lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+        )
+
+        last_vacuum_ts = None
+        try:
+            row = _sqlite_exec_with_retry(
+                conn,
+                "SELECT timestamp_utc FROM db_maintenance_events WHERE vacuum_ran=1 ORDER BY id DESC LIMIT 1",
+                lock_retries=max(args.sqlite_lock_retries, 0),
+                lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+            ).fetchone()
+            if row and row[0]:
+                last_vacuum_ts = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00")).astimezone(timezone.utc)
+        except Exception:
+            last_vacuum_ts = None
+
+        do_vacuum = bool(args.vacuum)
+        if (not do_vacuum) and size_gb_before >= float(args.auto_vacuum_over_gb):
+            if last_vacuum_ts is None:
+                do_vacuum = True
+            else:
+                elapsed_h = (datetime.now(timezone.utc) - last_vacuum_ts).total_seconds() / 3600.0
+                do_vacuum = elapsed_h >= float(args.vacuum_min_interval_hours)
+
+        if do_vacuum:
+            _sqlite_exec_with_retry(
+                conn,
+                "VACUUM",
+                lock_retries=max(args.sqlite_lock_retries, 0),
+                lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+            )
+
+        if _table_exists(conn, "jsonl_records"):
+            row = _sqlite_exec_with_retry(
+                conn,
+                "SELECT COUNT(*) FROM jsonl_records",
+                lock_retries=max(args.sqlite_lock_retries, 0),
+                lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+            ).fetchone()
+            total_rows = int(row[0] if row else 0)
+
+        _sqlite_exec_with_retry(
+            conn,
+            "INSERT INTO db_maintenance_events(timestamp_utc, db_path, vacuum_ran, indexes_touched, notes) VALUES (?, ?, ?, ?, ?)",
+            (timestamp_utc, str(db_path), 1 if do_vacuum else 0, created_indexes, "auto_maintenance"),
+            lock_retries=max(args.sqlite_lock_retries, 0),
+            lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+        )
+        conn.commit()
+
+        size_gb_after = db_path.stat().st_size / (1024 ** 3)
+        payload.update(
+            {
+                "ok": True,
+                "vacuum_ran": bool(do_vacuum),
+                "indexes_touched": int(created_indexes),
+                "jsonl_records_rows": int(total_rows),
+                "size_gb_before": round(size_gb_before, 3),
+                "size_gb_after": round(size_gb_after, 3),
+            }
+        )
+    except Exception as exc:
+        size_gb_after = db_path.stat().st_size / (1024 ** 3) if db_path.exists() else 0.0
+        payload.update(
+            {
+                "ok": False,
+                "error": str(exc),
+                "vacuum_ran": bool(do_vacuum),
+                "indexes_touched": int(created_indexes),
+                "jsonl_records_rows": int(total_rows),
+                "size_gb_after": round(size_gb_after, 3),
+            }
+        )
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return _emit(payload, out_path, args.json)
 
 
 if __name__ == "__main__":

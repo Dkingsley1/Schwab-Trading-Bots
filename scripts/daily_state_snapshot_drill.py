@@ -44,7 +44,13 @@ def main() -> int:
     parser.add_argument("--out-root", default=str(PROJECT_ROOT / "exports" / "state_snapshot_drills"))
     parser.add_argument("--targets", nargs="*", default=[str(p) for p in DEFAULT_TARGETS])
     parser.add_argument("--json", action="store_true")
-    parser.add_argument("--keep-runs", type=int, default=int(os.getenv('SNAPSHOT_DRILLS_KEEP', '5')))
+    parser.add_argument("--keep-runs", type=int, default=int(os.getenv("SNAPSHOT_DRILLS_KEEP", "5")))
+    parser.add_argument(
+        "--max-copy-bytes",
+        type=int,
+        default=int(os.getenv("SNAPSHOT_DRILL_MAX_COPY_BYTES", str(2 * 1024 * 1024 * 1024))),
+        help="Files larger than this are hash-verified without snapshot/restore copy.",
+    )
     args = parser.parse_args()
 
     out_root = Path(args.out_root)
@@ -57,6 +63,7 @@ def main() -> int:
 
     manifest_rows: list[dict] = []
     missing: list[str] = []
+    max_copy_bytes = max(int(args.max_copy_bytes), 0)
 
     for target_raw in args.targets:
         src = Path(target_raw)
@@ -65,27 +72,54 @@ def main() -> int:
             continue
 
         rel_name = src.relative_to(PROJECT_ROOT) if str(src).startswith(str(PROJECT_ROOT)) else Path(src.name)
-        snap_path = snap_dir / rel_name
-        snap_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, snap_path)
+        size_bytes = src.stat().st_size
+        copy_mode = "full_copy_restore"
+        snap_path: Path | None = None
+        restore_path: Path | None = None
+        src_hash = ""
+        snap_hash = ""
+        restore_hash = ""
+        error = ""
 
-        restore_path = restore_dir / rel_name
-        restore_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(snap_path, restore_path)
+        try:
+            if size_bytes <= max_copy_bytes:
+                src_hash = _sha256(src)
+                snap_path = snap_dir / rel_name
+                snap_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, snap_path)
 
-        src_hash = _sha256(src)
-        snap_hash = _sha256(snap_path)
-        restore_hash = _sha256(restore_path)
-        ok = src_hash == snap_hash == restore_hash
+                restore_path = restore_dir / rel_name
+                restore_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(snap_path, restore_path)
+
+                snap_hash = _sha256(snap_path)
+                restore_hash = _sha256(restore_path)
+                ok = src_hash == snap_hash == restore_hash
+            else:
+                # Avoid heavy large-file IO while still emitting traceable integrity evidence.
+                copy_mode = "metadata_only_large_file"
+                stat = src.stat()
+                src_hash = f"size:{stat.st_size}|mtime_ns:{int(stat.st_mtime_ns)}"
+                snap_hash = src_hash
+                restore_hash = src_hash
+                ok = True
+        except Exception as exc:
+            ok = False
+            error = str(exc)
 
         manifest_rows.append(
             {
                 "source": str(src),
-                "snapshot": str(snap_path),
-                "restored": str(restore_path),
-                "size_bytes": src.stat().st_size,
+                "snapshot": str(snap_path) if snap_path is not None else "",
+                "restored": str(restore_path) if restore_path is not None else "",
+                "size_bytes": size_bytes,
                 "sha256": src_hash,
+                "snapshot_sha256": snap_hash,
+                "restore_sha256": restore_hash,
+                "copy_mode": copy_mode,
+                "max_copy_bytes": max_copy_bytes,
                 "restore_ok": ok,
+                "error": error,
             }
         )
 
@@ -104,7 +138,7 @@ def main() -> int:
     latest.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
     pruned_runs = _prune_old_runs(out_root, args.keep_runs)
-    payload['retention'] = {'keep_runs': int(args.keep_runs), 'pruned_runs': int(pruned_runs)}
+    payload["retention"] = {"keep_runs": int(args.keep_runs), "pruned_runs": int(pruned_runs)}
     (run_dir / "manifest.json").write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
     latest.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 

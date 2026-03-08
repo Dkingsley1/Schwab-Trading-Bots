@@ -37,6 +37,9 @@ def main() -> int:
         "source_mode": meta.get("source_mode"),
         "selected_source": meta.get("selected_source"),
         "sql_sync": meta.get("sql_sync"),
+        "raw_debug_sync": meta.get("raw_debug_sync"),
+        "raw_debug_context": meta.get("raw_debug_context"),
+        "raw_context_enabled": bool(meta.get("raw_context_enabled", False)),
         "context": {k: round(float(v), 6) for k, v in (context or {}).items()},
     }
 

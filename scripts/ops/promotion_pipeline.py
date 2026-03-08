@@ -30,6 +30,7 @@ def main() -> int:
     steps: list[tuple[str, list[str], bool]] = [
         ('walk_forward_validate', [str(PY), str(PROJECT_ROOT / 'scripts' / 'walk_forward_validate.py')], True),
         ('walk_forward_promotion_gate', [str(PY), str(PROJECT_ROOT / 'scripts' / 'walk_forward_promotion_gate.py')], False),
+        ('lane_promotion_gate', [str(PY), str(PROJECT_ROOT / 'scripts' / 'lane_promotion_gate.py'), '--json'], False),
         ('promotion_readiness_summary', [str(PY), str(PROJECT_ROOT / 'scripts' / 'promotion_readiness_summary.py'), '--json'], True),
         ('promotion_bottleneck_focus', [str(PY), str(PROJECT_ROOT / 'scripts' / 'promotion_bottleneck_focus.py'), '--json'], True),
         ('new_bot_graduation_gate', [str(PY), str(PROJECT_ROOT / 'scripts' / 'new_bot_graduation_gate.py'), '--json'], False),

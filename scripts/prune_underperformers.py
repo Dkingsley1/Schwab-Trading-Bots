@@ -1,10 +1,17 @@
 import argparse
 import json
+import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.training_guard import check_confirmed_training_success, check_registry_row_state_before_deletion
+from core.accountability import write_registry_mutation_journal
 
 
 def _load_registry(path: Path) -> dict:
@@ -19,21 +26,73 @@ def _safe_unlink(path_str: str) -> bool:
     return False
 
 
+def _safe_write_json(path: Path, payload: dict) -> str:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return str(path)
+    except Exception as exc:
+        fallback = Path("/tmp") / path.name
+        try:
+            fallback.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            print(f"[UnderperformerPrune] audit_write_fallback path={path} fallback={fallback} err={exc}")
+            return str(fallback)
+        except Exception:
+            print(f"[UnderperformerPrune] audit_write_failed path={path} err={exc}")
+            return ""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Delete/retire bots after repeated no-improvement retrains.")
     parser.add_argument("--registry", default=str(PROJECT_ROOT / "master_bot_registry.json"))
     parser.add_argument("--min-streak", type=int, default=3)
     parser.add_argument("--delete-artifacts", action="store_true", help="Also delete model/log artifacts for retired bots.")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--require-training-success",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("REQUIRE_CONFIRMED_TRAINING_SUCCESS", "1").strip() == "1",
+        help="Block deletion when recent confirmed training success is missing.",
+    )
+    parser.add_argument(
+        "--max-training-age-hours",
+        type=float,
+        default=float(os.getenv("CONFIRMED_TRAINING_SUCCESS_MAX_AGE_HOURS", "72")),
+    )
+    parser.add_argument(
+        "--training-success-file",
+        default=str(PROJECT_ROOT / "governance" / "health" / "training_success_latest.json"),
+    )
+    parser.add_argument(
+        "--training-scorecard-file",
+        default=str(PROJECT_ROOT / "governance" / "health" / "retrain_scorecard_latest.json"),
+    )
     args = parser.parse_args()
 
     reg_path = Path(args.registry)
     reg = _load_registry(reg_path)
+    original_reg = json.loads(json.dumps(reg))
 
     now = datetime.now(timezone.utc)
     changed = []
+    blocked = []
+    blocked_state = []
     deleted_files = []
 
+    guard_ok = True
+    guard_reason = "disabled"
+    guard_details = {}
+    if args.require_training_success:
+        guard_ok, guard_reason, guard_details = check_confirmed_training_success(
+            project_root=str(PROJECT_ROOT),
+            marker_path=str(args.training_success_file),
+            scorecard_path=str(args.training_scorecard_file),
+            max_age_hours=float(args.max_training_age_hours),
+            require_master_update=True,
+            min_trained_bots=1,
+        )
+
+    candidates = []
     for row in reg.get("sub_bots", []):
         streak = int(row.get("no_improvement_streak", 0) or 0)
         already_deleted = bool(row.get("deleted_from_rotation", False))
@@ -42,19 +101,48 @@ def main() -> int:
             continue
 
         reason = row.get("delete_reason") or f"deleted_no_improvement_{args.min_streak}_retrainings"
+        candidates.append(
+            {
+                "row": row,
+                "bot_id": row.get("bot_id"),
+                "streak": streak,
+                "reason": reason,
+            }
+        )
+
+    for c in candidates:
+        row = c["row"]
+        bot_id = c["bot_id"]
+        reason = str(c["reason"])
+        streak = int(c["streak"])
+
+        state_ok, state_reason, state_details = check_registry_row_state_before_deletion(
+            row,
+            min_streak=int(args.min_streak),
+        )
+        if not state_ok:
+            blocked_state.append(
+                {
+                    "bot_id": bot_id,
+                    "streak": streak,
+                    "reason": reason,
+                    "state_reason": state_reason,
+                    "state_details": state_details,
+                }
+            )
+            continue
+
+        if args.require_training_success and (not guard_ok):
+            blocked.append({"bot_id": bot_id, "streak": streak, "reason": reason, "guard_reason": guard_reason})
+            continue
+
         row["deleted_from_rotation"] = True
         row["delete_reason"] = reason
         row["active"] = False
         row["weight"] = 0.0
         row["reason"] = reason
 
-        changed.append(
-            {
-                "bot_id": row.get("bot_id"),
-                "streak": streak,
-                "reason": reason,
-            }
-        )
+        changed.append({"bot_id": bot_id, "streak": streak, "reason": reason})
 
         if args.delete_artifacts:
             for key in ("model_path", "log_file"):
@@ -67,21 +155,54 @@ def main() -> int:
         "timestamp_utc": now.isoformat(),
         "apply": bool(args.apply),
         "min_streak": int(args.min_streak),
+        "candidate_count": len(candidates),
         "changed_count": len(changed),
         "changed": changed,
+        "blocked_count": len(blocked),
+        "blocked": blocked,
+        "blocked_state_count": len(blocked_state),
+        "blocked_state": blocked_state,
         "deleted_files_count": len(deleted_files),
         "deleted_files": deleted_files,
+        "deletion_guard": {
+            "required": bool(args.require_training_success),
+            "ok": bool(guard_ok),
+            "reason": guard_reason,
+            "details": guard_details,
+        },
     }
 
     audit_dir = PROJECT_ROOT / "governance" / "audits"
     audit_dir.mkdir(parents=True, exist_ok=True)
     latest_path = audit_dir / "underperformer_prune_latest.json"
 
-    if args.apply:
-        backup = reg_path.with_name(f"master_bot_registry.backup_{now.strftime("%Y%m%d_%H%M%S")}.json")
-        backup.write_text(json.dumps(reg, indent=2), encoding="utf-8")
+    apply_blocked = bool(args.apply and args.require_training_success and (not guard_ok) and len(candidates) > 0)
+    out["apply_blocked"] = apply_blocked
+
+    if args.apply and (not apply_blocked):
+        backup = reg_path.with_name(f"master_bot_registry.backup_{now.strftime('%Y%m%d_%H%M%S')}.json")
+        backup.write_text(json.dumps(original_reg, indent=2), encoding="utf-8")
         reg_path.write_text(json.dumps(reg, indent=2), encoding="utf-8")
-        latest_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
+        try:
+            write_registry_mutation_journal(
+                project_root=str(PROJECT_ROOT),
+                actor="prune_underperformers",
+                reason=f"apply_min_streak_{int(args.min_streak)}",
+                before=original_reg if isinstance(original_reg, dict) else {},
+                after=reg if isinstance(reg, dict) else {},
+                extra={
+                    "apply": bool(args.apply),
+                    "apply_blocked": bool(apply_blocked),
+                    "changed_count": len(changed),
+                    "blocked_count": len(blocked),
+                    "blocked_state_count": len(blocked_state),
+                    "backup_path": str(backup),
+                },
+            )
+        except Exception:
+            pass
+
+    out["audit_file"] = _safe_write_json(latest_path, out)
 
     print(json.dumps(out, indent=2))
     return 0

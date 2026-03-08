@@ -12,7 +12,7 @@ KEEP_N="$SNAPSHOT_DRILLS_KEEP"
 [[ "$KEEP_N" =~ ^[0-9]+$ ]] || KEEP_N=5
 
 # Newest-first run directories based on lexicographic timestamp folder names.
-RUN_DIRS=( ${(f)$(find "$TARGET_DIR" -mindepth 1 -maxdepth 1 -type d -print | sort -r)} )
+RUN_DIRS=( ${(f)"$(find "$TARGET_DIR" -mindepth 1 -maxdepth 1 -type d -print | sort -r)"} )
 COUNT=${#RUN_DIRS[@]}
 
 if (( COUNT > KEEP_N )); then

@@ -7,6 +7,9 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
+from core.training_guard import check_confirmed_training_success, check_registry_row_state_before_deletion
+from core.accountability import write_registry_mutation_journal
+
 
 TIMESTAMP_SUFFIX_RE = re.compile(r"_\d{8}_\d{6}$")
 
@@ -89,6 +92,20 @@ class MasterBot:
         self.trading_quality_weight = min(max(float(os.getenv("MASTER_TRADING_QUALITY_WEIGHT", "0.35")), 0.0), 0.8)
         self.freeze_bot_count_enabled = os.getenv("MASTER_FREEZE_BOT_COUNT", "1").strip() == "1"
         self.strict_live_pass_only = os.getenv("MASTER_STRICT_LIVE_PASS_ONLY", "1").strip() == "1"
+        self.require_confirmed_training_success = os.getenv("REQUIRE_CONFIRMED_TRAINING_SUCCESS", "1").strip() == "1"
+        self.confirmed_training_success_max_age_hours = float(os.getenv("CONFIRMED_TRAINING_SUCCESS_MAX_AGE_HOURS", "72"))
+        self.training_success_file = os.getenv(
+            "TRAINING_SUCCESS_FILE",
+            os.path.join(self.project_root, "governance", "health", "training_success_latest.json"),
+        )
+        self.training_scorecard_file = os.getenv(
+            "TRAINING_SCORECARD_FILE",
+            os.path.join(self.project_root, "governance", "health", "retrain_scorecard_latest.json"),
+        )
+        self.deletion_guard_ok = True
+        self.deletion_guard_reason = "disabled"
+        self.deletion_guard_details: Dict[str, object] = {}
+        self._refresh_deletion_guard()
 
         self.prev_accuracy_by_bot = self._load_previous_accuracy_map()
         self.prev_best_accuracy_by_bot = self._load_previous_best_accuracy_map()
@@ -99,6 +116,7 @@ class MasterBot:
         self.correlation_map = self._load_decision_correlation_map()
 
     def train_from_outcomes(self) -> Dict[str, object]:
+        self._refresh_deletion_guard()
         outcomes = self._load_outcomes()
         statuses = self._evaluate_statuses(outcomes)
         statuses = self._enforce_bucket_diversity(statuses)
@@ -108,6 +126,7 @@ class MasterBot:
         statuses = self._assign_weights(statuses)
         payload = self._build_registry_payload(statuses)
         self._save_registry(payload)
+        self._write_deletion_guard_audit(statuses)
         return payload
 
     def _load_outcomes(self) -> List[BotOutcome]:
@@ -161,9 +180,10 @@ class MasterBot:
 
         out: Dict[str, Dict[str, object]] = {}
         for row in prev.get("sub_bots", []):
-            bot_id = str(row.get("bot_id", "")).strip()
+            normalized = self._normalize_registry_row(row if isinstance(row, dict) else {})
+            bot_id = str(normalized.get("bot_id", "")).strip()
             if bot_id:
-                out[bot_id] = row
+                out[bot_id] = normalized
         return out
 
     def _load_previous_accuracy_map(self) -> Dict[str, float]:
@@ -346,6 +366,77 @@ class MasterBot:
             return "trend"
         return "signal_other"
 
+    @staticmethod
+    def _is_manual_quarantine(status: BotStatus) -> bool:
+        marker = "active_streak_cap_quarantine_manual_"
+        delete_reason = str(status.delete_reason or "")
+        reason = str(status.reason or "")
+        return delete_reason.startswith(marker) or reason.startswith(marker)
+
+    def _rotation_override_eligible(self, status: BotStatus) -> bool:
+        if self._is_manual_quarantine(status):
+            return False
+        if status.deleted_from_rotation:
+            return False
+
+        reason = str(status.reason or "")
+        if reason.startswith("graduation_hold:"):
+            return False
+        if reason.startswith("walk_forward_"):
+            return False
+        if reason.startswith("trading_quality_below_"):
+            return False
+        if reason.startswith("accuracy_below_"):
+            return False
+        if self.freeze_bot_count_enabled and reason.startswith("frozen_new_bot_count"):
+            return False
+
+        wf = self.walk_forward_map.get(status.bot_id, {})
+        if not isinstance(wf, dict) or not wf:
+            return False
+
+        runs = self._as_int(wf.get("runs"), 0)
+        if runs < max(self.graduation_min_runs, 12):
+            return False
+
+        wf_status = str(wf.get("status") or "").strip().lower()
+        if wf_status != "pass":
+            return False
+
+        wf_forward = self._as_float(wf.get("forward_mean"))
+        if wf_forward is None or wf_forward < max(self.walk_forward_min_forward_mean, self.graduation_min_forward_mean):
+            return False
+
+        wf_delta = self._as_float(wf.get("delta"))
+        if wf_delta is None or wf_delta < self.graduation_min_delta:
+            return False
+
+        wf_tq = self._as_float(wf.get("trading_quality_score"))
+        if wf_tq is not None and wf_tq < self.min_trading_quality_score:
+            return False
+
+        return True
+
+    @staticmethod
+    def _normalized_lifecycle_state(active: bool, deleted_from_rotation: bool) -> str:
+        if deleted_from_rotation:
+            return "deleted"
+        if active:
+            return "active"
+        return "inactive"
+
+    @classmethod
+    def _normalize_registry_row(cls, row: Dict[str, object]) -> Dict[str, object]:
+        normalized = dict(row or {})
+        deleted_from_rotation = bool(normalized.get("deleted_from_rotation", False))
+        active = bool(normalized.get("active", False)) and (not deleted_from_rotation)
+        normalized["deleted_from_rotation"] = deleted_from_rotation
+        normalized["active"] = active
+        normalized["lifecycle_state"] = cls._normalized_lifecycle_state(active, deleted_from_rotation)
+        if deleted_from_rotation:
+            normalized["weight"] = 0.0
+        return normalized
+
     def _enforce_bucket_diversity(self, statuses: List[BotStatus]) -> List[BotStatus]:
         bucket_min = {
             "trend": 3,
@@ -363,7 +454,14 @@ class MasterBot:
             if len(active) >= need:
                 continue
             candidates = sorted(
-                [x for x in by_bucket.get(bucket, []) if not x.active and x.candidate_test_accuracy is not None],
+                [
+                    x
+                    for x in by_bucket.get(bucket, [])
+                    if (not x.active)
+                    and (not x.deleted_from_rotation)
+                    and (x.candidate_test_accuracy is not None)
+                    and self._rotation_override_eligible(x)
+                ],
                 key=lambda x: (x.candidate_quality_score, x.candidate_test_accuracy or 0.0),
                 reverse=True,
             )
@@ -569,9 +667,28 @@ class MasterBot:
                 reason = f"trading_quality_below_{self.min_trading_quality_score:.2f}"
             elif streak >= self.no_improvement_retire_streak and not improved:
                 active = False
-                deleted_from_rotation = True
-                delete_reason = f"deleted_no_improvement_{self.no_improvement_retire_streak}_retrainings"
-                reason = delete_reason
+                state_ok, state_reason, _state_details = check_registry_row_state_before_deletion(
+                    {
+                        "bot_id": o.bot_id,
+                        "active": bool(prev_row.get("active", False)),
+                        "deleted_from_rotation": bool(prev_row.get("deleted_from_rotation", False)),
+                        "lifecycle_state": str(prev_row.get("lifecycle_state") or ""),
+                        "no_improvement_streak": streak,
+                    },
+                    min_streak=self.no_improvement_retire_streak,
+                )
+                if not state_ok:
+                    deleted_from_rotation = False
+                    delete_reason = ""
+                    reason = f"deletion_blocked_state:{state_reason}"
+                elif self.deletion_guard_ok:
+                    deleted_from_rotation = True
+                    delete_reason = f"deleted_no_improvement_{self.no_improvement_retire_streak}_retrainings"
+                    reason = delete_reason
+                else:
+                    deleted_from_rotation = False
+                    delete_reason = ""
+                    reason = f"deletion_blocked_pending_training_success:{self.deletion_guard_reason}"
             elif prev_acc is not None and effective_acc < (prev_acc - self.decay_guard_drop):
                 active = False
                 reason = f"decay_guard_drop_{self.decay_guard_drop:.2f}"
@@ -622,16 +739,6 @@ class MasterBot:
             acc = s.candidate_test_accuracy if s.candidate_test_accuracy is not None else -1.0
             return (s.candidate_quality_score, acc, s.quality_score)
 
-        def _eligible_for_floor_override(s: BotStatus) -> bool:
-            reason = str(s.reason or "")
-            if reason.startswith("graduation_hold:"):
-                return False
-            if self.strict_live_pass_only and reason.startswith("walk_forward_"):
-                return False
-            if self.freeze_bot_count_enabled and reason.startswith("frozen_new_bot_count"):
-                return False
-            return True
-
         candidates = sorted(
             [
                 s
@@ -639,21 +746,7 @@ class MasterBot:
                 if (not s.active)
                 and (not s.deleted_from_rotation)
                 and (s.candidate_test_accuracy is not None)
-                and _eligible_for_floor_override(s)
-            ],
-            key=rank_key,
-            reverse=True,
-        )
-
-        revived_deleted = sorted(
-            [
-                s
-                for s in statuses
-                if (not s.active)
-                and s.deleted_from_rotation
-                and (s.candidate_test_accuracy is not None)
-                and (not str(s.delete_reason or "").startswith("active_streak_cap_"))
-                and _eligible_for_floor_override(s)
+                and self._rotation_override_eligible(s)
             ],
             key=rank_key,
             reverse=True,
@@ -664,12 +757,6 @@ class MasterBot:
             if len(promoted) >= needed:
                 break
             promoted.append(st)
-
-        if len(promoted) < needed:
-            for st in revived_deleted:
-                if len(promoted) >= needed:
-                    break
-                promoted.append(st)
 
         for st in promoted:
             st.active = True
@@ -684,10 +771,11 @@ class MasterBot:
 
         return statuses
 
-
     def _enforce_active_streak_cap(self, statuses: List[BotStatus]) -> List[BotStatus]:
         cap = self.max_active_no_improvement_streak
         if cap <= 0:
+            return statuses
+        if not self.deletion_guard_ok:
             return statuses
 
         active_now = [s for s in statuses if s.active]
@@ -766,11 +854,15 @@ class MasterBot:
         return statuses
 
     def _build_registry_payload(self, statuses: List[BotStatus]) -> Dict[str, object]:
-        active_count = sum(1 for s in statuses if s.active)
-        inactive_count = len(statuses) - active_count
-        deleted_count = sum(1 for s in statuses if s.deleted_from_rotation)
+        rows: List[Dict[str, object]] = []
+        for status in sorted(statuses, key=lambda x: x.bot_id):
+            rows.append(self._normalize_registry_row(asdict(status)))
 
-        top_active = sorted([s for s in statuses if s.active], key=lambda x: x.weight, reverse=True)
+        active_rows = [row for row in rows if bool(row.get("active", False))]
+        active_count = len(active_rows)
+        inactive_count = len(rows) - active_count
+        deleted_count = sum(1 for row in rows if bool(row.get("deleted_from_rotation", False)))
+        top_active = sorted(active_rows, key=lambda x: float(x.get("weight") or 0.0), reverse=True)
 
         return {
             "updated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -792,6 +884,8 @@ class MasterBot:
                 "trading_quality_weight": self.trading_quality_weight,
                 "freeze_bot_count_enabled": self.freeze_bot_count_enabled,
                 "strict_live_pass_only": self.strict_live_pass_only,
+                "require_confirmed_training_success": self.require_confirmed_training_success,
+                "confirmed_training_success_max_age_hours": self.confirmed_training_success_max_age_hours,
                 "quality_score_formula": {
                     "accuracy_weight": 0.65,
                     "val_f1_weight": 0.25,
@@ -799,33 +893,119 @@ class MasterBot:
                 },
             },
             "summary": {
-                "total_bots": len(statuses),
+                "total_bots": len(rows),
                 "active_bots": active_count,
                 "inactive_bots": inactive_count,
                 "deleted_from_rotation": deleted_count,
-                "active_signal_sub_bots": sum(1 for s in statuses if s.active and s.bot_role == "signal_sub_bot"),
-                "active_infrastructure_sub_bots": sum(1 for s in statuses if s.active and s.bot_role == "infrastructure_sub_bot"),
-                "inactive_signal_sub_bots": sum(1 for s in statuses if (not s.active) and s.bot_role == "signal_sub_bot"),
-                "inactive_infrastructure_sub_bots": sum(1 for s in statuses if (not s.active) and s.bot_role == "infrastructure_sub_bot"),
-                "promoted_models": sum(1 for s in statuses if s.promoted),
-                "held_previous_models": sum(1 for s in statuses if not s.promoted),
+                "active_signal_sub_bots": sum(1 for row in rows if bool(row.get("active", False)) and row.get("bot_role") == "signal_sub_bot"),
+                "active_infrastructure_sub_bots": sum(1 for row in rows if bool(row.get("active", False)) and row.get("bot_role") == "infrastructure_sub_bot"),
+                "inactive_signal_sub_bots": sum(1 for row in rows if (not bool(row.get("active", False))) and row.get("bot_role") == "signal_sub_bot"),
+                "inactive_infrastructure_sub_bots": sum(1 for row in rows if (not bool(row.get("active", False))) and row.get("bot_role") == "infrastructure_sub_bot"),
+                "promoted_models": sum(1 for row in rows if bool(row.get("promoted", False))),
+                "held_previous_models": sum(1 for row in rows if not bool(row.get("promoted", False))),
+                "deletion_guard_ok": bool(self.deletion_guard_ok),
+                "deletion_guard_reason": self.deletion_guard_reason,
                 "top_active": [
                     {
-                        "bot_id": s.bot_id,
-                        "bot_role": s.bot_role,
-                        "weight": round(s.weight, 6),
-                        "test_accuracy": s.test_accuracy,
-                        "quality_score": round(s.quality_score, 6),
+                        "bot_id": row.get("bot_id"),
+                        "bot_role": row.get("bot_role"),
+                        "weight": round(float(row.get("weight") or 0.0), 6),
+                        "test_accuracy": row.get("test_accuracy"),
+                        "quality_score": round(float(row.get("quality_score") or 0.0), 6),
                     }
-                    for s in top_active[:5]
+                    for row in top_active[:5]
                 ],
             },
-            "sub_bots": [asdict(s) for s in sorted(statuses, key=lambda x: x.bot_id)],
+            "sub_bots": rows,
         }
 
     def _save_registry(self, payload: Dict[str, object]) -> None:
+        before: Dict[str, object] = {}
+        if os.path.exists(self.registry_path):
+            try:
+                with open(self.registry_path, "r", encoding="utf-8") as f:
+                    obj = json.load(f)
+                before = obj if isinstance(obj, dict) else {}
+            except Exception:
+                before = {}
+
         with open(self.registry_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
+
+        try:
+            write_registry_mutation_journal(
+                project_root=self.project_root,
+                actor="master_bot",
+                reason="registry_refresh",
+                before=before,
+                after=payload if isinstance(payload, dict) else {},
+                extra={
+                    "registry_path": self.registry_path,
+                },
+            )
+        except Exception:
+            pass
+
+    def _refresh_deletion_guard(self) -> None:
+        if not self.require_confirmed_training_success:
+            self.deletion_guard_ok = True
+            self.deletion_guard_reason = "disabled"
+            self.deletion_guard_details = {}
+            return
+
+        try:
+            ok, reason, details = check_confirmed_training_success(
+                project_root=self.project_root,
+                marker_path=self.training_success_file,
+                scorecard_path=self.training_scorecard_file,
+                max_age_hours=self.confirmed_training_success_max_age_hours,
+                require_master_update=True,
+                min_trained_bots=1,
+            )
+            self.deletion_guard_ok = bool(ok)
+            self.deletion_guard_reason = str(reason)
+            self.deletion_guard_details = details if isinstance(details, dict) else {}
+        except Exception as exc:
+            self.deletion_guard_ok = False
+            self.deletion_guard_reason = f"guard_error:{type(exc).__name__}"
+            self.deletion_guard_details = {"error": str(exc)}
+
+    @staticmethod
+    def _lifecycle_state(status: BotStatus) -> str:
+        return MasterBot._normalized_lifecycle_state(
+            bool(status.active and (not status.deleted_from_rotation)),
+            bool(status.deleted_from_rotation),
+        )
+
+    def _write_deletion_guard_audit(self, statuses: List[BotStatus]) -> None:
+        try:
+            audit_dir = os.path.join(self.project_root, "governance", "audits")
+            os.makedirs(audit_dir, exist_ok=True)
+            now = datetime.now(timezone.utc)
+            blocked = [
+                {
+                    "bot_id": s.bot_id,
+                    "reason": s.reason,
+                    "no_improvement_streak": s.no_improvement_streak,
+                }
+                for s in statuses
+                if str(s.reason or "").startswith("deletion_blocked_pending_training_success:")
+            ]
+            payload = {
+                "timestamp_utc": now.isoformat(),
+                "guard_required": bool(self.require_confirmed_training_success),
+                "guard_ok": bool(self.deletion_guard_ok),
+                "guard_reason": self.deletion_guard_reason,
+                "guard_details": self.deletion_guard_details,
+                "blocked_deletion_count": len(blocked),
+                "blocked_deletions": blocked[:20],
+                "deleted_from_rotation_count": sum(1 for s in statuses if s.deleted_from_rotation),
+            }
+            latest = os.path.join(audit_dir, "deletion_guard_latest.json")
+            with open(latest, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=True, indent=2)
+        except Exception:
+            return
 
     def _quality_score(
         self,
@@ -879,6 +1059,31 @@ class MasterBot:
     @staticmethod
     def _infer_bot_role(bot_id: str) -> str:
         name = bot_id.lower()
+
+        options_tokens = (
+            "options",
+            "greek",
+            "iv",
+            "put_call",
+            "vol_surface",
+            "skew",
+            "term_structure",
+            "calendar_spread",
+            "diagonal",
+        )
+        futures_tokens = (
+            "futures",
+            "funding",
+            "basis",
+            "order_book",
+            "open_interest",
+            "roll_yield",
+        )
+        if any(tok in name for tok in options_tokens):
+            return "options_sub_bot"
+        if any(tok in name for tok in futures_tokens):
+            return "futures_sub_bot"
+
         infra_tokens = (
             "layer",
             "sentinel",
@@ -915,6 +1120,13 @@ class MasterBot:
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _as_int(value, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return int(default)
 
     @staticmethod
     def _extract_bot_id_from_name(name: str) -> str:

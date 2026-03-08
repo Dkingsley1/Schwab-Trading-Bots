@@ -4,8 +4,9 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PY="$PROJECT_ROOT/.venv312/bin/python"
 AGENTS_DIR="$HOME/Library/LaunchAgents"
-LOG_DIR="$PROJECT_ROOT/logs"
-mkdir -p "$AGENTS_DIR" "$LOG_DIR"
+LOG_DIR="/tmp"
+UID_NUM="$(id -u)"
+mkdir -p "$AGENTS_DIR"
 
 WATCHDOG_PLIST="$AGENTS_DIR/com.dankingsley.ops.watchdog.plist"
 REPORT_PLIST="$AGENTS_DIR/com.dankingsley.ops.daily_report.plist"
@@ -83,10 +84,20 @@ cat > "$PROMO_PLIST" <<PLIST
 </dict></plist>
 PLIST
 
-for p in "$WATCHDOG_PLIST" "$REPORT_PLIST" "$CANARY_PLIST" "$SQL_PLIST" "$PROMO_PLIST"; do
-  launchctl unload "$p" >/dev/null 2>&1 || true
-  launchctl load "$p"
-  echo "Installed: $p"
-done
+install_job() {
+  local label="$1"
+  local plist="$2"
+  launchctl bootout "gui/$UID_NUM" "$plist" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/$UID_NUM" "$plist"
+  launchctl enable "gui/$UID_NUM/$label" || true
+  launchctl kickstart -k "gui/$UID_NUM/$label" || true
+  echo "Installed: $plist"
+}
+
+install_job "com.dankingsley.ops.watchdog" "$WATCHDOG_PLIST"
+install_job "com.dankingsley.ops.daily_report" "$REPORT_PLIST"
+install_job "com.dankingsley.ops.canary_tuner" "$CANARY_PLIST"
+install_job "com.dankingsley.ops.sql_link_writer" "$SQL_PLIST"
+install_job "com.dankingsley.ops.promotion_pipeline" "$PROMO_PLIST"
 
 echo "Ops automations installed."

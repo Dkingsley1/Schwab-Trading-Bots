@@ -16,3 +16,6 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ## Notes
 - Use `COMMANDS.md` as the source of truth for launch/retrain/floor/SQL commands.
 - If command behavior changes, update `COMMANDS.md` first.
+
+## Data Sources
+- Ingestion source catalog + key requirements: `/Users/dankingsley/PycharmProjects/schwab_trading_bot/DATA_INGESTION_SOURCES.md`

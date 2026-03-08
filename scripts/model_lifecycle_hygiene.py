@@ -23,8 +23,11 @@ def _mtime_iso(path: Path) -> str | None:
 
 def _collect_backups(root: Path) -> list[Path]:
     out: list[Path] = []
-    out.extend(sorted((root / "governance").glob("master_bot_registry.backup_*.json")))
+    out.extend(sorted(root.glob("master_bot_registry.backup*.json")))
+    out.extend(sorted(root.glob("registry_backup_before_retrain*.json")))
+    out.extend(sorted((root / "governance").glob("master_bot_registry.backup*.json")))
     out.extend(sorted((root / "governance").glob("registry_backup_before_retrain*.json")))
+    out.extend(sorted((root / "governance" / "lifecycle").glob("master_bot_registry.repair_backup_*.json")))
     # de-dup while preserving order
     seen = set()
     uniq: list[Path] = []
@@ -36,6 +39,30 @@ def _collect_backups(root: Path) -> list[Path]:
     return uniq
 
 
+def _as_path(value: object) -> Path | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return Path(text)
+
+
+def _mtime_value(path: Path) -> float:
+    try:
+        return float(path.stat().st_mtime)
+    except Exception:
+        return 0.0
+
+
+def _latest_artifact_for_bot(base: Path, bot_id: str, suffix: str) -> Path | None:
+    if not bot_id or (not base.exists()):
+        return None
+    rows = [p for p in base.glob(f"{bot_id}_*{suffix}") if p.is_file()]
+    if not rows:
+        return None
+    rows.sort(key=_mtime_value, reverse=True)
+    return rows[0]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Model lifecycle hygiene checks, manifest, and backup maintenance.")
     parser.add_argument("--registry", default=str(PROJECT_ROOT / "master_bot_registry.json"))
@@ -44,6 +71,8 @@ def main() -> int:
     parser.add_argument("--update-last-known-good", action="store_true")
     parser.add_argument("--min-free-gb", type=float, default=10.0)
     parser.add_argument("--max-missing-active-artifacts", type=int, default=2)
+    parser.add_argument("--repair-stale-artifacts", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--apply-repair", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--out-file", default=str(PROJECT_ROOT / "governance" / "lifecycle" / "model_lifecycle_latest.json"))
     parser.add_argument("--manifest-file", default=str(PROJECT_ROOT / "governance" / "lifecycle" / "model_manifest_latest.json"))
     parser.add_argument("--json", action="store_true")
@@ -56,13 +85,45 @@ def main() -> int:
     active_rows = [r for r in sub_bots if isinstance(r, dict) and bool(r.get("active", False))]
     missing_active = []
     manifest_rows = []
+    repaired_rows = []
 
     for row in active_rows:
         bot_id = str(row.get("bot_id", "")).strip()
-        model_path = Path(str(row.get("model_path") or ""))
-        log_path = Path(str(row.get("log_file") or ""))
-        model_ok = model_path.exists()
-        log_ok = log_path.exists()
+        model_path = _as_path(row.get("model_path"))
+        log_path = _as_path(row.get("log_file"))
+        model_ok = bool(model_path and model_path.exists())
+        log_ok = bool(log_path and log_path.exists())
+
+        original_model_path = str(model_path) if model_path is not None else ""
+        original_log_path = str(log_path) if log_path is not None else ""
+        row_repairs: dict[str, str] = {}
+
+        if args.repair_stale_artifacts:
+            if not model_ok:
+                repaired_model = _latest_artifact_for_bot(PROJECT_ROOT / "models", bot_id, ".npz")
+                if repaired_model is not None:
+                    row["model_path"] = str(repaired_model)
+                    model_path = repaired_model
+                    model_ok = True
+                    row_repairs["model_path"] = str(repaired_model)
+            if not log_ok:
+                repaired_log = _latest_artifact_for_bot(PROJECT_ROOT / "logs", bot_id, ".json")
+                if repaired_log is not None:
+                    row["log_file"] = str(repaired_log)
+                    log_path = repaired_log
+                    log_ok = True
+                    row_repairs["log_file"] = str(repaired_log)
+
+        if row_repairs:
+            repaired_rows.append(
+                {
+                    "bot_id": bot_id,
+                    "from_model_path": original_model_path,
+                    "from_log_path": original_log_path,
+                    "to_model_path": row_repairs.get("model_path", original_model_path),
+                    "to_log_path": row_repairs.get("log_file", original_log_path),
+                }
+            )
 
         if not model_ok or not log_ok:
             missing_active.append(
@@ -70,18 +131,18 @@ def main() -> int:
                     "bot_id": bot_id,
                     "model_exists": bool(model_ok),
                     "log_exists": bool(log_ok),
-                    "model_path": str(model_path),
-                    "log_path": str(log_path),
+                    "model_path": str(model_path) if model_path is not None else "",
+                    "log_path": str(log_path) if log_path is not None else "",
                 }
             )
 
         manifest_rows.append(
             {
                 "bot_id": bot_id,
-                "model_path": str(model_path),
-                "model_mtime_utc": _mtime_iso(model_path) if model_ok else None,
-                "log_path": str(log_path),
-                "log_mtime_utc": _mtime_iso(log_path) if log_ok else None,
+                "model_path": str(model_path) if model_path is not None else "",
+                "model_mtime_utc": _mtime_iso(model_path) if model_ok and model_path is not None else None,
+                "log_path": str(log_path) if log_path is not None else "",
+                "log_mtime_utc": _mtime_iso(log_path) if log_ok and log_path is not None else None,
                 "quality_score": float(row.get("quality_score", 0.0) or 0.0),
                 "test_accuracy": row.get("test_accuracy"),
             }
@@ -103,6 +164,21 @@ def main() -> int:
 
     lifecycle_dir = PROJECT_ROOT / "governance" / "lifecycle"
     lifecycle_dir.mkdir(parents=True, exist_ok=True)
+
+    repair_backup_file = None
+    repair_error = None
+    registry_updated = False
+    if args.repair_stale_artifacts and args.apply_repair and repaired_rows and isinstance(reg, dict):
+        try:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            if registry_path.exists():
+                backup_path = lifecycle_dir / f"master_bot_registry.repair_backup_{stamp}.json"
+                backup_path.write_text(registry_path.read_text(encoding="utf-8"), encoding="utf-8")
+                repair_backup_file = str(backup_path)
+            registry_path.write_text(json.dumps(reg, ensure_ascii=True, indent=2), encoding="utf-8")
+            registry_updated = True
+        except Exception as exc:
+            repair_error = str(exc)
 
     if args.update_last_known_good and registry_path.exists():
         lk = lifecycle_dir / "registry_last_known_good.json"
@@ -132,6 +208,15 @@ def main() -> int:
         "backup_files": len(backups),
         "pruned_backups": pruned,
         "manifest_file": str(Path(args.manifest_file)),
+        "repair": {
+            "enabled": bool(args.repair_stale_artifacts),
+            "apply": bool(args.apply_repair),
+            "fixed_count": len(repaired_rows),
+            "registry_updated": bool(registry_updated),
+            "backup_file": repair_backup_file,
+            "error": repair_error,
+            "examples": repaired_rows[:40],
+        },
     }
 
     out = Path(args.out_file)

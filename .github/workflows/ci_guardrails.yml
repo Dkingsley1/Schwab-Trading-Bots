@@ -1,0 +1,121 @@
+name: CI Guardrails
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  guardrails:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Python compile checks
+        run: |
+          python -m py_compile \
+            scripts/secret_scan.py \
+            scripts/dependency_guard.py \
+            scripts/global_risk_killswitch.py \
+            scripts/walk_forward_validate.py \
+            scripts/walk_forward_promotion_gate.py \
+            scripts/run_master_bot.py \
+            scripts/weekly_retrain.py \
+            scripts/daily_auto_verify.py \
+            scripts/promotion_readiness_summary.py \
+            scripts/canary_diagnostics_loop.py \
+            scripts/retire_persistent_losers.py \
+            scripts/promotion_bottleneck_focus.py \
+            scripts/new_bot_graduation_gate.py \
+            scripts/leak_overfit_guard.py \
+            scripts/model_lifecycle_hygiene.py \
+            scripts/weekly_gate_blocker_report.py
+
+      - name: CLI smoke (help)
+        run: |
+          python scripts/run_master_bot.py --help >/dev/null
+          python scripts/weekly_retrain.py --help >/dev/null
+          python scripts/daily_auto_verify.py --help >/dev/null
+          python scripts/walk_forward_validate.py --help >/dev/null
+          python scripts/walk_forward_promotion_gate.py --help >/dev/null
+          python scripts/new_bot_graduation_gate.py --help >/dev/null
+          python scripts/leak_overfit_guard.py --help >/dev/null
+          python scripts/model_lifecycle_hygiene.py --help >/dev/null
+          python scripts/weekly_gate_blocker_report.py --help >/dev/null
+
+      - name: Gate smoke fixtures
+        run: |
+          cat > /tmp/walk_forward_fixture.json <<'JSON'
+          {
+            "timestamp_utc": "2026-02-25T00:00:00+00:00",
+            "bots": {
+              "brain_refinery_v10_seasonal": {
+                "runs": 30,
+                "train_mean": 0.58,
+                "forward_mean": 0.57,
+                "delta": -0.01,
+                "trading_quality_score": 0.61,
+                "overfit_gap": 0.01,
+                "status": "pass"
+              },
+              "brain_refinery_v21_flash_crash": {
+                "runs": 28,
+                "train_mean": 0.56,
+                "forward_mean": 0.55,
+                "delta": -0.01,
+                "trading_quality_score": 0.59,
+                "overfit_gap": 0.01,
+                "status": "pass"
+              }
+            }
+          }
+          JSON
+
+          cat > /tmp/registry_fixture.json <<'JSON'
+          {
+            "sub_bots": [
+              {"bot_id": "brain_refinery_v10_seasonal", "active": true, "model_path": "/tmp/m1.npz", "log_file": "/tmp/l1.json", "quality_score": 0.6, "test_accuracy": 0.57},
+              {"bot_id": "brain_refinery_v21_flash_crash", "active": true, "model_path": "/tmp/m2.npz", "log_file": "/tmp/l2.json", "quality_score": 0.6, "test_accuracy": 0.55}
+            ]
+          }
+          JSON
+
+          touch /tmp/m1.npz /tmp/m2.npz /tmp/l1.json /tmp/l2.json
+
+          python scripts/walk_forward_promotion_gate.py \
+            --in-file /tmp/walk_forward_fixture.json \
+            --out-file /tmp/promotion_gate_fixture.json \
+            --min-runs-per-bot 6 \
+            --min-forward-mean 0.50 \
+            --min-delta -0.05 \
+            --min-trading-quality-score 0.40 \
+            --max-fail-share 0.5
+
+          python scripts/new_bot_graduation_gate.py \
+            --registry /tmp/registry_fixture.json \
+            --walk-forward-file /tmp/walk_forward_fixture.json \
+            --min-runs 6 \
+            --min-forward-mean 0.50 \
+            --min-delta -0.05 \
+            --min-mature-bots 1 \
+            --max-immature-active 0 \
+            --out-file /tmp/new_bot_graduation_fixture.json
+
+          python scripts/leak_overfit_guard.py \
+            --walk-forward-file /tmp/walk_forward_fixture.json \
+            --max-overfit-offenders 10 \
+            --max-leak-offenders 10 \
+            --out-file /tmp/leak_overfit_fixture.json
+
+      - name: Secret scan
+        run: |
+          python scripts/secret_scan.py
+
+      - name: Dependency guard (non-blocking snapshot in CI)
+        run: |
+          python scripts/dependency_guard.py || true

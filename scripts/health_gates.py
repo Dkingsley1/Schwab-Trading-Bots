@@ -36,12 +36,41 @@ def _latest_match(root: Path, pattern: str) -> Path:
     return files[-1]
 
 
+def _as_bool(raw: str, default: bool = True) -> bool:
+    text = str(raw or '').strip().lower()
+    if not text:
+        return bool(default)
+    return text in {'1', 'true', 'yes', 'on'}
+
+
+def _to_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _to_int(value, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except Exception:
+        return int(default)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description='Compute single health score and hard gate flags.')
     parser.add_argument('--project-root', default=str(PROJECT_ROOT))
     parser.add_argument('--stale-window-limit', type=int, default=int(os.getenv('HEALTH_GATE_STALE_WINDOW_LIMIT', '0')))
     parser.add_argument('--blocked-rate-limit', type=float, default=float(os.getenv('HEALTH_GATE_BLOCKED_RATE_LIMIT', '0.30')))
     parser.add_argument('--watchdog-restarts-limit', type=int, default=int(os.getenv('HEALTH_GATE_WATCHDOG_RESTARTS_LIMIT', '3')))
+    parser.add_argument('--ingestion-pending-lines-limit', type=int, default=int(os.getenv('HEALTH_GATE_INGEST_PENDING_LINES_LIMIT', '20000')))
+    parser.add_argument('--ingestion-oldest-age-seconds-limit', type=int, default=int(os.getenv('HEALTH_GATE_INGEST_OLDEST_AGE_SECONDS_LIMIT', '600')))
+    parser.add_argument('--ingestion-invalid-lines-limit', type=int, default=int(os.getenv('HEALTH_GATE_INGEST_INVALID_LINES_LIMIT', '10')))
+    parser.add_argument(
+        '--ingestion-backpressure-overload-fails',
+        action='store_true',
+        default=_as_bool(os.getenv('HEALTH_GATE_INGEST_BACKPRESSURE_OVERLOAD_FAILS', '1')),
+    )
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args()
 
@@ -69,19 +98,62 @@ def main() -> int:
             if daily_summary:
                 daily_summary_source = str(latest_daily)
 
+    ingestion_health_paths = [
+        project_root / 'governance' / 'health' / 'jsonl_sql_ingestion_health_latest.json',
+    ]
+    ingestion_health, ingestion_health_source = _first_non_empty_json(ingestion_health_paths)
+
+    backpressure_paths = [
+        project_root / 'governance' / 'health' / 'ingestion_backpressure_latest.json',
+    ]
+    backpressure, backpressure_source = _first_non_empty_json(backpressure_paths)
+
     blocked_rate = float(one_numbers.get('combined_blocked_rate', 0.0) or 0.0)
     stale_windows = int(one_numbers.get('decision_stale_windows_4h', 0) or one_numbers.get('decision_stale_windows', 0) or 0)
     watchdog_restarts = int((daily_summary.get('watchdog', {}) or {}).get('restarts', one_numbers.get('watchdog_restarts', 0) or 0))
+
+    sqlite_ingest = ingestion_health.get('sqlite', {}) if isinstance(ingestion_health.get('sqlite', {}), dict) else {}
+    ingest_pending_lines = _to_int(sqlite_ingest.get('pending_lines'), 0)
+    ingest_oldest_age_s = _to_float(sqlite_ingest.get('oldest_uningested_age_seconds'), 0.0)
+    ingest_invalid_lines = _to_int(sqlite_ingest.get('invalid'), 0)
+    ingest_p95_latency_s = _to_float(
+        (((ingestion_health.get('latency_slo', {}) or {}).get('sqlite', {}) or {}).get('all', {}) or {}).get('p95_seconds'),
+        0.0,
+    )
+
+    backpressure_overload = bool(backpressure.get('overload', False))
+    backpressure_pending_lines = _to_int(backpressure.get('pending_lines'), 0)
+    backpressure_oldest_age_s = _to_float(backpressure.get('oldest_pending_age_seconds'), 0.0)
 
     gate_stale = stale_windows > args.stale_window_limit
     gate_blocked = blocked_rate > args.blocked_rate_limit
     gate_restarts = watchdog_restarts > args.watchdog_restarts_limit
 
+    gate_ingest_pending = ingest_pending_lines > int(args.ingestion_pending_lines_limit)
+    gate_ingest_oldest_age = ingest_oldest_age_s > float(args.ingestion_oldest_age_seconds_limit)
+    gate_ingest_invalid = ingest_invalid_lines > int(args.ingestion_invalid_lines_limit)
+    gate_backpressure_overload = bool(backpressure_overload and args.ingestion_backpressure_overload_fails)
+
     score = 100.0
     score -= min(blocked_rate * 100.0 * 0.35, 35.0)
     score -= min(stale_windows * 8.0, 32.0)
     score -= min(watchdog_restarts * 7.0, 21.0)
+    score -= min((ingest_pending_lines / 1000.0) * 0.8, 8.0)
+    score -= min((ingest_oldest_age_s / 60.0) * 0.7, 7.0)
+    score -= min(max(ingest_invalid_lines, 0) * 0.25, 5.0)
+    if backpressure_overload:
+        score -= 4.0
     score = max(score, 0.0)
+
+    hard_gate_triggered = bool(
+        gate_stale
+        or gate_blocked
+        or gate_restarts
+        or gate_ingest_pending
+        or gate_ingest_oldest_age
+        or gate_ingest_invalid
+        or gate_backpressure_overload
+    )
 
     payload = {
         'timestamp_utc': datetime.now(timezone.utc).isoformat(),
@@ -89,18 +161,40 @@ def main() -> int:
         'source_files': {
             'one_numbers': one_numbers_source,
             'daily_runtime_summary': daily_summary_source,
+            'jsonl_sql_ingestion_health': ingestion_health_source,
+            'ingestion_backpressure': backpressure_source,
         },
         'inputs': {
             'blocked_rate': blocked_rate,
             'stale_windows': stale_windows,
             'watchdog_restarts': watchdog_restarts,
+            'ingest_pending_lines': ingest_pending_lines,
+            'ingest_oldest_uningested_age_seconds': ingest_oldest_age_s,
+            'ingest_invalid_lines': ingest_invalid_lines,
+            'ingest_p95_latency_seconds': ingest_p95_latency_s,
+            'backpressure_overload': backpressure_overload,
+            'backpressure_pending_lines': backpressure_pending_lines,
+            'backpressure_oldest_pending_age_seconds': backpressure_oldest_age_s,
         },
         'hard_gates': {
             'stale_windows': gate_stale,
             'blocked_rate': gate_blocked,
             'watchdog_restart_spike': gate_restarts,
+            'ingestion_pending_lines': gate_ingest_pending,
+            'ingestion_oldest_age': gate_ingest_oldest_age,
+            'ingestion_invalid_lines': gate_ingest_invalid,
+            'ingestion_backpressure_overload': gate_backpressure_overload,
         },
-        'hard_gate_triggered': bool(gate_stale or gate_blocked or gate_restarts),
+        'thresholds': {
+            'stale_window_limit': int(args.stale_window_limit),
+            'blocked_rate_limit': float(args.blocked_rate_limit),
+            'watchdog_restarts_limit': int(args.watchdog_restarts_limit),
+            'ingestion_pending_lines_limit': int(args.ingestion_pending_lines_limit),
+            'ingestion_oldest_age_seconds_limit': int(args.ingestion_oldest_age_seconds_limit),
+            'ingestion_invalid_lines_limit': int(args.ingestion_invalid_lines_limit),
+            'ingestion_backpressure_overload_fails': bool(args.ingestion_backpressure_overload_fails),
+        },
+        'hard_gate_triggered': hard_gate_triggered,
     }
 
     out = project_root / 'governance' / 'health' / 'health_gates_latest.json'
@@ -112,7 +206,9 @@ def main() -> int:
     else:
         print(
             f"health_score={payload['data_quality_score']:.2f} hard_gate_triggered={payload['hard_gate_triggered']} "
-            f"stale_windows={stale_windows} blocked_rate={blocked_rate:.4f} watchdog_restarts={watchdog_restarts}"
+            f"stale_windows={stale_windows} blocked_rate={blocked_rate:.4f} watchdog_restarts={watchdog_restarts} "
+            f"ingest_pending_lines={ingest_pending_lines} ingest_oldest_age_s={ingest_oldest_age_s:.1f} "
+            f"ingest_invalid_lines={ingest_invalid_lines} backpressure_overload={backpressure_overload}"
         )
 
     return 2 if payload['hard_gate_triggered'] else 0

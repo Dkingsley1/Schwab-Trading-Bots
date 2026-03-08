@@ -1,8 +1,10 @@
 import argparse
+import hashlib
 import json
 import math
 import os
 import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,6 +20,45 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 
 LABEL_TO_ID = {"negative": 0, "neutral": 1, "positive": 2}
 ID_TO_LABEL = {v: k for k, v in LABEL_TO_ID.items()}
+
+
+def _sha256_file(path: Path) -> str:
+    if (not path) or (not path.exists()):
+        return ""
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+def _sha256_json_obj(obj: Any) -> str:
+    try:
+        encoded = json.dumps(obj, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+    except Exception:
+        return ""
+
+
+def _git_commit(project_root: Path) -> str:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return str(proc.stdout or "").strip()
+        return ""
+    except Exception:
+        return ""
 
 
 def _parse_bool(value: str, default: bool = False) -> bool:
@@ -159,11 +200,19 @@ def _metric_score(metrics: Dict[str, Any]) -> float:
 
 
 def _checkpoint_score(metrics: Dict[str, Any]) -> float:
+    macro = float(metrics.get("macro_f1", 0.0) or 0.0)
+    balanced = float(metrics.get("balanced_accuracy", 0.0) or 0.0)
+    pos_recall = float(metrics.get("positive_recall", 0.0) or 0.0)
+    pos_precision = float(metrics.get("positive_precision", 0.0) or 0.0)
+    pos_f1 = float(metrics.get("positive_f1", 0.0) or 0.0)
+    gap = max(pos_recall - pos_precision, 0.0)
     return (
-        float(metrics.get("macro_f1", 0.0) or 0.0)
-        + float(metrics.get("balanced_accuracy", 0.0) or 0.0)
-        + (0.90 * float(metrics.get("positive_recall", 0.0) or 0.0))
-        + (0.35 * float(metrics.get("positive_f1", 0.0) or 0.0))
+        macro
+        + balanced
+        + (0.35 * pos_f1)
+        + (0.45 * pos_precision)
+        + (0.20 * pos_recall)
+        - (0.75 * max(gap - 0.22, 0.0))
     )
 
 
@@ -327,6 +376,81 @@ def _time_purged_split_indices(
     }
 
 
+def _derive_validation_split(
+    ts_epoch: np.ndarray,
+    train_idx: np.ndarray,
+    *,
+    val_ratio: float,
+    mode: str,
+    purge_seconds: float,
+    seed: int,
+    min_train_rows: int,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+    train_idx = np.asarray(train_idx, dtype=np.int64)
+    n_rows = int(len(train_idx))
+    min_train_rows = max(int(min_train_rows), 5)
+    if n_rows < (min_train_rows + 2):
+        raise RuntimeError(f"Not enough rows for validation split: {n_rows}")
+
+    val_ratio = max(min(float(val_ratio), 0.40), 0.05)
+    val_n = max(1, int(n_rows * val_ratio))
+    if n_rows - val_n < min_train_rows:
+        val_n = max(1, n_rows - min_train_rows)
+
+    if mode == "random":
+        rng = np.random.default_rng(seed)
+        order = train_idx.copy()
+        rng.shuffle(order)
+        val_idx = order[:val_n]
+        tr_idx = order[val_n:]
+        return tr_idx, val_idx, {
+            "mode": "random",
+            "seed": int(seed),
+            "validation_rows": int(len(val_idx)),
+            "train_rows": int(len(tr_idx)),
+        }
+
+    order = train_idx[np.argsort(ts_epoch[train_idx], kind="mergesort")]
+    val_idx = order[-val_n:]
+    tr_raw = order[:-val_n]
+
+    val_start_ts = float(ts_epoch[val_idx[0]]) if len(val_idx) else float(np.max(ts_epoch[order]))
+    purge_seconds = max(float(purge_seconds), 0.0)
+    purge_cutoff = val_start_ts - purge_seconds
+    tr_idx = tr_raw[ts_epoch[tr_raw] <= purge_cutoff]
+    used_purge_seconds = purge_seconds
+    relaxed = False
+
+    if len(tr_idx) < min_train_rows:
+        tr_idx = tr_raw
+        used_purge_seconds = 0.0
+        relaxed = True
+
+    if len(tr_idx) < min_train_rows:
+        rng = np.random.default_rng(seed)
+        fallback = train_idx.copy()
+        rng.shuffle(fallback)
+        val_idx = fallback[:val_n]
+        tr_idx = fallback[val_n:]
+        return tr_idx, val_idx, {
+            "mode": "random",
+            "seed": int(seed),
+            "validation_rows": int(len(val_idx)),
+            "train_rows": int(len(tr_idx)),
+            "fallback_from": "time_purged",
+            "fallback_reason": "insufficient_train_rows",
+        }
+
+    return tr_idx, val_idx, {
+        "mode": "time_purged",
+        "validation_rows": int(len(val_idx)),
+        "train_rows": int(len(tr_idx)),
+        "purge_seconds": float(used_purge_seconds),
+        "relaxed_purge": bool(relaxed),
+        "validation_start_ts": float(val_start_ts),
+    }
+
+
 def _rebalance_class_weights(
     y: np.ndarray,
     w: np.ndarray,
@@ -473,6 +597,10 @@ def _fit_class_logit_bias(
     *,
     positive_recall_target: float,
     neutral_recall_floor: float,
+    positive_precision_floor: float,
+    max_pos_recall_precision_gap: float,
+    score_weight_positive_precision: float,
+    score_gap_penalty: float,
     pos_bias_min: float,
     pos_bias_max: float,
     neg_bias_min: float,
@@ -490,6 +618,10 @@ def _fit_class_logit_bias(
     neg_bias_max = neg_bias_hi
     positive_recall_target = max(min(float(positive_recall_target), 1.0), 0.0)
     neutral_recall_floor = max(min(float(neutral_recall_floor), 1.0), 0.0)
+    positive_precision_floor = max(min(float(positive_precision_floor), 1.0), 0.0)
+    max_pos_recall_precision_gap = max(float(max_pos_recall_precision_gap), 0.0)
+    score_weight_positive_precision = max(float(score_weight_positive_precision), 0.0)
+    score_gap_penalty = max(float(score_gap_penalty), 0.0)
 
     base_probs = _softmax(logits)
     base_metrics = _metrics(base_probs, y)
@@ -508,13 +640,21 @@ def _fit_class_logit_bias(
             metrics = _metrics(probs, y)
             loss = _weighted_ce(probs, y, w)
 
-            score = _metric_score(metrics) + (0.65 * float(metrics.get("positive_recall", 0.0) or 0.0))
             pos_recall = float(metrics.get("positive_recall", 0.0) or 0.0)
+            pos_precision = float(metrics.get("positive_precision", 0.0) or 0.0)
             neu_recall = float(metrics.get("neutral_recall", 0.0) or 0.0)
+            pos_gap = max(pos_recall - pos_precision, 0.0)
+
+            score = _metric_score(metrics)
+            score += score_weight_positive_precision * pos_precision
             if pos_recall < positive_recall_target:
                 score -= 2.0 * (positive_recall_target - pos_recall)
             if neu_recall < neutral_recall_floor:
                 score -= 1.5 * (neutral_recall_floor - neu_recall)
+            if pos_precision < positive_precision_floor:
+                score -= 2.5 * (positive_precision_floor - pos_precision)
+            if pos_gap > max_pos_recall_precision_gap:
+                score -= score_gap_penalty * (pos_gap - max_pos_recall_precision_gap)
 
             tried += 1
             better = score > (best_score + 1e-12)
@@ -529,6 +669,10 @@ def _fit_class_logit_bias(
         "grid_points": int(tried),
         "positive_recall_target": float(positive_recall_target),
         "neutral_recall_floor": float(neutral_recall_floor),
+        "positive_precision_floor": float(positive_precision_floor),
+        "max_pos_recall_precision_gap": float(max_pos_recall_precision_gap),
+        "score_weight_positive_precision": float(score_weight_positive_precision),
+        "score_gap_penalty": float(score_gap_penalty),
         "selected_bias": {
             "negative": float(best_bias[0, 0]),
             "neutral": float(best_bias[0, 1]),
@@ -548,6 +692,9 @@ def _train_single_seed(
     x_tr: np.ndarray,
     y_tr: np.ndarray,
     w_tr: np.ndarray,
+    x_val: np.ndarray,
+    y_val: np.ndarray,
+    w_val: np.ndarray,
     x_te: np.ndarray,
     y_te: np.ndarray,
     w_te: np.ndarray,
@@ -564,9 +711,16 @@ def _train_single_seed(
     sampling_probs: np.ndarray,
     positive_recall_target: float,
     neutral_recall_floor: float,
+    positive_precision_floor: float,
+    max_pos_recall_precision_gap: float,
+    threshold_score_weight_positive_precision: float,
+    threshold_score_gap_penalty: float,
     pos_logit_bias_max: float,
     neg_logit_bias_max: float,
     logit_bias_steps: int,
+    early_stop_patience: int,
+    early_stop_min_delta: float,
+    early_stop_min_epochs: int,
 ) -> Dict[str, Any]:
     rng = np.random.default_rng(seed)
 
@@ -586,14 +740,21 @@ def _train_single_seed(
         if math.isfinite(total) and total > 0.0:
             sample_p = sampling_probs / total
 
+    early_stop_patience = max(int(early_stop_patience), 1)
+    early_stop_min_epochs = max(int(early_stop_min_epochs), 1)
+    early_stop_min_delta = max(float(early_stop_min_delta), 0.0)
+
     best = {
         "epoch": -1,
-        "te_loss": math.inf,
+        "val_loss": math.inf,
         "tr_loss": math.inf,
         "checkpoint_score": -math.inf,
         "W": None,
         "b": None,
     }
+    no_improve = 0
+    ran_epochs = 0
+    early_stopped = False
 
     for epoch in range(max(int(epochs), 1)):
         for _ in range(steps):
@@ -626,9 +787,9 @@ def _train_single_seed(
             b -= lr * grad_b
 
         tr_logits = x_tr @ W + b
-        te_logits = x_te @ W + b
+        val_logits = x_val @ W + b
         tr_probs = _softmax(tr_logits)
-        te_probs = _softmax(te_logits)
+        val_probs = _softmax(val_logits)
 
         tr_loss = _weighted_focal_ce(
             tr_probs,
@@ -637,61 +798,81 @@ def _train_single_seed(
             gamma=focal_gamma,
             class_alpha=focal_class_alpha,
         )
-        te_loss = _weighted_focal_ce(
-            te_probs,
-            y_te,
-            w_te,
+        val_loss = _weighted_focal_ce(
+            val_probs,
+            y_val,
+            w_val,
             gamma=focal_gamma,
             class_alpha=focal_class_alpha,
         )
 
-        te_metrics_epoch = _metrics(te_probs, y_te)
-        ckpt_score = _checkpoint_score(te_metrics_epoch)
-        better = ckpt_score > (best["checkpoint_score"] + 1e-12)
-        tie = abs(ckpt_score - best["checkpoint_score"]) <= 1e-12
-        if better or (tie and te_loss < best["te_loss"]):
+        val_metrics_epoch = _metrics(val_probs, y_val)
+        ckpt_score = _checkpoint_score(val_metrics_epoch)
+        improved = ckpt_score > (best["checkpoint_score"] + early_stop_min_delta)
+        tie = abs(ckpt_score - best["checkpoint_score"]) <= early_stop_min_delta
+        if (not improved) and tie and val_loss < (best["val_loss"] - 1e-6):
+            improved = True
+
+        if improved:
             best = {
                 "epoch": epoch,
-                "te_loss": float(te_loss),
+                "val_loss": float(val_loss),
                 "tr_loss": float(tr_loss),
                 "checkpoint_score": float(ckpt_score),
                 "W": W.copy(),
                 "b": b.copy(),
             }
+            no_improve = 0
+        else:
+            no_improve += 1
 
+        ran_epochs = epoch + 1
         if epoch % 50 == 0 or epoch == (max(int(epochs), 1) - 1):
-            te_acc = float(np.mean(np.argmax(te_probs, axis=1) == y_te))
-            te_macro = float(te_metrics_epoch.get("macro_f1", 0.0) or 0.0)
-            te_bal = float(te_metrics_epoch.get("balanced_accuracy", 0.0) or 0.0)
-            te_pos_rec = float(te_metrics_epoch.get("positive_recall", 0.0) or 0.0)
+            val_acc = float(np.mean(np.argmax(val_probs, axis=1) == y_val))
+            val_macro = float(val_metrics_epoch.get("macro_f1", 0.0) or 0.0)
+            val_bal = float(val_metrics_epoch.get("balanced_accuracy", 0.0) or 0.0)
+            val_pos_rec = float(val_metrics_epoch.get("positive_recall", 0.0) or 0.0)
+            val_pos_prec = float(val_metrics_epoch.get("positive_precision", 0.0) or 0.0)
             print(
-                f"Seed {seed} | Epoch {epoch:03d} | TrainLoss {tr_loss:.4f} | TestLoss {te_loss:.4f} "
-                f"| TestAcc {te_acc:.4f} | MacroF1 {te_macro:.4f} | BalAcc {te_bal:.4f} | PosRec {te_pos_rec:.4f}"
+                f"Seed {seed} | Epoch {epoch:03d} | TrainLoss {tr_loss:.4f} | ValLoss {val_loss:.4f} "
+                f"| ValAcc {val_acc:.4f} | MacroF1 {val_macro:.4f} | BalAcc {val_bal:.4f} "
+                f"| PosRec {val_pos_rec:.4f} | PosPrec {val_pos_prec:.4f}"
             )
+
+        if ran_epochs >= early_stop_min_epochs and no_improve >= early_stop_patience:
+            early_stopped = True
+            break
 
     W_best = best["W"] if best["W"] is not None else W
     b_best = best["b"] if best["b"] is not None else b
 
     tr_logits_best = x_tr @ W_best + b_best
+    val_logits_best = x_val @ W_best + b_best
     te_logits_best = x_te @ W_best + b_best
 
-    temp, te_loss_pre_cal, te_loss_post_cal = _fit_temperature(
-        te_logits_best,
-        y_te,
-        w_te,
+    temp, val_loss_pre_cal, val_loss_post_cal = _fit_temperature(
+        val_logits_best,
+        y_val,
+        w_val,
         t_min=temperature_min,
         t_max=temperature_max,
         steps=temperature_steps,
     )
 
     tr_logits_cal = tr_logits_best / temp
+    val_logits_cal = val_logits_best / temp
     te_logits_cal = te_logits_best / temp
-    class_logit_bias, te_metrics_pre_threshold, te_metrics_tuned_threshold, threshold_tuning = _fit_class_logit_bias(
-        te_logits_cal,
-        y_te,
-        w_te,
+
+    class_logit_bias, val_metrics_pre_threshold, val_metrics_tuned_threshold, threshold_tuning = _fit_class_logit_bias(
+        val_logits_cal,
+        y_val,
+        w_val,
         positive_recall_target=positive_recall_target,
         neutral_recall_floor=neutral_recall_floor,
+        positive_precision_floor=positive_precision_floor,
+        max_pos_recall_precision_gap=max_pos_recall_precision_gap,
+        score_weight_positive_precision=threshold_score_weight_positive_precision,
+        score_gap_penalty=threshold_score_gap_penalty,
         pos_bias_min=-abs(float(pos_logit_bias_max)),
         pos_bias_max=abs(float(pos_logit_bias_max)),
         neg_bias_min=-abs(float(neg_logit_bias_max)),
@@ -701,25 +882,33 @@ def _train_single_seed(
 
     bias_row = class_logit_bias.reshape(1, -1)
     tr_probs = _softmax(tr_logits_cal + bias_row)
+    val_probs = _softmax(val_logits_cal + bias_row)
     te_probs = _softmax(te_logits_cal + bias_row)
+    te_probs_pre_threshold = _softmax(te_logits_cal)
 
     tr_metrics = _metrics(tr_probs, y_tr)
+    val_metrics = _metrics(val_probs, y_val)
+    te_metrics_pre_threshold = _metrics(te_probs_pre_threshold, y_te)
     te_metrics = _metrics(te_probs, y_te)
 
     return {
         "seed": int(seed),
         "best_epoch": int(best["epoch"]),
+        "epochs_ran": int(ran_epochs),
+        "early_stopped": bool(early_stopped),
         "best_train_loss": float(best["tr_loss"]),
-        "best_test_loss": float(best["te_loss"]),
+        "best_validation_loss": float(best["val_loss"]),
         "best_checkpoint_score": float(best["checkpoint_score"]),
         "temperature": float(temp),
         "class_logit_bias": [float(x) for x in class_logit_bias.tolist()],
-        "test_loss_pre_calibration": float(te_loss_pre_cal),
-        "test_loss_post_calibration": float(te_loss_post_cal),
+        "validation_loss_pre_calibration": float(val_loss_pre_cal),
+        "validation_loss_post_calibration": float(val_loss_post_cal),
         "train_metrics": tr_metrics,
-        "test_metrics": te_metrics,
+        "validation_metrics_pre_threshold_tuning": val_metrics_pre_threshold,
+        "validation_metrics_threshold_tuned": val_metrics_tuned_threshold,
+        "validation_metrics": val_metrics,
         "test_metrics_pre_threshold_tuning": te_metrics_pre_threshold,
-        "test_metrics_threshold_tuned": te_metrics_tuned_threshold,
+        "test_metrics": te_metrics,
         "threshold_tuning": threshold_tuning,
         "score": float(_metric_score(te_metrics)),
         "W": W_best,
@@ -738,6 +927,109 @@ def _latest_policy_model_and_log(models_dir: Path, logs_dir: Path) -> Tuple[Opti
     log_path = logs_dir / f"trade_behavior_policy_{stamp}.json"
     log_obj = _safe_read_json(log_path) if log_path.exists() else {}
     return model_path, log_obj, (log_path if log_path.exists() else None)
+
+
+def _model_feature_names_from_npz(arr: Any) -> List[str]:
+    try:
+        files = set(arr.files)
+    except Exception:
+        files = set()
+    if "feature_names" not in files:
+        return []
+
+    raw = np.asarray(arr["feature_names"]).reshape(-1)
+    out: List[str] = []
+    for value in raw.tolist():
+        if isinstance(value, bytes):
+            name = value.decode("utf-8", errors="ignore").strip()
+        else:
+            name = str(value).strip()
+        if name:
+            out.append(name)
+    return out
+
+
+def _model_schema_summary(path: Optional[Path]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "path": str(path) if path else "",
+        "exists": bool(path and path.exists()),
+        "load_ok": False,
+        "feature_dim_field": 0,
+        "effective_dim": 0,
+        "mu_dim": 0,
+        "sigma_dim": 0,
+        "feature_names_count": 0,
+        "has_feature_names": False,
+        "feature_names_sha256": "",
+        "error": "",
+    }
+    if (path is None) or (not path.exists()):
+        return out
+
+    try:
+        arr = np.load(path, allow_pickle=False)
+        w = np.asarray(arr["W"])
+        mu = np.asarray(arr["mu"]).reshape(-1)
+        sigma = np.asarray(arr["sigma"]).reshape(-1)
+
+        model_dim = int(w.shape[0]) if w.ndim == 2 else 0
+        mu_dim = int(mu.shape[0])
+        sigma_dim = int(sigma.shape[0])
+        effective_dim = min(model_dim, mu_dim, sigma_dim)
+
+        feature_dim_field = 0
+        if "feature_dim" in arr.files:
+            try:
+                feature_dim_field = int(np.asarray(arr["feature_dim"]).reshape(-1)[0])
+            except Exception:
+                feature_dim_field = 0
+
+        feature_names = _model_feature_names_from_npz(arr)
+        feature_names_sha = _sha256_json_obj(feature_names) if feature_names else ""
+
+        out.update(
+            {
+                "load_ok": True,
+                "feature_dim_field": int(feature_dim_field),
+                "effective_dim": int(effective_dim),
+                "mu_dim": int(mu_dim),
+                "sigma_dim": int(sigma_dim),
+                "feature_names_count": int(len(feature_names)),
+                "has_feature_names": bool(feature_names),
+                "feature_names_sha256": feature_names_sha,
+                "feature_names": feature_names,
+            }
+        )
+    except Exception as exc:
+        out["error"] = str(exc)
+    return out
+
+
+def _rollback_schema_compatible(
+    prev_schema: Dict[str, Any],
+    *,
+    dataset_feature_dim: int,
+    dataset_feature_names: List[str],
+    require_feature_names: bool,
+) -> Tuple[bool, str]:
+    if not bool(prev_schema.get("load_ok", False)):
+        return False, "previous_model_schema_unreadable"
+
+    prev_dim = int(prev_schema.get("effective_dim", 0) or 0)
+    if prev_dim <= 0:
+        return False, "previous_model_dim_invalid"
+    if prev_dim != int(dataset_feature_dim):
+        return False, f"feature_dim_mismatch prev={prev_dim} dataset={int(dataset_feature_dim)}"
+
+    if not require_feature_names:
+        return True, "ok"
+
+    prev_names = [str(x) for x in (prev_schema.get("feature_names") or []) if str(x)]
+    if len(prev_names) != int(dataset_feature_dim):
+        return False, "previous_model_missing_feature_names"
+    if dataset_feature_names and (prev_names != dataset_feature_names):
+        return False, "feature_name_order_mismatch"
+    return True, "ok"
 
 
 def _data_quality_gate(project_root: Path, *, require_walk_forward_ok: bool) -> Tuple[bool, List[str], Dict[str, Any]]:
@@ -796,6 +1088,178 @@ def _data_quality_gate(project_root: Path, *, require_walk_forward_ok: bool) -> 
     return len(reasons) == 0, reasons, summary
 
 
+def _snapshot_training_coverage_summary(
+    *,
+    dataset_path: Path,
+    dataset_obj: Dict[str, Any],
+) -> Dict[str, Any]:
+    snapshot_context = dataset_obj.get("snapshot_context") if isinstance(dataset_obj.get("snapshot_context"), dict) else {}
+    snapshot_features = snapshot_context.get("features") if isinstance(snapshot_context.get("features"), dict) else {}
+    snapshot_meta = snapshot_context.get("meta") if isinstance(snapshot_context.get("meta"), dict) else {}
+
+    feature_names_raw = dataset_obj.get("feature_names") if isinstance(dataset_obj.get("feature_names"), list) else []
+    feature_names = [str(name) for name in feature_names_raw if str(name)]
+
+    snapshot_feature_names_from_context = sorted(
+        key for key in snapshot_features.keys() if str(key).startswith("snapshot_")
+    )
+    snapshot_feature_names_in_model = sorted(
+        {name for name in feature_names if name.startswith("snapshot_")}
+    )
+    missing_snapshot_features = [
+        key for key in snapshot_feature_names_from_context if key not in snapshot_feature_names_in_model
+    ]
+
+    total_snapshot_features = len(snapshot_feature_names_from_context)
+    present_snapshot_features = total_snapshot_features - len(missing_snapshot_features)
+    feature_coverage_ratio = (
+        float(present_snapshot_features) / float(total_snapshot_features)
+        if total_snapshot_features > 0
+        else 1.0
+    )
+
+    raw_debug_context = (
+        snapshot_meta.get("raw_debug_context")
+        if isinstance(snapshot_meta.get("raw_debug_context"), dict)
+        else {}
+    )
+
+    def _ratio(value: Any, default: float = 0.0) -> float:
+        try:
+            out = float(value)
+        except Exception:
+            out = float(default)
+        if not math.isfinite(out):
+            out = float(default)
+        return max(0.0, min(out, 1.0))
+
+    required_ratio = _ratio(os.getenv("SNAPSHOT_TRAINING_REQUIRED_RATIO", "1.0"), 1.0)
+    ratio_epsilon = max(min(float(os.getenv("SNAPSHOT_TRAINING_RATIO_EPSILON", "1e-6")), 0.01), 0.0)
+
+    snapshot_raw_sql_ingest_ratio = _ratio(
+        snapshot_features.get(
+            "snapshot_raw_sql_ingest_ratio",
+            raw_debug_context.get("ingest_coverage_ratio", 0.0),
+        ),
+        0.0,
+    )
+    snapshot_cov_fill_ratio = _ratio(snapshot_features.get("snapshot_cov_fill_ratio", 0.0), 0.0)
+    snapshot_replay_ok = _ratio(snapshot_features.get("snapshot_replay_ok", 0.0), 0.0)
+
+    meets_raw_ratio = snapshot_raw_sql_ingest_ratio + ratio_epsilon >= required_ratio
+    meets_fill_ratio = snapshot_cov_fill_ratio + ratio_epsilon >= required_ratio
+    meets_feature_coverage = feature_coverage_ratio + ratio_epsilon >= required_ratio
+
+    rows = int(dataset_obj.get("rows", 0) or 0)
+    all_snapshot_data_incorporated = bool(
+        rows > 0
+        and meets_raw_ratio
+        and meets_fill_ratio
+        and meets_feature_coverage
+        and (len(missing_snapshot_features) == 0)
+    )
+
+    if rows <= 0:
+        reason = "dataset_rows_zero"
+    elif len(missing_snapshot_features) > 0:
+        reason = "snapshot_feature_names_missing"
+    elif not meets_raw_ratio:
+        reason = "snapshot_raw_sql_ingest_ratio_below_required"
+    elif not meets_fill_ratio:
+        reason = "snapshot_cov_fill_ratio_below_required"
+    elif not meets_feature_coverage:
+        reason = "snapshot_feature_coverage_ratio_below_required"
+    else:
+        reason = "ok"
+
+    return {
+        "dataset_path": str(dataset_path),
+        "dataset_timestamp_utc": dataset_obj.get("timestamp_utc"),
+        "dataset_rows": rows,
+        "feature_dim": int(dataset_obj.get("_feature_dim", 0) or 0),
+        "feature_names_count": len(feature_names),
+        "snapshot_context_feature_count": total_snapshot_features,
+        "snapshot_feature_names_in_model_count": len(snapshot_feature_names_in_model),
+        "snapshot_feature_coverage_ratio": float(feature_coverage_ratio),
+        "missing_snapshot_feature_names": missing_snapshot_features,
+        "snapshot_raw_sql_ingest_ratio": float(snapshot_raw_sql_ingest_ratio),
+        "snapshot_cov_fill_ratio": float(snapshot_cov_fill_ratio),
+        "snapshot_replay_ok": float(snapshot_replay_ok),
+        "required_ratio": float(required_ratio),
+        "ratio_epsilon": float(ratio_epsilon),
+        "all_snapshot_data_incorporated": bool(all_snapshot_data_incorporated),
+        "reason": reason,
+    }
+
+
+def _write_snapshot_training_coverage_artifact(
+    *,
+    project_root: Path,
+    dataset_path: Path,
+    dataset_obj: Dict[str, Any],
+    model_path: Path,
+    log_path: Path,
+) -> Dict[str, Any]:
+    payload = _snapshot_training_coverage_summary(dataset_path=dataset_path, dataset_obj=dataset_obj)
+    payload.update(
+        {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "model_path": str(model_path),
+            "training_log": str(log_path),
+        }
+    )
+
+    out_path = project_root / "governance" / "health" / "snapshot_training_coverage_latest.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+    payload["artifact_path"] = str(out_path)
+    return payload
+
+
+def _cap_snapshot_feature_weights(
+    W: np.ndarray,
+    feature_names: List[str],
+    *,
+    max_abs_weight: float,
+) -> Dict[str, Any]:
+    cap = max(float(max_abs_weight), 0.0)
+    if cap <= 0.0:
+        return {
+            "enabled": False,
+            "max_abs_weight": 0.0,
+            "snapshot_feature_count": 0,
+            "weights_capped": 0,
+        }
+
+    if W.ndim != 2 or W.shape[0] <= 0:
+        return {
+            "enabled": True,
+            "max_abs_weight": cap,
+            "snapshot_feature_count": 0,
+            "weights_capped": 0,
+        }
+
+    capped = 0
+    snapshot_idx: List[int] = []
+    for i, name in enumerate(feature_names[: W.shape[0]]):
+        if str(name).startswith("snapshot_"):
+            snapshot_idx.append(i)
+
+    for idx in snapshot_idx:
+        row = W[idx, :]
+        before = row.copy()
+        np.clip(row, -cap, cap, out=row)
+        capped += int(np.sum(before != row))
+
+    return {
+        "enabled": True,
+        "max_abs_weight": cap,
+        "snapshot_feature_count": int(len(snapshot_idx)),
+        "weights_capped": int(capped),
+    }
+
+
 def _save_model(
     path: Path,
     *,
@@ -804,6 +1268,7 @@ def _save_model(
     mu: np.ndarray,
     sigma: np.ndarray,
     feature_dim: int,
+    feature_names: Optional[List[str]] = None,
     temperature: float,
     class_logit_bias: Optional[np.ndarray] = None,
 ) -> None:
@@ -813,26 +1278,32 @@ def _save_model(
         if raw.shape[0] == len(LABEL_TO_ID):
             bias = raw.astype(np.float32)
 
-    np.savez_compressed(
-        path,
-        W=W.astype(np.float32),
-        b=b.astype(np.float32),
-        mu=mu.astype(np.float32),
-        sigma=sigma.astype(np.float32),
-        labels=np.asarray(["negative", "neutral", "positive"]),
-        feature_dim=np.asarray([int(feature_dim)], dtype=np.int32),
-        temperature=np.asarray([float(temperature)], dtype=np.float32),
-        class_logit_bias=bias,
-    )
+    payload = {
+        "W": W.astype(np.float32),
+        "b": b.astype(np.float32),
+        "mu": mu.astype(np.float32),
+        "sigma": sigma.astype(np.float32),
+        "labels": np.asarray(["negative", "neutral", "positive"]),
+        "feature_dim": np.asarray([int(feature_dim)], dtype=np.int32),
+        "temperature": np.asarray([float(temperature)], dtype=np.float32),
+        "class_logit_bias": bias,
+    }
+
+    names = [str(name) for name in (feature_names or []) if str(name)]
+    if names:
+        payload["feature_names"] = np.asarray(names[: int(feature_dim)], dtype="<U128")
+
+    np.savez_compressed(path, **payload)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Train a weighted behavior policy model on past trades.")
     parser.add_argument("--dataset", default=str(DATASET_PATH))
     parser.add_argument("--epochs", type=int, default=int(os.getenv("TRADE_BEHAVIOR_EPOCHS", "300")))
-    parser.add_argument("--lr", type=float, default=float(os.getenv("TRADE_BEHAVIOR_LR", "0.05")))
+    parser.add_argument("--lr", type=float, default=float(os.getenv("TRADE_BEHAVIOR_LR", "0.02")))
     parser.add_argument("--l2", type=float, default=float(os.getenv("TRADE_BEHAVIOR_L2", "1e-4")))
     parser.add_argument("--test-ratio", type=float, default=float(os.getenv("TRADE_BEHAVIOR_TEST_RATIO", "0.2")))
+    parser.add_argument("--val-ratio", type=float, default=float(os.getenv("TRADE_BEHAVIOR_VAL_RATIO", "0.15")))
     parser.add_argument("--seed", type=int, default=int(os.getenv("TRADE_BEHAVIOR_SEED", "42")))
     parser.add_argument("--seeds", default=os.getenv("TRADE_BEHAVIOR_SEEDS", "42,1337,2026"))
     parser.add_argument("--split-mode", choices=["time_purged", "random"], default=os.getenv("TRADE_BEHAVIOR_SPLIT_MODE", "time_purged"))
@@ -843,28 +1314,51 @@ def main() -> int:
     parser.add_argument("--positive-weight-floor", type=float, default=float(os.getenv("TRADE_BEHAVIOR_POSITIVE_WEIGHT_FLOOR", "1.35")))
     parser.add_argument("--negative-weight-cap", type=float, default=float(os.getenv("TRADE_BEHAVIOR_NEGATIVE_WEIGHT_CAP", "1.0")))
     parser.add_argument("--regime-balance-cap", type=float, default=float(os.getenv("TRADE_BEHAVIOR_REGIME_BALANCE_CAP", "2.5")))
-    parser.add_argument("--batch-size", type=int, default=int(os.getenv("TRADE_BEHAVIOR_BATCH_SIZE", "1024")))
-    parser.add_argument("--batch-steps-per-epoch", type=int, default=int(os.getenv("TRADE_BEHAVIOR_BATCH_STEPS_PER_EPOCH", "4")))
-    parser.add_argument("--oversample-positive", type=float, default=float(os.getenv("TRADE_BEHAVIOR_OVERSAMPLE_POSITIVE", "1.85")))
-    parser.add_argument("--oversample-neutral", type=float, default=float(os.getenv("TRADE_BEHAVIOR_OVERSAMPLE_NEUTRAL", "1.35")))
-    parser.add_argument("--oversample-negative", type=float, default=float(os.getenv("TRADE_BEHAVIOR_OVERSAMPLE_NEGATIVE", "0.95")))
-    parser.add_argument("--focal-gamma", type=float, default=float(os.getenv("TRADE_BEHAVIOR_FOCAL_GAMMA", "1.25")))
-    parser.add_argument("--focal-alpha-negative", type=float, default=float(os.getenv("TRADE_BEHAVIOR_FOCAL_ALPHA_NEGATIVE", "0.9")))
-    parser.add_argument("--focal-alpha-neutral", type=float, default=float(os.getenv("TRADE_BEHAVIOR_FOCAL_ALPHA_NEUTRAL", "1.15")))
-    parser.add_argument("--focal-alpha-positive", type=float, default=float(os.getenv("TRADE_BEHAVIOR_FOCAL_ALPHA_POSITIVE", "1.65")))
+    parser.add_argument("--batch-size", type=int, default=int(os.getenv("TRADE_BEHAVIOR_BATCH_SIZE", "1536")))
+    parser.add_argument("--batch-steps-per-epoch", type=int, default=int(os.getenv("TRADE_BEHAVIOR_BATCH_STEPS_PER_EPOCH", "2")))
+    parser.add_argument("--oversample-positive", type=float, default=float(os.getenv("TRADE_BEHAVIOR_OVERSAMPLE_POSITIVE", "1.35")))
+    parser.add_argument("--oversample-neutral", type=float, default=float(os.getenv("TRADE_BEHAVIOR_OVERSAMPLE_NEUTRAL", "1.15")))
+    parser.add_argument("--oversample-negative", type=float, default=float(os.getenv("TRADE_BEHAVIOR_OVERSAMPLE_NEGATIVE", "1.00")))
+    parser.add_argument("--focal-gamma", type=float, default=float(os.getenv("TRADE_BEHAVIOR_FOCAL_GAMMA", "0.55")))
+    parser.add_argument("--focal-alpha-negative", type=float, default=float(os.getenv("TRADE_BEHAVIOR_FOCAL_ALPHA_NEGATIVE", "1.0")))
+    parser.add_argument("--focal-alpha-neutral", type=float, default=float(os.getenv("TRADE_BEHAVIOR_FOCAL_ALPHA_NEUTRAL", "1.05")))
+    parser.add_argument("--focal-alpha-positive", type=float, default=float(os.getenv("TRADE_BEHAVIOR_FOCAL_ALPHA_POSITIVE", "1.25")))
     parser.add_argument("--temperature-min", type=float, default=float(os.getenv("TRADE_BEHAVIOR_TEMPERATURE_MIN", "0.6")))
     parser.add_argument("--temperature-max", type=float, default=float(os.getenv("TRADE_BEHAVIOR_TEMPERATURE_MAX", "2.5")))
     parser.add_argument("--temperature-steps", type=int, default=int(os.getenv("TRADE_BEHAVIOR_TEMPERATURE_STEPS", "45")))
-    parser.add_argument("--positive-recall-target", type=float, default=float(os.getenv("TRADE_BEHAVIOR_POSITIVE_RECALL_TARGET", "0.32")))
-    parser.add_argument("--neutral-recall-floor", type=float, default=float(os.getenv("TRADE_BEHAVIOR_NEUTRAL_RECALL_FLOOR", "0.18")))
-    parser.add_argument("--positive-logit-bias-max", type=float, default=float(os.getenv("TRADE_BEHAVIOR_POSITIVE_LOGIT_BIAS_MAX", "1.2")))
-    parser.add_argument("--negative-logit-bias-max", type=float, default=float(os.getenv("TRADE_BEHAVIOR_NEGATIVE_LOGIT_BIAS_MAX", "0.8")))
-    parser.add_argument("--logit-bias-steps", type=int, default=int(os.getenv("TRADE_BEHAVIOR_LOGIT_BIAS_STEPS", "29")))
+    parser.add_argument("--positive-recall-target", type=float, default=float(os.getenv("TRADE_BEHAVIOR_POSITIVE_RECALL_TARGET", "0.24")))
+    parser.add_argument("--neutral-recall-floor", type=float, default=float(os.getenv("TRADE_BEHAVIOR_NEUTRAL_RECALL_FLOOR", "0.24")))
+    parser.add_argument("--positive-logit-bias-max", type=float, default=float(os.getenv("TRADE_BEHAVIOR_POSITIVE_LOGIT_BIAS_MAX", "0.55")))
+    parser.add_argument("--negative-logit-bias-max", type=float, default=float(os.getenv("TRADE_BEHAVIOR_NEGATIVE_LOGIT_BIAS_MAX", "0.35")))
+    parser.add_argument("--logit-bias-steps", type=int, default=int(os.getenv("TRADE_BEHAVIOR_LOGIT_BIAS_STEPS", "21")))
+    parser.add_argument("--threshold-positive-precision-floor", type=float, default=float(os.getenv("TRADE_BEHAVIOR_THRESHOLD_POS_PREC_FLOOR", "0.19")))
+    parser.add_argument("--threshold-max-pos-recall-precision-gap", type=float, default=float(os.getenv("TRADE_BEHAVIOR_THRESHOLD_MAX_POS_REC_PREC_GAP", "0.25")))
+    parser.add_argument("--threshold-score-weight-positive-precision", type=float, default=float(os.getenv("TRADE_BEHAVIOR_THRESHOLD_SCORE_WEIGHT_POS_PREC", "0.80")))
+    parser.add_argument("--threshold-score-gap-penalty", type=float, default=float(os.getenv("TRADE_BEHAVIOR_THRESHOLD_SCORE_GAP_PENALTY", "0.90")))
+    parser.add_argument("--early-stop-patience", type=int, default=int(os.getenv("TRADE_BEHAVIOR_EARLY_STOP_PATIENCE", "35")))
+    parser.add_argument("--early-stop-min-delta", type=float, default=float(os.getenv("TRADE_BEHAVIOR_EARLY_STOP_MIN_DELTA", "0.0005")))
+    parser.add_argument("--early-stop-min-epochs", type=int, default=int(os.getenv("TRADE_BEHAVIOR_EARLY_STOP_MIN_EPOCHS", "40")))
     parser.add_argument("--promotion-min-score-delta", type=float, default=float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MIN_SCORE_DELTA", "-0.01")))
     parser.add_argument("--promotion-max-neutral-f1-drop", type=float, default=float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MAX_NEUTRAL_F1_DROP", "0.03")))
+    parser.add_argument("--promotion-min-accuracy", type=float, default=float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MIN_ACCURACY", "0.38")))
+    parser.add_argument("--promotion-min-macro-f1", type=float, default=float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MIN_MACRO_F1", "0.33")))
+    parser.add_argument("--promotion-min-balanced-accuracy", type=float, default=float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MIN_BALANCED_ACCURACY", "0.36")))
+    parser.add_argument("--promotion-min-positive-precision", type=float, default=float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MIN_POSITIVE_PRECISION", "0.175")))
+    parser.add_argument("--promotion-max-pos-recall-precision-gap", type=float, default=float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MAX_POS_RECALL_PREC_GAP", "0.28")))
     parser.add_argument("--rollback-on-regression", action=argparse.BooleanOptionalAction, default=_parse_bool(os.getenv("TRADE_BEHAVIOR_ROLLBACK_ON_REGRESSION", "1"), default=True))
+    parser.add_argument(
+        "--rollback-require-schema-match",
+        action=argparse.BooleanOptionalAction,
+        default=_parse_bool(os.getenv("TRADE_BEHAVIOR_ROLLBACK_REQUIRE_SCHEMA_MATCH", "1"), default=True),
+    )
+    parser.add_argument(
+        "--require-feature-names",
+        action=argparse.BooleanOptionalAction,
+        default=_parse_bool(os.getenv("TRADE_BEHAVIOR_REQUIRE_FEATURE_NAMES", "1"), default=True),
+    )
     parser.add_argument("--strict-promotion-gate", action=argparse.BooleanOptionalAction, default=_parse_bool(os.getenv("TRADE_BEHAVIOR_STRICT_PROMOTION_GATE", "0"), default=False))
     parser.add_argument("--require-walk-forward-ok", action=argparse.BooleanOptionalAction, default=_parse_bool(os.getenv("TRADE_BEHAVIOR_REQUIRE_WALK_FORWARD_OK", "0"), default=False))
+    parser.add_argument("--max-abs-snapshot-weight", type=float, default=float(os.getenv("TRADE_BEHAVIOR_MAX_ABS_SNAPSHOT_WEIGHT", "1.25")))
     args = parser.parse_args()
 
     dataset_path = Path(args.dataset)
@@ -878,7 +1372,7 @@ def main() -> int:
         return 2
 
     if args.split_mode == "time_purged":
-        train_idx, test_idx, split_meta = _time_purged_split_indices(
+        train_outer_idx, test_idx, outer_split_meta = _time_purged_split_indices(
             ts_epoch=ts_epoch,
             test_ratio=args.test_ratio,
             purge_seconds=args.purge_seconds,
@@ -886,21 +1380,50 @@ def main() -> int:
             fallback_seed=args.seed,
         )
     else:
-        train_idx, test_idx, split_meta = _random_split_indices(
+        train_outer_idx, test_idx, outer_split_meta = _random_split_indices(
             n_rows=len(y),
             test_ratio=args.test_ratio,
             seed=args.seed,
             min_train_rows=max(args.min_train_rows, 5),
         )
 
-    if len(train_idx) < 5:
-        print("Not enough training rows after split")
+    if len(train_outer_idx) < 8:
+        print("Not enough rows after outer split")
         return 2
 
-    x_tr, x_te, mu, sigma = _standardize_train_test(X, train_idx, test_idx)
-    y_tr, y_te = y[train_idx], y[test_idx]
-    w_tr, w_te = w[train_idx], w[test_idx]
+    train_idx, val_idx, val_split_meta = _derive_validation_split(
+        ts_epoch=ts_epoch,
+        train_idx=train_outer_idx,
+        val_ratio=args.val_ratio,
+        mode=args.split_mode,
+        purge_seconds=args.purge_seconds,
+        seed=int(args.seed) + 17,
+        min_train_rows=max(args.min_train_rows, 5),
+    )
+
+    if len(train_idx) < 5 or len(val_idx) < 1:
+        print("Not enough rows after validation split")
+        return 2
+
+    x_train_raw = X[train_idx]
+    mu = np.mean(x_train_raw, axis=0, keepdims=True)
+    sigma = np.std(x_train_raw, axis=0, keepdims=True)
+    sigma = np.where(sigma < 1e-8, 1.0, sigma)
+
+    x_tr = (x_train_raw - mu) / sigma
+    x_val = (X[val_idx] - mu) / sigma
+    x_te = (X[test_idx] - mu) / sigma
+    mu = mu.squeeze(0)
+    sigma = sigma.squeeze(0)
+
+    y_tr, y_val, y_te = y[train_idx], y[val_idx], y[test_idx]
+    w_tr, w_val, w_te = w[train_idx], w[val_idx], w[test_idx]
     regime_tr = regimes[train_idx]
+
+    split_meta = dict(outer_split_meta)
+    split_meta["outer_train_rows"] = int(len(train_outer_idx))
+    split_meta["outer_test_rows"] = int(len(test_idx))
+    split_meta["validation"] = val_split_meta
 
     w_tr, class_balance_factors = _rebalance_class_weights(
         y_tr,
@@ -941,6 +1464,9 @@ def main() -> int:
             x_tr=x_tr,
             y_tr=y_tr,
             w_tr=w_tr,
+            x_val=x_val,
+            y_val=y_val,
+            w_val=w_val,
             x_te=x_te,
             y_te=y_te,
             w_te=w_te,
@@ -957,20 +1483,65 @@ def main() -> int:
             sampling_probs=sampling_probs,
             positive_recall_target=float(args.positive_recall_target),
             neutral_recall_floor=float(args.neutral_recall_floor),
+            positive_precision_floor=float(args.threshold_positive_precision_floor),
+            max_pos_recall_precision_gap=float(args.threshold_max_pos_recall_precision_gap),
+            threshold_score_weight_positive_precision=float(args.threshold_score_weight_positive_precision),
+            threshold_score_gap_penalty=float(args.threshold_score_gap_penalty),
             pos_logit_bias_max=float(args.positive_logit_bias_max),
             neg_logit_bias_max=float(args.negative_logit_bias_max),
             logit_bias_steps=max(int(args.logit_bias_steps), 3),
+            early_stop_patience=max(int(args.early_stop_patience), 1),
+            early_stop_min_delta=max(float(args.early_stop_min_delta), 0.0),
+            early_stop_min_epochs=max(int(args.early_stop_min_epochs), 1),
         )
         seed_results.append(seed_result)
 
     seed_results.sort(key=lambda row: float(row.get("score", -1e9)), reverse=True)
     champion = seed_results[0]
 
+    feature_names_raw = ds.get("feature_names") if isinstance(ds.get("feature_names"), list) else []
+    feature_names = [str(name) for name in feature_names_raw if str(name)]
+    dataset_feature_dim = int(X.shape[1]) if X.ndim == 2 else 0
+    if dataset_feature_dim <= 0:
+        print("Invalid dataset feature_dim<=0")
+        return 2
+    if args.require_feature_names and (not feature_names):
+        print("Dataset missing feature_names while require_feature_names=true")
+        return 2
+    if feature_names and len(feature_names) != dataset_feature_dim:
+        print(
+            f"Dataset feature_names length mismatch: names={len(feature_names)} "
+            f"feature_dim={dataset_feature_dim}"
+        )
+        return 2
+    if not feature_names:
+        feature_names = [f"feature_{i}" for i in range(dataset_feature_dim)]
+    snapshot_weight_cap = _cap_snapshot_feature_weights(
+        champion["W"],
+        feature_names,
+        max_abs_weight=float(args.max_abs_snapshot_weight),
+    )
+
     prev_model_path, prev_log, prev_log_path = _latest_policy_model_and_log(MODELS_DIR, LOGS_DIR)
+    prev_model_schema = _model_schema_summary(prev_model_path) if prev_model_path else {}
+    rollback_schema_ok = True
+    rollback_schema_reason = "disabled"
+    if bool(args.rollback_require_schema_match):
+        rollback_schema_ok, rollback_schema_reason = _rollback_schema_compatible(
+            prev_model_schema,
+            dataset_feature_dim=dataset_feature_dim,
+            dataset_feature_names=feature_names,
+            require_feature_names=bool(args.require_feature_names),
+        )
     prev_metrics = (prev_log.get("test_metrics") or {}) if isinstance(prev_log, dict) else {}
 
     candidate_metrics = champion.get("test_metrics") or {}
     candidate_score = _metric_score(candidate_metrics)
+    candidate_accuracy = float(candidate_metrics.get("accuracy", 0.0) or 0.0)
+    candidate_macro_f1 = float(candidate_metrics.get("macro_f1", 0.0) or 0.0)
+    candidate_balanced_accuracy = float(candidate_metrics.get("balanced_accuracy", 0.0) or 0.0)
+    candidate_positive_precision = float(candidate_metrics.get("positive_precision", 0.0) or 0.0)
+    candidate_positive_recall = float(candidate_metrics.get("positive_recall", 0.0) or 0.0)
     candidate_neutral_f1 = float(candidate_metrics.get("neutral_f1", 0.0) or 0.0)
 
     prev_score = _metric_score(prev_metrics) if prev_metrics else None
@@ -994,6 +1565,34 @@ def main() -> int:
             promotion_reasons.append(
                 f"candidate_neutral_f1={candidate_neutral_f1:.4f} < min_allowed_neutral_f1={min_allowed_neutral:.4f}"
             )
+
+    if candidate_accuracy < float(args.promotion_min_accuracy):
+        promote_ok = False
+        promotion_reasons.append(
+            f"candidate_accuracy={candidate_accuracy:.4f} < min_accuracy={float(args.promotion_min_accuracy):.4f}"
+        )
+    if candidate_macro_f1 < float(args.promotion_min_macro_f1):
+        promote_ok = False
+        promotion_reasons.append(
+            f"candidate_macro_f1={candidate_macro_f1:.4f} < min_macro_f1={float(args.promotion_min_macro_f1):.4f}"
+        )
+    if candidate_balanced_accuracy < float(args.promotion_min_balanced_accuracy):
+        promote_ok = False
+        promotion_reasons.append(
+            f"candidate_balanced_accuracy={candidate_balanced_accuracy:.4f} < min_balanced_accuracy={float(args.promotion_min_balanced_accuracy):.4f}"
+        )
+    if candidate_positive_precision < float(args.promotion_min_positive_precision):
+        promote_ok = False
+        promotion_reasons.append(
+            f"candidate_positive_precision={candidate_positive_precision:.4f} < min_positive_precision={float(args.promotion_min_positive_precision):.4f}"
+        )
+
+    pos_recall_precision_gap = candidate_positive_recall - candidate_positive_precision
+    if pos_recall_precision_gap > float(args.promotion_max_pos_recall_precision_gap):
+        promote_ok = False
+        promotion_reasons.append(
+            f"pos_recall_precision_gap={pos_recall_precision_gap:.4f} > max_gap={float(args.promotion_max_pos_recall_precision_gap):.4f}"
+        )
 
     dq_ok, dq_reasons, dq_summary = _data_quality_gate(
         PROJECT_ROOT,
@@ -1019,12 +1618,13 @@ def main() -> int:
             b=champion["b"],
             mu=mu,
             sigma=sigma,
-            feature_dim=int(X.shape[1]),
+            feature_dim=dataset_feature_dim,
+            feature_names=feature_names,
             temperature=float(champion.get("temperature", 1.0) or 1.0),
             class_logit_bias=np.asarray(champion.get("class_logit_bias", [0.0, 0.0, 0.0]), dtype=np.float64),
         )
     else:
-        if prev_model_path is not None and prev_model_path.exists():
+        if prev_model_path is not None and prev_model_path.exists() and (rollback_schema_ok or (not bool(args.rollback_require_schema_match))):
             shutil.copy2(prev_model_path, model_path)
             deployed_from_previous = True
             deployed_previous_path = str(prev_model_path)
@@ -1036,19 +1636,40 @@ def main() -> int:
                 b=champion["b"],
                 mu=mu,
                 sigma=sigma,
-                feature_dim=int(X.shape[1]),
+                feature_dim=dataset_feature_dim,
+                feature_names=feature_names,
                 temperature=float(champion.get("temperature", 1.0) or 1.0),
                 class_logit_bias=np.asarray(champion.get("class_logit_bias", [0.0, 0.0, 0.0]), dtype=np.float64),
             )
-            promotion_reasons.append("rollback_target_missing_deployed_candidate")
+            if prev_model_path is not None and prev_model_path.exists():
+                promotion_reasons.append(f"rollback_blocked_schema_guard:{rollback_schema_reason}")
+            else:
+                promotion_reasons.append("rollback_target_missing_deployed_candidate")
 
     label_counts = {name: int(np.sum(y == cid)) for name, cid in LABEL_TO_ID.items()}
 
+    dataset_lineage = ds.get("lineage", {}) if isinstance(ds.get("lineage"), dict) else {}
+    feature_schema_version = str(
+        dataset_lineage.get("feature_schema_version")
+        or ds.get("feature_schema_version")
+        or "trade_behavior_features_v2"
+    )
+    trainer_script_path = Path(__file__).resolve()
+    model_sha256 = _sha256_file(model_path)
+    dataset_sha256 = _sha256_file(dataset_path)
+    deployed_previous_model_sha256 = _sha256_file(Path(deployed_previous_path)) if deployed_previous_path else ""
+
     log_payload = {
+        "log_schema_version": max(int(os.getenv("LOG_SCHEMA_VERSION", "2")), 1),
+        "run_id": str(os.getenv("CORRELATION_RUN_ID", "") or "").strip(),
+        "iter_id": str(os.getenv("CORRELATION_ITER_ID", "") or "").strip(),
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "dataset": str(dataset_path),
         "rows": int(len(y)),
+        "feature_dim": int(dataset_feature_dim),
+        "feature_names": feature_names,
         "train_rows": int(len(y_tr)),
+        "validation_rows": int(len(y_val)),
         "test_rows": int(len(y_te)),
         "label_counts": label_counts,
         "dataset_skipped_dim_mismatch": int(ds.get("_skipped_dim_mismatch", 0) or 0),
@@ -1060,12 +1681,17 @@ def main() -> int:
             {
                 "seed": int(r["seed"]),
                 "best_epoch": int(r["best_epoch"]),
+                "epochs_ran": int(r.get("epochs_ran", 0)),
+                "early_stopped": bool(r.get("early_stopped", False)),
                 "best_train_loss": float(r["best_train_loss"]),
-                "best_test_loss": float(r["best_test_loss"]),
+                "best_validation_loss": float(r.get("best_validation_loss", 0.0)),
                 "best_checkpoint_score": float(r.get("best_checkpoint_score", 0.0)),
                 "temperature": float(r["temperature"]),
                 "class_logit_bias": r.get("class_logit_bias", [0.0, 0.0, 0.0]),
                 "score": float(r["score"]),
+                "validation_metrics_pre_threshold_tuning": r.get("validation_metrics_pre_threshold_tuning", {}),
+                "validation_metrics_threshold_tuned": r.get("validation_metrics_threshold_tuned", {}),
+                "validation_metrics": r.get("validation_metrics", {}),
                 "test_metrics_pre_threshold_tuning": r.get("test_metrics_pre_threshold_tuning", {}),
                 "test_metrics": r["test_metrics"],
                 "threshold_tuning": r.get("threshold_tuning", {}),
@@ -1074,12 +1700,18 @@ def main() -> int:
         ],
         "champion_seed": int(champion["seed"]),
         "best_epoch": int(champion["best_epoch"]),
+        "epochs_ran": int(champion.get("epochs_ran", 0)),
+        "early_stopped": bool(champion.get("early_stopped", False)),
         "best_train_loss": float(champion["best_train_loss"]),
-        "test_loss_pre_calibration": float(champion["test_loss_pre_calibration"]),
-        "test_loss_post_calibration": float(champion["test_loss_post_calibration"]),
+        "best_validation_loss": float(champion.get("best_validation_loss", 0.0)),
+        "validation_loss_pre_calibration": float(champion.get("validation_loss_pre_calibration", 0.0)),
+        "validation_loss_post_calibration": float(champion.get("validation_loss_post_calibration", 0.0)),
         "temperature": float(champion["temperature"]),
         "class_logit_bias": champion.get("class_logit_bias", [0.0, 0.0, 0.0]),
         "train_metrics": champion["train_metrics"],
+        "validation_metrics_pre_threshold_tuning": champion.get("validation_metrics_pre_threshold_tuning", {}),
+        "validation_metrics_threshold_tuned": champion.get("validation_metrics_threshold_tuned", {}),
+        "validation_metrics": champion.get("validation_metrics", {}),
         "test_metrics_pre_threshold_tuning": champion.get("test_metrics_pre_threshold_tuning", {}),
         "test_metrics": champion["test_metrics"],
         "threshold_tuning": champion.get("threshold_tuning", {}),
@@ -1091,17 +1723,43 @@ def main() -> int:
         "deployed_previous_model": deployed_previous_path,
         "promotion_gate": {
             "rollback_enabled": bool(args.rollback_on_regression),
+            "rollback_require_schema_match": bool(args.rollback_require_schema_match),
+            "rollback_schema_guard": {
+                "enabled": bool(args.rollback_require_schema_match),
+                "ok": bool(rollback_schema_ok),
+                "reason": str(rollback_schema_reason),
+                "dataset_feature_dim": int(dataset_feature_dim),
+                "dataset_feature_names_count": int(len(feature_names)),
+                "dataset_feature_names_sha256": _sha256_json_obj(feature_names),
+                "previous_model": {
+                    "path": str(prev_model_schema.get("path", "")),
+                    "exists": bool(prev_model_schema.get("exists", False)),
+                    "load_ok": bool(prev_model_schema.get("load_ok", False)),
+                    "feature_dim_field": int(prev_model_schema.get("feature_dim_field", 0) or 0),
+                    "effective_dim": int(prev_model_schema.get("effective_dim", 0) or 0),
+                    "feature_names_count": int(prev_model_schema.get("feature_names_count", 0) or 0),
+                    "has_feature_names": bool(prev_model_schema.get("has_feature_names", False)),
+                    "feature_names_sha256": str(prev_model_schema.get("feature_names_sha256", "")),
+                    "error": str(prev_model_schema.get("error", "")),
+                },
+            },
             "strict_gate": bool(args.strict_promotion_gate),
             "reasons": promotion_reasons,
             "thresholds": {
                 "promotion_min_score_delta": float(args.promotion_min_score_delta),
                 "promotion_max_neutral_f1_drop": float(args.promotion_max_neutral_f1_drop),
+                "promotion_min_accuracy": float(args.promotion_min_accuracy),
+                "promotion_min_macro_f1": float(args.promotion_min_macro_f1),
+                "promotion_min_balanced_accuracy": float(args.promotion_min_balanced_accuracy),
+                "promotion_min_positive_precision": float(args.promotion_min_positive_precision),
+                "promotion_max_pos_recall_precision_gap": float(args.promotion_max_pos_recall_precision_gap),
             },
             "previous_model": str(prev_model_path) if prev_model_path else None,
             "previous_log": str(prev_log_path) if prev_log_path else None,
         },
         "data_quality_gate": dq_summary,
         "training_objective": {
+            "snapshot_weight_cap": snapshot_weight_cap,
             "focal_gamma": float(max(args.focal_gamma, 0.0)),
             "focal_alpha": {
                 "negative": float(max(args.focal_alpha_negative, 0.05)),
@@ -1118,19 +1776,69 @@ def main() -> int:
             "threshold_tuning": {
                 "positive_recall_target": float(args.positive_recall_target),
                 "neutral_recall_floor": float(args.neutral_recall_floor),
+                "positive_precision_floor": float(args.threshold_positive_precision_floor),
+                "max_pos_recall_precision_gap": float(args.threshold_max_pos_recall_precision_gap),
+                "score_weight_positive_precision": float(args.threshold_score_weight_positive_precision),
+                "score_gap_penalty": float(args.threshold_score_gap_penalty),
                 "positive_logit_bias_max": float(args.positive_logit_bias_max),
                 "negative_logit_bias_max": float(args.negative_logit_bias_max),
                 "grid_steps": int(max(args.logit_bias_steps, 3)),
             },
+            "early_stopping": {
+                "patience": int(max(args.early_stop_patience, 1)),
+                "min_delta": float(max(args.early_stop_min_delta, 0.0)),
+                "min_epochs": int(max(args.early_stop_min_epochs, 1)),
+            },
+            "split": {
+                "outer_mode": str(args.split_mode),
+                "test_ratio": float(args.test_ratio),
+                "val_ratio": float(args.val_ratio),
+                "purge_seconds": float(args.purge_seconds),
+            },
+        },
+        "lineage": {
+            "feature_schema_version": feature_schema_version,
+            "dataset_path": str(dataset_path),
+            "dataset_sha256": dataset_sha256,
+            "dataset_payload_sha256": str(dataset_lineage.get("output_payload_sha256") or ""),
+            "dataset_builder_script": str(dataset_lineage.get("builder_script") or ""),
+            "dataset_builder_script_sha256": str(dataset_lineage.get("builder_script_sha256") or ""),
+            "dataset_builder_git_commit": str(dataset_lineage.get("git_commit") or ""),
+            "trainer_script": str(trainer_script_path),
+            "trainer_script_sha256": _sha256_file(trainer_script_path),
+            "git_commit": _git_commit(PROJECT_ROOT),
+            "model_sha256": model_sha256,
+            "deployed_previous_model_sha256": deployed_previous_model_sha256,
+            "candidate_payload_sha256": _sha256_json_obj(
+                {
+                    "test_metrics": champion["test_metrics"],
+                    "candidate_score": float(candidate_score),
+                    "champion_seed": int(champion["seed"]),
+                }
+            ),
         },
         "outcome_learning": ds.get("outcome_learning", {}),
     }
 
     log_path = LOGS_DIR / f"trade_behavior_policy_{timestamp}.json"
+    snapshot_training_coverage = _write_snapshot_training_coverage_artifact(
+        project_root=PROJECT_ROOT,
+        dataset_path=dataset_path,
+        dataset_obj=ds,
+        model_path=model_path,
+        log_path=log_path,
+    )
+    log_payload["snapshot_training_coverage"] = snapshot_training_coverage
     log_path.write_text(json.dumps(log_payload, indent=2), encoding="utf-8")
 
     print("Saved model:", model_path)
     print("Saved log:", log_path)
+    print(
+        "Snapshot training coverage:",
+        snapshot_training_coverage.get("artifact_path", ""),
+        "all_snapshot_data_incorporated=",
+        int(bool(snapshot_training_coverage.get("all_snapshot_data_incorporated", False))),
+    )
     print(
         json.dumps(
             {

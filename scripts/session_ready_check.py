@@ -1,6 +1,6 @@
 import argparse
 import json
-import os
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -9,46 +9,143 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = PROJECT_ROOT / "data" / "jsonl_link.sqlite3"
+DEFAULT_EXPECTED_PROFILES = ["conservative", "aggressive"]
+
+
+def _command_invokes_target(command: str, match: str) -> bool:
+    if (not command) or (not match):
+        return False
+    try:
+        parts = shlex.split(command)
+    except Exception:
+        parts = str(command).split()
+    if not parts:
+        return False
+    if parts[0].isdigit():
+        parts = parts[1:]
+    for part in parts[:3]:
+        if part == match or part.endswith(f"/{match}"):
+            return True
+    return False
 
 
 def _proc_count(match: str) -> int:
-    p = subprocess.run(["/bin/ps", "-axo", "command"], capture_output=True, text=True, check=False)
-    return sum(1 for line in (p.stdout or "").splitlines() if match in line)
+    commands: list[str] = []
+    try:
+        p = subprocess.run(["/bin/ps", "-axo", "command"], capture_output=True, text=True, check=False)
+        commands = (p.stdout or "").splitlines()
+    except Exception:
+        commands = []
+
+    if not commands:
+        try:
+            p = subprocess.run(["pgrep", "-af", match], capture_output=True, text=True, check=False)
+            if p.returncode == 0:
+                return sum(1 for line in (p.stdout or "").splitlines() if _command_invokes_target(line, match))
+            return 0
+        except Exception:
+            return 0
+
+    return sum(1 for line in commands if _command_invokes_target(line, match))
+
+
+def _load_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _parse_timestamp(raw: object) -> datetime | None:
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _profile_from_heartbeat_name(path: Path) -> str:
+    name = path.name
+    if not name.startswith("shadow_loop_") or not name.endswith(".json"):
+        return ""
+    core = name[len("shadow_loop_") : -5]
+    parts = core.rsplit("_", 3)
+    return parts[0].strip().lower() if len(parts) == 4 else core.strip().lower()
+
+
+def _profile_from_runtime_checkpoint(path: Path) -> str:
+    name = path.parent.name
+    if not name.startswith("shadow_"):
+        return ""
+    profile = name[len("shadow_") :]
+    for suffix in ("_equities", "_crypto"):
+        if profile.endswith(suffix):
+            profile = profile[: -len(suffix)]
+            break
+    return profile.strip().lower()
+
+
+def _profile_activity_map() -> dict[str, datetime]:
+    activity: dict[str, datetime] = {}
+    hb_dir = PROJECT_ROOT / "governance" / "health"
+    now = datetime.now(timezone.utc)
+
+    for p in hb_dir.glob("shadow_loop_*.json"):
+        profile = _profile_from_heartbeat_name(p)
+        if not profile:
+            continue
+        ts = _parse_timestamp(_load_json(p).get("timestamp_utc"))
+        if ts is None or ts > now:
+            continue
+        current = activity.get(profile)
+        if current is None or ts > current:
+            activity[profile] = ts
+
+    for p in (PROJECT_ROOT / "governance").glob("shadow_*/runtime_checkpoint.json"):
+        profile = _profile_from_runtime_checkpoint(p)
+        if not profile:
+            continue
+        ts = _parse_timestamp(_load_json(p).get("timestamp_utc"))
+        if ts is None or ts > now:
+            continue
+        current = activity.get(profile)
+        if current is None or ts > current:
+            activity[profile] = ts
+
+    return activity
+
+
+def _resolve_expected_profiles(raw: str, activity: dict[str, datetime], heartbeat_max_age_sec: float) -> list[str]:
+    parts = [x.strip().lower() for x in str(raw or "").split(",") if x.strip()]
+    if parts and parts != ["auto"]:
+        return parts
+
+    now = datetime.now(timezone.utc)
+    recent_window = max(float(heartbeat_max_age_sec) * 3.0, 900.0)
+    recent = sorted(
+        profile
+        for profile, ts in activity.items()
+        if max((now - ts).total_seconds(), 0.0) <= recent_window
+    )
+    return recent or list(DEFAULT_EXPECTED_PROFILES)
 
 
 def _profile_heartbeat_ok(profile: str, max_age_sec: float) -> tuple[bool, str]:
-    hb_dir = PROJECT_ROOT / "governance" / "health"
-    candidates = sorted(hb_dir.glob(f"shadow_loop_{profile}*.json"))
-    if not candidates:
-        return False, f"missing_pattern=shadow_loop_{profile}*.json"
-    best_age = None
-    for p in candidates:
-        try:
-            payload = json.loads(p.read_text(encoding="utf-8"))
-            ts = str(payload.get("timestamp_utc", "")).replace("Z", "+00:00")
-            dt = datetime.fromisoformat(ts).astimezone(timezone.utc)
-            age = max((datetime.now(timezone.utc) - dt).total_seconds(), 0.0)
-            if best_age is None or age < best_age:
-                best_age = age
-        except Exception:
-            continue
-    if best_age is None:
-        return False, "parse_error_all_candidates"
-    return best_age <= max_age_sec, f"age_sec={best_age:.1f}"
+    activity = _profile_activity_map()
+    ts = activity.get(str(profile or "").strip().lower())
+    if ts is None:
+        return False, f"missing_profile={profile}"
+    age = max((datetime.now(timezone.utc) - ts).total_seconds(), 0.0)
+    return age <= max_age_sec, f"age_sec={age:.1f}"
 
 
 def _latest_heartbeat_age_sec() -> float:
-    hb_dir = PROJECT_ROOT / "governance" / "health"
-    ages = []
+    activity = _profile_activity_map()
+    if not activity:
+        return 1e9
     now = datetime.now(timezone.utc)
-    for p in hb_dir.glob("shadow_loop_*.json"):
-        try:
-            payload = json.loads(p.read_text(encoding="utf-8"))
-            ts = str(payload.get("timestamp_utc", "")).replace("Z", "+00:00")
-            dt = datetime.fromisoformat(ts).astimezone(timezone.utc)
-            ages.append(max((now - dt).total_seconds(), 0.0))
-        except Exception:
-            continue
+    ages = [max((now - ts).total_seconds(), 0.0) for ts in activity.values()]
     return min(ages) if ages else 1e9
 
 
@@ -65,15 +162,30 @@ def _sql_writable() -> bool:
         return False
 
 
+def _halt_flag_detail() -> tuple[bool, str]:
+    halt_flag = PROJECT_ROOT / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
+    if not halt_flag.exists():
+        return False, str(halt_flag)
+    payload = _load_json(halt_flag)
+    reason = str(payload.get("reason") or "unknown")
+    source = str(payload.get("source") or "")
+    detail = str(halt_flag)
+    if reason:
+        detail += f" reason={reason}"
+    if source:
+        detail += f" source={source}"
+    return True, detail
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Single PASS/FAIL readiness check.")
-    parser.add_argument("--min-disk-gb", type=float, default=float(os.getenv("SESSION_READY_MIN_DISK_GB", "15.0")))
+    parser.add_argument("--min-disk-gb", type=float, default=float(__import__("os").getenv("SESSION_READY_MIN_DISK_GB", "15.0")))
     parser.add_argument(
         "--heartbeat-max-age-sec",
         type=float,
-        default=float(os.getenv("SESSION_READY_HEARTBEAT_MAX_AGE_SEC", "300.0")),
+        default=float(__import__("os").getenv("SESSION_READY_HEARTBEAT_MAX_AGE_SEC", "300.0")),
     )
-    parser.add_argument("--expected-profiles", default=os.getenv("SESSION_READY_EXPECTED_PROFILES", "conservative,aggressive"))
+    parser.add_argument("--expected-profiles", default=__import__("os").getenv("SESSION_READY_EXPECTED_PROFILES", "auto"))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -90,10 +202,11 @@ def main() -> int:
     age = _latest_heartbeat_age_sec()
     checks.append({"name": "heartbeat_freshness", "ok": age <= args.heartbeat_max_age_sec, "details": f"heartbeat_age_sec={age:.1f}"})
 
-    halt_flag = PROJECT_ROOT / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
-    checks.append({"name": "global_halt_not_set", "ok": not halt_flag.exists(), "details": str(halt_flag)})
+    halt_active, halt_detail = _halt_flag_detail()
+    checks.append({"name": "global_halt_not_set", "ok": not halt_active, "details": halt_detail})
 
-    expected_profiles = [x.strip() for x in str(args.expected_profiles).split(",") if x.strip()]
+    activity = _profile_activity_map()
+    expected_profiles = _resolve_expected_profiles(args.expected_profiles, activity, args.heartbeat_max_age_sec)
     for profile in expected_profiles:
         ok_prof, details = _profile_heartbeat_ok(profile, args.heartbeat_max_age_sec)
         checks.append({"name": f"profile_heartbeat_{profile}", "ok": ok_prof, "details": details})
@@ -102,6 +215,7 @@ def main() -> int:
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "ok": ok,
+        "expected_profiles": expected_profiles,
         "checks": checks,
     }
 

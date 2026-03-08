@@ -5,6 +5,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from core.accountability import write_registry_mutation_journal
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -57,6 +58,7 @@ def main() -> int:
 
     reg_path = Path(args.registry)
     reg = json.loads(reg_path.read_text(encoding="utf-8"))
+    original_reg = json.loads(json.dumps(reg))
 
     grouped = defaultdict(list)
     for row in reg.get("sub_bots", []):
@@ -109,9 +111,25 @@ def main() -> int:
     if args.apply:
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         backup = reg_path.with_name(f"master_bot_registry.backup_redundant_prune_{ts}.json")
-        backup.write_text(json.dumps(reg, indent=2), encoding="utf-8")
+        backup.write_text(json.dumps(original_reg, indent=2), encoding="utf-8")
         reg_path.write_text(json.dumps(reg, indent=2), encoding="utf-8")
         out["backup"] = str(backup)
+        try:
+            write_registry_mutation_journal(
+                project_root=str(PROJECT_ROOT),
+                actor="prune_redundant_bots",
+                reason="apply_redundant_family_prune",
+                before=original_reg if isinstance(original_reg, dict) else {},
+                after=reg if isinstance(reg, dict) else {},
+                extra={
+                    "changed_count": len(changes),
+                    "keep_signal": int(args.keep_signal),
+                    "keep_infra": int(args.keep_infra),
+                    "backup_path": str(backup),
+                },
+            )
+        except Exception:
+            pass
 
     print(json.dumps(out, indent=2))
     return 0

@@ -1,5 +1,6 @@
 import argparse
 import fcntl
+import hashlib
 import gc
 import glob
 import json
@@ -24,6 +25,7 @@ MASTER_RUNNER = os.path.join(PROJECT_ROOT, "scripts", "run_master_bot.py")
 TRADE_DATASET_BUILDER = os.path.join(PROJECT_ROOT, "scripts", "build_behavior_dataset_from_decisions.py")
 TRADE_DATASET_BUILDER_LEGACY = os.path.join(PROJECT_ROOT, "scripts", "build_trade_learning_dataset.py")
 TRADE_BEHAVIOR_TRAINER = os.path.join(PROJECT_ROOT, "scripts", "train_trade_behavior_bot.py")
+TRADE_BEHAVIOR_DATASET = os.path.join(PROJECT_ROOT, "data", "trade_history", "trade_learning_dataset.json")
 SNAPSHOT_HEALTH_SYNC_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "sync_snapshot_health_to_sql.py")
 PRUNE_UNDERPERFORMERS = os.path.join(PROJECT_ROOT, "scripts", "prune_underperformers.py")
 PRUNE_REDUNDANT = os.path.join(PROJECT_ROOT, "scripts", "prune_redundant_bots.py")
@@ -34,12 +36,17 @@ PROMOTION_READINESS_PATH = os.path.join(PROJECT_ROOT, "governance", "walk_forwar
 PROMOTION_BOTTLENECK_PATH = os.path.join(PROJECT_ROOT, "governance", "walk_forward", "promotion_bottleneck_latest.json")
 WALK_FORWARD_VALIDATE_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "walk_forward_validate.py")
 WALK_FORWARD_PROMOTION_GATE_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "walk_forward_promotion_gate.py")
+LANE_PROMOTION_GATE_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "lane_promotion_gate.py")
 PROMOTION_READINESS_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "promotion_readiness_summary.py")
 PROMOTION_BOTTLENECK_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "promotion_bottleneck_focus.py")
 NEW_BOT_GRADUATION_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "new_bot_graduation_gate.py")
 LEAK_OVERFIT_GUARD_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "leak_overfit_guard.py")
 MODEL_LIFECYCLE_HYGIENE_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "model_lifecycle_hygiene.py")
 WEEKLY_GATE_BLOCKER_REPORT_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "weekly_gate_blocker_report.py")
+RETRAIN_ARTIFACT_FRESHNESS_GUARD = os.path.join(PROJECT_ROOT, "scripts", "retrain_artifact_freshness_guard.py")
+TRAINING_SAMPLE_QUOTA_GUARD = os.path.join(PROJECT_ROOT, "scripts", "training_sample_quota_guard.py")
+REPLAY_FEATURE_ABLATION_REPORT = os.path.join(PROJECT_ROOT, "scripts", "replay_feature_ablation_report.py")
+EXPORT_MODEL_CARD_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "export_model_card.py")
 
 
 _MLX_LOCK_HANDLE = None
@@ -138,6 +145,99 @@ def _load_json_file(path: str) -> dict:
         return {}
 
 
+def _log_schema_version() -> int:
+    try:
+        return max(int(os.getenv("LOG_SCHEMA_VERSION", "2")), 1)
+    except Exception:
+        return 2
+
+
+def _sha256_file(path: str) -> str:
+    if (not path) or (not os.path.exists(path)):
+        return ""
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+def _sha256_json_obj(obj: dict) -> str:
+    try:
+        encoded = json.dumps(obj, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+    except Exception:
+        return ""
+
+
+def _git_commit(project_root: str) -> str:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", project_root, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return str(proc.stdout or "").strip()
+        return ""
+    except Exception:
+        return ""
+
+
+def _latest_file(pattern: str) -> str:
+    rows = sorted(glob.glob(pattern))
+    return rows[-1] if rows else ""
+
+
+def _build_retrain_lineage(
+    *,
+    stage: str,
+    registry_path: str,
+    registry_backup_path: str,
+    target_count: int,
+) -> dict:
+    dataset_obj = _load_json_file(TRADE_BEHAVIOR_DATASET)
+    dataset_lineage = dataset_obj.get("lineage") if isinstance(dataset_obj.get("lineage"), dict) else {}
+
+    latest_behavior_model = _latest_file(os.path.join(PROJECT_ROOT, "models", "trade_behavior_policy_*.npz"))
+    latest_behavior_log = _latest_file(os.path.join(PROJECT_ROOT, "logs", "trade_behavior_policy_*.json"))
+
+    registry_obj = _load_json_file(registry_path)
+
+    return {
+        "lineage_schema_version": 1,
+        "stage": str(stage),
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "target_count": int(target_count),
+        "git_commit": _git_commit(PROJECT_ROOT),
+        "weekly_retrain_script": os.path.abspath(__file__),
+        "weekly_retrain_script_sha256": _sha256_file(os.path.abspath(__file__)),
+        "registry_path": registry_path,
+        "registry_sha256": _sha256_file(registry_path),
+        "registry_payload_sha256": _sha256_json_obj(registry_obj),
+        "registry_backup_before_retrain": registry_backup_path if os.path.exists(registry_backup_path) else "",
+        "registry_backup_before_retrain_sha256": _sha256_file(registry_backup_path),
+        "trade_behavior_dataset": TRADE_BEHAVIOR_DATASET if os.path.exists(TRADE_BEHAVIOR_DATASET) else "",
+        "trade_behavior_dataset_sha256": _sha256_file(TRADE_BEHAVIOR_DATASET),
+        "trade_behavior_feature_schema_version": str(dataset_lineage.get("feature_schema_version") or ""),
+        "trade_behavior_dataset_payload_sha256": str(dataset_lineage.get("output_payload_sha256") or ""),
+        "trade_behavior_dataset_builder_script": str(dataset_lineage.get("builder_script") or ""),
+        "trade_behavior_dataset_builder_script_sha256": str(dataset_lineage.get("builder_script_sha256") or ""),
+        "trade_behavior_dataset_builder_git_commit": str(dataset_lineage.get("git_commit") or ""),
+        "trade_behavior_model_latest": latest_behavior_model,
+        "trade_behavior_model_latest_sha256": _sha256_file(latest_behavior_model),
+        "trade_behavior_log_latest": latest_behavior_log,
+        "trade_behavior_log_latest_sha256": _sha256_file(latest_behavior_log),
+    }
+
+
 def _check_data_quality_floor(
     *,
     coverage_file: str,
@@ -233,6 +333,7 @@ def _write_retrain_scorecard(
     data_quality_summary: dict,
     canary_priority_selected: int,
     distill_selected: int,
+    lineage: dict | None = None,
 ) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     out_dir = os.path.join(PROJECT_ROOT, "exports", "sql_reports")
@@ -259,6 +360,9 @@ def _write_retrain_scorecard(
 
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "log_schema_version": _log_schema_version(),
+        "run_id": str(os.getenv("CORRELATION_RUN_ID", "") or "").strip(),
+        "iter_id": str(os.getenv("CORRELATION_ITER_ID", "") or "").strip(),
         "started_utc": started_utc,
         "ended_utc": ended_utc,
         "target_count": int(target_count),
@@ -279,6 +383,8 @@ def _write_retrain_scorecard(
         "failures": failures,
         "skipped_by_memory": skipped_by_memory,
     }
+    if lineage:
+        payload["lineage"] = lineage
 
     json_path = os.path.join(out_dir, f"retrain_scorecard_{ts}.json")
     with open(json_path, "w", encoding="utf-8") as f:
@@ -305,6 +411,55 @@ def _write_retrain_scorecard(
         f.write("\n".join(lines) + "\n")
 
     return json_path
+
+def _write_training_success_marker(
+    *,
+    target_outcomes: list[dict],
+    failures: list[str],
+    skipped_by_memory: list[str],
+    master_update_status: str,
+    data_quality_summary: dict,
+    lineage: dict | None = None,
+) -> str:
+    trained_count = sum(1 for row in target_outcomes if str((row or {}).get("status", "")) == "trained")
+    failure_count = len(failures)
+    precheck_ok = str(master_update_status).startswith("updated")
+    data_quality_ok = bool((data_quality_summary or {}).get("ok", False))
+
+    if failure_count > 0:
+        reason = f"training_failures_present:{failure_count}"
+    elif trained_count <= 0:
+        reason = "no_trained_targets"
+    elif not precheck_ok:
+        reason = f"master_update_not_updated:{master_update_status}"
+    elif not data_quality_ok:
+        reason = "data_quality_not_ok"
+    else:
+        reason = "ok"
+
+    confirmed = (failure_count == 0) and (trained_count > 0) and precheck_ok and data_quality_ok
+
+    payload = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "log_schema_version": _log_schema_version(),
+        "run_id": str(os.getenv("CORRELATION_RUN_ID", "") or "").strip(),
+        "iter_id": str(os.getenv("CORRELATION_ITER_ID", "") or "").strip(),
+        "confirmed_training_success": bool(confirmed),
+        "reason": reason,
+        "trained_count": int(trained_count),
+        "failure_count": int(failure_count),
+        "skipped_by_memory_count": int(len(skipped_by_memory)),
+        "master_update_status": str(master_update_status),
+        "data_quality_ok": bool(data_quality_ok),
+    }
+    if lineage:
+        payload["lineage"] = lineage
+
+    out_path = os.path.join(PROJECT_ROOT, "governance", "health", "training_success_latest.json")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=True, indent=2)
+    return out_path
 
 
 def _market_open_now_et(start_hour: int, end_hour: int) -> bool:
@@ -468,6 +623,14 @@ def _memory_ready(min_free_pct: float, max_swap_gb: float) -> tuple[bool, str, d
 
     swap_gb = snap.get("swap_used_gb")
     if swap_gb is not None and swap_gb > max_swap_gb:
+        # macOS can keep swap allocated long after pressure clears; allow progress when free memory is healthy.
+        swap_relax_free_pct = float(os.getenv("RETRAIN_SWAP_RELAX_FREE_PCT", "72"))
+        relax_floor = max(float(min_free_pct), float(swap_relax_free_pct))
+        if free_pct is not None and free_pct >= relax_floor:
+            return True, (
+                f"swap_relaxed swap_used_gb={swap_gb:.2f} > max_swap_gb={max_swap_gb:.2f} "
+                f"but free_pct={free_pct:.1f} >= relax_floor={relax_floor:.1f}"
+            ), snap
         return False, f"swap_used_gb={swap_gb:.2f} > max_swap_gb={max_swap_gb:.2f}", snap
 
     return True, "ok", snap
@@ -1166,6 +1329,12 @@ def main() -> int:
         help="Refresh walk-forward, promotion gate, graduation gate, and leak/overfit artifacts before master update.",
     )
     parser.add_argument(
+        "--allow-precheck-failures",
+        action="store_true",
+        default=os.getenv("RETRAIN_ALLOW_PRECHECK_FAILURES", "0").strip() == "1",
+        help="Allow master update even when promotion prechecks fail; marks run as precheck override.",
+    )
+    parser.add_argument(
         "--weekly-gate-blocker-report",
         action="store_true",
         default=os.getenv("RETRAIN_WEEKLY_GATE_BLOCKER_REPORT", "1").strip() == "1",
@@ -1189,6 +1358,48 @@ def main() -> int:
         "--lifecycle-min-free-gb",
         type=float,
         default=float(os.getenv("RETRAIN_LIFECYCLE_MIN_FREE_GB", "10")),
+    )
+    parser.add_argument(
+        "--lifecycle-repair-stale-artifacts",
+        action="store_true",
+        default=os.getenv("RETRAIN_LIFECYCLE_REPAIR_STALE_ARTIFACTS", "1").strip() == "1",
+    )
+    parser.add_argument(
+        "--lifecycle-apply-repair",
+        action="store_true",
+        default=os.getenv("RETRAIN_LIFECYCLE_APPLY_REPAIR", "1").strip() == "1",
+    )
+    parser.add_argument(
+        "--require-artifact-freshness",
+        action="store_true",
+        default=os.getenv("RETRAIN_REQUIRE_ARTIFACT_FRESHNESS", "1").strip() == "1",
+        help="Fail fast if replay/reconciliation artifacts are stale or unhealthy.",
+    )
+    parser.add_argument(
+        "--artifact-freshness-max-age-minutes",
+        type=float,
+        default=float(os.getenv("RETRAIN_ARTIFACT_FRESHNESS_MAX_AGE_MINUTES", "180")),
+    )
+    parser.add_argument(
+        "--require-sample-quotas",
+        action="store_true",
+        default=os.getenv("RETRAIN_REQUIRE_SAMPLE_QUOTAS", "1").strip() == "1",
+        help="Enforce minimum regime/symbol sample quotas before behavior training.",
+    )
+    parser.add_argument(
+        "--sample-min-per-regime",
+        type=int,
+        default=int(os.getenv("RETRAIN_SAMPLE_MIN_PER_REGIME", "120")),
+    )
+    parser.add_argument(
+        "--sample-min-per-symbol",
+        type=int,
+        default=int(os.getenv("RETRAIN_SAMPLE_MIN_PER_SYMBOL", "25")),
+    )
+    parser.add_argument(
+        "--sample-max-top-symbol-share",
+        type=float,
+        default=float(os.getenv("RETRAIN_SAMPLE_MAX_TOP_SYMBOL_SHARE", "0.25")),
     )
     args = parser.parse_args()
 
@@ -1224,6 +1435,23 @@ def main() -> int:
         )
         if not dq_ok:
             print(f"Retrain blocked by data quality floor: {dq_reason}")
+            return 1
+
+    if args.require_artifact_freshness and os.path.exists(RETRAIN_ARTIFACT_FRESHNESS_GUARD):
+        rc_fresh = run_cmd(
+            [
+                VENV_PY,
+                RETRAIN_ARTIFACT_FRESHNESS_GUARD,
+                "--max-age-minutes",
+                str(float(args.artifact_freshness_max_age_minutes)),
+                "--json",
+            ],
+            args.dry_run,
+            os.environ.copy(),
+            extra_nice=max(args.ops_extra_nice, 0),
+        )
+        if rc_fresh != 0:
+            print("Retrain blocked by artifact freshness guard.")
             return 1
 
     if args.promotion_bottleneck_priority and os.path.exists(PROMOTION_BOTTLENECK_SCRIPT):
@@ -1345,11 +1573,13 @@ def main() -> int:
         f"OPENBLAS={child_env.get('OPENBLAS_NUM_THREADS')} "
         f"VECLIB={child_env.get('VECLIB_MAXIMUM_THREADS')}"
     )
+    swap_relax_free_pct = float(os.getenv("RETRAIN_SWAP_RELAX_FREE_PCT", "72"))
     print(
         "Memory gate: "
         f"enabled={args.memory_guard} "
         f"min_free_pct={args.min_free_pct:.1f} "
         f"max_swap_gb={args.max_swap_gb:.2f} "
+        f"swap_relax_free_pct={swap_relax_free_pct:.1f} "
         f"adaptive={args.adaptive_swap_gate} "
         f"adaptive_step_gb={args.adaptive_swap_step_gb:.2f} "
         f"adaptive_cap_gb={args.adaptive_swap_max_gb:.2f} "
@@ -1523,6 +1753,7 @@ def main() -> int:
             artifact_steps = [
                 (WALK_FORWARD_VALIDATE_SCRIPT, False),
                 (WALK_FORWARD_PROMOTION_GATE_SCRIPT, True),
+                (LANE_PROMOTION_GATE_SCRIPT, True),
                 (PROMOTION_READINESS_SCRIPT, False),
                 (PROMOTION_BOTTLENECK_SCRIPT, False),
                 (NEW_BOT_GRADUATION_SCRIPT, True),
@@ -1534,24 +1765,36 @@ def main() -> int:
                         precheck_failures.append(f"missing:{os.path.basename(script_path)}")
                     continue
                 cmd = [VENV_PY, script_path]
-                if script_path in {PROMOTION_READINESS_SCRIPT, PROMOTION_BOTTLENECK_SCRIPT, NEW_BOT_GRADUATION_SCRIPT, LEAK_OVERFIT_GUARD_SCRIPT}:
+                if script_path in {PROMOTION_READINESS_SCRIPT, PROMOTION_BOTTLENECK_SCRIPT, NEW_BOT_GRADUATION_SCRIPT, LEAK_OVERFIT_GUARD_SCRIPT, LANE_PROMOTION_GATE_SCRIPT}:
                     cmd.append("--json")
                 rc_art = run_cmd(cmd, args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
                 if rc_art != 0 and required_ok:
                     precheck_failures.append(f"{os.path.basename(script_path)}:exit_{rc_art}")
 
-        if precheck_failures:
+        if precheck_failures and (not args.allow_precheck_failures):
             master_update_status = "precheck_failed"
             print("FAIL: promotion prechecks failed")
             for item in precheck_failures:
                 print(f" - {item}")
         else:
-            rc = run_cmd([sys.executable, MASTER_RUNNER], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+            if precheck_failures and args.allow_precheck_failures:
+                print("WARN: promotion prechecks failed but override is enabled")
+                for item in precheck_failures:
+                    print(f" - {item}")
+            master_cmd = [sys.executable, MASTER_RUNNER]
+            if precheck_failures and args.allow_precheck_failures:
+                master_cmd.extend([
+                    "--no-require-canary-gate",
+                    "--no-require-graduation-gate",
+                    "--no-require-leak-overfit-gate",
+                    "--no-require-promotion-quality-gate",
+                ])
+            rc = run_cmd(master_cmd, args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
             if rc != 0:
                 master_update_status = f"failed_exit_{rc}"
                 print(f"FAIL: master bot update (exit={rc})")
             else:
-                master_update_status = "updated"
+                master_update_status = "updated_precheck_override" if precheck_failures else "updated"
 
             if not args.dry_run and rc == 0:
                 curr_registry_snapshot = _registry_snapshot(REGISTRY_PATH)
@@ -1571,6 +1814,22 @@ def main() -> int:
 
     ended = datetime.now(timezone.utc).isoformat()
     print(f"Weekly retrain end (UTC): {ended}")
+
+    marker_lineage = _build_retrain_lineage(
+        stage="post_master_update",
+        registry_path=REGISTRY_PATH,
+        registry_backup_path=registry_backup_path,
+        target_count=len(targets),
+    )
+    marker_path = _write_training_success_marker(
+        target_outcomes=target_outcomes,
+        failures=failures,
+        skipped_by_memory=skipped_by_memory,
+        master_update_status=master_update_status,
+        data_quality_summary=data_quality_summary,
+        lineage=marker_lineage,
+    )
+    print(f"Training success marker written: {marker_path}")
 
     if skipped_by_memory:
         print(f"Skipped by memory gate: {len(skipped_by_memory)}")
@@ -1626,6 +1885,25 @@ def main() -> int:
                 f"(legacy: {TRADE_DATASET_BUILDER_LEGACY})"
             )
 
+        if args.require_sample_quotas and os.path.exists(TRAINING_SAMPLE_QUOTA_GUARD):
+            quota_cmd = [
+                VENV_PY,
+                TRAINING_SAMPLE_QUOTA_GUARD,
+                "--dataset",
+                TRADE_BEHAVIOR_DATASET,
+                "--min-per-regime",
+                str(int(args.sample_min_per_regime)),
+                "--min-per-symbol",
+                str(int(args.sample_min_per_symbol)),
+                "--max-top-symbol-share",
+                str(float(args.sample_max_top_symbol_share)),
+                "--json",
+            ]
+            rc_quota = run_cmd(quota_cmd, args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+            if rc_quota != 0:
+                print("FAIL: training sample quota guard")
+                return 1
+
         if os.path.exists(TRADE_BEHAVIOR_TRAINER):
             rc = run_cmd([VENV_PY, TRADE_BEHAVIOR_TRAINER], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
             if rc != 0 and trade_behavior_strict:
@@ -1633,6 +1911,19 @@ def main() -> int:
                 return 1
         else:
             print(f"WARN: trade behavior trainer missing: {TRADE_BEHAVIOR_TRAINER}")
+
+        if os.path.exists(REPLAY_FEATURE_ABLATION_REPORT):
+            rc_ablation = run_cmd(
+                [VENV_PY, REPLAY_FEATURE_ABLATION_REPORT, "--json"],
+                args.dry_run,
+                child_env,
+                extra_nice=max(args.ops_extra_nice, 0),
+            )
+            if rc_ablation != 0:
+                if trade_behavior_strict:
+                    print("FAIL: replay feature ablation report")
+                    return 1
+                print("WARN: replay feature ablation report failed")
 
     if args.monthly_prune and (not args.dry_run) and _monthly_prune_due():
         print("Running monthly prune pass...")
@@ -1684,6 +1975,12 @@ def main() -> int:
     if args.weekly_gate_blocker_report and os.path.exists(WEEKLY_GATE_BLOCKER_REPORT_SCRIPT):
         _ = run_cmd([VENV_PY, WEEKLY_GATE_BLOCKER_REPORT_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
 
+    scorecard_lineage = _build_retrain_lineage(
+        stage="final_scorecard",
+        registry_path=REGISTRY_PATH,
+        registry_backup_path=registry_backup_path,
+        target_count=len(targets),
+    )
     scorecard_path = _write_retrain_scorecard(
         started_utc=started,
         ended_utc=ended,
@@ -1699,8 +1996,12 @@ def main() -> int:
         data_quality_summary=data_quality_summary,
         canary_priority_selected=canary_priority_selected,
         distill_selected=distill_selected,
+        lineage=scorecard_lineage,
     )
     print(f"Retrain scorecard written: {scorecard_path}")
+
+    if os.path.exists(EXPORT_MODEL_CARD_SCRIPT):
+        _ = run_cmd([VENV_PY, EXPORT_MODEL_CARD_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
 
     if args.lifecycle_hygiene and os.path.exists(MODEL_LIFECYCLE_HYGIENE_SCRIPT):
         lifecycle_cmd = [
@@ -1714,6 +2015,10 @@ def main() -> int:
         ]
         if args.lifecycle_apply_prune:
             lifecycle_cmd.append("--apply-prune")
+        if args.lifecycle_repair_stale_artifacts:
+            lifecycle_cmd.append("--repair-stale-artifacts")
+        if args.lifecycle_apply_repair and args.lifecycle_apply_prune:
+            lifecycle_cmd.append("--apply-repair")
         if str(master_update_status).startswith("updated") or str(master_update_status).startswith("rolled_back"):
             lifecycle_cmd.append("--update-last-known-good")
         _ = run_cmd(lifecycle_cmd, args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))

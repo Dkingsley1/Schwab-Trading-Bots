@@ -1,7 +1,9 @@
 import argparse
+import hashlib
 import json
 import math
 import os
+import subprocess
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,6 +49,10 @@ SNAPSHOT_FEATURE_NAMES = [
     "snapshot_raw_event_file_ratio",
     "snapshot_raw_lock_file_ratio",
     "snapshot_raw_recency_norm",
+    "snapshot_e2e_replay_ok",
+    "snapshot_e2e_hash_match",
+    "snapshot_paper_replay_ok",
+    "snapshot_paper_replay_hash_match",
 ]
 
 
@@ -94,6 +100,47 @@ def _hash01(text: str) -> float:
         h ^= ord(ch)
         h = (h * 16777619) & 0xFFFFFFFF
     return h / 0xFFFFFFFF
+
+
+def _sha256_file(path: Path) -> str:
+    if not path.exists() or (not path.is_file()):
+        return ""
+    h = hashlib.sha256()
+    try:
+        with path.open("rb") as f:
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+def _sha256_json_obj(obj: Any) -> str:
+    try:
+        encoded = json.dumps(obj, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+    except Exception:
+        return ""
+
+
+def _git_commit(project_root: Path) -> str:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return str(proc.stdout or "").strip()
+        return ""
+    except Exception:
+        return ""
+
+
 
 
 def _role_index(role: str) -> int:
@@ -159,6 +206,10 @@ def _snapshot_health_context(project_root: Path) -> Tuple[Dict[str, float], Dict
             persist_files_to_sql=persist_sql,
         )
         if context:
+            context.setdefault("snapshot_e2e_replay_ok", 1.0)
+            context.setdefault("snapshot_e2e_hash_match", 1.0)
+            context.setdefault("snapshot_paper_replay_ok", 1.0)
+            context.setdefault("snapshot_paper_replay_hash_match", 1.0)
             return context, meta
     except Exception:
         pass
@@ -167,6 +218,8 @@ def _snapshot_health_context(project_root: Path) -> Tuple[Dict[str, float], Dict
 
     coverage = _safe_load_json(health / "snapshot_coverage_latest.json", default={})
     replay = _safe_load_json(health / "replay_preopen_sanity_latest.json", default={})
+    replay_e2e = _safe_load_json(health / "replay_end_to_end_latest.json", default={})
+    paper_replay = _safe_load_json(health / "paper_replay_drill_latest.json", default={})
     drift = _safe_load_json(health / "preopen_replay_drift_latest.json", default={})
     divergence = _safe_load_json(health / "data_source_divergence_latest.json", default={})
     triprate = _safe_load_json(health / "guardrail_triprate_latest.json", default={})
@@ -235,6 +288,13 @@ def _snapshot_health_context(project_root: Path) -> Tuple[Dict[str, float], Dict
     else:
         drill_recency_norm = 0.0
 
+    e2e_hash_match = replay_e2e.get("hash_match")
+    if e2e_hash_match is None:
+        e2e_hash_match = True
+    paper_hash_match = paper_replay.get("hash_match")
+    if paper_hash_match is None:
+        paper_hash_match = True
+
     context = {
         "snapshot_cov_ok": 1.0 if bool(coverage.get("ok", False)) else 0.0,
         "snapshot_cov_log_ratio": coverage_log_ratio,
@@ -249,17 +309,25 @@ def _snapshot_health_context(project_root: Path) -> Tuple[Dict[str, float], Dict
         "snapshot_drill_restore_fail_ratio": drill_restore_fail_ratio,
         "snapshot_drill_missing_ratio": drill_missing_ratio,
         "snapshot_drill_recency_norm": drill_recency_norm,
+        "snapshot_e2e_replay_ok": 1.0 if bool(replay_e2e.get("ok", True)) else 0.0,
+        "snapshot_e2e_hash_match": 1.0 if bool(e2e_hash_match) else 0.0,
+        "snapshot_paper_replay_ok": 1.0 if bool(paper_replay.get("ok", True)) else 0.0,
+        "snapshot_paper_replay_hash_match": 1.0 if bool(paper_hash_match) else 0.0,
     }
 
     meta = {
         "coverage_file": str(health / "snapshot_coverage_latest.json"),
         "replay_file": str(health / "replay_preopen_sanity_latest.json"),
+        "replay_end_to_end_file": str(health / "replay_end_to_end_latest.json"),
+        "paper_replay_file": str(health / "paper_replay_drill_latest.json"),
         "drift_file": str(health / "preopen_replay_drift_latest.json"),
         "divergence_file": str(health / "data_source_divergence_latest.json"),
         "triprate_file": str(health / "guardrail_triprate_latest.json"),
         "queue_stress_file": str(health / "execution_queue_stress_latest.json"),
         "coverage_ts": coverage.get("timestamp_utc"),
         "replay_ts": replay.get("timestamp_utc"),
+        "replay_end_to_end_ts": replay_e2e.get("timestamp_utc"),
+        "paper_replay_ts": paper_replay.get("timestamp_utc"),
         "drift_ts": drift.get("timestamp_utc"),
         "divergence_ts": divergence.get("timestamp_utc"),
         "triprate_ts": triprate.get("timestamp_utc"),
@@ -474,6 +542,7 @@ def main() -> int:
 
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "log_schema_version": max(int(os.getenv("LOG_SCHEMA_VERSION", "2")), 1),
         "rows": len(rows),
         "examples": len(examples),
         "skipped_lines": skipped_lines,
@@ -481,6 +550,13 @@ def main() -> int:
         "source": str(in_path),
         "feature_dim": len(feature_names),
         "feature_names": feature_names,
+        "lineage": {
+            "feature_schema_version": "trade_behavior_features_v3",
+            "source_sha256": _sha256_file(in_path),
+            "builder_script": str(Path(__file__).resolve()),
+            "builder_script_sha256": _sha256_file(Path(__file__).resolve()),
+            "git_commit": _git_commit(PROJECT_ROOT),
+        },
         "snapshot_context": {
             "features": {k: round(float(v), 6) for k, v in snapshot_context.items()},
             "meta": snapshot_meta,
@@ -531,6 +607,9 @@ def main() -> int:
         "data": examples,
     }
 
+    payload.setdefault("lineage", {})
+    payload["lineage"]["output_payload_sha256"] = _sha256_json_obj(payload)
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(
@@ -542,6 +621,7 @@ def main() -> int:
                 "label_counts": payload["label_counts"],
                 "regime_label_counts": payload["regime_label_counts"],
                 "source": payload["source"],
+                "lineage": payload.get("lineage", {}),
             },
             indent=2,
         )

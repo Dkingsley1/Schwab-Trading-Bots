@@ -20,6 +20,7 @@ token.json
 *.key
 .env
 .env.*
+!config/.env.example
 
 # Runtime outputs (large / generated)
 logs/

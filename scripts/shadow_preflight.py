@@ -12,6 +12,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TOKEN_PATH = PROJECT_ROOT / "token.json"
 
 
+def _is_writable_directory(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return False
+    return os.access(path, os.W_OK)
+
+
 def _flag(name: str, default: str = "0") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -20,10 +28,18 @@ def _parse_symbols(value: str) -> List[str]:
     return [s.strip().upper() for s in value.split(",") if s.strip()]
 
 
-def _proc_running(match: str) -> int:
+def _proc_running(match: str, exclude: List[str] | None = None) -> int:
     proc = subprocess.run(["ps", "-ax", "-o", "command="], capture_output=True, text=True, check=False)
     out = proc.stdout or ""
-    return sum(1 for line in out.splitlines() if match in line)
+    excludes = [x for x in (exclude or []) if x]
+    count = 0
+    for line in out.splitlines():
+        if match not in line:
+            continue
+        if any(marker in line for marker in excludes):
+            continue
+        count += 1
+    return count
 
 
 def _check_disk(min_free_gb: float) -> Dict[str, object]:
@@ -34,6 +50,34 @@ def _check_disk(min_free_gb: float) -> Dict[str, object]:
         "name": "disk_free",
         "ok": ok,
         "details": f"free_gb={free_gb:.2f} min_required_gb={min_free_gb:.2f}",
+    }
+
+
+def _check_storage_route() -> Dict[str, object]:
+    external_mount = os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS").strip() or "/Volumes/BOT_LOGS"
+    external_dir = os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot").strip() or "schwab_trading_bot"
+    external_root_cfg = os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "").strip()
+    if external_root_cfg:
+        external_root = Path(external_root_cfg).expanduser()
+    else:
+        external_root = Path(external_mount).expanduser() / external_dir
+
+    local_root = Path(
+        os.getenv("BOT_LOGS_LOCAL_FALLBACK_ROOT", str(PROJECT_ROOT / "local_fallback_storage"))
+    ).expanduser()
+
+    prefer_external = os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1").strip().lower() not in {"0", "false", "no", "off"}
+    external_ok = _is_writable_directory(external_root)
+    local_ok = _is_writable_directory(local_root)
+    mode = "external" if (prefer_external and external_ok) else "local_fallback"
+
+    return {
+        "name": "storage_route_writable",
+        "ok": external_ok or local_ok,
+        "details": (
+            f"mode={mode} external_ok={int(external_ok)} local_ok={int(local_ok)} "
+            f"external_root={external_root} local_root={local_root}"
+        ),
     }
 
 
@@ -79,6 +123,8 @@ def main() -> int:
         }
     )
 
+    checks.append(_check_storage_route())
+
     core = _parse_symbols(args.symbols_core)
     vol = _parse_symbols(args.symbols_volatile)
     defensive = _parse_symbols(args.symbols_defensive + ("," + args.extra_symbols if args.extra_symbols else ""))
@@ -94,12 +140,21 @@ def main() -> int:
     checks.append(_check_disk(max(args.min_free_gb, 0.1)))
 
     if args.broker == "schwab" and not args.simulate:
-        key = os.getenv("SCHWAB_API_KEY", "YOUR_KEY_HERE")
-        secret = os.getenv("SCHWAB_SECRET", "YOUR_SECRET_HERE")
+        key = os.getenv("SCHWAB_API_KEY", "").strip()
+        secret = os.getenv("SCHWAB_SECRET", "").strip()
+        invalid = {
+            "",
+            "YOUR_KEY_HERE",
+            "YOUR_SECRET_HERE",
+            "YOUR_REAL_KEY",
+            "YOUR_REAL_SECRET",
+            "<real_key>",
+            "<real_secret>",
+        }
         checks.append(
             {
                 "name": "schwab_credentials_present",
-                "ok": key not in {"", "YOUR_KEY_HERE"} and secret not in {"", "YOUR_SECRET_HERE"},
+                "ok": key not in invalid and secret not in invalid,
                 "details": "SCHWAB_API_KEY/SCHWAB_SECRET placeholders not allowed for non-simulate mode",
             }
         )
@@ -112,7 +167,14 @@ def main() -> int:
         )
 
     if args.broker == "schwab":
-        running = _proc_running("scripts/run_parallel_shadows.py")
+        running = _proc_running(
+            "scripts/run_parallel_shadows.py",
+            exclude=[
+                "scripts/shadow_watchdog.py",
+                "scripts/ops/preflight_autofix.py",
+                "scripts/shadow_preflight.py",
+            ],
+        )
         checks.append(
             {
                 "name": "no_duplicate_parallel_launcher",
@@ -121,7 +183,13 @@ def main() -> int:
             }
         )
     else:
-        running = _proc_running("scripts/run_shadow_training_loop.py --broker coinbase")
+        running = _proc_running(
+            "scripts/run_shadow_training_loop.py --broker coinbase",
+            exclude=[
+                "scripts/ops/preflight_autofix.py",
+                "scripts/shadow_preflight.py",
+            ],
+        )
         checks.append(
             {
                 "name": "no_duplicate_coinbase_loop",

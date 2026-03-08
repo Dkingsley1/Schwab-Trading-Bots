@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import filecmp
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,7 @@ class StorageRoutingResult:
     autosync_copied_files: int = 0
     autosync_copy_errors: int = 0
     autosync_pruned_files: int = 0
+    split_brain_conflicts: int = 0
 
 
 def _resolve_link_target(link_path: Path) -> Path | None:
@@ -114,6 +116,35 @@ def _auto_sync_local_to_external(
                 dst_file = dst_base / fname
 
                 if dst_file.exists():
+                    try:
+                        src_stat = src_file.stat()
+                        dst_stat = dst_file.stat()
+                        same_size = src_stat.st_size == dst_stat.st_size
+                        same_content = same_size and filecmp.cmp(src_file, dst_file, shallow=False)
+
+                        if same_content:
+                            if prune_local:
+                                src_file.unlink()
+                                pruned += 1
+                            continue
+
+                        if copied >= max_copy_files:
+                            return copied, errors, pruned
+
+                        # Preserve local-only deltas under a suffix instead of dropping them.
+                        conflict = dst_file.with_name(f"{dst_file.name}.local_fallback")
+                        seq = 1
+                        while conflict.exists():
+                            conflict = dst_file.with_name(f"{dst_file.name}.local_fallback.{seq}")
+                            seq += 1
+
+                        shutil.copy2(src_file, conflict)
+                        copied += 1
+                        if prune_local:
+                            src_file.unlink()
+                            pruned += 1
+                    except Exception:
+                        errors += 1
                     continue
 
                 try:
@@ -129,6 +160,53 @@ def _auto_sync_local_to_external(
                     errors += 1
 
     return copied, errors, pruned
+
+def _scan_tree_signature(base: Path, link_dirs: Iterable[str], *, max_files: int) -> dict[str, tuple[int, int]]:
+    out: dict[str, tuple[int, int]] = {}
+    if max_files <= 0:
+        return out
+
+    for rel_name in link_dirs:
+        name = str(rel_name).strip().strip("/")
+        if not name:
+            continue
+        root_dir = base / name
+        if not root_dir.exists() or not root_dir.is_dir():
+            continue
+        for root, _, files in os.walk(root_dir):
+            root_path = Path(root)
+            for fname in files:
+                if len(out) >= max_files:
+                    return out
+                if ".local_fallback" in fname:
+                    continue
+                fp = root_path / fname
+                try:
+                    st = fp.stat()
+                except Exception:
+                    continue
+                rel = str(fp.relative_to(base))
+                out[rel] = (int(st.st_size), int(st.st_mtime))
+    return out
+
+
+def _split_brain_conflicts(local_root: Path, external_root: Path, link_dirs: Iterable[str], *, max_files: int) -> int:
+    local_sig = _scan_tree_signature(local_root, link_dirs, max_files=max_files)
+    if not local_sig:
+        return 0
+    external_sig = _scan_tree_signature(external_root, link_dirs, max_files=max_files)
+    if not external_sig:
+        return 0
+
+    conflicts = 0
+    for rel, local_meta in local_sig.items():
+        ext_meta = external_sig.get(rel)
+        if not ext_meta:
+            continue
+        if local_meta != ext_meta:
+            conflicts += 1
+    return int(conflicts)
+
 
 
 def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = DEFAULT_LINK_DIRS) -> StorageRoutingResult:
@@ -146,16 +224,29 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
     active_root = external_root if external_ready else local_root
     mode = "external" if external_ready else "local_fallback"
 
-    if not _is_writable_directory(active_root):
-        raise RuntimeError(f"active storage root is not writable: {active_root}")
-
     switched: list[str] = []
     passthrough: list[str] = []
     autosync_copied = 0
     autosync_errors = 0
     autosync_pruned = 0
+    split_brain_conflicts = 0
 
     link_dirs_tuple = tuple(link_dirs)
+
+    if mode == "external" and _env_flag("BOT_LOGS_BLOCK_SPLIT_BRAIN", "1"):
+        scan_max_files = max(int(os.getenv("BOT_LOGS_SPLIT_BRAIN_SCAN_MAX_FILES", "5000") or 5000), 100)
+        split_brain_conflicts = _split_brain_conflicts(
+            local_root=local_root,
+            external_root=external_root,
+            link_dirs=link_dirs_tuple,
+            max_files=scan_max_files,
+        )
+        if split_brain_conflicts > 0:
+            mode = "local_fallback_split_brain"
+            active_root = local_root
+
+    if not _is_writable_directory(active_root):
+        raise RuntimeError(f"active storage root is not writable: {active_root}")
 
     if mode == "external" and _env_flag("BOT_LOGS_AUTO_SYNC_ON_RECONNECT", "1"):
         prune_local = _env_flag("BOT_LOGS_AUTO_SYNC_PRUNE_LOCAL", "1")
@@ -197,6 +288,7 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
     os.environ["BOT_LOGS_AUTOSYNC_COPIED_FILES"] = str(autosync_copied)
     os.environ["BOT_LOGS_AUTOSYNC_COPY_ERRORS"] = str(autosync_errors)
     os.environ["BOT_LOGS_AUTOSYNC_PRUNED_FILES"] = str(autosync_pruned)
+    os.environ["BOT_LOGS_SPLIT_BRAIN_CONFLICTS"] = str(split_brain_conflicts)
     return StorageRoutingResult(
         mode=mode,
         active_root=active_root,
@@ -205,6 +297,7 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
         autosync_copied_files=int(autosync_copied),
         autosync_copy_errors=int(autosync_errors),
         autosync_pruned_files=int(autosync_pruned),
+        split_brain_conflicts=int(split_brain_conflicts),
     )
 
 
@@ -218,5 +311,6 @@ def describe_storage_routing(result: StorageRoutingResult) -> str:
     )
     return (
         f"[StorageRoute] mode={result.mode} active_root={result.active_root} "
-        f"switched={switched} passthrough={passthrough} autosync={autosync}"
+        f"switched={switched} passthrough={passthrough} autosync={autosync} "
+        f"split_brain_conflicts={result.split_brain_conflicts}"
     )

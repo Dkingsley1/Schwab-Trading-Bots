@@ -6,11 +6,12 @@ Use these exact commands as the source of truth.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot && \
 export MARKET_DATA_ONLY=1 ALLOW_ORDER_EXECUTION=0 ENABLE_RESOURCE_GUARD=0 && \
-export SHADOW_SYMBOLS_CORE="SPY,QQQ,AAPL,MSFT,NVDA,NFLX,DIS,WBD,DIA,IWM,MDY" && \
-export SHADOW_SYMBOLS_VOLATILE="SOXL,SOXS,MSTR,SMCI,COIN,TSLA,UVXY,VIXY" && \
-export SHADOW_SYMBOLS_DEFENSIVE="TLT,GLD,XLV,XLU,XLP,HYG,LQD,UUP,XLE,XLF,XLI,XLK,XLY,IEF,SHY,TIP,TLH,JNK,ITA,LMT,NOC,RTX,GD,LHX,LDOS" && \
-export SHADOW_SYMBOLS_COMMOD_FX_INTL="DBC,UNG,CORN,SLV,USO,FXE,FXY,EFA,EEM,EWJ,FXI" && \
-export DIVIDEND_SYMBOLS="SCHD,VIG,DGRO,JNJ,PG,KO,PEP,XOM,CVX,O,MAIN" && \
+export SHADOW_SYMBOLS_CORE="SPY,QQQ,DIA,IWM,MDY,VOO,VTI,RSP,AAPL,MSFT,NVDA,AMZN,GOOGL,META,AVGO,ORCL,CRM,ADBE,NFLX,DIS,WBD,GS,JPM,BKNG,ABNB,MAR,HLT" && \
+export SHADOW_SYMBOLS_VOLATILE="SOXL,SOXS,TQQQ,SQQQ,MSTR,SMCI,COIN,TSLA,PLTR,AMD,MRVL,ARM,IBIT,ETHA,MARA,RIOT,UVXY,VIXY,AAL,UAL,DAL,LUV,ALK,JBLU,CCL,RCL,NCLH,EXPE,JETS,XOP,OIH,OXY,SLB,HAL" && \
+export SHADOW_SYMBOLS_DEFENSIVE="TLT,GLD,XLV,XLU,XLP,MO,HYG,LQD,UUP,XLE,XLF,XLI,XLK,XLY,IEF,SHY,TIP,TLH,JNK,AGG,BND,MUB,IGIB,USHY,FLOT,VGIT,SCHD,VIG,DGRO,HDV,NOBL,VYM,DIVO,JEPI,JEPQ,SPLV,VTV,JNJ,PG,KO,PEP,MCD,ABBV,ABT,MRK,PFE,T,VZ,O,VICI,MAIN,XOM,CVX,COP,EOG,MPC,PSX,VLO,KMI,ITA,LMT,NOC,RTX,GD,LHX,LDOS" && \
+export SHADOW_SYMBOLS_COMMOD_FX_INTL="DBC,UNG,CORN,SLV,USO,FXE,FXY,EFA,EEM,EWJ,FXI,VEA,VWO,IEFA,VGK,INDA,SMH,SOXX,VGT,IGV,XOP,OIH,JETS,VNQ,IYR" && \
+export DIVIDEND_SYMBOLS="SCHD,VIG,DGRO,HDV,NOBL,VYM,DIVO,JEPI,JEPQ,SPYD,DIV,FDVV,SCHY,JNJ,PG,KO,PEP,MCD,MO,ABBV,ABT,MRK,PFE,T,VZ,O,VICI,MAIN,XOM,CVX,COP,KMI,MPC,PSX,VLO,EOG,SLB" && \
+export DIVIDEND_QUALITY_SYMBOLS="SCHD,VIG,DGRO,HDV,NOBL,VYM,DIVO,SCHY,JNJ,PG,KO,PEP,MCD,ABBV,ABT,MRK,XOM,CVX,COP,O,VICI,MSFT,AAPL" && \
 export BOND_SYMBOLS="TLT,IEF,SHY,TLH,TIP,LQD,HYG,JNK,BND,AGG,MUB,IGIB,USHY,FLOT,VGIT" && \
 ./.venv312/bin/python scripts/run_all_sleeves.py --simulate --with-aggressive-modes \
   --symbols-core "$SHADOW_SYMBOLS_CORE" \
@@ -198,4 +199,50 @@ Compound strategy (quality dividend buy-and-hold with compounding metrics):
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./.venv312/bin/python scripts/run_dividend_shadow.py --simulate --strategy-mode compound
+```
+
+
+## 18) Long-Term Strategy Sleeves (1-3)
+1. Long-term dividend compound sleeve:
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./.venv312/bin/python scripts/run_long_term_dividend_compound_shadow.py --simulate
+```
+
+2. Long-term core ETF accumulation sleeve:
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./.venv312/bin/python scripts/run_long_term_core_etf_shadow.py --simulate
+```
+
+3. Long-term sector rotation sleeve:
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./.venv312/bin/python scripts/run_long_term_sector_rotation_shadow.py --simulate
+```
+
+## 19) Live Manual Trade Awareness (avoid false mismatch blocks)
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+export LIVE_MANUAL_TRADE_AWARE_ENABLED=1
+export LIVE_MANUAL_TRADE_QTY_TOLERANCE=2.0
+export LIVE_MANUAL_TRADE_AUTO_SYNC_LOCAL=1
+```
+
+## 20) Python 3.14 Canary Lane (keep production on 3.12)
+Bootstrap/refresh the 3.14 canary venv + run smoke checks:
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh py314-canary --refresh-deps
+```
+
+Fast re-check (no reinstall):
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh py314-canary --skip-install
+```
+
+Canary report:
+```bash
+cat /Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/health/python314_canary_latest.json
 ```

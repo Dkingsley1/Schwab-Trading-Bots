@@ -5,7 +5,12 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON_BIN="$PROJECT_ROOT/.venv312/bin/python"
 RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/project_timeline_report.py"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.dankingsley.project_timeline_autoupdate.plist"
-LOG_DIR="$PROJECT_ROOT/logs"
+PRUNE_DAYS="${PROJECT_TIMELINE_PRUNE_OLDER_DAYS:-7}"
+PRUNE_KEEP_RUNS="${PROJECT_TIMELINE_PRUNE_KEEP_RUNS:-20}"
+UPDATE_SECONDS="${PROJECT_TIMELINE_UPDATE_SECONDS:-10}"
+ACTIVITY_HOURS="${PROJECT_TIMELINE_ACTIVITY_HOURS:-72}"
+ACTIVITY_LIMIT="${PROJECT_TIMELINE_ACTIVITY_LIMIT:-600}"
+LOG_DIR="$HOME/Library/Logs/schwab_trading_bot"
 OUT_LOG="$LOG_DIR/project_timeline_autoupdate.out.log"
 ERR_LOG="$LOG_DIR/project_timeline_autoupdate.err.log"
 
@@ -25,21 +30,51 @@ cat > "$PLIST_PATH" <<PLIST
     <string>$RUN_SCRIPT</string>
     <string>--auto</string>
     <string>--json</string>
+    <string>--prune-auto</string>
+    <string>--prune-older-days</string>
+    <string>$PRUNE_DAYS</string>
+    <string>--prune-keep-runs</string>
+    <string>$PRUNE_KEEP_RUNS</string>
+    <string>--activity-hours</string>
+    <string>$ACTIVITY_HOURS</string>
+    <string>--activity-limit</string>
+    <string>$ACTIVITY_LIMIT</string>
   </array>
 
   <key>WorkingDirectory</key>
   <string>$PROJECT_ROOT</string>
 
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>$HOME</string>
+  </dict>
+
   <key>RunAtLoad</key>
   <true/>
 
   <key>StartInterval</key>
-  <integer>120</integer>
+  <integer>$UPDATE_SECONDS</integer>
 
   <key>WatchPaths</key>
   <array>
     <string>$PROJECT_ROOT/.git/HEAD</string>
     <string>$PROJECT_ROOT/.git/index</string>
+    <string>$PROJECT_ROOT/master_bot_registry.json</string>
+    <string>$PROJECT_ROOT/README.md</string>
+    <string>$PROJECT_ROOT/COMMANDS.md</string>
+    <string>$PROJECT_ROOT/scripts</string>
+    <string>$PROJECT_ROOT/core</string>
+    <string>$PROJECT_ROOT/config</string>
+    <string>$PROJECT_ROOT/tests</string>
+    <string>$PROJECT_ROOT/governance/health</string>
+    <string>$PROJECT_ROOT/governance/walk_forward</string>
+    <string>$PROJECT_ROOT/logs</string>
+    <string>$PROJECT_ROOT/data</string>
+    <string>$PROJECT_ROOT/exports/sql_reports</string>
+    <string>$PROJECT_ROOT/exports/reports</string>
   </array>
 
   <key>StandardOutPath</key>
@@ -54,7 +89,7 @@ launchctl unload "$PLIST_PATH" >/dev/null 2>&1 || true
 launchctl load "$PLIST_PATH"
 
 echo "Installed and loaded: $PLIST_PATH"
-echo "Auto-update cadence: every 120 seconds + on git index/head changes"
+echo "Auto-update cadence: every ${UPDATE_SECONDS} seconds + on watched project paths"
 echo "Logs: $OUT_LOG and $ERR_LOG"
 echo "Latest markdown: $PROJECT_ROOT/exports/reports/project_timeline/project_timeline_latest.md"
 echo "Latest printable html: $PROJECT_ROOT/exports/reports/project_timeline/project_timeline_print_latest.html"

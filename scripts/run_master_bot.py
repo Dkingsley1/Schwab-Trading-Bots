@@ -99,6 +99,27 @@ def _canary_gate_ok(
     return True, "ok", {}
 
 
+def _lane_gate_ok(path: Path) -> tuple[bool, str, dict]:
+    if not path.exists():
+        return False, f"missing_lane_promotion_gate:{path}", {}
+
+    gate = _read_json(path)
+    promote_ok = bool(gate.get("promote_ok", False))
+    coverage_ok = bool(gate.get("coverage_ok", False))
+    if promote_ok and coverage_ok:
+        return True, "ok", {}
+
+    detail = {
+        "path": str(path),
+        "promote_ok": promote_ok,
+        "coverage_ok": coverage_ok,
+        "covered_lanes": int(gate.get("covered_lanes", 0) or 0),
+        "passing_covered_lanes": int(gate.get("passing_covered_lanes", 0) or 0),
+        "ranked_lanes": (gate.get("ranked_lanes", []) if isinstance(gate.get("ranked_lanes"), list) else [])[:6],
+    }
+    return False, "lane_promotion_gate_blocked", detail
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train/update master bot policy from sub-bot outcomes")
     parser.add_argument("--preferred-low", type=float, default=0.55)
@@ -119,10 +140,18 @@ def main() -> None:
     parser.add_argument("--require-leak-overfit-gate", action="store_true", default=os.getenv("REQUIRE_LEAK_OVERFIT_GATE", "1") == "1")
     parser.add_argument("--no-require-leak-overfit-gate", dest="require_leak_overfit_gate", action="store_false")
 
+    parser.add_argument("--require-lane-promotion-gate", action="store_true", default=os.getenv("REQUIRE_LANE_PROMOTION_GATE", "1") == "1")
+    parser.add_argument("--no-require-lane-promotion-gate", dest="require_lane_promotion_gate", action="store_false")
+
+    parser.add_argument("--require-promotion-quality-gate", action="store_true", default=os.getenv("REQUIRE_PROMOTION_QUALITY_GATE", "1") == "1")
+    parser.add_argument("--no-require-promotion-quality-gate", dest="require_promotion_quality_gate", action="store_false")
+
     parser.add_argument("--promotion-gate-file", default=str(Path(PROJECT_ROOT) / "governance" / "walk_forward" / "promotion_gate_latest.json"))
+    parser.add_argument("--lane-promotion-gate-file", default=str(Path(PROJECT_ROOT) / "governance" / "walk_forward" / "lane_promotion_gate_latest.json"))
     parser.add_argument("--stability-file", default=str(Path(PROJECT_ROOT) / "governance" / "health" / "daily_auto_verify_latest.json"))
     parser.add_argument("--graduation-file", default=str(Path(PROJECT_ROOT) / "governance" / "walk_forward" / "new_bot_graduation_latest.json"))
     parser.add_argument("--leak-overfit-file", default=str(Path(PROJECT_ROOT) / "governance" / "health" / "leak_overfit_guard_latest.json"))
+    parser.add_argument("--promotion-quality-file", default=str(Path(PROJECT_ROOT) / "governance" / "health" / "promotion_quality_gate_latest.json"))
 
     parser.add_argument("--print-full", action="store_true")
     args = parser.parse_args()
@@ -140,6 +169,24 @@ def main() -> None:
             print(f"Master bot update blocked by canary gate: {reason}")
             if detail:
                 print("Canary gate detail:")
+                print(json.dumps(detail, ensure_ascii=True, indent=2))
+            raise SystemExit(2)
+
+    if args.require_lane_promotion_gate:
+        ok, reason, detail = _lane_gate_ok(Path(args.lane_promotion_gate_file))
+        if not ok:
+            print(f"Master bot update blocked by lane promotion gate: {reason}")
+            if detail:
+                print("Lane promotion gate detail:")
+                print(json.dumps(detail, ensure_ascii=True, indent=2))
+            raise SystemExit(2)
+
+    if args.require_promotion_quality_gate:
+        ok, reason, detail = _bool_gate_ok(Path(args.promotion_quality_file), "promotion_quality_gate")
+        if not ok:
+            print(f"Master bot update blocked by promotion quality gate: {reason}")
+            if detail:
+                print("Promotion quality gate detail:")
                 print(json.dumps(detail, ensure_ascii=True, indent=2))
             raise SystemExit(2)
 

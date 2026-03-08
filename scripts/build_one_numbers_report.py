@@ -70,9 +70,94 @@ def _fmt_pct(v: float) -> str:
     return f"{v * 100.0:.2f}%"
 
 
+def _read_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _chunked(items: list[str], size: int) -> list[list[str]]:
+    return [items[i : i + size] for i in range(0, len(items), max(size, 1))]
+
+
+def _materialize_working_subset(
+    conn: sqlite3.Connection,
+    *,
+    source_rel_values: list[str],
+    decision_like: str,
+    governance_like: str,
+    pnl_like: str,
+    watchdog_like: str,
+) -> int:
+    # Build a temp subset table named jsonl_records so all downstream queries stay unchanged.
+    # This dramatically reduces runtime on very large main tables.
+    conn.execute("DROP TABLE IF EXISTS temp.jsonl_records")
+    conn.execute(
+        """
+        CREATE TEMP TABLE jsonl_records (
+            id INTEGER,
+            source_file TEXT,
+            source_rel TEXT,
+            line_no INTEGER,
+            ingested_at TEXT,
+            payload_sha1 TEXT,
+            payload_json TEXT
+        )
+        """
+    )
+
+    inserted = 0
+    unique_sources = sorted({str(s) for s in source_rel_values if str(s).strip()})
+    if unique_sources:
+        for chunk in _chunked(unique_sources, 200):
+            placeholders = ",".join(["?"] * len(chunk))
+            conn.execute(
+                f"""
+                INSERT INTO temp.jsonl_records (
+                    id, source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json
+                )
+                SELECT
+                    id, source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json
+                FROM main.jsonl_records
+                WHERE source_rel IN ({placeholders})
+                """,
+                tuple(chunk),
+            )
+        inserted = _safe_int(conn.execute("SELECT COUNT(*) FROM temp.jsonl_records").fetchone()[0], 0)
+
+    if inserted == 0:
+        conn.execute(
+            """
+            INSERT INTO temp.jsonl_records (
+                id, source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json
+            )
+            SELECT
+                id, source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json
+            FROM main.jsonl_records
+            WHERE source_rel LIKE ?
+               OR source_rel LIKE ?
+               OR source_rel LIKE ?
+               OR source_rel LIKE ?
+               OR source_rel='governance/health/preopen_replay_drift_history.jsonl'
+            """,
+            (decision_like, governance_like, pnl_like, watchdog_like),
+        )
+        inserted = _safe_int(conn.execute("SELECT COUNT(*) FROM temp.jsonl_records").fetchone()[0], 0)
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tmp_jsonl_source_rel ON jsonl_records(source_rel)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tmp_jsonl_id ON jsonl_records(id)")
+    return inserted
+
+
 def _is_crypto_symbol(symbol: str) -> bool:
     s = (symbol or "").upper().strip()
     return s.endswith("-USD") or s.endswith("-USDC") or s.endswith("-USDT")
+
+
+def _is_futures_symbol(symbol: str) -> bool:
+    s = (symbol or "").upper().strip()
+    return s.startswith("/") or s.endswith("=F") or s.endswith("1!") or s.endswith("2!")
 
 
 def _stale_windows(ts_rows: Iterable[tuple], stale_seconds: int) -> int:
@@ -118,7 +203,7 @@ def _ensure_sql_snapshot_table(conn: sqlite3.Connection) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build one concise numbers file from SQL logs (stocks + crypto + alerts).")
+    parser = argparse.ArgumentParser(description="Build one concise numbers file from SQL logs (stocks + crypto + futures + options + alerts).")
     parser.add_argument("--day", default=datetime.now(timezone.utc).strftime("%Y%m%d"))
     parser.add_argument("--out-dir", default=str(PROJECT_ROOT / "exports" / "one_numbers"))
     parser.add_argument("--db", default=str(DEFAULT_DB))
@@ -154,10 +239,95 @@ def main() -> int:
     governance_like = f"governance/%/master_control_{day}.jsonl"
     pnl_like = f"governance/%/shadow_pnl_attribution_{day}.jsonl"
     watchdog_like = f"governance/watchdog/watchdog_events_{day}.jsonl"
+    decision_bucket_case = """
+    CASE
+      WHEN LOWER(COALESCE(source_rel, '')) LIKE '%futures%'
+        OR LOWER(COALESCE(json_extract(payload_json, '$.mode'), '')) LIKE '%futures%'
+        OR COALESCE(json_extract(payload_json, '$.symbol'), '') LIKE '/%'
+        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%=F'
+        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%1!'
+      THEN 'futures'
+      WHEN UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USD'
+        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USDC'
+        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USDT'
+      THEN 'crypto'
+      ELSE 'stocks'
+    END
+    """
+    pnl_bucket_case = """
+    CASE
+      WHEN LOWER(COALESCE(source_rel, '')) LIKE '%futures%'
+        OR COALESCE(json_extract(payload_json, '$.symbol'), '') LIKE '/%'
+        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%=F'
+        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%1!'
+      THEN 'futures'
+      WHEN UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USD'
+        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USDC'
+        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USDT'
+      THEN 'crypto'
+      ELSE 'stocks'
+    END
+    """
 
-    # Combined totals
+    state_obj = _read_json(PROJECT_ROOT / "governance" / "jsonl_sql_link_state.json")
+    sqlite_state = state_obj.get("sqlite") if isinstance(state_obj.get("sqlite"), dict) else {}
+
+    decision_sources_day = sorted(
+        [
+            str(rel)
+            for rel in sqlite_state
+            if str(rel).startswith("decision_explanations/") and str(rel).endswith(f"decision_explanations_{day}.jsonl")
+        ]
+    )
+    governance_sources_day = sorted(
+        [
+            str(rel)
+            for rel in sqlite_state
+            if str(rel).startswith("governance/") and str(rel).endswith(f"master_control_{day}.jsonl")
+        ]
+    )
+    pnl_sources_day = sorted(
+        [
+            str(rel)
+            for rel in sqlite_state
+            if str(rel).startswith("governance/") and str(rel).endswith(f"shadow_pnl_attribution_{day}.jsonl")
+        ]
+    )
+    watchdog_sources_day = sorted(
+        [
+            str(rel)
+            for rel in sqlite_state
+            if str(rel) == f"governance/watchdog/watchdog_events_{day}.jsonl"
+        ]
+    )
+
+    linked_source_files_total = len(sqlite_state) if sqlite_state else 0
+    decision_source_files = len(decision_sources_day)
+    governance_source_files = len(governance_sources_day)
+
+    _ = _materialize_working_subset(
+        conn,
+        source_rel_values=(
+            decision_sources_day
+            + governance_sources_day
+            + pnl_sources_day
+            + watchdog_sources_day
+            + ["governance/health/preopen_replay_drift_history.jsonl"]
+        ),
+        decision_like=decision_like,
+        governance_like=governance_like,
+        pnl_like=pnl_like,
+        watchdog_like=watchdog_like,
+    )
+
+    # Combined totals (computed against the temp working subset).
     decision_total_rows = _safe_int(_q1(conn, "SELECT COUNT(*) FROM jsonl_records WHERE source_rel LIKE ?", (decision_like,)), 0)
     governance_total_rows = _safe_int(_q1(conn, "SELECT COUNT(*) FROM jsonl_records WHERE source_rel LIKE ?", (governance_like,)), 0)
+
+    if decision_source_files == 0:
+        decision_source_files = _safe_int(_q1(conn, "SELECT COUNT(DISTINCT source_rel) FROM jsonl_records WHERE source_rel LIKE ?", (decision_like,)), 0)
+    if governance_source_files == 0:
+        governance_source_files = _safe_int(_q1(conn, "SELECT COUNT(DISTINCT source_rel) FROM jsonl_records WHERE source_rel LIKE ?", (governance_like,)), 0)
 
     status_rows = _qall(
         conn,
@@ -183,51 +353,51 @@ def main() -> int:
     )
     action_counts = {str(k): _safe_int(v) for k, v in action_rows}
 
-    # Exact stock/crypto split from decision symbols
+    # Pre-compute decision bucket table once to avoid repeated full scans.
+    conn.execute("DROP TABLE IF EXISTS temp.decision_bucketed")
+    conn.execute(
+        f"""
+        CREATE TEMP TABLE decision_bucketed AS
+        SELECT
+          {decision_bucket_case} AS bucket,
+          COALESCE(json_extract(payload_json, '$.symbol'), 'UNKNOWN') AS symbol,
+          COALESCE(json_extract(payload_json, '$.action'), 'UNKNOWN') AS action,
+          COALESCE(json_extract(payload_json, '$.status'), 'UNKNOWN') AS status
+        FROM jsonl_records
+        WHERE source_rel LIKE ?
+        """,
+        (decision_like,),
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tmp_decision_bucketed_bucket ON decision_bucketed(bucket)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tmp_decision_bucketed_symbol ON decision_bucketed(symbol)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tmp_decision_bucketed_action ON decision_bucketed(action)")
+
+    # Exact stocks/crypto/futures split from decision payload + source path.
     split_rows = _qall(
         conn,
         """
-        SELECT
-          CASE
-            WHEN UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USD'
-              OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USDC'
-              OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USDT'
-            THEN 'crypto'
-            ELSE 'stocks'
-          END AS bucket,
-          COUNT(*)
-        FROM jsonl_records
-        WHERE source_rel LIKE ?
+        SELECT bucket, COUNT(*)
+        FROM decision_bucketed
         GROUP BY bucket
         """,
-        (decision_like,),
     )
     split_counts = {str(k): _safe_int(v) for k, v in split_rows}
     stocks_decision_rows = split_counts.get("stocks", 0)
     crypto_decision_rows = split_counts.get("crypto", 0)
+    futures_decision_rows = split_counts.get("futures", 0)
 
     split_action_rows = _qall(
         conn,
         """
-        SELECT
-          CASE
-            WHEN UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USD'
-              OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USDC'
-              OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USDT'
-            THEN 'crypto'
-            ELSE 'stocks'
-          END AS bucket,
-          COALESCE(json_extract(payload_json, '$.action'), 'UNKNOWN') AS action,
-          COUNT(*)
-        FROM jsonl_records
-        WHERE source_rel LIKE ?
+        SELECT bucket, action, COUNT(*)
+        FROM decision_bucketed
         GROUP BY bucket, action
         """,
-        (decision_like,),
     )
 
     stocks_actions = {"BUY": 0, "SELL": 0, "HOLD": 0}
     crypto_actions = {"BUY": 0, "SELL": 0, "HOLD": 0}
+    futures_actions = {"BUY": 0, "SELL": 0, "HOLD": 0}
     for bucket, action, cnt in split_action_rows:
         b = str(bucket)
         a = str(action)
@@ -235,26 +405,42 @@ def main() -> int:
             stocks_actions[a] = _safe_int(cnt)
         if b == "crypto" and a in crypto_actions:
             crypto_actions[a] = _safe_int(cnt)
+        if b == "futures" and a in futures_actions:
+            futures_actions[a] = _safe_int(cnt)
 
     # Top symbols and concentration
     top_symbols_rows = _qall(
         conn,
         """
-        SELECT COALESCE(json_extract(payload_json, '$.symbol'), 'UNKNOWN') AS symbol, COUNT(*) AS rows
-        FROM jsonl_records
-        WHERE source_rel LIKE ?
+        SELECT symbol, COUNT(*) AS rows
+        FROM decision_bucketed
         GROUP BY symbol
         ORDER BY rows DESC
         LIMIT 50
         """,
-        (decision_like,),
     )
     top_symbols = [(str(sym), _safe_int(cnt)) for sym, cnt in top_symbols_rows]
     top3_total = sum(cnt for _, cnt in top_symbols[:3])
     symbol_concentration_top3_share = (top3_total / max(decision_total_rows, 1))
 
-    stocks_top = [(s, c) for s, c in top_symbols if not _is_crypto_symbol(s)]
-    crypto_top = [(s, c) for s, c in top_symbols if _is_crypto_symbol(s)]
+    def _bucket_top_symbols(bucket: str) -> list[tuple[str, int]]:
+        rows = _qall(
+            conn,
+            """
+            SELECT symbol, COUNT(*) AS rows
+            FROM decision_bucketed
+            WHERE bucket=?
+            GROUP BY symbol
+            ORDER BY rows DESC
+            LIMIT 50
+            """,
+            (bucket,),
+        )
+        return [(str(sym), _safe_int(cnt)) for sym, cnt in rows]
+
+    stocks_top = _bucket_top_symbols("stocks")
+    crypto_top = _bucket_top_symbols("crypto")
+    futures_top = _bucket_top_symbols("futures")
 
     # Governance action mix
     gov_action_rows = _qall(
@@ -268,19 +454,113 @@ def main() -> int:
         (governance_like,),
     )
     gov_actions = {str(k): _safe_int(v) for k, v in gov_action_rows}
+    options_style_rows = _qall(
+        conn,
+        """
+        SELECT COALESCE(NULLIF(json_extract(payload_json, '$.options_plan.options_style'), ''), 'NONE') AS style, COUNT(*)
+        FROM jsonl_records
+        WHERE source_rel LIKE ?
+        GROUP BY style
+        ORDER BY COUNT(*) DESC
+        """,
+        (governance_like,),
+    )
+    options_styles = [(str(style), _safe_int(cnt)) for style, cnt in options_style_rows]
+    options_active_styles = [(style, cnt) for style, cnt in options_styles if style.upper() != "NONE"]
+    options_decision_rows = sum(cnt for _, cnt in options_active_styles)
+    options_none_rows = sum(cnt for style, cnt in options_styles if style.upper() == "NONE")
+
+    futures_style_rows = _qall(
+        conn,
+        """
+        SELECT COALESCE(NULLIF(json_extract(payload_json, '$.futures_plan.futures_style'), ''), 'NONE') AS style, COUNT(*)
+        FROM jsonl_records
+        WHERE source_rel LIKE ?
+        GROUP BY style
+        ORDER BY COUNT(*) DESC
+        """,
+        (governance_like,),
+    )
+    futures_styles = [(str(style), _safe_int(cnt)) for style, cnt in futures_style_rows]
+    futures_active_styles = [(style, cnt) for style, cnt in futures_styles if style.upper() != "NONE"]
+    futures_strategy_rows = sum(cnt for _, cnt in futures_active_styles)
+    futures_none_rows = sum(cnt for style, cnt in futures_styles if style.upper() == "NONE")
+    options_contracts_total = _safe_float(
+        _q1(
+            conn,
+            """
+            SELECT SUM(CAST(COALESCE(json_extract(payload_json, '$.options_plan.contracts'), 0.0) AS REAL))
+            FROM jsonl_records
+            WHERE source_rel LIKE ?
+            """,
+            (governance_like,),
+        ),
+        0.0,
+    )
+    options_master_action_rows = _qall(
+        conn,
+        """
+        SELECT COALESCE(json_extract(payload_json, '$.options_master.action'), 'UNKNOWN') AS action, COUNT(*)
+        FROM jsonl_records
+        WHERE source_rel LIKE ?
+        GROUP BY action
+        """,
+        (governance_like,),
+    )
+    options_master_actions = {"BUY": 0, "SELL": 0, "HOLD": 0}
+    for action, cnt in options_master_action_rows:
+        a = str(action)
+        if a in options_master_actions:
+            options_master_actions[a] = _safe_int(cnt)
+    futures_governance_rows = _safe_int(
+        _q1(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM jsonl_records
+            WHERE source_rel LIKE ?
+              AND (
+                LOWER(source_rel) LIKE '%futures%'
+                OR CAST(COALESCE(json_extract(payload_json, '$.active_futures_sub_bots'), 0) AS INTEGER) > 0
+              )
+            """,
+            (governance_like,),
+        ),
+        0,
+    )
+    options_specialist_active_rows = _safe_int(
+        _q1(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM jsonl_records
+            WHERE source_rel LIKE ?
+              AND CAST(COALESCE(json_extract(payload_json, '$.active_options_sub_bots'), 0) AS INTEGER) > 0
+            """,
+            (governance_like,),
+        ),
+        0,
+    )
+    futures_specialist_active_rows = _safe_int(
+        _q1(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM jsonl_records
+            WHERE source_rel LIKE ?
+              AND CAST(COALESCE(json_extract(payload_json, '$.active_futures_sub_bots'), 0) AS INTEGER) > 0
+            """,
+            (governance_like,),
+        ),
+        0,
+    )
 
     # PnL proxy splits and by-strategy
     pnl_split_rows = _qall(
         conn,
-        """
+        f"""
         SELECT
-          CASE
-            WHEN UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USD'
-              OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USDC'
-              OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USDT'
-            THEN 'crypto'
-            ELSE 'stocks'
-          END AS bucket,
+          {pnl_bucket_case} AS bucket,
           SUM(CAST(COALESCE(json_extract(payload_json, '$.pnl_proxy'), 0.0) AS REAL))
         FROM jsonl_records
         WHERE source_rel LIKE ?
@@ -291,6 +571,7 @@ def main() -> int:
     pnl_split = {str(k): _safe_float(v) for k, v in pnl_split_rows}
     stocks_pnl_proxy = pnl_split.get("stocks", 0.0)
     crypto_pnl_proxy = pnl_split.get("crypto", 0.0)
+    futures_pnl_proxy = pnl_split.get("futures", 0.0)
 
     pnl_strategy_rows = _qall(
         conn,
@@ -413,6 +694,142 @@ def main() -> int:
     blocked_rate = blocked_total / max(decision_total_rows, 1)
     hold_no_edge_rate = hold_no_edge / max(action_counts.get("HOLD", 0), 1)
 
+    # Paper execution (for paper-trading visibility in one-page report).
+    paper_executed_total = _safe_int(
+        _q1(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM jsonl_records
+            WHERE source_rel LIKE ?
+              AND COALESCE(json_extract(payload_json, '$.status'), '')='PAPER_EXECUTED'
+            """,
+            (decision_like,),
+        ),
+        0,
+    )
+    paper_executed_crypto = _safe_int(
+        _q1(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM jsonl_records
+            WHERE source_rel LIKE ?
+              AND COALESCE(json_extract(payload_json, '$.status'), '')='PAPER_EXECUTED'
+              AND (
+                UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USD'
+                OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USDC'
+                OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USDT'
+              )
+            """,
+            (decision_like,),
+        ),
+        0,
+    )
+    paper_bot_rows = _qall(
+        conn,
+        """
+        SELECT COALESCE(json_extract(payload_json, '$.bot_id'), 'UNKNOWN') AS bot_id, COUNT(*)
+        FROM jsonl_records
+        WHERE source_rel LIKE ?
+          AND COALESCE(json_extract(payload_json, '$.status'), '')='PAPER_EXECUTED'
+        GROUP BY bot_id
+        ORDER BY COUNT(*) DESC
+        LIMIT 5
+        """,
+        (decision_like,),
+    )
+
+    # Guardrail counters for quick verification in the one-page report.
+    guardrail_master_latency_slo_fail = _safe_int(
+        _q1(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM jsonl_records
+            WHERE source_rel LIKE ?
+              AND payload_json LIKE '%master_latency_slo_ok=FAIL%'
+            """,
+            (decision_like,),
+        ),
+        0,
+    )
+    guardrail_feature_freshness_fail = _safe_int(
+        _q1(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM jsonl_records
+            WHERE source_rel LIKE ?
+              AND payload_json LIKE '%feature_freshness_ok=FAIL%'
+            """,
+            (decision_like,),
+        ),
+        0,
+    )
+    guardrail_event_lock_hits = _safe_int(
+        _q1(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM jsonl_records
+            WHERE source_rel LIKE ?
+              AND (
+                payload_json LIKE '%event_lock_window%'
+                OR payload_json LIKE '%event_lock%'
+              )
+            """,
+            (decision_like,),
+        ),
+        0,
+    )
+    guardrail_canary_mentions = _safe_int(
+        _q1(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM jsonl_records
+            WHERE source_rel LIKE ?
+              AND payload_json LIKE '%canary%'
+            """,
+            (governance_like,),
+        ),
+        0,
+    )
+
+    cutoff_24h = (now_utc - timedelta(hours=24)).isoformat()
+    preopen_replay_rows_24h = _safe_int(
+        _q1(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM jsonl_records
+            WHERE source_rel='governance/health/preopen_replay_drift_history.jsonl'
+              AND julianday(replace(COALESCE(json_extract(payload_json, '$.timestamp_utc'), ''), 'Z', '+00:00')) >= julianday(?)
+            """,
+            (cutoff_24h,),
+        ),
+        0,
+    )
+    preopen_replay_fail_24h = _safe_int(
+        _q1(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM jsonl_records
+            WHERE source_rel='governance/health/preopen_replay_drift_history.jsonl'
+              AND julianday(replace(COALESCE(json_extract(payload_json, '$.timestamp_utc'), ''), 'Z', '+00:00')) >= julianday(?)
+              AND (
+                LOWER(COALESCE(json_extract(payload_json, '$.status'), '')) IN ('fail','failed','error')
+                OR COALESCE(json_extract(payload_json, '$.ok'), 1)=0
+                OR COALESCE(json_extract(payload_json, '$.passed'), 1)=0
+              )
+            """,
+            (cutoff_24h,),
+        ),
+        0,
+    )
+
     # Drift flag: compare buy rate last 1h vs last 4h baseline.
     buy_rate_1h = s60[1] / max(s60[0], 1)
     buy_rate_4h = s240[1] / max(s240[0], 1)
@@ -486,6 +903,30 @@ def main() -> int:
         except Exception:
             continue
 
+    # Ops metadata (storage + SQL link writer health + canary state).
+    logs_root = PROJECT_ROOT / "logs"
+    try:
+        storage_logs_target = str(logs_root.resolve())
+    except Exception:
+        storage_logs_target = str(logs_root)
+    storage_mode = "external" if storage_logs_target.startswith("/Volumes/") else "local"
+
+    sql_link_health = _read_json(PROJECT_ROOT / "governance" / "health" / "sql_link_service_latest.json")
+    sql_link_ok = bool(sql_link_health.get("ok"))
+    sql_link_rc = _safe_int(sql_link_health.get("rc"), -1)
+    sql_link_db_size_gb = _safe_float(sql_link_health.get("sqlite_db_size_gb"), 0.0)
+    hot_retention = sql_link_health.get("hot_retention") or {}
+    hot_retention_ran = bool(hot_retention.get("ran"))
+    hot_retention_rc = _safe_int(hot_retention.get("rc"), 0)
+    hot_retention_db_after = _safe_float(hot_retention.get("db_size_gb_after"), 0.0)
+
+    canary_state = _read_json(PROJECT_ROOT / "governance" / "canary_state.json")
+    canary_weight = _safe_float(
+        canary_state.get("weight", canary_state.get("current_weight", canary_state.get("applied_weight", 0.0))),
+        0.0,
+    )
+    canary_enabled = bool(canary_state.get("enabled", canary_state.get("active", canary_weight > 0.0)))
+
     # Data quality score
     score = 100.0
     if decision_total_rows == 0:
@@ -519,6 +960,9 @@ def main() -> int:
         ("db_path", str(db_path)),
         ("combined_decision_total_rows", str(decision_total_rows)),
         ("combined_governance_total_rows", str(governance_total_rows)),
+        ("linked_source_files_total", str(linked_source_files_total)),
+        ("decision_source_files", str(decision_source_files)),
+        ("governance_source_files", str(governance_source_files)),
         ("combined_action_buy", str(action_counts.get("BUY", 0))),
         ("combined_action_sell", str(action_counts.get("SELL", 0))),
         ("combined_action_hold", str(action_counts.get("HOLD", 0))),
@@ -532,8 +976,24 @@ def main() -> int:
         ("crypto_action_buy", str(crypto_actions.get("BUY", 0))),
         ("crypto_action_sell", str(crypto_actions.get("SELL", 0))),
         ("crypto_action_hold", str(crypto_actions.get("HOLD", 0))),
+        ("futures_decision_rows", str(futures_decision_rows)),
+        ("futures_action_buy", str(futures_actions.get("BUY", 0))),
+        ("futures_action_sell", str(futures_actions.get("SELL", 0))),
+        ("futures_action_hold", str(futures_actions.get("HOLD", 0))),
         ("stocks_pnl_proxy", f"{stocks_pnl_proxy:.6f}"),
         ("crypto_pnl_proxy", f"{crypto_pnl_proxy:.6f}"),
+        ("futures_pnl_proxy", f"{futures_pnl_proxy:.6f}"),
+        ("futures_strategy_rows", str(futures_strategy_rows)),
+        ("futures_strategy_none_rows", str(futures_none_rows)),
+        ("options_decision_rows", str(options_decision_rows)),
+        ("options_none_rows", str(options_none_rows)),
+        ("options_contracts_total", f"{options_contracts_total:.2f}"),
+        ("options_master_action_buy", str(options_master_actions.get("BUY", 0))),
+        ("options_master_action_sell", str(options_master_actions.get("SELL", 0))),
+        ("options_master_action_hold", str(options_master_actions.get("HOLD", 0))),
+        ("options_specialist_active_rows", str(options_specialist_active_rows)),
+        ("futures_specialist_active_rows", str(futures_specialist_active_rows)),
+        ("futures_governance_rows", str(futures_governance_rows)),
         ("timeslice_15m_rows", str(s15[0])),
         ("timeslice_15m_buy_sell_imbalance", f"{_imbalance(s15[1], s15[2]):.6f}"),
         ("timeslice_15m_blocked_rate", f"{(s15[3] / max(s15[0], 1)):.6f}"),
@@ -562,6 +1022,24 @@ def main() -> int:
         ("bot_stack_active_sub_bots", str(bot_stack_active_sub_bots)),
         ("bot_stack_watchdog_schwab_live", str(bot_stack_watchdog_schwab_live).lower()),
         ("bot_stack_watchdog_coinbase_live", str(bot_stack_watchdog_coinbase_live).lower()),
+        ("paper_executed_total", str(paper_executed_total)),
+        ("paper_executed_crypto", str(paper_executed_crypto)),
+        ("guardrail_master_latency_slo_fail", str(guardrail_master_latency_slo_fail)),
+        ("guardrail_feature_freshness_fail", str(guardrail_feature_freshness_fail)),
+        ("guardrail_canary_mentions", str(guardrail_canary_mentions)),
+        ("guardrail_event_lock_hits", str(guardrail_event_lock_hits)),
+        ("guardrail_preopen_replay_rows_24h", str(preopen_replay_rows_24h)),
+        ("guardrail_preopen_replay_fail_24h", str(preopen_replay_fail_24h)),
+        ("ops_storage_mode", storage_mode),
+        ("ops_storage_logs_target", storage_logs_target),
+        ("ops_sql_link_ok", str(sql_link_ok).lower()),
+        ("ops_sql_link_rc", str(sql_link_rc)),
+        ("ops_sql_link_db_size_gb", f"{sql_link_db_size_gb:.3f}"),
+        ("ops_hot_retention_ran", str(hot_retention_ran).lower()),
+        ("ops_hot_retention_rc", str(hot_retention_rc)),
+        ("ops_hot_retention_db_size_gb_after", f"{hot_retention_db_after:.3f}"),
+        ("ops_canary_enabled", str(canary_enabled).lower()),
+        ("ops_canary_weight", f"{canary_weight:.6f}"),
     ]
 
     for k, v in alerts.items():
@@ -576,11 +1054,27 @@ def main() -> int:
         rows.append((f"crypto_top_symbol_{i}", f"{sym}:{cnt}"))
     for i in range(len(crypto_top[:5]) + 1, 6):
         rows.append((f"crypto_top_symbol_{i}", "n/a"))
+    for i, (sym, cnt) in enumerate(futures_top[:5], start=1):
+        rows.append((f"futures_top_symbol_{i}", f"{sym}:{cnt}"))
+    for i in range(len(futures_top[:5]) + 1, 6):
+        rows.append((f"futures_top_symbol_{i}", "n/a"))
+    for i, (style, cnt) in enumerate(futures_active_styles[:5], start=1):
+        rows.append((f"futures_style_{i}", f"{style}:{cnt}"))
+    for i in range(len(futures_active_styles[:5]) + 1, 6):
+        rows.append((f"futures_style_{i}", "n/a"))
+    for i, (style, cnt) in enumerate(options_active_styles[:5], start=1):
+        rows.append((f"options_style_{i}", f"{style}:{cnt}"))
+    for i in range(len(options_active_styles[:5]) + 1, 6):
+        rows.append((f"options_style_{i}", "n/a"))
 
     for i, (bot_id, pnl) in enumerate(pnl_strategy_rows[:5], start=1):
         rows.append((f"pnl_strategy_{i}", f"{bot_id}:{_safe_float(pnl):.6f}"))
     for i in range(len(pnl_strategy_rows[:5]) + 1, 6):
         rows.append((f"pnl_strategy_{i}", "n/a"))
+    for i, (bot_id, cnt) in enumerate(paper_bot_rows[:5], start=1):
+        rows.append((f"paper_bot_{i}", f"{bot_id}:{_safe_int(cnt)}"))
+    for i in range(len(paper_bot_rows[:5]) + 1, 6):
+        rows.append((f"paper_bot_{i}", "n/a"))
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     csv_path = out_dir / f"one_numbers_{day}_{stamp}.csv"
@@ -590,6 +1084,9 @@ def main() -> int:
 
     stocks_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in stocks_top[:5]) if stocks_top else "n/a"
     crypto_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in crypto_top[:5]) if crypto_top else "n/a"
+    futures_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in futures_top[:5]) if futures_top else "n/a"
+    futures_styles_md = ", ".join(f"{style}:{cnt}" for style, cnt in futures_active_styles[:5]) if futures_active_styles else "n/a"
+    options_styles_md = ", ".join(f"{style}:{cnt}" for style, cnt in options_active_styles[:5]) if options_active_styles else "n/a"
 
     md_lines = [
         f"# One Numbers Report ({day})",
@@ -614,6 +1111,23 @@ def main() -> int:
         f"- PnL proxy: {crypto_pnl_proxy:.6f}",
         f"- Top symbols: {crypto_top_md}",
         "",
+        "## Futures",
+        f"- Rows: {futures_decision_rows}",
+        f"- Actions: BUY={futures_actions.get('BUY',0)}, SELL={futures_actions.get('SELL',0)}, HOLD={futures_actions.get('HOLD',0)}",
+        f"- PnL proxy: {futures_pnl_proxy:.6f}",
+        f"- Strategy decisions (style!=NONE): {futures_strategy_rows}",
+        f"- Strategy decisions NONE: {futures_none_rows}",
+        f"- Top symbols: {futures_top_md}",
+        f"- Active futures styles: {futures_styles_md}",
+        f"- Governance rows tagged futures: {futures_governance_rows}",
+        "",
+        "## Options",
+        f"- Strategy decisions (style!=NONE): {options_decision_rows}",
+        f"- Strategy decisions NONE: {options_none_rows}",
+        f"- Total contracts: {options_contracts_total:.2f}",
+        f"- Options master actions: BUY={options_master_actions.get('BUY',0)}, SELL={options_master_actions.get('SELL',0)}, HOLD={options_master_actions.get('HOLD',0)}",
+        f"- Active options styles: {options_styles_md}",
+        "",
         "## Stability (15m / 1h / 4h)",
         f"- Rows: {s15[0]} / {s60[0]} / {s240[0]}",
         f"- Buy-sell imbalance: {_imbalance(s15[1], s15[2]):.4f} / {_imbalance(s60[1], s60[2]):.4f} / {_imbalance(s240[1], s240[2]):.4f}",
@@ -630,6 +1144,18 @@ def main() -> int:
         f"- Active sub-bots: {bot_stack_active_sub_bots}",
         f"- Watchdog live (schwab/coinbase): {str(bot_stack_watchdog_schwab_live).lower()}/{str(bot_stack_watchdog_coinbase_live).lower()}",
         f"- Source: {bot_stack_latest_json}",
+        "",
+        "## Paper + Guardrails",
+        f"- Paper executed (total/crypto): {paper_executed_total}/{paper_executed_crypto}",
+        f"- Guardrail hits: latency_slo_fail={guardrail_master_latency_slo_fail}, feature_freshness_fail={guardrail_feature_freshness_fail}, canary_mentions={guardrail_canary_mentions}, event_lock_hits={guardrail_event_lock_hits}",
+        f"- Preopen replay sanity (24h rows/failures): {preopen_replay_rows_24h}/{preopen_replay_fail_24h}",
+        "",
+        "## Ops/Storage",
+        f"- Storage mode: {storage_mode}",
+        f"- Logs target: {storage_logs_target}",
+        f"- SQL link service: ok={str(sql_link_ok).lower()} rc={sql_link_rc} db_size_gb={sql_link_db_size_gb:.3f}",
+        f"- Hot retention: ran={str(hot_retention_ran).lower()} rc={hot_retention_rc} db_after_gb={hot_retention_db_after:.3f}",
+        f"- Canary state: enabled={str(canary_enabled).lower()} weight={canary_weight:.4f}",
         "",
         "## Alerts",
     ]
