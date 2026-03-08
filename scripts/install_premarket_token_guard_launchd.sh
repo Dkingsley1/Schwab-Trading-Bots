@@ -2,15 +2,17 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON_BIN="$PROJECT_ROOT/.venv312/bin/python"
-RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/premarket_token_guard.py"
+RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_premarket_token_guard_launchd.sh"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.dankingsley.premarket_token_guard.plist"
 LABEL="com.dankingsley.premarket_token_guard"
 UID_NUM="$(id -u)"
 OUT_LOG="/tmp/com.dankingsley.premarket_token_guard.out.log"
 ERR_LOG="/tmp/com.dankingsley.premarket_token_guard.err.log"
+RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-live}"
+CHECK_INTERVAL_SECONDS="${PREMARKET_TOKEN_CHECK_INTERVAL_SECONDS:-1800}"
 
 mkdir -p "$HOME/Library/LaunchAgents"
+chmod +x "$RUN_SCRIPT"
 
 cat > "$PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -20,11 +22,15 @@ cat > "$PLIST_PATH" <<PLIST
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$PYTHON_BIN</string>
     <string>$RUN_SCRIPT</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
+  </dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$CHECK_INTERVAL_SECONDS</integer>
   <key>StartCalendarInterval</key>
   <array>
     <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>3</integer><key>Minute</key><integer>50</integer></dict>
@@ -45,4 +51,6 @@ launchctl enable "gui/$UID_NUM/$LABEL" || true
 launchctl kickstart -k "gui/$UID_NUM/$LABEL" || true
 
 echo "Installed and loaded: $PLIST_PATH"
+echo "Profile: $RUNTIME_PROFILE"
+echo "Check interval seconds: $CHECK_INTERVAL_SECONDS"
 echo "Logs: $OUT_LOG and $ERR_LOG"

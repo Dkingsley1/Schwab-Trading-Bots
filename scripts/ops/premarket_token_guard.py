@@ -178,7 +178,11 @@ def _token_needs_refresh(status: Dict[str, Any], max_age_seconds: float) -> tupl
 def _auth_attempt(token_path: Path, callback_timeout_seconds: float) -> Dict[str, Any]:
     api_key = os.getenv('SCHWAB_API_KEY', '').strip()
     app_secret = os.getenv('SCHWAB_SECRET', '').strip()
-    callback_url = os.getenv('SCHWAB_CALLBACK_URL', 'https://127.0.0.1:8182').strip() or 'https://127.0.0.1:8182'
+    callback_url = (
+        os.getenv('SCHWAB_CALLBACK_URL', '').strip()
+        or os.getenv('SCHWAB_REDIRECT', '').strip()
+        or 'https://127.0.0.1:8182'
+    )
 
     invalid = {'', 'YOUR_KEY_HERE', 'YOUR_SECRET_HERE', 'YOUR_REAL_KEY', 'YOUR_REAL_SECRET', '<real_key>', '<real_secret>'}
     if api_key in invalid or app_secret in invalid:

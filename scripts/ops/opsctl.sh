@@ -302,6 +302,12 @@ case "$cmd" in
   timeline-install-autoupdate)
     exec "$PROJECT_ROOT/scripts/install_project_timeline_autoupdate_launchd.sh" "$@"
     ;;
+  token-refresh)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/premarket_token_guard.py" "$@"
+    ;;
+  token-install-autorefresh)
+    exec "$PROJECT_ROOT/scripts/install_premarket_token_guard_launchd.sh" "$@"
+    ;;
   help|*)
     cat <<'EOF'
 opsctl commands:
@@ -329,6 +335,8 @@ opsctl commands:
   coinbase-tail [--symbol BTC-USD] [--lines 40]
   timeline-report [--auto] [--json]
   timeline-install-autoupdate
+  token-refresh [--always-auth] [--json]
+  token-install-autorefresh
 EOF
     ;;
 esac
