@@ -6,6 +6,16 @@ import json
 from datetime import datetime
 import os
 
+from indicator_bot_common import train_price_indicator_bot, train_runtime_indicator_bot
+from runtime_training_common import (
+    direction_label_builder,
+    feature_ema,
+    feature_std,
+    observation_feature,
+    price_change,
+    symbol_role_features,
+)
+
 # -----------------------------
 # Feature engineering helpers
 # -----------------------------
@@ -171,84 +181,150 @@ def simulate_news_shocks(n=5000):
 # -----------------------------
 # Training
 # -----------------------------
+FEATURE_SOURCE = "prices"
+
+_NEWS_ROLE_MAP = {
+    "shock": ["UVXY", "VIXY", "SOXL", "SOXS", "MSTR", "SMCI", "COIN", "TSLA"],
+    "bond": ["TLT", "IEF", "SHY", "TIP", "LQD", "HYG"],
+    "dividend": ["SCHD", "VIG", "DGRO", "JNJ", "PG", "KO", "PEP"],
+}
+
+
+def build_features(prices):
+    returns = np.log(prices[1:] / prices[:-1])
+    returns = np.concatenate([[0.0], returns])
+    sma = np.convolve(prices, np.ones(10) / 10, mode="same")
+    ema10 = ema(prices, 10)
+    rsi14 = rsi(prices, 14)
+    vol10 = rolling_std(returns, 10)
+    return np.stack([returns, sma, ema10, rsi14, vol10], axis=1)
+
+
+def _runtime_feature_vector(sequence, idx):
+    obs = sequence[idx]
+    roles = symbol_role_features(str(obs.get("symbol") or ""), _NEWS_ROLE_MAP)
+    return np.asarray(
+        [
+            observation_feature(obs, "pct_from_close"),
+            observation_feature(obs, "mom_5m"),
+            observation_feature(obs, "vol_30m"),
+            observation_feature(obs, "range_pos"),
+            observation_feature(obs, "spread_bps"),
+            observation_feature(obs, "market_data_latency_ms"),
+            observation_feature(obs, "news_available"),
+            observation_feature(obs, "news_items_30m"),
+            observation_feature(obs, "news_items_2h"),
+            observation_feature(obs, "news_sentiment"),
+            observation_feature(obs, "news_negative_share"),
+            observation_feature(obs, "news_positive_share"),
+            observation_feature(obs, "news_shock_rate"),
+            observation_feature(obs, "news_recent_impact"),
+            observation_feature(obs, "news_source_quality_norm"),
+            observation_feature(obs, "news_entity_relevance_norm"),
+            observation_feature(obs, "news_topic_earnings_norm"),
+            observation_feature(obs, "news_topic_guidance_norm"),
+            observation_feature(obs, "news_topic_regulatory_norm"),
+            observation_feature(obs, "news_novelty_norm"),
+            observation_feature(obs, "news_premarket_norm"),
+            observation_feature(obs, "news_after_hours_norm"),
+            observation_feature(obs, "calendar_event_proximity_norm"),
+            observation_feature(obs, "calendar_high_impact_24h_norm"),
+            observation_feature(obs, "calendar_macro_surprise_norm"),
+            observation_feature(obs, "calendar_macro_abs_surprise_norm"),
+            observation_feature(obs, "ctx_VIX_X_pct_from_close"),
+            observation_feature(obs, "ctx_UUP_pct_from_close"),
+            observation_feature(obs, "breadth_advance_decline_norm"),
+            observation_feature(obs, "breadth_risk_off_norm"),
+            observation_feature(obs, "options_iv_atm_norm"),
+            observation_feature(obs, "options_iv_skew_norm"),
+            observation_feature(obs, "options_vol_expectation_norm"),
+            observation_feature(obs, "data_quality_quote_agreement_norm"),
+            observation_feature(obs, "options_specialist_vote"),
+            observation_feature(obs, "futures_specialist_vote"),
+            observation_feature(obs, "behavior_prior"),
+            observation_feature(obs, "active_sub_bots"),
+            observation_feature(obs, "active_futures_sub_bots"),
+            price_change(sequence, idx, 3),
+            feature_std(sequence, idx, "pct_from_close", 6),
+            feature_ema(sequence, idx, "news_sentiment", 4),
+            feature_ema(sequence, idx, "behavior_prior", 4),
+            roles["role_shock"],
+            roles["role_bond"],
+            roles["role_dividend"],
+        ],
+        dtype=np.float32,
+    )
+
+
+def _train_synthetic():
+    return train_price_indicator_bot(
+        run_tag="brain_refinery_v12_news_shocks",
+        feature_names=["returns", "sma10", "ema10", "rsi14", "vol10"],
+        feature_builder=build_features,
+        price_simulator=simulate_news_shocks,
+    )
+
+
 def train_brain():
-    np.random.seed(42)
-
-    prices = simulate_news_shocks(n=5000)
-
-    window = 30
-    X, y = make_dataset(prices, window=window)
-    X_train, y_train, X_val, y_val, X_test, y_test = split_data(X, y)
-
-    input_dim = X.shape[1]
-    brain = TradingBrain(input_dim)
-    mx.eval(brain.parameters())
-
-    optimizer = optim.Adam(learning_rate=0.001)
-    loss_and_grad_fn = nn.value_and_grad(brain, loss_fn)
-
-    epochs = 200
-    batch_size = 128
-    patience = 15
-    best_val = float("inf")
-    patience_left = patience
-
-    print("Training...")
-
-    for epoch in range(epochs):
-        idx = np.random.permutation(X_train.shape[0])
-
-        total_loss = 0.0
-        num_batches = 0
-
-        for start in range(0, X_train.shape[0], batch_size):
-            batch_idx = mx.array(idx[start:start+batch_size])
-            xb = mx.take(X_train, batch_idx, axis=0)
-            yb = mx.take(y_train, batch_idx, axis=0)
-
-            loss, grads = loss_and_grad_fn(brain, xb, yb)
-            optimizer.update(brain, grads)
-            mx.eval(brain.parameters(), optimizer.state)
-
-            total_loss += float(loss)
-            num_batches += 1
-
-        val_loss = float(loss_fn(brain, X_val, y_val))
-        if epoch % 10 == 0:
-            print(f"Epoch {epoch} | Train {total_loss/num_batches:.6f} | Val {val_loss:.6f}")
-
-        if val_loss < best_val:
-            best_val = val_loss
-            patience_left = patience
-        else:
-            patience_left -= 1
-            if patience_left == 0:
-                print("Early stopping.")
-                break
-
-    preds = mx.sigmoid(brain(X_test))
-    pred_labels = (preds > 0.5).astype(mx.float32)
-    acc = float(mx.mean((pred_labels == y_test).astype(mx.float32)))
-
-    print(f"Test accuracy: {acc:.4f}")
-
-    config = {
-        "window": window,
-        "learning_rate": 0.001,
-        "epochs": epochs,
-        "batch_size": batch_size,
-        "patience": patience,
-        "input_dim": int(input_dim),
-        "num_points": int(len(prices)),
-    }
-    metrics = {
-        "best_val_loss": float(best_val),
-        "final_val_loss": float(val_loss),
-        "test_accuracy": float(acc),
-    }
-    save_artifacts(brain, config, metrics, run_tag="brain_refinery_v12_news_shocks")
-
-    return brain
+    return train_runtime_indicator_bot(
+        run_tag="brain_refinery_v12_news_shocks",
+        feature_names=[
+            "pct_from_close",
+            "mom_5m",
+            "vol_30m",
+            "range_pos",
+            "spread_bps",
+            "market_data_latency_ms",
+            "news_available",
+            "news_items_30m",
+            "news_items_2h",
+            "news_sentiment",
+            "news_negative_share",
+            "news_positive_share",
+            "news_shock_rate",
+            "news_recent_impact",
+            "news_source_quality_norm",
+            "news_entity_relevance_norm",
+            "news_topic_earnings_norm",
+            "news_topic_guidance_norm",
+            "news_topic_regulatory_norm",
+            "news_novelty_norm",
+            "news_premarket_norm",
+            "news_after_hours_norm",
+            "calendar_event_proximity_norm",
+            "calendar_high_impact_24h_norm",
+            "calendar_macro_surprise_norm",
+            "calendar_macro_abs_surprise_norm",
+            "ctx_VIX_X_pct_from_close",
+            "ctx_UUP_pct_from_close",
+            "breadth_advance_decline_norm",
+            "breadth_risk_off_norm",
+            "options_iv_atm_norm",
+            "options_iv_skew_norm",
+            "options_vol_expectation_norm",
+            "data_quality_quote_agreement_norm",
+            "options_specialist_vote",
+            "futures_specialist_vote",
+            "behavior_prior",
+            "active_sub_bots",
+            "active_futures_sub_bots",
+            "ret_3",
+            "pct_from_close_std_6",
+            "news_sentiment_ema_4",
+            "behavior_prior_ema_4",
+            "role_shock",
+            "role_bond",
+            "role_dividend",
+        ],
+        runtime_feature_builder=_runtime_feature_vector,
+        runtime_label_builder=direction_label_builder(min_return=0.001),
+        lookback_days=21,
+        window=18,
+        horizon=6,
+        min_samples=192,
+        min_sequences=3,
+        fallback_trainer=_train_synthetic,
+    )
 
 if __name__ == "__main__":
-    trained_model = train_brain()
+    train_brain()

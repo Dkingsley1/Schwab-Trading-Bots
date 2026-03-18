@@ -294,6 +294,28 @@ def _load_dataset(path: Path) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.nd
     return X, y, w, ts, symbols, regimes, meta
 
 
+def _curated_dataset_guard(ds: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    source = ds.get("source") if isinstance(ds.get("source"), dict) else {}
+    dataset_kind = str(ds.get("dataset_kind") or "").strip().lower()
+    decision_sources = int(source.get("decision_files", 0) or 0) + int(source.get("decision_sql_files", 0) or 0)
+    governance_sources = int(source.get("governance_files", 0) or 0) + int(source.get("governance_sql_files", 0) or 0)
+    pnl_sources = int(source.get("pnl_attribution_files", 0) or 0) + int(source.get("pnl_sql_files", 0) or 0)
+
+    summary = {
+        "dataset_kind": dataset_kind,
+        "decision_sources": int(decision_sources),
+        "governance_sources": int(governance_sources),
+        "pnl_sources": int(pnl_sources),
+    }
+    if dataset_kind != "curated_decision_governance":
+        return False, "dataset_kind_not_curated", summary
+    if decision_sources <= 0:
+        return False, "decision_sources_missing", summary
+    if governance_sources <= 0:
+        return False, "governance_sources_missing", summary
+    return True, "ok", summary
+
+
 def _standardize_train_test(X: np.ndarray, train_idx: np.ndarray, test_idx: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     x_tr = X[train_idx]
     x_te = X[test_idx]
@@ -1018,18 +1040,23 @@ def _rollback_schema_compatible(
     prev_dim = int(prev_schema.get("effective_dim", 0) or 0)
     if prev_dim <= 0:
         return False, "previous_model_dim_invalid"
-    if prev_dim != int(dataset_feature_dim):
+    dataset_dim = int(dataset_feature_dim)
+    if prev_dim > dataset_dim:
         return False, f"feature_dim_mismatch prev={prev_dim} dataset={int(dataset_feature_dim)}"
 
     if not require_feature_names:
         return True, "ok"
 
     prev_names = [str(x) for x in (prev_schema.get("feature_names") or []) if str(x)]
-    if len(prev_names) != int(dataset_feature_dim):
+    if len(prev_names) != prev_dim:
         return False, "previous_model_missing_feature_names"
-    if dataset_feature_names and (prev_names != dataset_feature_names):
-        return False, "feature_name_order_mismatch"
-    return True, "ok"
+    if dataset_feature_names:
+        expected_prefix = dataset_feature_names[:prev_dim]
+        if prev_names != expected_prefix:
+            return False, "feature_name_order_mismatch"
+    if prev_dim == dataset_dim:
+        return True, "ok"
+    return True, f"prefix_compatible prev={prev_dim} dataset={dataset_dim}"
 
 
 def _data_quality_gate(project_root: Path, *, require_walk_forward_ok: bool) -> Tuple[bool, List[str], Dict[str, Any]]:
@@ -1356,6 +1383,11 @@ def main() -> int:
         action=argparse.BooleanOptionalAction,
         default=_parse_bool(os.getenv("TRADE_BEHAVIOR_REQUIRE_FEATURE_NAMES", "1"), default=True),
     )
+    parser.add_argument(
+        "--require-curated-dataset",
+        action=argparse.BooleanOptionalAction,
+        default=_parse_bool(os.getenv("TRADE_BEHAVIOR_REQUIRE_CURATED_DATASET", "1"), default=True),
+    )
     parser.add_argument("--strict-promotion-gate", action=argparse.BooleanOptionalAction, default=_parse_bool(os.getenv("TRADE_BEHAVIOR_STRICT_PROMOTION_GATE", "0"), default=False))
     parser.add_argument("--require-walk-forward-ok", action=argparse.BooleanOptionalAction, default=_parse_bool(os.getenv("TRADE_BEHAVIOR_REQUIRE_WALK_FORWARD_OK", "0"), default=False))
     parser.add_argument("--max-abs-snapshot-weight", type=float, default=float(os.getenv("TRADE_BEHAVIOR_MAX_ABS_SNAPSHOT_WEIGHT", "1.25")))
@@ -1369,6 +1401,11 @@ def main() -> int:
     X, y, w, ts_epoch, symbols, regimes, ds = _load_dataset(dataset_path)
     if len(y) < 20:
         print(f"Not enough rows to train behavior model: {len(y)}")
+        return 2
+
+    curated_ok, curated_reason, curated_summary = _curated_dataset_guard(ds)
+    if args.require_curated_dataset and not curated_ok:
+        print(f"Curated dataset guard failed: {curated_reason}")
         return 2
 
     if args.split_mode == "time_purged":
@@ -1673,6 +1710,12 @@ def main() -> int:
         "test_rows": int(len(y_te)),
         "label_counts": label_counts,
         "dataset_skipped_dim_mismatch": int(ds.get("_skipped_dim_mismatch", 0) or 0),
+        "dataset_curated_guard": {
+            "enabled": bool(args.require_curated_dataset),
+            "ok": bool(curated_ok),
+            "reason": str(curated_reason),
+            "summary": curated_summary,
+        },
         "split": split_meta,
         "class_balance_factors": class_balance_factors,
         "class_regime_factors": class_regime_factors,

@@ -6,6 +6,8 @@ import json
 from datetime import datetime
 import os
 
+from indicator_bot_common import train_price_indicator_bot
+
 # -----------------------------
 # Feature engineering helpers
 # -----------------------------
@@ -170,84 +172,26 @@ def simulate_liquidity_droughts(n=5000):
 # -----------------------------
 # Training
 # -----------------------------
+FEATURE_SOURCE = "prices"
+
+
+def build_features(prices):
+    returns = np.log(prices[1:] / prices[:-1])
+    returns = np.concatenate([[0.0], returns])
+    sma = np.convolve(prices, np.ones(10) / 10, mode="same")
+    ema10 = ema(prices, 10)
+    rsi14 = rsi(prices, 14)
+    vol10 = rolling_std(returns, 10)
+    return np.stack([returns, sma, ema10, rsi14, vol10], axis=1)
+
+
 def train_brain():
-    np.random.seed(42)
-
-    prices = simulate_liquidity_droughts(n=5000)
-
-    window = 30
-    X, y = make_dataset(prices, window=window)
-    X_train, y_train, X_val, y_val, X_test, y_test = split_data(X, y)
-
-    input_dim = X.shape[1]
-    brain = TradingBrain(input_dim)
-    mx.eval(brain.parameters())
-
-    optimizer = optim.Adam(learning_rate=0.001)
-    loss_and_grad_fn = nn.value_and_grad(brain, loss_fn)
-
-    epochs = 200
-    batch_size = 128
-    patience = 15
-    best_val = float("inf")
-    patience_left = patience
-
-    print("Training...")
-
-    for epoch in range(epochs):
-        idx = np.random.permutation(X_train.shape[0])
-
-        total_loss = 0.0
-        num_batches = 0
-
-        for start in range(0, X_train.shape[0], batch_size):
-            batch_idx = mx.array(idx[start:start+batch_size])
-            xb = mx.take(X_train, batch_idx, axis=0)
-            yb = mx.take(y_train, batch_idx, axis=0)
-
-            loss, grads = loss_and_grad_fn(brain, xb, yb)
-            optimizer.update(brain, grads)
-            mx.eval(brain.parameters(), optimizer.state)
-
-            total_loss += float(loss)
-            num_batches += 1
-
-        val_loss = float(loss_fn(brain, X_val, y_val))
-        if epoch % 10 == 0:
-            print(f"Epoch {epoch} | Train {total_loss/num_batches:.6f} | Val {val_loss:.6f}")
-
-        if val_loss < best_val:
-            best_val = val_loss
-            patience_left = patience
-        else:
-            patience_left -= 1
-            if patience_left == 0:
-                print("Early stopping.")
-                break
-
-    preds = mx.sigmoid(brain(X_test))
-    pred_labels = (preds > 0.5).astype(mx.float32)
-    acc = float(mx.mean((pred_labels == y_test).astype(mx.float32)))
-
-    print(f"Test accuracy: {acc:.4f}")
-
-    config = {
-        "window": window,
-        "learning_rate": 0.001,
-        "epochs": epochs,
-        "batch_size": batch_size,
-        "patience": patience,
-        "input_dim": int(input_dim),
-        "num_points": int(len(prices)),
-    }
-    metrics = {
-        "best_val_loss": float(best_val),
-        "final_val_loss": float(val_loss),
-        "test_accuracy": float(acc),
-    }
-    save_artifacts(brain, config, metrics, run_tag="brain_refinery_v15_liquidity_droughts")
-
-    return brain
+    return train_price_indicator_bot(
+        run_tag="brain_refinery_v15_liquidity_droughts",
+        feature_names=["returns", "sma10", "ema10", "rsi14", "vol10"],
+        feature_builder=build_features,
+        price_simulator=simulate_liquidity_droughts,
+    )
 
 if __name__ == "__main__":
-    trained_model = train_brain()
+    train_brain()

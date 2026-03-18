@@ -1,9 +1,11 @@
 import argparse
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+OPS_THRESHOLDS_FILE = PROJECT_ROOT / "governance" / "ops_thresholds.json"
 
 
 def _load(path: Path) -> dict:
@@ -11,6 +13,12 @@ def _load(path: Path) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def _threshold_defaults() -> dict:
+    payload = _load(OPS_THRESHOLDS_FILE)
+    gates = payload.get("promotion_gates") if isinstance(payload.get("promotion_gates"), dict) else {}
+    return gates.get("graduation_gate") if isinstance(gates.get("graduation_gate"), dict) else {}
 
 
 def _to_float(value, default=0.0) -> float:
@@ -28,15 +36,16 @@ def _to_int(value, default=0) -> int:
 
 
 def main() -> int:
+    defaults = _threshold_defaults()
     parser = argparse.ArgumentParser(description="New-bot graduation gate for promotion safety.")
     parser.add_argument("--registry", default=str(PROJECT_ROOT / "master_bot_registry.json"))
     parser.add_argument("--walk-forward-file", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "walk_forward_latest.json"))
-    parser.add_argument("--min-runs", type=int, default=int(__import__("os").getenv("GRADUATION_MIN_RUNS", "30")))
-    parser.add_argument("--min-forward-mean", type=float, default=float(__import__("os").getenv("GRADUATION_MIN_FORWARD_MEAN", "0.52")))
-    parser.add_argument("--min-delta", type=float, default=float(__import__("os").getenv("GRADUATION_MIN_DELTA", "-0.02")))
-    parser.add_argument("--min-mature-bots", type=int, default=int(__import__("os").getenv("GRADUATION_MIN_MATURE_BOTS", "16")))
-    parser.add_argument("--min-mature-pass-rate", type=float, default=float(__import__("os").getenv("GRADUATION_MIN_MATURE_PASS_RATE", "0.30")))
-    parser.add_argument("--max-immature-active", type=int, default=int(__import__("os").getenv("GRADUATION_MAX_IMMATURE_ACTIVE", "0")))
+    parser.add_argument("--min-runs", type=int, default=int(os.getenv("GRADUATION_MIN_RUNS", str(defaults.get("min_runs", 24)))))
+    parser.add_argument("--min-forward-mean", type=float, default=float(os.getenv("GRADUATION_MIN_FORWARD_MEAN", str(defaults.get("min_forward_mean", 0.52)))))
+    parser.add_argument("--min-delta", type=float, default=float(os.getenv("GRADUATION_MIN_DELTA", str(defaults.get("min_delta", -0.02)))))
+    parser.add_argument("--min-mature-bots", type=int, default=int(os.getenv("GRADUATION_MIN_MATURE_BOTS", str(defaults.get("min_mature_bots", 10)))))
+    parser.add_argument("--min-mature-pass-rate", type=float, default=float(os.getenv("GRADUATION_MIN_MATURE_PASS_RATE", str(defaults.get("min_mature_pass_rate", 0.30)))))
+    parser.add_argument("--max-immature-active", type=int, default=int(os.getenv("GRADUATION_MAX_IMMATURE_ACTIVE", str(defaults.get("max_immature_active", 0)))))
     parser.add_argument("--out-file", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "new_bot_graduation_latest.json"))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()

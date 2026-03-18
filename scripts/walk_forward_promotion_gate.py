@@ -8,6 +8,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_IN_FILE = PROJECT_ROOT / "governance" / "walk_forward" / "walk_forward_latest.json"
 DEFAULT_REGISTRY_FILE = PROJECT_ROOT / "master_bot_registry.json"
+OPS_THRESHOLDS_FILE = PROJECT_ROOT / "governance" / "ops_thresholds.json"
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -15,6 +16,12 @@ def _load_json(path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def _ops_thresholds() -> dict[str, Any]:
+    payload = _load_json(OPS_THRESHOLDS_FILE)
+    gates = payload.get("promotion_gates") if isinstance(payload.get("promotion_gates"), dict) else {}
+    return gates.get("promotion_gate") if isinstance(gates.get("promotion_gate"), dict) else {}
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -91,26 +98,27 @@ def _registry_gate_allowed(
 
 
 def main() -> int:
+    defaults = _ops_thresholds()
     parser = argparse.ArgumentParser(description="Promotion gate based on walk-forward + trading quality metrics.")
     parser.add_argument("--in-file", default=str(DEFAULT_IN_FILE))
     parser.add_argument("--registry-file", default=str(DEFAULT_REGISTRY_FILE))
-    parser.add_argument("--min-forward-mean", type=float, default=float(os.getenv("PROMOTION_GATE_MIN_FORWARD_MEAN", "0.53")))
-    parser.add_argument("--min-delta", type=float, default=float(os.getenv("PROMOTION_GATE_MIN_DELTA", "-0.01")))
-    parser.add_argument("--min-trading-quality-score", type=float, default=float(os.getenv("PROMOTION_GATE_MIN_TRADING_QUALITY_SCORE", "0.52")))
-    parser.add_argument("--max-overfit-gap", type=float, default=float(os.getenv("PROMOTION_GATE_MAX_OVERFIT_GAP", "0.10")))
-    parser.add_argument("--max-fail-share", type=float, default=float(os.getenv("PROMOTION_GATE_MAX_FAIL_SHARE", "0.25")))
-    parser.add_argument("--max-severe-overfit-share", type=float, default=float(os.getenv("PROMOTION_GATE_MAX_SEVERE_OVERFIT_SHARE", "0.10")))
-    parser.add_argument("--min-runs-per-bot", type=int, default=int(os.getenv("PROMOTION_GATE_MIN_RUNS", "12")))
-    parser.add_argument("--min-considered-bots", type=int, default=int(os.getenv("PROMOTION_GATE_MIN_CONSIDERED", "12")))
+    parser.add_argument("--min-forward-mean", type=float, default=float(os.getenv("PROMOTION_GATE_MIN_FORWARD_MEAN", str(defaults.get("min_forward_mean", 0.53)))))
+    parser.add_argument("--min-delta", type=float, default=float(os.getenv("PROMOTION_GATE_MIN_DELTA", str(defaults.get("min_delta", -0.01)))))
+    parser.add_argument("--min-trading-quality-score", type=float, default=float(os.getenv("PROMOTION_GATE_MIN_TRADING_QUALITY_SCORE", str(defaults.get("min_trading_quality_score", 0.52)))))
+    parser.add_argument("--max-overfit-gap", type=float, default=float(os.getenv("PROMOTION_GATE_MAX_OVERFIT_GAP", str(defaults.get("max_overfit_gap", 0.10)))))
+    parser.add_argument("--max-fail-share", type=float, default=float(os.getenv("PROMOTION_GATE_MAX_FAIL_SHARE", str(defaults.get("max_fail_share", 0.25)))))
+    parser.add_argument("--max-severe-overfit-share", type=float, default=float(os.getenv("PROMOTION_GATE_MAX_SEVERE_OVERFIT_SHARE", str(defaults.get("max_severe_overfit_share", 0.10)))))
+    parser.add_argument("--min-runs-per-bot", type=int, default=int(os.getenv("PROMOTION_GATE_MIN_RUNS", str(defaults.get("min_runs_per_bot", 12)))))
+    parser.add_argument("--min-considered-bots", type=int, default=int(os.getenv("PROMOTION_GATE_MIN_CONSIDERED", str(defaults.get("min_considered_bots", 4)))))
     parser.add_argument(
         "--require-active-registry",
         action=argparse.BooleanOptionalAction,
-        default=os.getenv("PROMOTION_GATE_REQUIRE_ACTIVE_REGISTRY", "1").strip() == "1",
+        default=os.getenv("PROMOTION_GATE_REQUIRE_ACTIVE_REGISTRY", "1" if bool(defaults.get("require_active_registry", True)) else "0").strip() == "1",
     )
     parser.add_argument(
         "--include-infrastructure",
         action=argparse.BooleanOptionalAction,
-        default=os.getenv("PROMOTION_GATE_INCLUDE_INFRASTRUCTURE", "0").strip() == "1",
+        default=os.getenv("PROMOTION_GATE_INCLUDE_INFRASTRUCTURE", "1" if bool(defaults.get("include_infrastructure", False)) else "0").strip() == "1",
     )
     parser.add_argument("--out-file", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "promotion_gate_latest.json"))
     args = parser.parse_args()

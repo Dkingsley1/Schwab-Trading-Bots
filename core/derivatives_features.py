@@ -35,6 +35,11 @@ OPTIONS_FEATURE_KEYS = [
     "options_atm_strike",
     "options_strike_dispersion_norm",
     "options_vol_expectation_norm",
+    "options_gamma_exposure_norm",
+    "options_call_wall_distance_norm",
+    "options_put_wall_distance_norm",
+    "options_oi_concentration_norm",
+    "options_unusual_flow_norm",
 ]
 
 FUTURES_FEATURE_KEYS = [
@@ -68,6 +73,13 @@ CALENDAR_FEATURE_KEYS = [
     "calendar_event_proximity_norm",
     "calendar_next_event_norm",
     "calendar_macro_event_norm",
+    "calendar_macro_surprise_norm",
+    "calendar_macro_abs_surprise_norm",
+    "calendar_macro_revision_norm",
+    "calendar_fomc_event_norm",
+    "calendar_cpi_event_norm",
+    "calendar_labor_event_norm",
+    "calendar_treasury_auction_norm",
     "calendar_options_expiry_week_norm",
     "calendar_dividend_events_30d_norm",
     "calendar_dividend_exdate_proximity_norm",
@@ -79,6 +91,18 @@ CALENDAR_FEATURE_KEYS = [
 
 def _to_float(value: Any, default: float = 0.0) -> float:
     try:
+        if isinstance(value, str):
+            text = value.strip().replace(",", "")
+            if not text or text.lower() in {"n/a", "na", "none", "null", "--", "-"}:
+                return default
+            mult = 1.0
+            tail = text[-1:].lower()
+            if tail in {"k", "m", "b"}:
+                mult = {"k": 1.0e3, "m": 1.0e6, "b": 1.0e9}[tail]
+                text = text[:-1]
+            if text.endswith("%"):
+                text = text[:-1]
+            return float(text) * mult
         return float(value)
     except Exception:
         return default
@@ -86,6 +110,10 @@ def _to_float(value: Any, default: float = 0.0) -> float:
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(float(value), 1.0))
+
+
+def _signed_centered_norm(value: float, scale: float) -> float:
+    return _clamp01(0.5 + (float(value) / max(float(scale), 1e-8)))
 
 
 def _safe_mean(values: List[float]) -> float:
@@ -314,10 +342,17 @@ def summarize_option_chain(
 
     call_oi = 0.0
     put_oi = 0.0
+    call_volume = 0.0
+    put_volume = 0.0
     delta_abs_vals: List[float] = []
     gamma_vals: List[float] = []
     theta_abs_vals: List[float] = []
     vega_vals: List[float] = []
+    unusual_flow_ratios: List[float] = []
+    strike_open_interest: Dict[float, float] = {}
+    call_wall_oi: Dict[float, float] = {}
+    put_wall_oi: Dict[float, float] = {}
+    gamma_exposure = 0.0
 
     atm_strike = 0.0
     atm_iv = 0.0
@@ -380,6 +415,28 @@ def summarize_option_chain(
             call_oi += oi
         elif side == "PUT":
             put_oi += oi
+        if strike > 0.0 and oi > 0.0:
+            strike_open_interest[strike] = strike_open_interest.get(strike, 0.0) + oi
+            if side == "CALL":
+                call_wall_oi[strike] = call_wall_oi.get(strike, 0.0) + oi
+            elif side == "PUT":
+                put_wall_oi[strike] = put_wall_oi.get(strike, 0.0) + oi
+
+        volume = max(
+            _to_float(
+                row.get("totalVolume")
+                if row.get("totalVolume") is not None
+                else row.get("volume"),
+                0.0,
+            ),
+            0.0,
+        )
+        if side == "CALL":
+            call_volume += volume
+        elif side == "PUT":
+            put_volume += volume
+        if volume > 0.0:
+            unusual_flow_ratios.append(min(volume / max(oi, 1.0), 4.0))
 
         d = row.get("delta")
         if d is not None:
@@ -391,6 +448,7 @@ def summarize_option_chain(
             g_val = abs(_to_float(g, 0.0))
             if g_val <= 5.0:
                 gamma_vals.append(g_val)
+                gamma_exposure += g_val * max(oi, 0.0)
         t = row.get("theta")
         if t is not None:
             t_val = abs(_to_float(t, 0.0))
@@ -445,6 +503,17 @@ def summarize_option_chain(
     near_exp = min(dte_all) if dte_all else 0.0
     far_exp = max(dte_all) if dte_all else 0.0
     strike_dispersion = _safe_stdev(moneyness_all)
+    total_oi = max(call_oi + put_oi, 0.0)
+    oi_concentration = (max(strike_open_interest.values()) / total_oi) if strike_open_interest and total_oi > 0.0 else 0.0
+
+    call_wall_distance = 0.0
+    put_wall_distance = 0.0
+    if under > 0.0 and call_wall_oi:
+        call_wall_strike = max(call_wall_oi.items(), key=lambda kv: kv[1])[0]
+        call_wall_distance = abs(call_wall_strike - under) / max(under, 1e-8)
+    if under > 0.0 and put_wall_oi:
+        put_wall_strike = max(put_wall_oi.items(), key=lambda kv: kv[1])[0]
+        put_wall_distance = abs(put_wall_strike - under) / max(under, 1e-8)
 
     negative_bias = _clamp01(
         (0.55 * _clamp01((put_call_ratio - 1.0) / 1.5))
@@ -488,6 +557,11 @@ def summarize_option_chain(
             "options_atm_strike": float(max(atm_strike, 0.0)),
             "options_strike_dispersion_norm": _clamp01(strike_dispersion / 0.35),
             "options_vol_expectation_norm": vol_expect,
+            "options_gamma_exposure_norm": _clamp01(math.log1p(max(gamma_exposure, 0.0)) / 10.0),
+            "options_call_wall_distance_norm": _clamp01(call_wall_distance / 0.20),
+            "options_put_wall_distance_norm": _clamp01(put_wall_distance / 0.20),
+            "options_oi_concentration_norm": _clamp01(oi_concentration),
+            "options_unusual_flow_norm": _clamp01(_safe_mean(unusual_flow_ratios) / 4.0),
         }
     )
     return out
@@ -721,6 +795,14 @@ def summarize_calendar_payload(
     earnings_7d = 0
     macro_24h = 0
     options_expiry_week = 0
+    macro_surprise = 0.0
+    macro_abs_surprise = 0.0
+    macro_revision = 0.0
+    macro_surprise_n = 0
+    fomc_7d = 0
+    cpi_7d = 0
+    labor_7d = 0
+    treasury_auction_7d = 0
 
     macro_tokens = (
         "fomc",
@@ -735,6 +817,9 @@ def summarize_calendar_payload(
         "rates",
         "treasury",
     )
+    cpi_tokens = ("cpi", "pce", "inflation")
+    labor_tokens = ("payroll", "nonfarm", "unemployment", "jobless", "labor")
+    treasury_auction_tokens = ("treasury auction", "10-year auction", "30-year auction", "2-year auction", "bond auction", "note auction")
     high_tokens = ("high", "critical", "red", "major")
     earnings_tokens = ("earnings", "guidance", "revenue")
     options_expiry_tokens = ("options expiration", "opex", "triple witching")
@@ -771,6 +856,10 @@ def summarize_calendar_payload(
         impact_score = _to_float(impact_raw, 0.0)
         is_high = any(tok in impact for tok in high_tokens) or ("high impact" in text) or (impact_score >= 3.0)
         is_macro = any(tok in text for tok in macro_tokens)
+        is_fomc = ("fomc" in text) or ("fed" in text) or ("rate decision" in text)
+        is_cpi = any(tok in text for tok in cpi_tokens)
+        is_labor = any(tok in text for tok in labor_tokens)
+        is_treasury_auction = any(tok in text for tok in treasury_auction_tokens)
         is_earnings = any(tok in text for tok in earnings_tokens)
         is_opex = any(tok in text for tok in options_expiry_tokens)
         is_dividend = any(tok in text for tok in dividend_tokens)
@@ -792,6 +881,14 @@ def summarize_calendar_payload(
                 earnings_7d += 1
             if delta_s <= 7 * 24 * 3600 and is_opex:
                 options_expiry_week += 1
+            if delta_s <= 7 * 24 * 3600 and is_fomc:
+                fomc_7d += 1
+            if delta_s <= 7 * 24 * 3600 and is_cpi:
+                cpi_7d += 1
+            if delta_s <= 7 * 24 * 3600 and is_labor:
+                labor_7d += 1
+            if delta_s <= 7 * 24 * 3600 and is_treasury_auction:
+                treasury_auction_7d += 1
 
             if delta_s <= 30 * 24 * 3600 and is_dividend:
                 dividend_events_30d += 1
@@ -805,12 +902,31 @@ def summarize_calendar_payload(
             if is_dividend_exdate:
                 dividend_recent_exdate += 1
 
+        if is_macro:
+            actual = _to_float(_row_get_ci(row, "actual", "actualvalue", "last"), 0.0)
+            forecast = _to_float(_row_get_ci(row, "forecast", "consensus", "estimate", "teforecast"), 0.0)
+            previous = _to_float(_row_get_ci(row, "previous", "prior"), 0.0)
+            revised = _to_float(_row_get_ci(row, "revised", "revision", "revisedfromprevious"), 0.0)
+
+            baseline = forecast if abs(forecast) > 0.0 else previous
+            if abs(actual) > 0.0 and abs(baseline) > 0.0:
+                scale = max(abs(baseline), 1.0)
+                surprise = max(min((actual - baseline) / scale, 3.0), -3.0)
+                macro_surprise += surprise
+                macro_abs_surprise += abs(surprise)
+                macro_surprise_n += 1
+            if abs(revised) > 0.0 and abs(previous) > 0.0:
+                revision = max(min((revised - previous) / max(abs(previous), 1.0), 3.0), -3.0)
+                macro_revision += revision
+
     if next_minutes >= 1e8:
         next_minutes = 0.0
     if next_dividend_ex_minutes >= 1e8:
         next_dividend_ex_minutes = 0.0
     if next_dividend_payout_minutes >= 1e8:
         next_dividend_payout_minutes = 0.0
+    if macro_surprise_n <= 0:
+        macro_surprise_n = 1
 
     out.update(
         {
@@ -821,6 +937,13 @@ def summarize_calendar_payload(
             "calendar_event_proximity_norm": _clamp01(1.0 - (next_minutes / 240.0)) if next_minutes > 0 else 0.0,
             "calendar_next_event_norm": _clamp01(next_minutes / 1440.0) if next_minutes > 0 else 0.0,
             "calendar_macro_event_norm": _clamp01(macro_24h / 12.0),
+            "calendar_macro_surprise_norm": _signed_centered_norm(macro_surprise / macro_surprise_n, 3.0),
+            "calendar_macro_abs_surprise_norm": _clamp01((macro_abs_surprise / macro_surprise_n) / 3.0),
+            "calendar_macro_revision_norm": _signed_centered_norm(macro_revision / macro_surprise_n, 3.0),
+            "calendar_fomc_event_norm": _clamp01(fomc_7d / 3.0),
+            "calendar_cpi_event_norm": _clamp01(cpi_7d / 4.0),
+            "calendar_labor_event_norm": _clamp01(labor_7d / 4.0),
+            "calendar_treasury_auction_norm": _clamp01(treasury_auction_7d / 5.0),
             "calendar_options_expiry_week_norm": _clamp01(options_expiry_week / 4.0),
             "calendar_dividend_events_30d_norm": _clamp01(dividend_events_30d / 20.0),
             "calendar_dividend_exdate_proximity_norm": _clamp01(1.0 - (next_dividend_ex_minutes / (7.0 * 1440.0))) if next_dividend_ex_minutes > 0 else 0.0,

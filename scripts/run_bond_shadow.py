@@ -1,5 +1,6 @@
 import argparse
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -7,10 +8,41 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VENV_PY = PROJECT_ROOT / '.venv312' / 'bin' / 'python'
 SHADOW_LOOP = PROJECT_ROOT / 'scripts' / 'run_shadow_training_loop.py'
+LOAD_RUNTIME_ENV = PROJECT_ROOT / 'scripts' / 'ops' / 'load_runtime_env.sh'
 
 DEFAULT_BOND_SYMBOLS = (
-    'TLT,IEF,SHY,TLH,TIP,LQD,HYG,JNK,BND,AGG,MUB,IGIB,USHY,FLOT,VGIT'
+    'TLT,IEF,SHY,TIP,LQD,HYG'
 )
+
+
+def _runtime_profile(simulate: bool) -> str:
+    profile = os.getenv('BOT_RUNTIME_PROFILE', 'sim' if simulate else 'live').strip().lower()
+    return profile if profile in {'sim', 'live'} else ('sim' if simulate else 'live')
+
+
+def _bootstrap_runtime_env(base_env: dict[str, str], profile: str) -> dict[str, str]:
+    if not LOAD_RUNTIME_ENV.exists():
+        return base_env
+    source_cmd = (
+        f"source {shlex.quote(str(LOAD_RUNTIME_ENV))} {shlex.quote(profile)} --quiet >/dev/null 2>&1 && env -0"
+    )
+    result = subprocess.run(
+        ['/bin/zsh', '-lc', source_cmd],
+        cwd=str(PROJECT_ROOT),
+        env=base_env,
+        capture_output=True,
+        text=False,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout:
+        return base_env
+    merged = base_env.copy()
+    for chunk in result.stdout.split(b'\0'):
+        if not chunk or b'=' not in chunk:
+            continue
+        key, value = chunk.split(b'=', 1)
+        merged[key.decode('utf-8', 'ignore')] = value.decode('utf-8', 'ignore')
+    return merged
 
 
 def main() -> int:
@@ -30,7 +62,7 @@ def main() -> int:
         print(f'ERROR: missing shadow loop script: {SHADOW_LOOP}')
         return 2
 
-    env = os.environ.copy()
+    env = _bootstrap_runtime_env(os.environ.copy(), _runtime_profile(args.simulate))
     env['MARKET_DATA_ONLY'] = '1'
     env['ALLOW_ORDER_EXECUTION'] = '0'
     env['SHADOW_PROFILE'] = 'bond'

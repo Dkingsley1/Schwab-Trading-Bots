@@ -16,6 +16,7 @@ def test_summarize_option_chain_emits_bias_roll_vwap_term_and_vol_expectation() 
                 "strikePrice": 100.0,
                 "impliedVolatility": 0.38,
                 "openInterest": 1200,
+                "totalVolume": 900,
                 "delta": 0.52,
                 "gamma": 0.08,
                 "theta": -0.04,
@@ -31,6 +32,7 @@ def test_summarize_option_chain_emits_bias_roll_vwap_term_and_vol_expectation() 
                 "strikePrice": 100.0,
                 "impliedVolatility": 0.46,
                 "openInterest": 2100,
+                "totalVolume": 1400,
                 "delta": -0.49,
                 "gamma": 0.09,
                 "theta": -0.05,
@@ -46,6 +48,7 @@ def test_summarize_option_chain_emits_bias_roll_vwap_term_and_vol_expectation() 
                 "strikePrice": 110.0,
                 "impliedVolatility": 0.34,
                 "openInterest": 800,
+                "totalVolume": 500,
                 "bid": 2.1,
                 "ask": 2.4,
                 "mark": 2.3,
@@ -57,6 +60,7 @@ def test_summarize_option_chain_emits_bias_roll_vwap_term_and_vol_expectation() 
                 "strikePrice": 90.0,
                 "impliedVolatility": 0.43,
                 "openInterest": 1600,
+                "totalVolume": 700,
                 "bid": 2.5,
                 "ask": 2.9,
                 "mark": 2.8,
@@ -72,6 +76,11 @@ def test_summarize_option_chain_emits_bias_roll_vwap_term_and_vol_expectation() 
     assert 0.0 <= out["options_roll_yield_norm"] <= 1.0
     assert 0.0 <= out["options_vwap_bias_norm"] <= 1.0
     assert 0.0 <= out["options_vol_expectation_norm"] <= 1.0
+    assert 0.0 <= out["options_gamma_exposure_norm"] <= 1.0
+    assert 0.0 <= out["options_call_wall_distance_norm"] <= 1.0
+    assert 0.0 <= out["options_put_wall_distance_norm"] <= 1.0
+    assert 0.0 <= out["options_oi_concentration_norm"] <= 1.0
+    assert 0.0 <= out["options_unusual_flow_norm"] <= 1.0
     assert "options_iv_term_structure" in out
 
 
@@ -132,12 +141,18 @@ def test_summarize_calendar_payload_supports_tradingeconomics_style_fields() -> 
             "Country": "United States",
             "Event": "CPI YoY",
             "Importance": 3,
+            "Actual": "3.6%",
+            "Forecast": "3.2%",
+            "Previous": "3.0%",
         },
         {
             "Date": (now + timedelta(days=1)).isoformat(),
             "Country": "United States",
-            "Event": "Options Expiration",
+            "Event": "10-Year Treasury Auction",
             "Importance": "Medium",
+            "Actual": "4.18",
+            "Forecast": "4.11",
+            "Previous": "4.07",
         },
     ]
 
@@ -147,7 +162,10 @@ def test_summarize_calendar_payload_supports_tradingeconomics_style_fields() -> 
     assert out["calendar_next_event_norm"] > 0.0
     assert out["calendar_high_impact_24h_norm"] > 0.0
     assert out["calendar_macro_event_norm"] > 0.0
-    assert out["calendar_options_expiry_week_norm"] > 0.0
+    assert out["calendar_macro_surprise_norm"] != 0.5
+    assert out["calendar_macro_abs_surprise_norm"] > 0.0
+    assert out["calendar_cpi_event_norm"] > 0.0
+    assert out["calendar_treasury_auction_norm"] > 0.0
 
 
 def test_summarize_calendar_payload_emits_dividend_capture_and_payout_features() -> None:

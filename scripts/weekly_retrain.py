@@ -47,6 +47,10 @@ RETRAIN_ARTIFACT_FRESHNESS_GUARD = os.path.join(PROJECT_ROOT, "scripts", "retrai
 TRAINING_SAMPLE_QUOTA_GUARD = os.path.join(PROJECT_ROOT, "scripts", "training_sample_quota_guard.py")
 REPLAY_FEATURE_ABLATION_REPORT = os.path.join(PROJECT_ROOT, "scripts", "replay_feature_ablation_report.py")
 EXPORT_MODEL_CARD_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "export_model_card.py")
+DATA_RETENTION_POLICY = os.path.join(PROJECT_ROOT, "scripts", "data_retention_policy.py")
+DATA_DIVERGENCE_GLOBAL_FILE = os.path.join(PROJECT_ROOT, "governance", "health", "data_source_divergence_latest.json")
+DATA_DIVERGENCE_BOND_FILE = os.path.join(PROJECT_ROOT, "governance", "health", "data_source_divergence_bond_latest.json")
+DATA_DIVERGENCE_NON_BOND_FILE = os.path.join(PROJECT_ROOT, "governance", "health", "data_source_divergence_non_bond_latest.json")
 
 
 _MLX_LOCK_HANDLE = None
@@ -132,6 +136,39 @@ def _apply_regime_balanced_order(targets: list[str]) -> list[str]:
         if not moved:
             break
     return ordered
+
+
+def _apply_excluded_bot_ids(targets: list[str], excluded_bot_ids: str) -> list[str]:
+    excluded = {x.strip().lower() for x in str(excluded_bot_ids or "").split(",") if x.strip()}
+    if not excluded:
+        return targets
+    return [t for t in targets if _normalized_bot_id_from_script(t) not in excluded]
+
+
+def _apply_included_bot_ids(targets: list[str], included_bot_ids: str) -> list[str]:
+    wanted = [x.strip().lower() for x in str(included_bot_ids or "").split(",") if x.strip()]
+    if not wanted:
+        return targets
+    target_map = {_normalized_bot_id_from_script(t): t for t in targets}
+    out: list[str] = []
+    seen: set[str] = set()
+    for bot_id in wanted:
+        target = target_map.get(bot_id)
+        if target and bot_id not in seen:
+            out.append(target)
+            seen.add(bot_id)
+    return out
+
+
+def _resolve_data_divergence_file(scope: str, fallback_file: str) -> tuple[str, str]:
+    token = str(scope or "").strip().lower()
+    if token in {"", "all", "global", "all_profiles"}:
+        return fallback_file or DATA_DIVERGENCE_GLOBAL_FILE, "all_profiles"
+    if token in {"bond", "bond_profile", "bond-only", "bond_only"}:
+        return DATA_DIVERGENCE_BOND_FILE, "bond_profile"
+    if token in {"non_bond", "non-bond", "nonbond", "non_bond_profiles"}:
+        return DATA_DIVERGENCE_NON_BOND_FILE, "non_bond_profiles"
+    return fallback_file or DATA_DIVERGENCE_GLOBAL_FILE, token
 
 
 def _load_json_file(path: str) -> dict:
@@ -738,6 +775,7 @@ def _build_child_env(thread_cap: int) -> dict[str, str]:
     ):
         env.setdefault(key, cap)
 
+    env.setdefault("PYTHONUNBUFFERED", "1")
     env.setdefault("TOKENIZERS_PARALLELISM", "false")
     return env
 
@@ -1202,12 +1240,41 @@ def main() -> int:
         default=float(os.getenv("RETRAIN_MAX_DATA_DIVERGENCE_SPREAD", "0.03")),
     )
     parser.add_argument(
+        "--data-divergence-scope",
+        default=os.getenv("RETRAIN_DATA_DIVERGENCE_SCOPE", "all"),
+        help="Select divergence artifact scope: all, bond, or non_bond.",
+    )
+    parser.add_argument(
         "--snapshot-coverage-file",
         default=os.getenv("SNAPSHOT_COVERAGE_FILE", os.path.join(PROJECT_ROOT, "governance", "health", "snapshot_coverage_latest.json")),
     )
     parser.add_argument(
         "--data-divergence-file",
-        default=os.getenv("DATA_DIVERGENCE_FILE", os.path.join(PROJECT_ROOT, "governance", "health", "data_source_divergence_latest.json")),
+        default=os.getenv("DATA_DIVERGENCE_FILE", DATA_DIVERGENCE_GLOBAL_FILE),
+    )
+    parser.add_argument(
+        "--require-full-snapshot-sync",
+        action="store_true",
+        default=os.getenv("RETRAIN_REQUIRE_FULL_SNAPSHOT_SYNC", "1").strip() == "1",
+        help="Require all retained debug snapshot dirs to be ingested into SQLite before trade-behavior retrain.",
+    )
+    parser.add_argument(
+        "--purge-incorporated-snapshots",
+        action="store_true",
+        default=os.getenv("RETRAIN_PURGE_INGESTED_SNAPSHOTS", "1").strip() == "1",
+        help="After confirmed successful retrain, purge fully ingested debug snapshot dirs.",
+    )
+    parser.add_argument(
+        "--purge-debug-snapshots-days",
+        type=int,
+        default=int(os.getenv("RETRAIN_PURGE_DEBUG_SNAPSHOTS_DAYS", "0")),
+        help="Retention window to use for post-retrain debug snapshot purge.",
+    )
+    parser.add_argument(
+        "--purge-debug-snapshots-keep",
+        type=int,
+        default=int(os.getenv("RETRAIN_PURGE_DEBUG_SNAPSHOTS_KEEP", "0")),
+        help="Number of newest debug snapshot dirs to keep after post-retrain purge.",
     )
     parser.add_argument(
         "--regime-balance",
@@ -1219,6 +1286,16 @@ def main() -> int:
         "--regime-focus",
         default=os.getenv("RETRAIN_REGIME_FOCUS", ""),
         help="Optional comma-separated regime focus list (trend,mean_revert,shock,liquidity,other).",
+    )
+    parser.add_argument(
+        "--exclude-bot-ids",
+        default=os.getenv("RETRAIN_EXCLUDE_BOT_IDS", ""),
+        help="Optional comma-separated bot ids to exclude from retrain target queue.",
+    )
+    parser.add_argument(
+        "--include-bot-ids",
+        default=os.getenv("RETRAIN_INCLUDE_BOT_IDS", ""),
+        help="Optional comma-separated bot ids to exclusively retrain.",
     )
     parser.add_argument(
         "--canary-priority-file",
@@ -1335,6 +1412,12 @@ def main() -> int:
         help="Allow master update even when promotion prechecks fail; marks run as precheck override.",
     )
     parser.add_argument(
+        "--skip-master-update",
+        action="store_true",
+        default=os.getenv("RETRAIN_SKIP_MASTER_UPDATE", "0").strip() == "1",
+        help="Train targets without refreshing promotion artifacts or updating master registry.",
+    )
+    parser.add_argument(
         "--weekly-gate-blocker-report",
         action="store_true",
         default=os.getenv("RETRAIN_WEEKLY_GATE_BLOCKER_REPORT", "1").strip() == "1",
@@ -1418,20 +1501,32 @@ def main() -> int:
         print(f"ERROR: venv python not found at {VENV_PY}")
         return 2
 
+    effective_divergence_file, effective_divergence_scope = _resolve_data_divergence_file(
+        str(args.data_divergence_scope or ""),
+        str(args.data_divergence_file or DATA_DIVERGENCE_GLOBAL_FILE),
+    )
+
     data_quality_summary: dict = {}
     if args.require_data_quality_floor:
         dq_ok, dq_reason, dq_detail = _check_data_quality_floor(
             coverage_file=str(args.snapshot_coverage_file),
-            divergence_file=str(args.data_divergence_file),
+            divergence_file=effective_divergence_file,
             min_coverage_ratio=float(args.min_snapshot_coverage_ratio),
             max_divergence_spread=float(args.max_data_divergence_spread),
         )
-        data_quality_summary = {"ok": dq_ok, "reason": dq_reason, **dq_detail}
+        data_quality_summary = {
+            "ok": dq_ok,
+            "reason": dq_reason,
+            "data_divergence_scope": effective_divergence_scope,
+            "data_divergence_file": effective_divergence_file,
+            **dq_detail,
+        }
         print(
             "Data quality floor: "
             f"ok={dq_ok} "
             f"coverage={dq_detail.get('coverage_ratio', 0.0):.4f}/{dq_detail.get('min_coverage_ratio', 0.0):.4f} "
-            f"divergence={dq_detail.get('worst_relative_spread', 0.0):.4f}/{dq_detail.get('max_divergence_spread', 0.0):.4f}"
+            f"divergence={dq_detail.get('worst_relative_spread', 0.0):.4f}/{dq_detail.get('max_divergence_spread', 0.0):.4f} "
+            f"scope={effective_divergence_scope}"
         )
         if not dq_ok:
             print(f"Retrain blocked by data quality floor: {dq_reason}")
@@ -1496,11 +1591,22 @@ def main() -> int:
         print("ERROR: no brain_refinery targets found")
         return 2
 
+    if str(args.include_bot_ids or "").strip():
+        targets = _apply_included_bot_ids(targets, str(args.include_bot_ids or ""))
+        if not targets:
+            print(f"ERROR: include_bot_ids selected zero targets: {args.include_bot_ids}")
+            return 2
+
     base_targets = list(targets)
+    effective_active_only = bool(args.active_only)
+    if str(args.include_bot_ids or "").strip() and effective_active_only:
+        effective_active_only = False
+        print("Include-bot-ids override: bypassing active_only filter.")
+
     min_age = max(float(args.min_model_age_hours), 0.0)
     targets, target_stats = _filter_targets_for_efficiency(
         targets,
-        active_only=args.active_only,
+        active_only=effective_active_only,
         max_targets=max(int(args.max_targets), 0),
         min_model_age_hours=min_age,
     )
@@ -1508,7 +1614,7 @@ def main() -> int:
         print("WARN: age filter selected zero targets; retrying with min_model_age_hours=0")
         targets, target_stats = _filter_targets_for_efficiency(
             base_targets,
-            active_only=args.active_only,
+            active_only=effective_active_only,
             max_targets=max(int(args.max_targets), 0),
             min_model_age_hours=0.0,
         )
@@ -1528,6 +1634,8 @@ def main() -> int:
 
     if args.regime_balance:
         targets = _apply_regime_balanced_order(targets)
+
+    targets = _apply_excluded_bot_ids(targets, str(args.exclude_bot_ids or ""))
 
     targets, canary_priority_selected = _apply_canary_priority(
         targets,
@@ -1599,7 +1707,7 @@ def main() -> int:
 
     print(
         "Efficiency filter: "
-        f"active_only={args.active_only} "
+        f"active_only={effective_active_only} "
         f"max_targets={args.max_targets} "
         f"min_model_age_hours={args.min_model_age_hours:.1f} "
         f"selected={target_stats.get('post', 0)}/{target_stats.get('pre', 0)}"
@@ -1608,6 +1716,8 @@ def main() -> int:
         "Queue strategy: "
         f"regime_balance={args.regime_balance} "
         f"regime_focus={effective_regime_focus or 'all'} "
+        f"include_bot_ids={str(args.include_bot_ids or 'none')} "
+        f"exclude_bot_ids={str(args.exclude_bot_ids or 'none')} "
         f"canary_priority_selected={canary_priority_selected} "
         f"new_bot_boost={args.new_bot_boost} "
         f"bottleneck_profile_used={bool(bottleneck_profile)}"
@@ -1731,7 +1841,10 @@ def main() -> int:
     except Exception as exc:
         print(f"WARN: could not backup registry before update: {exc}")
 
-    if _wait_for_memory_gate(
+    if args.skip_master_update:
+        master_update_status = "skipped_by_flag"
+        print("Master registry update skipped by flag.")
+    elif _wait_for_memory_gate(
         enabled=args.memory_guard,
         min_free_pct=args.min_free_pct,
         max_swap_gb=dynamic_max_swap_gb,
@@ -1831,6 +1944,34 @@ def main() -> int:
     )
     print(f"Training success marker written: {marker_path}")
 
+    confirmed_training_success = False
+    try:
+        with open(marker_path, "r", encoding="utf-8") as f:
+            confirmed_training_success = bool((json.load(f) or {}).get("confirmed_training_success", False))
+    except Exception:
+        confirmed_training_success = False
+
+    if args.purge_incorporated_snapshots and (not args.dry_run):
+        if confirmed_training_success:
+            if os.path.exists(DATA_RETENTION_POLICY):
+                print("Purging fully ingested debug snapshots after confirmed retrain success...")
+                retention_cmd = [
+                    VENV_PY,
+                    DATA_RETENTION_POLICY,
+                    "--apply",
+                    "--json",
+                    "--debug-snapshots-days",
+                    str(max(int(args.purge_debug_snapshots_days), 0)),
+                    "--debug-snapshots-keep",
+                    str(max(int(args.purge_debug_snapshots_keep), 0)),
+                    "--require-training-success",
+                ]
+                _ = run_cmd(retention_cmd, args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+            else:
+                print(f"WARN: data retention script missing: {DATA_RETENTION_POLICY}")
+        else:
+            print("Skipping debug snapshot purge because confirmed training success was not achieved.")
+
     if skipped_by_memory:
         print(f"Skipped by memory gate: {len(skipped_by_memory)}")
         for s in skipped_by_memory:
@@ -1847,21 +1988,36 @@ def main() -> int:
 
     if enable_trade_behavior_retrain:
         print("Running trade history behavior learning step...")
+        trade_behavior_trained_ok = False
 
         if os.path.exists(SNAPSHOT_HEALTH_SYNC_SCRIPT):
-            _ = run_cmd([VENV_PY, SNAPSHOT_HEALTH_SYNC_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+            snapshot_sync_cmd = [VENV_PY, SNAPSHOT_HEALTH_SYNC_SCRIPT, "--json"]
+            if args.require_full_snapshot_sync:
+                snapshot_sync_cmd.append("--require-full-debug-sync")
+            snapshot_sync_rc = run_cmd(snapshot_sync_cmd, args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+            if snapshot_sync_rc != 0:
+                print(f"FAIL: snapshot SQL sync coverage gate (exit={snapshot_sync_rc})")
+                return 1
         else:
             print(f"WARN: snapshot health SQL sync script missing: {SNAPSHOT_HEALTH_SYNC_SCRIPT}")
 
         dataset_builder_override = os.getenv("TRADE_BEHAVIOR_DATASET_BUILDER", "").strip()
+        allow_legacy_trade_dataset_builder = os.getenv("TRADE_BEHAVIOR_ALLOW_LEGACY_DATASET_BUILDER", "0").strip() == "1"
         dataset_builder_candidates: list[str] = []
         if dataset_builder_override:
             dataset_builder_candidates.append(dataset_builder_override)
         else:
             if os.path.exists(TRADE_DATASET_BUILDER):
                 dataset_builder_candidates.append(TRADE_DATASET_BUILDER)
-            if os.path.exists(TRADE_DATASET_BUILDER_LEGACY) and TRADE_DATASET_BUILDER_LEGACY not in dataset_builder_candidates:
+            if (
+                allow_legacy_trade_dataset_builder
+                and os.path.exists(TRADE_DATASET_BUILDER_LEGACY)
+                and TRADE_DATASET_BUILDER_LEGACY not in dataset_builder_candidates
+            ):
                 dataset_builder_candidates.append(TRADE_DATASET_BUILDER_LEGACY)
+
+        if (not dataset_builder_override) and (not allow_legacy_trade_dataset_builder) and os.path.exists(TRADE_DATASET_BUILDER_LEGACY):
+            print("Trade dataset builder legacy fallback disabled; curated builder only")
 
         dataset_build_rc = 0
         if dataset_builder_candidates:
@@ -1906,6 +2062,7 @@ def main() -> int:
 
         if os.path.exists(TRADE_BEHAVIOR_TRAINER):
             rc = run_cmd([VENV_PY, TRADE_BEHAVIOR_TRAINER], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+            trade_behavior_trained_ok = (rc == 0)
             if rc != 0 and trade_behavior_strict:
                 print("FAIL: trade behavior trainer")
                 return 1
@@ -1924,6 +2081,24 @@ def main() -> int:
                     print("FAIL: replay feature ablation report")
                     return 1
                 print("WARN: replay feature ablation report failed")
+
+        if trade_behavior_trained_ok and args.purge_incorporated_snapshots and (not args.dry_run):
+            if os.path.exists(DATA_RETENTION_POLICY):
+                print("Purging fully incorporated debug snapshots after successful trade-behavior training...")
+                retention_cmd = [
+                    VENV_PY,
+                    DATA_RETENTION_POLICY,
+                    "--apply",
+                    "--json",
+                    "--debug-snapshots-days",
+                    str(max(int(args.purge_debug_snapshots_days), 0)),
+                    "--debug-snapshots-keep",
+                    str(max(int(args.purge_debug_snapshots_keep), 0)),
+                    "--require-snapshot-training-coverage",
+                ]
+                _ = run_cmd(retention_cmd, args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+            else:
+                print(f"WARN: data retention script missing: {DATA_RETENTION_POLICY}")
 
     if args.monthly_prune and (not args.dry_run) and _monthly_prune_due():
         print("Running monthly prune pass...")
