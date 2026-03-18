@@ -42,6 +42,33 @@ def _sqlite_exec_with_retry(
             attempt += 1
 
 
+def _sqlite_sidecar_path(db_path: Path, suffix: str) -> Path:
+    return Path(f"{db_path}{suffix}")
+
+
+def _size_gb(path: Path) -> float:
+    try:
+        return float(path.stat().st_size) / (1024 ** 3)
+    except Exception:
+        return 0.0
+
+
+def _normalize_checkpoint_mode(raw: str) -> str:
+    mode = str(raw or "auto").strip().lower()
+    if mode in {"auto", "passive", "truncate", "restart"}:
+        return mode
+    return "auto"
+
+
+def _checkpoint_mode_for_wal(wal_size_gb: float, requested_mode: str, truncate_max_gb: float) -> str:
+    mode = _normalize_checkpoint_mode(requested_mode)
+    if wal_size_gb <= 0.0:
+        return ""
+    if mode != "auto":
+        return mode
+    return "truncate" if wal_size_gb <= max(float(truncate_max_gb), 0.0) else "passive"
+
+
 def _emit(payload: dict, out_path: Path, as_json: bool) -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
@@ -61,6 +88,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Apply SQLite performance tuning and maintenance.")
     parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--vacuum", action="store_true")
+    parser.add_argument("--checkpoint-only", action="store_true")
+    parser.add_argument("--wal-checkpoint-threshold-gb", type=float, default=float(os.getenv("SQLITE_WAL_CHECKPOINT_THRESHOLD_GB", "0.25")))
+    parser.add_argument("--wal-truncate-max-gb", type=float, default=float(os.getenv("SQLITE_WAL_TRUNCATE_MAX_GB", "8")))
+    parser.add_argument("--wal-checkpoint-mode", choices=("auto", "passive", "truncate", "restart"), default=_normalize_checkpoint_mode(os.getenv("SQLITE_WAL_CHECKPOINT_MODE", "auto")))
     parser.add_argument("--auto-vacuum-over-gb", type=float, default=float(os.getenv("SQLITE_AUTO_VACUUM_OVER_GB", "24")))
     parser.add_argument("--vacuum-min-interval-hours", type=float, default=float(os.getenv("SQLITE_VACUUM_MIN_INTERVAL_HOURS", "24")))
     parser.add_argument("--json", action="store_true")
@@ -95,6 +126,8 @@ def main() -> int:
     total_rows = 0
     do_vacuum = False
     size_gb_before = db_path.stat().st_size / (1024 ** 3)
+    wal_path = _sqlite_sidecar_path(db_path, "-wal")
+    wal_size_gb_before = _size_gb(wal_path)
 
     payload = {
         "timestamp_utc": timestamp_utc,
@@ -105,6 +138,16 @@ def main() -> int:
         "jsonl_records_rows": 0,
         "size_gb_before": round(size_gb_before, 3),
         "size_gb_after": round(size_gb_before, 3),
+        "wal_size_gb_before": round(wal_size_gb_before, 3),
+        "wal_size_gb_after": round(wal_size_gb_before, 3),
+        "checkpoint_only": bool(args.checkpoint_only),
+        "checkpoint_ran": False,
+        "checkpoint_mode_requested": _normalize_checkpoint_mode(args.wal_checkpoint_mode),
+        "checkpoint_mode_applied": "",
+        "checkpoint_result": {},
+        "checkpoint_skipped_reason": "",
+        "wal_checkpoint_threshold_gb": float(args.wal_checkpoint_threshold_gb),
+        "wal_truncate_max_gb": float(args.wal_truncate_max_gb),
         "auto_vacuum_over_gb": float(args.auto_vacuum_over_gb),
         "vacuum_min_interval_hours": float(args.vacuum_min_interval_hours),
     }
@@ -118,12 +161,27 @@ def main() -> int:
         conn.execute("PRAGMA mmap_size=268435456")
         conn.execute(f"PRAGMA busy_timeout={int(max(float(args.sqlite_timeout_seconds), 1.0) * 1000)}")
 
-        if _table_exists(conn, "jsonl_records"):
+        if (not args.checkpoint_only) and _table_exists(conn, "jsonl_records"):
             idx_sql = [
                 "CREATE INDEX IF NOT EXISTS idx_jsonl_source_rel_ingested ON jsonl_records(source_rel, ingested_at)",
+                "CREATE INDEX IF NOT EXISTS idx_jsonl_source_rel_line ON jsonl_records(source_rel, line_no)",
                 "CREATE INDEX IF NOT EXISTS idx_jsonl_action_expr ON jsonl_records((json_extract(payload_json, '$.action')))",
                 "CREATE INDEX IF NOT EXISTS idx_jsonl_symbol_expr ON jsonl_records((json_extract(payload_json, '$.symbol')))",
                 "CREATE INDEX IF NOT EXISTS idx_jsonl_ts_expr ON jsonl_records((json_extract(payload_json, '$.timestamp_utc')))",
+            ]
+            for sql in idx_sql:
+                _sqlite_exec_with_retry(
+                    conn,
+                    sql,
+                    lock_retries=max(args.sqlite_lock_retries, 0),
+                    lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+                )
+                created_indexes += 1
+
+        if (not args.checkpoint_only) and _table_exists(conn, "json_file_records"):
+            idx_sql = [
+                "CREATE INDEX IF NOT EXISTS idx_json_file_source_rel_ingested ON json_file_records(source_rel, ingested_at)",
+                "CREATE INDEX IF NOT EXISTS idx_json_file_stream_ingested ON json_file_records(stream, ingested_at)",
             ]
             for sql in idx_sql:
                 _sqlite_exec_with_retry(
@@ -150,40 +208,65 @@ def main() -> int:
             lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
         )
 
-        _sqlite_exec_with_retry(
-            conn,
-            "ANALYZE",
-            lock_retries=max(args.sqlite_lock_retries, 0),
-            lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
-        )
-        _sqlite_exec_with_retry(
-            conn,
-            "PRAGMA optimize",
-            lock_retries=max(args.sqlite_lock_retries, 0),
-            lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
-        )
-        _sqlite_exec_with_retry(
-            conn,
-            "PRAGMA wal_checkpoint(TRUNCATE)",
-            lock_retries=max(args.sqlite_lock_retries, 0),
-            lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
-        )
-
-        last_vacuum_ts = None
-        try:
-            row = _sqlite_exec_with_retry(
+        if not args.checkpoint_only:
+            _sqlite_exec_with_retry(
                 conn,
-                "SELECT timestamp_utc FROM db_maintenance_events WHERE vacuum_ran=1 ORDER BY id DESC LIMIT 1",
+                "ANALYZE",
                 lock_retries=max(args.sqlite_lock_retries, 0),
                 lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
-            ).fetchone()
-            if row and row[0]:
-                last_vacuum_ts = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00")).astimezone(timezone.utc)
-        except Exception:
-            last_vacuum_ts = None
+            )
+            _sqlite_exec_with_retry(
+                conn,
+                "PRAGMA optimize",
+                lock_retries=max(args.sqlite_lock_retries, 0),
+                lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+            )
 
-        do_vacuum = bool(args.vacuum)
-        if (not do_vacuum) and size_gb_before >= float(args.auto_vacuum_over_gb):
+        checkpoint_threshold_gb = max(float(args.wal_checkpoint_threshold_gb), 0.0)
+        checkpoint_mode_applied = ""
+        if wal_size_gb_before <= 0.0:
+            payload["checkpoint_skipped_reason"] = "no_wal"
+        elif wal_size_gb_before < checkpoint_threshold_gb:
+            payload["checkpoint_skipped_reason"] = "wal_below_threshold"
+        else:
+            checkpoint_mode_applied = _checkpoint_mode_for_wal(
+                wal_size_gb=wal_size_gb_before,
+                requested_mode=str(args.wal_checkpoint_mode),
+                truncate_max_gb=float(args.wal_truncate_max_gb),
+            )
+            if checkpoint_mode_applied:
+                row = _sqlite_exec_with_retry(
+                    conn,
+                    f"PRAGMA wal_checkpoint({checkpoint_mode_applied.upper()})",
+                    lock_retries=max(args.sqlite_lock_retries, 0),
+                    lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+                ).fetchone()
+                payload["checkpoint_ran"] = True
+                payload["checkpoint_mode_applied"] = checkpoint_mode_applied
+                payload["checkpoint_result"] = {
+                    "busy": int(row[0] if row and len(row) > 0 else 0),
+                    "log_frames": int(row[1] if row and len(row) > 1 else 0),
+                    "checkpointed_frames": int(row[2] if row and len(row) > 2 else 0),
+                }
+            else:
+                payload["checkpoint_skipped_reason"] = "checkpoint_mode_unresolved"
+
+        last_vacuum_ts = None
+        if not args.checkpoint_only:
+            try:
+                row = _sqlite_exec_with_retry(
+                    conn,
+                    "SELECT timestamp_utc FROM db_maintenance_events WHERE vacuum_ran=1 ORDER BY id DESC LIMIT 1",
+                    lock_retries=max(args.sqlite_lock_retries, 0),
+                    lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+                ).fetchone()
+                if row and row[0]:
+                    last_vacuum_ts = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00")).astimezone(timezone.utc)
+            except Exception:
+                last_vacuum_ts = None
+
+        do_vacuum = bool(args.vacuum and (not args.checkpoint_only))
+        if (not args.checkpoint_only) and (not do_vacuum) and size_gb_before >= float(args.auto_vacuum_over_gb):
             if last_vacuum_ts is None:
                 do_vacuum = True
             else:
@@ -210,13 +293,20 @@ def main() -> int:
         _sqlite_exec_with_retry(
             conn,
             "INSERT INTO db_maintenance_events(timestamp_utc, db_path, vacuum_ran, indexes_touched, notes) VALUES (?, ?, ?, ?, ?)",
-            (timestamp_utc, str(db_path), 1 if do_vacuum else 0, created_indexes, "auto_maintenance"),
+            (
+                timestamp_utc,
+                str(db_path),
+                1 if do_vacuum else 0,
+                created_indexes,
+                (f"checkpoint_only:{payload['checkpoint_mode_applied'] or payload['checkpoint_skipped_reason']}" if args.checkpoint_only else "auto_maintenance"),
+            ),
             lock_retries=max(args.sqlite_lock_retries, 0),
             lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
         )
         conn.commit()
 
         size_gb_after = db_path.stat().st_size / (1024 ** 3)
+        wal_size_gb_after = _size_gb(wal_path)
         payload.update(
             {
                 "ok": True,
@@ -225,10 +315,12 @@ def main() -> int:
                 "jsonl_records_rows": int(total_rows),
                 "size_gb_before": round(size_gb_before, 3),
                 "size_gb_after": round(size_gb_after, 3),
+                "wal_size_gb_after": round(wal_size_gb_after, 3),
             }
         )
     except Exception as exc:
         size_gb_after = db_path.stat().st_size / (1024 ** 3) if db_path.exists() else 0.0
+        wal_size_gb_after = _size_gb(wal_path)
         payload.update(
             {
                 "ok": False,
@@ -237,6 +329,7 @@ def main() -> int:
                 "indexes_touched": int(created_indexes),
                 "jsonl_records_rows": int(total_rows),
                 "size_gb_after": round(size_gb_after, 3),
+                "wal_size_gb_after": round(wal_size_gb_after, 3),
             }
         )
     finally:

@@ -4,22 +4,28 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Deque, Dict, Optional, Set
+from typing import Any, Deque, Dict, Iterable, Optional, Sequence, Set
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.halt_flags import inspect_halt_flag
+
 VENV_PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
 PARALLEL_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_parallel_shadows.py"
 PARALLEL_AGGRESSIVE_SCRIPT = PROJECT_ROOT / "scripts" / "run_parallel_aggressive_modes.py"
 SHADOW_LOOP_SCRIPT = PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py"
 DIVIDEND_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_dividend_shadow.py"
 BOND_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_bond_shadow.py"
+OPSCTL_SCRIPT = PROJECT_ROOT / "scripts" / "ops" / "opsctl.sh"
 WATCHDOG_DIR = PROJECT_ROOT / "governance" / "watchdog"
 HEALTH_DIR = PROJECT_ROOT / "governance" / "health"
 GLOBAL_HALT_FLAG = HEALTH_DIR / "GLOBAL_TRADING_HALT.flag"
@@ -27,19 +33,25 @@ OPERATOR_STOP_FLAG = HEALTH_DIR / "OPERATOR_STOP.flag"
 HALT_RECOVERY_LATEST = HEALTH_DIR / "shadow_watchdog_halt_recovery_latest.json"
 HALT_RECOVERY_EVENTS = WATCHDOG_DIR / "shadow_watchdog_halt_recovery_events.jsonl"
 HEALTH_PRUNE_LATEST = HEALTH_DIR / "shadow_watchdog_health_prune_latest.json"
+TRIPWIRE_LATEST = HEALTH_DIR / "shadow_watchdog_tripwire_latest.json"
+TRIPWIRE_EVENTS = WATCHDOG_DIR / "shadow_watchdog_tripwire_events.jsonl"
 
 
 @dataclass
 class Target:
     name: str
     match: str
-    start_cmd: Optional[str]
+    start_cmd: Optional[str | Sequence[str]]
     required: bool = True
     restart_times: Deque[float] = field(default_factory=deque)
     heartbeat_glob: Optional[str] = None
     heartbeat_stale_seconds: int = 0
     min_healthy_heartbeats: int = 1
+    heartbeat_profiles: tuple[str, ...] = ()
+    allow_processless_heartbeat_live: bool = False
     exclude_matches: tuple[str, ...] = ()
+    unhealthy_streak: int = 0
+    tripwire_open: bool = False
 
 
 def _now_utc() -> datetime:
@@ -78,7 +90,105 @@ def _load_json(path: Path) -> dict:
 
 def _write_latest(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _halt_flag_state(path: Path) -> dict[str, Any]:
+    payload = inspect_halt_flag(path)
+    return {
+        "payload": payload.get("payload", {}) if isinstance(payload.get("payload"), dict) else {},
+        "reason": str(payload.get("reason") or "").strip(),
+        "valid": bool(payload.get("valid", False)),
+        "error": str(payload.get("error") or ""),
+        "size_bytes": int(payload.get("size_bytes", 0) or 0),
+    }
+
+
+def _start_cmd_executable_hints() -> tuple[str, ...]:
+    return (
+        str(VENV_PY),
+        str(OPSCTL_SCRIPT),
+    )
+
+
+def _start_cmd_executable_suffixes() -> tuple[str, ...]:
+    return (
+        ".venv312/bin/python",
+        "/scripts/ops/opsctl.sh",
+    )
+
+
+def _start_cmd_python_script_suffixes() -> tuple[str, ...]:
+    return (
+        "/scripts/run_parallel_shadows.py",
+        "/scripts/run_parallel_aggressive_modes.py",
+        "/scripts/run_dividend_shadow.py",
+        "/scripts/run_bond_shadow.py",
+        "/scripts/run_shadow_training_loop.py",
+    )
+
+
+def _decode_start_cmd(start_cmd: str | Sequence[str] | None) -> list[str]:
+    if start_cmd is None:
+        return []
+    if isinstance(start_cmd, (list, tuple)):
+        return [str(part) for part in start_cmd if str(part)]
+
+    raw = str(start_cmd).strip()
+    if not raw:
+        return []
+
+    if raw.startswith("["):
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = None
+        if isinstance(payload, list):
+            return [str(part) for part in payload if str(part)]
+
+    for executable in _start_cmd_executable_hints():
+        if raw == executable:
+            return [executable]
+        if raw.startswith(executable + " "):
+            remainder = raw[len(executable):].lstrip()
+            return [executable, *shlex.split(remainder)]
+
+    for suffix in _start_cmd_executable_suffixes():
+        end = raw.find(suffix)
+        if end < 0:
+            continue
+        executable = raw[: end + len(suffix)]
+        if not executable:
+            continue
+        remainder = raw[len(executable):].lstrip()
+        if executable.endswith(".venv312/bin/python") and remainder:
+            for script_suffix in _start_cmd_python_script_suffixes():
+                script_end = remainder.find(script_suffix)
+                if script_end < 0:
+                    continue
+                script_path = remainder[: script_end + len(script_suffix)]
+                script_tail = remainder[len(script_path):].lstrip()
+                return [executable, script_path, *shlex.split(script_tail)] if script_tail else [executable, script_path]
+        return [executable, *shlex.split(remainder)] if remainder else [executable]
+
+    return shlex.split(raw)
+
+
+def _format_start_cmd(start_cmd: str | Sequence[str] | None) -> str:
+    try:
+        args = _decode_start_cmd(start_cmd)
+    except Exception:
+        return str(start_cmd or "")
+    if not args:
+        return ""
+    return shlex.join(args)
+
+
+def _note_safe(value: str, *, limit: int = 160) -> str:
+    compact = " ".join(str(value or "").split()).replace(",", ";")
+    return compact[:limit]
 
 
 def _halt_flag_age_seconds(path: Path) -> Optional[float]:
@@ -92,6 +202,8 @@ def _evaluate_halt_auto_clear(
     *,
     halt_active: bool,
     halt_reason: str,
+    halt_payload_valid: bool,
+    halt_payload_error: str,
     halt_age_seconds: Optional[float],
     operator_stop_active: bool,
     auto_clear_enabled: bool,
@@ -115,6 +227,8 @@ def _evaluate_halt_auto_clear(
         return False, f"cooldown_not_elapsed:{halt_age_seconds:.1f}s<{min_age}s"
 
     normalized_reason = str(halt_reason or "").strip().lower()
+    if not normalized_reason and (not halt_payload_valid):
+        return True, f"malformed_payload_eligible:{halt_payload_error or 'missing_reason'}"
     if allowed_reasons and normalized_reason not in allowed_reasons:
         return False, f"reason_not_allowed:{normalized_reason or 'unknown'}"
 
@@ -131,8 +245,15 @@ def _auto_clear_global_halt(
 ) -> Dict[str, Any]:
     halt_active = GLOBAL_HALT_FLAG.exists()
     operator_stop_active = OPERATOR_STOP_FLAG.exists()
-    halt_payload = _load_json(GLOBAL_HALT_FLAG) if halt_active else {}
-    halt_reason = str(halt_payload.get("reason", "")).strip()
+    halt_state = _halt_flag_state(GLOBAL_HALT_FLAG) if halt_active else {
+        "payload": {},
+        "reason": "",
+        "valid": True,
+        "error": "",
+        "size_bytes": 0,
+    }
+    halt_payload = halt_state["payload"] if isinstance(halt_state.get("payload"), dict) else {}
+    halt_reason = str(halt_state.get("reason") or "").strip()
     halt_age_seconds = _halt_flag_age_seconds(GLOBAL_HALT_FLAG) if halt_active else None
 
     market_data_only = _env_flag("MARKET_DATA_ONLY", "1")
@@ -141,6 +262,8 @@ def _auto_clear_global_halt(
     should_clear, decision_reason = _evaluate_halt_auto_clear(
         halt_active=halt_active,
         halt_reason=halt_reason,
+        halt_payload_valid=bool(halt_state.get("valid", False)),
+        halt_payload_error=str(halt_state.get("error") or ""),
         halt_age_seconds=halt_age_seconds,
         operator_stop_active=operator_stop_active,
         auto_clear_enabled=auto_clear_enabled,
@@ -171,6 +294,9 @@ def _auto_clear_global_halt(
         "decision_reason": decision_reason,
         "halt_active": bool(halt_active),
         "halt_reason": halt_reason,
+        "halt_payload_valid": bool(halt_state.get("valid", False)),
+        "halt_payload_error": str(halt_state.get("error") or ""),
+        "halt_payload_size_bytes": int(halt_state.get("size_bytes", 0) or 0),
         "halt_age_seconds": (round(float(halt_age_seconds), 2) if halt_age_seconds is not None else None),
         "operator_stop_active": bool(operator_stop_active),
         "market_data_only": bool(market_data_only),
@@ -258,15 +384,20 @@ def _can_restart(target: Target, now_ts: float, max_restarts: int, window_second
     return len(target.restart_times) < max_restarts
 
 
-def _start_target(start_cmd: str, dry_run: bool) -> bool:
-    if dry_run:
-        return True
+def _start_target(start_cmd: str | Sequence[str], dry_run: bool) -> tuple[bool, str]:
     try:
-        args = shlex.split(start_cmd)
+        args = _decode_start_cmd(start_cmd)
+    except Exception as exc:
+        return False, f"cmd_parse_failed:{type(exc).__name__}:{exc}"
+    if not args:
+        return False, "cmd_parse_failed:empty"
+    if dry_run:
+        return True, shlex.join(args)
+    try:
         subprocess.Popen(args, cwd=str(PROJECT_ROOT))
-        return True
-    except Exception:
-        return False
+        return True, shlex.join(args)
+    except Exception as exc:
+        return False, f"{type(exc).__name__}:{exc}"
 
 
 def _build_default_schwab_cmd(simulate: bool) -> str:
@@ -325,13 +456,16 @@ def _parse_ts(ts: str) -> Optional[datetime]:
         return None
 
 
-def _heartbeat_health(target: Target) -> tuple[bool, int, Optional[float]]:
+def _heartbeat_health(target: Target, rows_by_pid: dict[int, str]) -> tuple[bool, int, Optional[float], int]:
     if not target.heartbeat_glob or target.heartbeat_stale_seconds <= 0:
-        return True, 0, None
+        return True, 0, None, 0
 
     now = _now_utc()
     healthy = 0
     latest_age: Optional[float] = None
+    live_process_backed = 0
+    profile_filter = {str(x).strip().lower() for x in target.heartbeat_profiles if str(x).strip()}
+    excludes = tuple(x for x in target.exclude_matches if x)
 
     for fp in glob.glob(target.heartbeat_glob):
         path = Path(fp)
@@ -342,12 +476,28 @@ def _heartbeat_health(target: Target) -> tuple[bool, int, Optional[float]]:
         ts = _parse_ts(str(payload.get("timestamp_utc", "")))
         if ts is None:
             continue
+        if profile_filter:
+            profile = str(payload.get("profile", "")).strip().lower()
+            if profile not in profile_filter:
+                continue
+        pid = payload.get("pid")
+        try:
+            pid_int = int(pid)
+        except Exception:
+            pid_int = _heartbeat_pid_from_filename(path)
+        cmd = ""
+        if pid_int is not None:
+            cmd = rows_by_pid.get(pid_int, "")
+            if cmd and any(ex in cmd for ex in excludes):
+                continue
         age = max((now - ts).total_seconds(), 0.0)
         latest_age = age if latest_age is None else min(latest_age, age)
         if age <= target.heartbeat_stale_seconds:
             healthy += 1
+            if pid_int is not None and cmd:
+                live_process_backed += 1
 
-    return healthy >= max(target.min_healthy_heartbeats, 1), healthy, latest_age
+    return healthy >= max(target.min_healthy_heartbeats, 1), healthy, latest_age, live_process_backed
 
 
 def _age_seconds_from_mtime(path: Path, now_ts: float) -> float:
@@ -545,6 +695,88 @@ def _status_payload(entries: list[dict], halt_recovery: Optional[dict] = None, h
     return payload
 
 
+def _tripwire_payload(
+    targets: list[Target],
+    entries: list[dict],
+    *,
+    enabled: bool,
+    streak_threshold: int,
+) -> dict:
+    active_incidents: list[dict] = []
+    emitted_events: list[dict] = []
+    threshold = max(int(streak_threshold), 1)
+
+    for target, entry in zip(targets, entries):
+        heartbeat_required = bool(target.heartbeat_glob and target.heartbeat_stale_seconds > 0)
+        heartbeat_lost = bool(entry.get("heartbeat_lost", False))
+        tripwire_unhealthy = heartbeat_lost if heartbeat_required else (not bool(entry.get("process_live", False)))
+
+        if enabled and tripwire_unhealthy:
+            target.unhealthy_streak += 1
+            if target.unhealthy_streak >= threshold and not target.tripwire_open:
+                target.tripwire_open = True
+                event = {
+                    "timestamp_utc": _now_iso(),
+                    "event": "loop_tripwire_opened",
+                    "target": target.name,
+                    "required": bool(target.required),
+                    "consecutive_unhealthy_cycles": int(target.unhealthy_streak),
+                    "process_live": bool(entry.get("process_live", False)),
+                    "heartbeat_required": bool(heartbeat_required),
+                    "heartbeat_lost": bool(heartbeat_lost),
+                    "match_count": int(entry.get("match_count", 0) or 0),
+                    "action": str(entry.get("action", "none")),
+                    "note": str(entry.get("note", "")),
+                }
+                emitted_events.append(event)
+                _append_jsonl(TRIPWIRE_EVENTS, event)
+        else:
+            if target.tripwire_open:
+                event = {
+                    "timestamp_utc": _now_iso(),
+                    "event": "loop_tripwire_cleared",
+                    "target": target.name,
+                    "required": bool(target.required),
+                    "previous_consecutive_unhealthy_cycles": int(target.unhealthy_streak),
+                    "process_live": bool(entry.get("process_live", False)),
+                    "heartbeat_required": bool(heartbeat_required),
+                    "heartbeat_lost": bool(heartbeat_lost),
+                    "match_count": int(entry.get("match_count", 0) or 0),
+                    "action": str(entry.get("action", "none")),
+                    "note": str(entry.get("note", "")),
+                }
+                emitted_events.append(event)
+                _append_jsonl(TRIPWIRE_EVENTS, event)
+            target.unhealthy_streak = 0
+            target.tripwire_open = False
+
+        if target.tripwire_open:
+            active_incidents.append(
+                {
+                    "target": target.name,
+                    "required": bool(target.required),
+                    "consecutive_unhealthy_cycles": int(target.unhealthy_streak),
+                    "process_live": bool(entry.get("process_live", False)),
+                    "heartbeat_required": bool(heartbeat_required),
+                    "heartbeat_lost": bool(heartbeat_lost),
+                    "match_count": int(entry.get("match_count", 0) or 0),
+                    "action": str(entry.get("action", "none")),
+                    "note": str(entry.get("note", "")),
+                }
+            )
+
+    payload = {
+        "timestamp_utc": _now_iso(),
+        "enabled": bool(enabled),
+        "streak_threshold": int(threshold),
+        "active": bool(active_incidents),
+        "active_incidents": active_incidents,
+        "events_emitted": emitted_events,
+    }
+    _write_latest(TRIPWIRE_LATEST, payload)
+    return payload
+
+
 def _run_iteration(
     targets: list[Target],
     max_restarts_per_window: int,
@@ -561,6 +793,8 @@ def _run_iteration(
     health_prune_data_ingress_stale_seconds: int,
     health_prune_orphan_marker_stale_seconds: int,
     health_prune_max_files_per_pass: int,
+    tripwire_enabled: bool,
+    tripwire_streak_threshold: int,
 ) -> int:
     halt_recovery = _auto_clear_global_halt(
         auto_clear_enabled=auto_clear_global_halt,
@@ -571,6 +805,7 @@ def _run_iteration(
     )
 
     rows = _scan_process_rows()
+    rows_by_pid = {pid: cmd for pid, cmd in rows}
     now_ts = time.time()
     overall_rc = 0
     entries: list[dict] = []
@@ -580,9 +815,11 @@ def _run_iteration(
         pids = [pid for pid, _ in matches]
         proc_live = len(matches) > 0
 
-        hb_ok, hb_count, hb_age = _heartbeat_health(target)
+        hb_ok, hb_count, hb_age, hb_live_count = _heartbeat_health(target, rows_by_pid)
         hb_required = bool(target.heartbeat_glob and target.heartbeat_stale_seconds > 0)
-        live = proc_live and (hb_ok if hb_required else True)
+        live = (
+            hb_ok and (proc_live or (target.allow_processless_heartbeat_live and hb_live_count > 0))
+        ) if hb_required else proc_live
 
         note_parts = []
         if proc_live:
@@ -592,6 +829,7 @@ def _run_iteration(
         if hb_required:
             note_parts.append(f"heartbeat_ok={hb_ok}")
             note_parts.append(f"heartbeat_count={hb_count}")
+            note_parts.append(f"heartbeat_live_process_count={hb_live_count}")
             if hb_age is not None:
                 note_parts.append(f"heartbeat_age_s={hb_age:.1f}")
 
@@ -601,6 +839,7 @@ def _run_iteration(
             "match": target.match,
             "live": live,
             "process_live": proc_live,
+            "heartbeat_lost": bool(hb_required and (not hb_ok)),
             "match_count": len(matches),
             "match_pids": pids,
             "action": "none",
@@ -611,6 +850,10 @@ def _run_iteration(
             pass
         elif not target.required:
             entry["note"] = entry["note"] + ",optional_target_missing"
+        elif bool(halt_recovery.get("halt_active", False)):
+            overall_rc = 1
+            entry["action"] = "halted"
+            entry["note"] = entry["note"] + ",global_halt_active"
         elif not target.start_cmd:
             overall_rc = 1
             entry["action"] = "error"
@@ -622,17 +865,20 @@ def _run_iteration(
         else:
             if proc_live:
                 _terminate_pids(pids)
-            ok = _start_target(target.start_cmd, dry_run=dry_run)
+            ok, start_detail = _start_target(target.start_cmd, dry_run=dry_run)
+            start_cmd_text = _format_start_cmd(target.start_cmd)
+            if start_cmd_text:
+                entry["start_cmd"] = start_cmd_text
             if ok:
                 target.restart_times.append(now_ts)
                 entry["action"] = "restart"
                 entry["note"] = entry["note"] + ",restart_attempted"
-                entry["start_cmd"] = target.start_cmd
+                entry["start_detail"] = start_detail
             else:
                 overall_rc = 1
                 entry["action"] = "error"
-                entry["note"] = entry["note"] + ",restart_failed"
-                entry["start_cmd"] = target.start_cmd
+                entry["start_error"] = start_detail
+                entry["note"] = entry["note"] + f",restart_failed={_note_safe(start_detail)}"
 
         entries.append(entry)
 
@@ -648,7 +894,15 @@ def _run_iteration(
             max_files_per_pass=max(int(health_prune_max_files_per_pass), 1),
         )
 
+    tripwire_summary = _tripwire_payload(
+        targets,
+        entries,
+        enabled=bool(tripwire_enabled),
+        streak_threshold=max(int(tripwire_streak_threshold), 1),
+    )
+
     payload = _status_payload(entries, halt_recovery=halt_recovery, health_prune=health_prune_summary)
+    payload["tripwire"] = tripwire_summary
 
     if event_log_path is not None:
         _append_jsonl(event_log_path, payload)
@@ -676,6 +930,14 @@ def _run_iteration(
                     errors=health_prune_summary.get("error_total", 0),
                     shadow=(health_prune_summary.get("shadow_loop") or {}).get("candidates", 0),
                     ingress=(health_prune_summary.get("data_ingress") or {}).get("candidates", 0),
+                )
+            )
+        if tripwire_summary.get("active"):
+            active_targets = ",".join(str(x.get("target", "")) for x in tripwire_summary.get("active_incidents", []))
+            print(
+                " - tripwire: active=1 threshold={threshold} targets={targets}".format(
+                    threshold=tripwire_summary.get("streak_threshold", 0),
+                    targets=active_targets,
                 )
             )
     return overall_rc
@@ -736,7 +998,7 @@ def main() -> int:
     parser.add_argument(
         "--auto-clear-global-halt-min-age-seconds",
         type=int,
-        default=int(os.getenv("SHADOW_WATCHDOG_AUTO_CLEAR_GLOBAL_HALT_MIN_AGE_SECONDS", "300")),
+        default=int(os.getenv("SHADOW_WATCHDOG_AUTO_CLEAR_GLOBAL_HALT_MIN_AGE_SECONDS", "60")),
         help="Minimum halt flag age before auto-clear is allowed.",
     )
     parser.add_argument(
@@ -804,6 +1066,25 @@ def main() -> int:
         default=int(os.getenv("SHADOW_WATCHDOG_PRUNE_MAX_FILES_PER_PASS", "300")),
         help="Safety cap on number of stale health files pruned per pass.",
     )
+    parser.add_argument(
+        "--tripwire-enabled",
+        dest="tripwire_enabled",
+        action="store_true",
+        default=_env_flag("SHADOW_WATCHDOG_TRIPWIRE_ENABLED", "1"),
+        help="Write a latest incident file when watched loops lose heartbeat for consecutive cycles.",
+    )
+    parser.add_argument(
+        "--no-tripwire-enabled",
+        dest="tripwire_enabled",
+        action="store_false",
+        help="Disable loop heartbeat tripwire incident files.",
+    )
+    parser.add_argument(
+        "--tripwire-streak-threshold",
+        type=int,
+        default=max(int(os.getenv("SHADOW_WATCHDOG_TRIPWIRE_STREAK_THRESHOLD", "2")), 1),
+        help="Consecutive unhealthy watchdog cycles required before opening a tripwire incident.",
+    )
 
     parser.add_argument(
         "--event-log-path",
@@ -829,6 +1110,9 @@ def main() -> int:
             heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*_equities_schwab_*.json"),
             heartbeat_stale_seconds=max(args.schwab_heartbeat_stale_seconds, 30),
             min_healthy_heartbeats=max(args.schwab_min_heartbeats, 1),
+            heartbeat_profiles=("conservative", "aggressive"),
+            allow_processless_heartbeat_live=True,
+            exclude_matches=(() if args.simulate_schwab else ("--simulate",)),
         )
     ]
 
@@ -869,6 +1153,9 @@ def main() -> int:
                 heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*aggressive*_equities_schwab_*.json"),
                 heartbeat_stale_seconds=max(args.aggressive_modes_heartbeat_stale_seconds, 30),
                 min_healthy_heartbeats=max(args.aggressive_modes_min_heartbeats, 1),
+                heartbeat_profiles=("intraday_aggressive", "swing_aggressive"),
+                allow_processless_heartbeat_live=True,
+                exclude_matches=(() if args.simulate_schwab else ("--simulate",)),
             )
         )
 
@@ -882,6 +1169,7 @@ def main() -> int:
                 heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*dividend*_equities_schwab_*.json"),
                 heartbeat_stale_seconds=max(args.dividend_heartbeat_stale_seconds, 30),
                 min_healthy_heartbeats=max(args.dividend_min_heartbeats, 1),
+                exclude_matches=(() if args.simulate_schwab else ("--simulate",)),
             )
         )
 
@@ -895,6 +1183,7 @@ def main() -> int:
                 heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*bond*_equities_schwab_*.json"),
                 heartbeat_stale_seconds=max(args.bond_heartbeat_stale_seconds, 30),
                 min_healthy_heartbeats=max(args.bond_min_heartbeats, 1),
+                exclude_matches=(() if args.simulate_schwab else ("--simulate",)),
             )
         )
 
@@ -926,6 +1215,8 @@ def main() -> int:
             health_prune_data_ingress_stale_seconds=max(int(args.prune_data_ingress_stale_seconds), 60),
             health_prune_orphan_marker_stale_seconds=max(int(args.prune_orphan_marker_stale_seconds), 60),
             health_prune_max_files_per_pass=max(int(args.prune_max_files_per_pass), 1),
+            tripwire_enabled=bool(args.tripwire_enabled),
+            tripwire_streak_threshold=max(int(args.tripwire_streak_threshold), 1),
         )
 
     while True:
@@ -951,6 +1242,8 @@ def main() -> int:
             health_prune_data_ingress_stale_seconds=max(int(args.prune_data_ingress_stale_seconds), 60),
             health_prune_orphan_marker_stale_seconds=max(int(args.prune_orphan_marker_stale_seconds), 60),
             health_prune_max_files_per_pass=max(int(args.prune_max_files_per_pass), 1),
+            tripwire_enabled=bool(args.tripwire_enabled),
+            tripwire_streak_threshold=max(int(args.tripwire_streak_threshold), 1),
         )
         if rc != 0 and args.dry_run:
             return rc

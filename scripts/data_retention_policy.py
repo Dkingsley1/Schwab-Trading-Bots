@@ -6,15 +6,23 @@ import re
 import signal
 import shutil
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.training_guard import check_confirmed_training_success
 from snapshot_health_sql import debug_snapshot_ingest_coverage, sync_raw_debug_snapshots_to_sqlite
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TIMELINE_STAMP_RE = re.compile(r"^project_timeline(?:_print)?_(\d{8}_\d{6})\.(?:md|pdf|html)$")
+CRASH_REPORT_STAMP_RE = re.compile(r"^crash_report_digest(?:_print)?_(\d{8}_\d{6})\.(?:md|pdf|html)$")
+TRAINING_REPORT_STAMP_RE = re.compile(r"^training_report(?:_print)?_(\d{8}_\d{6})\.(?:md|pdf|html)$")
+DAILY_OPS_REPORT_RE = re.compile(r"^daily_ops_report_(\d{8})\.(?:md|json|pdf)$")
+ONE_NUMBERS_STAMP_RE = re.compile(r"^one_numbers_\d{8}_(\d{8}_\d{6})\.(?:md|csv|pdf)$")
 
 
 def _collect_old_files(base: Path, older_than_days: int) -> list[Path]:
@@ -40,6 +48,63 @@ def _parse_timeline_stamp(stamp: str) -> datetime | None:
         return dt.replace(tzinfo=timezone.utc)
     except Exception:
         return None
+
+
+def _parse_day_stamp(stamp: str) -> datetime | None:
+    try:
+        dt = datetime.strptime(stamp, "%Y%m%d")
+        return dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _collect_old_stamped_files(
+    base: Path,
+    stamp_re: re.Pattern[str],
+    *,
+    older_than_days: int,
+    keep_latest_runs: int,
+    parse_stamp_fn: Callable[[str], datetime | None],
+) -> tuple[list[Path], int, int]:
+    if not base.exists():
+        return [], 0, 0
+
+    rows: list[tuple[Path, str, datetime]] = []
+    total_files = 0
+    for p in base.iterdir():
+        if not p.is_file():
+            continue
+        total_files += 1
+        match = stamp_re.match(p.name)
+        if not match:
+            continue
+        stamp = match.group(1)
+        dt = parse_stamp_fn(stamp)
+        if dt is None:
+            continue
+        rows.append((p, stamp, dt))
+
+    keep_latest_runs = max(int(keep_latest_runs), 0)
+    unique_stamps = sorted({stamp: dt for _, stamp, dt in rows}.items(), key=lambda item: item[1])
+    keep_stamps = {stamp for stamp, _ in unique_stamps[-keep_latest_runs:]} if keep_latest_runs > 0 else set()
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(int(older_than_days), 0))
+    out: list[Path] = []
+    for p, stamp, dt in rows:
+        if stamp in keep_stamps:
+            continue
+        if dt < cutoff:
+            out.append(p)
+
+    for p in base.glob("*.local_fallback*"):
+        try:
+            mt = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+        except OSError:
+            continue
+        if mt < cutoff:
+            out.append(p)
+
+    return out, total_files, len(unique_stamps)
 
 
 def _collect_old_timeline_files(base: Path, older_than_days: int, keep_latest_runs: int) -> tuple[list[Path], int, int]:
@@ -152,6 +217,49 @@ def _vacuum_sqlite(path: Path) -> bool:
                 pass
 
 
+def _snapshot_training_coverage_ready(project_root: Path, *, max_age_hours: float) -> tuple[bool, str, dict[str, object]]:
+    path = project_root / "governance" / "health" / "snapshot_training_coverage_latest.json"
+    details: dict[str, object] = {
+        "coverage_file": str(path),
+        "max_age_hours": float(max(max_age_hours, 0.0)),
+    }
+    if not path.exists():
+        return False, "missing_snapshot_training_coverage_artifact", details
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        details["error"] = str(exc)
+        return False, "invalid_snapshot_training_coverage_artifact", details
+
+    ts_raw = payload.get("timestamp_utc")
+    try:
+        ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        ts = ts.astimezone(timezone.utc)
+    except Exception:
+        return False, "invalid_snapshot_training_coverage_timestamp", details
+
+    age_hours = max((datetime.now(timezone.utc) - ts).total_seconds() / 3600.0, 0.0)
+    details.update(
+        {
+            "timestamp_utc": ts.isoformat(),
+            "age_hours": round(age_hours, 4),
+            "all_snapshot_data_incorporated": bool(payload.get("all_snapshot_data_incorporated", False)),
+            "snapshot_raw_sql_ingest_ratio": float(payload.get("snapshot_raw_sql_ingest_ratio", 0.0) or 0.0),
+            "snapshot_cov_fill_ratio": float(payload.get("snapshot_cov_fill_ratio", 0.0) or 0.0),
+            "snapshot_feature_coverage_ratio": float(payload.get("snapshot_feature_coverage_ratio", 0.0) or 0.0),
+            "reason": str(payload.get("reason") or ""),
+        }
+    )
+    if age_hours > max(float(max_age_hours), 0.0):
+        return False, "stale_snapshot_training_coverage", details
+    if not bool(payload.get("all_snapshot_data_incorporated", False)):
+        return False, "snapshot_training_not_fully_incorporated", details
+    return True, "ok", details
+
+
 def _invoke_with_timeout(timeout_seconds: float, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> dict[str, Any]:
     timeout_seconds = float(timeout_seconds or 0.0)
     if timeout_seconds <= 0:
@@ -220,8 +328,30 @@ def main() -> int:
     parser.add_argument("--debug-snapshots-keep", type=int, default=int(os.getenv("RETENTION_DEBUG_SNAPSHOTS_KEEP", "24")))
     parser.add_argument("--prune-debug-snapshots", action=argparse.BooleanOptionalAction, default=os.getenv("RETENTION_PRUNE_DEBUG_SNAPSHOTS", "1").strip() == "1")
     parser.add_argument("--require-debug-snapshot-sync", action=argparse.BooleanOptionalAction, default=os.getenv("RETENTION_REQUIRE_DEBUG_SNAPSHOT_SYNC", "1").strip() == "1")
+    parser.add_argument(
+        "--require-training-success",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("RETENTION_REQUIRE_TRAINING_SUCCESS", "0").strip() == "1",
+        help="Only purge debug snapshots after confirmed successful training with snapshot coverage incorporated.",
+    )
+    parser.add_argument(
+        "--training-success-max-age-hours",
+        type=float,
+        default=float(os.getenv("RETENTION_TRAINING_SUCCESS_MAX_AGE_HOURS", "168")),
+    )
+    parser.add_argument(
+        "--require-snapshot-training-coverage",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("RETENTION_REQUIRE_SNAPSHOT_TRAINING_COVERAGE", "0").strip() == "1",
+        help="Only purge debug snapshots after the latest snapshot-training coverage artifact confirms full incorporation.",
+    )
+    parser.add_argument(
+        "--snapshot-training-max-age-hours",
+        type=float,
+        default=float(os.getenv("RETENTION_SNAPSHOT_TRAINING_MAX_AGE_HOURS", "168")),
+    )
     parser.add_argument("--debug-snapshot-sync-timeout-seconds", type=float, default=float(os.getenv("RETENTION_DEBUG_SNAPSHOT_SYNC_TIMEOUT_SECONDS", "600")))
-    parser.add_argument("--sqlite-path", default=os.getenv("SNAPSHOT_CONTEXT_SQLITE_PATH", str(PROJECT_ROOT / "data" / "jsonl_link.sqlite3")))
+    parser.add_argument("--sqlite-path", default=os.getenv("SNAPSHOT_CONTEXT_SQLITE_PATH", str(PROJECT_ROOT / "data" / "snapshot_context.sqlite3")))
     parser.add_argument("--sqlite-vacuum-over-gb", type=float, default=6.0)
     parser.add_argument("--sqlite-vacuum-timeout-seconds", type=float, default=float(os.getenv("RETENTION_SQLITE_VACUUM_TIMEOUT_SECONDS", "900")))
     parser.add_argument("--skip-sqlite-vacuum", action=argparse.BooleanOptionalAction, default=os.getenv("RETENTION_SKIP_SQLITE_VACUUM", "0").strip() == "1")
@@ -274,6 +404,70 @@ def main() -> int:
         "total_runs": int(timeline_total_runs),
     }
 
+    crash_dir = PROJECT_ROOT / "exports" / "reports" / "crash_reports"
+    crash_rows, crash_total_files, crash_total_runs = _collect_old_stamped_files(
+        crash_dir,
+        CRASH_REPORT_STAMP_RE,
+        older_than_days=args.exports_days,
+        keep_latest_runs=0,
+        parse_stamp_fn=_parse_timeline_stamp,
+    )
+    to_delete.extend(crash_rows)
+    summary["exports_crash_reports"] = {
+        "candidates": len(crash_rows),
+        "older_than_days": int(args.exports_days),
+        "total_files": int(crash_total_files),
+        "total_runs": int(crash_total_runs),
+    }
+
+    training_dir = PROJECT_ROOT / "exports" / "reports" / "training_reports"
+    training_rows, training_total_files, training_total_runs = _collect_old_stamped_files(
+        training_dir,
+        TRAINING_REPORT_STAMP_RE,
+        older_than_days=args.exports_days,
+        keep_latest_runs=0,
+        parse_stamp_fn=_parse_timeline_stamp,
+    )
+    to_delete.extend(training_rows)
+    summary["exports_training_reports"] = {
+        "candidates": len(training_rows),
+        "older_than_days": int(args.exports_days),
+        "total_files": int(training_total_files),
+        "total_runs": int(training_total_runs),
+    }
+
+    daily_ops_dir = PROJECT_ROOT / "exports" / "reports"
+    daily_ops_rows, daily_ops_total_files, daily_ops_total_runs = _collect_old_stamped_files(
+        daily_ops_dir,
+        DAILY_OPS_REPORT_RE,
+        older_than_days=args.exports_days,
+        keep_latest_runs=0,
+        parse_stamp_fn=_parse_day_stamp,
+    )
+    to_delete.extend(daily_ops_rows)
+    summary["exports_daily_ops_reports"] = {
+        "candidates": len(daily_ops_rows),
+        "older_than_days": int(args.exports_days),
+        "total_files": int(daily_ops_total_files),
+        "total_runs": int(daily_ops_total_runs),
+    }
+
+    one_numbers_dir = PROJECT_ROOT / "exports" / "one_numbers"
+    one_numbers_rows, one_numbers_total_files, one_numbers_total_runs = _collect_old_stamped_files(
+        one_numbers_dir,
+        ONE_NUMBERS_STAMP_RE,
+        older_than_days=args.exports_days,
+        keep_latest_runs=0,
+        parse_stamp_fn=_parse_timeline_stamp,
+    )
+    to_delete.extend(one_numbers_rows)
+    summary["exports_one_numbers"] = {
+        "candidates": len(one_numbers_rows),
+        "older_than_days": int(args.exports_days),
+        "total_files": int(one_numbers_total_files),
+        "total_runs": int(one_numbers_total_runs),
+    }
+
     file_deleted = 0
     if args.apply:
         for p in to_delete:
@@ -294,11 +488,43 @@ def main() -> int:
 
     debug_sync_meta: dict[str, object] = {}
     debug_cov_meta: dict[str, object] = {}
+    debug_training_guard: dict[str, object] = {}
+    debug_snapshot_training_guard: dict[str, object] = {}
     debug_dirs_deleted = 0
     debug_files_deleted = 0
     debug_dirs_skipped_not_ready = 0
+    debug_dirs_skipped_training_guard = 0
 
     if args.apply and args.prune_debug_snapshots and debug_candidates:
+        if args.require_training_success:
+            guard_ok, guard_reason, guard_details = check_confirmed_training_success(
+                project_root=str(PROJECT_ROOT),
+                max_age_hours=float(args.training_success_max_age_hours),
+                require_snapshot_training_complete=True,
+            )
+            debug_training_guard = {
+                "ok": bool(guard_ok),
+                "reason": str(guard_reason),
+                "details": guard_details if isinstance(guard_details, dict) else {},
+            }
+            if not guard_ok:
+                debug_dirs_skipped_training_guard = len(debug_candidates)
+                debug_candidates = []
+
+        if args.require_snapshot_training_coverage and debug_candidates:
+            snap_ok, snap_reason, snap_details = _snapshot_training_coverage_ready(
+                PROJECT_ROOT,
+                max_age_hours=float(args.snapshot_training_max_age_hours),
+            )
+            debug_snapshot_training_guard = {
+                "ok": bool(snap_ok),
+                "reason": str(snap_reason),
+                "details": snap_details if isinstance(snap_details, dict) else {},
+            }
+            if not snap_ok:
+                debug_dirs_skipped_training_guard += len(debug_candidates)
+                debug_candidates = []
+
         if args.require_debug_snapshot_sync:
             sync_result = _invoke_with_timeout(
                 args.debug_snapshot_sync_timeout_seconds,
@@ -397,8 +623,11 @@ def main() -> int:
             "deleted_dirs": int(debug_dirs_deleted),
             "deleted_files": int(debug_files_deleted),
             "skipped_not_ready": int(debug_dirs_skipped_not_ready),
+            "skipped_training_guard": int(debug_dirs_skipped_training_guard),
             "sql_sync": debug_sync_meta,
             "ingest_coverage": debug_cov_meta,
+            "training_success_guard": debug_training_guard,
+            "snapshot_training_guard": debug_snapshot_training_guard,
         },
         "sqlite": {
             "path": str(sqlite_path),

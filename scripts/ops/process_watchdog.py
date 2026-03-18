@@ -2,6 +2,7 @@ import argparse
 import glob
 import json
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -97,6 +98,34 @@ def _write_payload(path: Path, fallback: Path, payload: Dict[str, Any]) -> Path:
         fallback.parent.mkdir(parents=True, exist_ok=True)
         fallback.write_text(encoded, encoding='utf-8')
         return fallback
+
+
+def _bootstrap_runtime_env(profile: str) -> None:
+    loader = PROJECT_ROOT / 'scripts' / 'ops' / 'load_runtime_env.sh'
+    if not loader.exists():
+        return
+
+    normalized = (profile or 'live').strip() or 'live'
+    if normalized not in {'sim', 'live'}:
+        normalized = 'live'
+
+    cmd = [
+        '/bin/zsh',
+        '-lc',
+        f"source {shlex.quote(str(loader))} {shlex.quote(normalized)} --quiet >/dev/null && env -0",
+    ]
+    proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, check=False)
+    if proc.returncode != 0 or not proc.stdout:
+        return
+
+    for chunk in proc.stdout.decode('utf-8', errors='ignore').split('\0'):
+        if not chunk or '=' not in chunk:
+            continue
+        key, value = chunk.split('=', 1)
+        if not key:
+            continue
+        if key not in os.environ or not str(os.environ.get(key, '')).strip():
+            os.environ[key] = value
 
 
 def _within_budget(events: List[Dict[str, Any]], name: str, max_per_hour: int) -> bool:
@@ -280,18 +309,69 @@ def _resolve_external_storage_paths() -> Tuple[Path, Path]:
     return mount_root, (mount_root / project_dir)
 
 
+def _external_min_free_bytes() -> int:
+    raw_bytes = os.getenv('BOT_LOGS_EXTERNAL_MIN_FREE_BYTES', '').strip()
+    if raw_bytes:
+        try:
+            return max(int(float(raw_bytes)), 0)
+        except Exception:
+            return 0
+
+    raw_gb = os.getenv('BOT_LOGS_EXTERNAL_MIN_FREE_GB', '').strip()
+    if raw_gb:
+        try:
+            return max(int(float(raw_gb) * (1024 ** 3)), 0)
+        except Exception:
+            return 0
+
+    return 0
+
+
+def _disk_free_bytes(path: Path) -> int | None:
+    try:
+        return int(shutil.disk_usage(path).free)
+    except Exception:
+        return None
+
+
 def _probe_storage_mount() -> Dict[str, Any]:
     mount_root, external_root = _resolve_external_storage_paths()
     mount_present = bool(mount_root.exists() and mount_root.is_dir())
     external_root_exists = bool(external_root.exists() and external_root.is_dir())
     external_root_writable = bool(external_root_exists and os.access(external_root, os.W_OK))
-    external_available = bool(mount_present and external_root_writable)
+    probe_root = external_root if external_root_exists else mount_root
+    external_free_bytes = _disk_free_bytes(probe_root) if mount_present else None
+    external_min_free_bytes = _external_min_free_bytes()
+    external_low_space = bool(
+        external_root_exists
+        and external_root_writable
+        and external_min_free_bytes > 0
+        and external_free_bytes is not None
+        and external_free_bytes < external_min_free_bytes
+    )
+
+    if not mount_present:
+        unavailable_reason = 'mount_missing'
+    elif not external_root_exists:
+        unavailable_reason = 'root_missing'
+    elif not external_root_writable:
+        unavailable_reason = 'not_writable'
+    elif external_low_space:
+        unavailable_reason = 'low_space'
+    else:
+        unavailable_reason = 'ok'
+
+    external_available = bool(mount_present and external_root_exists and external_root_writable and not external_low_space)
     return {
         'mount_root': str(mount_root),
         'external_root': str(external_root),
         'mount_present': mount_present,
         'external_root_exists': external_root_exists,
         'external_root_writable': external_root_writable,
+        'external_free_bytes': external_free_bytes,
+        'external_min_free_bytes': int(external_min_free_bytes),
+        'external_low_space': external_low_space,
+        'external_unavailable_reason': unavailable_reason,
         'external_available': external_available,
     }
 
@@ -345,7 +425,31 @@ def _alert(severity: str, event: str, message: str, suppress_seconds: int = 600,
     }
 
 
+def _storage_mode_transition_alert(previous_mode: str, current_mode: str, *, suppress_seconds: int) -> Dict[str, Any] | None:
+    if current_mode in {'local_fallback', 'local_fallback_split_brain'}:
+        message = 'External BOT_LOGS unavailable or not writable. Switched to local fallback storage.'
+        if current_mode == 'local_fallback_split_brain':
+            message = 'External BOT_LOGS available, but failback is blocked by divergent local fallback data. Remaining on local fallback storage.'
+        return _alert(
+            'critical',
+            'storage_fallback_activated',
+            message,
+            suppress_seconds=max(suppress_seconds, 60),
+        )
+
+    if previous_mode in {'local_fallback', 'local_fallback_split_brain'} and current_mode == 'external':
+        return _alert(
+            'info',
+            'storage_external_restored',
+            'External BOT_LOGS restored. Storage routing back on external root.',
+            suppress_seconds=max(suppress_seconds, 60),
+        )
+
+    return None
+
+
 def main() -> int:
+    _bootstrap_runtime_env(os.getenv('BOT_RUNTIME_PROFILE', 'live'))
     parser = argparse.ArgumentParser(description='Watchdog: restart key loops with bounded backoff.')
     parser.add_argument('--max-restarts-per-hour', type=int, default=int(os.getenv('OPS_WATCHDOG_MAX_RESTARTS_PER_HOUR', '6')))
     parser.add_argument('--require-all-sleeves', action='store_true', default=os.getenv('OPS_WATCHDOG_REQUIRE_ALL_SLEEVES', '1') == '1')
@@ -402,20 +506,13 @@ def main() -> int:
                     'to': mode_now,
                     'timestamp_utc': datetime.now(timezone.utc).isoformat(),
                 }
-                if mode_now == 'local_fallback':
-                    storage_mode_transition['alert'] = _alert(
-                        'warn',
-                        'storage_fallback_activated',
-                        'External BOT_LOGS unavailable. Switched to local fallback storage.',
-                        suppress_seconds=max(args.alert_suppress_seconds, 60),
-                    )
-                elif storage_mode == 'local_fallback' and mode_now == 'external':
-                    storage_mode_transition['alert'] = _alert(
-                        'info',
-                        'storage_external_restored',
-                        'External BOT_LOGS restored. Storage routing back on external root.',
-                        suppress_seconds=max(args.alert_suppress_seconds, 60),
-                    )
+                alert = _storage_mode_transition_alert(
+                    storage_mode,
+                    mode_now,
+                    suppress_seconds=args.alert_suppress_seconds,
+                )
+                if alert is not None:
+                    storage_mode_transition['alert'] = alert
                 storage_mode = mode_now
             elif mode_now:
                 storage_mode = mode_now

@@ -66,6 +66,46 @@ def _env_flag(name: str, default: str = "0") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _external_min_free_bytes() -> int:
+    raw_bytes = os.getenv("BOT_LOGS_EXTERNAL_MIN_FREE_BYTES", "").strip()
+    if raw_bytes:
+        try:
+            return max(int(float(raw_bytes)), 0)
+        except Exception:
+            return 0
+
+    raw_gb = os.getenv("BOT_LOGS_EXTERNAL_MIN_FREE_GB", "").strip()
+    if raw_gb:
+        try:
+            return max(int(float(raw_gb) * (1024 ** 3)), 0)
+        except Exception:
+            return 0
+
+    return 0
+
+
+def _available_free_bytes(path: Path) -> int | None:
+    try:
+        return int(shutil.disk_usage(path).free)
+    except Exception:
+        return None
+
+
+def _external_root_ready(path: Path) -> bool:
+    if not _is_writable_directory(path):
+        return False
+
+    min_free_bytes = _external_min_free_bytes()
+    if min_free_bytes <= 0:
+        return True
+
+    free_bytes = _available_free_bytes(path)
+    if free_bytes is None:
+        return False
+
+    return free_bytes >= min_free_bytes
+
+
 def _auto_sync_local_to_external(
     local_root: Path,
     external_root: Path,
@@ -208,6 +248,24 @@ def _split_brain_conflicts(local_root: Path, external_root: Path, link_dirs: Ite
     return int(conflicts)
 
 
+def _links_route_to_root(project_root: Path, link_dirs: Iterable[str], target_root: Path) -> bool:
+    desired_root = target_root.resolve(strict=False)
+    saw_symlink = False
+
+    for rel_name in link_dirs:
+        name = str(rel_name).strip().strip('/')
+        if not name:
+            continue
+        path_in_repo = project_root / name
+        if not path_in_repo.is_symlink():
+            return False
+        current_target = _resolve_link_target(path_in_repo)
+        if current_target != (desired_root / name):
+            return False
+        saw_symlink = True
+
+    return saw_symlink
+
 
 def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = DEFAULT_LINK_DIRS) -> StorageRoutingResult:
     root = Path(project_root).resolve()
@@ -220,7 +278,7 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
     ).expanduser()
 
     prefer_external = os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1").strip().lower() not in {"0", "false", "no", "off"}
-    external_ready = prefer_external and _is_writable_directory(external_root)
+    external_ready = prefer_external and _external_root_ready(external_root)
     active_root = external_root if external_ready else local_root
     mode = "external" if external_ready else "local_fallback"
 
@@ -242,8 +300,10 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
             max_files=scan_max_files,
         )
         if split_brain_conflicts > 0:
-            mode = "local_fallback_split_brain"
-            active_root = local_root
+            links_already_external = _links_route_to_root(root, link_dirs_tuple, external_root)
+            if not links_already_external:
+                mode = "local_fallback_split_brain"
+                active_root = local_root
 
     if not _is_writable_directory(active_root):
         raise RuntimeError(f"active storage root is not writable: {active_root}")

@@ -135,19 +135,35 @@ def _token_status(path: Path) -> Dict[str, Any]:
         payload = {}
 
     if isinstance(payload, dict):
-        for key in ('expires_at', 'expiresAt', 'expires', 'expires_time'):
-            raw = payload.get(key)
-            if isinstance(raw, str) and raw.strip():
-                status['expires_at'] = raw.strip()
+        expiry_sources = [payload]
+        nested = payload.get('token')
+        if isinstance(nested, dict):
+            expiry_sources.insert(0, nested)
+
+        exp_value: Any = ''
+        for source in expiry_sources:
+            for key in ('expires_at', 'expiresAt', 'expires', 'expires_time'):
+                raw = source.get(key)
+                if raw not in (None, ''):
+                    exp_value = raw
+                    break
+            if exp_value not in (None, ''):
                 break
+
+        if exp_value not in (None, ''):
+            status['expires_at'] = str(exp_value)
 
     expires_at = str(status.get('expires_at') or '').strip()
     if expires_at:
         try:
-            dt = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            status['expires_in_seconds'] = dt.astimezone(timezone.utc).timestamp() - datetime.now(timezone.utc).timestamp()
+            if expires_at.replace('.', '', 1).isdigit():
+                exp_ts = float(expires_at)
+            else:
+                dt = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                exp_ts = dt.astimezone(timezone.utc).timestamp()
+            status['expires_in_seconds'] = exp_ts - datetime.now(timezone.utc).timestamp()
         except Exception:
             pass
 
@@ -175,7 +191,7 @@ def _token_needs_refresh(status: Dict[str, Any], max_age_seconds: float) -> tupl
 
 
 
-def _auth_attempt(token_path: Path, callback_timeout_seconds: float) -> Dict[str, Any]:
+def _auth_attempt(token_path: Path, callback_timeout_seconds: float, validate_account_probe: bool) -> Dict[str, Any]:
     api_key = os.getenv('SCHWAB_API_KEY', '').strip()
     app_secret = os.getenv('SCHWAB_SECRET', '').strip()
     callback_url = (
@@ -208,14 +224,30 @@ def _auth_attempt(token_path: Path, callback_timeout_seconds: float) -> Dict[str
         trader = BaseTrader(api_key=api_key, app_secret=app_secret, callback_url=callback_url, mode='shadow')
         trader.token_path = str(token_path)
         trader.authenticate()
+        details: Dict[str, Any] = {
+            'callback_url': callback_url,
+            'interactive': False,
+        }
+        if validate_account_probe:
+            resp = trader.client.get_account_numbers()
+            status_code = int(getattr(resp, 'status_code', 0) or 0)
+            details['account_probe_status_code'] = status_code
+            if not (200 <= status_code < 300):
+                body = (getattr(resp, 'text', '') or '')[:300]
+                return {
+                    'attempted': True,
+                    'ok': False,
+                    'reason': f'account_probe_failed:{status_code}',
+                    'details': {
+                        **details,
+                        'account_probe_body': body,
+                    },
+                }
         return {
             'attempted': True,
             'ok': True,
             'reason': 'auth_success',
-            'details': {
-                'callback_url': callback_url,
-                'interactive': False,
-            },
+            'details': details,
         }
     except Exception as exc:
         return {
@@ -240,9 +272,24 @@ def main() -> int:
     parser.add_argument('--network-host', default=os.getenv('PREMARKET_TOKEN_NETWORK_HOST', 'api.schwabapi.com:443'))
     parser.add_argument('--network-timeout-seconds', type=float, default=float(os.getenv('PREMARKET_TOKEN_NETWORK_TIMEOUT_SECONDS', '2.5')))
     parser.add_argument('--skip-network-check', action='store_true', default=os.getenv('PREMARKET_TOKEN_SKIP_NETWORK_CHECK', '0').strip() == '1')
+    parser.add_argument(
+        '--validate-account-probe',
+        dest='validate_account_probe',
+        action='store_true',
+        help='Require a real authenticated account probe after token auth.',
+    )
+    parser.add_argument(
+        '--no-validate-account-probe',
+        dest='validate_account_probe',
+        action='store_false',
+        help='Skip the post-auth account probe.',
+    )
     parser.add_argument('--alert-suppress-seconds', type=int, default=int(os.getenv('PREMARKET_TOKEN_ALERT_SUPPRESS_SECONDS', '1800')))
     parser.add_argument('--json', action='store_true')
-    parser.set_defaults(always_auth=os.getenv('PREMARKET_TOKEN_ALWAYS_AUTH', '0').strip() == '1')
+    parser.set_defaults(
+        always_auth=os.getenv('PREMARKET_TOKEN_ALWAYS_AUTH', '0').strip() == '1',
+        validate_account_probe=os.getenv('PREMARKET_TOKEN_VALIDATE_ACCOUNT_PROBE', '1').strip() != '0',
+    )
     args = parser.parse_args()
 
     now_iso = _now_iso()
@@ -263,7 +310,11 @@ def main() -> int:
     auth: Dict[str, Any] = {'attempted': False, 'ok': True, 'reason': 'not_needed'}
     if args.always_auth or needs_refresh:
         if network['ok']:
-            auth = _auth_attempt(token_path=token_path, callback_timeout_seconds=float(args.auth_timeout_seconds))
+            auth = _auth_attempt(
+                token_path=token_path,
+                callback_timeout_seconds=float(args.auth_timeout_seconds),
+                validate_account_probe=bool(args.validate_account_probe),
+            )
         else:
             auth = {
                 'attempted': False,
@@ -274,10 +325,8 @@ def main() -> int:
     after = _token_status(token_path)
     still_stale, stale_reason_after = _token_needs_refresh(after, max_age_seconds=max(args.max_token_age_seconds, 60.0))
 
-    ok = bool(after.get('exists')) and int(after.get('size_bytes') or 0) >= 64 and bool(network['ok'])
+    ok = bool(after.get('exists')) and int(after.get('size_bytes') or 0) >= 64 and bool(network['ok']) and (not still_stale)
     if auth.get('attempted') and not auth.get('ok'):
-        ok = False
-    if still_stale and not bool(auth.get('ok')):
         ok = False
 
     alerts: list[Dict[str, Any]] = []
@@ -342,6 +391,7 @@ def main() -> int:
         'refresh_reason_after': stale_reason_after,
         'network': network,
         'auth': auth,
+        'validate_account_probe': bool(args.validate_account_probe),
         'alerts': alerts,
     }
 

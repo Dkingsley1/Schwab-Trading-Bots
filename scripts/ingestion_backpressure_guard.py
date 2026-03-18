@@ -16,6 +16,36 @@ def _safe_count_lines(path: Path) -> int:
         return 0
 
 
+def _estimated_total_lines(path: Path, stat, progress: dict, *, max_exact_bytes: int, sample_bytes: int) -> int:
+    size_bytes = int(stat.st_size)
+    if size_bytes <= max(int(max_exact_bytes), 0):
+        return _safe_count_lines(path)
+
+    last_line = int(float(progress.get("last_line", 0) or 0))
+    prev_size = int(float(progress.get("file_size_bytes", 0) or 0))
+    if last_line > 0 and prev_size > 0:
+        # Reuse prior ingestion density to avoid rescanning multi-GB files on every verify.
+        est = int(round((size_bytes / max(prev_size, 1)) * last_line))
+        return max(est, last_line)
+
+    sample_target = min(max(int(sample_bytes), 4096), size_bytes)
+    try:
+        with path.open("rb") as f:
+            sample = f.read(sample_target)
+    except Exception:
+        sample = b""
+
+    if sample:
+        newline_count = sample.count(b"\n")
+        if newline_count > 0:
+            avg_bytes_per_line = max(len(sample) / newline_count, 1.0)
+            est = int(round(size_bytes / avg_bytes_per_line))
+            return max(est, 1)
+
+    # Conservative fallback when we cannot sample content.
+    return max(size_bytes // 256, 1)
+
+
 def _load_json(path: Path) -> dict:
     if not path.exists():
         return {}
@@ -68,6 +98,8 @@ def main() -> int:
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--state-file", default=None)
     parser.add_argument("--max-files", type=int, default=200)
+    parser.add_argument("--max-exact-count-bytes", type=int, default=64 * 1024 * 1024)
+    parser.add_argument("--sample-bytes", type=int, default=256 * 1024)
     parser.add_argument("--pending-lines-threshold", type=int, default=15000)
     parser.add_argument("--pending-files-threshold", type=int, default=45)
     parser.add_argument("--oldest-age-threshold-seconds", type=int, default=240)
@@ -109,7 +141,13 @@ def main() -> int:
 
         progress = sqlite_state.get(rel, {}) if isinstance(sqlite_state.get(rel, {}), dict) else {}
         last_line = _last_line_for_state(rel, st, progress)
-        total = _safe_count_lines(p)
+        total = _estimated_total_lines(
+            p,
+            st,
+            progress,
+            max_exact_bytes=int(args.max_exact_count_bytes),
+            sample_bytes=int(args.sample_bytes),
+        )
         pending_lines = max(int(total) - int(last_line), 0)
         if pending_lines <= 0:
             continue

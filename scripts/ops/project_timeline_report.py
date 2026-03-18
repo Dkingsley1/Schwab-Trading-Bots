@@ -108,6 +108,10 @@ TOKEN_DISPLAY_MAP = {
 }
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _run(cmd: List[str]) -> tuple[int, str, str]:
     try:
         proc = subprocess.run(
@@ -1334,37 +1338,57 @@ def _fmt(val: Any, default: str = "n/a") -> str:
     return txt if txt else default
 
 
-def _chrome_binary() -> str:
+def _pdf_renderer_binary(allow_gui_renderer: bool) -> tuple[str, str]:
     env_override = os.getenv("PROJECT_TIMELINE_PDF_BIN", "").strip()
-    env_bin = Path(env_override).expanduser() if env_override else None
-    candidates = []
-    if env_bin:
-        candidates.append(env_bin)
-    candidates.extend(
-        [
+    if env_override:
+        env_bin = Path(env_override).expanduser()
+        if env_bin.exists():
+            kind = "wkhtmltopdf" if env_bin.name == "wkhtmltopdf" else "browser"
+            return str(env_bin), kind
+
+    wkhtmltopdf = shutil.which("wkhtmltopdf")
+    if wkhtmltopdf:
+        return wkhtmltopdf, "wkhtmltopdf"
+
+    browser_bins = [
+        shutil.which("chromium"),
+        shutil.which("chromium-browser"),
+        shutil.which("google-chrome"),
+        shutil.which("google-chrome-stable"),
+        shutil.which("microsoft-edge"),
+        shutil.which("msedge"),
+    ]
+    for candidate in browser_bins:
+        if candidate:
+            return candidate, "browser"
+
+    if allow_gui_renderer:
+        for candidate in (
             Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
             Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
             Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
-        ]
-    )
-    for c in candidates:
-        if c.exists():
-            return str(c)
-    return ""
+        ):
+            if candidate.exists():
+                return str(candidate), "browser"
+
+    return "", ""
 
 
-def _render_pdf_from_html(html_path: Path, pdf_path: Path) -> tuple[bool, str]:
-    chrome = _chrome_binary()
-    if not chrome:
-        return False, "chrome_binary_not_found"
+def _render_pdf_from_html(html_path: Path, pdf_path: Path, *, allow_gui_renderer: bool) -> tuple[bool, str]:
+    renderer, renderer_kind = _pdf_renderer_binary(allow_gui_renderer=allow_gui_renderer)
+    if not renderer:
+        return False, "pdf_renderer_not_found"
     html_uri = html_path.resolve().as_uri()
-    cmd = [
-        chrome,
-        "--headless",
-        "--disable-gpu",
-        f"--print-to-pdf={pdf_path}",
-        html_uri,
-    ]
+    if renderer_kind == "wkhtmltopdf":
+        cmd = [renderer, html_uri, str(pdf_path)]
+    else:
+        cmd = [
+            renderer,
+            "--headless",
+            "--disable-gpu",
+            f"--print-to-pdf={pdf_path}",
+            html_uri,
+        ]
     rc, out, err = _run(cmd)
     if rc == 0 and pdf_path.exists() and pdf_path.stat().st_size > 0:
         return True, out or "ok"
@@ -1917,8 +1941,30 @@ def main() -> int:
         default=os.getenv("PROJECT_TIMELINE_INCLUDE_DETAILED_TIMELINE", "0").strip() == "1",
         help="Include the raw detailed recent timeline section in the report output.",
     )
+    parser.add_argument(
+        "--render-pdf",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Render a PDF alongside the markdown/html outputs. Auto mode defaults to off unless explicitly enabled.",
+    )
+    parser.add_argument(
+        "--allow-gui-pdf-renderer",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Allow GUI browser app bundles for PDF rendering when no CLI renderer is available.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+
+    if args.render_pdf is None:
+        render_pdf = _env_flag("PROJECT_TIMELINE_AUTO_RENDER_PDF", "0") if args.auto else _env_flag("PROJECT_TIMELINE_RENDER_PDF", "1")
+    else:
+        render_pdf = bool(args.render_pdf)
+
+    if args.allow_gui_pdf_renderer is None:
+        allow_gui_pdf_renderer = _env_flag("PROJECT_TIMELINE_ALLOW_GUI_PDF_RENDERER", "0")
+    else:
+        allow_gui_pdf_renderer = bool(args.allow_gui_pdf_renderer)
 
     generated_utc = datetime.now(timezone.utc).isoformat()
     generated_local = datetime.now().astimezone().isoformat()
@@ -1942,6 +1988,8 @@ def main() -> int:
         "git": git_data,
         "ops": ops_data,
         "include_detailed_timeline": bool(args.include_detailed_timeline),
+        "render_pdf_enabled": bool(render_pdf),
+        "allow_gui_pdf_renderer": bool(allow_gui_pdf_renderer),
     }
 
     out_dir = Path(args.output_dir)
@@ -1957,7 +2005,7 @@ def main() -> int:
         and state.get("signature") == signature
         and latest_md.exists()
         and latest_html.exists()
-        and latest_pdf.exists()
+        and ((not render_pdf) or latest_pdf.exists())
     )
 
     if unchanged:
@@ -1971,13 +2019,15 @@ def main() -> int:
             "signature": signature,
             "latest_markdown": str(latest_md),
             "latest_printable_html": str(latest_html),
-            "latest_pdf": str(latest_pdf),
+            "latest_pdf": str(latest_pdf) if latest_pdf.exists() else "",
             "generated_utc": generated_utc,
             "prune": prune_summary,
             "activity_hours": int(args.activity_hours),
             "activity_limit": int(args.activity_limit),
             "recent_activity_rows": len(recent_project_activity),
             "include_detailed_timeline": bool(args.include_detailed_timeline),
+            "render_pdf_enabled": bool(render_pdf),
+            "allow_gui_pdf_renderer": bool(allow_gui_pdf_renderer),
         }
         if args.json:
             print(json.dumps(payload, ensure_ascii=True))
@@ -2002,16 +2052,30 @@ def main() -> int:
     ts_md.write_text(md_text, encoding="utf-8")
     ts_html.write_text(html_text, encoding="utf-8")
 
-    pdf_ok, pdf_detail = _render_pdf_from_html(latest_html, latest_pdf)
-    if pdf_ok:
-        try:
-            shutil.copy2(latest_pdf, ts_pdf)
-        except Exception as exc:
-            pdf_ok = False
-            pdf_detail = f"timestamp_pdf_copy_failed:{exc}"
-            ts_pdf = Path("")
+    if latest_pdf.exists():
+        latest_pdf.unlink()
+    if ts_pdf.exists():
+        ts_pdf.unlink()
+
+    pdf_ok = False
+    pdf_detail = "pdf_render_disabled"
+    if render_pdf:
+        pdf_ok, pdf_detail = _render_pdf_from_html(
+            latest_html,
+            latest_pdf,
+            allow_gui_renderer=allow_gui_pdf_renderer,
+        )
+        if pdf_ok:
+            try:
+                shutil.copy2(latest_pdf, ts_pdf)
+            except Exception as exc:
+                pdf_ok = False
+                pdf_detail = f"timestamp_pdf_copy_failed:{exc}"
+                ts_pdf = None
+        else:
+            ts_pdf = None
     else:
-        ts_pdf = Path("")
+        ts_pdf = None
 
     prune_summary = (
         _prune_timeline_snapshots(out_dir, keep_runs=int(args.prune_keep_runs), older_than_days=int(args.prune_older_days))
@@ -2027,7 +2091,7 @@ def main() -> int:
         "latest_pdf": str(latest_pdf) if latest_pdf.exists() else "",
         "timestamped_markdown": str(ts_md),
         "timestamped_printable_html": str(ts_html),
-        "timestamped_pdf": str(ts_pdf) if ts_pdf else "",
+        "timestamped_pdf": str(ts_pdf) if ts_pdf is not None else "",
         "pdf_ok": bool(pdf_ok),
         "pdf_detail": str(pdf_detail),
         "head": git_data.get("head"),
@@ -2038,6 +2102,8 @@ def main() -> int:
         "activity_limit": int(args.activity_limit),
         "recent_activity_rows": len(recent_project_activity),
         "include_detailed_timeline": bool(args.include_detailed_timeline),
+        "render_pdf_enabled": bool(render_pdf),
+        "allow_gui_pdf_renderer": bool(allow_gui_pdf_renderer),
     }
     _save_state(state_file, state_payload)
 
@@ -2049,7 +2115,7 @@ def main() -> int:
         "latest_pdf": str(latest_pdf) if latest_pdf.exists() else "",
         "timestamped_markdown": str(ts_md),
         "timestamped_printable_html": str(ts_html),
-        "timestamped_pdf": str(ts_pdf) if ts_pdf else "",
+        "timestamped_pdf": str(ts_pdf) if ts_pdf is not None else "",
         "pdf_ok": bool(pdf_ok),
         "pdf_detail": str(pdf_detail),
         "generated_utc": generated_utc,
@@ -2065,7 +2131,7 @@ def main() -> int:
     else:
         print(f"Wrote: {ts_md}")
         print(f"Wrote: {ts_html}")
-        if ts_pdf:
+        if ts_pdf is not None:
             print(f"Wrote: {ts_pdf}")
         print(f"Latest MD: {latest_md}")
         print(f"Latest HTML: {latest_html}")

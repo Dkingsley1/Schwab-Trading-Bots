@@ -1,4 +1,5 @@
 import argparse
+import glob
 import json
 import subprocess
 from datetime import datetime, timezone
@@ -39,6 +40,40 @@ def _count_keyword(path: Path, keyword: str, tail_lines: int = 2000) -> int:
         return 0
 
 
+def _latest_existing(paths: list[Path]) -> Path | None:
+    existing = [p for p in paths if p.exists()]
+    if not existing:
+        return None
+    return max(existing, key=lambda p: p.stat().st_mtime)
+
+
+def _latest_glob(pattern: str) -> Path | None:
+    rows = [Path(p) for p in glob.glob(pattern)]
+    return _latest_existing(rows)
+
+
+def _resolve_watchdog_log() -> Path | None:
+    home_logs = Path.home() / "Library" / "Logs" / "schwab_trading_bot"
+    candidates = [
+        home_logs / "shadow_watchdog.out.log",
+        PROJECT_ROOT / "logs" / "shadow_watchdog.out.log",
+        Path("/private/tmp/com.dankingsley.shadow_watchdog.out.log"),
+        _latest_glob(str(PROJECT_ROOT / "logs" / "shadow_watchdog_manual_*.log")),
+    ]
+    return _latest_existing([p for p in candidates if p is not None])
+
+
+def _resolve_all_sleeves_log() -> Path | None:
+    home_logs = Path.home() / "Library" / "Logs" / "schwab_trading_bot"
+    candidates = [
+        home_logs / "all_sleeves.out.log",
+        PROJECT_ROOT / "logs" / "all_sleeves.out.log",
+        Path("/private/tmp/com.dankingsley.all_sleeves.out.log"),
+        _latest_glob(str(PROJECT_ROOT / "logs" / "all_sleeves_*.log")),
+    ]
+    return _latest_existing([p for p in candidates if p is not None])
+
+
 def _append_jsonl(path: Path, row: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
@@ -57,12 +92,13 @@ def main() -> int:
 
     watchdog_count = _pgrep_count("scripts/shadow_watchdog.py")
     loop_count = _pgrep_count("run_shadow_training_loop.py")
+    all_sleeves_count = _pgrep_count("scripts/run_all_sleeves.py")
 
-    watchdog_log = Path("/private/tmp/com.dankingsley.shadow_watchdog.out.log")
-    all_sleeves_log = Path("/private/tmp/com.dankingsley.all_sleeves.out.log")
-    wd_log_age = _fresh_minutes(watchdog_log)
-    sleeves_log_age = _fresh_minutes(all_sleeves_log)
-    restart_mentions = _count_keyword(watchdog_log, "restart")
+    watchdog_log = _resolve_watchdog_log()
+    all_sleeves_log = _resolve_all_sleeves_log()
+    wd_log_age = _fresh_minutes(watchdog_log) if watchdog_log is not None else 1e9
+    sleeves_log_age = _fresh_minutes(all_sleeves_log) if all_sleeves_log is not None else 1e9
+    restart_mentions = _count_keyword(watchdog_log, "restart") if watchdog_log is not None else 0
 
     failed = []
     if args.require_watchdog and watchdog_count <= 0:
@@ -71,7 +107,8 @@ def main() -> int:
         failed.append("shadow_loop_not_running")
     if wd_log_age > float(args.max_log_age_minutes):
         failed.append("watchdog_log_stale")
-    if sleeves_log_age > float(args.max_log_age_minutes):
+    # Only enforce an all-sleeves launcher log when that wrapper is in use.
+    if all_sleeves_count > 0 and sleeves_log_age > float(args.max_log_age_minutes):
         failed.append("all_sleeves_log_stale")
 
     out = {
@@ -81,14 +118,15 @@ def main() -> int:
         "metrics": {
             "watchdog_process_count": int(watchdog_count),
             "shadow_loop_process_count": int(loop_count),
+            "all_sleeves_process_count": int(all_sleeves_count),
             "watchdog_log_age_minutes": round(float(wd_log_age), 4),
             "all_sleeves_log_age_minutes": round(float(sleeves_log_age), 4),
             "watchdog_restart_mentions_tail": int(restart_mentions),
         },
         "thresholds": {"max_log_age_minutes": float(args.max_log_age_minutes)},
         "evidence": {
-            "watchdog_log": str(watchdog_log),
-            "all_sleeves_log": str(all_sleeves_log),
+            "watchdog_log": str(watchdog_log) if watchdog_log is not None else "",
+            "all_sleeves_log": str(all_sleeves_log) if all_sleeves_log is not None else "",
         },
     }
 

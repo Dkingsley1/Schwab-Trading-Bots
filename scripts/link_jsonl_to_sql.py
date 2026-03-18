@@ -21,6 +21,17 @@ DEFAULT_INCLUDE_GLOBS = [
     "data/**/*.jsonl",
 ]
 DEFAULT_EXCLUDE_PARTS = ["/.git/", "/.venv", "/models/archive/"]
+DEFAULT_INCLUDE_JSON_GLOBS = [
+    "master_bot_registry.json",
+    "config/**/*.json",
+    "governance/health/**/*.json",
+    "governance/walk_forward/**/*.json",
+    "governance/distillation/**/*.json",
+    "governance/canary/**/*.json",
+    "data/trade_history/**/*.json",
+    "exports/state_snapshot_drills/latest.json",
+]
+DEFAULT_JSON_EXCLUDE_PARTS = ["/.git/", "/.venv", "/models/archive/", "/exports/reports/"]
 
 
 def _now_utc() -> str:
@@ -123,19 +134,53 @@ def _discover_jsonl_files(project_root: Path, include_globs: List[str], exclude_
     return discover_jsonl_files(project_root, include_globs=include_globs, exclude_parts=exclude_parts)
 
 
+def discover_json_files(
+    project_root: Path,
+    include_globs: Optional[List[str]] = None,
+    exclude_parts: Optional[List[str]] = None,
+) -> List[Path]:
+    include = include_globs or list(DEFAULT_INCLUDE_JSON_GLOBS)
+    excludes = exclude_parts or list(DEFAULT_JSON_EXCLUDE_PARTS)
+
+    found: List[Path] = []
+    seen_path = set()
+    seen_resolved = set()
+
+    for pat in include:
+        for p in project_root.glob(pat):
+            if not p.is_file():
+                continue
+            p_str = str(p)
+            if any(part and part in p_str for part in excludes):
+                continue
+            try:
+                resolved = str(p.resolve(strict=False))
+            except Exception:
+                resolved = p_str
+            if p_str in seen_path or resolved in seen_resolved:
+                continue
+            seen_path.add(p_str)
+            seen_resolved.add(resolved)
+            found.append(p)
+
+    found.sort(key=lambda path: str(path.relative_to(project_root)))
+    return found
+
+
 def _load_state(path: Path) -> Dict[str, Dict[str, Dict[str, Any]]]:
     if not path.exists():
-        return {"sqlite": {}, "mysql": {}}
+        return {"sqlite": {}, "mysql": {}, "sqlite_json_files": {}}
     try:
         with open(path, "r", encoding="utf-8") as f:
             obj = json.load(f)
         if not isinstance(obj, dict):
-            return {"sqlite": {}, "mysql": {}}
+            return {"sqlite": {}, "mysql": {}, "sqlite_json_files": {}}
         obj.setdefault("sqlite", {})
         obj.setdefault("mysql", {})
+        obj.setdefault("sqlite_json_files", {})
         return obj
     except Exception:
-        return {"sqlite": {}, "mysql": {}}
+        return {"sqlite": {}, "mysql": {}, "sqlite_json_files": {}}
 
 
 def _save_state(path: Path, state: Dict[str, Dict[str, Dict[str, Any]]]) -> None:
@@ -456,10 +501,104 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection, table: str) -> None:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
 
     conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_source_rel ON {table}(source_rel)")
+    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_source_rel_line ON {table}(source_rel, line_no)")
     conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_ingested_at ON {table}(ingested_at)")
     conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_run_id ON {table}(run_id)")
     conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_iter_id ON {table}(iter_id)")
     conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_decision_id ON {table}(decision_id)")
+
+
+def _json_file_stream(source_rel: str) -> str:
+    rel = str(source_rel or "")
+    if rel == "master_bot_registry.json":
+        return "registry"
+    if rel.startswith("config/"):
+        return "config"
+    if rel.startswith("governance/health/"):
+        return "governance_health"
+    if rel.startswith("governance/walk_forward/"):
+        return "governance_walk_forward"
+    if rel.startswith("governance/distillation/"):
+        return "governance_distillation"
+    if rel.startswith("governance/canary/"):
+        return "governance_canary"
+    if rel.startswith("data/trade_history/"):
+        return "trade_history_json"
+    if rel.startswith("exports/state_snapshot_drills/"):
+        return "state_snapshot_drill"
+    return "json_file"
+
+
+def _ensure_sqlite_json_file_schema(conn: sqlite3.Connection, table: str) -> None:
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {table} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_file TEXT NOT NULL,
+            source_rel TEXT NOT NULL,
+            stream TEXT NOT NULL,
+            modified_at TEXT,
+            ingested_at TEXT NOT NULL,
+            payload_sha1 TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            payload_size_bytes INTEGER NOT NULL DEFAULT 0,
+            log_schema_version INTEGER,
+            UNIQUE(source_rel, payload_sha1)
+        )
+        """
+    )
+    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_source_rel ON {table}(source_rel)")
+    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_stream ON {table}(stream)")
+    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_ingested_at ON {table}(ingested_at)")
+
+
+def _sync_json_file_to_sqlite(
+    conn: Optional[sqlite3.Connection],
+    table: str,
+    project_root: Path,
+    file_path: Path,
+    dry_run: bool,
+    lock_retries: int,
+    lock_retry_delay_seconds: float,
+) -> Dict[str, Any]:
+    source_rel = str(file_path.relative_to(project_root))
+    modified_at = datetime.fromtimestamp(file_path.stat().st_mtime, tz=timezone.utc).isoformat()
+    obj = json.loads(file_path.read_text(encoding="utf-8"))
+    payload_json = json.dumps(obj, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    payload_sha1 = hashlib.sha1(payload_json.encode("utf-8")).hexdigest()
+    row = (
+        str(file_path),
+        source_rel,
+        _json_file_stream(source_rel),
+        modified_at,
+        _now_utc(),
+        payload_sha1,
+        payload_json,
+        len(payload_json.encode("utf-8")),
+        _log_schema_version(),
+    )
+    inserted = 0
+    if not dry_run:
+        if conn is None:
+            raise RuntimeError("sqlite connection missing")
+        cur = _sqlite_executemany_with_retry(
+            conn,
+            f"INSERT OR IGNORE INTO {table} "
+            "(source_file, source_rel, stream, modified_at, ingested_at, payload_sha1, payload_json, payload_size_bytes, log_schema_version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [row],
+            lock_retries=lock_retries,
+            lock_retry_delay_seconds=lock_retry_delay_seconds,
+        )
+        inserted = cur.rowcount if cur.rowcount is not None else 0
+    else:
+        inserted = 1
+    return {
+        "inserted": int(inserted),
+        "payload_sha1": payload_sha1,
+        "payload_size_bytes": len(payload_json.encode("utf-8")),
+        "stream": _json_file_stream(source_rel),
+    }
 
 
 def _sqlite_executemany_with_retry(
@@ -834,6 +973,7 @@ def main() -> int:
 
     parser.add_argument("--sqlite-db", default=None, help="SQLite database file path.")
     parser.add_argument("--sqlite-table", default="jsonl_records")
+    parser.add_argument("--sqlite-json-table", default="json_file_records")
     parser.add_argument("--sqlite-timeout-seconds", type=float, default=float(os.getenv("SQLITE_TIMEOUT_SECONDS", "60")))
     parser.add_argument("--sqlite-lock-retries", type=int, default=int(os.getenv("SQLITE_LOCK_RETRIES", "8")))
     parser.add_argument(
@@ -858,6 +998,7 @@ def main() -> int:
     parser.add_argument("--journal-file", default=os.getenv("INGEST_JOURNAL_FILE", ""))
     parser.add_argument("--journal-events-file", default=os.getenv("INGEST_JOURNAL_EVENTS_FILE", ""))
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--skip-json-files", action="store_true")
     args = parser.parse_args()
 
     project_root = Path(args.project_root).resolve()
@@ -866,10 +1007,16 @@ def main() -> int:
         return 2
 
     files = discover_jsonl_files(project_root)
+    json_files = [] if args.skip_json_files else discover_json_files(project_root)
     if args.max_files > 0:
         files = files[: args.max_files]
+        json_files = json_files[: args.max_files]
 
     print(f"Discovered JSONL files: {len(files)}")
+    if args.skip_json_files:
+        print("Discovered JSON files: 0 (skip-json-files)")
+    else:
+        print(f"Discovered JSON files: {len(json_files)}")
 
     state_path = (
         Path(args.state_file).resolve()
@@ -906,6 +1053,7 @@ def main() -> int:
             sqlite_conn.execute("PRAGMA synchronous=NORMAL")
             sqlite_conn.execute(f"PRAGMA busy_timeout={int(max(float(args.sqlite_timeout_seconds), 1.0) * 1000)}")
             _ensure_sqlite_schema(sqlite_conn, args.sqlite_table)
+            _ensure_sqlite_json_file_schema(sqlite_conn, args.sqlite_json_table)
         print(f"SQLite target: {sqlite_db} table={args.sqlite_table}")
 
     if args.mode in {"mysql", "both"}:
@@ -929,6 +1077,14 @@ def main() -> int:
     total_inserted = {"sqlite": 0, "mysql": 0}
     total_invalid = {"sqlite": 0, "mysql": 0}
     total_invalid_samples = {"sqlite": 0, "mysql": 0}
+    json_file_metrics = {
+        "sqlite": {
+            "inserted": 0,
+            "invalid": 0,
+            "skipped_unchanged": 0,
+            "bytes": 0,
+        }
+    }
     lag_metrics = {
         "sqlite": {
             "pending_lines": 0,
@@ -1227,6 +1383,103 @@ def main() -> int:
                     f"pending_lines={pending_lines}"
                 )
 
+        if args.mode in {"sqlite", "both"}:
+            for fp in json_files:
+                rel = str(fp.relative_to(project_root))
+                try:
+                    st = fp.stat()
+                except FileNotFoundError:
+                    print(f"Skipping vanished JSON file before sync: {rel}")
+                    continue
+
+                progress = state["sqlite_json_files"].get(rel, {})
+                current_sig = (
+                    int(getattr(st, "st_ino", 0)),
+                    int(getattr(st, "st_size", 0)),
+                    float(getattr(st, "st_mtime", 0.0)),
+                )
+                previous_sig = (
+                    int(progress.get("file_inode", 0) or 0),
+                    int(progress.get("file_size_bytes", 0) or 0),
+                    float(progress.get("mtime", 0.0) or 0.0),
+                )
+                if current_sig == previous_sig:
+                    json_file_metrics["sqlite"]["skipped_unchanged"] += 1
+                    continue
+
+                print(f"Syncing JSON file: {rel}")
+                _journal_event(
+                    journal_paths,
+                    {
+                        "timestamp_utc": _now_utc(),
+                        "event": "json_file_start",
+                        "ingest_run_id": ingest_run_id,
+                        "mode": "sqlite",
+                        "source_rel": rel,
+                        "stream": _json_file_stream(rel),
+                    },
+                )
+
+                try:
+                    result = _sync_json_file_to_sqlite(
+                        sqlite_conn,
+                        args.sqlite_json_table,
+                        project_root,
+                        fp,
+                        args.dry_run,
+                        lock_retries=max(args.sqlite_lock_retries, 0),
+                        lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+                    )
+                except Exception as exc:
+                    json_file_metrics["sqlite"]["invalid"] += 1
+                    _journal_event(
+                        journal_paths,
+                        {
+                            "timestamp_utc": _now_utc(),
+                            "event": "json_file_failed",
+                            "ingest_run_id": ingest_run_id,
+                            "mode": "sqlite",
+                            "source_rel": rel,
+                            "stream": _json_file_stream(rel),
+                            "error": str(exc),
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+                    print(f"  sqlite json file failed: {rel} error={exc}")
+                    continue
+
+                if not args.dry_run and sqlite_conn is not None:
+                    sqlite_conn.commit()
+
+                post_st = fp.stat()
+                state["sqlite_json_files"][rel] = {
+                    "mtime": float(post_st.st_mtime),
+                    "file_inode": int(post_st.st_ino),
+                    "file_size_bytes": int(post_st.st_size),
+                    "payload_sha1": str(result["payload_sha1"]),
+                }
+                json_file_metrics["sqlite"]["inserted"] += int(result["inserted"])
+                json_file_metrics["sqlite"]["bytes"] += int(result["payload_size_bytes"])
+
+                _journal_event(
+                    journal_paths,
+                    {
+                        "timestamp_utc": _now_utc(),
+                        "event": "json_file_complete",
+                        "ingest_run_id": ingest_run_id,
+                        "mode": "sqlite",
+                        "source_rel": rel,
+                        "stream": str(result["stream"]),
+                        "inserted": int(result["inserted"]),
+                        "payload_size_bytes": int(result["payload_size_bytes"]),
+                    },
+                )
+
+                print(
+                    f"  sqlite json inserted={result['inserted']} "
+                    f"payload_size_bytes={result['payload_size_bytes']}"
+                )
+
         if not args.dry_run:
             _save_state(state_path, state)
 
@@ -1241,6 +1494,7 @@ def main() -> int:
             "state_file": str(state_path),
             "checkpoint_mode": "line_offset_inode_v2",
             "files_discovered": int(len(files)),
+            "json_files_discovered": int(len(json_files)),
             "invalid_log_file": str(invalid_log_path),
             "journal_files": [str(p) for p in journal_paths],
             "sqlite": {
@@ -1251,6 +1505,12 @@ def main() -> int:
                 "oldest_uningested_age_seconds": float(lag_metrics["sqlite"]["oldest_uningested_age_seconds"]),
                 "files_with_pending": int(lag_metrics["sqlite"]["files_with_pending"]),
                 "top_pending_files": list(lag_metrics["sqlite"]["top_pending_files"]),
+            },
+            "sqlite_json_files": {
+                "inserted": int(json_file_metrics["sqlite"]["inserted"]),
+                "invalid": int(json_file_metrics["sqlite"]["invalid"]),
+                "skipped_unchanged": int(json_file_metrics["sqlite"]["skipped_unchanged"]),
+                "bytes": int(json_file_metrics["sqlite"]["bytes"]),
             },
             "mysql": {
                 "inserted": int(total_inserted["mysql"]),
@@ -1287,6 +1547,12 @@ def main() -> int:
                 f"pending={lag_metrics['sqlite']['pending_lines']} "
                 f"oldest_pending_age_s={lag_metrics['sqlite']['oldest_uningested_age_seconds']:.1f} "
                 f"p95_latency_s={float(sqlite_lat.get('p95_seconds', 0.0) or 0.0):.1f}"
+            )
+            print(
+                f"SQLite JSON files inserted={json_file_metrics['sqlite']['inserted']} "
+                f"invalid={json_file_metrics['sqlite']['invalid']} "
+                f"skipped_unchanged={json_file_metrics['sqlite']['skipped_unchanged']} "
+                f"bytes={json_file_metrics['sqlite']['bytes']}"
             )
         if args.mode in {"mysql", "both"}:
             mysql_lat = health_payload["latency_slo"]["mysql"]["all"]

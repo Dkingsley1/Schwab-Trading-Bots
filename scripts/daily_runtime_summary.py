@@ -4,26 +4,26 @@ import json
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, Iterator, List, Optional
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
+def _iter_jsonl(path: Path) -> Iterator[Dict[str, Any]]:
     if not path.exists():
-        return []
-    out: List[Dict[str, Any]] = []
+        return
     with path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
-                out.append(json.loads(line))
+                obj = json.loads(line)
             except Exception:
                 continue
-    return out
+            if isinstance(obj, dict):
+                yield obj
 
 
 def _parse_ts(row: Dict[str, Any]) -> Optional[datetime]:
@@ -41,8 +41,7 @@ def _iter_files(pattern: str) -> Iterable[Path]:
         yield Path(p)
 
 
-def _stale_windows(rows: List[Dict[str, Any]], stale_seconds: int) -> int:
-    stamps = [s for s in (_parse_ts(r) for r in rows) if s is not None]
+def _stale_windows_from_stamps(stamps: List[datetime], stale_seconds: int) -> int:
     if len(stamps) < 2:
         return 0
     stamps = sorted(stamps)
@@ -51,6 +50,76 @@ def _stale_windows(rows: List[Dict[str, Any]], stale_seconds: int) -> int:
         if (stamps[i] - stamps[i - 1]).total_seconds() > stale_seconds:
             gaps += 1
     return gaps
+
+
+def _summarize_watchdog(rows: Iterable[Dict[str, Any]]) -> dict[str, int]:
+    events = 0
+    restarts = 0
+    throttled = 0
+    restart_errors = 0
+    for row in rows:
+        events += 1
+        for t in row.get("targets", []) or []:
+            action = str((t or {}).get("action", "none"))
+            if action == "restart":
+                restarts += 1
+            elif action == "throttled":
+                throttled += 1
+            elif action == "error":
+                restart_errors += 1
+    return {
+        "events": events,
+        "restarts": restarts,
+        "throttled": throttled,
+        "restart_errors": restart_errors,
+    }
+
+
+def _summarize_status_rows(rows: Iterable[Dict[str, Any]], *, stale_seconds: int, skipped_statuses: set[str]) -> dict[str, Any]:
+    total_rows = 0
+    skipped = 0
+    status_counts: Counter[str] = Counter()
+    stamps: List[datetime] = []
+
+    for row in rows:
+        total_rows += 1
+        status = str(row.get("status", "UNKNOWN"))
+        status_counts[status] += 1
+        if status in skipped_statuses:
+            skipped += 1
+        ts = _parse_ts(row)
+        if ts is not None:
+            stamps.append(ts)
+
+    return {
+        "rows": total_rows,
+        "skipped_decisions": skipped,
+        "status_counts": dict(status_counts),
+        "stale_windows": _stale_windows_from_stamps(stamps, stale_seconds),
+    }
+
+
+def _summarize_rows(rows: Iterable[Dict[str, Any]], *, stale_seconds: int) -> dict[str, Any]:
+    total_rows = 0
+    stamps: List[datetime] = []
+    for row in rows:
+        total_rows += 1
+        ts = _parse_ts(row)
+        if ts is not None:
+            stamps.append(ts)
+    return {
+        "rows": total_rows,
+        "stale_windows": _stale_windows_from_stamps(stamps, stale_seconds),
+    }
+
+
+def _summarize_events(rows: Iterable[Dict[str, Any]]) -> dict[str, Any]:
+    total_rows = 0
+    event_counts: Counter[str] = Counter()
+    for row in rows:
+        total_rows += 1
+        event_counts[str(row.get("event", "none"))] += 1
+    return {"rows": total_rows, "event_counts": dict(event_counts)}
 
 
 def main() -> None:
@@ -67,65 +136,43 @@ def main() -> None:
     governance_files = list(_iter_files(str(PROJECT_ROOT / "governance" / "shadow*" / f"master_control_{day}.jsonl")))
     retrain_files = list(_iter_files(str(PROJECT_ROOT / "governance" / "shadow*" / f"auto_retrain_events_{day}.jsonl")))
 
-    watchdog_rows: List[Dict[str, Any]] = []
-    for f in watchdog_files:
-        watchdog_rows.extend(_load_jsonl(f))
-
-    decision_rows: List[Dict[str, Any]] = []
-    for f in decision_files:
-        decision_rows.extend(_load_jsonl(f))
-
-    governance_rows: List[Dict[str, Any]] = []
-    for f in governance_files:
-        governance_rows.extend(_load_jsonl(f))
-
-    retrain_rows: List[Dict[str, Any]] = []
-    for f in retrain_files:
-        retrain_rows.extend(_load_jsonl(f))
-
-    restarts = 0
-    throttled = 0
-    restart_errors = 0
-    for row in watchdog_rows:
-        for t in row.get("targets", []) or []:
-            action = str((t or {}).get("action", "none"))
-            if action == "restart":
-                restarts += 1
-            elif action == "throttled":
-                throttled += 1
-            elif action == "error":
-                restart_errors += 1
-
     skipped_statuses = {"BLOCKED", "DATA_ONLY_BLOCKED"}
-    skipped_decisions = sum(1 for r in decision_rows if str(r.get("status", "")) in skipped_statuses)
-    status_counts = Counter(str(r.get("status", "UNKNOWN")) for r in decision_rows)
-
-    retrain_events = Counter(str(r.get("event", "none")) for r in retrain_rows)
+    watchdog_summary = _summarize_watchdog(row for f in watchdog_files for row in _iter_jsonl(f))
+    decision_summary = _summarize_status_rows(
+        (row for f in decision_files for row in _iter_jsonl(f)),
+        stale_seconds=args.stale_seconds,
+        skipped_statuses=skipped_statuses,
+    )
+    governance_summary = _summarize_rows(
+        (row for f in governance_files for row in _iter_jsonl(f)),
+        stale_seconds=args.stale_seconds,
+    )
+    retrain_summary = _summarize_events(row for f in retrain_files for row in _iter_jsonl(f))
 
     payload = {
         "day": day,
         "watchdog": {
-            "events": len(watchdog_rows),
-            "restarts": restarts,
-            "throttled": throttled,
-            "restart_errors": restart_errors,
+            "events": watchdog_summary["events"],
+            "restarts": watchdog_summary["restarts"],
+            "throttled": watchdog_summary["throttled"],
+            "restart_errors": watchdog_summary["restart_errors"],
             "files": [str(x) for x in watchdog_files],
         },
         "decision": {
-            "rows": len(decision_rows),
-            "skipped_decisions": skipped_decisions,
-            "status_counts": dict(status_counts),
-            "stale_windows": _stale_windows(decision_rows, args.stale_seconds),
+            "rows": decision_summary["rows"],
+            "skipped_decisions": decision_summary["skipped_decisions"],
+            "status_counts": decision_summary["status_counts"],
+            "stale_windows": decision_summary["stale_windows"],
             "files": [str(x) for x in decision_files],
         },
         "governance": {
-            "rows": len(governance_rows),
-            "stale_windows": _stale_windows(governance_rows, args.stale_seconds),
+            "rows": governance_summary["rows"],
+            "stale_windows": governance_summary["stale_windows"],
             "files": [str(x) for x in governance_files],
         },
         "retrain": {
-            "rows": len(retrain_rows),
-            "event_counts": dict(retrain_events),
+            "rows": retrain_summary["rows"],
+            "event_counts": retrain_summary["event_counts"],
             "files": [str(x) for x in retrain_files],
         },
     }
@@ -151,8 +198,8 @@ def main() -> None:
             rrows=payload["retrain"]["rows"],
         )
     )
-    if retrain_events:
-        print("Retrain events: " + ", ".join(f"{k}={v}" for k, v in sorted(retrain_events.items())))
+    if retrain_summary["event_counts"]:
+        print("Retrain events: " + ", ".join(f"{k}={v}" for k, v in sorted(retrain_summary["event_counts"].items())))
 
 
 if __name__ == "__main__":
