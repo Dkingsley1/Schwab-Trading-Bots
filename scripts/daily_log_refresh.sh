@@ -9,6 +9,9 @@ cd "$PROJECT_ROOT"
 
 [[ -f "$PROJECT_ROOT/scripts/load_ops_thresholds_env.sh" ]] && source "$PROJECT_ROOT/scripts/load_ops_thresholds_env.sh"
 
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_tradingeconomics_guest_data.py" --json \
+  || echo "[WARN] collect_tradingeconomics_guest_data failed; continuing daily refresh"
+
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/link_jsonl_to_sql.py" --mode sqlite
 
 # Explicit SQLite maintenance step (non-fatal so the rest of daily refresh still runs).
@@ -29,6 +32,11 @@ cp "$DAILY_RUNTIME_SUMMARY_JSON" "$PROJECT_ROOT/governance/health/daily_runtime_
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_data_center.py"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_one_numbers_report.py" --day "$TODAY_UTC"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/bot_stack_status_report.py"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/export_model_card.py" --json || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/export_bot_explainability.py" --json || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/paper_execution_calibration_report.py" --hours 24 --json || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/strategy_attribution_report.py" --day "$TODAY_UTC" --json || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/post_trade_analysis.py" --day "$TODAY_UTC" --hours 24 --json || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/sleeve_slo_guard.py" --day "$TODAY_UTC" --once || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/sleeve_allocator.py"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/portfolio_risk_ledger.py"
@@ -64,6 +72,7 @@ cp "$DAILY_RUNTIME_SUMMARY_JSON" "$PROJECT_ROOT/governance/health/daily_runtime_
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/secret_scan.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/daily_auto_verify.py" --day "$TODAY_UTC" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/observability_exporter.py"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/report_pdf_bundle.py" --json || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/event_bus_relay.py" --day "$TODAY_UTC" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/safe_mode_guard.py" --trip-streak "${SAFE_MODE_TRIP_STREAK_REQUIRED:-3}" --clear-streak "${SAFE_MODE_CLEAR_STREAK_REQUIRED:-2}" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/global_risk_killswitch.py" || true

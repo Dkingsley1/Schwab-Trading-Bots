@@ -3,6 +3,8 @@ import glob
 import json
 import math
 import os
+import re
+from itertools import chain
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,6 +17,8 @@ except Exception:
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+from sql_dataset_io import iter_sqlite_jsonl_rows, resolve_sqlite_path, split_paths_by_sqlite_coverage
 
 SHOCK_SYMBOLS = {"UVXY", "VIXY", "SOXL", "SOXS", "MSTR", "SMCI", "COIN", "TSLA"}
 MEAN_REVERT_SYMBOLS = {"TLT", "IEF", "SHY", "BND", "AGG", "GLD", "XLU", "XLP"}
@@ -132,6 +136,45 @@ FEATURE_NAMES = [
     "external_bea_dataset_count_norm",
 ]
 
+BEHAVIOR_LANE_FEATURE_NAMES = [
+    "day_opening_auction_signal_norm",
+    "day_halt_resume_risk_norm",
+    "day_liquidity_vacuum_risk_norm",
+    "day_execution_cost_risk_norm",
+    "day_session_open_norm",
+    "day_session_midday_norm",
+    "day_session_power_hour_norm",
+    "day_regime_trend_norm",
+    "day_regime_chop_norm",
+    "day_regime_alignment_norm",
+    "swing_post_earnings_drift_norm",
+    "swing_gap_continuation_norm",
+    "swing_gap_fade_norm",
+    "swing_vol_compression_breakout_norm",
+    "swing_sector_relative_strength_norm",
+    "swing_weekly_trend_confirm_norm",
+    "swing_regime_trend_norm",
+    "swing_regime_chop_norm",
+    "swing_regime_alignment_norm",
+    "bond_duration_regime_norm",
+    "bond_curve_steepener_norm",
+    "bond_curve_flattener_norm",
+    "bond_carry_roll_norm",
+    "bond_credit_risk_on_norm",
+    "bond_credit_risk_off_norm",
+    "bond_inflation_breakeven_norm",
+]
+
+FEATURE_NAMES.extend(BEHAVIOR_LANE_FEATURE_NAMES)
+
+BEHAVIOR_CAPITAL_FLOW_FEATURE_NAMES = [
+    "capital_flow_signed_scaled",
+    "capital_flow_inflow_norm",
+    "capital_flow_outflow_norm",
+]
+
+FEATURE_NAMES.extend(BEHAVIOR_CAPITAL_FLOW_FEATURE_NAMES)
+
 
 def _safe_load_json(path: Path, default: Dict[str, Any]) -> Dict[str, Any]:
     if not path.exists():
@@ -223,6 +266,33 @@ def _resolve_glob_paths(pattern: str, *, root: Path) -> List[Path]:
 
     uniq = {str(p): p for p in matches}
     return [uniq[k] for k in sorted(uniq.keys())]
+
+
+def _path_day_utc(path: Path) -> Optional[datetime]:
+    m = re.search(r"_(\d{8})\.jsonl$", path.name)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y%m%d").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _filter_recent_paths(paths: List[Path], since_utc: datetime) -> List[Path]:
+    cutoff_day = (since_utc - timedelta(days=1)).date()
+    out: List[Path] = []
+    for path in paths:
+        day_utc = _path_day_utc(path)
+        if day_utc is not None and day_utc.date() >= cutoff_day:
+            out.append(path)
+            continue
+        try:
+            mtime_utc = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        except Exception:
+            mtime_utc = None
+        if mtime_utc is not None and mtime_utc >= (since_utc - timedelta(days=1)):
+            out.append(path)
+    return out
 
 
 def _role_index(mode_label: str) -> float:
@@ -488,6 +558,7 @@ def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict
     census = _safe_load_json(root / "census" / "latest.json", default={})
     fred = _safe_load_json(root / "fred" / "latest.json", default={})
     bea = _safe_load_json(root / "bea" / "latest.json", default={})
+    tradingeconomics = _safe_load_json(root / "tradingeconomics" / "latest.json", default={})
 
     provider_names = ("bls", "census", "fred", "bea")
     provider_ok = {}
@@ -496,8 +567,13 @@ def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict
         provider_ok[name] = bool(node.get("ok", False))
 
     status_ts = _parse_ts(status.get("timestamp_utc"))
-    if status_ts is not None:
-        age_hours = max((now_utc - status_ts).total_seconds() / 3600.0, 0.0)
+    te_status = tradingeconomics.get("status") if isinstance(tradingeconomics.get("status"), dict) else {}
+    te_ts = _parse_ts(tradingeconomics.get("timestamp_utc"))
+    te_ok = bool(te_status.get("ok", False)) or int(_to_float(te_status.get("datasets_ok_count"), 0.0)) > 0
+    provider_ok["tradingeconomics"] = te_ok
+    latest_status_ts = max([ts for ts in (status_ts, te_ts) if ts is not None], default=None)
+    if latest_status_ts is not None:
+        age_hours = max((now_utc - latest_status_ts).total_seconds() / 3600.0, 0.0)
         recency_norm = 1.0 - _clamp01(age_hours / 72.0)
     else:
         recency_norm = 0.0
@@ -522,6 +598,36 @@ def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict
     bls_cpi_latest, bls_cpi_prev = _latest_two_numeric((bls_map.get("CUUR0000SA0") or {}).get("data"))
     bls_cpi_mom = _pct_change(bls_cpi_latest, bls_cpi_prev)
 
+    te_derived = tradingeconomics.get("derived") if isinstance(tradingeconomics.get("derived"), dict) else {}
+    te_macro_backfill = te_derived.get("macro_backfill") if isinstance(te_derived.get("macro_backfill"), dict) else {}
+    te_unrate_latest = _try_float(te_macro_backfill.get("unemployment_rate_latest"))
+    te_inflation_mom = _try_float(te_macro_backfill.get("inflation_mom_ratio"))
+    te_gdp_qoq = _try_float(te_macro_backfill.get("gdp_qoq_ratio"))
+
+    te_backfill_used = {
+        "fred_unrate": False,
+        "fred_cpi_mom": False,
+        "fred_gdp_qoq": False,
+        "bls_unrate": False,
+        "bls_cpi_mom": False,
+    }
+
+    if fred_unrate_latest is None and te_unrate_latest is not None:
+        fred_unrate_latest = te_unrate_latest
+        te_backfill_used["fred_unrate"] = True
+    if abs(fred_cpi_mom) <= 1e-12 and te_inflation_mom is not None:
+        fred_cpi_mom = te_inflation_mom
+        te_backfill_used["fred_cpi_mom"] = True
+    if abs(fred_gdp_qoq) <= 1e-12 and te_gdp_qoq is not None:
+        fred_gdp_qoq = te_gdp_qoq
+        te_backfill_used["fred_gdp_qoq"] = True
+    if bls_unrate_latest is None and te_unrate_latest is not None:
+        bls_unrate_latest = te_unrate_latest
+        te_backfill_used["bls_unrate"] = True
+    if abs(bls_cpi_mom) <= 1e-12 and te_inflation_mom is not None:
+        bls_cpi_mom = te_inflation_mom
+        te_backfill_used["bls_cpi_mom"] = True
+
     census_population: Optional[float] = None
     census_rows = census.get("response")
     if isinstance(census_rows, list) and len(census_rows) >= 2:
@@ -539,7 +645,7 @@ def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict
     bea_dataset_count = float(len(bea_dataset_rows)) if isinstance(bea_dataset_rows, list) else 0.0
 
     context = {
-        "external_feeds_ok": 1.0 if all(provider_ok.get(name, False) for name in provider_names) else 0.0,
+        "external_feeds_ok": 1.0 if (all(provider_ok.get(name, False) for name in provider_names) or te_ok) else 0.0,
         "external_feeds_recency_norm": recency_norm,
         "external_fred_unrate_norm": _clamp01((_try_float(fred_unrate_latest) or 0.0) / 12.0),
         "external_fred_cpi_mom_norm": _signed_pct_norm(fred_cpi_mom, 120.0),
@@ -556,6 +662,16 @@ def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict
         "census_ts": census.get("timestamp_utc"),
         "fred_ts": fred.get("timestamp_utc"),
         "bea_ts": bea.get("timestamp_utc"),
+        "tradingeconomics_ts": tradingeconomics.get("timestamp_utc"),
+        "tradingeconomics": {
+            "ok": te_ok,
+            "datasets_ok_count": int(_to_float(te_status.get("datasets_ok_count"), 0.0)),
+            "macro_backfill": te_macro_backfill,
+            "calendar_rows": te_derived.get("calendar_rows") if isinstance(te_derived.get("calendar_rows"), list) else [],
+            "news_features": te_derived.get("news_features") if isinstance(te_derived.get("news_features"), dict) else {},
+            "market_breadth": te_derived.get("market_breadth") if isinstance(te_derived.get("market_breadth"), dict) else {},
+            "bond_reference": te_derived.get("bond_reference") if isinstance(te_derived.get("bond_reference"), dict) else {},
+        },
         "raw": {
             "fred_unrate_latest": fred_unrate_latest,
             "fred_cpi_mom": fred_cpi_mom,
@@ -564,6 +680,10 @@ def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict
             "bls_cpi_mom": bls_cpi_mom,
             "census_population": census_population,
             "bea_dataset_count": int(bea_dataset_count),
+            "tradingeconomics_unrate_latest": te_unrate_latest,
+            "tradingeconomics_inflation_mom_ratio": te_inflation_mom,
+            "tradingeconomics_gdp_qoq_ratio": te_gdp_qoq,
+            "tradingeconomics_backfill_used": te_backfill_used,
         },
     }
     return context, meta
@@ -571,9 +691,9 @@ def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict
 
 
 
-def _load_governance_index(paths: List[Path], since_utc: datetime) -> Dict[str, Dict[str, float]]:
+def _load_governance_index(rows: Iterable[Dict[str, Any]], since_utc: datetime) -> Dict[str, Dict[str, float]]:
     out: Dict[str, Dict[str, float]] = {}
-    for row in _iter_jsonl(paths):
+    for row in rows:
         ts = _parse_ts(row.get("timestamp_utc"))
         if ts is None or ts < since_utc:
             continue
@@ -587,6 +707,8 @@ def _load_governance_index(paths: List[Path], since_utc: datetime) -> Dict[str, 
         cb = row.get("circuit_breakers") or {}
         exec_sim = row.get("execution_sim") or {}
         spec_votes = row.get("specialist_votes") if isinstance(row.get("specialist_votes"), dict) else {}
+        lane_features = row.get("lane_strategy_features") if isinstance(row.get("lane_strategy_features"), dict) else {}
+        capital_flow = row.get("capital_flow") if isinstance(row.get("capital_flow"), dict) else {}
 
         out[sid] = {
             "active_sub_bots": _to_float(row.get("active_sub_bots_total"), _to_float(row.get("active_sub_bots"), 0.0)),
@@ -609,12 +731,20 @@ def _load_governance_index(paths: List[Path], since_utc: datetime) -> Dict[str, 
             "exec_latency_ms": _to_float(exec_sim.get("latency_ms"), 0.0),
             "exec_impact_bps": _to_float(exec_sim.get("impact_bps"), 0.0),
         }
+        for key in BEHAVIOR_LANE_FEATURE_NAMES:
+            out[sid][key] = _clamp01(_to_float(lane_features.get(key), 0.0))
+        for key in BEHAVIOR_CAPITAL_FLOW_FEATURE_NAMES:
+            raw = _to_float(capital_flow.get(key), 0.0)
+            if key == "capital_flow_signed_scaled":
+                out[sid][key] = _clamp(raw, -1.0, 1.0)
+            else:
+                out[sid][key] = _clamp01(raw)
     return out
 
 
-def _load_exec_history(paths: List[Path], since_utc: datetime) -> Dict[str, List[Tuple[float, float, float, float]]]:
+def _load_exec_history(rows: Iterable[Dict[str, Any]], since_utc: datetime) -> Dict[str, List[Tuple[float, float, float, float]]]:
     by_symbol: Dict[str, List[Tuple[float, float, float, float]]] = defaultdict(list)
-    for row in _iter_jsonl(paths):
+    for row in rows:
         if str(row.get("layer") or "") != "grand_master":
             continue
         ts = _parse_ts(row.get("timestamp_utc"))
@@ -854,6 +984,15 @@ def _decision_feature_vector(
         _clamp01(_to_float(external_context.get("external_bea_dataset_count_norm"), 0.0)),
     ]
 
+    for key in BEHAVIOR_LANE_FEATURE_NAMES:
+        vec.append(_clamp01(_to_float(features.get(key), _to_float(gov.get(key), 0.0))))
+    for key in BEHAVIOR_CAPITAL_FLOW_FEATURE_NAMES:
+        raw = _to_float(features.get(key), _to_float(gov.get(key), 0.0))
+        if key == "capital_flow_signed_scaled":
+            vec.append(_clamp(raw, -1.0, 1.0))
+        else:
+            vec.append(_clamp01(raw))
+
     return vec, regime, label_confidence_proxy
 
 
@@ -872,6 +1011,12 @@ def main() -> int:
     parser.add_argument("--min-per-symbol", type=int, default=int(os.getenv("BEHAVIOR_DATASET_MIN_PER_SYMBOL", "8")))
     parser.add_argument("--max-per-symbol", type=int, default=int(os.getenv("BEHAVIOR_DATASET_MAX_PER_SYMBOL", "3000")))
     parser.add_argument("--max-per-symbol-regime", type=int, default=int(os.getenv("BEHAVIOR_DATASET_MAX_PER_SYMBOL_REGIME", "1200")))
+    parser.add_argument("--sqlite-path", default=os.getenv("BEHAVIOR_DATASET_SQLITE_PATH", ""))
+    parser.add_argument(
+        "--prefer-sql",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("BEHAVIOR_DATASET_PREFER_SQL", "1").strip() == "1",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -923,25 +1068,59 @@ def main() -> int:
     decision_paths = _resolve_glob_paths(args.decision_glob, root=PROJECT_ROOT)
     if not decision_paths:
         decision_paths = sorted(Path(p) for p in PROJECT_ROOT.glob("decision_explanations/shadow*/decision_explanations_*.jsonl"))
+    decision_paths = _filter_recent_paths(decision_paths, since_utc)
 
     governance_paths = _resolve_glob_paths(args.governance_glob, root=PROJECT_ROOT)
     if not governance_paths:
         governance_paths = sorted(Path(p) for p in PROJECT_ROOT.glob("governance/shadow*/master_control_*.jsonl"))
+    governance_paths = _filter_recent_paths(governance_paths, since_utc)
 
     pnl_paths = _resolve_glob_paths(args.pnl_attribution_glob, root=PROJECT_ROOT)
     if not pnl_paths:
         pnl_paths = sorted(Path(p) for p in PROJECT_ROOT.glob("governance/shadow*/shadow_pnl_attribution_*.jsonl"))
+    pnl_paths = _filter_recent_paths(pnl_paths, since_utc)
+
+    sqlite_path = resolve_sqlite_path(args.sqlite_path) if bool(args.prefer_sql) else None
+
+    decision_sql_rels, decision_file_fallbacks = split_paths_by_sqlite_coverage(
+        project_root=PROJECT_ROOT,
+        paths=decision_paths,
+        sqlite_path=sqlite_path,
+    )
+    governance_sql_rels, governance_file_fallbacks = split_paths_by_sqlite_coverage(
+        project_root=PROJECT_ROOT,
+        paths=governance_paths,
+        sqlite_path=sqlite_path,
+    )
+    pnl_sql_rels, pnl_file_fallbacks = split_paths_by_sqlite_coverage(
+        project_root=PROJECT_ROOT,
+        paths=pnl_paths,
+        sqlite_path=sqlite_path,
+    )
 
     snapshot_context, snapshot_meta = _snapshot_health_context(PROJECT_ROOT)
     external_context, external_meta = _external_feeds_context(PROJECT_ROOT, now_utc=now_utc)
     event_windows = _event_windows_from_env()
 
-    gov_by_snapshot = _load_governance_index(governance_paths, since_utc=since_utc)
-    exec_history = _load_exec_history(pnl_paths, since_utc=since_utc)
+    governance_rows = chain(
+        iter_sqlite_jsonl_rows(sqlite_path=sqlite_path, source_rels=governance_sql_rels) if governance_sql_rels else (),
+        _iter_jsonl(governance_file_fallbacks),
+    )
+    pnl_rows = chain(
+        iter_sqlite_jsonl_rows(sqlite_path=sqlite_path, source_rels=pnl_sql_rels) if pnl_sql_rels else (),
+        _iter_jsonl(pnl_file_fallbacks),
+    )
+    decision_rows = chain(
+        iter_sqlite_jsonl_rows(sqlite_path=sqlite_path, source_rels=decision_sql_rels) if decision_sql_rels else (),
+        _iter_jsonl(decision_file_fallbacks),
+    )
+
+    gov_by_snapshot = _load_governance_index(governance_rows, since_utc=since_utc)
+    exec_history = _load_exec_history(pnl_rows, since_utc=since_utc)
 
     by_symbol: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     raw_rows = 0
-    for row in _iter_jsonl(decision_paths):
+    for row in decision_rows:
         raw_rows += 1
         ts = _parse_ts(row.get("timestamp_utc"))
         if ts is None or ts < since_utc:
@@ -1137,7 +1316,9 @@ def main() -> int:
 
     payload = {
         "timestamp_utc": now_utc.isoformat(),
+        "dataset_kind": "curated_decision_governance",
         "schema": "behavior_dataset_v3_dual_horizon",
+        "feature_schema_version": "trade_behavior_features_v4",
         "lookback_hours": int(args.lookback_hours),
         "horizons": {
             "primary_seconds": int(horizon_primary_s),
@@ -1156,6 +1337,14 @@ def main() -> int:
             "pnl_attribution_files": len(pnl_paths),
             "since_utc": since_utc.isoformat(),
             "raw_decision_rows_scanned": int(raw_rows),
+            "prefer_sql": bool(args.prefer_sql),
+            "sqlite_path": str(sqlite_path) if sqlite_path else "",
+            "decision_sql_files": len(decision_sql_rels),
+            "decision_file_fallbacks": len(decision_file_fallbacks),
+            "governance_sql_files": len(governance_sql_rels),
+            "governance_file_fallbacks": len(governance_file_fallbacks),
+            "pnl_sql_files": len(pnl_sql_rels),
+            "pnl_file_fallbacks": len(pnl_file_fallbacks),
         },
         "thresholds": {
             "positive_bps": positive_bps,
@@ -1180,6 +1369,18 @@ def main() -> int:
         },
         "feature_dim": len(FEATURE_NAMES),
         "feature_names": FEATURE_NAMES,
+        "retention_model": {
+            "primary_training_inputs": [
+                "decision_explanations",
+                "governance/master_control",
+                "governance/shadow_pnl_attribution",
+            ],
+            "raw_ingest_dependency": "bounded_sql_backing_only",
+        },
+        "lineage": {
+            "feature_schema_version": "trade_behavior_features_v4",
+            "builder_script": str(Path(__file__).resolve()),
+        },
         "snapshot_context": {
             "features": {k: round(_to_float(v), 6) for k, v in snapshot_context.items()},
             "meta": snapshot_meta,

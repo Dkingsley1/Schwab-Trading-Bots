@@ -1,67 +1,256 @@
 # Commands (Canonical)
 
 Use these exact commands as the source of truth.
+They are aligned to the current `opsctl.sh`, `start_stack.sh`, and direct script entry points in this repo.
 
-## 1) Start All Sleeves (single live terminal feed)
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot && \
-export MARKET_DATA_ONLY=1 ALLOW_ORDER_EXECUTION=0 ENABLE_RESOURCE_GUARD=0 && \
-export SHADOW_SYMBOLS_CORE="SPY,QQQ,DIA,IWM,MDY,VOO,VTI,RSP,AAPL,MSFT,NVDA,AMZN,GOOGL,META,AVGO,ORCL,CRM,ADBE,NFLX,DIS,WBD,GS,JPM,BKNG,ABNB,MAR,HLT" && \
-export SHADOW_SYMBOLS_VOLATILE="SOXL,SOXS,TQQQ,SQQQ,MSTR,SMCI,COIN,TSLA,PLTR,AMD,MRVL,ARM,IBIT,ETHA,MARA,RIOT,UVXY,VIXY,AAL,UAL,DAL,LUV,ALK,JBLU,CCL,RCL,NCLH,EXPE,JETS,XOP,OIH,OXY,SLB,HAL" && \
-export SHADOW_SYMBOLS_DEFENSIVE="TLT,GLD,XLV,XLU,XLP,MO,HYG,LQD,UUP,XLE,XLF,XLI,XLK,XLY,IEF,SHY,TIP,TLH,JNK,AGG,BND,MUB,IGIB,USHY,FLOT,VGIT,SCHD,VIG,DGRO,HDV,NOBL,VYM,DIVO,JEPI,JEPQ,SPLV,VTV,JNJ,PG,KO,PEP,MCD,ABBV,ABT,MRK,PFE,T,VZ,O,VICI,MAIN,XOM,CVX,COP,EOG,MPC,PSX,VLO,KMI,ITA,LMT,NOC,RTX,GD,LHX,LDOS" && \
-export SHADOW_SYMBOLS_COMMOD_FX_INTL="DBC,UNG,CORN,SLV,USO,FXE,FXY,EFA,EEM,EWJ,FXI,VEA,VWO,IEFA,VGK,INDA,SMH,SOXX,VGT,IGV,XOP,OIH,JETS,VNQ,IYR" && \
-export DIVIDEND_SYMBOLS="SCHD,VIG,DGRO,HDV,NOBL,VYM,DIVO,JEPI,JEPQ,SPYD,DIV,FDVV,SCHY,JNJ,PG,KO,PEP,MCD,MO,ABBV,ABT,MRK,PFE,T,VZ,O,VICI,MAIN,XOM,CVX,COP,KMI,MPC,PSX,VLO,EOG,SLB" && \
-export DIVIDEND_QUALITY_SYMBOLS="SCHD,VIG,DGRO,HDV,NOBL,VYM,DIVO,SCHY,JNJ,PG,KO,PEP,MCD,ABBV,ABT,MRK,XOM,CVX,COP,O,VICI,MSFT,AAPL" && \
-export BOND_SYMBOLS="TLT,IEF,SHY,TLH,TIP,LQD,HYG,JNK,BND,AGG,MUB,IGIB,USHY,FLOT,VGIT" && \
-./.venv312/bin/python scripts/run_all_sleeves.py --simulate --with-aggressive-modes \
-  --symbols-core "$SHADOW_SYMBOLS_CORE" \
-  --symbols-volatile "$SHADOW_SYMBOLS_VOLATILE" \
-  --symbols-defensive "$SHADOW_SYMBOLS_DEFENSIVE,$SHADOW_SYMBOLS_COMMOD_FX_INTL" \
-  --dividend-symbols "$DIVIDEND_SYMBOLS" \
-  --bond-symbols "$BOND_SYMBOLS"
-```
+Primary start commands below use live market data with shadow execution only. Anything with `--simulate` or `--paper` is not live data.
 
-## 2) Watchdog Health (one-shot)
+The old custom `run_all_sleeves.py ... --simulate` command was simulated data. The live version below removes `--simulate`.
+
+## Token Authorization
+
+### FIRST: refresh Schwab token / authorization handshake
+Use this first when Schwab live feeds halt, the token expires, or `get_accounts_snapshot` starts failing.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./.venv312/bin/python scripts/shadow_watchdog.py --once --watch-coinbase --watch-dividend --watch-bond --simulate-schwab --interval-seconds 30
+./scripts/ops/opsctl.sh token-refresh --always-auth
 ```
 
-## 3) Retrain (normal, after-hours gate enabled)
+Expected healthy result: `premarket_token_guard ok=1`
+
+### If non-interactive token refresh fails, run an interactive Schwab re-auth
+Use this when `token-refresh --always-auth` fails with `unsupported_token_type` or `refresh_token_authentication_error`.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./.venv312/bin/python scripts/weekly_retrain.py --continue-on-error
+./scripts/ops/opsctl.sh token-refresh-interactive
 ```
 
-## 4) Retrain Manual Override (run during market hours)
-Important: correct override variable is `RETRAIN_AFTER_HOURS_ONLY=0`.
+Expected healthy result: `Handshake Successful.` and `schwab_auth_refresh ok=1`
+
+### FIRST: restart Schwab live feeds after token authorization
+Run this immediately after a successful token handshake.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-RETRAIN_AFTER_HOURS_ONLY=0 ./.venv312/bin/python scripts/weekly_retrain.py --continue-on-error
+./scripts/ops/opsctl.sh feed-refresh --source schwab
 ```
 
-## 5) Walk-Forward + Promotion Gate
+### Exact Schwab feed refresh command
+Copy/paste this when you only need to restart Schwab live feeds.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./.venv312/bin/python scripts/walk_forward_validate.py
-./.venv312/bin/python scripts/walk_forward_promotion_gate.py
+./scripts/ops/opsctl.sh feed-refresh --source schwab
 ```
 
-## 6) Raise Floor (canary gate enforced)
+### Full token-auth recovery sequence
+Use this exact pair when the system is halted on Schwab auth problems.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-ACTIVE_STREAK_HARD_CAP=12 ./.venv312/bin/python scripts/run_master_bot.py --min-active-bots 35
-./.venv312/bin/python scripts/bot_registry_status.py
+./scripts/ops/opsctl.sh token-refresh --always-auth
+./scripts/ops/opsctl.sh feed-refresh --source schwab
 ```
 
-## 7) Raise Floor (manual override if canary is blocked)
+### Full token-auth recovery sequence when non-interactive refresh is broken
+Use this exact sequence when the token refresh reports `unsupported_token_type`.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-ACTIVE_STREAK_HARD_CAP=12 ./.venv312/bin/python scripts/run_master_bot.py --no-require-canary-gate --min-active-bots 35
-./.venv312/bin/python scripts/bot_registry_status.py
+./scripts/ops/opsctl.sh token-refresh-interactive
+./scripts/ops/opsctl.sh feed-refresh --source schwab
 ```
 
-## 8) SQL + One Numbers Refresh
+## Live Starts
+
+### Full live feed refresh/start (Schwab sleeves + Coinbase live data)
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh feed-refresh --source all
+```
+
+### Schwab live sleeves only
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh feed-refresh --source schwab
+```
+
+### Coinbase live shadow only
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh coinbase-start --force-restart --live-data
+```
+
+### Coinbase crypto futures live shadow
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh coinbase-futures-start --force-restart --live-data --profiles crypto_futures
+```
+
+### Schwab futures live shadow
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh schwab-futures-start --force-restart --live-data --profiles schwab_futures
+```
+
+### Direct all-sleeves live run with canonical symbol sets
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+source ./scripts/ops/load_runtime_env.sh live --quiet
+./.venv312/bin/python scripts/run_all_sleeves.py --with-aggressive-modes
+```
+
+## Live Feed Refresh
+
+### Refresh all live feeds
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh feed-refresh --source all
+```
+
+### Refresh Schwab live feeds
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh feed-refresh --source schwab
+```
+
+### Refresh Coinbase live feeds
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh feed-refresh --source coinbase
+```
+
+## Live Macro Bulletins
+
+### Powell / Fed live bulletin
+Use this during Powell remarks, FOMC press conferences, or other live Fed events. The bots react to the text bulletin immediately through the news-shock and macro-event features. The YouTube link is optional metadata; the text is what matters.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh macro-bulletin --template powell --headline "Jerome Powell live remarks" --summary "Paste the key line or theme here" --url "https://www.youtube.com/watch?v=-sSSzdXIlA8" --stance auto --impact high
+```
+
+### Hawkish Powell update
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh macro-bulletin --template powell --headline "Powell says inflation risks remain elevated" --summary "Higher for longer tone; no rush to cut" --url "https://www.youtube.com/watch?v=-sSSzdXIlA8" --stance hawkish --impact critical
+```
+
+### Dovish Powell update
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh macro-bulletin --template powell --headline "Powell says disinflation is continuing" --summary "Growth softening and policy can become less restrictive" --url "https://www.youtube.com/watch?v=-sSSzdXIlA8" --stance dovish --impact critical
+```
+
+### Show the active live macro bulletin
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh macro-bulletin --status --json
+```
+
+### Start automatic YouTube caption watch for a single Powell stream
+This uses YouTube auto-captions and keeps the live macro bulletin updated without manual re-entry.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh macro-auto-start --force-restart --youtube-url "https://www.youtube.com/watch?v=-sSSzdXIlA8" --template powell --speaker "Jerome Powell" --source "Federal Reserve"
+```
+
+### Start automatic Federal Reserve channel watch
+This watches the full Federal Reserve YouTube channel, checks the Schwab calendar for the matching Fed event, arms media ingest inside the pre-live window, and then rolls straight into live capture when the stream actually opens.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh macro-auto-start --force-restart --youtube-channel-url "https://www.youtube.com/@federalreserve" --template fed --speaker "Federal Reserve" --source "Federal Reserve" --correlate-with-schwab-calendar --trigger-media-ingest-on-live --trigger-media-ingest-before-minutes 10 --media-ingest-cookies-from-browser chrome
+```
+
+### Replay a full Fed or Powell video transcript
+This re-reads the entire YouTube caption track from a finished video, scores the whole transcript, and writes an overall macro stance with keyword evidence.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh macro-replay --youtube-url "https://www.youtube.com/watch?v=-sSSzdXIlA8" --template powell --speaker "Jerome Powell" --source "Federal Reserve" --json
+```
+
+### Capture audio, archive alignment, and build training-ready macro transcript features
+This downloads the event audio, tries MLX-based transcription when available, archives alignment against the caption cues already captured, and writes SQL-ingestible training feature rows.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh macro-media-ingest --youtube-url "https://www.youtube.com/watch?v=-sSSzdXIlA8" --template powell --speaker "Jerome Powell" --source "Federal Reserve" --cookies-from-browser chrome --wait-for-live-seconds 900 --json
+```
+
+### Check automatic macro watch status
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh macro-auto-status
+```
+
+### Stop automatic YouTube caption watch
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh macro-auto-stop
+```
+
+### Clear the live macro bulletin after the event
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh macro-bulletin --clear
+```
+
+### Watch all live feeds
+Use `--symbol SYMBOL` only when you want a filtered tail; there is no NVIDIA-specific default in this list.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh feed --source all --lines 80
+```
+
+### Watch Schwab live feeds
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh schwab-tail --lines 80
+```
+
+### Watch Coinbase live feeds
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh coinbase-tail --lines 80
+```
+
+### Refresh Schwab auth token before restarting live feeds
+Run this before `feed-refresh --source schwab` if Schwab auth or handshake looks stale.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh token-refresh --always-auth
+```
+
+### Interactive Schwab token refresh
+Use this when the normal token refresh still leaves auth broken.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh token-refresh-interactive
+```
+
+## Health And SQL
+
+### Runtime status
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh status
+```
+
+### Health snapshot
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh health
+```
+
+### TradingEconomics free guest-data sync
+This pulls the free no-key guest sample datasets TradingEconomics exposes, archives raw rows for SQL, and refreshes the live `market_breadth` and `bond_reference` snapshots the loop already consumes.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh tradingeconomics-sync --json
+```
+
+### TradingEconomics free guest-data sync with broader country coverage
+Use this when you want the widest no-key macro pull the system supports without a paid TradingEconomics key.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh tradingeconomics-sync --countries "United States,Euro Area,China,Japan,United Kingdom,Canada" --lookahead-days 45 --news-limit 40 --json
+```
+
+### SQL sync + SQLite maintenance + One Numbers refresh
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./.venv312/bin/python scripts/link_jsonl_to_sql.py --mode sqlite
@@ -69,7 +258,13 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./.venv312/bin/python scripts/build_one_numbers_report.py --day "$(date -u +%Y%m%d)"
 ```
 
-## 9) Allocator / Risk / Budget (portfolio control layer)
+### Daily full refresh pipeline
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/daily_log_refresh.sh
+```
+
+### Allocator / risk / budget layer refresh
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./.venv312/bin/python scripts/sleeve_allocator.py
@@ -77,172 +272,193 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./.venv312/bin/python scripts/execution_budgeter.py
 ```
 
-## 10) Executive Dashboard (Numbers-friendly)
+## Retrain
+
+### Standard retrain (after-hours gate enabled)
+This wrapper is blocked during the configured session window, which is currently `8:00 AM` to `8:00 PM` Eastern on March 18, 2026 unless you override the gate.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./.venv312/bin/python scripts/build_executive_dashboard.py --day "$(date -u +%Y%m%d)"
-open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/executive_dashboard/latest.csv
+./scripts/ops/opsctl.sh retrain
 ```
 
-## 11) Daily Full Pipeline
+### Force full retrain bypass
+Runs during market hours and bypasses retrain quality/freshness/sample/precheck gates.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/daily_log_refresh.sh
+./scripts/ops/opsctl.sh retrain-force-full
 ```
 
-## 12) Lock Troubleshooting
-Check running parallel shadows:
-```bash
-ps -axo pid,etime,command | grep "run_parallel_shadows.py" | grep -v grep
-```
-
-If lock says busy and process is stale:
+### Force targeted retrain bypass
+Use this for surgical retrains without a master-registry update.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-kill <pid>
-rm -f governance/parallel_shadow.lock
+./scripts/ops/opsctl.sh retrain-force-targeted --include-bot-ids brain_refinery_v56_meta_ranker,brain_refinery_v64_regime_router_layer
 ```
 
-## 13) Common Gotchas
-- If you see `No symbols provided`, your symbol env vars are empty. Re-export them before start.
-- If retrain says market-open skip, use `RETRAIN_AFTER_HOURS_ONLY=0` for manual override.
-- If `run_master_bot.py` says `promotion_gate_blocked`, either pass canary first or use `--no-require-canary-gate`.
-
-## 14) Distillation-Enabled Retrain (teachers -> new bots)
-Generate/refresh teacher-student plan:
+### Distillation / promotion recovery retrain
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./.venv312/bin/python scripts/distill_new_bots.py
-```
-
-Run retrain with student priority + optional extra student passes:
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-RETRAIN_AFTER_HOURS_ONLY=0 RETRAIN_DISTILLATION_PRIORITY=1 RETRAIN_DISTILLATION_STUDENT_EXTRA_PASS=2 \
+RETRAIN_AFTER_HOURS_ONLY=0 \
+RETRAIN_MAX_TARGETS=12 \
+RETRAIN_REGIME_FOCUS=mean_revert,shock,macro \
+RETRAIN_CANARY_PRIORITY_TOP_N=10 \
+RETRAIN_NEW_BOT_BOOST=1 \
+RETRAIN_DISTILLATION_PRIORITY=1 \
+RETRAIN_DISTILLATION_STUDENT_EXTRA_PASS=2 \
 ./.venv312/bin/python scripts/weekly_retrain.py --continue-on-error
 ```
 
-## 15) One-Command Live Feed (seamless)
+### Walk-forward + promotion gate
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh schwab-tail
+./.venv312/bin/python scripts/walk_forward_validate.py
+./.venv312/bin/python scripts/walk_forward_promotion_gate.py
 ```
 
-NVDA-only:
+### Regime detection / regime validation
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh schwab-tail --symbol NVDA
+./scripts/ops/opsctl.sh regime-validate
 ```
 
-All feeds (Schwab + Coinbase):
+### Meta learning layer targeted refresh
+The meta-learning layer already exists as `brain_refinery_v56_meta_ranker`; this retrains only that layer.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh feed --source all
+./scripts/ops/opsctl.sh retrain-force-targeted --include-bot-ids brain_refinery_v56_meta_ranker
 ```
 
-## 16) Coinbase Paper Trading (new)
+## Model And Analysis
+
+### Model card + lineage snapshot
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh coinbase-start --paper --force-restart --top-n 2 --min-acc 0.55 --profiles default
+./scripts/ops/opsctl.sh model-card --json
 ```
 
-Watch Coinbase paper/shadow feed:
+### Bot explainability export
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh coinbase-tail
+./scripts/ops/opsctl.sh explainability --limit 12 --json
 ```
 
-### 16b) Coinbase Crypto Futures Sleeve (paper first)
+### Strategy attribution artifact
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh coinbase-futures-start --paper --force-restart --top-n 10 --min-acc 0.53 --profiles crypto_futures
+./scripts/ops/opsctl.sh strategy-attribution --day "$(date -u +%Y%m%d)" --json
 ```
 
-Stop only the futures sleeve:
+### Paper execution calibration
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh coinbase-futures-stop
+./scripts/ops/opsctl.sh paper-calibration --hours 24 --json
 ```
 
-
-## 17) Project Timeline + Printable Auto-Update
-Generate timeline now (writes markdown + print-ready HTML):
+### Automated post-trade analysis
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh timeline-report
+./scripts/ops/opsctl.sh post-trade-analysis --day "$(date -u +%Y%m%d)" --hours 24 --json
 ```
 
-Install automatic updater (refreshes every 120s and on git HEAD/index changes):
+## Reports
+
+### Training report
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh timeline-install-autoupdate
+./scripts/ops/opsctl.sh training-report --json
 ```
 
-Open latest printable document (HTML):
-```bash
-open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/project_timeline/project_timeline_print_latest.html
-```
-
-Open latest printable PDF:
-```bash
-open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/project_timeline/project_timeline_latest.pdf
-```
-
-## 15) Dividend Strategy Modes (capture vs compound)
-Capture strategy (buy ahead of ex-dividend window, then rotate out after capture window):
+### Crash report digest
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./.venv312/bin/python scripts/run_dividend_shadow.py --simulate --strategy-mode capture
+./scripts/ops/opsctl.sh crash-report --lookback-days 3 --recent-limit 40 --json
 ```
 
-Compound strategy (quality dividend buy-and-hold with compounding metrics):
+### Project timeline report
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./.venv312/bin/python scripts/run_dividend_shadow.py --simulate --strategy-mode compound
+./scripts/ops/opsctl.sh timeline-report --json
 ```
 
-
-## 18) Long-Term Strategy Sleeves (1-3)
-1. Long-term dividend compound sleeve:
+### PDF report bundle page
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./.venv312/bin/python scripts/run_long_term_dividend_compound_shadow.py --simulate
+./scripts/ops/opsctl.sh report-pdfs --json
+open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/report_pdf_bundle_latest.html
 ```
 
-2. Long-term core ETF accumulation sleeve:
+### Open the latest PDF bundle file
+```bash
+open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/report_pdf_bundle_latest.pdf
+```
+
+## Halts And Recovery
+
+### Current halt recovery state
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./.venv312/bin/python scripts/run_long_term_core_etf_shadow.py --simulate
+cat governance/health/shadow_watchdog_halt_recovery_latest.json
 ```
 
-3. Long-term sector rotation sleeve:
+### Tail softguard global halt events
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./.venv312/bin/python scripts/run_long_term_sector_rotation_shadow.py --simulate
+tail -n 40 governance/events/live_softguard_$(date -u +%Y%m%d).jsonl
 ```
 
-## 19) Live Manual Trade Awareness (avoid false mismatch blocks)
+### Tail live execution guard failures
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-export LIVE_MANUAL_TRADE_AWARE_ENABLED=1
-export LIVE_MANUAL_TRADE_QTY_TOLERANCE=2.0
-export LIVE_MANUAL_TRADE_AUTO_SYNC_LOCAL=1
+tail -n 40 governance/events/live_execution_guard_$(date -u +%Y%m%d).jsonl
 ```
 
-## 20) Python 3.14 Canary Lane (keep production on 3.12)
-Bootstrap/refresh the 3.14 canary venv + run smoke checks:
+### Search today for softguard/token-related halt causes
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh py314-canary --refresh-deps
+rg -n "softguard_api_circuit_opened|refresh_token_authentication_error|unsupported_token_type|circuit_opened" governance/events logs --glob "*$(date -u +%Y%m%d)*"
 ```
 
-Fast re-check (no reinstall):
+### Recovery sequence after token/auth-related halts
+Run token authorization first. A healthy token refresh should print `premarket_token_guard ok=1`.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh py314-canary --skip-install
+./scripts/ops/opsctl.sh token-refresh --always-auth
+./scripts/ops/opsctl.sh feed-refresh --source schwab
 ```
 
-Canary report:
+### Recovery sequence when token refresh reports `unsupported_token_type`
 ```bash
-cat /Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/health/python314_canary_latest.json
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh token-refresh-interactive
+./scripts/ops/opsctl.sh feed-refresh --source schwab
 ```
+
+## Sim And Paper
+
+### Simulated Schwab sleeves
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh start-sim --run-all-sleeves --force-restart
+```
+
+### Coinbase paper mirror
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh coinbase-start --paper --force-restart --top-n 5 --min-acc 0.58 --profiles default
+```
+
+### Coinbase crypto futures paper mirror
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh coinbase-futures-start --paper --force-restart --top-n 10 --min-acc 0.56 --profiles crypto_futures
+```
+
+## Common Gotchas
+
+- If a command includes `--simulate`, it is simulated data, not live data.
+- If a command includes `--paper`, it is paper execution, not live execution.
+- `token-refresh` is the first fix for repeated Schwab `softguard_api_circuit_opened` halts tied to refresh-token auth failures.
+- If `token-refresh --always-auth` fails with `unsupported_token_type`, use `token-refresh-interactive` before restarting Schwab feeds.
+- After Schwab token authorization, a healthy refresh should print `premarket_token_guard ok=1`; if it does not, fix credentials before trusting live restarts.
+- `retrain-force-targeted` skips master update on purpose; use it for surgical retrains, not promotion.
+- `report-pdfs` refreshes the report catalog page even when some optional source reports are still missing.

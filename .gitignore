@@ -29,6 +29,13 @@ decisions/
 decision_explanations/
 governance/
 exports/
+logs
+models
+decisions
+decision_explanations
+governance
+exports
+data
 
 # Optional local data dumps
 *.jsonl
@@ -77,3 +84,13 @@ data/*.sqlite3-shm
 
 # Local runtime failover storage
 local_fallback_storage/
+
+# Local Codex / auth / scratch cleanup
+.codex_write_probe*
+.codex_write_test*
+master_bot_registry.json.bak
+master_bot_registry.json.master_candidate.bak
+token.json.bad.*
+token.json.bak.*
+token.json.invalid_*
+skip

@@ -28,11 +28,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       cat <<'EOF'
-Usage: scripts/ops/live_feed_tail.sh [--source schwab|coinbase|all] [--symbol NVDA] [--lines 40] [--raw]
+Usage: scripts/ops/live_feed_tail.sh [--source schwab|coinbase|all] [--symbol SYMBOL] [--lines 40] [--raw]
 
 Examples:
   scripts/ops/live_feed_tail.sh
-  scripts/ops/live_feed_tail.sh --symbol NVDA
+  scripts/ops/live_feed_tail.sh --symbol SPY
   scripts/ops/live_feed_tail.sh --source coinbase
   scripts/ops/live_feed_tail.sh --source all --lines 80
 EOF
@@ -55,7 +55,8 @@ if [[ "$SOURCE" != "schwab" && "$SOURCE" != "coinbase" && "$SOURCE" != "all" ]];
   exit 2
 fi
 
-DAY="$(date -u +%Y%m%d)"
+DAY_UTC="$(date -u +%Y%m%d)"
+DAY_LOCAL="$(date +%Y%m%d)"
 
 typeset -a files
 typeset -A seen
@@ -77,10 +78,17 @@ latest_log() {
   echo "$out"
 }
 
+append_live_json_dir() {
+  local dir="$1"
+  append_file "$PROJECT_ROOT/decision_explanations/$dir/decision_explanations_${DAY_LOCAL}.jsonl"
+  append_file "$PROJECT_ROOT/decision_explanations/$dir/decision_explanations_${DAY_UTC}.jsonl"
+  append_file "$(latest_log "$PROJECT_ROOT/decision_explanations/$dir/decision_explanations_*.jsonl")"
+}
+
 if [[ "$SOURCE" == "schwab" || "$SOURCE" == "all" ]]; then
   append_file "$(latest_log "$PROJECT_ROOT/logs/schwab_live_*.log")"
   for d in     shadow_equities     shadow_aggressive_equities     shadow_dividend_equities     shadow_bond_equities     shadow_intraday_aggressive_equities     shadow_swing_aggressive_equities; do
-    append_file "$PROJECT_ROOT/decision_explanations/$d/decision_explanations_${DAY}.jsonl"
+    append_live_json_dir "$d"
   done
 fi
 
@@ -90,17 +98,17 @@ if [[ "$SOURCE" == "coinbase" || "$SOURCE" == "all" ]]; then
   append_file "$PROJECT_ROOT/logs/shadow_watchdog.out.log"
   append_file "$(latest_log "$PROJECT_ROOT/logs/coinbase_futures_live_*.log")"
   for d in shadow_crypto shadow_coinbase shadow_crypto_futures_crypto; do
-    append_file "$PROJECT_ROOT/decision_explanations/$d/decision_explanations_${DAY}.jsonl"
+    append_live_json_dir "$d"
   done
 fi
 
 if [[ ${#files[@]} -eq 0 ]]; then
-  echo "No live feed files found for source=$SOURCE day=$DAY" >&2
+  echo "No live feed files found for source=$SOURCE local_day=$DAY_LOCAL utc_day=$DAY_UTC" >&2
   echo "Start loops first with: $PROJECT_ROOT/scripts/ops/opsctl.sh start" >&2
   exit 1
 fi
 
-echo "live_feed source=$SOURCE day=$DAY symbol=${SYMBOL:-ALL} lines=$LINES"
+echo "live_feed source=$SOURCE local_day=$DAY_LOCAL utc_day=$DAY_UTC symbol=${SYMBOL:-ALL} lines=$LINES"
 for f in "${files[@]}"; do
   echo " - $f"
 done
@@ -109,7 +117,7 @@ if [[ "$RAW" == "1" ]]; then
   exec tail -n "$LINES" -F "${files[@]}"
 fi
 
-ops_pat='AllSleevesLock|PREFLIGHT|IncidentSnapshot|StorageRoute|process_watchdog|sql_link_writer_service'
+ops_pat='AllSleevesLock|PREFLIGHT|IncidentSnapshot|process_watchdog|sql_link_writer_service'
 json_pat='"timestamp_utc":|"mode":|"status":|"symbol":|"action":'
 
 if [[ -n "$SYMBOL" ]]; then

@@ -1,5 +1,6 @@
 import argparse
 import atexit
+import copy
 import fcntl
 import glob
 import gzip
@@ -11,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -51,6 +53,27 @@ from core.derivatives_features import (
     summarize_futures_quote_features,
     summarize_option_chain,
 )
+from core.market_context_features import (
+    BOND_REFERENCE_FEATURE_KEYS,
+    BREADTH_FEATURE_KEYS,
+    CREDIT_CONTEXT_FEATURE_KEYS,
+    DATA_QUALITY_FEATURE_KEYS,
+    EXECUTION_LAG_FEATURE_KEYS,
+    NEWS_STRUCTURED_FEATURE_KEYS,
+    default_bond_reference_features,
+    default_breadth_features,
+    default_credit_context_features,
+    default_data_quality_features,
+    default_execution_lag_features,
+    default_structured_news_features,
+    load_latest_external_context,
+    summarize_bond_quote_reference_features,
+    summarize_bond_reference_context,
+    summarize_breadth_context,
+    summarize_credit_context,
+    summarize_data_quality_context,
+    summarize_structured_news_items,
+)
 from core.runtime_layers import (
     BackpressureController,
     CanaryRollout,
@@ -81,6 +104,44 @@ class SubBot:
     test_accuracy: Optional[float]
     promoted: bool = False
     bot_role: str = "signal_sub_bot"
+
+
+def _parse_bot_weight_boosts(raw: str) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    for part in (raw or "").split(","):
+        chunk = str(part or "").strip()
+        if not chunk or ":" not in chunk:
+            continue
+        bot_id, mult_raw = chunk.split(":", 1)
+        bot_key = str(bot_id or "").strip().lower()
+        if not bot_key:
+            continue
+        try:
+            mult = float(mult_raw)
+        except ValueError:
+            continue
+        if not math.isfinite(mult):
+            continue
+        out[bot_key] = min(max(mult, 0.10), 3.00)
+    return out
+
+
+def _bot_weight_boost_map() -> Dict[str, float]:
+    raw = os.getenv(
+        "MASTER_BOT_WEIGHT_BOOSTS",
+        "brain_refinery_v10_seasonal:1.35,brain_refinery_v35_dmi_state_machine:1.30",
+    ).strip()
+    return _parse_bot_weight_boosts(raw)
+
+
+def _apply_bot_weight_boost(bot_id: str, weight: float) -> float:
+    boosts = _bot_weight_boost_map()
+    if not boosts:
+        return weight
+    mult = boosts.get(str(bot_id or "").strip().lower())
+    if mult is None:
+        return weight
+    return max(float(weight) * float(mult), 0.0)
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -191,10 +252,12 @@ def _load_registry(path: str) -> Dict[str, Any]:
 def _parse_sub_bots(registry: Dict[str, Any]) -> List[SubBot]:
     bots: List[SubBot] = []
     for row in registry.get("sub_bots", []):
+        bot_id = str(row.get("bot_id"))
+        base_weight = float(row.get("weight", 0.0) or 0.0)
         bots.append(
             SubBot(
-                bot_id=str(row.get("bot_id")),
-                weight=float(row.get("weight", 0.0) or 0.0),
+                bot_id=bot_id,
+                weight=_apply_bot_weight_boost(bot_id, base_weight),
                 active=bool(row.get("active", False)),
                 reason=str(row.get("reason", "unknown")),
                 test_accuracy=float(row["test_accuracy"]) if row.get("test_accuracy") is not None else None,
@@ -417,7 +480,7 @@ def _clamp01(value: float) -> float:
     return max(0.0, min(float(value), 1.0))
 
 
-_NEWS_FEATURE_KEYS = [
+_BASE_NEWS_FEATURE_KEYS = [
     "news_available",
     "news_items_30m",
     "news_items_2h",
@@ -428,6 +491,8 @@ _NEWS_FEATURE_KEYS = [
     "news_shock_rate",
     "news_recent_impact",
 ]
+
+_NEWS_FEATURE_KEYS = _BASE_NEWS_FEATURE_KEYS + list(NEWS_STRUCTURED_FEATURE_KEYS)
 
 _NEWS_POSITIVE_TOKENS = {
     "beat", "beats", "upgrade", "upgrades", "outperform", "buy", "surge", "record", "growth", "raises", "strong", "bullish", "profit", "profits", "gain", "gains"
@@ -440,6 +505,14 @@ _NEWS_NEGATIVE_TOKENS = {
 _NEWS_SHOCK_TOKENS = {
     "guidance", "earnings", "fda", "recall", "investigation", "sec", "merger", "acquisition", "layoff", "default"
 }
+
+_LIVE_MACRO_SOURCE_TOKENS = (
+    "federal reserve",
+    "federalreserve.gov",
+    "fomc",
+    "jerome powell",
+    "powell",
+)
 
 
 _DIVIDEND_FEATURE_KEYS = [
@@ -502,12 +575,18 @@ _LANE_STRATEGY_FEATURE_KEYS = [
     "day_session_open_norm",
     "day_session_midday_norm",
     "day_session_power_hour_norm",
+    "day_regime_trend_norm",
+    "day_regime_chop_norm",
+    "day_regime_alignment_norm",
     "swing_post_earnings_drift_norm",
     "swing_gap_continuation_norm",
     "swing_gap_fade_norm",
     "swing_vol_compression_breakout_norm",
     "swing_sector_relative_strength_norm",
     "swing_weekly_trend_confirm_norm",
+    "swing_regime_trend_norm",
+    "swing_regime_chop_norm",
+    "swing_regime_alignment_norm",
     "bond_duration_regime_norm",
     "bond_curve_steepener_norm",
     "bond_curve_flattener_norm",
@@ -522,12 +601,20 @@ _LANE_STRATEGY_FEATURE_KEYS = [
     "dividend_rebalance_due_norm",
 ]
 
+_CAPITAL_FLOW_FEATURE_KEYS = [
+    "capital_flow_signed_scaled",
+    "capital_flow_inflow_norm",
+    "capital_flow_outflow_norm",
+]
+
 _LONG_TERM_CORE_QUALITY_DEFAULT = "SPY,VOO,VTI,IVV,QQQ,SCHX,IWB,RSP,SPLG,VUG,VTV"
 _LONG_TERM_SECTOR_QUALITY_DEFAULT = "XLK,XLV,XLP,XLU,XLI,XLF,XLE,SMH,SOXX"
 
 
 def _default_news_features() -> Dict[str, float]:
-    return {k: 0.0 for k in _NEWS_FEATURE_KEYS}
+    out = {k: 0.0 for k in _BASE_NEWS_FEATURE_KEYS}
+    out.update(default_structured_news_features())
+    return out
 
 
 def _default_dividend_features() -> Dict[str, float]:
@@ -536,6 +623,24 @@ def _default_dividend_features() -> Dict[str, float]:
 
 def _default_lane_strategy_features() -> Dict[str, float]:
     return {k: 0.0 for k in _LANE_STRATEGY_FEATURE_KEYS}
+
+
+def _default_capital_flow_features() -> Dict[str, float]:
+    return {k: 0.0 for k in _CAPITAL_FLOW_FEATURE_KEYS}
+
+
+def _clamp11(value: float) -> float:
+    return max(-1.0, min(float(value), 1.0))
+
+
+def _hint_float(value: Any, default: float = 0.0) -> float:
+    try:
+        out = float(value)
+    except Exception:
+        return default
+    if not math.isfinite(out):
+        return default
+    return out
 
 
 def _news_ts_to_epoch(raw: Any) -> Optional[float]:
@@ -644,6 +749,7 @@ def _headline_sentiment(text: str) -> tuple[float, bool]:
 def _summarize_news_items(
     items: List[Dict[str, Any]],
     *,
+    symbol: str,
     now_ts: float,
     lookback_seconds: float,
     max_items: int,
@@ -716,6 +822,364 @@ def _summarize_news_items(
             "news_positive_share": pos_n / max(n, 1),
             "news_shock_rate": shock_n / max(n, 1),
             "news_recent_impact": min(impact_sum / max(weight_sum, 1e-8), 1.0),
+        }
+    )
+    out.update(
+        summarize_structured_news_items(
+            [row for _, row in rows],
+            symbol=symbol,
+            now_ts=now_ts,
+            max_items=max_items,
+        )
+    )
+    return out
+
+
+def _live_macro_symbols(row: Dict[str, Any]) -> set[str]:
+    out: set[str] = set()
+    for key in ("symbol", "ticker"):
+        raw = row.get(key)
+        if isinstance(raw, str) and raw.strip():
+            out.add(raw.strip().upper())
+    for key in ("symbols", "tickers", "relatedSymbols", "relatedTickers", "securities"):
+        raw = row.get(key)
+        if isinstance(raw, str) and raw.strip():
+            for token in raw.replace("|", ",").split(","):
+                token = token.strip().upper()
+                if token:
+                    out.add(token)
+        elif isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, str) and item.strip():
+                    out.add(item.strip().upper())
+                elif isinstance(item, dict):
+                    for sub_key in ("symbol", "ticker"):
+                        sub_val = item.get(sub_key)
+                        if isinstance(sub_val, str) and sub_val.strip():
+                            out.add(sub_val.strip().upper())
+    return out
+
+
+def _live_macro_active_rows(snapshot: Dict[str, Any], *, symbol: str, now_ts: float) -> List[Dict[str, Any]]:
+    if not isinstance(snapshot, dict):
+        return []
+    active_raw = str(snapshot.get("active", "1")).strip().lower()
+    if active_raw in {"0", "false", "no", "off"}:
+        return []
+
+    expires_ts = _news_ts_to_epoch(snapshot.get("expires_at_utc") or snapshot.get("expires_at"))
+    if expires_ts is not None and expires_ts < now_ts:
+        return []
+
+    items = _extract_news_items(snapshot, symbol)
+    if not items and any(str(snapshot.get(k) or "").strip() for k in ("headline", "title", "summary", "description", "content")):
+        items = [dict(snapshot)]
+
+    rows: List[Dict[str, Any]] = []
+    sym = str(symbol or "").strip().upper()
+    snapshot_broad = bool(snapshot.get("broad_market") or snapshot.get("macro_event"))
+    snapshot_published = snapshot.get("published") or snapshot.get("timestamp_utc")
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        row = dict(raw)
+        if not row.get("published") and snapshot_published:
+            row["published"] = snapshot_published
+        if not row.get("expires_at_utc") and snapshot.get("expires_at_utc"):
+            row["expires_at_utc"] = snapshot.get("expires_at_utc")
+
+        row_expires = _news_ts_to_epoch(row.get("expires_at_utc") or row.get("expires_at"))
+        if row_expires is not None and row_expires < now_ts:
+            continue
+
+        broad_market = bool(row.get("broad_market") or row.get("macro_event") or snapshot_broad)
+        related = _live_macro_symbols(row)
+        if sym and related and (sym not in related) and (not broad_market):
+            continue
+        rows.append(row)
+    return rows
+
+
+def _live_macro_source_quality(row: Dict[str, Any]) -> float:
+    text = " ".join(
+        str(row.get(key) or "")
+        for key in ("source", "publisher", "channel", "speaker", "headline", "title", "summary")
+    ).lower()
+    if any(token in text for token in _LIVE_MACRO_SOURCE_TOKENS):
+        return 1.0
+    if any(token in text for token in ("reuters", "bloomberg", "cnbc", "wall street journal", "wsj")):
+        return 0.92
+    return 0.75
+
+
+def _merge_live_macro_news_features(
+    news_features: Dict[str, float],
+    *,
+    symbol: str,
+    now_ts: float,
+    snapshot: Dict[str, Any],
+) -> Dict[str, float]:
+    out = dict(news_features) if isinstance(news_features, dict) else _default_news_features()
+    rows = _live_macro_active_rows(snapshot, symbol=symbol, now_ts=now_ts)
+    if not rows:
+        return out
+
+    manual_feats = _summarize_news_items(
+        rows,
+        symbol=symbol,
+        now_ts=now_ts,
+        lookback_seconds=48.0 * 3600.0,
+        max_items=max(len(rows), 1),
+    )
+    for key, value in manual_feats.items():
+        curr = float(out.get(key, 0.0) or 0.0)
+        cand = float(value or 0.0)
+        if key == "news_sentiment":
+            if abs(cand) >= abs(curr):
+                out[key] = _clamp11(cand)
+        else:
+            out[key] = max(curr, cand)
+
+    snapshot_sentiment = _clamp11(_hint_float(snapshot.get("sentiment_hint"), 0.0))
+    snapshot_shock = _clamp01(_hint_float(snapshot.get("shock_hint"), 0.0))
+    for row in rows:
+        ts = _news_ts_to_epoch(
+            row.get("published")
+            or row.get("publishedDate")
+            or row.get("dateTime")
+            or row.get("datetime")
+            or row.get("timestamp")
+            or row.get("time")
+            or row.get("displayDate")
+        )
+        age_seconds = max(now_ts - ts, 0.0) if ts is not None else 0.0
+        recency = math.exp(-age_seconds / 5400.0)
+
+        sentiment_hint = _clamp11(_hint_float(row.get("sentiment_hint"), snapshot_sentiment))
+        shock_hint = _clamp01(_hint_float(row.get("shock_hint"), snapshot_shock))
+        broad_market = bool(row.get("broad_market") or row.get("macro_event") or snapshot.get("broad_market") or snapshot.get("macro_event"))
+        relevance = 1.0 if broad_market else 0.85
+        source_quality = _live_macro_source_quality(row)
+        impact_floor = max(shock_hint, abs(sentiment_hint))
+        impact_score = _clamp01(impact_floor * max(recency, 0.45))
+
+        out["news_available"] = max(float(out.get("news_available", 0.0) or 0.0), 1.0)
+        if age_seconds <= 30.0 * 60.0:
+            out["news_items_30m"] = max(float(out.get("news_items_30m", 0.0) or 0.0), 1.0)
+        if age_seconds <= 2.0 * 60.0 * 60.0:
+            out["news_items_2h"] = max(float(out.get("news_items_2h", 0.0) or 0.0), 1.0)
+        if age_seconds <= 24.0 * 60.0 * 60.0:
+            out["news_items_24h"] = max(float(out.get("news_items_24h", 0.0) or 0.0), 1.0)
+
+        current_sent = float(out.get("news_sentiment", 0.0) or 0.0)
+        hinted_sent = _clamp11(sentiment_hint * max(recency, 0.55))
+        if abs(hinted_sent) >= abs(current_sent):
+            out["news_sentiment"] = hinted_sent
+        if hinted_sent > 0.0:
+            out["news_positive_share"] = max(float(out.get("news_positive_share", 0.0) or 0.0), max(recency, 0.65))
+        elif hinted_sent < 0.0:
+            out["news_negative_share"] = max(float(out.get("news_negative_share", 0.0) or 0.0), max(recency, 0.65))
+
+        out["news_shock_rate"] = max(float(out.get("news_shock_rate", 0.0) or 0.0), impact_score)
+        out["news_recent_impact"] = max(float(out.get("news_recent_impact", 0.0) or 0.0), impact_score)
+        out["news_source_quality_norm"] = max(float(out.get("news_source_quality_norm", 0.0) or 0.0), source_quality)
+        out["news_entity_relevance_norm"] = max(float(out.get("news_entity_relevance_norm", 0.0) or 0.0), relevance)
+        out["news_novelty_norm"] = max(float(out.get("news_novelty_norm", 0.0) or 0.0), 1.0)
+
+        headline = _headline_text(row).lower()
+        if any(token in headline for token in ("powell", "federal reserve", "fed", "fomc", "inflation", "rates", "tariffs", "labor", "growth")):
+            out["news_topic_regulatory_norm"] = max(float(out.get("news_topic_regulatory_norm", 0.0) or 0.0), 0.90 * max(recency, 0.5))
+
+    return out
+
+
+def _merge_live_macro_calendar_features(
+    calendar_features: Dict[str, float],
+    *,
+    symbol: str,
+    now_ts: float,
+    snapshot: Dict[str, Any],
+) -> Dict[str, float]:
+    out = dict(calendar_features) if isinstance(calendar_features, dict) else default_calendar_features()
+    rows = _live_macro_active_rows(snapshot, symbol=symbol, now_ts=now_ts)
+    if not rows:
+        return out
+
+    max_event = 0.0
+    signed_signal = 0.0
+    snapshot_sentiment = _clamp11(_hint_float(snapshot.get("sentiment_hint"), 0.0))
+    snapshot_shock = _clamp01(_hint_float(snapshot.get("shock_hint"), 0.0))
+    for row in rows:
+        ts = _news_ts_to_epoch(
+            row.get("published")
+            or row.get("publishedDate")
+            or row.get("dateTime")
+            or row.get("datetime")
+            or row.get("timestamp")
+            or row.get("time")
+            or row.get("displayDate")
+        )
+        age_seconds = max(now_ts - ts, 0.0) if ts is not None else 0.0
+        recency = math.exp(-age_seconds / 5400.0)
+
+        sentiment_hint = _clamp11(_hint_float(row.get("sentiment_hint"), snapshot_sentiment))
+        shock_hint = _clamp01(_hint_float(row.get("shock_hint"), snapshot_shock))
+        event_score = max(0.70 * max(recency, 0.5), shock_hint * max(recency, 0.5))
+        max_event = max(max_event, _clamp01(event_score))
+
+        hinted = _clamp11(sentiment_hint * max(recency, 0.6))
+        if abs(hinted) >= abs(signed_signal):
+            signed_signal = hinted
+
+    out["calendar_feed_available"] = max(float(out.get("calendar_feed_available", 0.0) or 0.0), 1.0)
+    out["calendar_events_24h_norm"] = max(float(out.get("calendar_events_24h_norm", 0.0) or 0.0), max_event)
+    out["calendar_high_impact_24h_norm"] = max(float(out.get("calendar_high_impact_24h_norm", 0.0) or 0.0), max_event)
+    out["calendar_event_proximity_norm"] = max(float(out.get("calendar_event_proximity_norm", 0.0) or 0.0), max_event)
+    out["calendar_next_event_norm"] = max(float(out.get("calendar_next_event_norm", 0.0) or 0.0), max_event)
+    out["calendar_macro_event_norm"] = max(float(out.get("calendar_macro_event_norm", 0.0) or 0.0), max_event)
+    out["calendar_macro_abs_surprise_norm"] = max(float(out.get("calendar_macro_abs_surprise_norm", 0.0) or 0.0), max_event)
+    out["calendar_fomc_event_norm"] = max(float(out.get("calendar_fomc_event_norm", 0.0) or 0.0), max_event)
+
+    current_signed = float(out.get("calendar_macro_surprise_norm", 0.5) or 0.5) - 0.5
+    if abs(signed_signal) >= abs(current_signed):
+        out["calendar_macro_surprise_norm"] = _clamp01(0.5 + (signed_signal * 0.5))
+
+    return out
+
+
+def _merge_calendar_feature_sets(
+    base_features: Dict[str, float],
+    extra_features: Dict[str, Any],
+) -> Dict[str, float]:
+    out = dict(base_features) if isinstance(base_features, dict) else default_calendar_features()
+    if not isinstance(extra_features, dict):
+        return out
+
+    for key, raw_value in extra_features.items():
+        if key not in CALENDAR_FEATURE_KEYS:
+            continue
+        value = _hint_float(raw_value, None)
+        if value is None or not math.isfinite(value):
+            continue
+
+        current = _hint_float(out.get(key), 0.0)
+        if key in {"calendar_macro_surprise_norm", "calendar_macro_revision_norm"}:
+            current_delta = abs((current if current is not None else 0.5) - 0.5)
+            value_delta = abs(value - 0.5)
+            if value_delta >= current_delta:
+                out[key] = _clamp01(value)
+            continue
+
+        if key == "calendar_next_event_norm":
+            current_num = float(current or 0.0)
+            if current_num <= 0.0:
+                out[key] = _clamp01(value)
+            elif value > 0.0:
+                out[key] = _clamp01(min(current_num, value))
+            continue
+
+        out[key] = max(float(current or 0.0), _clamp01(value))
+
+    return out
+
+
+def _external_macro_calendar_proxy_features(project_root: str) -> Dict[str, float]:
+    feats = default_calendar_features()
+    try:
+        try:
+            from scripts.build_behavior_dataset_from_decisions import _external_feeds_context
+        except Exception:
+            from build_behavior_dataset_from_decisions import _external_feeds_context
+
+        external_context, external_meta = _external_feeds_context(Path(project_root), datetime.now(timezone.utc))
+        if not isinstance(external_context, dict):
+            return feats
+
+        fred_unrate = float(external_context.get("external_fred_unrate_norm", 0.0) or 0.0)
+        fred_cpi = float(external_context.get("external_fred_cpi_mom_norm", 0.0) or 0.0)
+        fred_gdp = float(external_context.get("external_fred_gdp_qoq_norm", 0.0) or 0.0)
+        bls_unrate = float(external_context.get("external_bls_unrate_norm", 0.0) or 0.0)
+        bls_cpi = float(external_context.get("external_bls_cpi_mom_norm", 0.0) or 0.0)
+
+        macro_values = [fred_cpi, fred_gdp, bls_cpi]
+        macro_values = [v for v in macro_values if math.isfinite(v) and abs(v) > 1e-9]
+        macro_surprise = sum((v - 0.5) for v in macro_values) / max(len(macro_values), 1)
+        labor_signal = 0.5 * ((bls_unrate - 0.5) + (fred_unrate - 0.5))
+        any_macro = 1.0 if macro_values or abs(labor_signal) > 1e-6 else 0.0
+        abs_surprise = min(abs(macro_surprise) * 2.0, 1.0)
+
+        meta = external_meta if isinstance(external_meta, dict) else {}
+        fred_map = meta.get("fred") if isinstance(meta.get("fred"), dict) else {}
+        bls_map = meta.get("bls") if isinstance(meta.get("bls"), dict) else {}
+        has_cpi = 1.0 if (fred_map.get("fred_cpi_mom") is not None or bls_map.get("bls_cpi_mom") is not None) else 0.0
+        has_labor = 1.0 if (fred_map.get("fred_unrate_latest") is not None or bls_map.get("bls_unrate_latest") is not None) else 0.0
+
+        feats.update(
+            {
+                "calendar_feed_available": 1.0 if any_macro > 0.0 else 0.0,
+                "calendar_events_24h_norm": max(any_macro, abs_surprise),
+                "calendar_high_impact_24h_norm": max(abs_surprise, min(abs(labor_signal) * 2.0, 1.0)),
+                "calendar_event_proximity_norm": max(abs_surprise, min(abs(labor_signal) * 2.0, 1.0)),
+                "calendar_next_event_norm": max(abs_surprise, min(abs(labor_signal) * 2.0, 1.0)),
+                "calendar_macro_event_norm": any_macro,
+                "calendar_macro_surprise_norm": max(min(0.5 + macro_surprise, 1.0), 0.0),
+                "calendar_macro_abs_surprise_norm": abs_surprise,
+                "calendar_macro_revision_norm": 0.5,
+                "calendar_fomc_event_norm": 1.0 if abs(float(fred_gdp or 0.0) - 0.5) >= 0.05 else 0.0,
+                "calendar_cpi_event_norm": has_cpi,
+                "calendar_labor_event_norm": has_labor,
+            }
+        )
+
+        te_meta = meta.get("tradingeconomics") if isinstance(meta.get("tradingeconomics"), dict) else {}
+        te_calendar_rows = te_meta.get("calendar_rows") if isinstance(te_meta.get("calendar_rows"), list) else []
+        if te_calendar_rows:
+            te_calendar_features = summarize_calendar_payload(
+                te_calendar_rows,
+                now_ts=datetime.now(timezone.utc).timestamp(),
+                max_items=600,
+            )
+            feats = _merge_calendar_feature_sets(feats, te_calendar_features)
+    except Exception:
+        return feats
+    return feats
+
+
+def _augment_news_features_with_event_proxy(
+    news_features: Dict[str, float],
+    *,
+    market_snapshot: Dict[str, float],
+    calendar_features: Dict[str, float],
+) -> Dict[str, float]:
+    out = dict(news_features or {})
+    if float(out.get("news_available", 0.0) or 0.0) > 0.0:
+        return out
+
+    macro_abs = float(calendar_features.get("calendar_macro_abs_surprise_norm", 0.0) or 0.0)
+    macro_signed = float(calendar_features.get("calendar_macro_surprise_norm", 0.0) or 0.0) - 0.5
+    event_prox = float(calendar_features.get("calendar_event_proximity_norm", 0.0) or 0.0)
+    high_impact = float(calendar_features.get("calendar_high_impact_24h_norm", 0.0) or 0.0)
+    vol_30m = abs(float(market_snapshot.get("vol_30m", 0.0) or 0.0))
+    pct_from_close = abs(float(market_snapshot.get("pct_from_close", 0.0) or 0.0))
+    shock_intensity = max(macro_abs, high_impact, min((vol_30m / 0.02), 1.0), min((pct_from_close / 0.03), 1.0))
+
+    if shock_intensity <= 0.0:
+        return out
+
+    out.update(
+        {
+            "news_available": max(float(out.get("news_available", 0.0) or 0.0), 0.35),
+            "news_items_30m": max(float(out.get("news_items_30m", 0.0) or 0.0), min(shock_intensity, 1.0) * 0.6),
+            "news_items_2h": max(float(out.get("news_items_2h", 0.0) or 0.0), min(max(shock_intensity, event_prox), 1.0) * 0.7),
+            "news_items_24h": max(float(out.get("news_items_24h", 0.0) or 0.0), min(max(shock_intensity, event_prox), 1.0)),
+            "news_shock_rate": max(float(out.get("news_shock_rate", 0.0) or 0.0), shock_intensity),
+            "news_recent_impact": max(float(out.get("news_recent_impact", 0.0) or 0.0), shock_intensity),
+            "news_sentiment": max(min(macro_signed * 2.0, 1.0), -1.0),
+            "news_negative_share": max(float(out.get("news_negative_share", 0.0) or 0.0), max(-macro_signed * 2.0, 0.0)),
+            "news_positive_share": max(float(out.get("news_positive_share", 0.0) or 0.0), max(macro_signed * 2.0, 0.0)),
+            "news_source_quality_norm": max(float(out.get("news_source_quality_norm", 0.0) or 0.0), 0.55),
+            "news_entity_relevance_norm": max(float(out.get("news_entity_relevance_norm", 0.0) or 0.0), 0.5),
+            "news_novelty_norm": max(float(out.get("news_novelty_norm", 0.0) or 0.0), min(0.4 + shock_intensity * 0.5, 1.0)),
         }
     )
     return out
@@ -1020,11 +1484,27 @@ def _market_snapshot_from_schwab(client: Any, symbol: str) -> Dict[str, float]:
     if prev_close <= 0:
         prev_close = max(last_price, 1.0)
 
+    last_price, prev_close = _apply_bond_quote_quarantine(
+        symbol=symbol,
+        last_price=last_price,
+        prev_close=prev_close,
+        closes=closes,
+    )
+
+    quote_history_relative_deviation = 0.0
+    quote_history_agreement_norm = 0.0
     if closes and last_price > 0.0:
         hist_last = closes[-1]
         if hist_last > 0.0:
             max_quote_dev = max(float(os.getenv("MARKET_SNAPSHOT_MAX_QUOTE_DEVIATION", "0.35")), 0.05)
+            if str(symbol or "").strip().upper() in _bond_quote_symbol_universe():
+                max_quote_dev = min(
+                    max_quote_dev,
+                    max(min(float(os.getenv("BOND_MARKET_SNAPSHOT_MAX_QUOTE_DEVIATION", "0.05")), 0.25), 0.005),
+                )
             rel_dev = abs(last_price - hist_last) / max(hist_last, 1e-8)
+            quote_history_relative_deviation = float(rel_dev)
+            quote_history_agreement_norm = _clamp01(max(1.0 - (rel_dev / max(max_quote_dev, 1e-8)), 0.0))
             if rel_dev > max_quote_dev:
                 last_price = hist_last
 
@@ -1119,9 +1599,12 @@ def _market_snapshot_from_schwab(client: Any, symbol: str) -> Dict[str, float]:
         "bid_size": bid_size,
         "ask_size": ask_size,
         "snapshot_ts_utc": now_ts,
+        "quote_history_relative_deviation": quote_history_relative_deviation,
+        "quote_history_agreement_norm": quote_history_agreement_norm,
     }
     out.update(futures_quote)
     out.update(_default_dividend_features())
+    out.update(default_bond_reference_features())
     out.update(
         {
             "dividend_signal_available": 1.0 if (dividend_yield_pct > 0.0 or dividend_amount > 0.0 or payout_ratio > 0.0 or ex_days > 0.0 or pay_days > 0.0) else 0.0,
@@ -1135,6 +1618,13 @@ def _market_snapshot_from_schwab(client: Any, symbol: str) -> Dict[str, float]:
             "dividend_pay_date_days": float(pay_days),
             "dividend_pay_date_proximity_norm": _clamp01(1.0 - (pay_days / 20.0)) if pay_days > 0.0 else 0.0,
         }
+    )
+    out.update(
+        summarize_bond_quote_reference_features(
+            symbol=symbol,
+            quote_payload=quote,
+            last_price=float(last_price),
+        )
     )
     return out
 
@@ -1152,6 +1642,7 @@ def _market_snapshot_from_coinbase(client: CoinbaseMarketDataClient, symbol: str
     if float(out.get("snapshot_ts_utc", 0.0) or 0.0) <= 0.0:
         out["snapshot_ts_utc"] = time.time()
     out.update(_default_dividend_features())
+    out.update(default_bond_reference_features())
     return out
 
 
@@ -1180,6 +1671,7 @@ def _market_snapshot_simulated(last_price: float) -> Dict[str, float]:
     }
     out.update(default_futures_features())
     out.update(_default_dividend_features())
+    out.update(default_bond_reference_features())
     return out
 
 
@@ -1638,16 +2130,21 @@ def _apply_execution_guard(
     reasons: List[str],
     features: Dict[str, float],
     symbol_is_futures: bool,
+    broker: str = "",
 ) -> tuple[str, float, List[str], Dict[str, Any]]:
     if action not in {"BUY", "SELL"}:
         return action, score, reasons, {
             "ok": True,
+            "market_kind": "none",
             "spread_ok": True,
             "depth_ok": True,
             "tx_cost_ok": True,
+            "latency_ok": True,
+            "imbalance_ok": True,
             "reason": "not_trade_action",
         }
 
+    market_kind = "crypto" if str(broker or "").strip().lower() == "coinbase" else ("futures" if symbol_is_futures else "equities")
     spread_bps = float(features.get("spread_bps", 0.0) or 0.0)
     if symbol_is_futures and spread_bps <= 0.0:
         spread_norm = float(features.get("futures_spread_bps_norm", 0.0) or 0.0)
@@ -1660,55 +2157,95 @@ def _apply_execution_guard(
         or 0.0
     )
     tx_cost_bps = _estimate_transaction_cost(features, action) * 10000.0
+    market_data_latency_ms = float(features.get("market_data_latency_ms", 0.0) or 0.0)
+    imbalance = float(features.get("futures_order_book_imbalance", 0.0) or 0.0)
+    adverse_imbalance = max((-imbalance if action == "BUY" else imbalance), 0.0)
 
     max_spread = float(
         os.getenv(
-            "EXEC_GUARD_MAX_SPREAD_BPS_FUTURES" if symbol_is_futures else "EXEC_GUARD_MAX_SPREAD_BPS_EQUITIES",
-            "28" if symbol_is_futures else "35",
+            f"EXEC_GUARD_MAX_SPREAD_BPS_{market_kind.upper()}",
+            "22" if market_kind == "crypto" else ("28" if market_kind == "futures" else "35"),
         )
     )
     min_depth = float(
         os.getenv(
-            "EXEC_GUARD_MIN_DEPTH_NORM_FUTURES" if symbol_is_futures else "EXEC_GUARD_MIN_DEPTH_NORM_EQUITIES",
-            "0.10" if symbol_is_futures else "0.00",
+            f"EXEC_GUARD_MIN_DEPTH_NORM_{market_kind.upper()}",
+            "0.08" if market_kind == "crypto" else ("0.10" if market_kind == "futures" else "0.00"),
         )
     )
-    max_tx_cost = float(os.getenv("EXEC_GUARD_MAX_TX_COST_BPS", "26"))
+    max_tx_cost = float(
+        os.getenv(
+            f"EXEC_GUARD_MAX_TX_COST_BPS_{market_kind.upper()}",
+            os.getenv("EXEC_GUARD_MAX_TX_COST_BPS", "24" if market_kind == "crypto" else "26"),
+        )
+    )
+    max_market_data_latency_ms = float(
+        os.getenv(
+            f"EXEC_GUARD_MAX_MARKET_DATA_LATENCY_MS_{market_kind.upper()}",
+            "1500" if market_kind == "crypto" else ("1200" if market_kind == "futures" else "900"),
+        )
+    )
+    max_adverse_imbalance = float(
+        os.getenv(
+            f"EXEC_GUARD_MAX_ADVERSE_IMBALANCE_{market_kind.upper()}",
+            "0.45" if market_kind in {"crypto", "futures"} else "1.10",
+        )
+    )
 
     spread_ok = (spread_bps <= max_spread) if spread_bps > 0.0 else True
     depth_ok = depth_norm >= min_depth
     tx_cost_ok = tx_cost_bps <= max_tx_cost
-    ok = spread_ok and depth_ok and tx_cost_ok
+    latency_ok = (market_data_latency_ms <= max_market_data_latency_ms) if market_data_latency_ms > 0.0 else True
+    imbalance_ok = adverse_imbalance <= max_adverse_imbalance
+    ok = spread_ok and depth_ok and tx_cost_ok and latency_ok and imbalance_ok
 
     if ok:
         return action, score, reasons, {
             "ok": True,
+            "market_kind": market_kind,
             "spread_ok": spread_ok,
             "depth_ok": depth_ok,
             "tx_cost_ok": tx_cost_ok,
+            "latency_ok": latency_ok,
+            "imbalance_ok": imbalance_ok,
             "spread_bps": spread_bps,
             "depth_norm": depth_norm,
             "tx_cost_bps": tx_cost_bps,
+            "market_data_latency_ms": market_data_latency_ms,
+            "max_market_data_latency_ms": max_market_data_latency_ms,
+            "adverse_imbalance": adverse_imbalance,
+            "max_adverse_imbalance": max_adverse_imbalance,
         }
 
     new_action, new_score = _force_action_score("HOLD", score, threshold)
     new_reasons = list(reasons) + [
         (
             "execution_guard_block "
+            f"market_kind={market_kind} "
             f"spread_ok={int(spread_ok)} depth_ok={int(depth_ok)} tx_cost_ok={int(tx_cost_ok)} "
+            f"latency_ok={int(latency_ok)} imbalance_ok={int(imbalance_ok)} "
             f"spread_bps={spread_bps:.2f}/{max_spread:.2f} "
             f"depth_norm={depth_norm:.3f}/{min_depth:.3f} "
-            f"tx_cost_bps={tx_cost_bps:.2f}/{max_tx_cost:.2f}"
+            f"tx_cost_bps={tx_cost_bps:.2f}/{max_tx_cost:.2f} "
+            f"market_data_latency_ms={market_data_latency_ms:.1f}/{max_market_data_latency_ms:.1f} "
+            f"adverse_imbalance={adverse_imbalance:.3f}/{max_adverse_imbalance:.3f}"
         )
     ]
     return new_action, new_score, new_reasons, {
         "ok": False,
+        "market_kind": market_kind,
         "spread_ok": spread_ok,
         "depth_ok": depth_ok,
         "tx_cost_ok": tx_cost_ok,
+        "latency_ok": latency_ok,
+        "imbalance_ok": imbalance_ok,
         "spread_bps": spread_bps,
         "depth_norm": depth_norm,
         "tx_cost_bps": tx_cost_bps,
+        "market_data_latency_ms": market_data_latency_ms,
+        "max_market_data_latency_ms": max_market_data_latency_ms,
+        "adverse_imbalance": adverse_imbalance,
+        "max_adverse_imbalance": max_adverse_imbalance,
     }
 
 
@@ -2530,8 +3067,31 @@ def _build_options_plan(
             }
 
     elif master_action == "SELL" and (1.0 - master_score) >= (threshold - 0.03):
-        # 7) Risk reversal bearish.
-        if low_event_risk and liquid_chain and ((1.0 - master_score) >= (threshold - 0.05)) and bearish_bias:
+        # 7) Bearish calendar when the back month is rich and directional pressure is already negative.
+        if (iv_term_norm > 0.60) and low_event_risk and liquid_chain and bearish_bias:
+            action = "BUY_TO_OPEN"
+            score = max(1.0 - master_score, 0.56)
+            reasons = [
+                "put_calendar_spread",
+                f"term_structure={iv_term_norm:.3f}",
+                f"put_call_norm={put_call_norm:.3f}",
+            ]
+            plan = {
+                "symbol": symbol,
+                "options_style": "PUT_CALENDAR_SPREAD",
+                "strategy_family": "calendar",
+                "underlying_price": px,
+                "dte_days": front_dte,
+                "contracts": 1,
+                "legs": [
+                    _leg("SELL_TO_OPEN", "PUT", 0.99, front_dte, 1),
+                    _leg("BUY_TO_OPEN", "PUT", 0.99, back_dte, 1),
+                ],
+                "strike": round(px * 0.99, 2),
+            }
+
+        # 8) Risk reversal bearish.
+        elif low_event_risk and liquid_chain and ((1.0 - master_score) >= (threshold - 0.05)) and bearish_bias:
             action = "BUY_TO_OPEN"
             score = max(1.0 - master_score, 0.58)
             reasons = [
@@ -2648,6 +3208,30 @@ def _build_options_plan(
                 "contracts": 1,
                 "legs": legs,
                 "strike": strike,
+            }
+
+        elif high_vol_regime and low_event_risk and liquid_chain and expiry_week < 0.8 and abs(vwap_bias - 0.5) <= 0.08 and abs(iv_skew_norm - 0.5) <= 0.10:
+            action = "SELL_TO_OPEN"
+            score = max(master_score, 0.57)
+            reasons = [
+                "iron_butterfly_income",
+                f"vol_expect={vol_expect:.3f}",
+                f"iv_skew={iv_skew_norm:.3f}",
+            ]
+            plan = {
+                "symbol": symbol,
+                "options_style": "IRON_BUTTERFLY",
+                "strategy_family": "neutral_income",
+                "underlying_price": px,
+                "dte_days": front_dte,
+                "contracts": 1,
+                "legs": [
+                    _leg("SELL_TO_OPEN", "PUT", 1.00, front_dte, 1),
+                    _leg("BUY_TO_OPEN", "PUT", 0.94, front_dte, 1),
+                    _leg("SELL_TO_OPEN", "CALL", 1.00, front_dte, 1),
+                    _leg("BUY_TO_OPEN", "CALL", 1.06, front_dte, 1),
+                ],
+                "strike": round(px, 2),
             }
 
         elif high_vol_regime and low_event_risk and liquid_chain and expiry_week < 0.8:
@@ -2978,7 +3562,45 @@ def _build_futures_plan(
             "front_month": "M1",
         }
 
-    # 3) Trend breakout / pullback continuation.
+    # 3) Funding dislocation mean reversion.
+    elif low_event_risk and liquid and abs(funding) >= 0.15 and abs(imbalance) >= 0.10 and abs(basis) <= 0.18:
+        action = "SELL" if funding > 0.0 else "BUY"
+        score = max(master_score, 0.57)
+        reasons = [
+            "futures_funding_mean_revert",
+            f"funding={funding:+.3f}",
+            f"imbalance={imbalance:+.3f}",
+            f"basis={basis:+.3f}",
+        ]
+        plan = {
+            "symbol": symbol,
+            "futures_style": "FUTURES_FUNDING_MEAN_REVERT",
+            "strategy_family": "mean_revert",
+            "contracts": contracts,
+            "legs": [_fleg("BUY" if action == "BUY" else "SELL", "M1", contracts, 0)],
+            "front_month": "M1",
+        }
+
+    # 4) Order-book imbalance breakout.
+    elif low_event_risk and liquid and (master_action in {"BUY", "SELL"}) and high_conviction and abs(imbalance) >= 0.22 and ((master_action == "BUY" and mom_5m >= 0.0 and range_pos >= 0.52 and vwap >= -0.08) or (master_action == "SELL" and mom_5m <= 0.0 and range_pos <= 0.48 and vwap <= 0.08)):
+        action = master_action
+        score = max(master_score, 0.58)
+        reasons = [
+            "futures_orderbook_imbalance_breakout",
+            f"imbalance={imbalance:+.3f}",
+            f"mom_5m={mom_5m:+.4f}",
+            f"range_pos={range_pos:.3f}",
+        ]
+        plan = {
+            "symbol": symbol,
+            "futures_style": "FUTURES_ORDERBOOK_IMBALANCE_BREAKOUT",
+            "strategy_family": "directional",
+            "contracts": contracts,
+            "legs": [_fleg("BUY" if action == "BUY" else "SELL", "M1", contracts, 0)],
+            "front_month": "M1",
+        }
+
+    # 5) Trend breakout / pullback continuation.
     elif low_event_risk and liquid and (master_action in {"BUY", "SELL"}) and high_conviction and ((master_action == "BUY" and mom_5m >= 0.0 and range_pos >= 0.56) or (master_action == "SELL" and mom_5m <= 0.0 and range_pos <= 0.44)):
         action = master_action
         score = max(master_score, 0.57)
@@ -2997,7 +3619,7 @@ def _build_futures_plan(
             "front_month": "M1",
         }
 
-    # 4) VWAP/imbalance mean reversion.
+    # 6) VWAP/imbalance mean reversion.
     elif low_event_risk and liquid and (abs(vwap) >= 0.12) and (abs(imbalance) >= 0.10):
         action = "SELL" if vwap > 0 else "BUY"
         score = max(master_score, 0.55)
@@ -3015,7 +3637,7 @@ def _build_futures_plan(
             "front_month": "M1",
         }
 
-    # 5) Term-structure roll rotation.
+    # 7) Term-structure roll rotation.
     elif low_event_risk and liquid and (abs(term) >= 0.10) and (abs(roll) >= 0.12):
         direction_score = term + roll - 0.35 * neg_bias - 0.15 * funding
         action = "BUY" if direction_score >= 0.0 else "SELL"
@@ -3072,6 +3694,12 @@ def _hash01(text: str) -> float:
         h ^= ord(ch)
         h = (h * 16777619) & 0xFFFFFFFF
     return (h / 0xFFFFFFFF)
+
+
+def _safe_mean(values: List[float]) -> float:
+    if not values:
+        return 0.0
+    return float(sum(values)) / float(len(values))
 
 
 def _latest_trade_behavior_model(project_root: str) -> Optional[str]:
@@ -3359,6 +3987,40 @@ _BEHAVIOR_FEATURE_NAMES_V2 = [
     "external_census_population_log_norm",
     "external_bea_dataset_count_norm",
 ]
+
+_BEHAVIOR_LANE_FEATURE_NAMES = [
+    "day_opening_auction_signal_norm",
+    "day_halt_resume_risk_norm",
+    "day_liquidity_vacuum_risk_norm",
+    "day_execution_cost_risk_norm",
+    "day_session_open_norm",
+    "day_session_midday_norm",
+    "day_session_power_hour_norm",
+    "day_regime_trend_norm",
+    "day_regime_chop_norm",
+    "day_regime_alignment_norm",
+    "swing_post_earnings_drift_norm",
+    "swing_gap_continuation_norm",
+    "swing_gap_fade_norm",
+    "swing_vol_compression_breakout_norm",
+    "swing_sector_relative_strength_norm",
+    "swing_weekly_trend_confirm_norm",
+    "swing_regime_trend_norm",
+    "swing_regime_chop_norm",
+    "swing_regime_alignment_norm",
+    "bond_duration_regime_norm",
+    "bond_curve_steepener_norm",
+    "bond_curve_flattener_norm",
+    "bond_carry_roll_norm",
+    "bond_credit_risk_on_norm",
+    "bond_credit_risk_off_norm",
+    "bond_inflation_breakeven_norm",
+]
+
+_BEHAVIOR_CAPITAL_FLOW_FEATURE_NAMES = list(_CAPITAL_FLOW_FEATURE_KEYS)
+
+_BEHAVIOR_FEATURE_NAMES_V2.extend(_BEHAVIOR_LANE_FEATURE_NAMES)
+_BEHAVIOR_FEATURE_NAMES_V2.extend(_BEHAVIOR_CAPITAL_FLOW_FEATURE_NAMES)
 _BEHAVIOR_SNAPSHOT_CONTEXT_CACHE: Dict[str, Any] = {"loaded_at_ts": 0.0, "values": {}}
 
 
@@ -3774,6 +4436,15 @@ def _behavior_feature_vector_v2(symbol: str, action_hint: str, features: Dict[st
         'external_bea_dataset_count_norm': _behavior_clamp01(float(snapshot_ctx.get('external_bea_dataset_count_norm', features.get('external_bea_dataset_count_norm', 0.0)) or 0.0)),
     }
 
+    for key in _BEHAVIOR_LANE_FEATURE_NAMES:
+        vec_map[key] = _behavior_clamp01(float(features.get(key, 0.0) or 0.0))
+    for key in _BEHAVIOR_CAPITAL_FLOW_FEATURE_NAMES:
+        raw = float(features.get(key, 0.0) or 0.0)
+        if key == "capital_flow_signed_scaled":
+            vec_map[key] = max(-1.0, min(raw, 1.0))
+        else:
+            vec_map[key] = _behavior_clamp01(raw)
+
     vec = [float(vec_map.get(name, 0.0) or 0.0) for name in _BEHAVIOR_FEATURE_NAMES_V2]
     return np.asarray([vec], dtype=float)
 
@@ -3894,6 +4565,8 @@ def _append_jsonl(path: str, row: Dict[str, Any]) -> None:
 
 class JsonlWriteBuffer:
     _instance: Optional["JsonlWriteBuffer"] = None
+    _recent_message_ids: Dict[str, Dict[str, float]] = {}
+    _recent_message_ids_lock = threading.Lock()
 
     @classmethod
     def shared(cls) -> "JsonlWriteBuffer":
@@ -3933,8 +4606,68 @@ class JsonlWriteBuffer:
         for path in list(self._buf.keys()):
             self.flush_path(path)
 
+    @classmethod
+    def _dedupe_window_seconds(cls) -> float:
+        return max(float(os.getenv("JSONL_MESSAGE_ID_DEDUP_WINDOW_SECONDS", "900") or 900.0), 0.0)
+
+    @classmethod
+    def _dedupe_rows(cls, path: str, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not rows:
+            return []
+
+        window_seconds = cls._dedupe_window_seconds()
+        if window_seconds <= 0.0:
+            return list(rows)
+
+        now = time.time()
+        cutoff = now - window_seconds
+        path_key = os.path.abspath(path)
+        deduped: List[Dict[str, Any]] = []
+        batch_seen: set[str] = set()
+
+        with cls._recent_message_ids_lock:
+            bucket = cls._recent_message_ids.setdefault(path_key, {})
+            for key in [msg_id for msg_id, ts in bucket.items() if ts < cutoff]:
+                bucket.pop(key, None)
+
+            for row in rows:
+                msg_id = str((row or {}).get("message_id") or "").strip()
+                if not msg_id:
+                    deduped.append(row)
+                    continue
+                if msg_id in batch_seen or msg_id in bucket:
+                    continue
+                batch_seen.add(msg_id)
+                deduped.append(row)
+
+        return deduped
+
+    @classmethod
+    def _remember_written_rows(cls, path: str, rows: List[Dict[str, Any]]) -> None:
+        if not rows:
+            return
+        window_seconds = cls._dedupe_window_seconds()
+        if window_seconds <= 0.0:
+            return
+
+        now = time.time()
+        cutoff = now - window_seconds
+        path_key = os.path.abspath(path)
+        with cls._recent_message_ids_lock:
+            bucket = cls._recent_message_ids.setdefault(path_key, {})
+            for key in [msg_id for msg_id, ts in bucket.items() if ts < cutoff]:
+                bucket.pop(key, None)
+            for row in rows:
+                msg_id = str((row or {}).get("message_id") or "").strip()
+                if msg_id:
+                    bucket[msg_id] = now
+
     @staticmethod
     def _flush_batch(path: str, rows: List[Dict[str, Any]]) -> None:
+        if not rows:
+            return
+
+        rows = JsonlWriteBuffer._dedupe_rows(path, rows)
         if not rows:
             return
 
@@ -3962,6 +4695,7 @@ class JsonlWriteBuffer:
 
         wrote = _write_once()
         if wrote >= len(rows):
+            JsonlWriteBuffer._remember_written_rows(path, rows)
             return
 
         if not _route_storage_or_fail():
@@ -3970,6 +4704,10 @@ class JsonlWriteBuffer:
             return
 
         retry_wrote = _write_once()
+        if retry_wrote >= len(rows):
+            JsonlWriteBuffer._remember_written_rows(path, rows)
+            return
+
         if retry_wrote < len(rows):
             print(f"[StorageRoute] write_retry_failed path={path} wrote={retry_wrote} expected={len(rows)}")
             JsonlWriteBuffer._emit_write_failure_event(path=path, error=RuntimeError("batch_write_retry_failed"))
@@ -4528,6 +5266,53 @@ def _parse_symbol_set(raw: str) -> set[str]:
     return out
 
 
+def _bond_quote_symbol_universe() -> set[str]:
+    out = _parse_symbol_set(os.getenv("BOND_SYMBOLS", "TLT,IEF,SHY,TIP,LQD,HYG"))
+    for symbols in _bond_symbol_sets().values():
+        out.update(symbols)
+    return out
+
+
+def _apply_bond_quote_quarantine(*, symbol: str, last_price: float, prev_close: float, closes: List[float]) -> tuple[float, float]:
+    sym = str(symbol or "").strip().upper()
+    if sym not in _bond_quote_symbol_universe():
+        return float(last_price), float(prev_close)
+
+    max_intraday_move = max(min(float(os.getenv("BOND_MARKET_SNAPSHOT_MAX_INTRADAY_MOVE", "0.12")), 0.50), 0.01)
+    max_abs_price = max(float(os.getenv("BOND_MARKET_SNAPSHOT_MAX_ABS_PRICE", "300")), 1.0)
+    hist_last = float(closes[-1]) if closes else 0.0
+
+    fallback_last = 0.0
+    if 0.0 < hist_last <= max_abs_price:
+        fallback_last = hist_last
+    elif 0.0 < prev_close <= max_abs_price:
+        fallback_last = prev_close
+
+    if last_price > max_abs_price:
+        if fallback_last > 0.0:
+            last_price = fallback_last
+        else:
+            raise RuntimeError(f"bond_quote_out_of_bounds symbol={sym} last_price={last_price:.4f}")
+
+    if prev_close > max_abs_price:
+        if fallback_last > 0.0:
+            prev_close = fallback_last
+        elif 0.0 < last_price <= max_abs_price:
+            prev_close = last_price
+        else:
+            raise RuntimeError(f"bond_prev_close_out_of_bounds symbol={sym} prev_close={prev_close:.4f}")
+
+    if prev_close > 0.0 and last_price > 0.0:
+        rel_move = abs(last_price - prev_close) / max(prev_close, 1e-8)
+        if rel_move > max_intraday_move:
+            if fallback_last > 0.0:
+                last_price = fallback_last
+            else:
+                raise RuntimeError(f"bond_quote_intraday_move_too_large symbol={sym} rel_move={rel_move:.4f}")
+
+    return float(last_price), float(prev_close)
+
+
 def _long_term_quality_universe(profile: str) -> set[str]:
     prof = (profile or "").strip().lower()
     if prof == "long_term_core_etf":
@@ -4806,6 +5591,76 @@ def _directional_action_from_value(value: float) -> str:
     return "HOLD"
 
 
+def _trend_chop_regime_metrics(features: Dict[str, float]) -> tuple[float, float, float]:
+    pct = float(features.get("pct_from_close", 0.0) or 0.0)
+    mom = float(features.get("mom_5m", 0.0) or 0.0)
+    vol = max(float(features.get("vol_30m", 0.0) or 0.0), 0.0)
+    range_pos = _clamp01(float(features.get("range_pos", 0.5) or 0.5))
+    spread_bps = max(float(features.get("spread_bps", 0.0) or 0.0), 0.0)
+
+    ctx_moves = [
+        _ctx_pct_feature(features, "SPY"),
+        _ctx_pct_feature(features, "QQQ"),
+        _ctx_pct_feature(features, "IWM"),
+    ]
+    ctx_used = [x for x in ctx_moves if abs(x) > 1e-8]
+    benchmark_move = (_safe_mean(ctx_used) if ctx_used else 0.0)
+    rel_move = pct - benchmark_move
+
+    directional_anchor = pct if abs(pct) >= 0.0006 else mom
+    aligned = 0
+    compared = 0
+    for probe in (mom, benchmark_move):
+        if abs(probe) < 0.0003 or abs(directional_anchor) < 0.0003:
+            continue
+        compared += 1
+        if probe * directional_anchor > 0.0:
+            aligned += 1
+    alignment_norm = 0.5 if compared <= 0 else _clamp01(aligned / compared)
+
+    momentum_norm = _clamp01(abs(mom) / 0.0045)
+    move_norm = _clamp01(abs(pct) / 0.012)
+    bench_norm = _clamp01(abs(benchmark_move) / 0.008)
+    rel_norm = _clamp01(abs(rel_move) / 0.010)
+    range_extension = _clamp01(abs(range_pos - 0.5) * 2.0)
+    spread_penalty = _clamp01(spread_bps / 24.0)
+    vol_penalty = _clamp01(vol / 0.05)
+    leadership_norm = _clamp01(0.5 + (rel_move * 35.0))
+
+    trend_norm = _clamp01(
+        (0.25 * momentum_norm)
+        + (0.20 * move_norm)
+        + (0.15 * range_extension)
+        + (0.15 * alignment_norm)
+        + (0.10 * leadership_norm)
+        + (0.08 * rel_norm)
+        + (0.07 * bench_norm)
+        + (0.05 * (1.0 - spread_penalty))
+        + (0.05 * (1.0 - vol_penalty))
+    )
+
+    mid_range = _clamp01(1.0 - (abs(range_pos - 0.5) * 2.0))
+    disagreement = _clamp01(1.0 - alignment_norm)
+    low_momentum = _clamp01(1.0 - momentum_norm)
+    low_move = _clamp01(1.0 - move_norm)
+    low_benchmark = _clamp01(1.0 - bench_norm)
+    chop_norm = _clamp01(
+        (0.24 * mid_range)
+        + (0.22 * low_momentum)
+        + (0.18 * low_move)
+        + (0.14 * disagreement)
+        + (0.12 * low_benchmark)
+        + (0.10 * _clamp01(0.5 + spread_penalty - (0.5 * range_extension)))
+    )
+
+    if trend_norm >= 0.60:
+        chop_norm = _clamp01(chop_norm * (1.0 - (0.45 * trend_norm)))
+    if chop_norm >= 0.60:
+        trend_norm = _clamp01(trend_norm * (1.0 - (0.35 * chop_norm)))
+
+    return trend_norm, chop_norm, alignment_norm
+
+
 def _apply_day_strategy_overlay(
     *,
     symbol: str,
@@ -4826,6 +5681,7 @@ def _apply_day_strategy_overlay(
     spread_bps = max(float(features.get("spread_bps", 0.0) or 0.0), 0.0)
     bid = max(float(features.get("bid_size", 0.0) or 0.0), 0.0)
     ask = max(float(features.get("ask_size", 0.0) or 0.0), 0.0)
+    regime_trend, regime_chop, regime_alignment = _trend_chop_regime_metrics(features)
 
     imbalance = (bid - ask) / max((bid + ask), 1e-8)
     max_spread = max(float(os.getenv("DAY_EXEC_COST_MAX_SPREAD_BPS", "20") or 20.0), 1.0)
@@ -4860,6 +5716,9 @@ def _apply_day_strategy_overlay(
     elif new_action in {"BUY", "SELL"} and liquidity_vacuum_risk >= 0.78:
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"day_liquidity_vacuum_guard risk={liquidity_vacuum_risk:.3f}"]
+    elif new_action in {"BUY", "SELL"} and regime_chop >= 0.68 and regime_trend <= 0.58:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"day_regime_chop_guard chop={regime_chop:.3f} trend={regime_trend:.3f}"]
     elif new_action == "HOLD" and open_norm >= 0.25 and auction_signal >= 0.62:
         direct = _directional_action_from_value((0.65 * mom) + (0.35 * imbalance))
         if direct in {"BUY", "SELL"}:
@@ -4868,14 +5727,19 @@ def _apply_day_strategy_overlay(
                 f"day_opening_auction_imbalance signal={auction_signal:.3f}",
                 f"day_auction_imbalance={imbalance:+.3f}",
             ]
-    elif new_action in {"BUY", "SELL"} and midday_norm >= 0.72 and abs(mom) < 0.003:
+    elif new_action in {"BUY", "SELL"} and midday_norm >= 0.72 and max(abs(mom) < 0.003, regime_chop >= 0.64):
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
-        new_reasons = new_reasons + [f"day_midday_chop_guard mom={mom:+.4f}"]
-    elif new_action == "HOLD" and power_norm >= 0.55 and abs(mom) >= 0.003 and execution_cost_risk < 0.65:
-        direct = _directional_action_from_value(mom)
+        new_reasons = new_reasons + [f"day_midday_chop_guard mom={mom:+.4f} chop={regime_chop:.3f}"]
+    elif new_action == "HOLD" and regime_trend >= 0.72 and regime_alignment >= 0.50 and execution_cost_risk < 0.62 and liquidity_vacuum_risk < 0.65:
+        direct = _directional_action_from_value((0.55 * mom) + (0.30 * pct) + (0.15 * imbalance))
         if direct in {"BUY", "SELL"}:
             new_action, new_score = _force_action_score(direct, new_score, threshold)
-            new_reasons = new_reasons + [f"day_power_hour_trend mom={mom:+.4f}"]
+            new_reasons = new_reasons + [f"day_regime_trend_bias trend={regime_trend:.3f} align={regime_alignment:.3f}"]
+    elif new_action == "HOLD" and power_norm >= 0.55 and abs(mom) >= 0.003 and execution_cost_risk < 0.65 and regime_trend >= 0.58:
+        direct = _directional_action_from_value(mom if regime_alignment >= 0.45 else pct)
+        if direct in {"BUY", "SELL"}:
+            new_action, new_score = _force_action_score(direct, new_score, threshold)
+            new_reasons = new_reasons + [f"day_power_hour_trend mom={mom:+.4f} trend={regime_trend:.3f}"]
 
     out_features = {
         "day_opening_auction_signal_norm": auction_signal,
@@ -4885,6 +5749,9 @@ def _apply_day_strategy_overlay(
         "day_session_open_norm": open_norm,
         "day_session_midday_norm": midday_norm,
         "day_session_power_hour_norm": power_norm,
+        "day_regime_trend_norm": regime_trend,
+        "day_regime_chop_norm": regime_chop,
+        "day_regime_alignment_norm": regime_alignment,
     }
     return new_action, new_score, new_reasons, out_features
 
@@ -4909,6 +5776,7 @@ def _apply_swing_strategy_overlay(
     news_shock = _clamp01(float(features.get("news_shock_rate", 0.0) or 0.0))
     event_prox = _clamp01(float(features.get("calendar_event_proximity_norm", 0.0) or 0.0))
     high_impact = _clamp01(float(features.get("calendar_high_impact_24h_norm", 0.0) or 0.0))
+    regime_trend, regime_chop, regime_alignment = _trend_chop_regime_metrics(features)
 
     drift_strength = max(abs(news_sent), abs(mom), abs(pct))
     post_earnings_drift = _clamp01(((0.55 * max(news_shock, event_prox)) + (0.45 * high_impact)) * _clamp01(drift_strength / 0.02))
@@ -4939,22 +5807,30 @@ def _apply_swing_strategy_overlay(
     new_score = float(score)
     new_reasons = list(reasons)
 
-    if new_action == "HOLD" and post_earnings_drift >= 0.60 and abs(news_sent) >= 0.15 and weekly_confirm >= 0.45:
+    if new_action == "HOLD" and regime_trend >= 0.72 and regime_alignment >= 0.52 and weekly_confirm >= 0.48 and sector_rs >= 0.48:
+        direct = _directional_action_from_value((0.45 * pct) + (0.35 * mom) + (0.20 * rel))
+        if direct in {"BUY", "SELL"}:
+            new_action, new_score = _force_action_score(direct, new_score, threshold)
+            new_reasons = new_reasons + [f"swing_regime_trend_bias trend={regime_trend:.3f} align={regime_alignment:.3f}"]
+    elif new_action == "HOLD" and post_earnings_drift >= 0.60 and abs(news_sent) >= 0.15 and weekly_confirm >= 0.45 and regime_alignment >= 0.45:
         direct = _directional_action_from_value(news_sent)
         if direct in {"BUY", "SELL"}:
             new_action, new_score = _force_action_score(direct, new_score, threshold)
             new_reasons = new_reasons + [f"swing_post_earnings_drift={post_earnings_drift:.3f}"]
-    elif new_action == "HOLD" and continuation_norm >= 0.68 and weekly_confirm >= 0.50:
+    elif new_action == "HOLD" and continuation_norm >= 0.68 and weekly_confirm >= 0.50 and regime_trend >= 0.58:
         direct = _directional_action_from_value(pct)
         if direct in {"BUY", "SELL"}:
             new_action, new_score = _force_action_score(direct, new_score, threshold)
             new_reasons = new_reasons + [f"swing_gap_continuation={continuation_norm:.3f}"]
-    elif new_action == "HOLD" and squeeze_breakout >= 0.66 and weekly_confirm >= 0.52:
+    elif new_action == "HOLD" and squeeze_breakout >= 0.66 and weekly_confirm >= 0.52 and regime_chop <= 0.62:
         direct = _directional_action_from_value(mom if abs(mom) >= 0.001 else pct)
         if direct in {"BUY", "SELL"}:
             new_action, new_score = _force_action_score(direct, new_score, threshold)
             new_reasons = new_reasons + [f"swing_squeeze_breakout={squeeze_breakout:.3f}"]
 
+    if new_action in {"BUY", "SELL"} and regime_chop >= 0.70 and continuation_norm < 0.65 and squeeze_breakout < 0.60:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"swing_regime_chop_guard chop={regime_chop:.3f} trend={regime_trend:.3f}"]
     if new_action == "BUY" and (gap_fade_norm >= 0.74) and (weekly_confirm <= 0.45):
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"swing_gap_fade_risk={gap_fade_norm:.3f}"]
@@ -4972,6 +5848,9 @@ def _apply_swing_strategy_overlay(
         "swing_vol_compression_breakout_norm": squeeze_breakout,
         "swing_sector_relative_strength_norm": sector_rs,
         "swing_weekly_trend_confirm_norm": weekly_confirm,
+        "swing_regime_trend_norm": regime_trend,
+        "swing_regime_chop_norm": regime_chop,
+        "swing_regime_alignment_norm": regime_alignment,
     }
     return new_action, new_score, new_reasons, out_features
 
@@ -5073,6 +5952,52 @@ def _apply_bond_strategy_overlay(
         "bond_inflation_breakeven_norm": inflation_breakeven,
     }
     return new_action, new_score, new_reasons, out_features
+
+
+def _behavior_lane_feature_preview(
+    *,
+    symbol: str,
+    features: Dict[str, float],
+    day_state: Optional[Dict[str, Any]] = None,
+    swing_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, float]:
+    if _is_day_profile():
+        _, _, _, out = _apply_day_strategy_overlay(
+            symbol=symbol,
+            action="HOLD",
+            score=0.5,
+            threshold=0.55,
+            reasons=[],
+            features=features,
+            state={},
+        )
+        return {key: float(out.get(key, 0.0) or 0.0) for key in _BEHAVIOR_LANE_FEATURE_NAMES}
+
+    if _is_swing_profile():
+        preview_state = copy.deepcopy(swing_state) if isinstance(swing_state, dict) else {}
+        _, _, _, out = _apply_swing_strategy_overlay(
+            symbol=symbol,
+            action="HOLD",
+            score=0.5,
+            threshold=0.55,
+            reasons=[],
+            features=features,
+            state=preview_state,
+        )
+        return {key: float(out.get(key, 0.0) or 0.0) for key in _BEHAVIOR_LANE_FEATURE_NAMES}
+
+    if _is_bond_profile():
+        _, _, _, out = _apply_bond_strategy_overlay(
+            symbol=symbol,
+            action="HOLD",
+            score=0.5,
+            threshold=0.55,
+            reasons=[],
+            features=features,
+        )
+        return {key: float(out.get(key, 0.0) or 0.0) for key in _BEHAVIOR_LANE_FEATURE_NAMES}
+
+    return {}
 
 
 def _governance_path(project_root: str, broker: Optional[str] = None) -> str:
@@ -5284,6 +6209,107 @@ def _broker_margin_available_proxy(broker_truth: Dict[str, Any], lane: str) -> f
     headroom_pct = float(caps.get(lane_key, caps.get("default", 0.70)))
     headroom_pct = min(max(headroom_pct, 0.05), 1.0)
     return float(max(available, 0.0) * headroom_pct)
+
+
+def _default_capital_flow_state() -> Dict[str, Any]:
+    return {
+        "detected": False,
+        "estimated_amount": 0.0,
+        "ratio_to_equity": 0.0,
+        "cash_balance_delta": 0.0,
+        "equity_delta": 0.0,
+        "agreement_norm": 0.0,
+        **_default_capital_flow_features(),
+    }
+
+
+def _estimate_capital_flow_state(
+    account_metrics: Dict[str, float],
+    previous_metrics: Dict[str, float],
+) -> Dict[str, Any]:
+    out = _default_capital_flow_state()
+    if not isinstance(account_metrics, dict) or not isinstance(previous_metrics, dict):
+        return out
+
+    cash_now = _to_float(account_metrics.get("cash_balance"), 0.0)
+    cash_prev = _to_float(previous_metrics.get("cash_balance"), 0.0)
+    equity_now = max(_to_float(account_metrics.get("equity"), 0.0), cash_now)
+    equity_prev = max(_to_float(previous_metrics.get("equity"), 0.0), cash_prev)
+
+    if cash_now <= 0.0 or cash_prev <= 0.0 or equity_now <= 0.0 or equity_prev <= 0.0:
+        return out
+
+    cash_delta = float(cash_now - cash_prev)
+    equity_delta = float(equity_now - equity_prev)
+    out["cash_balance_delta"] = cash_delta
+    out["equity_delta"] = equity_delta
+
+    if abs(cash_delta) <= 1e-9 or abs(equity_delta) <= 1e-9 or (cash_delta * equity_delta) < 0.0:
+        return out
+
+    dominant_delta = max(abs(cash_delta), abs(equity_delta), 1.0)
+    agreement_norm = max(
+        0.0,
+        min(1.0, 1.0 - (abs(abs(cash_delta) - abs(equity_delta)) / dominant_delta)),
+    )
+    out["agreement_norm"] = float(agreement_norm)
+    if agreement_norm <= 0.35:
+        return out
+
+    estimated_amount = math.copysign(min(abs(cash_delta), abs(equity_delta)) * agreement_norm, cash_delta)
+    baseline_equity = max(equity_now, equity_prev, 1.0)
+
+    min_abs = max(float(os.getenv("CAPITAL_FLOW_EVENT_MIN_ABS", "500") or 500.0), 0.0)
+    min_ratio = max(float(os.getenv("CAPITAL_FLOW_EVENT_MIN_RATIO", "0.0025") or 0.0025), 0.0)
+    if abs(estimated_amount) < max(min_abs, baseline_equity * min_ratio):
+        return out
+
+    scale_ratio = max(float(os.getenv("CAPITAL_FLOW_FEATURE_SCALE_RATIO", "0.05") or 0.05), 1e-4)
+    ratio_to_equity = abs(estimated_amount) / baseline_equity
+
+    out.update(
+        {
+            "detected": True,
+            "estimated_amount": float(estimated_amount),
+            "ratio_to_equity": float(ratio_to_equity),
+            "capital_flow_signed_scaled": float(math.tanh((estimated_amount / baseline_equity) / scale_ratio)),
+            "capital_flow_inflow_norm": float(min(max(max(estimated_amount, 0.0) / baseline_equity / scale_ratio, 0.0), 1.0)),
+            "capital_flow_outflow_norm": float(min(max(max(-estimated_amount, 0.0) / baseline_equity / scale_ratio, 0.0), 1.0)),
+        }
+    )
+    return out
+
+
+def _effective_account_equity_proxy(
+    broker_truth: Dict[str, Any],
+    fallback_equity_proxy: float,
+) -> Tuple[float, Dict[str, Any]]:
+    metrics = broker_truth.get("account_metrics") if isinstance(broker_truth, dict) else {}
+    if not isinstance(metrics, dict):
+        metrics = {}
+
+    age_iters = max(int(_to_float(broker_truth.get("age_iters"), 0.0) or 0), 0)
+    max_age_iters = max(int(float(os.getenv("BROKER_TRUTH_EQUITY_MAX_AGE_ITERS", "18") or 18)), 0)
+    status = str(broker_truth.get("status", "") or "").strip().lower()
+    live_equity = max(
+        _to_float(metrics.get("equity"), 0.0),
+        _to_float(metrics.get("cash_balance"), 0.0),
+    )
+
+    use_live = (
+        live_equity > 0.0
+        and age_iters <= max_age_iters
+        and status not in {"error", "disabled", "pending"}
+    )
+    effective_equity = float(live_equity if use_live else max(float(fallback_equity_proxy), 0.0))
+    return effective_equity, {
+        "source": "broker_truth_account_metrics" if use_live else "account_equity_proxy",
+        "broker_equity": float(live_equity),
+        "fallback_equity_proxy": float(max(float(fallback_equity_proxy), 0.0)),
+        "age_iters": int(age_iters),
+        "max_age_iters": int(max_age_iters),
+        "status": status,
+    }
 
 
 def _estimate_options_margin_proxy(decision: Dict[str, Any]) -> float:
@@ -5590,6 +6616,7 @@ def _fetch_broker_truth_snapshot(
     iter_count: int,
     manual_payload: Dict[str, Any],
     manual_tolerance: float,
+    previous_state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     now_iso = datetime.now(timezone.utc).isoformat()
     out: Dict[str, Any] = {
@@ -5607,6 +6634,7 @@ def _fetch_broker_truth_snapshot(
         "mismatch_count": 0,
         "mismatch_examples": [],
         "account_metrics": {},
+        "capital_flow": _default_capital_flow_state(),
     }
 
     manual_positions = _manual_position_map(manual_payload)
@@ -5635,6 +6663,12 @@ def _fetch_broker_truth_snapshot(
     positions_rows = trader._extract_all_positions_from_payload(payload)
     open_order_ids = trader._extract_open_order_ids_from_payload(payload)
     account_metrics = _extract_account_metrics(payload)
+    previous_metrics = (
+        previous_state.get("account_metrics")
+        if isinstance(previous_state, dict) and isinstance(previous_state.get("account_metrics"), dict)
+        else {}
+    )
+    capital_flow = _estimate_capital_flow_state(account_metrics, previous_metrics)
 
     positions_map: Dict[str, float] = {}
     for row in positions_rows:
@@ -5672,6 +6706,7 @@ def _fetch_broker_truth_snapshot(
             "open_orders_total": int(len(open_order_ids)),
             "positions": {k: float(v) for k, v in sorted_positions[:60]},
             "account_metrics": dict(account_metrics),
+            "capital_flow": dict(capital_flow),
             "mismatch_count": int(len(mismatch_examples)),
             "mismatch_examples": mismatch_examples[:20],
             "ok": len(mismatch_examples) == 0,
@@ -5941,6 +6976,94 @@ def _parse_symbols(value: str) -> List[str]:
     if not deduped:
         raise ValueError("No symbols provided")
     return deduped
+
+
+def _parse_symbols_optional(value: str) -> List[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    try:
+        return _parse_symbols(raw)
+    except ValueError:
+        return []
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return int(default)
+
+
+def _normalize_runtime_symbol(broker: str, symbol: str) -> str:
+    raw = str(symbol or "").strip()
+    if not raw:
+        return ""
+    if str(broker or "").strip().lower() == "coinbase":
+        return CoinbaseMarketDataClient.normalize_symbol(raw)
+    return raw.upper()
+
+
+def _coinbase_runtime_prefix(profile: str) -> str:
+    return "COINBASE_FUTURES" if str(profile or "").strip().lower() == "crypto_futures" else "COINBASE"
+
+
+def _schwab_runtime_prefix(profile: str) -> str:
+    return "SCHWAB_FUTURES" if str(profile or "").strip().lower() == "schwab_futures" else "SCHWAB"
+
+
+def _symbol_policy_for_runtime(broker: str, profile: str, symbols: List[str]) -> Dict[str, Any]:
+    broker_name = str(broker or "").strip().lower()
+    if broker_name == "coinbase":
+        prefix = _coinbase_runtime_prefix(profile)
+    else:
+        prefix = _schwab_runtime_prefix(profile)
+
+    allowed = {
+        _normalize_runtime_symbol(broker_name, symbol)
+        for symbol in symbols
+        if str(symbol or "").strip()
+    }
+    fast_symbols = [
+        _normalize_runtime_symbol(broker_name, symbol)
+        for symbol in _parse_symbols_optional(os.getenv(f"{prefix}_WATCH_SYMBOLS_FAST", ""))
+        if _normalize_runtime_symbol(broker_name, symbol) in allowed
+    ]
+    slow_symbols = [
+        _normalize_runtime_symbol(broker_name, symbol)
+        for symbol in _parse_symbols_optional(os.getenv(f"{prefix}_WATCH_SYMBOLS_SLOW", ""))
+        if _normalize_runtime_symbol(broker_name, symbol) in allowed
+    ]
+    fast_set = set(fast_symbols)
+    slow_symbols = [symbol for symbol in slow_symbols if symbol not in fast_set]
+
+    websocket_symbols: List[str] = []
+    if broker_name == "coinbase":
+        websocket_symbols = _parse_symbols_optional(os.getenv(f"{prefix}_WEBSOCKET_SYMBOLS", ""))
+        websocket_symbols = [
+            _normalize_runtime_symbol(broker_name, symbol)
+            for symbol in websocket_symbols
+            if _normalize_runtime_symbol(broker_name, symbol) in allowed
+        ]
+        if not websocket_symbols:
+            websocket_symbols = list(fast_symbols)
+
+    return {
+        "fast_symbols": fast_symbols,
+        "slow_symbols": slow_symbols,
+        "websocket_symbols": websocket_symbols,
+        "core_every_n": max(_env_int(f"{prefix}_CORE_EVERY_N_ITERS", _env_int("CORE_SYMBOL_EVERY_N_ITERS", 1)), 1),
+        "fast_every_n": max(_env_int(f"{prefix}_FAST_EVERY_N_ITERS", 1), 1),
+        "slow_every_n": max(_env_int(f"{prefix}_SLOW_EVERY_N_ITERS", 2), 1),
+    }
+
+
+def _coinbase_symbol_policy(profile: str, symbols: List[str]) -> Dict[str, Any]:
+    return _symbol_policy_for_runtime("coinbase", profile, symbols)
+
+
+def _schwab_symbol_policy(profile: str, symbols: List[str]) -> Dict[str, Any]:
+    return _symbol_policy_for_runtime("schwab", profile, symbols)
 
 
 def _feature_symbol_key(symbol: str) -> str:
@@ -6336,6 +7459,7 @@ def run_loop(
                 raise RuntimeError(f"Schwab authentication failed: {err}") from exc
         else:
             client = CoinbaseMarketDataClient(timeout_seconds=float(os.getenv("COINBASE_TIMEOUT_SECONDS", "8")))
+            client.set_live_symbols(list(dict.fromkeys(symbols + context_symbols)))
             _append_jsonl(
                 _event_bus_path(PROJECT_ROOT),
                 {
@@ -6391,6 +7515,7 @@ def run_loop(
     symbol_stale_counts: Dict[str, int] = {}
     symbol_regime_marker: Dict[str, tuple[int, int, int]] = {}
     symbol_regime_cooldown_until_iter: Dict[str, int] = {}
+    execution_lag_by_symbol: Dict[str, Dict[str, float]] = {}
     dividend_compound_state: Dict[str, Dict[str, float]] = {}
     dividend_policy_state: Dict[str, Dict[str, float]] = {}
     day_strategy_state: Dict[str, Any] = {"halt_until_ts_by_symbol": {}}
@@ -6458,6 +7583,11 @@ def run_loop(
     calendar_days_ahead = max(int(os.getenv("SCHWAB_CALENDAR_DAYS_AHEAD", "7")), 1)
     calendar_cache: Dict[str, Any] = {"ts": 0.0, "features": default_calendar_features()}
     calendar_method_state: Dict[str, Any] = {"disabled": False, "warned": False, "method": "", "source": ""}
+    external_context_cache_ttl_seconds = max(float(os.getenv("EXTERNAL_CONTEXT_CACHE_TTL_SECONDS", "90")), 15.0)
+    external_context_cache: Dict[str, Dict[str, Any]] = {
+        "market_breadth": {"ts": 0.0, "payload": {}},
+        "bond_reference": {"ts": 0.0, "payload": {}},
+    }
 
     te_calendar_enabled = (
         calendar_context_enabled
@@ -6579,7 +7709,12 @@ def run_loop(
         ).split(',') if x.strip()
     ]
     master_latency_slo_enabled = os.getenv('MASTER_LATENCY_SLO_GUARD_ENABLED', '1').strip() == '1'
-    master_latency_slo_timeout_ms = float(os.getenv('MASTER_LATENCY_SLO_TIMEOUT_MS', '800'))
+    master_latency_timeout_default = (
+        os.getenv("MASTER_LATENCY_SLO_TIMEOUT_MS_CRYPTO", "1800")
+        if broker == "coinbase"
+        else os.getenv("MASTER_LATENCY_SLO_TIMEOUT_MS_EQUITIES", "800")
+    )
+    master_latency_slo_timeout_ms = float(os.getenv('MASTER_LATENCY_SLO_TIMEOUT_MS', master_latency_timeout_default))
     preopen_replay_sanity_enabled = os.getenv(
         'PREOPEN_REPLAY_SANITY_ENABLED',
         '0' if broker == 'coinbase' else '1',
@@ -6767,10 +7902,6 @@ def run_loop(
         )
     )
 
-    broker_truth_reconcile_enabled = _env_flag(
-        "BROKER_TRUTH_RECONCILE_ENABLED",
-        "1" if (broker == "schwab" and (not simulate)) else "0",
-    )
     broker_truth_refresh_iters = max(int(os.getenv("BROKER_TRUTH_REFRESH_ITERS", "6") or 6), 1)
     broker_truth_manual_tolerance = max(float(os.getenv("BROKER_TRUTH_MANUAL_QTY_TOLERANCE", "1.0") or 1.0), 0.0)
     broker_truth_state: Dict[str, Any] = {
@@ -6786,6 +7917,7 @@ def run_loop(
         "mismatch_count": 0,
         "mismatch_examples": [],
         "account_metrics": {},
+        "capital_flow": _default_capital_flow_state(),
     }
     broker_truth_last_refresh_iter = 0
 
@@ -6823,7 +7955,7 @@ def run_loop(
     log_maintenance_max_ops = max(int(os.getenv('LOG_MAINTENANCE_MAX_OPS', '300')), 10)
 
     exec_queue = ExecutionQueue(max_depth=max(int(os.getenv("EXEC_QUEUE_MAX_DEPTH", "4000")), 100))
-    equity_proxy = float(os.getenv("ACCOUNT_EQUITY_PROXY", "100000"))
+    configured_equity_proxy = float(os.getenv("ACCOUNT_EQUITY_PROXY", "100000"))
     max_notional_pct = float(os.getenv("SIZING_MAX_NOTIONAL_PCT", "0.06"))
     symbol_budgets = _parse_symbol_budgets(os.getenv("PORTFOLIO_SYMBOL_BUDGETS", ""))
     portfolio_base_budget = float(os.getenv("PORTFOLIO_BASE_BUDGET", "1.0"))
@@ -7014,6 +8146,7 @@ def run_loop(
                 iter_count=iter_count,
                 manual_payload=manual_trade_overrides,
                 manual_tolerance=broker_truth_manual_tolerance,
+                previous_state=broker_truth_state,
             )
             broker_truth_last_refresh_iter = int(iter_count)
             broker_truth_state["age_iters"] = 0
@@ -7050,6 +8183,19 @@ def run_loop(
         else:
             broker_truth_state["status"] = "disabled"
             broker_truth_state["age_iters"] = 0
+            broker_truth_state["capital_flow"] = _default_capital_flow_state()
+
+        effective_equity_proxy, effective_equity_meta = _effective_account_equity_proxy(
+            broker_truth=broker_truth_state,
+            fallback_equity_proxy=configured_equity_proxy,
+        )
+        capital_flow_meta = broker_truth_state.get("capital_flow") if isinstance(broker_truth_state, dict) else {}
+        if not isinstance(capital_flow_meta, dict):
+            capital_flow_meta = _default_capital_flow_state()
+        capital_flow_features = {
+            key: float(capital_flow_meta.get(key, 0.0) or 0.0)
+            for key in _CAPITAL_FLOW_FEATURE_KEYS
+        }
 
         _write_heartbeat(
             project_root=PROJECT_ROOT,
@@ -7262,10 +8408,18 @@ def run_loop(
                         snap = _market_snapshot_from_schwab(client, sym)
                     else:
                         snap = _market_snapshot_from_coinbase(client, sym)
+                latency_ms = (time.perf_counter() - started) * 1000.0
+                snap = dict(snap or {})
+                snap["market_data_latency_ms"] = round(float(latency_ms), 3)
+                if float(snap.get("queue_depth", 0.0) or 0.0) <= 0.0:
+                    bid_size = max(float(snap.get("bid_size", 0.0) or 0.0), 0.0)
+                    ask_size = max(float(snap.get("ask_size", 0.0) or 0.0), 0.0)
+                    snap["queue_depth"] = bid_size + ask_size
+                if float(snap.get("queue_depth_norm", 0.0) or 0.0) <= 0.0 and float(snap.get("futures_depth_ratio_norm", 0.0) or 0.0) > 0.0:
+                    snap["queue_depth_norm"] = float(snap.get("futures_depth_ratio_norm", 0.0) or 0.0)
 
                 state_cache.set(cache_key, snap)
                 circuit_breaker.record_success(cb_key)
-                latency_ms = (time.perf_counter() - started) * 1000.0
                 _log_api_call(
                     project_root=PROJECT_ROOT,
                     broker=broker,
@@ -7350,6 +8504,7 @@ def run_loop(
             items = _extract_news_items(payload, sym)
             feats = _summarize_news_items(
                 items,
+                symbol=sym,
                 now_ts=now_s,
                 lookback_seconds=news_lookback_hours * 3600.0,
                 max_items=news_max_items,
@@ -7509,7 +8664,7 @@ def run_loop(
                     calendar_method_state["warned"] = True
                 if not te_calendar_enabled:
                     calendar_method_state["disabled"] = True
-                feats = default_calendar_features()
+                feats = _external_macro_calendar_proxy_features(PROJECT_ROOT)
                 calendar_cache["ts"] = now_s
                 calendar_cache["features"] = feats
                 return feats
@@ -7527,6 +8682,20 @@ def run_loop(
             calendar_cache["ts"] = now_s
             calendar_cache["features"] = feats
             return dict(feats)
+
+        def _load_external_context_category(name: str) -> Dict[str, Any]:
+            token = str(name or "").strip().lower()
+            if not token:
+                return {}
+            now_s = time.time()
+            cache_row = external_context_cache.setdefault(token, {"ts": 0.0, "payload": {}})
+            if (now_s - float(cache_row.get("ts", 0.0) or 0.0)) <= external_context_cache_ttl_seconds:
+                payload = cache_row.get("payload")
+                return dict(payload) if isinstance(payload, dict) else {}
+            payload = load_latest_external_context(PROJECT_ROOT, token)
+            cache_row["ts"] = now_s
+            cache_row["payload"] = dict(payload) if isinstance(payload, dict) else {}
+            return dict(cache_row["payload"])
 
         if context_symbols:
             if enable_async_pipeline:
@@ -7742,6 +8911,8 @@ def run_loop(
                 context_features[f"ctx_{k}_vol_30m"] = ctx_mkt.get("vol_30m", 0.0)
                 context_features[f"ctx_{k}_mom_5m"] = ctx_mkt.get("mom_5m", 0.0)
 
+            live_macro_snapshot = _load_external_context_category("live_macro")
+
             news_features = _default_news_features()
             if news_context_enabled:
                 try:
@@ -7766,6 +8937,26 @@ def run_loop(
                     calendar_features = default_calendar_features()
                     _record_snapshot_debug(symbol, 'calendar_feed_error', error=str(exc))
 
+            if live_macro_snapshot:
+                news_features = _merge_live_macro_news_features(
+                    news_features,
+                    symbol=symbol,
+                    now_ts=now_ts,
+                    snapshot=live_macro_snapshot,
+                )
+                calendar_features = _merge_live_macro_calendar_features(
+                    calendar_features,
+                    symbol=symbol,
+                    now_ts=now_ts,
+                    snapshot=live_macro_snapshot,
+                )
+
+            news_features = _augment_news_features_with_event_proxy(
+                news_features,
+                market_snapshot=mkt,
+                calendar_features=calendar_features,
+            )
+
             feature_cache_key = f"f:{symbol}"
             if feature_cache_enabled and feature_cache_key in feature_cache and feature_cache[feature_cache_key][0] == iter_count:
                 shared_features = dict(feature_cache[feature_cache_key][1])
@@ -7780,11 +8971,68 @@ def run_loop(
                 if feature_cache_enabled:
                     feature_cache[feature_cache_key] = (iter_count, dict(shared_features))
 
+            breadth_features = summarize_breadth_context(
+                symbol=symbol,
+                market_snapshot=mkt,
+                context_market=context_market,
+                external_snapshot=_load_external_context_category("market_breadth"),
+            )
+            bond_reference_features = summarize_bond_reference_context(
+                symbol=symbol,
+                market_snapshot=shared_features,
+                context_market=context_market,
+                calendar_features=calendar_features,
+                external_snapshot=_load_external_context_category("bond_reference"),
+            )
+            credit_context_features = summarize_credit_context(
+                symbol=symbol,
+                market_snapshot=shared_features,
+                context_market=context_market,
+                external_snapshot=_load_external_context_category("bond_reference"),
+            )
+            execution_lag_features = dict(default_execution_lag_features())
+            execution_lag_features.update(execution_lag_by_symbol.get(symbol, {}))
+            shared_features = {
+                **shared_features,
+                **default_breadth_features(),
+                **default_bond_reference_features(),
+                **default_credit_context_features(),
+                **execution_lag_features,
+                **breadth_features,
+                **bond_reference_features,
+                **credit_context_features,
+            }
+
             freshness_ok, freshness_reason, freshness_age_s = _feature_freshness_guard(
                 shared_features,
                 max_age_seconds=feature_freshness_max_age_seconds,
                 required_keys=feature_freshness_required,
             ) if feature_freshness_enabled else (True, 'disabled', 0.0)
+            missing_feature_count = 0
+            required_feature_count = len(feature_freshness_required)
+            if required_feature_count > 0:
+                for req_key in feature_freshness_required:
+                    key = str(req_key or "").strip()
+                    if not key:
+                        continue
+                    if shared_features.get(key) is None:
+                        missing_feature_count += 1
+            data_quality_features = summarize_data_quality_context(
+                market_snapshot=shared_features,
+                freshness_ok=freshness_ok,
+                freshness_age_seconds=float(freshness_age_s),
+                symbol_fail_count=int(symbol_fail_counts.get(symbol, 0) or 0),
+                symbol_stale_count=int(symbol_stale_counts.get(symbol, 0) or 0),
+                symbol_circuit_hits=int(symbol_circuit_hits.get(symbol, 0) or 0),
+                quarantine_seconds=max(float(symbol_quarantine_until.get(symbol, 0.0) or 0.0) - now_ts, 0.0),
+                missing_feature_count=missing_feature_count,
+                required_feature_count=required_feature_count,
+            )
+            shared_features = {
+                **shared_features,
+                **default_data_quality_features(),
+                **data_quality_features,
+            }
             _log_gate(
                 symbol,
                 "feature_freshness",
@@ -7815,6 +9063,8 @@ def run_loop(
                 "active_options_sub_bots": float(active_options_sub_bots),
                 "active_futures_sub_bots": float(active_futures_sub_bots),
                 **_default_lane_strategy_features(),
+                **_default_capital_flow_features(),
+                **capital_flow_features,
             }
 
             if _is_dividend_profile():
@@ -7834,6 +9084,18 @@ def run_loop(
                         features=shared_features,
                         state=dividend_compound_state,
                     ),
+                }
+
+            lane_preview_features = _behavior_lane_feature_preview(
+                symbol=symbol,
+                features=shared_features,
+                day_state=day_strategy_state,
+                swing_state=swing_strategy_state,
+            )
+            if lane_preview_features:
+                shared_features = {
+                    **shared_features,
+                    **lane_preview_features,
                 }
 
             mom = float(shared_features.get("mom_5m", 0.0))
@@ -8409,15 +9671,19 @@ def run_loop(
                 reasons=gm_reasons,
                 features=shared_features,
                 symbol_is_futures=symbol_is_futures,
+                broker=broker,
             )
             _log_gate(
                 symbol,
                 "execution_guard",
                 bool(execution_guard_meta.get("ok", True)),
                 reason=("ok" if bool(execution_guard_meta.get("ok", True)) else "execution_guard_block"),
+                market_kind=str(execution_guard_meta.get("market_kind", "") or ""),
                 spread_bps=float(execution_guard_meta.get("spread_bps", 0.0) or 0.0),
                 depth_norm=float(execution_guard_meta.get("depth_norm", 0.0) or 0.0),
                 tx_cost_bps=float(execution_guard_meta.get("tx_cost_bps", 0.0) or 0.0),
+                market_data_latency_ms=float(execution_guard_meta.get("market_data_latency_ms", 0.0) or 0.0),
+                adverse_imbalance=float(execution_guard_meta.get("adverse_imbalance", 0.0) or 0.0),
             )
 
             runtime_lane = _runtime_lane_key(
@@ -8491,7 +9757,7 @@ def run_loop(
                 score=gm_score,
                 threshold=gm_threshold,
                 volatility_1m=volatility_now,
-                equity_proxy=equity_proxy,
+                equity_proxy=effective_equity_proxy,
                 max_notional_pct=max_notional_pct,
             )
             alloc_qty = allocate_quantity(
@@ -8510,7 +9776,7 @@ def run_loop(
                 action=gm_action,
                 qty=alloc_qty,
                 last_price=float(mkt.get("last_price", 0.0) or 0.0),
-                equity_proxy=equity_proxy,
+                equity_proxy=effective_equity_proxy,
                 state=portfolio_risk_state,
                 sector_map=portfolio_sector_map,
             )
@@ -8518,7 +9784,7 @@ def run_loop(
             alloc_qty, long_term_turnover_meta = _apply_long_term_turnover_cap(
                 qty=alloc_qty,
                 last_price=float(mkt.get("last_price", 0.0) or 0.0),
-                equity_proxy=equity_proxy,
+                equity_proxy=effective_equity_proxy,
                 state=long_term_policy_state,
             )
 
@@ -8966,11 +10232,31 @@ def run_loop(
                 return_1m=ret_1m,
                 spread_bps=float(shared_features.get("spread_bps", 8.0) or 8.0),
                 volatility_1m=float(shared_features.get("volatility_1m", shared_features.get("vol", 0.0)) or 0.0),
-                latency_ms=float(os.getenv("EXEC_SIM_LATENCY_MS", "120")),
+                latency_ms=float(shared_features.get("market_data_latency_ms", 0.0) or os.getenv("EXEC_SIM_LATENCY_MS", "120")),
                 bid_size=float(shared_features.get("bid_size", 1000.0) or 1000.0),
                 ask_size=float(shared_features.get("ask_size", 1000.0) or 1000.0),
                 order_size=dispatch_qty if dispatch_qty > 0 else 1.0,
+                broker=broker,
+                market_kind=("crypto" if broker == "coinbase" else "equities"),
+                symbol=symbol,
             )
+            expected_fill_delta_bps = 0.0
+            live_last_price = float(mkt.get("last_price", 0.0) or 0.0)
+            if live_last_price > 0.0 and float(exec_sim.expected_fill_price or 0.0) > 0.0:
+                expected_fill_delta_bps = (
+                    (float(exec_sim.expected_fill_price) - live_last_price) / live_last_price
+                ) * 10000.0
+            execution_lag_by_symbol[symbol] = {
+                "lag_slippage_bps": float(exec_sim.slippage_bps),
+                "lag_latency_ms": float(exec_sim.latency_ms),
+                "lag_impact_bps": float(exec_sim.impact_bps),
+                "lag_fee_bps": float(exec_sim.fee_bps),
+                "lag_expected_fill_delta_bps": float(expected_fill_delta_bps),
+                "lag_adjusted_return_1m": float(exec_sim.adjusted_return_1m),
+                "lag_trade_action_norm": (
+                    1.0 if gm_action == "BUY" else (-1.0 if gm_action == "SELL" else 0.0)
+                ),
+            }
             for row in all_sub_rows:
                 role = str(row.get("bot_role", "signal_sub_bot")).strip().lower()
                 layer = "sub_bot"
@@ -9008,6 +10294,7 @@ def run_loop(
                     "slippage_bps": exec_sim.slippage_bps,
                     "latency_ms": exec_sim.latency_ms,
                     "expected_fill_price": exec_sim.expected_fill_price,
+                    "fee_bps": exec_sim.fee_bps,
                 },
             )
 
@@ -9082,12 +10369,18 @@ def run_loop(
                 "flash_aux": flash_aux,
                 "specialist_votes": {"options": float(shared_features.get("options_specialist_vote", 0.0) or 0.0), "futures": float(shared_features.get("futures_specialist_vote", 0.0) or 0.0)},
                 "specialist_rows": {"options": options_specialist_rows, "futures": futures_specialist_rows},
+                "news_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in _NEWS_FEATURE_KEYS},
                 "options_chain_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in OPTIONS_FEATURE_KEYS},
                 "futures_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in FUTURES_FEATURE_KEYS},
                 "calendar_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in CALENDAR_FEATURE_KEYS},
                 "dividend_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in _DIVIDEND_FEATURE_KEYS},
                 "long_term_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in _LONG_TERM_FEATURE_KEYS},
                 "lane_strategy_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in _LANE_STRATEGY_FEATURE_KEYS},
+                "breadth_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in BREADTH_FEATURE_KEYS},
+                "bond_reference_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in BOND_REFERENCE_FEATURE_KEYS},
+                "credit_context_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in CREDIT_CONTEXT_FEATURE_KEYS},
+                "data_quality_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in DATA_QUALITY_FEATURE_KEYS},
+                "execution_lag_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in EXECUTION_LAG_FEATURE_KEYS},
                 "options_plan": options_decision["plan"],
                 "futures_plan": futures_decision["plan"],
                 "options_roll_manager": options_roll_meta,
@@ -9096,12 +10389,21 @@ def run_loop(
                 "futures_margin_guard": futures_margin_meta,
                 "manual_trade_reconcile": manual_reconcile_meta,
                 "broker_truth_reconcile": broker_truth_snapshot,
+                "capital_flow": {
+                    "detected": bool(capital_flow_meta.get("detected", False)),
+                    "estimated_amount": float(capital_flow_meta.get("estimated_amount", 0.0) or 0.0),
+                    "ratio_to_equity": float(capital_flow_meta.get("ratio_to_equity", 0.0) or 0.0),
+                    "cash_balance_delta": float(capital_flow_meta.get("cash_balance_delta", 0.0) or 0.0),
+                    "equity_delta": float(capital_flow_meta.get("equity_delta", 0.0) or 0.0),
+                    "agreement_norm": float(capital_flow_meta.get("agreement_norm", 0.0) or 0.0),
+                    **{k: float(shared_features.get(k, 0.0) or 0.0) for k in _CAPITAL_FLOW_FEATURE_KEYS},
+                },
                 "order_idempotency": idempotency_meta,
                 "execution_guard": execution_guard_meta,
                 "portfolio_risk_engine": portfolio_risk_meta,
                 "long_term_turnover_policy": long_term_turnover_meta,
                 "lane_allocator": {"lane": runtime_lane, "lane_budget_mult": lane_budget_mult, "lane_base_budget": lane_base_budget},
-                "execution_sim": {"slippage_bps": exec_sim.slippage_bps, "latency_ms": exec_sim.latency_ms, "expected_fill_price": exec_sim.expected_fill_price, "impact_bps": exec_sim.impact_bps},
+                "execution_sim": {"slippage_bps": exec_sim.slippage_bps, "latency_ms": exec_sim.latency_ms, "expected_fill_price": exec_sim.expected_fill_price, "impact_bps": exec_sim.impact_bps, "fee_bps": exec_sim.fee_bps},
                 "feature_freshness": {
                     "enabled": feature_freshness_enabled,
                     "ok": freshness_ok,
@@ -9116,7 +10418,11 @@ def run_loop(
                     "timeout_ms": master_latency_slo_timeout_ms,
                 },
                 "portfolio": {
-                    "equity_proxy": equity_proxy,
+                    "equity_proxy": effective_equity_proxy,
+                    "configured_equity_proxy": configured_equity_proxy,
+                    "effective_equity_source": str(effective_equity_meta.get("source", "")),
+                    "broker_equity": float(effective_equity_meta.get("broker_equity", 0.0) or 0.0),
+                    "broker_truth_age_iters": int(effective_equity_meta.get("age_iters", 0) or 0),
                     "raw_qty": raw_qty,
                     "alloc_qty": alloc_qty,
                     "dispatch_qty": dispatch_qty,
@@ -9475,6 +10781,12 @@ def main() -> None:
         args.symbols_volatile,
         args.symbols_defensive,
     )
+    volatile_symbols = _parse_symbols(args.symbols_volatile)
+    defensive_symbols = _parse_symbols(args.symbols_defensive)
+    core_every_n = max(args.core_every_n_iters, 1)
+    volatile_every_n = max(args.volatile_every_n_iters, 1)
+    defensive_every_n = max(args.defensive_every_n_iters, 1)
+    current_profile = (args.profile or os.getenv("SHADOW_PROFILE", "")).strip().lower()
 
     context_symbols = _parse_symbols(args.context_symbols)
     if args.broker == "coinbase":
@@ -9486,14 +10798,49 @@ def main() -> None:
         if context_symbols and all(s in equity_context_defaults for s in context_symbols):
             context_symbols = ["BTC-USD", "ETH-USD", "SOL-USD"]
 
+        policy = _coinbase_symbol_policy(current_profile, symbols)
+        volatile_symbols = list(policy["fast_symbols"])
+        defensive_symbols = list(policy["slow_symbols"])
+        core_every_n = int(policy["core_every_n"])
+        volatile_every_n = int(policy["fast_every_n"])
+        defensive_every_n = int(policy["slow_every_n"])
+        if policy["websocket_symbols"]:
+            os.environ["COINBASE_WEBSOCKET_SYMBOLS"] = ",".join(policy["websocket_symbols"])
+        print(
+            "[CoinbaseTiering] "
+            f"profile={current_profile or 'default'} fast={len(volatile_symbols)} slow={len(defensive_symbols)} "
+            f"websocket={len(policy['websocket_symbols'])} core_every_n={core_every_n} "
+            f"fast_every_n={volatile_every_n} slow_every_n={defensive_every_n}"
+        )
+    elif args.broker == "schwab":
+        symbols = [_normalize_runtime_symbol("schwab", s) for s in symbols]
+        context_symbols = [_normalize_runtime_symbol("schwab", s) for s in context_symbols]
+        policy = _schwab_symbol_policy(current_profile, symbols)
+        volatile_symbols = list(policy["fast_symbols"])
+        defensive_symbols = list(policy["slow_symbols"])
+        core_every_n = int(policy["core_every_n"])
+        volatile_every_n = int(policy["fast_every_n"])
+        defensive_every_n = int(policy["slow_every_n"])
+        print(
+            "[SchwabTiering] "
+            f"profile={current_profile or 'default'} fast={len(volatile_symbols)} slow={len(defensive_symbols)} "
+            f"core_every_n={core_every_n} fast_every_n={volatile_every_n} slow_every_n={defensive_every_n}"
+        )
+
+    symbol_set = set(symbols)
+    volatile_symbols = [symbol for symbol in volatile_symbols if symbol in symbol_set]
+    volatile_set = set(volatile_symbols)
+    defensive_symbols = [symbol for symbol in defensive_symbols if symbol in symbol_set and symbol not in volatile_set]
+    core_count = len([symbol for symbol in symbols if symbol not in volatile_set and symbol not in set(defensive_symbols)])
+
     print(
-        f"Symbol groups: core={len(_parse_symbols(args.symbols_core))} "
-        f"volatile={len(_parse_symbols(args.symbols_volatile))} "
-        f"defensive={len(_parse_symbols(args.symbols_defensive))} total={len(symbols)} broker={args.broker}"
+        f"Symbol groups: core={core_count} "
+        f"volatile={len(volatile_symbols)} "
+        f"defensive={len(defensive_symbols)} total={len(symbols)} broker={args.broker}"
     )
-    os.environ["CORE_SYMBOL_EVERY_N_ITERS"] = str(max(args.core_every_n_iters, 1))
-    os.environ["VOLATILE_SYMBOL_EVERY_N_ITERS"] = str(max(args.volatile_every_n_iters, 1))
-    os.environ["DEFENSIVE_SYMBOL_EVERY_N_ITERS"] = str(max(args.defensive_every_n_iters, 1))
+    os.environ["CORE_SYMBOL_EVERY_N_ITERS"] = str(core_every_n)
+    os.environ["VOLATILE_SYMBOL_EVERY_N_ITERS"] = str(volatile_every_n)
+    os.environ["DEFENSIVE_SYMBOL_EVERY_N_ITERS"] = str(defensive_every_n)
 
     os.chdir(PROJECT_ROOT)
     run_loop(
@@ -9511,8 +10858,8 @@ def main() -> None:
         session_end_hour=args.session_end_hour,
         bad_symbol_fail_limit=args.bad_symbol_fail_limit,
         bad_symbol_retry_minutes=args.bad_symbol_retry_minutes,
-        volatile_symbols=_parse_symbols(args.symbols_volatile),
-        defensive_symbols=_parse_symbols(args.symbols_defensive),
+        volatile_symbols=volatile_symbols,
+        defensive_symbols=defensive_symbols,
     )
 
 
