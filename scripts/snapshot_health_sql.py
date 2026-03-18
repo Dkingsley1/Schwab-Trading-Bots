@@ -80,7 +80,7 @@ def _parse_ts_utc(raw: Any) -> Optional[datetime]:
 
 
 def _default_sqlite_path(project_root: Path) -> Path:
-    return project_root / "data" / "jsonl_link.sqlite3"
+    return project_root / "data" / "snapshot_context.sqlite3"
 
 
 def _sqlite_has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -89,6 +89,17 @@ def _sqlite_has_table(conn: sqlite3.Connection, table: str) -> bool:
         (table,),
     ).fetchone()
     return bool(row)
+
+
+def _connect_sqlite(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(path), timeout=120.0)
+    try:
+        conn.execute("PRAGMA busy_timeout=120000")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+    except Exception:
+        pass
+    return conn
 
 
 def _default_raw_debug_context() -> Dict[str, float]:
@@ -244,10 +255,8 @@ def sync_snapshot_health_to_sqlite(
         )
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
+    conn = _connect_sqlite(db_path)
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
         _ensure_snapshot_health_schema(conn)
 
         inserted = 0
@@ -290,7 +299,7 @@ def sync_raw_debug_snapshots_to_sqlite(
     fast_skip = os.getenv("SNAPSHOT_RAW_SYNC_FAST_SKIP", "1").strip() == "1"
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
+    conn = _connect_sqlite(db_path)
 
     dirs_seen = 0
     files_seen = 0
@@ -300,8 +309,6 @@ def sync_raw_debug_snapshots_to_sqlite(
     error_count = 0
 
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
         _ensure_debug_snapshot_schema(conn)
 
         existing_counts: Dict[str, int] = {}
@@ -447,7 +454,7 @@ def debug_snapshot_ingest_coverage(
 
     ingested_counts: Dict[str, int] = {}
     if db_path.exists():
-        conn = sqlite3.connect(str(db_path))
+        conn = _connect_sqlite(db_path)
         try:
             if _sqlite_has_table(conn, "debug_snapshot_raw_records"):
                 ids = [d.name for d in dirs]
@@ -494,7 +501,7 @@ def load_snapshot_health_payloads_from_sqlite(sqlite_path: Path) -> Dict[str, Di
     if not db_path.exists():
         return {}
 
-    conn = sqlite3.connect(str(db_path))
+    conn = _connect_sqlite(db_path)
     try:
         if not _sqlite_has_table(conn, "snapshot_health_records"):
             return {}
@@ -551,7 +558,7 @@ def load_raw_debug_snapshot_context_from_sqlite(
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
     cutoff_iso = cutoff.isoformat()
 
-    conn = sqlite3.connect(str(db_path))
+    conn = _connect_sqlite(db_path)
     try:
         if not _sqlite_has_table(conn, "debug_snapshot_raw_records"):
             meta["reason"] = "table_missing"

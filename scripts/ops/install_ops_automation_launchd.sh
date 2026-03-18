@@ -3,10 +3,14 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PY="$PROJECT_ROOT/.venv312/bin/python"
+RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-live}"
+SQL_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_sql_link_writer_launchd.sh"
 AGENTS_DIR="$HOME/Library/LaunchAgents"
 LOG_DIR="/tmp"
 UID_NUM="$(id -u)"
 mkdir -p "$AGENTS_DIR"
+
+chmod +x "$SQL_RUN_SCRIPT"
 
 WATCHDOG_PLIST="$AGENTS_DIR/com.dankingsley.ops.watchdog.plist"
 REPORT_PLIST="$AGENTS_DIR/com.dankingsley.ops.daily_report.plist"
@@ -61,7 +65,8 @@ cat > "$SQL_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.sql_link_writer</string>
-  <key>ProgramArguments</key><array><string>$PY</string><string>$PROJECT_ROOT/scripts/ops/sql_link_writer_service.py</string></array>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$SQL_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

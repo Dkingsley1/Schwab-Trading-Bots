@@ -24,6 +24,7 @@ from core.live_execution_controls import LiveExecutionGuard, LiveRiskConfig
 from core.path_registry import auth_events_path, decision_explanations_paths, execution_guard_path, live_softguard_path
 
 from core.accountability import current_correlation, now_utc_iso, safe_append_jsonl, safe_append_channel_event, safe_write_json_atomic
+from core.halt_flags import write_halt_flag_atomic
 
 
 class BaseTrader:
@@ -223,21 +224,33 @@ class BaseTrader:
             with open(path, "r", encoding="utf-8") as f:
                 token_obj = json.load(f)
             if isinstance(token_obj, dict):
-                for k in ("expires_at", "expiresAt", "expires", "expires_time"):
-                    raw = token_obj.get(k)
-                    if isinstance(raw, str) and raw.strip():
-                        status["expires_at"] = raw.strip()
+                expiry_sources = [token_obj]
+                nested = token_obj.get("token")
+                if isinstance(nested, dict):
+                    expiry_sources.insert(0, nested)
+
+                exp_value: Any = ""
+                for source in expiry_sources:
+                    for k in ("expires_at", "expiresAt", "expires", "expires_time"):
+                        raw = source.get(k)
+                        if raw not in (None, ""):
+                            exp_value = raw
+                            break
+                    if exp_value not in (None, ""):
                         break
-                exp = status.get("expires_at")
-                if isinstance(exp, str) and exp:
-                    norm = exp.replace("Z", "+00:00")
+
+                if exp_value not in (None, ""):
+                    status["expires_at"] = str(exp_value)
                     try:
-                        exp_dt = datetime.fromisoformat(norm)
-                        if exp_dt.tzinfo is None:
-                            exp_dt = exp_dt.replace(tzinfo=timezone.utc)
-                        status["expires_in_seconds"] = float(
-                            exp_dt.astimezone(timezone.utc).timestamp() - datetime.now(timezone.utc).timestamp()
-                        )
+                        if isinstance(exp_value, (int, float)):
+                            exp_ts = float(exp_value)
+                        else:
+                            norm = str(exp_value).strip().replace("Z", "+00:00")
+                            exp_dt = datetime.fromisoformat(norm)
+                            if exp_dt.tzinfo is None:
+                                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                            exp_ts = exp_dt.astimezone(timezone.utc).timestamp()
+                        status["expires_in_seconds"] = float(exp_ts - datetime.now(timezone.utc).timestamp())
                     except Exception:
                         pass
         except Exception:
@@ -787,9 +800,14 @@ class BaseTrader:
             "source": "base_trader.softguard",
         }
         try:
-            os.makedirs(os.path.dirname(self.global_halt_flag_path), exist_ok=True)
-            with open(self.global_halt_flag_path, "w", encoding="utf-8") as f:
-                f.write(json.dumps(payload, ensure_ascii=True, indent=2))
+            ok = write_halt_flag_atomic(
+                self.global_halt_flag_path,
+                payload,
+                project_root=self.project_root,
+                source="base_trader.softguard",
+            )
+            if not ok:
+                raise RuntimeError(f"halt_flag_write_failed:{self.global_halt_flag_path}")
             self._log_softguard_event(
                 event="global_halt_set",
                 status="ok",

@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.incident_auto_halt import evaluate_incident
 from scripts.promotion_quality_gate import evaluate_quality
 from scripts.replay_end_to_end_deterministic import run_replay
+import scripts.pager_alert_router as pager_alert_router
 
 
 class OpsQualityIncidentTests(unittest.TestCase):
@@ -97,6 +98,23 @@ class OpsQualityIncidentTests(unittest.TestCase):
         )
         self.assertFalse(ok)
         self.assertIn("leak_overfit_not_ok", failed)
+
+    def test_promotion_quality_keeps_zero_fail_share(self) -> None:
+        ok, failed, details = evaluate_quality(
+            {"promote_ok": True, "considered_bots": 4, "fail_share": 0.0},
+            {"ok": True},
+            {"ok": True},
+            {"ok": True},
+            {"ok": True},
+            {"ok": True},
+            max_fail_share=0.25,
+            min_considered_bots=4,
+            require_replay=True,
+            require_reconciliation_slo=True,
+        )
+        self.assertTrue(ok)
+        self.assertEqual(failed, [])
+        self.assertEqual(details["promotion"]["fail_share"], 0.0)
 
     def test_incident_evaluate_fails_on_bad_quality_gate(self) -> None:
         ok, failed, detail = evaluate_incident(
@@ -282,6 +300,50 @@ class OpsQualityIncidentTests(unittest.TestCase):
             self.assertFalse(payload["ok"])
             self.assertFalse(payload["hash_match"])
             self.assertIn("expected_hash_mismatch", payload["failed_checks"])
+
+
+    def test_pager_alert_router_send_reports_pushover_success(self) -> None:
+        payload = {"severity": "critical", "event": "tripwire", "message": "Tripwire active"}
+
+        def fake_send_pushover(inner_payload: dict) -> bool:
+            self.assertEqual(inner_payload, payload)
+            return True
+
+        pager_alert_router._send_pushover = fake_send_pushover
+        pager_alert_router._send_webhook = lambda _: False
+        pager_alert_router._webhook_url = lambda: ""
+        pager_alert_router._pushover_config = lambda: {
+            "token": "token",
+            "user": "user",
+            "device": "",
+            "priority": "0",
+            "sound": "",
+        }
+
+        result = pager_alert_router.send(payload)
+
+        self.assertTrue(result["configured"]["pushover"])
+        self.assertTrue(result["pushover"])
+        self.assertFalse(result["webhook"])
+        self.assertTrue(result["any_sent"])
+
+    def test_pager_alert_router_send_without_channels(self) -> None:
+        pager_alert_router._webhook_url = lambda: ""
+        pager_alert_router._pushover_config = lambda: {
+            "token": "",
+            "user": "",
+            "device": "",
+            "priority": "0",
+            "sound": "",
+        }
+
+        result = pager_alert_router.send({"severity": "warn", "event": "noop", "message": ""})
+
+        self.assertFalse(result["configured"]["webhook"])
+        self.assertFalse(result["configured"]["pushover"])
+        self.assertFalse(result["any_configured"])
+        self.assertFalse(result["any_sent"])
+
 
 
 if __name__ == "__main__":

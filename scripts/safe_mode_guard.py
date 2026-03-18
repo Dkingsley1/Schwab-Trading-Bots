@@ -1,11 +1,17 @@
 import argparse
 import json
 import os
+import sys
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.halt_flags import write_halt_flag_atomic
+
 HEALTH_PATH = PROJECT_ROOT / "governance" / "health" / "health_gates_latest.json"
 STATE_PATH = PROJECT_ROOT / "governance" / "health" / "safe_mode_state.json"
 HALT_FLAG = PROJECT_ROOT / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
@@ -81,8 +87,12 @@ def main() -> int:
     }
 
     if state["trip_streak"] >= max(args.trip_streak, 1):
-        HALT_FLAG.parent.mkdir(parents=True, exist_ok=True)
-        HALT_FLAG.write_text(json.dumps({"timestamp_utc": now, "reason": "repeated_hard_gates"}, ensure_ascii=True), encoding="utf-8")
+        write_halt_flag_atomic(
+            HALT_FLAG,
+            {"timestamp_utc": now, "reason": "repeated_hard_gates"},
+            project_root=str(PROJECT_ROOT),
+            source="safe_mode_guard",
+        )
         event["event"] = "halt_set"
         _notify({"event": "halt_set", "timestamp_utc": now, "trip_streak": state["trip_streak"], "reason": "repeated_hard_gates"})
     elif HALT_FLAG.exists() and args.auto_clear and state["clear_streak"] >= max(args.clear_streak, 1):

@@ -17,20 +17,15 @@ Usage:
   ./scripts/runbook.sh <section>
 
 Sections:
-  start
-  watchdog
+  live
+  refresh
+  health
   retrain
-  retrain-override
-  validate
-  floor
-  floor-override
-  sql
-  portfolio
-  dashboard
-  daily
-  locks
+  analysis
+  reports
+  halts
+  sim-paper
   gotchas
-  distill
 EOF
 }
 
@@ -53,47 +48,32 @@ case "$1" in
   all)
     cat "$RUNBOOK"
     ;;
-  start)
-    extract_heading "1\) Start All Sleeves \(single live terminal feed\)"
+  live)
+    extract_heading "Live Starts"
     ;;
-  watchdog)
-    extract_heading "2\) Watchdog Health \(one-shot\)"
+  refresh)
+    extract_heading "Live Feed Refresh"
     ;;
   retrain)
-    extract_heading "3\) Retrain \(normal, after-hours gate enabled\)"
+    extract_heading "Retrain"
     ;;
-  retrain-override)
-    extract_heading "4\) Retrain Manual Override \(run during market hours\)"
+  health)
+    extract_heading "Health And SQL"
     ;;
-  validate)
-    extract_heading "5\) Walk-Forward + Promotion Gate"
+  analysis)
+    extract_heading "Model And Analysis"
     ;;
-  floor)
-    extract_heading "6\) Raise Floor \(canary gate enforced\)"
+  reports)
+    extract_heading "Reports"
     ;;
-  floor-override)
-    extract_heading "7\) Raise Floor \(manual override if canary is blocked\)"
+  halts)
+    extract_heading "Halts And Recovery"
     ;;
-  sql)
-    extract_heading "8\) SQL + One Numbers Refresh"
-    ;;
-  portfolio)
-    extract_heading "9\) Allocator / Risk / Budget \(portfolio control layer\)"
-    ;;
-  dashboard)
-    extract_heading "10\) Executive Dashboard \(Numbers-friendly\)"
-    ;;
-  daily)
-    extract_heading "11\) Daily Full Pipeline"
-    ;;
-  locks)
-    extract_heading "12\) Lock Troubleshooting"
+  sim-paper)
+    extract_heading "Sim And Paper"
     ;;
   gotchas)
-    extract_heading "13\) Common Gotchas"
-    ;;
-  distill)
-    extract_heading "14\) Distillation-Enabled Retrain \(teachers -> new bots\)"
+    extract_heading "Common Gotchas"
     ;;
   *)
     echo "Unknown section: $1"

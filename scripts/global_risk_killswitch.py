@@ -1,11 +1,16 @@
 import argparse
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.halt_flags import write_halt_flag_atomic
 
 
 def _load(path: Path) -> dict:
@@ -66,9 +71,11 @@ def main() -> int:
 
     if reasons:
         halt_flag.parent.mkdir(parents=True, exist_ok=True)
-        halt_flag.write_text(
-            json.dumps({'timestamp_utc': now, 'reason': 'global_risk_killswitch', 'details': reasons}, ensure_ascii=True),
-            encoding='utf-8',
+        write_halt_flag_atomic(
+            halt_flag,
+            {'timestamp_utc': now, 'reason': 'global_risk_killswitch', 'details': reasons},
+            project_root=str(PROJECT_ROOT),
+            source='global_risk_killswitch',
         )
         action = 'halt_set'
     elif args.auto_clear and halt_flag.exists():

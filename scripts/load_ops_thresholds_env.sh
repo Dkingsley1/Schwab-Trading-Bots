@@ -21,6 +21,9 @@ sm = cfg.get('safe_mode', {})
 sr = cfg.get('session_ready', {})
 ks = cfg.get('global_killswitch', {})
 ah = cfg.get('auto_heavy', {})
+pg = cfg.get('promotion_gates', {})
+pgp = pg.get('promotion_gate', {}) if isinstance(pg.get('promotion_gate', {}), dict) else {}
+gg = pg.get('graduation_gate', {}) if isinstance(pg.get('graduation_gate', {}), dict) else {}
 
 pairs = {
   'RESOURCE_GUARD_MAX_LOAD_PER_CORE': rg.get('max_load_per_core', 1.8),
@@ -42,6 +45,22 @@ pairs = {
   'AUTO_HEAVY_ON_STREAK_REQ': ah.get('on_streak_required', 3),
   'AUTO_HEAVY_OFF_STREAK_REQ': ah.get('off_streak_required', 8),
   'AUTO_HEAVY_MEMORY_PRESSURE_TRIP': ah.get('memory_pressure_trip', 1),
+  'PROMOTION_GATE_MIN_FORWARD_MEAN': pgp.get('min_forward_mean', 0.53),
+  'PROMOTION_GATE_MIN_DELTA': pgp.get('min_delta', -0.01),
+  'PROMOTION_GATE_MIN_TRADING_QUALITY_SCORE': pgp.get('min_trading_quality_score', 0.52),
+  'PROMOTION_GATE_MAX_OVERFIT_GAP': pgp.get('max_overfit_gap', 0.10),
+  'PROMOTION_GATE_MAX_FAIL_SHARE': pgp.get('max_fail_share', 0.25),
+  'PROMOTION_GATE_MAX_SEVERE_OVERFIT_SHARE': pgp.get('max_severe_overfit_share', 0.10),
+  'PROMOTION_GATE_MIN_RUNS': pgp.get('min_runs_per_bot', 12),
+  'PROMOTION_GATE_MIN_CONSIDERED': pgp.get('min_considered_bots', 4),
+  'PROMOTION_GATE_REQUIRE_ACTIVE_REGISTRY': int(bool(pgp.get('require_active_registry', True))),
+  'PROMOTION_GATE_INCLUDE_INFRASTRUCTURE': int(bool(pgp.get('include_infrastructure', False))),
+  'GRADUATION_MIN_RUNS': gg.get('min_runs', 24),
+  'GRADUATION_MIN_FORWARD_MEAN': gg.get('min_forward_mean', 0.52),
+  'GRADUATION_MIN_DELTA': gg.get('min_delta', -0.02),
+  'GRADUATION_MIN_MATURE_BOTS': gg.get('min_mature_bots', 10),
+  'GRADUATION_MIN_MATURE_PASS_RATE': gg.get('min_mature_pass_rate', 0.30),
+  'GRADUATION_MAX_IMMATURE_ACTIVE': gg.get('max_immature_active', 0),
 }
 for k, v in pairs.items():
   print(f"{k}={v}")

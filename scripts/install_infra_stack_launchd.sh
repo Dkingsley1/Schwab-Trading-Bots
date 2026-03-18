@@ -10,9 +10,12 @@ RUN_ALL_LAUNCHER="$PROJECT_ROOT/scripts/ops/run_all_sleeves_launchd.sh"
 ALL_SLEEVES_PLIST="$AGENTS_DIR/com.dankingsley.all_sleeves.plist"
 RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-live}"
 MARKET_OPEN_HOUR="${MARKET_SESSION_START_HOUR:-4}"
-OUT_LOG="/tmp/com.dankingsley.all_sleeves.out.log"
-ERR_LOG="/tmp/com.dankingsley.all_sleeves.err.log"
+LAUNCHD_LOG_DIR="$HOME/Library/Logs/schwab_trading_bot"
+OUT_LOG="$LAUNCHD_LOG_DIR/all_sleeves.out.log"
+ERR_LOG="$LAUNCHD_LOG_DIR/all_sleeves.err.log"
 ORCHESTRATOR_MODE="${STACK_ORCHESTRATOR_MODE:-watchdog}"
+
+mkdir -p "$LAUNCHD_LOG_DIR"
 
 if [[ "$ORCHESTRATOR_MODE" == "all_sleeves" ]]; then
   chmod +x "$RUN_ALL_LAUNCHER"
@@ -25,10 +28,13 @@ if [[ "$ORCHESTRATOR_MODE" == "all_sleeves" ]]; then
   <key>Label</key><string>com.dankingsley.all_sleeves</string>
   <key>ProgramArguments</key>
   <array>
+    <string>/bin/zsh</string>
     <string>$RUN_ALL_LAUNCHER</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>$HOME</string>
     <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
     <key>MARKET_SESSION_START_HOUR</key><string>$MARKET_OPEN_HOUR</string>
     <key>MARKET_DATA_ONLY</key><string>1</string>

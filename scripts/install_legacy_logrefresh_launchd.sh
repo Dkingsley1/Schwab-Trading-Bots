@@ -33,6 +33,8 @@ cat > "$PLIST_PATH" <<PLIST
     <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key>
     <string>$HOME</string>
+    <key>FINDER_LOG_REFRESH_DESKTOP_SHORTCUTS</key>
+    <string>${FINDER_LOG_REFRESH_DESKTOP_SHORTCUTS:-0}</string>
   </dict>
 
   <key>RunAtLoad</key>

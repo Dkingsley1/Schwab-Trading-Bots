@@ -1,11 +1,17 @@
 import argparse
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.halt_flags import write_halt_flag_atomic
+
 OPERATOR_FLAG = PROJECT_ROOT / "governance" / "health" / "OPERATOR_STOP.flag"
 GLOBAL_HALT_FLAG = PROJECT_ROOT / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
 
@@ -15,8 +21,14 @@ def _now() -> str:
 
 
 def _write_flag(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    ok = write_halt_flag_atomic(
+        path,
+        payload,
+        project_root=str(PROJECT_ROOT),
+        source="operator_control",
+    )
+    if not ok:
+        raise RuntimeError(f"flag_write_failed:{path}")
 
 
 def _remove_flag(path: Path) -> bool:

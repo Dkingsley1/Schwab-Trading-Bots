@@ -5,13 +5,28 @@ import os
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 
 def _now_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_ts_utc(raw: str) -> Optional[datetime]:
+    text = str(raw or '').strip()
+    if not text:
+        return None
+    if text.endswith('Z'):
+        text = text[:-1] + '+00:00'
+    try:
+        dt = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 @dataclass
@@ -72,9 +87,34 @@ class ChannelQueue:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_channel_messages_channel_id ON channel_messages(channel, id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_channel_messages_created_at ON channel_messages(created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_channel_consumer_state_channel ON channel_consumer_state(channel, last_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_channel_consumer_state_updated_at ON channel_consumer_state(updated_at)")
             conn.commit()
         finally:
             conn.close()
+
+    def _normalize_payload_row(
+        self,
+        *,
+        channel: str,
+        payload: Dict[str, Any],
+        source_path: str = "",
+        message_id: str = "",
+        parent_message_id: str = "",
+        run_id: str = "",
+        iter_id: str = "",
+    ) -> tuple[str, str, str, str, str, str, str, str]:
+        ch = str(channel or '').strip()
+        if not ch:
+            raise ValueError('channel is required')
+
+        msg_id = str(message_id or payload.get('message_id') or uuid.uuid4())
+        parent_id = str(parent_message_id or payload.get('parent_message_id') or payload.get('parent_decision_id') or '')
+        run = str(run_id or payload.get('run_id') or '')
+        itr = str(iter_id or payload.get('iter_id') or '')
+        created_at = str(payload.get('timestamp_utc') or _now_utc())
+        payload_json = json.dumps(payload, ensure_ascii=True, separators=(',', ':'))
+        return (ch, msg_id, parent_id, run, itr, str(source_path or ''), payload_json, created_at)
 
     def enqueue(
         self,
@@ -87,16 +127,15 @@ class ChannelQueue:
         run_id: str = "",
         iter_id: str = "",
     ) -> str:
-        ch = str(channel or "").strip()
-        if not ch:
-            raise ValueError("channel is required")
-
-        msg_id = str(message_id or payload.get("message_id") or uuid.uuid4())
-        parent_id = str(parent_message_id or payload.get("parent_message_id") or payload.get("parent_decision_id") or "")
-        run = str(run_id or payload.get("run_id") or "")
-        itr = str(iter_id or payload.get("iter_id") or "")
-        created_at = str(payload.get("timestamp_utc") or _now_utc())
-        payload_json = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+        row = self._normalize_payload_row(
+            channel=channel,
+            payload=payload,
+            source_path=source_path,
+            message_id=message_id,
+            parent_message_id=parent_message_id,
+            run_id=run_id,
+            iter_id=iter_id,
+        )
 
         conn = self._connect()
         try:
@@ -106,12 +145,64 @@ class ChannelQueue:
                     channel, message_id, parent_message_id, run_id, iter_id, source_path, payload_json, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (ch, msg_id, parent_id, run, itr, str(source_path or ""), payload_json, created_at),
+                row,
             )
             conn.commit()
         finally:
             conn.close()
-        return msg_id
+        return str(row[1])
+
+    def enqueue_batch(
+        self,
+        *,
+        channel: str,
+        payloads: Sequence[Dict[str, Any]],
+        source_path: str = '',
+    ) -> List[str]:
+        batch = [
+            self._normalize_payload_row(channel=channel, payload=dict(payload or {}), source_path=source_path)
+            for payload in payloads
+            if isinstance(payload, dict) and payload
+        ]
+        if not batch:
+            return []
+
+        conn = self._connect()
+        try:
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO channel_messages(
+                    channel, message_id, parent_message_id, run_id, iter_id, source_path, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                batch,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return [str(row[1]) for row in batch]
+
+    def active_consumer_count(self, *, channel: str = '', max_age_seconds: int = 86400) -> int:
+        conn = self._connect()
+        try:
+            cutoff = (_parse_ts_utc(_now_utc()) or datetime.now(timezone.utc)) - timedelta(seconds=max(int(max_age_seconds), 60))
+            cutoff_iso = cutoff.isoformat()
+            if channel:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM channel_consumer_state WHERE channel=? AND updated_at>=?",
+                    (str(channel), cutoff_iso),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM channel_consumer_state WHERE updated_at>=?",
+                    (cutoff_iso,),
+                ).fetchone()
+        finally:
+            conn.close()
+        return int(row[0] if row and row[0] is not None else 0)
+
+    def has_recent_consumer(self, *, channel: str = '', max_age_seconds: int = 86400) -> bool:
+        return self.active_consumer_count(channel=channel, max_age_seconds=max_age_seconds) > 0
 
     def read_from_cursor(self, *, consumer: str, channel: str, limit: int = 500) -> List[ChannelMessage]:
         cons = str(consumer or "").strip()
@@ -151,10 +242,10 @@ class ChannelQueue:
                     id=int(r[0]),
                     channel=str(r[1]),
                     message_id=str(r[2]),
-                    parent_message_id=str(r[3] or ""),
-                    run_id=str(r[4] or ""),
-                    iter_id=str(r[5] or ""),
-                    source_path=str(r[6] or ""),
+                    parent_message_id=str(r[3] or ''),
+                    run_id=str(r[4] or ''),
+                    iter_id=str(r[5] or ''),
+                    source_path=str(r[6] or ''),
                     payload=payload,
                     created_at=str(r[8]),
                 )

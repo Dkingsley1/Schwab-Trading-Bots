@@ -1,11 +1,17 @@
 import argparse
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.halt_flags import write_halt_flag_atomic
+
 HALT_FLAG = PROJECT_ROOT / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
 STATE_FILE = PROJECT_ROOT / "governance" / "health" / "incident_auto_halt_state.json"
 EVENT_LOG = PROJECT_ROOT / "governance" / "watchdog" / "incident_auto_halt_events.jsonl"
@@ -197,7 +203,12 @@ def main() -> int:
             "fail_streak": state["fail_streak"],
             "mode": mode,
         }
-        halt_flag.write_text(json.dumps(halt_payload, ensure_ascii=True), encoding="utf-8")
+        write_halt_flag_atomic(
+            halt_flag,
+            halt_payload,
+            project_root=str(PROJECT_ROOT),
+            source="incident_auto_halt",
+        )
         event["event"] = "halt_set"
     elif halt_flag.exists() and effective_auto_clear and state["clear_streak"] >= max(int(args.clear_streak), 1):
         halt_flag.unlink()

@@ -76,11 +76,32 @@ export ALLOW_ORDER_EXECUTION="${ALLOW_ORDER_EXECUTION:-0}"
 
 if [[ "$ORCHESTRATOR_MODE" == "watchdog" ]]; then
   WD_MATCH="scripts/shadow_watchdog.py"
-  if ps -axo command | grep -F "$WD_MATCH" | grep -v grep >/dev/null 2>&1; then
+  WD_PLIST="$HOME/Library/LaunchAgents/com.dankingsley.shadow_watchdog.plist"
+  if [[ "$FORCE_RESTART" == "1" ]]; then
+    pkill -f "$WD_MATCH" >/dev/null 2>&1 || true
+    sleep 1
+    if [[ -x "$PROJECT_ROOT/scripts/install_shadow_watchdog_launchd.sh" ]]; then
+      "$PROJECT_ROOT/scripts/install_shadow_watchdog_launchd.sh" >/dev/null 2>&1 || true
+    elif [[ -f "$WD_PLIST" ]]; then
+      launchctl unload "$WD_PLIST" >/dev/null 2>&1 || true
+      launchctl load "$WD_PLIST" >/dev/null 2>&1 || true
+    elif [[ -x "$PROJECT_ROOT/scripts/ops/run_shadow_watchdog_launchd.sh" ]]; then
+      WD_LOG="logs/shadow_watchdog_manual_$(date -u +%Y%m%d_%H%M%S).log"
+      PYTHONUNBUFFERED=1 nohup "$PROJECT_ROOT/scripts/ops/run_shadow_watchdog_launchd.sh" > "$WD_LOG" 2>&1 & disown
+      echo "shadow_watchdog_log=$WD_LOG"
+    fi
+    sleep 2
+    if ps -axo command | grep -F "$WD_MATCH" | grep -v grep >/dev/null 2>&1; then
+      WD_PID="$(ps -axo pid,command | grep -F "$WD_MATCH" | grep -v grep | awk 'NR==1{print $1}')"
+      echo "shadow_watchdog=reloaded pid=$WD_PID"
+    else
+      echo "shadow_watchdog=failed_to_restart"
+      exit 1
+    fi
+  elif ps -axo command | grep -F "$WD_MATCH" | grep -v grep >/dev/null 2>&1; then
     WD_PID="$(ps -axo pid,command | grep -F "$WD_MATCH" | grep -v grep | awk 'NR==1{print $1}')"
     echo "shadow_watchdog=already_running pid=$WD_PID"
   else
-    WD_PLIST="$HOME/Library/LaunchAgents/com.dankingsley.shadow_watchdog.plist"
     if [[ -x "$PROJECT_ROOT/scripts/install_shadow_watchdog_launchd.sh" ]]; then
       "$PROJECT_ROOT/scripts/install_shadow_watchdog_launchd.sh" >/dev/null 2>&1 || true
     elif [[ -f "$WD_PLIST" ]]; then
@@ -138,10 +159,13 @@ if [[ "$WITH_COINBASE" == "1" ]]; then
     fi
 
     if [[ "$COINBASE_PAPER" == "1" ]]; then
-      echo "coinbase_paper=enabled top_n=${TOP_BOT_PAPER_TRADING_TOP_N:-2} min_acc=${TOP_BOT_PAPER_TRADING_MIN_ACC:-0.55}"
-      TOP_BOT_PAPER_TRADING_ENABLED=1       TOP_BOT_PAPER_TRADING_TOP_N="${TOP_BOT_PAPER_TRADING_TOP_N:-2}"       TOP_BOT_PAPER_TRADING_MIN_ACC="${TOP_BOT_PAPER_TRADING_MIN_ACC:-0.55}"       TOP_BOT_PAPER_TRADING_PROFILES="${TOP_BOT_PAPER_TRADING_PROFILES:-default}"       PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"       PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-0}"       PYTHONUNBUFFERED=1 nohup "${CB_CMD[@]}" > "$LOG_CB" 2>&1 & disown
+      COINBASE_PAPER_TOP_N="${COINBASE_TOP_BOT_PAPER_TRADING_TOP_N:-${TOP_BOT_PAPER_TRADING_TOP_N:-5}}"
+      COINBASE_PAPER_MIN_ACC="${COINBASE_TOP_BOT_PAPER_TRADING_MIN_ACC:-${TOP_BOT_PAPER_TRADING_MIN_ACC:-0.58}}"
+      COINBASE_PAPER_PROFILES="${COINBASE_TOP_BOT_PAPER_TRADING_PROFILES:-${TOP_BOT_PAPER_TRADING_PROFILES:-default}}"
+      echo "coinbase_paper=enabled top_n=$COINBASE_PAPER_TOP_N min_acc=$COINBASE_PAPER_MIN_ACC"
+      TOP_BOT_PAPER_TRADING_ENABLED=1       TOP_BOT_PAPER_TRADING_TOP_N="$COINBASE_PAPER_TOP_N"       TOP_BOT_PAPER_TRADING_MIN_ACC="$COINBASE_PAPER_MIN_ACC"       TOP_BOT_PAPER_TRADING_PROFILES="$COINBASE_PAPER_PROFILES"       PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"       PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}"       PYTHONUNBUFFERED=1 nohup "${CB_CMD[@]}" > "$LOG_CB" 2>&1 & disown
     else
-      ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-0}"       PYTHONUNBUFFERED=1 nohup "${CB_CMD[@]}" > "$LOG_CB" 2>&1 & disown
+      ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}"       PYTHONUNBUFFERED=1 nohup "${CB_CMD[@]}" > "$LOG_CB" 2>&1 & disown
     fi
 
     sleep 2

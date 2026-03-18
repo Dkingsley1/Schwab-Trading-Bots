@@ -6,12 +6,13 @@ RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_premarket_token_guard_launchd.sh"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.dankingsley.premarket_token_guard.plist"
 LABEL="com.dankingsley.premarket_token_guard"
 UID_NUM="$(id -u)"
-OUT_LOG="/tmp/com.dankingsley.premarket_token_guard.out.log"
-ERR_LOG="/tmp/com.dankingsley.premarket_token_guard.err.log"
+LOG_DIR="$HOME/Library/Logs/schwab_trading_bot"
+OUT_LOG="$LOG_DIR/premarket_token_guard.out.log"
+ERR_LOG="$LOG_DIR/premarket_token_guard.err.log"
 RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-live}"
 CHECK_INTERVAL_SECONDS="${PREMARKET_TOKEN_CHECK_INTERVAL_SECONDS:-1800}"
 
-mkdir -p "$HOME/Library/LaunchAgents"
+mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
 chmod +x "$RUN_SCRIPT"
 
 cat > "$PLIST_PATH" <<PLIST
@@ -22,10 +23,13 @@ cat > "$PLIST_PATH" <<PLIST
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key>
   <array>
+    <string>/bin/zsh</string>
     <string>$RUN_SCRIPT</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>$HOME</string>
     <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
   </dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>

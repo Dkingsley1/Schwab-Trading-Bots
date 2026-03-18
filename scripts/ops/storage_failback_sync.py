@@ -30,6 +30,7 @@ def main() -> int:
             'copy_errors': int(routing.autosync_copy_errors),
             'pruned_files': int(routing.autosync_pruned_files),
         },
+        'split_brain_conflicts': int(routing.split_brain_conflicts),
     }
 
     out = PROJECT_ROOT / 'governance' / 'health' / 'storage_failback_sync_latest.json'

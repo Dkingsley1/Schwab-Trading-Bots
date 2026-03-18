@@ -162,16 +162,17 @@ def _queue_publish(
 
         db_path = queue_db_path or default_queue_db_path(project_root)
         q = ChannelQueue(db_path)
-        for p in payloads:
-            q.enqueue(
-                channel=channel,
-                payload=p,
-                source_path=source_path,
-                message_id=str(p.get("message_id") or ""),
-                parent_message_id=str(p.get("parent_message_id") or ""),
-                run_id=str(p.get("run_id") or ""),
-                iter_id=str(p.get("iter_id") or ""),
-            )
+
+        require_consumer = os.getenv("BOT_CHANNEL_QUEUE_REQUIRE_RECENT_CONSUMER", "1").strip().lower() in {"1", "true", "yes", "on"}
+        consumer_max_age_seconds = max(int(os.getenv("BOT_CHANNEL_QUEUE_CONSUMER_MAX_AGE_SECONDS", "86400")), 60)
+        if require_consumer and not q.has_recent_consumer(channel=channel, max_age_seconds=consumer_max_age_seconds):
+            return
+
+        q.enqueue_batch(
+            channel=channel,
+            payloads=list(payloads),
+            source_path=source_path,
+        )
     except Exception as exc:
         _emit_write_failure_event(
             project_root=project_root,
