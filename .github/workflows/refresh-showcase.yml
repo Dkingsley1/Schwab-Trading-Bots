@@ -1,0 +1,45 @@
+name: Refresh Showcase Highlights
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "README.md"
+      - "master_bot_registry.json"
+      - "docs/showcase/**"
+      - "scripts/ops/update_showcase_highlights.py"
+      - "governance/health/**"
+      - "exports/external_context/**"
+      - "exports/reports/**"
+  schedule:
+    - cron: "27 */6 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  refresh-showcase:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Refresh generated showcase docs
+        run: python3 scripts/ops/update_showcase_highlights.py
+
+      - name: Commit generated changes
+        run: |
+          if [[ -n "$(git status --porcelain -- README.md docs/showcase/generated)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add README.md docs/showcase/generated
+            git commit -m "chore: refresh showcase highlights"
+            git push
+          fi
