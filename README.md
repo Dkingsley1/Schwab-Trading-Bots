@@ -65,7 +65,7 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/runbook.sh live
 ./scripts/runbook.sh retrain
 ./scripts/reportbook.sh bundle
-./scripts/ops/opsctl.sh showcase-refresh
+python3 scripts/ops/update_showcase_highlights.py
 ```
 
 ## Notes
