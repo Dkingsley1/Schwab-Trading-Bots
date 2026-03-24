@@ -3,14 +3,20 @@ import csv
 import fcntl
 import json
 import os
+import re
 import sqlite3
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
+from xml.sax.saxutils import escape
+from zoneinfo import ZoneInfo
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = PROJECT_ROOT / "data" / "jsonl_link.sqlite3"
+DEFAULT_REPORT_TIMEZONE = "America/New_York"
+DAY_SUFFIX_RE = re.compile(r"_(\d{8})\.jsonl$")
 
 
 def _acquire_singleton_lock(lock_path: Path):
@@ -41,6 +47,186 @@ def _write_kv_csv(path: Path, rows: list[tuple[str, str]]) -> None:
         w.writerow(["metric", "value"])
         for r in rows:
             w.writerow(list(r))
+
+
+def _xlsx_col_name(index: int) -> str:
+    name = ""
+    current = max(index, 1)
+    while current:
+        current, rem = divmod(current - 1, 26)
+        name = chr(65 + rem) + name
+    return name
+
+
+def _xlsx_inline_cell(ref: str, value: str, style: int = 0) -> str:
+    escaped = escape(str(value))
+    style_attr = f' s="{style}"' if style else ""
+    return f'<c r="{ref}" t="inlineStr"{style_attr}><is><t xml:space="preserve">{escaped}</t></is></c>'
+
+
+def _humanize_metric_label(metric: str) -> str:
+    text = str(metric or "").strip().replace("_", " ")
+    if not text:
+        return ""
+    text = text.title()
+    replacements = {
+        "Utc": "UTC",
+        "Pnl": "PnL",
+        "Sql": "SQL",
+        "Db": "DB",
+        "Pct": "Pct",
+        "1H": "1H",
+        "4H": "4H",
+        "15M": "15M",
+        "Mtd": "MTD",
+    }
+    for src, dst in replacements.items():
+        text = text.replace(src, dst)
+    return text
+
+
+def _report_title_date(day_value: str) -> str:
+    raw = str(day_value or "").strip()
+    if not raw:
+        return "Unknown Date"
+    try:
+        return datetime.strptime(raw, "%Y%m%d").strftime("%B %d, %Y")
+    except Exception:
+        return raw
+
+
+def _write_one_numbers_xlsx(path: Path, rows: list[tuple[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row_map = {str(metric): str(value) for metric, value in rows}
+    logical_rows: list[tuple[str, str, int]] = []
+
+    day = row_map.get("resolved_day") or row_map.get("day_utc") or row_map.get("requested_day") or "unknown"
+    logical_rows.append((f"One Numbers Report ({_report_title_date(day)})", "", 2))
+    logical_rows.append(("", "", 0))
+    for label, metric in [
+        ("Generated", "generated_utc"),
+        ("Requested Day", "requested_day"),
+        ("Resolved Day", "resolved_day"),
+        ("Day Fallback Applied", "day_fallback_applied"),
+    ]:
+        if metric in row_map:
+            logical_rows.append((label, row_map[metric], 0))
+    if "db_path" in row_map:
+        logical_rows.append(("Database Path", row_map["db_path"], 0))
+    logical_rows.append(("", "", 0))
+
+    section_name_map = {
+        "Report Metadata": "Report Metadata",
+        "Current Day": "Combined",
+        "Month To Date": "Month To Date",
+        "All Time": "All Time",
+        "Detailed Metrics": "Detailed Metrics",
+    }
+    current_section = ""
+    first_section = True
+    for metric, value in rows:
+        metric_str = str(metric)
+        value_str = str(value)
+        if metric_str.startswith("report_section_"):
+            section_title = section_name_map.get(value_str, value_str)
+            if section_title == "Report Metadata":
+                current_section = section_title
+                continue
+            if not first_section:
+                logical_rows.append(("", "", 0))
+            logical_rows.append((section_title, "", 1))
+            first_section = False
+            current_section = section_title
+            continue
+        if metric_str in {"day_utc", "generated_utc", "requested_day", "resolved_day", "day_fallback_applied", "db_path"}:
+            continue
+        label = _humanize_metric_label(metric_str)
+        logical_rows.append((label, value_str, 0))
+
+    row_xml: list[str] = []
+    used_rows = max(len(logical_rows), 1)
+    for row_index, (left, right, style) in enumerate(logical_rows, start=1):
+        cells = [
+            _xlsx_inline_cell(f"{_xlsx_col_name(1)}{row_index}", left, style),
+            _xlsx_inline_cell(f"{_xlsx_col_name(2)}{row_index}", right, style),
+        ]
+        row_xml.append(f'<row r="{row_index}" spans="1:2">{"".join(cells)}</row>')
+
+    worksheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<dimension ref="A1:B{used_rows}"/>'
+        f'<sheetViews><sheetView workbookViewId="0" tabSelected="1"><selection activeCell="A1" sqref="A1:B{used_rows}"/></sheetView></sheetViews>'
+        '<sheetFormatPr defaultRowHeight="15"/>'
+        '<cols>'
+        '<col min="1" max="1" width="38" customWidth="1"/>'
+        '<col min="2" max="2" width="68" customWidth="1"/>'
+        '<col min="3" max="16384" width="0" hidden="1" customWidth="1"/>'
+        '</cols>'
+        f'<sheetData>{"".join(row_xml)}</sheetData>'
+        '</worksheet>'
+    )
+    styles_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<fonts count="3">'
+        '<font><sz val="11"/><name val="Aptos"/></font>'
+        '<font><b/><sz val="11"/><name val="Aptos"/></font>'
+        '<font><b/><sz val="15"/><name val="Aptos"/></font>'
+        '</fonts>'
+        '<fills count="3">'
+        '<fill><patternFill patternType="none"/></fill>'
+        '<fill><patternFill patternType="gray125"/></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FFDEDEDE"/><bgColor indexed="64"/></patternFill></fill>'
+        '</fills>'
+        '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+        '<cellXfs count="3">'
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+        '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'
+        '<xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'
+        '</cellXfs>'
+        '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
+        '</styleSheet>'
+    )
+    workbook_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="One Numbers" sheetId="1" r:id="rId1"/></sheets>'
+        '</workbook>'
+    )
+    workbook_rels_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+        '</Relationships>'
+    )
+    root_rels_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+        '</Relationships>'
+    )
+    content_types_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+        '</Types>'
+    )
+
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types_xml)
+        zf.writestr("_rels/.rels", root_rels_xml)
+        zf.writestr("xl/workbook.xml", workbook_xml)
+        zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml)
+        zf.writestr("xl/styles.xml", styles_xml)
+        zf.writestr("xl/worksheets/sheet1.xml", worksheet_xml)
 
 
 def _q1(conn: sqlite3.Connection, sql: str, params: tuple = ()):
@@ -75,6 +261,78 @@ def _read_json(path: Path) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def _report_timezone() -> timezone | ZoneInfo:
+    tz_name = str(os.getenv("ONE_NUMBERS_REPORT_TIMEZONE", DEFAULT_REPORT_TIMEZONE) or DEFAULT_REPORT_TIMEZONE).strip()
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        return timezone.utc
+
+
+def _default_report_day() -> str:
+    return datetime.now(_report_timezone()).strftime("%Y%m%d")
+
+
+def _empty_day_sources() -> dict[str, list[str]]:
+    return {
+        "decision": [],
+        "governance": [],
+        "pnl": [],
+        "watchdog": [],
+    }
+
+
+def _extract_day_from_source_rel(source_rel: str) -> str:
+    match = DAY_SUFFIX_RE.search(str(source_rel or ""))
+    return match.group(1) if match else ""
+
+
+def _sqlite_state_sources_by_day(sqlite_state: dict) -> dict[str, dict[str, list[str]]]:
+    by_day: dict[str, dict[str, list[str]]] = {}
+    for rel in sqlite_state:
+        source_rel = str(rel)
+        bucket = ""
+        if source_rel.startswith("decision_explanations/") and "/decision_explanations_" in source_rel:
+            bucket = "decision"
+        elif source_rel.startswith("governance/") and "/master_control_" in source_rel:
+            bucket = "governance"
+        elif source_rel.startswith("governance/") and "/shadow_pnl_attribution_" in source_rel:
+            bucket = "pnl"
+        elif source_rel.startswith("governance/watchdog/watchdog_events_"):
+            bucket = "watchdog"
+        if not bucket:
+            continue
+        day = _extract_day_from_source_rel(source_rel)
+        if not day:
+            continue
+        day_entry = by_day.setdefault(day, _empty_day_sources())
+        day_entry[bucket].append(source_rel)
+    for day_entry in by_day.values():
+        for bucket in day_entry:
+            day_entry[bucket] = sorted(day_entry[bucket])
+    return by_day
+
+
+def _resolve_report_day(requested_day: str, sqlite_state: dict) -> tuple[str, dict[str, list[str]]]:
+    day_sources = _sqlite_state_sources_by_day(sqlite_state)
+    requested = str(requested_day or "").strip() or _default_report_day()
+    selected = day_sources.get(requested, _empty_day_sources())
+    if selected["decision"] or selected["governance"]:
+        return requested, selected
+
+    candidates = sorted(
+        day
+        for day, entry in day_sources.items()
+        if entry["decision"] or entry["governance"]
+    )
+    if not candidates:
+        return requested, selected
+
+    prior_or_equal = [day for day in candidates if day <= requested]
+    resolved_day = prior_or_equal[-1] if prior_or_equal else candidates[-1]
+    return resolved_day, day_sources.get(resolved_day, _empty_day_sources())
 
 
 def _chunked(items: list[str], size: int) -> list[list[str]]:
@@ -202,9 +460,79 @@ def _ensure_sql_snapshot_table(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_one_numbers_generated ON one_numbers_snapshots(generated_utc)")
 
 
+def _latest_daily_snapshots(conn: sqlite3.Connection) -> dict[str, dict]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT s.day_utc, s.generated_utc, s.metrics_json
+            FROM one_numbers_snapshots s
+            JOIN (
+                SELECT day_utc, MAX(id) AS max_id
+                FROM one_numbers_snapshots
+                GROUP BY day_utc
+            ) latest
+              ON latest.max_id = s.id
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+
+    out: dict[str, dict] = {}
+    for day_utc, generated_utc, metrics_json in rows:
+        metrics = {}
+        try:
+            metrics = json.loads(metrics_json or "{}")
+        except Exception:
+            metrics = {}
+        out[str(day_utc)] = {
+            "day_utc": str(day_utc),
+            "generated_utc": str(generated_utc or ""),
+            "metrics": metrics if isinstance(metrics, dict) else {},
+        }
+    return out
+
+
+def _rollup_metric_int(metrics: dict, key: str) -> int:
+    return _safe_int(metrics.get(key, 0), 0)
+
+
+def _rollup_metric_float(metrics: dict, key: str) -> float:
+    return _safe_float(metrics.get(key, 0.0), 0.0)
+
+
+def _aggregate_rollup(entries: list[dict]) -> dict[str, str]:
+    if not entries:
+        return {
+            "days_covered": "0",
+            "decision_total_rows": "0",
+            "governance_total_rows": "0",
+            "blocked_total": "0",
+            "paper_executed_total": "0",
+            "watchdog_restarts": "0",
+            "avg_data_quality_score": "0.00",
+        }
+
+    days_covered = len(entries)
+    decision_total_rows = sum(_rollup_metric_int(e["metrics"], "combined_decision_total_rows") for e in entries)
+    governance_total_rows = sum(_rollup_metric_int(e["metrics"], "combined_governance_total_rows") for e in entries)
+    blocked_total = sum(_rollup_metric_int(e["metrics"], "combined_blocked_total") for e in entries)
+    paper_executed_total = sum(_rollup_metric_int(e["metrics"], "paper_executed_total") for e in entries)
+    watchdog_restarts = sum(_rollup_metric_int(e["metrics"], "watchdog_restarts") for e in entries)
+    avg_data_quality_score = sum(_rollup_metric_float(e["metrics"], "data_quality_score") for e in entries) / max(days_covered, 1)
+    return {
+        "days_covered": str(days_covered),
+        "decision_total_rows": str(decision_total_rows),
+        "governance_total_rows": str(governance_total_rows),
+        "blocked_total": str(blocked_total),
+        "paper_executed_total": str(paper_executed_total),
+        "watchdog_restarts": str(watchdog_restarts),
+        "avg_data_quality_score": f"{avg_data_quality_score:.2f}",
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build one concise numbers file from SQL logs (stocks + crypto + futures + options + alerts).")
-    parser.add_argument("--day", default=datetime.now(timezone.utc).strftime("%Y%m%d"))
+    parser.add_argument("--day", default="", help="Preferred session day in YYYYMMDD. Defaults to the report timezone day and can fall back to the latest linked day with data.")
     parser.add_argument("--out-dir", default=str(PROJECT_ROOT / "exports" / "one_numbers"))
     parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--stale-seconds", type=int, default=180)
@@ -219,7 +547,7 @@ def main() -> int:
         print(f"{exc}")
         return 1
 
-    day = args.day
+    requested_day = str(args.day or "").strip() or _default_report_day()
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     db_path = Path(args.db)
@@ -235,10 +563,7 @@ def main() -> int:
 
     conn = sqlite3.connect(str(db_path))
 
-    decision_like = f"decision_explanations/%/decision_explanations_{day}.jsonl"
-    governance_like = f"governance/%/master_control_{day}.jsonl"
-    pnl_like = f"governance/%/shadow_pnl_attribution_{day}.jsonl"
-    watchdog_like = f"governance/watchdog/watchdog_events_{day}.jsonl"
+    day = requested_day
     decision_bucket_case = """
     CASE
       WHEN LOWER(COALESCE(source_rel, '')) LIKE '%futures%'
@@ -271,35 +596,16 @@ def main() -> int:
 
     state_obj = _read_json(PROJECT_ROOT / "governance" / "jsonl_sql_link_state.json")
     sqlite_state = state_obj.get("sqlite") if isinstance(state_obj.get("sqlite"), dict) else {}
+    day, day_sources = _resolve_report_day(requested_day, sqlite_state)
+    decision_sources_day = day_sources["decision"]
+    governance_sources_day = day_sources["governance"]
+    pnl_sources_day = day_sources["pnl"]
+    watchdog_sources_day = day_sources["watchdog"]
 
-    decision_sources_day = sorted(
-        [
-            str(rel)
-            for rel in sqlite_state
-            if str(rel).startswith("decision_explanations/") and str(rel).endswith(f"decision_explanations_{day}.jsonl")
-        ]
-    )
-    governance_sources_day = sorted(
-        [
-            str(rel)
-            for rel in sqlite_state
-            if str(rel).startswith("governance/") and str(rel).endswith(f"master_control_{day}.jsonl")
-        ]
-    )
-    pnl_sources_day = sorted(
-        [
-            str(rel)
-            for rel in sqlite_state
-            if str(rel).startswith("governance/") and str(rel).endswith(f"shadow_pnl_attribution_{day}.jsonl")
-        ]
-    )
-    watchdog_sources_day = sorted(
-        [
-            str(rel)
-            for rel in sqlite_state
-            if str(rel) == f"governance/watchdog/watchdog_events_{day}.jsonl"
-        ]
-    )
+    decision_like = f"decision_explanations/%/decision_explanations_{day}.jsonl"
+    governance_like = f"governance/%/master_control_{day}.jsonl"
+    pnl_like = f"governance/%/shadow_pnl_attribution_{day}.jsonl"
+    watchdog_like = f"governance/watchdog/watchdog_events_{day}.jsonl"
 
     linked_source_files_total = len(sqlite_state) if sqlite_state else 0
     decision_source_files = len(decision_sources_day)
@@ -952,22 +1258,69 @@ def main() -> int:
         "ALERT_DATA_QUALITY": data_quality_score < 80.0,
     }
 
+    current_rollup_metrics = {
+        "combined_decision_total_rows": decision_total_rows,
+        "combined_governance_total_rows": governance_total_rows,
+        "combined_blocked_total": blocked_total,
+        "paper_executed_total": paper_executed_total,
+        "watchdog_restarts": watchdog_restarts,
+        "data_quality_score": data_quality_score,
+    }
+    latest_snapshots = _latest_daily_snapshots(conn)
+    latest_snapshots[day] = {
+        "day_utc": day,
+        "generated_utc": now_utc.isoformat(),
+        "metrics": current_rollup_metrics,
+    }
+    month_prefix = day[:6]
+    month_rollup = _aggregate_rollup([entry for entry_day, entry in latest_snapshots.items() if str(entry_day).startswith(month_prefix)])
+    all_time_rollup = _aggregate_rollup(list(latest_snapshots.values()))
+
     # Build output rows
     generated_utc = now_utc.isoformat()
-    rows: list[tuple[str, str]] = [
+    metadata_rows: list[tuple[str, str]] = [
+        ("report_section_01", "Report Metadata"),
         ("day_utc", day),
+        ("requested_day", requested_day),
+        ("resolved_day", day),
+        ("day_fallback_applied", str(requested_day != day).lower()),
         ("generated_utc", generated_utc),
         ("db_path", str(db_path)),
+    ]
+    summary_rows: list[tuple[str, str]] = [
+        ("report_section_02", "Current Day"),
         ("combined_decision_total_rows", str(decision_total_rows)),
         ("combined_governance_total_rows", str(governance_total_rows)),
+        ("combined_blocked_total", str(blocked_total)),
+        ("combined_blocked_rate", f"{blocked_rate:.6f}"),
+        ("data_quality_score", f"{data_quality_score:.2f}"),
+        ("paper_executed_total", str(paper_executed_total)),
+        ("watchdog_restarts", str(watchdog_restarts)),
+        ("report_section_03", "Month To Date"),
+        ("month_to_date_days_covered", month_rollup["days_covered"]),
+        ("month_to_date_decision_total_rows", month_rollup["decision_total_rows"]),
+        ("month_to_date_governance_total_rows", month_rollup["governance_total_rows"]),
+        ("month_to_date_blocked_total", month_rollup["blocked_total"]),
+        ("month_to_date_paper_executed_total", month_rollup["paper_executed_total"]),
+        ("month_to_date_watchdog_restarts", month_rollup["watchdog_restarts"]),
+        ("month_to_date_avg_data_quality_score", month_rollup["avg_data_quality_score"]),
+        ("report_section_04", "All Time"),
+        ("all_time_days_covered", all_time_rollup["days_covered"]),
+        ("all_time_decision_total_rows", all_time_rollup["decision_total_rows"]),
+        ("all_time_governance_total_rows", all_time_rollup["governance_total_rows"]),
+        ("all_time_blocked_total", all_time_rollup["blocked_total"]),
+        ("all_time_paper_executed_total", all_time_rollup["paper_executed_total"]),
+        ("all_time_watchdog_restarts", all_time_rollup["watchdog_restarts"]),
+        ("all_time_avg_data_quality_score", all_time_rollup["avg_data_quality_score"]),
+    ]
+    detail_rows: list[tuple[str, str]] = [
+        ("report_section_05", "Detailed Metrics"),
         ("linked_source_files_total", str(linked_source_files_total)),
         ("decision_source_files", str(decision_source_files)),
         ("governance_source_files", str(governance_source_files)),
         ("combined_action_buy", str(action_counts.get("BUY", 0))),
         ("combined_action_sell", str(action_counts.get("SELL", 0))),
         ("combined_action_hold", str(action_counts.get("HOLD", 0))),
-        ("combined_blocked_total", str(blocked_total)),
-        ("combined_blocked_rate", f"{blocked_rate:.6f}"),
         ("stocks_decision_rows", str(stocks_decision_rows)),
         ("stocks_action_buy", str(stocks_actions.get("BUY", 0))),
         ("stocks_action_sell", str(stocks_actions.get("SELL", 0))),
@@ -1011,18 +1364,15 @@ def main() -> int:
         ("buy_rate_4h", f"{buy_rate_4h:.6f}"),
         ("buy_rate_drift_abs", f"{buy_rate_drift_abs:.6f}"),
         ("model_drift_flag", str(model_drift_flag).lower()),
-        ("watchdog_restarts", str(watchdog_restarts)),
         ("watchdog_throttled", str(watchdog_throttled)),
         ("watchdog_restart_errors", str(watchdog_restart_errors)),
         ("decision_last_age_sec", str(decision_last_age_sec)),
         ("governance_last_age_sec", str(governance_last_age_sec)),
         ("heartbeat_recent_count", str(heartbeat_recent)),
-        ("data_quality_score", f"{data_quality_score:.2f}"),
         ("bot_stack_overall_status", bot_stack_status),
         ("bot_stack_active_sub_bots", str(bot_stack_active_sub_bots)),
         ("bot_stack_watchdog_schwab_live", str(bot_stack_watchdog_schwab_live).lower()),
         ("bot_stack_watchdog_coinbase_live", str(bot_stack_watchdog_coinbase_live).lower()),
-        ("paper_executed_total", str(paper_executed_total)),
         ("paper_executed_crypto", str(paper_executed_crypto)),
         ("guardrail_master_latency_slo_fail", str(guardrail_master_latency_slo_fail)),
         ("guardrail_feature_freshness_fail", str(guardrail_feature_freshness_fail)),
@@ -1041,6 +1391,7 @@ def main() -> int:
         ("ops_canary_enabled", str(canary_enabled).lower()),
         ("ops_canary_weight", f"{canary_weight:.6f}"),
     ]
+    rows: list[tuple[str, str]] = metadata_rows + summary_rows + detail_rows
 
     for k, v in alerts.items():
         rows.append((k, str(v).lower()))
@@ -1079,8 +1430,10 @@ def main() -> int:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     csv_path = out_dir / f"one_numbers_{day}_{stamp}.csv"
     md_path = out_dir / f"one_numbers_{day}_{stamp}.md"
+    xlsx_path = out_dir / f"one_numbers_{day}_{stamp}.xlsx"
 
     _write_kv_csv(csv_path, rows)
+    _write_one_numbers_xlsx(xlsx_path, rows)
 
     stocks_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in stocks_top[:5]) if stocks_top else "n/a"
     crypto_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in crypto_top[:5]) if crypto_top else "n/a"
@@ -1092,12 +1445,32 @@ def main() -> int:
         f"# One Numbers Report ({day})",
         "",
         f"Generated: {generated_utc}",
+        f"Requested day: {requested_day}",
+        f"Resolved day: {day}",
         "",
         "## Combined",
         f"- Decisions: {decision_total_rows}",
         f"- Actions: BUY={action_counts.get('BUY',0)}, SELL={action_counts.get('SELL',0)}, HOLD={action_counts.get('HOLD',0)}",
         f"- Blocked: {blocked_total} ({_fmt_pct(blocked_rate)})",
         f"- Data quality score: {data_quality_score:.2f}/100",
+        "",
+        "## Month To Date",
+        f"- Days covered: {month_rollup['days_covered']}",
+        f"- Decisions: {month_rollup['decision_total_rows']}",
+        f"- Governance rows: {month_rollup['governance_total_rows']}",
+        f"- Blocked total: {month_rollup['blocked_total']}",
+        f"- Paper executions: {month_rollup['paper_executed_total']}",
+        f"- Watchdog restarts: {month_rollup['watchdog_restarts']}",
+        f"- Avg data quality score: {month_rollup['avg_data_quality_score']}/100",
+        "",
+        "## All Time",
+        f"- Days covered: {all_time_rollup['days_covered']}",
+        f"- Decisions: {all_time_rollup['decision_total_rows']}",
+        f"- Governance rows: {all_time_rollup['governance_total_rows']}",
+        f"- Blocked total: {all_time_rollup['blocked_total']}",
+        f"- Paper executions: {all_time_rollup['paper_executed_total']}",
+        f"- Watchdog restarts: {all_time_rollup['watchdog_restarts']}",
+        f"- Avg data quality score: {all_time_rollup['avg_data_quality_score']}/100",
         "",
         "## Stocks",
         f"- Rows: {stocks_decision_rows}",
@@ -1166,6 +1539,7 @@ def main() -> int:
 
     latest_csv = out_dir / "latest.csv"
     latest_md = out_dir / "latest.md"
+    latest_xlsx = out_dir / "latest.xlsx"
     latest_json = out_dir / "one_numbers_summary.json"
     health_latest_json = PROJECT_ROOT / "governance" / "health" / "one_numbers_latest.json"
     legacy_latest_dir = out_dir / "latest"
@@ -1175,6 +1549,9 @@ def main() -> int:
     summary_payload = {
         "generated_utc": generated_utc,
         "day_utc": day,
+        "requested_day": requested_day,
+        "resolved_day": day,
+        "day_fallback_applied": requested_day != day,
         **metric_map,
     }
     payload_text = json.dumps(summary_payload, ensure_ascii=True, indent=2)
@@ -1190,8 +1567,11 @@ def main() -> int:
         latest_csv.unlink()
     if latest_md.exists() or latest_md.is_symlink():
         latest_md.unlink()
+    if latest_xlsx.exists() or latest_xlsx.is_symlink():
+        latest_xlsx.unlink()
     latest_csv.symlink_to(csv_path)
     latest_md.symlink_to(md_path)
+    latest_xlsx.symlink_to(xlsx_path)
 
     # SQL register snapshot
     if not args.no_sql_write:
@@ -1222,8 +1602,10 @@ def main() -> int:
 
     print(f"Wrote: {csv_path}")
     print(f"Wrote: {md_path}")
+    print(f"Wrote: {xlsx_path}")
     print(f"Latest CSV: {latest_csv}")
     print(f"Latest MD: {latest_md}")
+    print(f"Latest XLSX: {latest_xlsx}")
     print(f"Latest JSON: {latest_json}")
     if not args.no_sql_write:
         print("Registered snapshot in SQLite table: one_numbers_snapshots")
