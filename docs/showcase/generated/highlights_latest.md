@@ -1,37 +1,37 @@
 # Auto-Refreshed Highlights
 
-_Generated at 2026-03-22 15:51 UTC_
+_Generated at 2026-04-01 12:47 UTC_
 
 ## Platform Snapshot
 
-- Registered bots: `96`
-- Active bots: `15`
-- Live lane artifacts tracked: `9`
-- Running lane artifacts: `2`
-- Crypto source coverage: `13/14`
-- Crypto news coverage: `6/7`
+- Registered bots: `94`
+- Active bots: `26`
+- Live lane artifacts tracked: `0`
+- Running lane artifacts: `0`
+- Crypto source coverage: `0/0`
+- Crypto news coverage: `0/0`
 - Correlation mode: `exact`
-- Last training result: `0 trained / 4 failed`
+- Last training result: `0 trained / 0 failed`
 
 ## Key Highlights
 
-- Registry currently tracks 96 bots with 15 active across infrastructure_sub_bot, options_sub_bot, signal_sub_bot lanes.
-- Live ingestion is wired across 9 lane artifacts with 2 currently reporting `running`.
-- Crypto context is aggregating 13/14 healthy sources and 6/7 healthy crypto news feeds.
-- Latest divergence check is `ok=True` with worst relative spread 0.44%.
-- Market/crypto correlation overlay is running in `exact` mode with 0 aligned pairs and cache hits/misses 0/20.
-- Latest training summary: 0 trained, 4 failed, `confirmed_training_success=False`.
-- Watchdog tripwire is `active=False` and the latest daily ops quality score is 79.66.
+- Registry currently tracks 94 bots with 26 active across infrastructure_sub_bot, options_sub_bot, signal_sub_bot lanes.
+- Live ingestion is wired across 0 lane artifacts with 0 currently reporting `running`.
+- Crypto context is aggregating 0/0 healthy sources and 0/0 healthy crypto news feeds.
+- Latest divergence check is `ok=False` with worst relative spread 0.00%.
+- Market/crypto correlation overlay is running in `exact` mode with 0 aligned pairs and cache hits/misses 0/0.
+- Latest training summary: 0 trained, 0 failed, `confirmed_training_success=False`.
+- Watchdog tripwire is `active=False` and the latest daily ops quality score is n/a.
 
 ## Current Active Lineup
 
 | Bot | Role | Test Accuracy | Quality Score |
 | --- | --- | ---: | ---: |
-| brain_refinery_v10_seasonal | signal_sub_bot | 93.8% | 0.998 |
+| brain_refinery_v95_rates_regime_bond_bot | signal_sub_bot | 100.0% | 0.230 |
+| brain_refinery_v96_credit_spread_rotation_bot | signal_sub_bot | 89.5% | 0.229 |
 | brain_refinery_v35_dmi_state_machine | signal_sub_bot | 85.2% | 0.998 |
 | brain_refinery_v56_meta_ranker | infrastructure_sub_bot | 79.9% | 0.875 |
-| brain_refinery_v43_intraday_ultrafast_proxy | signal_sub_bot | 63.4% | 0.633 |
-| brain_refinery_v4_simple | signal_sub_bot | 61.1% | 0.978 |
+| brain_refinery_v21_flash_crash | signal_sub_bot | 72.2% | 0.649 |
 
 ## Showcase Links
 

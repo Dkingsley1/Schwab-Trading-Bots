@@ -39,13 +39,13 @@ flowchart TD
 ## Auto-Refreshed Highlights
 
 <!-- SHOWCASE_HIGHLIGHTS_START -->
-_Generated at 2026-03-22 15:51 UTC_
+_Generated at 2026-04-01 12:47 UTC_
 
-- Active registry lineup: `15` of `96` bots are active.
-- Live collection snapshot: `2/9` lane artifacts are reporting `running`.
-- Crypto context: `13/14` healthy sources and `6/7` healthy news feeds.
+- Active registry lineup: `26` of `94` bots are active.
+- Live collection snapshot: `0/0` lane artifacts are reporting `running`.
+- Crypto context: `0/0` healthy sources and `0/0` healthy news feeds.
 - Correlation overlay: mode `exact`, aligned pairs `0`.
-- Top active lineup by test accuracy: `brain_refinery_v10_seasonal` (93.8%), `brain_refinery_v35_dmi_state_machine` (85.2%), `brain_refinery_v56_meta_ranker` (79.9%).
+- Top active lineup by test accuracy: `brain_refinery_v95_rates_regime_bond_bot` (100.0%), `brain_refinery_v96_credit_spread_rotation_bot` (89.5%), `brain_refinery_v35_dmi_state_machine` (85.2%).
 
 Full generated detail lives in [docs/showcase/generated/highlights_latest.md](docs/showcase/generated/highlights_latest.md).
 <!-- SHOWCASE_HIGHLIGHTS_END -->
