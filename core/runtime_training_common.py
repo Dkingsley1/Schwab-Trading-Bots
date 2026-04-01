@@ -3,6 +3,7 @@ from __future__ import annotations
 import glob
 import json
 import math
+import os
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,6 +34,10 @@ RuntimeFeatureBuilder = Callable[[Sequence[RuntimeObservation], int], np.ndarray
 RuntimeLabelBuilder = Callable[[Sequence[RuntimeObservation], int, int], Optional[float]]
 RuntimeSampleFilter = Callable[[Sequence[RuntimeObservation], int, int], bool]
 RuntimeConfidenceBuilder = Callable[[Sequence[RuntimeObservation], int, int], float]
+
+_DEFAULT_RUNTIME_LABEL_BALANCE_MAX_RATIO = 4.0
+_DEFAULT_RUNTIME_LABEL_BALANCE_MIN_MINORITY_SAMPLES = 6
+_DEFAULT_RUNTIME_LABEL_BALANCE_MIN_TOTAL_SAMPLES = 64
 
 _ROOT_STRATEGY_PRIORITY = {
     "grand_master_bot": 0,
@@ -68,7 +73,126 @@ _RUNTIME_CALENDAR_EVENT_KEYS = {
     "calendar_treasury_auction_norm",
 }
 
-_RUNTIME_GAP_FILL_KEYS = set(BREADTH_FEATURE_KEYS) | set(BOND_REFERENCE_FEATURE_KEYS) | set(CREDIT_CONTEXT_FEATURE_KEYS) | set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS | _RUNTIME_CALENDAR_EVENT_KEYS
+_RUNTIME_MARKET_MICRO_KEYS = {
+    "market_micro_premarket_pressure_norm",
+    "market_micro_opening_auction_norm",
+    "market_micro_power_hour_pressure_norm",
+    "market_micro_closing_auction_norm",
+    "market_micro_relative_volume_norm",
+    "market_micro_order_flow_imbalance_norm",
+    "market_micro_options_flow_norm",
+    "market_micro_short_pressure_norm",
+    "market_micro_credit_flow_norm",
+    "market_micro_gap_continuation_norm",
+    "market_micro_reversal_risk_norm",
+    "market_micro_trend_persistence_norm",
+    "market_micro_range_expansion_norm",
+    "market_micro_block_trade_norm",
+}
+
+_RUNTIME_SEC_EDGAR_KEYS = {
+    "sec_filing_count_7d_norm",
+    "sec_high_impact_7d_norm",
+    "sec_earnings_7d_norm",
+    "sec_guidance_7d_norm",
+    "sec_regulatory_7d_norm",
+    "sec_ownership_30d_norm",
+    "sec_insider_30d_norm",
+    "sec_recent_proximity_norm",
+    "sec_recent_symbols_norm",
+    "sec_recent_filings_1d_norm",
+    "sec_recent_high_impact_1d_norm",
+}
+
+_RUNTIME_EXTENDED_QUANT_KEYS = {
+    "cot_equity_risk_on_norm",
+    "cot_equity_crowding_norm",
+    "cot_bond_risk_off_norm",
+    "cot_usd_bullish_norm",
+    "cot_macro_positioning_stress_norm",
+    "cot_risk_on_norm",
+    "sofr_level_norm",
+    "sofr_30d_avg_norm",
+    "sofr_90d_avg_norm",
+    "sofr_180d_avg_norm",
+    "sofr_term_pressure_norm",
+    "sofr_funding_stress_norm",
+    "sofr_index_norm",
+    "cboe_total_put_call_norm",
+    "cboe_index_put_call_norm",
+    "cboe_equity_put_call_norm",
+    "cboe_put_call_stress_norm",
+    "cboe_vix_spot_norm",
+    "short_threshold_listed_norm",
+    "short_threshold_rule3210_norm",
+    "short_threshold_symbol_share_norm",
+    "short_threshold_total_listed_norm",
+    "short_threshold_recency_norm",
+    "short_ftd_presence_norm",
+    "short_ftd_quantity_norm",
+    "short_ftd_symbol_share_norm",
+    "short_ftd_total_hits_norm",
+}
+
+_RUNTIME_CRYPTO_MARKET_KEYS = {
+    "crypto_deribit_futures_oi_norm",
+    "crypto_deribit_options_oi_norm",
+    "crypto_deribit_mark_iv_norm",
+    "crypto_deribit_basis_norm",
+    "crypto_kraken_volume_norm",
+    "crypto_kraken_range_norm",
+    "crypto_hyperliquid_funding_norm",
+    "crypto_hyperliquid_open_interest_norm",
+    "crypto_hyperliquid_basis_norm",
+    "crypto_coinmetrics_tx_count_norm",
+    "crypto_coinmetrics_active_addr_norm",
+    "crypto_coingecko_volume_norm",
+    "crypto_coingecko_momentum_norm",
+    "crypto_cross_provider_price_agreement_norm",
+    "crypto_defillama_stablecoin_growth_norm",
+    "crypto_defillama_dex_volume_growth_norm",
+    "crypto_etherscan_gas_norm",
+}
+
+_RUNTIME_MARKET_CRYPTO_CORRELATION_KEYS = {
+    "market_crypto_risk_corr_norm",
+    "market_crypto_spy_corr_norm",
+    "market_crypto_qqq_corr_norm",
+    "market_crypto_tlt_corr_norm",
+    "market_crypto_uup_inverse_corr_norm",
+    "market_crypto_gold_corr_norm",
+    "market_crypto_current_alignment_norm",
+    "market_crypto_divergence_norm",
+    "market_crypto_corr_confidence_norm",
+}
+
+_RUNTIME_FX_MARKET_KEYS = {
+    "fx_official_data_available",
+    "fx_eurusd_level_norm",
+    "fx_eurusd_momentum_norm",
+    "fx_usdjpy_level_norm",
+    "fx_usdjpy_momentum_norm",
+    "fx_gbpusd_level_norm",
+    "fx_gbpusd_momentum_norm",
+    "fx_usd_strength_norm",
+    "fx_usd_broad_index_norm",
+    "fx_proxy_agreement_norm",
+    "fx_risk_on_alignment_norm",
+    "fx_crypto_alignment_norm",
+    "fx_macro_dispersion_norm",
+    "fx_corr_confidence_norm",
+}
+
+_RUNTIME_DIVIDEND_DRIP_KEYS = {
+    "dividend_drip_active_norm",
+    "dividend_drip_recent_reinvest_norm",
+    "dividend_drip_cash_only_norm",
+    "dividend_drip_share_credit_norm",
+    "dividend_drip_event_recency_norm",
+    "dividend_drip_confidence_norm",
+}
+
+_RUNTIME_GAP_FILL_KEYS = set(BREADTH_FEATURE_KEYS) | set(BOND_REFERENCE_FEATURE_KEYS) | set(CREDIT_CONTEXT_FEATURE_KEYS) | set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS | _RUNTIME_CALENDAR_EVENT_KEYS | _RUNTIME_MARKET_MICRO_KEYS | _RUNTIME_SEC_EDGAR_KEYS | _RUNTIME_EXTENDED_QUANT_KEYS | _RUNTIME_CRYPTO_MARKET_KEYS | _RUNTIME_MARKET_CRYPTO_CORRELATION_KEYS | _RUNTIME_FX_MARKET_KEYS | _RUNTIME_DIVIDEND_DRIP_KEYS
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -142,6 +266,17 @@ def _feature_subset(payload: Mapping[str, Any], keys: Iterable[str]) -> Dict[str
     return out
 
 
+def _symbol_feature_subset(payload: Mapping[str, Any], keys: Iterable[str]) -> Dict[str, Dict[str, float]]:
+    out: Dict[str, Dict[str, float]] = {}
+    for symbol, row in payload.items():
+        if not isinstance(row, Mapping):
+            continue
+        subset = _feature_subset(row, keys)
+        if subset:
+            out[str(symbol).strip().upper()] = subset
+    return out
+
+
 def _live_macro_gap_fill_features(payload: Mapping[str, Any]) -> Tuple[Dict[str, float], Dict[str, float]]:
     if not isinstance(payload, Mapping):
         return {}, {}
@@ -193,11 +328,48 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     market_breadth = load_latest_external_context(project_root, "market_breadth")
     bond_reference = load_latest_external_context(project_root, "bond_reference")
     live_macro = load_latest_external_context(project_root, "live_macro")
+    official_macro = load_latest_external_context(project_root, "official_macro_context")
+    market_micro = load_latest_external_context(project_root, "market_micro")
+    sec_edgar = load_latest_external_context(project_root, "sec_edgar")
+    extended_quant = load_latest_external_context(project_root, "extended_quant_context")
+    crypto_market = load_latest_external_context(project_root, "crypto_market_context")
+    market_crypto_correlation = load_latest_external_context(project_root, "market_crypto_correlation")
+    fx_market_context = load_latest_external_context(project_root, "fx_market_context")
+    dividend_drip_state = load_latest_external_context(project_root, "dividend_drip_state")
 
     te_derived = tradingeconomics.get("derived") if isinstance(tradingeconomics.get("derived"), Mapping) else {}
+    official_derived = official_macro.get("derived") if isinstance(official_macro.get("derived"), Mapping) else {}
+    sec_derived = sec_edgar.get("derived") if isinstance(sec_edgar.get("derived"), Mapping) else {}
+    extended_derived = extended_quant.get("derived") if isinstance(extended_quant.get("derived"), Mapping) else {}
+    crypto_derived = crypto_market.get("derived") if isinstance(crypto_market.get("derived"), Mapping) else {}
+    market_crypto_corr_derived = market_crypto_correlation.get("derived") if isinstance(market_crypto_correlation.get("derived"), Mapping) else {}
+    fx_market_derived = fx_market_context.get("derived") if isinstance(fx_market_context.get("derived"), Mapping) else {}
+    dividend_drip_derived = dividend_drip_state.get("derived") if isinstance(dividend_drip_state.get("derived"), Mapping) else {}
     te_calendar = te_derived.get("calendar_features") if isinstance(te_derived.get("calendar_features"), Mapping) else {}
     te_news = te_derived.get("news_features") if isinstance(te_derived.get("news_features"), Mapping) else {}
     te_calendar_rows = te_derived.get("calendar_rows") if isinstance(te_derived.get("calendar_rows"), list) else []
+    official_calendar = official_derived.get("calendar_features") if isinstance(official_derived.get("calendar_features"), Mapping) else {}
+    official_news = official_derived.get("news_features") if isinstance(official_derived.get("news_features"), Mapping) else {}
+    official_calendar_rows = official_derived.get("calendar_rows") if isinstance(official_derived.get("calendar_rows"), list) else []
+    official_bond_overlay = official_derived.get("bond_reference_overlay") if isinstance(official_derived.get("bond_reference_overlay"), Mapping) else {}
+    sec_calendar = sec_derived.get("calendar_features") if isinstance(sec_derived.get("calendar_features"), Mapping) else {}
+    sec_news = sec_derived.get("news_features") if isinstance(sec_derived.get("news_features"), Mapping) else {}
+    sec_global = sec_derived.get("global_features") if isinstance(sec_derived.get("global_features"), Mapping) else {}
+    sec_symbol = sec_derived.get("symbol_features") if isinstance(sec_derived.get("symbol_features"), Mapping) else {}
+    extended_calendar = extended_derived.get("calendar_features") if isinstance(extended_derived.get("calendar_features"), Mapping) else {}
+    extended_news = extended_derived.get("news_features") if isinstance(extended_derived.get("news_features"), Mapping) else {}
+    extended_global = extended_derived.get("global_features") if isinstance(extended_derived.get("global_features"), Mapping) else {}
+    extended_symbol = extended_derived.get("symbol_features") if isinstance(extended_derived.get("symbol_features"), Mapping) else {}
+    extended_bond_overlay = extended_derived.get("bond_reference_overlay") if isinstance(extended_derived.get("bond_reference_overlay"), Mapping) else {}
+    crypto_news = crypto_derived.get("news_features") if isinstance(crypto_derived.get("news_features"), Mapping) else {}
+    crypto_global = crypto_derived.get("global_features") if isinstance(crypto_derived.get("global_features"), Mapping) else {}
+    crypto_symbol = crypto_derived.get("symbol_features") if isinstance(crypto_derived.get("symbol_features"), Mapping) else {}
+    market_crypto_corr_global = market_crypto_corr_derived.get("global_features") if isinstance(market_crypto_corr_derived.get("global_features"), Mapping) else {}
+    market_crypto_corr_symbol = market_crypto_corr_derived.get("symbol_features") if isinstance(market_crypto_corr_derived.get("symbol_features"), Mapping) else {}
+    fx_market_global = fx_market_derived.get("global_features") if isinstance(fx_market_derived.get("global_features"), Mapping) else {}
+    fx_market_symbol = fx_market_derived.get("symbol_features") if isinstance(fx_market_derived.get("symbol_features"), Mapping) else {}
+    dividend_drip_global = dividend_drip_derived.get("global_features") if isinstance(dividend_drip_derived.get("global_features"), Mapping) else {}
+    dividend_drip_symbol = dividend_drip_derived.get("symbol_features") if isinstance(dividend_drip_derived.get("symbol_features"), Mapping) else {}
 
     calendar_features = _feature_subset(te_calendar, _RUNTIME_CALENDAR_EVENT_KEYS)
     if te_calendar_rows and callable(summarize_calendar_payload):
@@ -208,11 +380,43 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
         for key, value in _feature_subset(summarized, _RUNTIME_CALENDAR_EVENT_KEYS).items():
             if key not in calendar_features:
                 calendar_features[key] = value
+    for key, value in _feature_subset(official_calendar, _RUNTIME_CALENDAR_EVENT_KEYS).items():
+        calendar_features[key] = max(calendar_features.get(key, 0.0), value)
+    for key, value in _feature_subset(sec_calendar, _RUNTIME_CALENDAR_EVENT_KEYS).items():
+        calendar_features[key] = max(calendar_features.get(key, 0.0), value)
+    for key, value in _feature_subset(extended_calendar, _RUNTIME_CALENDAR_EVENT_KEYS).items():
+        calendar_features[key] = max(calendar_features.get(key, 0.0), value)
+    if official_calendar_rows and callable(summarize_calendar_payload):
+        try:
+            official_summarized = summarize_calendar_payload(official_calendar_rows, now_ts=datetime.now(timezone.utc).timestamp(), max_items=600)
+        except Exception:
+            official_summarized = {}
+        for key, value in _feature_subset(official_summarized, _RUNTIME_CALENDAR_EVENT_KEYS).items():
+            calendar_features[key] = max(calendar_features.get(key, 0.0), value)
 
     news_features = _feature_subset(te_news, set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS)
     if te_news:
         news_features.setdefault("news_available", 0.35)
         news_features.setdefault("news_items_24h", 0.4)
+    for key, value in _feature_subset(official_news, set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS).items():
+        if key == "news_sentiment":
+            if abs(value) > abs(news_features.get(key, 0.0)):
+                news_features[key] = value
+        else:
+            news_features[key] = max(news_features.get(key, 0.0), value)
+    for extra_news in (sec_news, extended_news):
+        for key, value in _feature_subset(extra_news, set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS).items():
+            if key == "news_sentiment":
+                if abs(value) > abs(news_features.get(key, 0.0)):
+                    news_features[key] = value
+            else:
+                news_features[key] = max(news_features.get(key, 0.0), value)
+    for key, value in _feature_subset(crypto_news, set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS).items():
+        if key == "news_sentiment":
+            if abs(value) > abs(news_features.get(key, 0.0)):
+                news_features[key] = value
+        else:
+            news_features[key] = max(news_features.get(key, 0.0), value)
 
     live_macro_calendar, live_macro_news = _live_macro_gap_fill_features(live_macro if isinstance(live_macro, Mapping) else {})
     breadth_features = summarize_breadth_context(
@@ -221,6 +425,45 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
         context_market={},
         external_snapshot=market_breadth if isinstance(market_breadth, Mapping) else {},
     )
+    merged_bond_reference = dict(bond_reference) if isinstance(bond_reference, Mapping) else {}
+    for overlay in (official_bond_overlay, extended_bond_overlay):
+        if not isinstance(overlay, Mapping):
+            continue
+        for key, value in overlay.items():
+            if isinstance(value, Mapping) and isinstance(merged_bond_reference.get(key), Mapping):
+                nested = dict(merged_bond_reference[key])
+                nested.update(value)
+                merged_bond_reference[key] = nested
+            else:
+                merged_bond_reference[key] = value
+    market_micro_features = {}
+    market_micro_derived = market_micro.get("derived") if isinstance(market_micro.get("derived"), Mapping) else {}
+    market_micro_global = market_micro_derived.get("global_features") if isinstance(market_micro_derived.get("global_features"), Mapping) else {}
+    for key, value in _feature_subset(market_micro_global, _RUNTIME_MARKET_MICRO_KEYS).items():
+        market_micro_features[key] = value
+    external_global_features = {}
+    external_global_features.update(_feature_subset(sec_global, _RUNTIME_SEC_EDGAR_KEYS))
+    external_global_features.update(_feature_subset(extended_global, _RUNTIME_EXTENDED_QUANT_KEYS))
+    external_global_features.update(_feature_subset(crypto_global, _RUNTIME_CRYPTO_MARKET_KEYS))
+    external_global_features.update(_feature_subset(market_crypto_corr_global, _RUNTIME_MARKET_CRYPTO_CORRELATION_KEYS))
+    external_global_features.update(_feature_subset(fx_market_global, _RUNTIME_FX_MARKET_KEYS))
+    external_global_features.update(_feature_subset(dividend_drip_global, _RUNTIME_DIVIDEND_DRIP_KEYS))
+    external_symbol_features = _symbol_feature_subset(sec_symbol, _RUNTIME_SEC_EDGAR_KEYS)
+    for symbol, subset in _symbol_feature_subset(extended_symbol, _RUNTIME_EXTENDED_QUANT_KEYS).items():
+        current = external_symbol_features.setdefault(symbol, {})
+        current.update(subset)
+    for symbol, subset in _symbol_feature_subset(crypto_symbol, _RUNTIME_CRYPTO_MARKET_KEYS).items():
+        current = external_symbol_features.setdefault(symbol, {})
+        current.update(subset)
+    for symbol, subset in _symbol_feature_subset(market_crypto_corr_symbol, _RUNTIME_MARKET_CRYPTO_CORRELATION_KEYS).items():
+        current = external_symbol_features.setdefault(symbol, {})
+        current.update(subset)
+    for symbol, subset in _symbol_feature_subset(fx_market_symbol, _RUNTIME_FX_MARKET_KEYS).items():
+        current = external_symbol_features.setdefault(symbol, {})
+        current.update(subset)
+    for symbol, subset in _symbol_feature_subset(dividend_drip_symbol, _RUNTIME_DIVIDEND_DRIP_KEYS).items():
+        current = external_symbol_features.setdefault(symbol, {})
+        current.update(subset)
 
     return {
         "calendar_features": calendar_features,
@@ -228,7 +471,10 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
         "live_macro_calendar": live_macro_calendar,
         "live_macro_news": live_macro_news,
         "breadth_features": breadth_features,
-        "bond_reference": bond_reference if isinstance(bond_reference, Mapping) else {},
+        "bond_reference": merged_bond_reference,
+        "market_micro_features": market_micro_features,
+        "external_global_features": external_global_features,
+        "external_symbol_features": external_symbol_features,
     }
 
 
@@ -250,6 +496,9 @@ def _enrich_runtime_observation(
     live_macro_news = gap_fill_context.get("live_macro_news") if isinstance(gap_fill_context.get("live_macro_news"), Mapping) else {}
     breadth_features = gap_fill_context.get("breadth_features") if isinstance(gap_fill_context.get("breadth_features"), Mapping) else {}
     bond_reference = gap_fill_context.get("bond_reference") if isinstance(gap_fill_context.get("bond_reference"), Mapping) else {}
+    market_micro_features = gap_fill_context.get("market_micro_features") if isinstance(gap_fill_context.get("market_micro_features"), Mapping) else {}
+    external_global_features = gap_fill_context.get("external_global_features") if isinstance(gap_fill_context.get("external_global_features"), Mapping) else {}
+    external_symbol_features = gap_fill_context.get("external_symbol_features") if isinstance(gap_fill_context.get("external_symbol_features"), Mapping) else {}
 
     for key, value in calendar_features.items():
         _set_missing_feature(features, str(key), value)
@@ -261,8 +510,15 @@ def _enrich_runtime_observation(
         _set_missing_feature(features, str(key), value)
     for key, value in breadth_features.items():
         _set_missing_feature(features, str(key), value)
-
+    for key, value in market_micro_features.items():
+        _set_missing_feature(features, str(key), value)
     symbol = str(obs.get("symbol") or "").strip().upper()
+    symbol_feature_map = external_symbol_features.get(symbol) if isinstance(external_symbol_features.get(symbol), Mapping) else {}
+    for key, value in symbol_feature_map.items():
+        _set_missing_feature(features, str(key), value)
+    for key, value in external_global_features.items():
+        _set_missing_feature(features, str(key), value)
+
     bond_features = summarize_bond_reference_context(
         symbol=symbol,
         market_snapshot=features,
@@ -629,12 +885,14 @@ def make_runtime_windowed_dataset(
     sample_filter: Optional[RuntimeSampleFilter] = None,
     confidence_builder: Optional[RuntimeConfidenceBuilder] = None,
     min_confidence: float = 0.0,
+    sample_stride: int = 1,
     window: int,
     horizon: int,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
     w = max(int(window), 1)
     h = max(int(horizon), 1)
     min_conf = max(0.0, min(float(min_confidence), 1.0))
+    stride = max(int(sample_stride), 1)
 
     samples: List[np.ndarray] = []
     labels: List[float] = []
@@ -650,7 +908,7 @@ def make_runtime_windowed_dataset(
         if len(rows) < (w + h):
             continue
         eligible_sequences += 1
-        for idx in range(w - 1, len(rows) - h):
+        for idx in range(w - 1, len(rows) - h, stride):
             if sample_filter is not None:
                 try:
                     include_sample = bool(sample_filter(rows, idx, h))
@@ -703,6 +961,7 @@ def make_runtime_windowed_dataset(
             "feature_dim": 0,
             "window": w,
             "horizon": h,
+            "sample_stride": stride,
             "positive_rate": 0.0,
             "skipped_labels": skipped_labels,
             "skipped_filtered": skipped_filtered,
@@ -718,6 +977,13 @@ def make_runtime_windowed_dataset(
     X = np.asarray([samples[i] for i in order], dtype=np.float32)
     y = np.asarray([[labels[i]] for i in order], dtype=np.float32)
     conf = np.asarray([sample_confidence[i] for i in order], dtype=np.float32)
+    anchor_ordered = np.asarray([anchor_ts[i] for i in order], dtype=np.float64)
+    X, y, conf, balance_meta = _rebalance_binary_runtime_dataset(
+        X,
+        y,
+        conf,
+        anchor_ordered,
+    )
     positive_rate = float(np.mean(y[:, 0])) if y.size else 0.0
     return X, y, {
         "sequence_count": len(sequences),
@@ -726,6 +992,7 @@ def make_runtime_windowed_dataset(
         "feature_dim": int(feature_dim),
         "window": w,
         "horizon": h,
+        "sample_stride": stride,
         "positive_rate": positive_rate,
         "skipped_labels": skipped_labels,
         "skipped_filtered": skipped_filtered,
@@ -735,4 +1002,92 @@ def make_runtime_windowed_dataset(
         "confidence_max": float(np.max(conf)) if conf.size else 0.0,
         "min_confidence": float(min_conf),
         "_sample_confidence": conf,
+        **balance_meta,
     }
+
+
+def _rebalance_binary_runtime_dataset(
+    X: np.ndarray,
+    y: np.ndarray,
+    conf: np.ndarray,
+    anchor_ts: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
+    labels = np.asarray(y[:, 0], dtype=np.float32).reshape(-1) if y.ndim == 2 else np.asarray([], dtype=np.float32)
+    total_samples = int(labels.size)
+    positive_count = int(np.sum(labels >= 0.5))
+    negative_count = int(total_samples - positive_count)
+    base_meta = {
+        "label_balance_applied": False,
+        "label_balance_reason": "not_needed",
+        "label_balance_original_sample_count": total_samples,
+        "label_balance_original_positive_rate": float(np.mean(labels)) if labels.size else 0.0,
+        "label_balance_kept_positive": positive_count,
+        "label_balance_kept_negative": negative_count,
+        "label_balance_max_ratio": float(
+            max(_safe_float(os.getenv("RUNTIME_TRAIN_LABEL_BALANCE_MAX_RATIO", _DEFAULT_RUNTIME_LABEL_BALANCE_MAX_RATIO), _DEFAULT_RUNTIME_LABEL_BALANCE_MAX_RATIO), 1.0)
+        ),
+    }
+    if total_samples == 0 or positive_count == 0 or negative_count == 0:
+        base_meta["label_balance_reason"] = "single_class"
+        return X, y, conf, base_meta
+
+    min_total_samples = max(
+        int(_safe_float(os.getenv("RUNTIME_TRAIN_LABEL_BALANCE_MIN_TOTAL_SAMPLES", _DEFAULT_RUNTIME_LABEL_BALANCE_MIN_TOTAL_SAMPLES), _DEFAULT_RUNTIME_LABEL_BALANCE_MIN_TOTAL_SAMPLES)),
+        1,
+    )
+    min_minority_samples = max(
+        int(_safe_float(os.getenv("RUNTIME_TRAIN_LABEL_BALANCE_MIN_MINORITY_SAMPLES", _DEFAULT_RUNTIME_LABEL_BALANCE_MIN_MINORITY_SAMPLES), _DEFAULT_RUNTIME_LABEL_BALANCE_MIN_MINORITY_SAMPLES)),
+        1,
+    )
+    max_ratio = float(base_meta["label_balance_max_ratio"])
+    if total_samples < min_total_samples:
+        base_meta["label_balance_reason"] = "sample_count_below_floor"
+        return X, y, conf, base_meta
+
+    if positive_count >= negative_count:
+        majority_idx = np.flatnonzero(labels >= 0.5)
+        minority_idx = np.flatnonzero(labels < 0.5)
+        majority_label = "positive"
+    else:
+        majority_idx = np.flatnonzero(labels < 0.5)
+        minority_idx = np.flatnonzero(labels >= 0.5)
+        majority_label = "negative"
+
+    if minority_idx.size < min_minority_samples:
+        base_meta["label_balance_reason"] = "minority_below_floor"
+        return X, y, conf, base_meta
+
+    if majority_idx.size <= int(math.ceil(minority_idx.size * max_ratio)):
+        base_meta["label_balance_reason"] = "already_within_ratio"
+        return X, y, conf, base_meta
+
+    target_majority = min(int(math.ceil(minority_idx.size * max_ratio)), int(majority_idx.size))
+    majority_by_time = majority_idx[np.argsort(anchor_ts[majority_idx], kind="stable")]
+    anchor_positions = np.unique(np.linspace(0, max(majority_by_time.size - 1, 0), num=target_majority, dtype=np.int64))
+    majority_keep = majority_by_time[anchor_positions]
+    if majority_keep.size < target_majority:
+        remaining_needed = int(target_majority - majority_keep.size)
+        majority_set = {int(i) for i in majority_keep.tolist()}
+        extras_ranked = sorted(
+            [int(i) for i in majority_idx.tolist() if int(i) not in majority_set],
+            key=lambda idx: (-float(conf[idx]), -float(anchor_ts[idx])),
+        )
+        if remaining_needed > 0 and extras_ranked:
+            majority_keep = np.concatenate([majority_keep, np.asarray(extras_ranked[:remaining_needed], dtype=np.int64)])
+
+    selected_idx = np.sort(np.concatenate([minority_idx, majority_keep]))
+    X_out = np.asarray(X[selected_idx], dtype=np.float32)
+    y_out = np.asarray(y[selected_idx], dtype=np.float32)
+    conf_out = np.asarray(conf[selected_idx], dtype=np.float32)
+    labels_out = np.asarray(y_out[:, 0], dtype=np.float32)
+    base_meta.update(
+        {
+            "label_balance_applied": True,
+            "label_balance_reason": f"downsampled_{majority_label}",
+            "label_balance_kept_positive": int(np.sum(labels_out >= 0.5)),
+            "label_balance_kept_negative": int(np.sum(labels_out < 0.5)),
+            "label_balance_rebalanced_sample_count": int(labels_out.size),
+            "label_balance_rebalanced_positive_rate": float(np.mean(labels_out)) if labels_out.size else 0.0,
+        }
+    )
+    return X_out, y_out, conf_out, base_meta

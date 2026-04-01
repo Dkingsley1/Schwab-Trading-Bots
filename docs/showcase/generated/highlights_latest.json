@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-03-22T15:34:40.054875+00:00",
+  "generated_at_utc": "2026-03-22T15:51:03.109473+00:00",
   "bot_summary": {
     "total_registered": 96,
     "active_count": 15,
@@ -57,55 +57,55 @@
       {
         "lane": "aggressive_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 1643,
+        "iter": 1676,
         "api_error": 0
       },
       {
         "lane": "bond_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 555,
+        "iter": 566,
         "api_error": 0
       },
       {
         "lane": "conservative_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 1643,
+        "iter": 1676,
         "api_error": 0
       },
       {
         "lane": "crypto_futures_crypto_coinbase",
         "loop_state": "running",
-        "iter": 2534,
+        "iter": 2567,
         "api_error": 0
       },
       {
         "lane": "default_crypto_coinbase",
         "loop_state": "running",
-        "iter": 2534,
+        "iter": 2567,
         "api_error": 0
       },
       {
         "lane": "dividend_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 824,
+        "iter": 840,
         "api_error": 0
       },
       {
         "lane": "intraday_aggressive_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 1643,
+        "iter": 1676,
         "api_error": 0
       },
       {
         "lane": "schwab_futures_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 1643,
+        "iter": 1676,
         "api_error": 0
       },
       {
         "lane": "swing_aggressive_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 660,
+        "iter": 673,
         "api_error": 0
       }
     ]
@@ -316,10 +316,10 @@
       }
     },
     "correlation": {
-      "timestamp_utc": "2026-03-22T15:23:02.847862+00:00",
+      "timestamp_utc": "2026-03-22T15:35:52.804231+00:00",
       "ok": true,
       "files_scanned": 20,
-      "rows_scanned": 250526,
+      "rows_scanned": 249729,
       "stock_symbols_observed": 165,
       "crypto_symbols_observed": 7,
       "aligned_pairs": 0,
@@ -411,7 +411,7 @@
       }
     },
     "watchdog": {
-      "timestamp_utc": "2026-03-22T15:34:24.714492Z",
+      "timestamp_utc": "2026-03-22T15:50:49.411172Z",
       "enabled": true,
       "streak_threshold": 2,
       "active": false,

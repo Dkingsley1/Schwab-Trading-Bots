@@ -223,7 +223,7 @@ def main() -> int:
 
     api_key = os.getenv("SCHWAB_API_KEY", "YOUR_KEY_HERE")
     secret = os.getenv("SCHWAB_SECRET", "YOUR_SECRET_HERE")
-    redirect = os.getenv("SCHWAB_REDIRECT", "https://127.0.0.1:8080")
+    redirect = os.getenv("SCHWAB_REDIRECT", "https://127.0.0.1:8182")
 
     normalized: List[Dict[str, Any]] = []
 

@@ -206,6 +206,48 @@ def test_make_runtime_windowed_dataset_applies_filter_and_confidence_gate(tmp_pa
     assert round(float(meta["confidence_mean"]), 4) == 0.9
 
 
+def test_make_runtime_windowed_dataset_rebalances_extreme_label_skew(tmp_path) -> None:
+    base_ts = datetime.now(timezone.utc)
+    path = tmp_path / "decision_explanations" / "shadow_aggressive_equities" / "decision_explanations_20260325.jsonl"
+    rows = []
+    price = 100.0
+    for i in range(96):
+        if i > 0:
+            price += (-0.75 if i % 12 == 0 else 0.28)
+        prev_close = max(price - (0.28 if i % 12 else -0.75), 1e-8) if i > 0 else price
+        rows.append(
+            {
+                "timestamp_utc": (base_ts + timedelta(seconds=60 * i)).isoformat(),
+                "mode": "shadow_aggressive_equities",
+                "symbol": "SPY",
+                "strategy": "grand_master_bot",
+                "features": {
+                    "last_price": price,
+                    "pct_from_close": (price / max(prev_close, 1e-8)) - 1.0,
+                    "vol_30m": 0.0035,
+                },
+                "metadata": {"layer": "grand_master", "snapshot_id": f"snap-{i}"},
+            }
+        )
+    _write_jsonl(path, rows)
+
+    sequences = rtc.load_runtime_observation_sequences(tmp_path, lookback_days=2)
+    X, y, meta = rtc.make_runtime_windowed_dataset(
+        sequences=sequences,
+        feature_builder=lambda seq, idx: np.asarray([rtc.observation_feature(seq[idx], "pct_from_close")], dtype=np.float32),
+        label_builder=rtc.direction_label_builder(min_return=0.0),
+        window=2,
+        horizon=1,
+    )
+
+    assert X.shape[0] == meta["sample_count"]
+    assert y.shape[0] == meta["sample_count"]
+    assert meta["label_balance_applied"] is True
+    assert meta["label_balance_original_sample_count"] > meta["sample_count"]
+    assert float(meta["label_balance_original_positive_rate"]) > 0.85
+    assert float(meta["positive_rate"]) <= 0.8001
+
+
 def test_load_runtime_observation_sequences_backfills_external_context_for_sparse_rows(tmp_path) -> None:
     ts = datetime.now(timezone.utc)
     path = tmp_path / "decision_explanations" / "shadow_bond_equities" / "decision_explanations_20260318.jsonl"
@@ -291,6 +333,126 @@ def test_load_runtime_observation_sequences_backfills_external_context_for_spars
         ),
         encoding="utf-8",
     )
+    (external_root / "sec_edgar_latest.json").write_text(
+        json.dumps(
+            {
+                "derived": {
+                    "news_features": {
+                        "news_source_quality_norm": 0.96,
+                        "news_topic_earnings_norm": 0.72,
+                    },
+                    "calendar_features": {
+                        "calendar_events_24h_norm": 0.25,
+                    },
+                    "global_features": {
+                        "sec_recent_symbols_norm": 0.45,
+                    },
+                    "symbol_features": {
+                        "TLT": {
+                            "sec_guidance_7d_norm": 0.55,
+                            "sec_recent_proximity_norm": 0.81,
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (external_root / "extended_quant_context_latest.json").write_text(
+        json.dumps(
+            {
+                "derived": {
+                    "global_features": {
+                        "sofr_funding_stress_norm": 0.66,
+                        "cboe_put_call_stress_norm": 0.58,
+                    },
+                    "symbol_features": {
+                        "TLT": {
+                            "short_threshold_listed_norm": 1.0,
+                        }
+                    },
+                    "bond_reference_overlay": {
+                        "funding_stress_norm": 0.66,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (external_root / "crypto_market_context_latest.json").write_text(
+        json.dumps(
+            {
+                "derived": {
+                    "news_features": {
+                        "news_available": 0.85,
+                        "news_items_24h": 0.65,
+                        "news_sentiment": -0.28,
+                        "news_shock_rate": 0.44,
+                        "news_source_quality_norm": 0.81,
+                    },
+                    "global_features": {
+                        "crypto_cross_provider_price_agreement_norm": 0.91,
+                        "crypto_defillama_stablecoin_growth_norm": 0.64,
+                    },
+                    "symbol_features": {
+                        "TLT": {
+                            "crypto_deribit_mark_iv_norm": 0.0,
+                        },
+                        "BTC-USD": {
+                            "crypto_deribit_mark_iv_norm": 0.74,
+                            "crypto_hyperliquid_funding_norm": 0.58,
+                        },
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (external_root / "market_crypto_correlation_latest.json").write_text(
+        json.dumps(
+            {
+                "derived": {
+                    "global_features": {
+                        "market_crypto_risk_corr_norm": 0.72,
+                        "market_crypto_corr_confidence_norm": 0.61,
+                    },
+                    "symbol_features": {
+                        "TLT": {
+                            "market_crypto_tlt_corr_norm": 0.33,
+                            "market_crypto_current_alignment_norm": 0.57,
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (external_root / "dividend_drip_state_latest.json").write_text(
+        json.dumps(
+            {
+                "derived": {
+                    "global_features": {
+                        "dividend_drip_active_norm": 0.44,
+                        "dividend_drip_confidence_norm": 0.71,
+                    },
+                    "symbol_features": {
+                        "TLT": {
+                            "dividend_drip_active_norm": 0.0,
+                        },
+                        "SCHD": {
+                            "dividend_drip_active_norm": 0.83,
+                            "dividend_drip_recent_reinvest_norm": 0.64,
+                            "dividend_drip_cash_only_norm": 0.12,
+                            "dividend_drip_share_credit_norm": 0.58,
+                            "dividend_drip_event_recency_norm": 0.91,
+                            "dividend_drip_confidence_norm": 0.88,
+                        },
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
     sequences = rtc.load_runtime_observation_sequences(tmp_path, lookback_days=2)
     row = sequences[("shadow_bond_equities", "TLT")][0]
@@ -301,6 +463,77 @@ def test_load_runtime_observation_sequences_backfills_external_context_for_spars
     assert features["bond_yield_10y_norm"] > 0.0
     assert features["news_available"] > 0.0
     assert features["news_sentiment"] < 0.0
+    assert features["news_shock_rate"] >= 0.44
+    assert features["sec_guidance_7d_norm"] == 0.55
+    assert features["sofr_funding_stress_norm"] == 0.66
+    assert features["short_threshold_listed_norm"] == 1.0
+    assert features["crypto_cross_provider_price_agreement_norm"] == 0.91
+    assert features["crypto_defillama_stablecoin_growth_norm"] == 0.64
+    assert features["market_crypto_risk_corr_norm"] == 0.72
+    assert features["market_crypto_tlt_corr_norm"] == 0.33
+    assert features["market_crypto_current_alignment_norm"] == 0.57
+    assert features["dividend_drip_active_norm"] == 0.0
+    assert features["dividend_drip_confidence_norm"] == 0.71
+
+
+def test_load_runtime_observation_sequences_backfills_dividend_drip_state(tmp_path) -> None:
+    ts = datetime.now(timezone.utc)
+    path = tmp_path / "decision_explanations" / "shadow_dividend_equities" / "decision_explanations_20260318.jsonl"
+
+    _write_jsonl(
+        path,
+        [
+            {
+                "timestamp_utc": ts.isoformat(),
+                "mode": "shadow_dividend_equities",
+                "symbol": "SCHD",
+                "strategy": "grand_master_bot",
+                "features": {
+                    "last_price": 27.5,
+                    "pct_from_close": 0.004,
+                    "vol_30m": 0.002,
+                },
+                "metadata": {"layer": "grand_master", "snapshot_id": "snap-drip-1"},
+            }
+        ],
+    )
+
+    external_root = tmp_path / "data" / "external_context"
+    external_root.mkdir(parents=True, exist_ok=True)
+    (external_root / "dividend_drip_state_latest.json").write_text(
+        json.dumps(
+            {
+                "derived": {
+                    "global_features": {
+                        "dividend_drip_active_norm": 0.52,
+                        "dividend_drip_confidence_norm": 0.61,
+                    },
+                    "symbol_features": {
+                        "SCHD": {
+                            "dividend_drip_active_norm": 0.86,
+                            "dividend_drip_recent_reinvest_norm": 0.72,
+                            "dividend_drip_cash_only_norm": 0.14,
+                            "dividend_drip_share_credit_norm": 0.63,
+                            "dividend_drip_event_recency_norm": 0.93,
+                            "dividend_drip_confidence_norm": 0.89,
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sequences = rtc.load_runtime_observation_sequences(tmp_path, lookback_days=2)
+    row = sequences[("shadow_dividend_equities", "SCHD")][0]
+    features = row["features"]
+
+    assert features["dividend_drip_active_norm"] == 0.86
+    assert features["dividend_drip_recent_reinvest_norm"] == 0.72
+    assert features["dividend_drip_cash_only_norm"] == 0.14
+    assert features["dividend_drip_share_credit_norm"] == 0.63
+    assert features["dividend_drip_event_recency_norm"] == 0.93
+    assert features["dividend_drip_confidence_norm"] == 0.89
 
 
 def test_load_runtime_observation_sequences_carries_forward_recent_context(tmp_path) -> None:

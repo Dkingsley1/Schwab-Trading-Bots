@@ -41,12 +41,33 @@ def _read_jsonl(path: Path) -> list[dict]:
     return rows
 
 
+def _strategy_bot_id(raw: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    if "::" in text:
+        return text.split("::", 1)[1].strip().lower()
+    return text.lower()
+
+
+def _failure_reason_summary(raw: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    marker = "runtime_training_quality_guard_failed"
+    if marker in text:
+        text = text.split(marker, 1)[-1].strip()
+    return text[:240]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build promotion bottleneck focus plan for targeted retrain.")
     parser.add_argument("--readiness-file", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "promotion_readiness_latest.json"))
     parser.add_argument("--history-jsonl", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "promotion_readiness_history.jsonl"))
     parser.add_argument("--diagnostics-file", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "canary_diagnostics_latest.json"))
     parser.add_argument("--regime-file", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "regime_segmented_latest.json"))
+    parser.add_argument("--training-success-file", default=str(PROJECT_ROOT / "governance" / "health" / "training_success_latest.json"))
+    parser.add_argument("--paper-performance-file", default=str(PROJECT_ROOT / "governance" / "health" / "paper_performance_latest.json"))
     parser.add_argument("--lookback-days", type=int, default=14)
     parser.add_argument("--top-bots", type=int, default=20)
     parser.add_argument("--top-segments", type=int, default=2)
@@ -57,6 +78,8 @@ def main() -> int:
     readiness = _load(Path(args.readiness_file))
     diagnostics = _load(Path(args.diagnostics_file))
     regime = _load(Path(args.regime_file))
+    training_success = _load(Path(args.training_success_file))
+    paper_performance = _load(Path(args.paper_performance_file))
 
     fail_by_segment = readiness.get("failed_by_segment") if isinstance(readiness.get("failed_by_segment"), dict) else {}
     seg_rows = regime.get("segments") if isinstance(regime.get("segments"), dict) else {}
@@ -75,14 +98,88 @@ def main() -> int:
     top_segments = ranked_segments[: max(int(args.top_segments), 1)]
 
     top_bots_raw = diagnostics.get("top_failing_bots") if isinstance(diagnostics.get("top_failing_bots"), list) else []
+    sleeve_rows = paper_performance.get("sleeve_latest") if isinstance(paper_performance.get("sleeve_latest"), list) else []
+    bot_to_sleeves: dict[str, list[str]] = {}
+    weak_sleeves = []
+    for sleeve in sleeve_rows:
+        if not isinstance(sleeve, dict):
+            continue
+        profile = str(sleeve.get("profile") or "").strip().lower()
+        if not profile:
+            continue
+        win_rate_raw = sleeve.get("win_rate")
+        weak_sleeves.append(
+            {
+                "profile": profile,
+                "ending_net_pnl_total": round(float(sleeve.get("ending_net_pnl_total", 0.0) or 0.0), 6),
+                "win_rate": (round(float(win_rate_raw), 6) if win_rate_raw is not None else None),
+                "winning_strategy_count": int(sleeve.get("winning_strategy_count", 0) or 0),
+                "losing_strategy_count": int(sleeve.get("losing_strategy_count", 0) or 0),
+                "flat_strategy_count": int(sleeve.get("flat_strategy_count", 0) or 0),
+            }
+        )
+        ranked = []
+        for key in ("top_losing_strategies", "top_winning_strategies"):
+            values = sleeve.get(key) if isinstance(sleeve.get(key), list) else []
+            ranked.extend(values)
+        for row in ranked:
+            if not isinstance(row, dict):
+                continue
+            bot_id = _strategy_bot_id(str(row.get("strategy") or ""))
+            if not bot_id:
+                continue
+            bot_to_sleeves.setdefault(bot_id, [])
+            if profile not in bot_to_sleeves[bot_id]:
+                bot_to_sleeves[bot_id].append(profile)
+    weak_sleeves.sort(
+        key=lambda row: (
+            1.0 if row.get("win_rate") is None else float(row.get("win_rate")),
+            float(row.get("ending_net_pnl_total", 0.0) or 0.0),
+            row.get("profile", ""),
+        )
+    )
+
     top_bots = []
-    for row in top_bots_raw[: max(int(args.top_bots), 1)]:
+    seen_bots: set[str] = set()
+    training_failures = training_success.get("failure_details") if isinstance(training_success.get("failure_details"), list) else []
+    latest_training_failures = []
+    for row in training_failures[: max(int(args.top_bots), 1)]:
         if not isinstance(row, dict):
             continue
         bot_id = str(row.get("bot_id", "")).strip().lower()
         if not bot_id:
             continue
-        top_bots.append({"bot_id": bot_id, "fail_days": int(row.get("fail_days", 0) or 0)})
+        seen_bots.add(bot_id)
+        latest_training_failures.append(
+            {
+                "bot_id": bot_id,
+                "latest_reason": _failure_reason_summary(str(row.get("reason") or "")),
+                "observed_live_sleeves": bot_to_sleeves.get(bot_id, []),
+            }
+        )
+        top_bots.append(
+            {
+                "bot_id": bot_id,
+                "fail_days": int(row.get("fail_days", 0) or 0),
+                "latest_reason": _failure_reason_summary(str(row.get("reason") or "")),
+                "observed_live_sleeves": bot_to_sleeves.get(bot_id, []),
+            }
+        )
+
+    for row in top_bots_raw[: max(int(args.top_bots), 1)]:
+        if not isinstance(row, dict):
+            continue
+        bot_id = str(row.get("bot_id", "")).strip().lower()
+        if not bot_id or bot_id in seen_bots:
+            continue
+        seen_bots.add(bot_id)
+        top_bots.append(
+            {
+                "bot_id": bot_id,
+                "fail_days": int(row.get("fail_days", 0) or 0),
+                "observed_live_sleeves": bot_to_sleeves.get(bot_id, []),
+            }
+        )
 
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=max(int(args.lookback_days), 1))
@@ -100,6 +197,7 @@ def main() -> int:
     regime_focus = ",".join([str(r["segment"]) for r in top_segments if str(r.get("segment", "")).strip()])
     canary_top_n = max(len(top_bots), 10)
     max_targets = min(max(12, len(top_bots) * 2), 30)
+    targeted_bot_ids = [str(row.get("bot_id") or "").strip() for row in top_bots if str(row.get("bot_id") or "").strip()]
 
     payload = {
         "timestamp_utc": now.isoformat(),
@@ -117,11 +215,15 @@ def main() -> int:
         },
         "top_segments": top_segments,
         "top_failing_bots": top_bots,
+        "latest_training_failures": latest_training_failures,
+        "weak_sleeves": weak_sleeves[:5],
         "recommended_retrain_profile": {
             "RETRAIN_REGIME_FOCUS": regime_focus,
             "RETRAIN_CANARY_PRIORITY_TOP_N": int(canary_top_n),
             "RETRAIN_MAX_TARGETS": int(max_targets),
             "RETRAIN_MIN_MODEL_AGE_HOURS": 12 if trend_direction != "improving" else 18,
+            "RETRAIN_INCLUDE_BOT_IDS": ",".join(targeted_bot_ids),
+            "RETRAIN_SKIP_MASTER_UPDATE": bool(targeted_bot_ids),
         },
     }
 

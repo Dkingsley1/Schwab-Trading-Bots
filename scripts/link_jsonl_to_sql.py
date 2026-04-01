@@ -8,7 +8,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 DEFAULT_INCLUDE_GLOBS = [
     "paper_trades_*.jsonl",
@@ -83,6 +83,87 @@ def _source_priority(source_rel: str) -> int:
         "other": 9,
     }
     return int(weights.get(stream, 9))
+
+
+def _path_hot_priority(source_rel: str) -> int:
+    rel = str(source_rel or "")
+    if rel.startswith("decision_explanations/"):
+        return 0
+    if rel.startswith("decisions/"):
+        return 1
+    hot_prefixes = (
+        ("governance/events/gate_logs_", 2),
+        ("governance/channels/gate/", 3),
+        ("governance/channels/risk/", 4),
+        ("governance/channels/decision/", 5),
+        ("governance/shadow_", 6),
+        ("governance/channels/api/", 7),
+        ("governance/channels/ingress/", 8),
+        ("governance/channels/runtime/", 9),
+    )
+    for prefix, priority in hot_prefixes:
+        if rel.startswith(prefix):
+            if prefix == "governance/shadow_" and "/shadow_pnl_attribution_" in rel:
+                return 11
+            return priority
+    return 9
+
+
+def _is_deferred_analytics_path(source_rel: str) -> bool:
+    rel = str(source_rel or "")
+    return (
+        rel.startswith("governance/events/api_calls_")
+        or rel.startswith("governance/events/data_ingress_")
+        or rel.startswith("governance/channels/api/")
+        or rel.startswith("governance/channels/ingress/")
+        or rel.startswith("governance/channels/runtime/")
+        or "/shadow_pnl_attribution_" in rel
+    )
+
+
+def _parse_csv_values(raw: Optional[str]) -> List[str]:
+    if raw is None:
+        return []
+    return [part.strip() for part in str(raw).split(",") if str(part).strip()]
+
+
+def _json_file_priority(source_rel: str) -> int:
+    stream = _json_file_stream(source_rel)
+    weights = {
+        "registry": 0,
+        "config": 1,
+        "governance_health": 2,
+        "governance_walk_forward": 3,
+        "governance_distillation": 4,
+        "governance_canary": 5,
+        "trade_history_json": 6,
+        "state_snapshot_drill": 7,
+        "json_file": 8,
+    }
+    return int(weights.get(stream, 8))
+
+
+def _matches_rel_filters(
+    *,
+    source_rel: str,
+    stream: str,
+    include_streams: List[str],
+    exclude_streams: List[str],
+    path_contains: List[str],
+    path_not_contains: List[str],
+) -> bool:
+    rel = str(source_rel or "")
+    include_streams_set = set(include_streams)
+    exclude_streams_set = set(exclude_streams)
+    if include_streams_set and stream not in include_streams_set:
+        return False
+    if exclude_streams_set and stream in exclude_streams_set:
+        return False
+    if path_contains and not any(token in rel for token in path_contains):
+        return False
+    if path_not_contains and any(token in rel for token in path_not_contains):
+        return False
+    return True
 
 
 def discover_jsonl_files(
@@ -165,6 +246,65 @@ def discover_json_files(
 
     found.sort(key=lambda path: str(path.relative_to(project_root)))
     return found
+
+
+def _prioritize_jsonl_files_by_pending_bytes(
+    files: List[Path],
+    *,
+    project_root: Path,
+    sqlite_state: Dict[str, Dict[str, Any]],
+) -> List[Path]:
+    def _sort_key(path: Path) -> Tuple[int, int, int, int, int, float, str]:
+        try:
+            rel = str(path.relative_to(project_root))
+        except Exception:
+            rel = str(path)
+        progress = sqlite_state.get(rel, {}) if isinstance(sqlite_state, dict) else {}
+        try:
+            stat = path.stat()
+            size_bytes = int(stat.st_size)
+            mtime = float(stat.st_mtime)
+        except Exception:
+            size_bytes = 0
+            mtime = 0.0
+        last_offset = int(float(progress.get("last_offset_bytes", 0) or 0))
+        pending_bytes = max(size_bytes - max(last_offset, 0), 0)
+        has_pending = 0 if pending_bytes > 0 else 1
+        deferred = 1 if _is_deferred_analytics_path(rel) else 0
+        return (has_pending, deferred, _path_hot_priority(rel), -pending_bytes, _source_priority(rel), -mtime, rel)
+
+    return sorted(files, key=_sort_key)
+
+
+def _limit_prioritized_jsonl_files(
+    files: List[Path],
+    *,
+    project_root: Path,
+    max_files: int,
+    max_deferred_files: int,
+) -> List[Path]:
+    if max_files <= 0:
+        return list(files)
+    core_files: List[Path] = []
+    deferred_files: List[Path] = []
+    for path in files:
+        try:
+            rel = str(path.relative_to(project_root))
+        except Exception:
+            rel = str(path)
+        if _is_deferred_analytics_path(rel):
+            deferred_files.append(path)
+        else:
+            core_files.append(path)
+    if not core_files:
+        return deferred_files[:max_files]
+
+    kept = core_files[:max_files]
+    remaining = max(max_files - len(kept), 0)
+    if remaining <= 0 or max_deferred_files <= 0:
+        return kept
+    kept.extend(deferred_files[: min(remaining, max_deferred_files)])
+    return kept
 
 
 def _load_state(path: Path) -> Dict[str, Dict[str, Dict[str, Any]]]:
@@ -642,15 +782,41 @@ def _sync_file_to_sqlite(
     invalid_sample_limit: int,
     run_id: str,
     iter_id: str,
+    checkpoint_every_lines: int = 0,
+    checkpoint_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     inserted = 0
     invalid = 0
     invalid_logged = 0
     last_line_seen = max(int(start_line), 0)
     last_offset_seen = max(int(start_offset_bytes), 0)
+    last_checkpoint_line = max(int(start_line), 0)
     source_rel = str(file_path.relative_to(project_root))
 
     rows: List[Tuple[Any, ...]] = []
+
+    def emit_checkpoint(force: bool = False) -> None:
+        nonlocal last_checkpoint_line
+        if checkpoint_cb is None or int(last_line_seen) <= int(last_checkpoint_line):
+            return
+        if not force and max(int(checkpoint_every_lines), 0) > 0:
+            if int(last_line_seen) - int(last_checkpoint_line) < int(checkpoint_every_lines):
+                return
+        if not dry_run:
+            if conn is None:
+                raise RuntimeError("sqlite connection missing")
+            conn.commit()
+        checkpoint_cb(
+            {
+                "last_line": int(last_line_seen),
+                "last_offset_bytes": int(last_offset_seen),
+                "inserted": int(inserted),
+                "invalid": int(invalid),
+                "invalid_samples_logged": int(invalid_logged),
+            }
+        )
+        last_checkpoint_line = int(last_line_seen)
+
     for line_no, raw, next_offset in _iter_new_lines(file_path, start_line, start_offset_bytes):
         last_line_seen = int(line_no)
         last_offset_seen = int(next_offset)
@@ -714,6 +880,7 @@ def _sync_file_to_sqlite(
             else:
                 inserted += len(rows)
             rows = []
+            emit_checkpoint()
 
     if rows:
         if not dry_run:
@@ -729,6 +896,8 @@ def _sync_file_to_sqlite(
             inserted += cur.rowcount if cur.rowcount is not None else 0
         else:
             inserted += len(rows)
+
+    emit_checkpoint(force=True)
 
     return {
         "inserted": int(inserted),
@@ -981,6 +1150,11 @@ def main() -> int:
         type=float,
         default=float(os.getenv("SQLITE_LOCK_RETRY_DELAY_SECONDS", "0.25")),
     )
+    parser.add_argument(
+        "--sqlite-state-checkpoint-lines",
+        type=int,
+        default=int(os.getenv("SQLITE_STATE_CHECKPOINT_LINES", "10000")),
+    )
 
     parser.add_argument("--mysql-bin", default=os.getenv("MYSQL_BIN", "/opt/homebrew/bin/mysql"))
     parser.add_argument("--mysql-host", default=os.getenv("MYSQL_HOST", "127.0.0.1"))
@@ -992,11 +1166,21 @@ def main() -> int:
     parser.add_argument("--mysql-batch-size", type=int, default=int(os.getenv("MYSQL_BATCH_SIZE", "200")))
 
     parser.add_argument("--max-files", type=int, default=0)
+    parser.add_argument(
+        "--max-deferred-files",
+        type=int,
+        default=int(os.getenv("INGEST_MAX_DEFERRED_FILES", "2")),
+    )
     parser.add_argument("--top-pending-files", type=int, default=int(os.getenv("INGEST_TOP_PENDING_FILES", "10")))
     parser.add_argument("--invalid-sample-limit", type=int, default=int(os.getenv("INGEST_INVALID_SAMPLE_LIMIT", "25")))
     parser.add_argument("--invalid-log-file", default=os.getenv("INGEST_INVALID_LOG_FILE", ""))
     parser.add_argument("--journal-file", default=os.getenv("INGEST_JOURNAL_FILE", ""))
     parser.add_argument("--journal-events-file", default=os.getenv("INGEST_JOURNAL_EVENTS_FILE", ""))
+    parser.add_argument("--health-file", default=os.getenv("INGEST_HEALTH_FILE", ""))
+    parser.add_argument("--include-streams", default=os.getenv("INGEST_INCLUDE_STREAMS", ""))
+    parser.add_argument("--exclude-streams", default=os.getenv("INGEST_EXCLUDE_STREAMS", ""))
+    parser.add_argument("--path-contains", default=os.getenv("INGEST_PATH_CONTAINS", ""))
+    parser.add_argument("--path-not-contains", default=os.getenv("INGEST_PATH_NOT_CONTAINS", ""))
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-json-files", action="store_true")
     args = parser.parse_args()
@@ -1006,10 +1190,57 @@ def main() -> int:
         print(f"Project root missing: {project_root}")
         return 2
 
+    include_streams = _parse_csv_values(args.include_streams)
+    exclude_streams = _parse_csv_values(args.exclude_streams)
+    path_contains = _parse_csv_values(args.path_contains)
+    path_not_contains = _parse_csv_values(args.path_not_contains)
+
     files = discover_jsonl_files(project_root)
+    files = [
+        fp
+        for fp in files
+        if _matches_rel_filters(
+            source_rel=str(fp.relative_to(project_root)),
+            stream=_classify_stream(str(fp.relative_to(project_root))),
+            include_streams=include_streams,
+            exclude_streams=exclude_streams,
+            path_contains=path_contains,
+            path_not_contains=path_not_contains,
+        )
+    ]
     json_files = [] if args.skip_json_files else discover_json_files(project_root)
+    if not args.skip_json_files:
+        json_files = [
+            fp
+            for fp in json_files
+            if _matches_rel_filters(
+                source_rel=str(fp.relative_to(project_root)),
+                stream=_json_file_stream(str(fp.relative_to(project_root))),
+                include_streams=[],
+                exclude_streams=[],
+                path_contains=path_contains,
+                path_not_contains=path_not_contains,
+            )
+        ]
+    state_path = (
+        Path(args.state_file).resolve()
+        if args.state_file
+        else (project_root / "governance" / "jsonl_sql_link_state.json")
+    )
+    state = _load_state(state_path)
+    files = _prioritize_jsonl_files_by_pending_bytes(
+        files,
+        project_root=project_root,
+        sqlite_state=state.get("sqlite", {}) if isinstance(state, dict) else {},
+    )
+
     if args.max_files > 0:
-        files = files[: args.max_files]
+        files = _limit_prioritized_jsonl_files(
+            files,
+            project_root=project_root,
+            max_files=args.max_files,
+            max_deferred_files=max(args.max_deferred_files, 0),
+        )
         json_files = json_files[: args.max_files]
 
     print(f"Discovered JSONL files: {len(files)}")
@@ -1017,13 +1248,6 @@ def main() -> int:
         print("Discovered JSON files: 0 (skip-json-files)")
     else:
         print(f"Discovered JSON files: {len(json_files)}")
-
-    state_path = (
-        Path(args.state_file).resolve()
-        if args.state_file
-        else (project_root / "governance" / "jsonl_sql_link_state.json")
-    )
-    state = _load_state(state_path)
 
     day_utc = datetime.now(timezone.utc).strftime("%Y%m%d")
     default_invalid_log = project_root / "governance" / "events" / f"jsonl_ingestion_invalid_{day_utc}.jsonl"
@@ -1035,6 +1259,11 @@ def main() -> int:
         Path(args.journal_file).resolve() if args.journal_file else default_journal_latest,
         Path(args.journal_events_file).resolve() if args.journal_events_file else default_journal_daily,
     ]
+    health_file_path = (
+        Path(args.health_file).resolve()
+        if args.health_file
+        else (project_root / "governance" / "health" / "jsonl_sql_ingestion_health_latest.json")
+    )
 
     run_id = str(os.getenv("CORRELATION_RUN_ID", "") or "").strip()
     iter_id = str(os.getenv("CORRELATION_ITER_ID", "") or "").strip()
@@ -1134,6 +1363,38 @@ def main() -> int:
                 }
                 _journal_event(journal_paths, start_evt)
 
+                def sqlite_checkpoint(checkpoint: Dict[str, Any]) -> None:
+                    try:
+                        checkpoint_st = fp.stat()
+                    except Exception:
+                        checkpoint_st = st
+                    state["sqlite"][rel] = {
+                        "last_line": int(checkpoint["last_line"]),
+                        "last_offset_bytes": int(checkpoint["last_offset_bytes"]),
+                        "mtime": float(checkpoint_st.st_mtime),
+                        "file_inode": int(checkpoint_st.st_ino),
+                        "file_size_bytes": int(checkpoint_st.st_size),
+                    }
+                    _save_state(state_path, state)
+                    pending_lines = max(int(total_lines) - int(checkpoint["last_line"]), 0)
+                    _journal_event(
+                        journal_paths,
+                        {
+                            "timestamp_utc": _now_utc(),
+                            "event": "file_checkpoint",
+                            "ingest_run_id": ingest_run_id,
+                            "mode": "sqlite",
+                            "source_rel": rel,
+                            "stream": stream,
+                            "last_line": int(checkpoint["last_line"]),
+                            "last_offset_bytes": int(checkpoint["last_offset_bytes"]),
+                            "inserted": int(checkpoint["inserted"]),
+                            "invalid": int(checkpoint["invalid"]),
+                            "invalid_samples_logged": int(checkpoint["invalid_samples_logged"]),
+                            "pending_lines": int(pending_lines),
+                        },
+                    )
+
                 lat_all, lat_stream = _ensure_latency_bucket(latency_metrics, "sqlite", stream)
                 started_ts = time.time()
                 try:
@@ -1153,6 +1414,8 @@ def main() -> int:
                         invalid_sample_limit=max(args.invalid_sample_limit, 0),
                         run_id=run_id,
                         iter_id=iter_id,
+                        checkpoint_every_lines=max(int(args.sqlite_state_checkpoint_lines), 0),
+                        checkpoint_cb=sqlite_checkpoint,
                     )
                 except FileNotFoundError:
                     _journal_event(
@@ -1492,11 +1755,18 @@ def main() -> int:
             "mode": args.mode,
             "project_root": str(project_root),
             "state_file": str(state_path),
+            "health_file": str(health_file_path),
             "checkpoint_mode": "line_offset_inode_v2",
             "files_discovered": int(len(files)),
             "json_files_discovered": int(len(json_files)),
             "invalid_log_file": str(invalid_log_path),
             "journal_files": [str(p) for p in journal_paths],
+            "filters": {
+                "include_streams": include_streams,
+                "exclude_streams": exclude_streams,
+                "path_contains": path_contains,
+                "path_not_contains": path_not_contains,
+            },
             "sqlite": {
                 "inserted": int(total_inserted["sqlite"]),
                 "invalid": int(total_invalid["sqlite"]),
@@ -1533,10 +1803,8 @@ def main() -> int:
             },
         }
 
-        health_dir = project_root / "governance" / "health"
-        health_dir.mkdir(parents=True, exist_ok=True)
-        health_latest = health_dir / "jsonl_sql_ingestion_health_latest.json"
-        with open(health_latest, "w", encoding="utf-8") as f:
+        health_file_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(health_file_path, "w", encoding="utf-8") as f:
             json.dump(health_payload, f, ensure_ascii=True, indent=2)
 
         print("Done.")
@@ -1563,7 +1831,7 @@ def main() -> int:
                 f"p95_latency_s={float(mysql_lat.get('p95_seconds', 0.0) or 0.0):.1f}"
             )
         print(f"State file: {state_path}")
-        print(f"Health summary: {health_latest}")
+        print(f"Health summary: {health_file_path}")
         return 0
     finally:
         if sqlite_conn is not None:

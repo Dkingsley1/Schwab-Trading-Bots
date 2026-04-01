@@ -55,3 +55,19 @@ def test_guard_fails_when_auth_reports_success_but_token_stays_stale() -> None:
     assert captured["payload"]["ok"] is False
     assert captured["payload"]["refresh_needed_after"] is True
 
+
+def test_token_needs_refresh_uses_configurable_expiry_floor() -> None:
+    status = {
+        "exists": True,
+        "size_bytes": 808,
+        "age_seconds": 30.0,
+        "expires_in_seconds": 500.0,
+    }
+
+    needs_refresh, reason = ptg._token_needs_refresh(status, max_age_seconds=3600.0, min_expires_seconds=300.0)
+    assert needs_refresh is False
+    assert reason == "token_fresh"
+
+    needs_refresh, reason = ptg._token_needs_refresh(status, max_age_seconds=3600.0, min_expires_seconds=600.0)
+    assert needs_refresh is True
+    assert reason.startswith("token_expiring_soon:")

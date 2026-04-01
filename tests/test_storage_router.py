@@ -129,6 +129,29 @@ class StorageRouterTests(unittest.TestCase):
                 (local_root / 'logs').resolve(strict=False),
             )
 
+    def test_auto_sync_records_copy_error_details(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            local_root = root / 'local'
+            external_root = root / 'external'
+            self._write_text(local_root / 'logs' / 'state.json', 'hello')
+            external_root.mkdir(parents=True, exist_ok=True)
+
+            with mock.patch.object(storage_router.shutil, 'copy2', side_effect=OSError('disk I/O failed')):
+                copied, errors, pruned, details = storage_router._auto_sync_local_to_external(
+                    local_root=local_root,
+                    external_root=external_root,
+                    link_dirs=('logs',),
+                    prune_local=False,
+                    max_copy_files=10,
+                )
+
+            self.assertEqual(copied, 0)
+            self.assertEqual(errors, 1)
+            self.assertEqual(pruned, 0)
+            self.assertEqual(len(details), 1)
+            self.assertIn('logs/state.json', details[0])
+
 
 if __name__ == '__main__':
     unittest.main()

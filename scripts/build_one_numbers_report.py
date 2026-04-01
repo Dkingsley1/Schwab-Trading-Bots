@@ -19,6 +19,10 @@ DEFAULT_REPORT_TIMEZONE = "America/New_York"
 DAY_SUFFIX_RE = re.compile(r"_(\d{8})\.jsonl$")
 
 
+def _emit_progress(message: str) -> None:
+    print(message, flush=True)
+
+
 def _acquire_singleton_lock(lock_path: Path):
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fh = open(lock_path, "a+", encoding="utf-8")
@@ -263,6 +267,105 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
+def _default_db_path() -> Path:
+    configured = str(os.getenv("SQL_LINK_SERVICE_PRIMARY_DB", "") or "").strip()
+    if configured:
+        return Path(configured)
+
+    progress = _read_json(PROJECT_ROOT / "governance" / "health" / "sql_link_service_progress_latest.json")
+    progress_db = str(progress.get("primary_db") or "").strip()
+    if progress_db:
+        return Path(progress_db)
+
+    latest = _read_json(PROJECT_ROOT / "governance" / "health" / "sql_link_service_latest.json")
+    latest_db = str(latest.get("db_path") or latest.get("primary_db") or "").strip()
+    if latest_db:
+        return Path(latest_db)
+
+    return DEFAULT_DB
+
+
+def _json_timestamp(payload: dict, path: Path) -> datetime | None:
+    if not isinstance(payload, dict):
+        return None
+    for key in ("timestamp_utc", "updated_at_utc", "updated_at", "created_at", "ended_utc", "started_utc", "generated_utc"):
+        raw = str(payload.get(key, "") or "").strip()
+        if not raw:
+            continue
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except Exception:
+        return None
+
+
+def _freshest_json_payload(paths: Iterable[Path]) -> tuple[dict, Path | None]:
+    best_payload: dict = {}
+    best_path: Path | None = None
+    best_score = float("-inf")
+    for path in paths:
+        payload = _read_json(path)
+        if not payload:
+            continue
+        ts = _json_timestamp(payload, path)
+        score = float(ts.timestamp()) if ts is not None else 0.0
+        if score >= best_score:
+            best_score = score
+            best_payload = payload
+            best_path = path
+    return best_payload, best_path
+
+
+def _progress_sort_key(progress: dict) -> tuple[int, int, float, int]:
+    return (
+        int(_safe_float(progress.get("last_line", 0), 0.0)),
+        int(_safe_float(progress.get("file_size_bytes", 0), 0.0)),
+        float(progress.get("mtime", 0.0) or 0.0),
+        int(_safe_float(progress.get("last_offset_bytes", 0), 0.0)),
+    )
+
+
+def _merge_sqlite_progress(merged: dict[str, dict], entries: dict[str, dict]) -> None:
+    for rel, raw_progress in entries.items():
+        progress = raw_progress if isinstance(raw_progress, dict) else {}
+        current = merged.get(str(rel), {})
+        if not isinstance(current, dict) or _progress_sort_key(progress) >= _progress_sort_key(current):
+            merged[str(rel)] = progress
+
+
+def _load_sqlite_progress(path: Path) -> dict[str, dict]:
+    payload = _read_json(path)
+    if not isinstance(payload, dict):
+        return {}
+    sqlite_state = payload.get("sqlite", {})
+    return sqlite_state if isinstance(sqlite_state, dict) else {}
+
+
+def _resolve_sqlite_state(project_root: Path) -> dict[str, dict]:
+    shard_root = project_root / "governance" / "sql_link_shards"
+    shard_files = sorted(p for p in shard_root.glob("jsonl_sql_link_state_*.json") if p.is_file())
+    legacy_path = project_root / "governance" / "jsonl_sql_link_state.json"
+
+    state_files: list[Path] = []
+    if shard_files:
+        state_files.extend(shard_files)
+    if legacy_path.exists():
+        state_files.append(legacy_path)
+    if not state_files:
+        return {}
+
+    merged: dict[str, dict] = {}
+    for path in state_files:
+        _merge_sqlite_progress(merged, _load_sqlite_progress(path))
+    return merged
+
+
 def _report_timezone() -> timezone | ZoneInfo:
     tz_name = str(os.getenv("ONE_NUMBERS_REPORT_TIMEZONE", DEFAULT_REPORT_TIMEZONE) or DEFAULT_REPORT_TIMEZONE).strip()
     try:
@@ -273,6 +376,68 @@ def _report_timezone() -> timezone | ZoneInfo:
 
 def _default_report_day() -> str:
     return datetime.now(_report_timezone()).strftime("%Y%m%d")
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return str(os.getenv(name, default) or default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_clock_minutes(raw: str, default: str) -> int:
+    candidate = str(raw or default).strip() or default
+    try:
+        hour_text, minute_text = candidate.split(":", 1)
+        hour = max(min(int(hour_text), 23), 0)
+        minute = max(min(int(minute_text), 59), 0)
+        return (hour * 60) + minute
+    except Exception:
+        return _parse_clock_minutes(default, "00:00") if candidate != default else 0
+
+
+def _data_quality_session_policy(now_utc: datetime) -> dict[str, object]:
+    tz_name = str(os.getenv("ONE_NUMBERS_SESSION_TIMEZONE", DEFAULT_REPORT_TIMEZONE) or DEFAULT_REPORT_TIMEZONE).strip()
+    try:
+        session_tz = ZoneInfo(tz_name)
+    except Exception:
+        session_tz = timezone.utc
+        tz_name = "UTC"
+
+    local_now = now_utc.astimezone(session_tz)
+    start_minutes = _parse_clock_minutes(os.getenv("ONE_NUMBERS_SESSION_START", "09:30"), "09:30")
+    end_minutes = _parse_clock_minutes(os.getenv("ONE_NUMBERS_SESSION_END", "16:00"), "16:00")
+    strict_decision_grace = max(_safe_int(os.getenv("ONE_NUMBERS_DECISION_STALE_GRACE_SECONDS", "120"), 120), 0)
+    strict_governance_grace = max(_safe_int(os.getenv("ONE_NUMBERS_GOVERNANCE_STALE_GRACE_SECONDS", "180"), 180), 0)
+    off_hours_grace = max(_safe_int(os.getenv("ONE_NUMBERS_OFF_HOURS_STALE_GRACE_SECONDS", "259200"), 259200), 0)
+    session_aware = _env_flag("ONE_NUMBERS_SESSION_AWARE_DATA_QUALITY", "1")
+
+    local_minutes = (local_now.hour * 60) + local_now.minute
+    weekday_open = local_now.weekday() < 5
+    session_open = weekday_open and start_minutes <= local_minutes < end_minutes
+
+    if session_aware and not session_open:
+        mode = "off_hours_relaxed"
+        decision_grace = max(strict_decision_grace, off_hours_grace)
+        governance_grace = max(strict_governance_grace, off_hours_grace)
+    else:
+        mode = "session_hours_strict" if session_open else "always_strict"
+        decision_grace = strict_decision_grace
+        governance_grace = strict_governance_grace
+
+    return {
+        "session_aware": bool(session_aware),
+        "session_open": bool(session_open),
+        "mode": mode,
+        "timezone": tz_name,
+        "local_timestamp": local_now.isoformat(),
+        "decision_grace_seconds": int(decision_grace),
+        "governance_grace_seconds": int(governance_grace),
+    }
+
+
+def _staleness_penalty(age_seconds: int, grace_seconds: int, divisor_seconds: float, cap: float) -> float:
+    overflow = max(float(age_seconds) - max(float(grace_seconds), 0.0), 0.0)
+    if overflow <= 0.0:
+        return 0.0
+    return min(overflow / max(float(divisor_seconds), 1.0), max(float(cap), 0.0))
 
 
 def _empty_day_sources() -> dict[str, list[str]]:
@@ -460,6 +625,51 @@ def _ensure_sql_snapshot_table(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_one_numbers_generated ON one_numbers_snapshots(generated_utc)")
 
 
+def _register_sql_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    generated_utc: str,
+    day: str,
+    decision_total_rows: int,
+    stocks_decision_rows: int,
+    crypto_decision_rows: int,
+    watchdog_restarts: int,
+    data_quality_score: float,
+    alerts: list[str],
+    metric_map: dict[str, str],
+) -> tuple[bool, str]:
+    try:
+        _ensure_sql_snapshot_table(conn)
+        conn.execute(
+            """
+            INSERT INTO one_numbers_snapshots (
+                generated_utc, day_utc, source_report_dir,
+                decision_total_rows, stocks_decision_rows, crypto_decision_rows,
+                watchdog_restarts, data_quality_score,
+                alerts_json, metrics_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                generated_utc,
+                day,
+                str(PROJECT_ROOT / "exports" / "sql_reports" / "latest"),
+                decision_total_rows,
+                stocks_decision_rows,
+                crypto_decision_rows,
+                watchdog_restarts,
+                data_quality_score,
+                json.dumps(alerts, ensure_ascii=True),
+                json.dumps(metric_map, ensure_ascii=True),
+            ),
+        )
+        conn.commit()
+        return True, ""
+    except sqlite3.OperationalError as exc:
+        if "locked" in str(exc).lower():
+            return False, str(exc)
+        raise
+
+
 def _latest_daily_snapshots(conn: sqlite3.Connection) -> dict[str, dict]:
     try:
         rows = conn.execute(
@@ -500,6 +710,39 @@ def _rollup_metric_float(metrics: dict, key: str) -> float:
     return _safe_float(metrics.get(key, 0.0), 0.0)
 
 
+def _blocked_metrics(
+    status_counts: dict[str, int],
+    decision_total_rows: int,
+    *,
+    observe_only_data_blocked_total: int = 0,
+) -> dict[str, float | int]:
+    risk_blocked_total = _safe_int(status_counts.get("BLOCKED", 0), 0)
+    raw_data_blocked_total = _safe_int(status_counts.get("DATA_ONLY_BLOCKED", 0), 0)
+    observe_only_data_blocked_total = min(max(_safe_int(observe_only_data_blocked_total, 0), 0), raw_data_blocked_total)
+    data_blocked_total = max(raw_data_blocked_total - observe_only_data_blocked_total, 0)
+    combined_blocked_total = risk_blocked_total + data_blocked_total
+    denom = max(decision_total_rows, 1)
+    risk_blocked_rate = risk_blocked_total / denom
+    raw_data_blocked_rate = raw_data_blocked_total / denom
+    observe_only_data_blocked_rate = observe_only_data_blocked_total / denom
+    data_blocked_rate = data_blocked_total / denom
+    combined_blocked_rate = combined_blocked_total / denom
+    effective_blocked_rate = min(data_blocked_rate + (risk_blocked_rate * 0.25), 1.0)
+    return {
+        "risk_blocked_total": risk_blocked_total,
+        "risk_blocked_rate": risk_blocked_rate,
+        "raw_data_blocked_total": raw_data_blocked_total,
+        "raw_data_blocked_rate": raw_data_blocked_rate,
+        "observe_only_data_blocked_total": observe_only_data_blocked_total,
+        "observe_only_data_blocked_rate": observe_only_data_blocked_rate,
+        "data_blocked_total": data_blocked_total,
+        "data_blocked_rate": data_blocked_rate,
+        "combined_blocked_total": combined_blocked_total,
+        "combined_blocked_rate": combined_blocked_rate,
+        "effective_blocked_rate": effective_blocked_rate,
+    }
+
+
 def _aggregate_rollup(entries: list[dict]) -> dict[str, str]:
     if not entries:
         return {
@@ -507,6 +750,8 @@ def _aggregate_rollup(entries: list[dict]) -> dict[str, str]:
             "decision_total_rows": "0",
             "governance_total_rows": "0",
             "blocked_total": "0",
+            "data_blocked_total": "0",
+            "risk_blocked_total": "0",
             "paper_executed_total": "0",
             "watchdog_restarts": "0",
             "avg_data_quality_score": "0.00",
@@ -516,6 +761,8 @@ def _aggregate_rollup(entries: list[dict]) -> dict[str, str]:
     decision_total_rows = sum(_rollup_metric_int(e["metrics"], "combined_decision_total_rows") for e in entries)
     governance_total_rows = sum(_rollup_metric_int(e["metrics"], "combined_governance_total_rows") for e in entries)
     blocked_total = sum(_rollup_metric_int(e["metrics"], "combined_blocked_total") for e in entries)
+    data_blocked_total = sum(_rollup_metric_int(e["metrics"], "data_blocked_total") for e in entries)
+    risk_blocked_total = sum(_rollup_metric_int(e["metrics"], "risk_blocked_total") for e in entries)
     paper_executed_total = sum(_rollup_metric_int(e["metrics"], "paper_executed_total") for e in entries)
     watchdog_restarts = sum(_rollup_metric_int(e["metrics"], "watchdog_restarts") for e in entries)
     avg_data_quality_score = sum(_rollup_metric_float(e["metrics"], "data_quality_score") for e in entries) / max(days_covered, 1)
@@ -524,19 +771,282 @@ def _aggregate_rollup(entries: list[dict]) -> dict[str, str]:
         "decision_total_rows": str(decision_total_rows),
         "governance_total_rows": str(governance_total_rows),
         "blocked_total": str(blocked_total),
+        "data_blocked_total": str(data_blocked_total),
+        "risk_blocked_total": str(risk_blocked_total),
         "paper_executed_total": str(paper_executed_total),
         "watchdog_restarts": str(watchdog_restarts),
         "avg_data_quality_score": f"{avg_data_quality_score:.2f}",
     }
 
 
+def _paper_history_by_day(paper_performance: dict) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    rows = paper_performance.get("history_daily_series") if isinstance(paper_performance.get("history_daily_series"), list) else []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        day = str(row.get("day_utc") or "").strip()
+        if not day:
+            continue
+        out[day] = row
+    return out
+
+
+def _lightweight_data_quality_score(
+    *,
+    decision_total_rows: int,
+    governance_total_rows: int,
+    decision_stale_windows: int,
+    governance_stale_windows: int,
+    watchdog_restarts: int,
+    watchdog_throttled: int,
+    watchdog_restart_errors: int,
+) -> float:
+    score = 100.0
+    if decision_total_rows == 0:
+        score -= 40.0
+    if governance_total_rows == 0:
+        score -= 25.0
+    score -= min(float(max(decision_stale_windows, 0)) * 12.0, 24.0)
+    score -= min(float(max(governance_stale_windows, 0)) * 8.0, 16.0)
+    score -= min(float(max(watchdog_restarts, 0)) * 1.0, 8.0)
+    score -= min(float(max(watchdog_throttled, 0)) * 2.0, 10.0)
+    score -= min(float(max(watchdog_restart_errors, 0)) * 3.0, 12.0)
+    return max(min(score, 100.0), 0.0)
+
+
+def _lightweight_metrics_from_daily_summary(summary: dict, paper_daily: dict) -> dict[str, float | int]:
+    decision = summary.get("decision") if isinstance(summary.get("decision"), dict) else {}
+    governance = summary.get("governance") if isinstance(summary.get("governance"), dict) else {}
+    watchdog = summary.get("watchdog") if isinstance(summary.get("watchdog"), dict) else {}
+    decision_total_rows = _safe_int(decision.get("rows"), 0)
+    governance_total_rows = _safe_int(governance.get("rows"), 0)
+    status_counts = decision.get("status_counts") if isinstance(decision.get("status_counts"), dict) else {}
+    blocked_metrics = _blocked_metrics(
+        {str(key): _safe_int(value, 0) for key, value in status_counts.items()},
+        decision_total_rows,
+        observe_only_data_blocked_total=_safe_int(decision.get("observe_only_data_blocked"), 0),
+    )
+    watchdog_restarts = _safe_int(watchdog.get("restarts"), 0)
+    watchdog_throttled = _safe_int(watchdog.get("throttled"), 0)
+    watchdog_restart_errors = _safe_int(watchdog.get("restart_errors"), 0)
+    decision_stale_windows = _safe_int(decision.get("stale_windows"), 0)
+    governance_stale_windows = _safe_int(governance.get("stale_windows"), 0)
+    return {
+        "combined_decision_total_rows": decision_total_rows,
+        "combined_governance_total_rows": governance_total_rows,
+        "combined_blocked_total": _safe_int(blocked_metrics["combined_blocked_total"], 0),
+        "raw_data_blocked_total": _safe_int(blocked_metrics["raw_data_blocked_total"], 0),
+        "observe_only_data_blocked_total": _safe_int(blocked_metrics["observe_only_data_blocked_total"], 0),
+        "data_blocked_total": _safe_int(blocked_metrics["data_blocked_total"], 0),
+        "risk_blocked_total": _safe_int(blocked_metrics["risk_blocked_total"], 0),
+        "combined_blocked_rate": _safe_float(blocked_metrics["combined_blocked_rate"], 0.0),
+        "raw_data_blocked_rate": _safe_float(blocked_metrics["raw_data_blocked_rate"], 0.0),
+        "observe_only_data_blocked_rate": _safe_float(blocked_metrics["observe_only_data_blocked_rate"], 0.0),
+        "data_blocked_rate": _safe_float(blocked_metrics["data_blocked_rate"], 0.0),
+        "risk_blocked_rate": _safe_float(blocked_metrics["risk_blocked_rate"], 0.0),
+        "effective_blocked_rate": _safe_float(blocked_metrics["effective_blocked_rate"], 0.0),
+        "paper_executed_total": _safe_int(paper_daily.get("executions"), 0),
+        "watchdog_restarts": watchdog_restarts,
+        "watchdog_throttled": watchdog_throttled,
+        "watchdog_restart_errors": watchdog_restart_errors,
+        "decision_stale_windows_4h": decision_stale_windows,
+        "governance_stale_windows_4h": governance_stale_windows,
+        "decision_source_files": len(decision.get("files", []) if isinstance(decision.get("files"), list) else []),
+        "governance_source_files": len(governance.get("files", []) if isinstance(governance.get("files"), list) else []),
+        "linked_source_files_total": len(decision.get("files", []) if isinstance(decision.get("files"), list) else [])
+        + len(governance.get("files", []) if isinstance(governance.get("files"), list) else []),
+        "combined_pnl_proxy": _safe_float(paper_daily.get("ending_net_pnl_total"), 0.0),
+        "data_quality_score": _lightweight_data_quality_score(
+            decision_total_rows=decision_total_rows,
+            governance_total_rows=governance_total_rows,
+            decision_stale_windows=decision_stale_windows,
+            governance_stale_windows=governance_stale_windows,
+            watchdog_restarts=watchdog_restarts,
+            watchdog_throttled=watchdog_throttled,
+            watchdog_restart_errors=watchdog_restart_errors,
+        ),
+    }
+
+
+def _load_daily_runtime_summary_history(project_root: Path) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    sql_root = project_root / "exports" / "sql_reports"
+    for path in sorted(sql_root.glob("daily_runtime_summary_*.json")):
+        payload = _read_json(path)
+        day = str(payload.get("day") or "").strip()
+        if not day:
+            continue
+        out[day] = payload
+    latest = _read_json(project_root / "governance" / "health" / "daily_runtime_summary_latest.json")
+    latest_day = str(latest.get("day") or "").strip()
+    if latest_day:
+        out[latest_day] = latest
+    return out
+
+
+def _resolve_lightweight_report_day(requested_day: str, history: dict[str, dict]) -> str:
+    requested = str(requested_day or "").strip() or _default_report_day()
+    current = history.get(requested, {})
+    if isinstance(current, dict):
+        decision_rows = _safe_int(((current.get("decision") or {}) if isinstance(current.get("decision"), dict) else {}).get("rows"), 0)
+        governance_rows = _safe_int(((current.get("governance") or {}) if isinstance(current.get("governance"), dict) else {}).get("rows"), 0)
+        if decision_rows > 0 or governance_rows > 0:
+            return requested
+    candidates = sorted(history.keys())
+    prior_or_equal = [day for day in candidates if day <= requested]
+    if prior_or_equal:
+        return prior_or_equal[-1]
+    return candidates[-1] if candidates else requested
+
+
+def _build_lightweight_summary_payload(*, project_root: Path, requested_day: str, db_path: Path) -> dict[str, object]:
+    previous_payload = _read_json(project_root / "governance" / "health" / "one_numbers_latest.json")
+    paper_performance = _read_json(project_root / "governance" / "health" / "paper_performance_latest.json")
+    paper_history = _paper_history_by_day(paper_performance)
+    history = _load_daily_runtime_summary_history(project_root)
+    resolved_day = _resolve_lightweight_report_day(requested_day, history)
+    summary = history.get(resolved_day, {})
+    metrics = _lightweight_metrics_from_daily_summary(summary, paper_history.get(resolved_day, {}))
+    entries: dict[str, dict] = {}
+    for day_utc, payload in history.items():
+        entries[day_utc] = {
+            "day_utc": day_utc,
+            "generated_utc": str(payload.get("generated_utc") or payload.get("timestamp_utc") or ""),
+            "metrics": _lightweight_metrics_from_daily_summary(payload, paper_history.get(day_utc, {})),
+        }
+    entries[resolved_day] = {
+        "day_utc": resolved_day,
+        "generated_utc": str(summary.get("generated_utc") or summary.get("timestamp_utc") or ""),
+        "metrics": metrics,
+    }
+    month_rollup = _aggregate_rollup(
+        [entry for day_utc, entry in entries.items() if str(day_utc).startswith(str(resolved_day)[:6])]
+    )
+    all_time_rollup = _aggregate_rollup(list(entries.values()))
+    now_utc = datetime.now(timezone.utc)
+    dq_policy = _data_quality_session_policy(now_utc)
+    logs_root = project_root / "logs"
+    try:
+        storage_logs_target = str(logs_root.resolve())
+    except Exception:
+        storage_logs_target = str(logs_root)
+    storage_mode = "external" if storage_logs_target.startswith("/Volumes/") else "local"
+
+    payload = dict(previous_payload if isinstance(previous_payload, dict) else {})
+    payload.update(
+        {
+            "generated_utc": now_utc.isoformat(),
+            "day_utc": resolved_day,
+            "requested_day": requested_day,
+            "resolved_day": resolved_day,
+            "day_fallback_applied": str(requested_day != resolved_day).lower(),
+            "report_section_01": "Report Metadata",
+            "report_section_02": "Current Day",
+            "report_section_03": "Month To Date",
+            "report_section_04": "All Time",
+            "report_section_05": "Detailed Metrics",
+            "db_path": str(db_path),
+            "combined_decision_total_rows": str(_safe_int(metrics["combined_decision_total_rows"], 0)),
+            "combined_governance_total_rows": str(_safe_int(metrics["combined_governance_total_rows"], 0)),
+            "combined_blocked_total": str(_safe_int(metrics["combined_blocked_total"], 0)),
+            "combined_blocked_rate": f"{_safe_float(metrics['combined_blocked_rate'], 0.0):.6f}",
+            "raw_data_blocked_total": str(_safe_int(metrics["raw_data_blocked_total"], 0)),
+            "raw_data_blocked_rate": f"{_safe_float(metrics['raw_data_blocked_rate'], 0.0):.6f}",
+            "observe_only_data_blocked_total": str(_safe_int(metrics["observe_only_data_blocked_total"], 0)),
+            "observe_only_data_blocked_rate": f"{_safe_float(metrics['observe_only_data_blocked_rate'], 0.0):.6f}",
+            "data_blocked_total": str(_safe_int(metrics["data_blocked_total"], 0)),
+            "data_blocked_rate": f"{_safe_float(metrics['data_blocked_rate'], 0.0):.6f}",
+            "risk_blocked_total": str(_safe_int(metrics["risk_blocked_total"], 0)),
+            "risk_blocked_rate": f"{_safe_float(metrics['risk_blocked_rate'], 0.0):.6f}",
+            "effective_blocked_rate": f"{_safe_float(metrics['effective_blocked_rate'], 0.0):.6f}",
+            "paper_executed_total": str(_safe_int(metrics["paper_executed_total"], 0)),
+            "watchdog_restarts": str(_safe_int(metrics["watchdog_restarts"], 0)),
+            "month_to_date_days_covered": month_rollup["days_covered"],
+            "month_to_date_decision_total_rows": month_rollup["decision_total_rows"],
+            "month_to_date_governance_total_rows": month_rollup["governance_total_rows"],
+            "month_to_date_blocked_total": month_rollup["blocked_total"],
+            "month_to_date_data_blocked_total": month_rollup["data_blocked_total"],
+            "month_to_date_risk_blocked_total": month_rollup["risk_blocked_total"],
+            "month_to_date_paper_executed_total": month_rollup["paper_executed_total"],
+            "month_to_date_watchdog_restarts": month_rollup["watchdog_restarts"],
+            "month_to_date_avg_data_quality_score": month_rollup["avg_data_quality_score"],
+            "all_time_days_covered": all_time_rollup["days_covered"],
+            "all_time_decision_total_rows": all_time_rollup["decision_total_rows"],
+            "all_time_governance_total_rows": all_time_rollup["governance_total_rows"],
+            "all_time_blocked_total": all_time_rollup["blocked_total"],
+            "all_time_data_blocked_total": all_time_rollup["data_blocked_total"],
+            "all_time_risk_blocked_total": all_time_rollup["risk_blocked_total"],
+            "all_time_paper_executed_total": all_time_rollup["paper_executed_total"],
+            "all_time_watchdog_restarts": all_time_rollup["watchdog_restarts"],
+            "all_time_avg_data_quality_score": all_time_rollup["avg_data_quality_score"],
+            "linked_source_files_total": str(_safe_int(metrics["linked_source_files_total"], 0)),
+            "decision_source_files": str(_safe_int(metrics["decision_source_files"], 0)),
+            "governance_source_files": str(_safe_int(metrics["governance_source_files"], 0)),
+            "decision_stale_windows_4h": str(_safe_int(metrics["decision_stale_windows_4h"], 0)),
+            "governance_stale_windows_4h": str(_safe_int(metrics["governance_stale_windows_4h"], 0)),
+            "watchdog_throttled": str(_safe_int(metrics["watchdog_throttled"], 0)),
+            "watchdog_restart_errors": str(_safe_int(metrics["watchdog_restart_errors"], 0)),
+            "decision_last_age_sec": "0",
+            "governance_last_age_sec": "0",
+            "decision_stale_penalty": "0.000000",
+            "governance_stale_penalty": "0.000000",
+            "data_quality_score": f"{_safe_float(metrics['data_quality_score'], 0.0):.2f}",
+            "data_quality_mode": str(dq_policy["mode"]),
+            "data_quality_session_aware": str(bool(dq_policy["session_aware"])).lower(),
+            "data_quality_session_open": str(bool(dq_policy["session_open"])).lower(),
+            "data_quality_session_timezone": str(dq_policy["timezone"]),
+            "data_quality_session_local_timestamp": str(dq_policy["local_timestamp"]),
+            "data_quality_decision_stale_grace_seconds": str(dq_policy["decision_grace_seconds"]),
+            "data_quality_governance_stale_grace_seconds": str(dq_policy["governance_grace_seconds"]),
+            "ops_storage_mode": storage_mode,
+            "ops_storage_logs_target": storage_logs_target,
+            "combined_pnl_proxy": f"{_safe_float(metrics['combined_pnl_proxy'], 0.0):.6f}",
+            "ALERT_WATCHDOG_RESTARTS": str(_safe_int(metrics["watchdog_restarts"], 0) > 0).lower(),
+            "ALERT_STALE_WINDOWS": str(
+                (_safe_int(metrics["decision_stale_windows_4h"], 0) + _safe_int(metrics["governance_stale_windows_4h"], 0)) > 0
+            ).lower(),
+            "ALERT_BLOCKED_RATE": str(_safe_float(metrics["effective_blocked_rate"], 0.0) > 0.25).lower(),
+            "ALERT_DATA_QUALITY": str(_safe_float(metrics["data_quality_score"], 0.0) < 80.0).lower(),
+            "report_mode": "lightweight_cached",
+            "lightweight_mode": True,
+            "lightweight_detail_fields_partial": True,
+        }
+    )
+    return payload
+
+
+def _observe_only_data_blocked_total(conn: sqlite3.Connection, decision_like: str) -> int:
+    return _safe_int(
+        _q1(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM jsonl_records
+            WHERE source_rel LIKE ?
+              AND COALESCE(json_extract(payload_json, '$.status'), '')='DATA_ONLY_BLOCKED'
+              AND COALESCE(json_extract(payload_json, '$.safety.market_data_only'), 0)=1
+              AND COALESCE(json_extract(payload_json, '$.safety.execution_enabled'), 1)=0
+            """,
+            (decision_like,),
+        ),
+        0,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build one concise numbers file from SQL logs (stocks + crypto + futures + options + alerts).")
     parser.add_argument("--day", default="", help="Preferred session day in YYYYMMDD. Defaults to the report timezone day and can fall back to the latest linked day with data.")
     parser.add_argument("--out-dir", default=str(PROJECT_ROOT / "exports" / "one_numbers"))
-    parser.add_argument("--db", default=str(DEFAULT_DB))
+    parser.add_argument("--db", default=str(_default_db_path()))
     parser.add_argument("--stale-seconds", type=int, default=180)
     parser.add_argument("--no-sql-write", action="store_true", help="Do not persist summary snapshot into SQLite")
+    parser.add_argument(
+        "--lightweight",
+        action="store_true",
+        help="Write latest JSON health snapshots only and skip CSV/XLSX/markdown bundle generation.",
+    )
+    parser.add_argument("--sqlite-timeout-seconds", type=float, default=15.0)
     args = parser.parse_args()
 
     lock_path = Path(os.getenv("ONE_NUMBERS_LOCK_PATH", str(PROJECT_ROOT / "governance" / "locks" / "one_numbers.lock")))
@@ -552,6 +1062,37 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     db_path = Path(args.db)
 
+    _emit_progress(
+        f"one_numbers start requested_day={requested_day} "
+        f"db={db_path} out_dir={out_dir} no_sql_write={str(bool(args.no_sql_write)).lower()}"
+    )
+
+    if args.lightweight:
+        summary_payload = _build_lightweight_summary_payload(
+            project_root=PROJECT_ROOT,
+            requested_day=requested_day,
+            db_path=db_path,
+        )
+        payload_text = json.dumps(summary_payload, ensure_ascii=True, indent=2)
+        latest_json = out_dir / "one_numbers_summary.json"
+        health_latest_json = PROJECT_ROOT / "governance" / "health" / "one_numbers_latest.json"
+        legacy_latest_dir = out_dir / "latest"
+        legacy_latest_json = legacy_latest_dir / "one_numbers_summary.json"
+        latest_json.write_text(payload_text, encoding="utf-8")
+        health_latest_json.parent.mkdir(parents=True, exist_ok=True)
+        health_latest_json.write_text(payload_text, encoding="utf-8")
+        legacy_latest_dir.mkdir(parents=True, exist_ok=True)
+        legacy_latest_json.write_text(payload_text, encoding="utf-8")
+        print("One Numbers lightweight mode enabled: used cached daily summary inputs and skipped SQL scan/artifact bundle.")
+        print(f"Latest JSON: {latest_json}")
+        try:
+            if lock_fh is not None:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+                lock_fh.close()
+        except Exception:
+            pass
+        return 0
+
     if not db_path.exists():
         try:
             if lock_fh is not None:
@@ -561,7 +1102,8 @@ def main() -> int:
             pass
         raise SystemExit(f"SQLite DB not found: {db_path}")
 
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), timeout=max(float(args.sqlite_timeout_seconds), 1.0))
+    conn.execute(f"PRAGMA busy_timeout={int(max(float(args.sqlite_timeout_seconds), 1.0) * 1000)}")
 
     day = requested_day
     decision_bucket_case = """
@@ -594,13 +1136,18 @@ def main() -> int:
     END
     """
 
-    state_obj = _read_json(PROJECT_ROOT / "governance" / "jsonl_sql_link_state.json")
-    sqlite_state = state_obj.get("sqlite") if isinstance(state_obj.get("sqlite"), dict) else {}
+    sqlite_state = _resolve_sqlite_state(PROJECT_ROOT)
     day, day_sources = _resolve_report_day(requested_day, sqlite_state)
     decision_sources_day = day_sources["decision"]
     governance_sources_day = day_sources["governance"]
     pnl_sources_day = day_sources["pnl"]
     watchdog_sources_day = day_sources["watchdog"]
+
+    _emit_progress(
+        f"one_numbers resolved_day={day} "
+        f"decision_sources={len(decision_sources_day)} governance_sources={len(governance_sources_day)} "
+        f"pnl_sources={len(pnl_sources_day)} watchdog_sources={len(watchdog_sources_day)}"
+    )
 
     decision_like = f"decision_explanations/%/decision_explanations_{day}.jsonl"
     governance_like = f"governance/%/master_control_{day}.jsonl"
@@ -611,7 +1158,7 @@ def main() -> int:
     decision_source_files = len(decision_sources_day)
     governance_source_files = len(governance_sources_day)
 
-    _ = _materialize_working_subset(
+    working_subset_rows = _materialize_working_subset(
         conn,
         source_rel_values=(
             decision_sources_day
@@ -625,6 +1172,8 @@ def main() -> int:
         pnl_like=pnl_like,
         watchdog_like=watchdog_like,
     )
+
+    _emit_progress(f"one_numbers working_subset_rows={working_subset_rows}")
 
     # Combined totals (computed against the temp working subset).
     decision_total_rows = _safe_int(_q1(conn, "SELECT COUNT(*) FROM jsonl_records WHERE source_rel LIKE ?", (decision_like,)), 0)
@@ -646,6 +1195,7 @@ def main() -> int:
         (decision_like,),
     )
     status_counts = {str(k): _safe_int(v) for k, v in status_rows}
+    observe_only_data_blocked_total = _observe_only_data_blocked_total(conn, decision_like)
 
     action_rows = _qall(
         conn,
@@ -996,8 +1546,22 @@ def main() -> int:
         0,
     )
 
-    blocked_total = status_counts.get("BLOCKED", 0) + status_counts.get("DATA_ONLY_BLOCKED", 0)
-    blocked_rate = blocked_total / max(decision_total_rows, 1)
+    blocked_metrics = _blocked_metrics(
+        status_counts,
+        decision_total_rows,
+        observe_only_data_blocked_total=observe_only_data_blocked_total,
+    )
+    blocked_total = int(blocked_metrics["combined_blocked_total"])
+    blocked_rate = float(blocked_metrics["combined_blocked_rate"])
+    raw_data_blocked_total = int(blocked_metrics["raw_data_blocked_total"])
+    raw_data_blocked_rate = float(blocked_metrics["raw_data_blocked_rate"])
+    observe_only_data_blocked_total = int(blocked_metrics["observe_only_data_blocked_total"])
+    observe_only_data_blocked_rate = float(blocked_metrics["observe_only_data_blocked_rate"])
+    data_blocked_total = int(blocked_metrics["data_blocked_total"])
+    data_blocked_rate = float(blocked_metrics["data_blocked_rate"])
+    risk_blocked_total = int(blocked_metrics["risk_blocked_total"])
+    risk_blocked_rate = float(blocked_metrics["risk_blocked_rate"])
+    effective_blocked_rate = float(blocked_metrics["effective_blocked_rate"])
     hold_no_edge_rate = hold_no_edge / max(action_counts.get("HOLD", 0), 1)
 
     # Paper execution (for paper-trading visibility in one-page report).
@@ -1045,6 +1609,23 @@ def main() -> int:
         """,
         (decision_like,),
     )
+
+    paper_performance = _read_json(PROJECT_ROOT / "governance" / "health" / "paper_performance_latest.json")
+    paper_sleeves = paper_performance.get("sleeve_latest") if isinstance(paper_performance.get("sleeve_latest"), list) else []
+    dividend_sleeve = next(
+        (
+            row for row in paper_sleeves
+            if isinstance(row, dict) and str(row.get("profile", "")).strip().lower() == "dividend"
+        ),
+        {},
+    )
+    dividend_ingress = _read_json(PROJECT_ROOT / "governance" / "health" / "data_ingress_latest_dividend_equities_schwab.json")
+    dividend_loop_state = str(dividend_ingress.get("loop_state") or "unknown")
+    dividend_pause_reason = str(dividend_ingress.get("pause_reason") or "none")
+    dividend_paper_executions = _safe_int(dividend_sleeve.get("executions"), 0)
+    dividend_ending_realized_pnl_total = _safe_float(dividend_sleeve.get("ending_realized_pnl_total"), 0.0)
+    dividend_ending_unrealized_pnl_total = _safe_float(dividend_sleeve.get("ending_unrealized_pnl_total"), 0.0)
+    dividend_ending_net_pnl_total = _safe_float(dividend_sleeve.get("ending_net_pnl_total"), 0.0)
 
     # Guardrail counters for quick verification in the one-page report.
     guardrail_master_latency_slo_fail = _safe_int(
@@ -1217,7 +1798,13 @@ def main() -> int:
         storage_logs_target = str(logs_root)
     storage_mode = "external" if storage_logs_target.startswith("/Volumes/") else "local"
 
-    sql_link_health = _read_json(PROJECT_ROOT / "governance" / "health" / "sql_link_service_latest.json")
+    sql_link_latest_path = PROJECT_ROOT / "governance" / "health" / "sql_link_service_latest.json"
+    sql_link_progress_path = PROJECT_ROOT / "governance" / "health" / "sql_link_service_progress_latest.json"
+    sql_link_health, sql_link_health_path = _freshest_json_payload([sql_link_progress_path, sql_link_latest_path])
+    if str((sql_link_health or {}).get("status", "")).strip().lower() == "running":
+        latest_completed = _read_json(sql_link_latest_path)
+        if latest_completed:
+            sql_link_health = {**latest_completed, **sql_link_health}
     sql_link_ok = bool(sql_link_health.get("ok"))
     sql_link_rc = _safe_int(sql_link_health.get("rc"), -1)
     sql_link_db_size_gb = _safe_float(sql_link_health.get("sqlite_db_size_gb"), 0.0)
@@ -1234,13 +1821,26 @@ def main() -> int:
     canary_enabled = bool(canary_state.get("enabled", canary_state.get("active", canary_weight > 0.0)))
 
     # Data quality score
+    dq_policy = _data_quality_session_policy(now_utc)
+    decision_stale_penalty = _staleness_penalty(
+        decision_last_age_sec,
+        int(dq_policy["decision_grace_seconds"]),
+        30.0,
+        20.0,
+    )
+    governance_stale_penalty = _staleness_penalty(
+        governance_last_age_sec,
+        int(dq_policy["governance_grace_seconds"]),
+        45.0,
+        15.0,
+    )
     score = 100.0
     if decision_total_rows == 0:
         score -= 40
     if governance_total_rows == 0:
         score -= 25
-    score -= min(max(decision_last_age_sec - 120, 0) / 30.0, 20.0)
-    score -= min(max(governance_last_age_sec - 180, 0) / 45.0, 15.0)
+    score -= decision_stale_penalty
+    score -= governance_stale_penalty
     if heartbeat_recent == 0:
         score -= 15
     score -= min(watchdog_restarts * 1.0, 8.0)
@@ -1252,7 +1852,7 @@ def main() -> int:
     alerts = {
         "ALERT_WATCHDOG_RESTARTS": watchdog_restarts > 0,
         "ALERT_STALE_WINDOWS": (decision_stale_windows + governance_stale_windows) > 0,
-        "ALERT_BLOCKED_RATE": blocked_rate > 0.25,
+        "ALERT_BLOCKED_RATE": effective_blocked_rate > 0.25,
         "ALERT_SYMBOL_CONCENTRATION": symbol_concentration_top3_share > 0.75,
         "ALERT_MODEL_DRIFT": model_drift_flag,
         "ALERT_DATA_QUALITY": data_quality_score < 80.0,
@@ -1262,6 +1862,10 @@ def main() -> int:
         "combined_decision_total_rows": decision_total_rows,
         "combined_governance_total_rows": governance_total_rows,
         "combined_blocked_total": blocked_total,
+        "raw_data_blocked_total": raw_data_blocked_total,
+        "observe_only_data_blocked_total": observe_only_data_blocked_total,
+        "data_blocked_total": data_blocked_total,
+        "risk_blocked_total": risk_blocked_total,
         "paper_executed_total": paper_executed_total,
         "watchdog_restarts": watchdog_restarts,
         "data_quality_score": data_quality_score,
@@ -1293,6 +1897,15 @@ def main() -> int:
         ("combined_governance_total_rows", str(governance_total_rows)),
         ("combined_blocked_total", str(blocked_total)),
         ("combined_blocked_rate", f"{blocked_rate:.6f}"),
+        ("raw_data_blocked_total", str(raw_data_blocked_total)),
+        ("raw_data_blocked_rate", f"{raw_data_blocked_rate:.6f}"),
+        ("observe_only_data_blocked_total", str(observe_only_data_blocked_total)),
+        ("observe_only_data_blocked_rate", f"{observe_only_data_blocked_rate:.6f}"),
+        ("data_blocked_total", str(data_blocked_total)),
+        ("data_blocked_rate", f"{data_blocked_rate:.6f}"),
+        ("risk_blocked_total", str(risk_blocked_total)),
+        ("risk_blocked_rate", f"{risk_blocked_rate:.6f}"),
+        ("effective_blocked_rate", f"{effective_blocked_rate:.6f}"),
         ("data_quality_score", f"{data_quality_score:.2f}"),
         ("paper_executed_total", str(paper_executed_total)),
         ("watchdog_restarts", str(watchdog_restarts)),
@@ -1301,6 +1914,8 @@ def main() -> int:
         ("month_to_date_decision_total_rows", month_rollup["decision_total_rows"]),
         ("month_to_date_governance_total_rows", month_rollup["governance_total_rows"]),
         ("month_to_date_blocked_total", month_rollup["blocked_total"]),
+        ("month_to_date_data_blocked_total", month_rollup["data_blocked_total"]),
+        ("month_to_date_risk_blocked_total", month_rollup["risk_blocked_total"]),
         ("month_to_date_paper_executed_total", month_rollup["paper_executed_total"]),
         ("month_to_date_watchdog_restarts", month_rollup["watchdog_restarts"]),
         ("month_to_date_avg_data_quality_score", month_rollup["avg_data_quality_score"]),
@@ -1309,6 +1924,8 @@ def main() -> int:
         ("all_time_decision_total_rows", all_time_rollup["decision_total_rows"]),
         ("all_time_governance_total_rows", all_time_rollup["governance_total_rows"]),
         ("all_time_blocked_total", all_time_rollup["blocked_total"]),
+        ("all_time_data_blocked_total", all_time_rollup["data_blocked_total"]),
+        ("all_time_risk_blocked_total", all_time_rollup["risk_blocked_total"]),
         ("all_time_paper_executed_total", all_time_rollup["paper_executed_total"]),
         ("all_time_watchdog_restarts", all_time_rollup["watchdog_restarts"]),
         ("all_time_avg_data_quality_score", all_time_rollup["avg_data_quality_score"]),
@@ -1368,12 +1985,27 @@ def main() -> int:
         ("watchdog_restart_errors", str(watchdog_restart_errors)),
         ("decision_last_age_sec", str(decision_last_age_sec)),
         ("governance_last_age_sec", str(governance_last_age_sec)),
+        ("decision_stale_penalty", f"{decision_stale_penalty:.6f}"),
+        ("governance_stale_penalty", f"{governance_stale_penalty:.6f}"),
+        ("data_quality_mode", str(dq_policy["mode"])),
+        ("data_quality_session_aware", str(bool(dq_policy["session_aware"])).lower()),
+        ("data_quality_session_open", str(bool(dq_policy["session_open"])).lower()),
+        ("data_quality_session_timezone", str(dq_policy["timezone"])),
+        ("data_quality_session_local_timestamp", str(dq_policy["local_timestamp"])),
+        ("data_quality_decision_stale_grace_seconds", str(dq_policy["decision_grace_seconds"])),
+        ("data_quality_governance_stale_grace_seconds", str(dq_policy["governance_grace_seconds"])),
         ("heartbeat_recent_count", str(heartbeat_recent)),
         ("bot_stack_overall_status", bot_stack_status),
         ("bot_stack_active_sub_bots", str(bot_stack_active_sub_bots)),
         ("bot_stack_watchdog_schwab_live", str(bot_stack_watchdog_schwab_live).lower()),
         ("bot_stack_watchdog_coinbase_live", str(bot_stack_watchdog_coinbase_live).lower()),
         ("paper_executed_crypto", str(paper_executed_crypto)),
+        ("dividend_loop_state", dividend_loop_state),
+        ("dividend_pause_reason", dividend_pause_reason),
+        ("dividend_paper_executions", str(dividend_paper_executions)),
+        ("dividend_ending_net_pnl_total", f"{dividend_ending_net_pnl_total:.6f}"),
+        ("dividend_ending_realized_pnl_total", f"{dividend_ending_realized_pnl_total:.6f}"),
+        ("dividend_ending_unrealized_pnl_total", f"{dividend_ending_unrealized_pnl_total:.6f}"),
         ("guardrail_master_latency_slo_fail", str(guardrail_master_latency_slo_fail)),
         ("guardrail_feature_freshness_fail", str(guardrail_feature_freshness_fail)),
         ("guardrail_canary_mentions", str(guardrail_canary_mentions)),
@@ -1409,13 +2041,15 @@ def main() -> int:
         rows.append((f"futures_top_symbol_{i}", f"{sym}:{cnt}"))
     for i in range(len(futures_top[:5]) + 1, 6):
         rows.append((f"futures_top_symbol_{i}", "n/a"))
-    for i, (style, cnt) in enumerate(futures_active_styles[:5], start=1):
+    style_field_limit = 10
+
+    for i, (style, cnt) in enumerate(futures_active_styles[:style_field_limit], start=1):
         rows.append((f"futures_style_{i}", f"{style}:{cnt}"))
-    for i in range(len(futures_active_styles[:5]) + 1, 6):
+    for i in range(len(futures_active_styles[:style_field_limit]) + 1, style_field_limit + 1):
         rows.append((f"futures_style_{i}", "n/a"))
-    for i, (style, cnt) in enumerate(options_active_styles[:5], start=1):
+    for i, (style, cnt) in enumerate(options_active_styles[:style_field_limit], start=1):
         rows.append((f"options_style_{i}", f"{style}:{cnt}"))
-    for i in range(len(options_active_styles[:5]) + 1, 6):
+    for i in range(len(options_active_styles[:style_field_limit]) + 1, style_field_limit + 1):
         rows.append((f"options_style_{i}", "n/a"))
 
     for i, (bot_id, pnl) in enumerate(pnl_strategy_rows[:5], start=1):
@@ -1432,110 +2066,121 @@ def main() -> int:
     md_path = out_dir / f"one_numbers_{day}_{stamp}.md"
     xlsx_path = out_dir / f"one_numbers_{day}_{stamp}.xlsx"
 
-    _write_kv_csv(csv_path, rows)
-    _write_one_numbers_xlsx(xlsx_path, rows)
+    if not args.lightweight:
+        _write_kv_csv(csv_path, rows)
+        _write_one_numbers_xlsx(xlsx_path, rows)
 
-    stocks_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in stocks_top[:5]) if stocks_top else "n/a"
-    crypto_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in crypto_top[:5]) if crypto_top else "n/a"
-    futures_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in futures_top[:5]) if futures_top else "n/a"
-    futures_styles_md = ", ".join(f"{style}:{cnt}" for style, cnt in futures_active_styles[:5]) if futures_active_styles else "n/a"
-    options_styles_md = ", ".join(f"{style}:{cnt}" for style, cnt in options_active_styles[:5]) if options_active_styles else "n/a"
+        stocks_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in stocks_top[:5]) if stocks_top else "n/a"
+        crypto_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in crypto_top[:5]) if crypto_top else "n/a"
+        futures_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in futures_top[:5]) if futures_top else "n/a"
+        futures_styles_md = ", ".join(f"{style}:{cnt}" for style, cnt in futures_active_styles[:style_field_limit]) if futures_active_styles else "n/a"
+        options_styles_md = ", ".join(f"{style}:{cnt}" for style, cnt in options_active_styles[:style_field_limit]) if options_active_styles else "n/a"
 
-    md_lines = [
-        f"# One Numbers Report ({day})",
-        "",
-        f"Generated: {generated_utc}",
-        f"Requested day: {requested_day}",
-        f"Resolved day: {day}",
-        "",
-        "## Combined",
-        f"- Decisions: {decision_total_rows}",
-        f"- Actions: BUY={action_counts.get('BUY',0)}, SELL={action_counts.get('SELL',0)}, HOLD={action_counts.get('HOLD',0)}",
-        f"- Blocked: {blocked_total} ({_fmt_pct(blocked_rate)})",
-        f"- Data quality score: {data_quality_score:.2f}/100",
-        "",
-        "## Month To Date",
-        f"- Days covered: {month_rollup['days_covered']}",
-        f"- Decisions: {month_rollup['decision_total_rows']}",
-        f"- Governance rows: {month_rollup['governance_total_rows']}",
-        f"- Blocked total: {month_rollup['blocked_total']}",
-        f"- Paper executions: {month_rollup['paper_executed_total']}",
-        f"- Watchdog restarts: {month_rollup['watchdog_restarts']}",
-        f"- Avg data quality score: {month_rollup['avg_data_quality_score']}/100",
-        "",
-        "## All Time",
-        f"- Days covered: {all_time_rollup['days_covered']}",
-        f"- Decisions: {all_time_rollup['decision_total_rows']}",
-        f"- Governance rows: {all_time_rollup['governance_total_rows']}",
-        f"- Blocked total: {all_time_rollup['blocked_total']}",
-        f"- Paper executions: {all_time_rollup['paper_executed_total']}",
-        f"- Watchdog restarts: {all_time_rollup['watchdog_restarts']}",
-        f"- Avg data quality score: {all_time_rollup['avg_data_quality_score']}/100",
-        "",
-        "## Stocks",
-        f"- Rows: {stocks_decision_rows}",
-        f"- Actions: BUY={stocks_actions.get('BUY',0)}, SELL={stocks_actions.get('SELL',0)}, HOLD={stocks_actions.get('HOLD',0)}",
-        f"- PnL proxy: {stocks_pnl_proxy:.6f}",
-        f"- Top symbols: {stocks_top_md}",
-        "",
-        "## Crypto",
-        f"- Rows: {crypto_decision_rows}",
-        f"- Actions: BUY={crypto_actions.get('BUY',0)}, SELL={crypto_actions.get('SELL',0)}, HOLD={crypto_actions.get('HOLD',0)}",
-        f"- PnL proxy: {crypto_pnl_proxy:.6f}",
-        f"- Top symbols: {crypto_top_md}",
-        "",
-        "## Futures",
-        f"- Rows: {futures_decision_rows}",
-        f"- Actions: BUY={futures_actions.get('BUY',0)}, SELL={futures_actions.get('SELL',0)}, HOLD={futures_actions.get('HOLD',0)}",
-        f"- PnL proxy: {futures_pnl_proxy:.6f}",
-        f"- Strategy decisions (style!=NONE): {futures_strategy_rows}",
-        f"- Strategy decisions NONE: {futures_none_rows}",
-        f"- Top symbols: {futures_top_md}",
-        f"- Active futures styles: {futures_styles_md}",
-        f"- Governance rows tagged futures: {futures_governance_rows}",
-        "",
-        "## Options",
-        f"- Strategy decisions (style!=NONE): {options_decision_rows}",
-        f"- Strategy decisions NONE: {options_none_rows}",
-        f"- Total contracts: {options_contracts_total:.2f}",
-        f"- Options master actions: BUY={options_master_actions.get('BUY',0)}, SELL={options_master_actions.get('SELL',0)}, HOLD={options_master_actions.get('HOLD',0)}",
-        f"- Active options styles: {options_styles_md}",
-        "",
-        "## Stability (15m / 1h / 4h)",
-        f"- Rows: {s15[0]} / {s60[0]} / {s240[0]}",
-        f"- Buy-sell imbalance: {_imbalance(s15[1], s15[2]):.4f} / {_imbalance(s60[1], s60[2]):.4f} / {_imbalance(s240[1], s240[2]):.4f}",
-        f"- Blocked rate: {_fmt_pct(s15[3]/max(s15[0],1))} / {_fmt_pct(s60[3]/max(s60[0],1))} / {_fmt_pct(s240[3]/max(s240[0],1))}",
-        f"- Stale windows (decision/governance): {decision_stale_windows}/{governance_stale_windows}",
-        "",
-        "## Risk/Diagnostics",
-        f"- Hold-no-edge rate: {_fmt_pct(hold_no_edge_rate)}",
-        f"- Symbol concentration top3 share: {_fmt_pct(symbol_concentration_top3_share)}",
-        f"- Drift abs (buy_rate 1h vs 4h): {buy_rate_drift_abs:.4f} (flag={str(model_drift_flag).lower()})",
-        "",
-        "## Bot Stack",
-        f"- Overall status: {bot_stack_status}",
-        f"- Active sub-bots: {bot_stack_active_sub_bots}",
-        f"- Watchdog live (schwab/coinbase): {str(bot_stack_watchdog_schwab_live).lower()}/{str(bot_stack_watchdog_coinbase_live).lower()}",
-        f"- Source: {bot_stack_latest_json}",
-        "",
-        "## Paper + Guardrails",
-        f"- Paper executed (total/crypto): {paper_executed_total}/{paper_executed_crypto}",
-        f"- Guardrail hits: latency_slo_fail={guardrail_master_latency_slo_fail}, feature_freshness_fail={guardrail_feature_freshness_fail}, canary_mentions={guardrail_canary_mentions}, event_lock_hits={guardrail_event_lock_hits}",
-        f"- Preopen replay sanity (24h rows/failures): {preopen_replay_rows_24h}/{preopen_replay_fail_24h}",
-        "",
-        "## Ops/Storage",
-        f"- Storage mode: {storage_mode}",
-        f"- Logs target: {storage_logs_target}",
-        f"- SQL link service: ok={str(sql_link_ok).lower()} rc={sql_link_rc} db_size_gb={sql_link_db_size_gb:.3f}",
-        f"- Hot retention: ran={str(hot_retention_ran).lower()} rc={hot_retention_rc} db_after_gb={hot_retention_db_after:.3f}",
-        f"- Canary state: enabled={str(canary_enabled).lower()} weight={canary_weight:.4f}",
-        "",
-        "## Alerts",
-    ]
-    md_lines.extend([f"- {k}: {str(v).lower()}" for k, v in alerts.items()])
-    md_lines.append("")
-    md_lines.append(f"CSV: `{csv_path}`")
-    md_path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+        md_lines = [
+            f"# One Numbers Report ({day})",
+            "",
+            f"Generated: {generated_utc}",
+            f"Requested day: {requested_day}",
+            f"Resolved day: {day}",
+            "",
+            "## Combined",
+            f"- Decisions: {decision_total_rows}",
+            f"- Actions: BUY={action_counts.get('BUY',0)}, SELL={action_counts.get('SELL',0)}, HOLD={action_counts.get('HOLD',0)}",
+            f"- Blocked: {blocked_total} ({_fmt_pct(blocked_rate)})",
+            f"- Data-blocked: {data_blocked_total} ({_fmt_pct(data_blocked_rate)})",
+            f"- Observe-only data-blocked excluded: {observe_only_data_blocked_total} ({_fmt_pct(observe_only_data_blocked_rate)})",
+            f"- Risk-blocked: {risk_blocked_total} ({_fmt_pct(risk_blocked_rate)})",
+            f"- Effective blocked rate: {_fmt_pct(effective_blocked_rate)}",
+            f"- Data quality score: {data_quality_score:.2f}/100",
+            f"- Data quality mode: {dq_policy['mode']} (session_open={str(bool(dq_policy['session_open'])).lower()}, tz={dq_policy['timezone']})",
+            "",
+            "## Month To Date",
+            f"- Days covered: {month_rollup['days_covered']}",
+            f"- Decisions: {month_rollup['decision_total_rows']}",
+            f"- Governance rows: {month_rollup['governance_total_rows']}",
+            f"- Blocked total: {month_rollup['blocked_total']}",
+            f"- Data-blocked total: {month_rollup['data_blocked_total']}",
+            f"- Risk-blocked total: {month_rollup['risk_blocked_total']}",
+            f"- Paper executions: {month_rollup['paper_executed_total']}",
+            f"- Watchdog restarts: {month_rollup['watchdog_restarts']}",
+            f"- Avg data quality score: {month_rollup['avg_data_quality_score']}/100",
+            "",
+            "## All Time",
+            f"- Days covered: {all_time_rollup['days_covered']}",
+            f"- Decisions: {all_time_rollup['decision_total_rows']}",
+            f"- Governance rows: {all_time_rollup['governance_total_rows']}",
+            f"- Blocked total: {all_time_rollup['blocked_total']}",
+            f"- Data-blocked total: {all_time_rollup['data_blocked_total']}",
+            f"- Risk-blocked total: {all_time_rollup['risk_blocked_total']}",
+            f"- Paper executions: {all_time_rollup['paper_executed_total']}",
+            f"- Watchdog restarts: {all_time_rollup['watchdog_restarts']}",
+            f"- Avg data quality score: {all_time_rollup['avg_data_quality_score']}/100",
+            "",
+            "## Stocks",
+            f"- Rows: {stocks_decision_rows}",
+            f"- Actions: BUY={stocks_actions.get('BUY',0)}, SELL={stocks_actions.get('SELL',0)}, HOLD={stocks_actions.get('HOLD',0)}",
+            f"- PnL proxy: {stocks_pnl_proxy:.6f}",
+            f"- Top symbols: {stocks_top_md}",
+            "",
+            "## Crypto",
+            f"- Rows: {crypto_decision_rows}",
+            f"- Actions: BUY={crypto_actions.get('BUY',0)}, SELL={crypto_actions.get('SELL',0)}, HOLD={crypto_actions.get('HOLD',0)}",
+            f"- PnL proxy: {crypto_pnl_proxy:.6f}",
+            f"- Top symbols: {crypto_top_md}",
+            "",
+            "## Futures",
+            f"- Rows: {futures_decision_rows}",
+            f"- Actions: BUY={futures_actions.get('BUY',0)}, SELL={futures_actions.get('SELL',0)}, HOLD={futures_actions.get('HOLD',0)}",
+            f"- PnL proxy: {futures_pnl_proxy:.6f}",
+            f"- Strategy decisions (style!=NONE): {futures_strategy_rows}",
+            f"- Strategy decisions NONE: {futures_none_rows}",
+            f"- Top symbols: {futures_top_md}",
+            f"- Active futures styles: {futures_styles_md}",
+            f"- Governance rows tagged futures: {futures_governance_rows}",
+            "",
+            "## Options",
+            f"- Strategy decisions (style!=NONE): {options_decision_rows}",
+            f"- Strategy decisions NONE: {options_none_rows}",
+            f"- Total contracts: {options_contracts_total:.2f}",
+            f"- Options master actions: BUY={options_master_actions.get('BUY',0)}, SELL={options_master_actions.get('SELL',0)}, HOLD={options_master_actions.get('HOLD',0)}",
+            f"- Active options styles: {options_styles_md}",
+            "",
+            "## Stability (15m / 1h / 4h)",
+            f"- Rows: {s15[0]} / {s60[0]} / {s240[0]}",
+            f"- Buy-sell imbalance: {_imbalance(s15[1], s15[2]):.4f} / {_imbalance(s60[1], s60[2]):.4f} / {_imbalance(s240[1], s240[2]):.4f}",
+            f"- Blocked rate: {_fmt_pct(s15[3]/max(s15[0],1))} / {_fmt_pct(s60[3]/max(s60[0],1))} / {_fmt_pct(s240[3]/max(s240[0],1))}",
+            f"- Stale windows (decision/governance): {decision_stale_windows}/{governance_stale_windows}",
+            "",
+            "## Risk/Diagnostics",
+            f"- Hold-no-edge rate: {_fmt_pct(hold_no_edge_rate)}",
+            f"- Symbol concentration top3 share: {_fmt_pct(symbol_concentration_top3_share)}",
+            f"- Drift abs (buy_rate 1h vs 4h): {buy_rate_drift_abs:.4f} (flag={str(model_drift_flag).lower()})",
+            "",
+            "## Bot Stack",
+            f"- Overall status: {bot_stack_status}",
+            f"- Active sub-bots: {bot_stack_active_sub_bots}",
+            f"- Watchdog live (schwab/coinbase): {str(bot_stack_watchdog_schwab_live).lower()}/{str(bot_stack_watchdog_coinbase_live).lower()}",
+            f"- Source: {bot_stack_latest_json}",
+            "",
+            "## Paper + Guardrails",
+            f"- Paper executed (total/crypto): {paper_executed_total}/{paper_executed_crypto}",
+            f"- Dividend sleeve: loop_state={dividend_loop_state}, pause_reason={dividend_pause_reason}, executions={dividend_paper_executions}, end_net={dividend_ending_net_pnl_total:.6f}",
+            f"- Guardrail hits: latency_slo_fail={guardrail_master_latency_slo_fail}, feature_freshness_fail={guardrail_feature_freshness_fail}, canary_mentions={guardrail_canary_mentions}, event_lock_hits={guardrail_event_lock_hits}",
+            f"- Preopen replay sanity (24h rows/failures): {preopen_replay_rows_24h}/{preopen_replay_fail_24h}",
+            "",
+            "## Ops/Storage",
+            f"- Storage mode: {storage_mode}",
+            f"- Logs target: {storage_logs_target}",
+            f"- SQL link service: ok={str(sql_link_ok).lower()} rc={sql_link_rc} db_size_gb={sql_link_db_size_gb:.3f}",
+            f"- Hot retention: ran={str(hot_retention_ran).lower()} rc={hot_retention_rc} db_after_gb={hot_retention_db_after:.3f}",
+            f"- Canary state: enabled={str(canary_enabled).lower()} weight={canary_weight:.4f}",
+            "",
+            "## Alerts",
+        ]
+        md_lines.extend([f"- {k}: {str(v).lower()}" for k, v in alerts.items()])
+        md_lines.append("")
+        md_lines.append(f"CSV: `{csv_path}`")
+        md_path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
 
     latest_csv = out_dir / "latest.csv"
     latest_md = out_dir / "latest.md"
@@ -1563,52 +2208,48 @@ def main() -> int:
     legacy_latest_dir.mkdir(parents=True, exist_ok=True)
     legacy_latest_json.write_text(payload_text, encoding="utf-8")
 
-    if latest_csv.exists() or latest_csv.is_symlink():
-        latest_csv.unlink()
-    if latest_md.exists() or latest_md.is_symlink():
-        latest_md.unlink()
-    if latest_xlsx.exists() or latest_xlsx.is_symlink():
-        latest_xlsx.unlink()
-    latest_csv.symlink_to(csv_path)
-    latest_md.symlink_to(md_path)
-    latest_xlsx.symlink_to(xlsx_path)
+    if not args.lightweight:
+        if latest_csv.exists() or latest_csv.is_symlink():
+            latest_csv.unlink()
+        if latest_md.exists() or latest_md.is_symlink():
+            latest_md.unlink()
+        if latest_xlsx.exists() or latest_xlsx.is_symlink():
+            latest_xlsx.unlink()
+        latest_csv.symlink_to(csv_path)
+        latest_md.symlink_to(md_path)
+        latest_xlsx.symlink_to(xlsx_path)
 
     # SQL register snapshot
+    snapshot_write_ok = False
+    snapshot_write_warning = ""
     if not args.no_sql_write:
-        _ensure_sql_snapshot_table(conn)
-        conn.execute(
-            """
-            INSERT INTO one_numbers_snapshots (
-                generated_utc, day_utc, source_report_dir,
-                decision_total_rows, stocks_decision_rows, crypto_decision_rows,
-                watchdog_restarts, data_quality_score,
-                alerts_json, metrics_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                generated_utc,
-                day,
-                str(PROJECT_ROOT / "exports" / "sql_reports" / "latest"),
-                decision_total_rows,
-                stocks_decision_rows,
-                crypto_decision_rows,
-                watchdog_restarts,
-                data_quality_score,
-                json.dumps(alerts, ensure_ascii=True),
-                json.dumps(metric_map, ensure_ascii=True),
-            ),
+        snapshot_write_ok, snapshot_write_warning = _register_sql_snapshot(
+            conn,
+            generated_utc=generated_utc,
+            day=day,
+            decision_total_rows=decision_total_rows,
+            stocks_decision_rows=stocks_decision_rows,
+            crypto_decision_rows=crypto_decision_rows,
+            watchdog_restarts=watchdog_restarts,
+            data_quality_score=data_quality_score,
+            alerts=alerts,
+            metric_map=metric_map,
         )
-        conn.commit()
 
-    print(f"Wrote: {csv_path}")
-    print(f"Wrote: {md_path}")
-    print(f"Wrote: {xlsx_path}")
-    print(f"Latest CSV: {latest_csv}")
-    print(f"Latest MD: {latest_md}")
-    print(f"Latest XLSX: {latest_xlsx}")
+    if args.lightweight:
+        print("One Numbers lightweight mode enabled: skipped CSV/XLSX/markdown artifact bundle.")
+    else:
+        print(f"Wrote: {csv_path}")
+        print(f"Wrote: {md_path}")
+        print(f"Wrote: {xlsx_path}")
+        print(f"Latest CSV: {latest_csv}")
+        print(f"Latest MD: {latest_md}")
+        print(f"Latest XLSX: {latest_xlsx}")
     print(f"Latest JSON: {latest_json}")
-    if not args.no_sql_write:
+    if not args.no_sql_write and snapshot_write_ok:
         print("Registered snapshot in SQLite table: one_numbers_snapshots")
+    elif snapshot_write_warning:
+        print(f"[WARN] Skipped one_numbers_snapshots SQL write: {snapshot_write_warning}")
 
     try:
         if lock_fh is not None:

@@ -14,11 +14,18 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-VENV_PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_python import resolve_runtime_python
+
+VENV_PY = resolve_runtime_python(PROJECT_ROOT)
 PARALLEL_SHADOWS = PROJECT_ROOT / "scripts" / "run_parallel_shadows.py"
 DIVIDEND_SHADOW = PROJECT_ROOT / "scripts" / "run_dividend_shadow.py"
 BOND_SHADOW = PROJECT_ROOT / "scripts" / "run_bond_shadow.py"
+FX_SHADOW = PROJECT_ROOT / "scripts" / "run_fx_shadow.py"
 AGGRESSIVE_MODES = PROJECT_ROOT / "scripts" / "run_parallel_aggressive_modes.py"
+EXECUTION_LANE = PROJECT_ROOT / "scripts" / "run_execution_lane.py"
 HALT_FLAG_PATH = PROJECT_ROOT / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
 PREFLIGHT_SCRIPT = PROJECT_ROOT / "scripts" / "shadow_preflight.py"
 DEBUG_SNAPSHOT_SCRIPT = PROJECT_ROOT / "scripts" / "collect_debug_snapshot.sh"
@@ -239,12 +246,31 @@ def _run_preflight(args: argparse.Namespace) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run all Schwab sleeves together: baseline + dividend + bond (+ optional aggressive modes).")
+    parser = argparse.ArgumentParser(description="Run all Schwab sleeves together: baseline + dividend + bond + optional FX (+ optional aggressive modes).")
     parser.add_argument("--simulate", action="store_true", help="Run all sleeves in simulation mode.")
     parser.add_argument("--with-aggressive-modes", action="store_true", help="Also run intraday+swing aggressive modes.")
+    parser.add_argument(
+        "--with-fx",
+        action="store_true",
+        default=_env_flag("RUN_ALL_SLEEVES_WITH_FX", os.getenv("FX_SHADOW_ENABLED", "0")),
+        help="Also run the paper-only FX proxy sleeve.",
+    )
+    parser.add_argument(
+        "--with-paper-executor",
+        action="store_true",
+        default=_env_flag("RUN_ALL_SLEEVES_WITH_PAPER_EXECUTOR", "1"),
+        help="Run the standalone paper execution lane consumer.",
+    )
+    parser.add_argument(
+        "--with-live-executor",
+        action="store_true",
+        default=_env_flag("RUN_ALL_SLEEVES_WITH_LIVE_EXECUTOR", "0"),
+        help="Run the standalone live execution lane consumer.",
+    )
     parser.add_argument("--parallel-interval-seconds", type=int, default=int(os.getenv("SHADOW_LOOP_INTERVAL", "15")))
     parser.add_argument("--dividend-interval-seconds", type=int, default=int(os.getenv("DIVIDEND_SHADOW_INTERVAL", "60")))
     parser.add_argument("--bond-interval-seconds", type=int, default=int(os.getenv("BOND_SHADOW_INTERVAL", "90")))
+    parser.add_argument("--fx-interval-seconds", type=int, default=int(os.getenv("FX_SHADOW_INTERVAL", "45")))
     parser.add_argument("--broker", default=os.getenv("DATA_BROKER", "schwab"), choices=["schwab", "coinbase"])
     parser.add_argument("--max-iterations", type=int, default=int(os.getenv("SHADOW_LOOP_MAX_ITERS", "0")))
     parser.add_argument("--symbols-core", default=os.getenv("SHADOW_SYMBOLS_CORE", ""))
@@ -252,6 +278,8 @@ def main() -> int:
     parser.add_argument("--symbols-defensive", default=(os.getenv("SHADOW_SYMBOLS_DEFENSIVE", "") + "," + os.getenv("SHADOW_SYMBOLS_COMMOD_FX_INTL", "")).strip(","))
     parser.add_argument("--dividend-symbols", default=os.getenv("DIVIDEND_SYMBOLS", ""))
     parser.add_argument("--bond-symbols", default=os.getenv("BOND_SYMBOLS", ""))
+    parser.add_argument("--fx-symbols", default=os.getenv("FX_SYMBOLS", ""))
+    parser.add_argument("--fx-context-symbols", default=os.getenv("FX_CONTEXT_SYMBOLS", ""))
     parser.add_argument("--restart-delay-seconds", type=int, default=int(os.getenv("ALL_SLEEVES_RESTART_DELAY", "3")))
     parser.add_argument("--max-restarts-per-hour", type=int, default=int(os.getenv("ALL_SLEEVES_MAX_RESTARTS_PER_HOUR", "40")))
     parser.add_argument("--no-restart-on-exit", dest="restart_on_exit", action="store_false", default=True)
@@ -265,10 +293,12 @@ def main() -> int:
     parser.add_argument("--nice-baseline", type=int, default=int(os.getenv("SLEEVE_NICE_BASELINE", "6")))
     parser.add_argument("--nice-dividend", type=int, default=int(os.getenv("SLEEVE_NICE_DIVIDEND", "10")))
     parser.add_argument("--nice-bond", type=int, default=int(os.getenv("SLEEVE_NICE_BOND", "10")))
+    parser.add_argument("--nice-fx", type=int, default=int(os.getenv("SLEEVE_NICE_FX", "9")))
     parser.add_argument("--nice-aggressive", type=int, default=int(os.getenv("SLEEVE_NICE_AGGRESSIVE", "5")))
     parser.add_argument("--workers-baseline", type=int, default=int(os.getenv("SLEEVE_WORKERS_BASELINE", os.getenv("ASYNC_PIPELINE_WORKERS", "4"))))
     parser.add_argument("--workers-dividend", type=int, default=int(os.getenv("SLEEVE_WORKERS_DIVIDEND", "2")))
     parser.add_argument("--workers-bond", type=int, default=int(os.getenv("SLEEVE_WORKERS_BOND", "2")))
+    parser.add_argument("--workers-fx", type=int, default=int(os.getenv("SLEEVE_WORKERS_FX", "2")))
     parser.add_argument("--workers-aggressive", type=int, default=int(os.getenv("SLEEVE_WORKERS_AGGRESSIVE", "3")))
 
     parser.add_argument("--disable-circuit-breakers", action="store_true")
@@ -324,6 +354,9 @@ def main() -> int:
     base_env = os.environ.copy()
     base_env["MARKET_DATA_ONLY"] = "1"
     base_env["ALLOW_ORDER_EXECUTION"] = "0"
+    base_env["EXECUTION_LANE_ENABLED"] = os.getenv("EXECUTION_LANE_ENABLED", "1")
+    base_env["MASTER_EXECUTION_LANE_ENABLED"] = os.getenv("MASTER_EXECUTION_LANE_ENABLED", "1")
+    base_env["INLINE_PAPER_EXECUTION_ENABLED"] = os.getenv("INLINE_PAPER_EXECUTION_ENABLED", "0")
 
     specs: dict[str, JobSpec] = {}
 
@@ -376,6 +409,26 @@ def main() -> int:
     env["ASYNC_PIPELINE_WORKERS"] = str(max(args.workers_bond, 1))
     specs["bond"] = JobSpec("bond", bond_cmd, env, breaker_group="core")
 
+    if args.with_fx:
+        fx_cmd = [
+            "nice", "-n", str(args.nice_fx),
+            str(VENV_PY), str(FX_SHADOW),
+            "--broker", "schwab",
+            "--interval-seconds", str(max(args.fx_interval_seconds, 15)),
+            "--max-iterations", str(args.max_iterations),
+        ]
+        if args.simulate:
+            fx_cmd.append("--simulate")
+        if args.fx_symbols:
+            fx_cmd.extend(["--symbols", args.fx_symbols])
+        if args.fx_context_symbols:
+            fx_cmd.extend(["--context-symbols", args.fx_context_symbols])
+        env = dict(base_env)
+        env["ASYNC_PIPELINE_WORKERS"] = str(max(args.workers_fx, 1))
+        env["FX_DIRECT_EXECUTION_ENABLED"] = "0"
+        env["SCHWAB_FOREX_API_VERIFIED"] = os.getenv("SCHWAB_FOREX_API_VERIFIED", "0")
+        specs["fx"] = JobSpec("fx", fx_cmd, env, breaker_group="core")
+
     if args.with_aggressive_modes:
         aggressive_cmd = [
             "nice", "-n", str(args.nice_aggressive),
@@ -388,6 +441,28 @@ def main() -> int:
         env = dict(base_env)
         env["ASYNC_PIPELINE_WORKERS"] = str(max(args.workers_aggressive, 1))
         specs["aggressive_modes"] = JobSpec("aggressive_modes", aggressive_cmd, env, breaker_group="core")
+
+    if args.with_paper_executor:
+        paper_exec_cmd = [
+            "nice", "-n", str(args.nice_baseline),
+            str(VENV_PY), str(EXECUTION_LANE),
+            "--mode", "paper",
+        ]
+        env = dict(base_env)
+        env["MARKET_DATA_ONLY"] = "0"
+        env["ALLOW_ORDER_EXECUTION"] = "1"
+        specs["paper_executor"] = JobSpec("paper_executor", paper_exec_cmd, env, breaker_group="core")
+
+    if args.with_live_executor:
+        live_exec_cmd = [
+            "nice", "-n", str(args.nice_baseline),
+            str(VENV_PY), str(EXECUTION_LANE),
+            "--mode", "live",
+        ]
+        env = dict(base_env)
+        env["MARKET_DATA_ONLY"] = "0"
+        env["ALLOW_ORDER_EXECUTION"] = "1"
+        specs["live_executor"] = JobSpec("live_executor", live_exec_cmd, env, breaker_group="core")
 
     procs: dict[str, subprocess.Popen] = {}
     restart_history: dict[str, list[float]] = {name: [] for name in specs}

@@ -83,18 +83,59 @@ def _format_yt_error(message: str, *, cookies_from_browser: str = "") -> str:
     return text[-1200:]
 
 
-def _extract_video_metadata(youtube_url: str, *, cookies_from_browser: str) -> Dict[str, Any]:
-    cmd = _yt_dlp_command(
-        ["--dump-single-json", "--no-playlist", "--no-warnings", str(youtube_url)],
-        cookies_from_browser=cookies_from_browser,
-    )
-    proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=False, timeout=180)
-    if proc.returncode != 0:
-        raise RuntimeError(_format_yt_error(proc.stderr or proc.stdout or "yt_dlp_metadata_failed", cookies_from_browser=cookies_from_browser))
-    payload = json.loads(proc.stdout or "{}")
-    if not isinstance(payload, dict) or not payload:
-        raise RuntimeError("yt_dlp_metadata_failed")
-    return payload
+def _cookie_attempts(cookies_from_browser: str) -> List[str]:
+    attempts: List[str] = []
+    primary = str(cookies_from_browser or "").strip()
+    for candidate in (primary, ""):
+        normalized = str(candidate or "").strip()
+        if normalized in attempts:
+            continue
+        attempts.append(normalized)
+    return attempts
+
+
+def _cookie_mode_label(cookies_from_browser: str) -> str:
+    normalized = str(cookies_from_browser or "").strip()
+    if not normalized:
+        return "public"
+    return f"cookies:{normalized}"
+
+
+def _captured_outputs(audio_dir: Path, video_id: str) -> List[Path]:
+    out: List[Path] = []
+    for path in sorted(audio_dir.glob(f"{video_id}.*")):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() in {".part", ".ytdl", ".tmp"}:
+            continue
+        out.append(path)
+    return out
+
+
+def _clear_capture_outputs(audio_dir: Path, video_id: str) -> None:
+    for path in sorted(audio_dir.glob(f"{video_id}.*")):
+        if path.is_file():
+            path.unlink(missing_ok=True)
+
+
+def _extract_video_metadata(youtube_url: str, *, cookies_from_browser: str) -> tuple[Dict[str, Any], str]:
+    errors: List[str] = []
+    for active_cookies in _cookie_attempts(cookies_from_browser):
+        cmd = _yt_dlp_command(
+            ["--dump-single-json", "--no-playlist", "--no-warnings", str(youtube_url)],
+            cookies_from_browser=active_cookies,
+        )
+        proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=False, timeout=180)
+        if proc.returncode != 0:
+            errors.append(
+                f"{_cookie_mode_label(active_cookies)}:{_format_yt_error(proc.stderr or proc.stdout or 'yt_dlp_metadata_failed', cookies_from_browser=active_cookies)}"
+            )
+            continue
+        payload = json.loads(proc.stdout or "{}")
+        if isinstance(payload, dict) and payload:
+            return payload, active_cookies
+        errors.append(f"{_cookie_mode_label(active_cookies)}:yt_dlp_metadata_failed")
+    raise RuntimeError("; ".join(errors)[-1200:] or "yt_dlp_metadata_failed")
 
 
 def _capture_audio(
@@ -105,36 +146,55 @@ def _capture_audio(
     audio_format: str,
     force_redownload: bool,
     cookies_from_browser: str,
-) -> Path:
+) -> tuple[Path, Dict[str, Any]]:
     audio_dir.mkdir(parents=True, exist_ok=True)
-    existing = sorted(audio_dir.glob(f"{video_id}.*"))
+    existing = _captured_outputs(audio_dir, video_id)
     if existing and not force_redownload:
-        return existing[0]
+        return existing[0], {"strategy": "existing_output", "cookie_mode": "unchanged"}
 
     output_template = audio_dir / f"{video_id}.%(ext)s"
-    cmd = _yt_dlp_command(
-        [
-            "-f",
-            "bestaudio/best",
-            "--extract-audio",
-            "--audio-format",
-            audio_format,
-            "--no-playlist",
-            "--no-progress",
-            "--no-warnings",
-            "--output",
-            str(output_template),
-            str(youtube_url),
-        ],
-        cookies_from_browser=cookies_from_browser,
-    )
-    proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=False, timeout=7200)
-    if proc.returncode != 0:
-        raise RuntimeError(_format_yt_error(proc.stderr or proc.stdout or "audio_capture_failed", cookies_from_browser=cookies_from_browser))
-    captured = sorted(audio_dir.glob(f"{video_id}.*"))
-    if not captured:
-        raise RuntimeError("audio_capture_missing_output")
-    return captured[0]
+    if force_redownload:
+        _clear_capture_outputs(audio_dir, video_id)
+
+    strategies = [
+        ("audio_only_extract", "bestaudio/best"),
+        ("progressive_extract", "best[protocol=https][acodec!=none][vcodec!=none]/18"),
+    ]
+    errors: List[str] = []
+    for active_cookies in _cookie_attempts(cookies_from_browser):
+        for strategy_name, format_selector in strategies:
+            cmd = _yt_dlp_command(
+                [
+                    "-f",
+                    format_selector,
+                    "--extract-audio",
+                    "--audio-format",
+                    audio_format,
+                    "--no-playlist",
+                    "--no-progress",
+                    "--no-warnings",
+                    "--output",
+                    str(output_template),
+                    str(youtube_url),
+                ],
+                cookies_from_browser=active_cookies,
+            )
+            proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=False, timeout=7200)
+            if proc.returncode == 0:
+                captured = _captured_outputs(audio_dir, video_id)
+                if captured:
+                    return captured[0], {
+                        "strategy": strategy_name,
+                        "cookie_mode": _cookie_mode_label(active_cookies),
+                        "cookies_from_browser": active_cookies,
+                    }
+                errors.append(f"{_cookie_mode_label(active_cookies)}:{strategy_name}:audio_capture_missing_output")
+            else:
+                errors.append(
+                    f"{_cookie_mode_label(active_cookies)}:{strategy_name}:{_format_yt_error(proc.stderr or proc.stdout or 'audio_capture_failed', cookies_from_browser=active_cookies)}"
+                )
+            _clear_capture_outputs(audio_dir, video_id)
+    raise RuntimeError("; ".join(errors)[-1600:] or "audio_capture_failed")
 
 
 def _capture_audio_with_wait(
@@ -147,13 +207,13 @@ def _capture_audio_with_wait(
     cookies_from_browser: str,
     wait_for_live_seconds: float,
     retry_interval_seconds: float,
-) -> tuple[Path, int]:
+) -> tuple[Path, int, Dict[str, Any]]:
     attempts = 0
     deadline = time.time() + max(float(wait_for_live_seconds or 0.0), 0.0)
     while True:
         attempts += 1
         try:
-            audio_path = _capture_audio(
+            audio_path, capture_context = _capture_audio(
                 youtube_url,
                 audio_dir,
                 video_id,
@@ -161,7 +221,7 @@ def _capture_audio_with_wait(
                 force_redownload=force_redownload,
                 cookies_from_browser=cookies_from_browser,
             )
-            return audio_path, attempts
+            return audio_path, attempts, capture_context
         except Exception:
             if time.time() >= deadline or max(float(wait_for_live_seconds or 0.0), 0.0) <= 0.0:
                 raise
@@ -414,11 +474,14 @@ def run_ingest(args: argparse.Namespace) -> Dict[str, Any]:
     retry_interval_seconds = max(float(args.retry_interval_seconds or 15.0), 5.0)
 
     metadata_attempts = 0
+    metadata_cookie_mode = _cookie_mode_label(cookies_from_browser)
+    metadata_cookie_value = cookies_from_browser
     metadata_deadline = time.time() + wait_for_live_seconds
     while True:
         metadata_attempts += 1
         try:
-            metadata = _extract_video_metadata(args.youtube_url, cookies_from_browser=cookies_from_browser)
+            metadata, metadata_cookie_value = _extract_video_metadata(args.youtube_url, cookies_from_browser=cookies_from_browser)
+            metadata_cookie_mode = _cookie_mode_label(metadata_cookie_value)
             break
         except Exception:
             if time.time() >= metadata_deadline or wait_for_live_seconds <= 0.0:
@@ -428,13 +491,13 @@ def run_ingest(args: argparse.Namespace) -> Dict[str, Any]:
     artifact_paths = _artifact_paths(media_root, video_id)
     title = str(metadata.get("title") or video_id)
 
-    audio_path, audio_capture_attempts = _capture_audio_with_wait(
+    audio_path, audio_capture_attempts, audio_capture_context = _capture_audio_with_wait(
         args.youtube_url,
         artifact_paths["audio_dir"],
         video_id,
         audio_format=args.audio_format,
         force_redownload=bool(args.force_redownload),
-        cookies_from_browser=cookies_from_browser,
+        cookies_from_browser=metadata_cookie_value,
         wait_for_live_seconds=wait_for_live_seconds,
         retry_interval_seconds=retry_interval_seconds,
     )
@@ -511,6 +574,9 @@ def run_ingest(args: argparse.Namespace) -> Dict[str, Any]:
         "audio_ext": audio_path.suffix.lower(),
         "ffmpeg_available": bool(FFMPEG_BIN and Path(FFMPEG_BIN).exists()),
         "cookies_from_browser": cookies_from_browser,
+        "metadata_cookie_mode": metadata_cookie_mode,
+        "audio_capture_cookie_mode": str(audio_capture_context.get("cookie_mode") or metadata_cookie_mode),
+        "audio_capture_strategy": str(audio_capture_context.get("strategy") or ""),
         "wait_for_live_seconds": wait_for_live_seconds,
         "retry_interval_seconds": retry_interval_seconds,
         "metadata_attempts": metadata_attempts,
@@ -547,6 +613,9 @@ def run_ingest(args: argparse.Namespace) -> Dict[str, Any]:
         "cue_archive_file": cue_payload.get("cue_archive_file"),
         "cue_count": int(cue_payload.get("cue_count", 0) or 0),
         "cookies_from_browser": cookies_from_browser,
+        "metadata_cookie_mode": metadata_cookie_mode,
+        "audio_capture_cookie_mode": str(audio_capture_context.get("cookie_mode") or metadata_cookie_mode),
+        "audio_capture_strategy": str(audio_capture_context.get("strategy") or ""),
         "wait_for_live_seconds": wait_for_live_seconds,
         "retry_interval_seconds": retry_interval_seconds,
         "metadata_attempts": metadata_attempts,

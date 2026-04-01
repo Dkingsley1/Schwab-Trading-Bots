@@ -2,6 +2,27 @@
 
 Use this page as the source of truth for report generation, bundle refreshes, and report file locations.
 
+## Freshness Warning
+
+Do not trust a report or health gate blindly if the underlying artifact timestamp is stale. This matters most for:
+- `governance/health/data_source_divergence_latest.json`
+- `governance/health/daily_auto_verify_latest.json`
+- `governance/health/retrain_scorecard_latest.json`
+- `governance/health/model_card_latest.json`
+
+Quick check:
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+cat governance/health/data_source_divergence_latest.json
+cat governance/health/daily_auto_verify_latest.json
+```
+
+If those files are old, run:
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/daily_log_refresh.sh
+```
+
 ## Bundle Page
 
 ### Refresh the report catalog page and PDF bundle
@@ -31,19 +52,27 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ### Daily runtime summary
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./.venv312/bin/python scripts/daily_runtime_summary.py --day "$(date -u +%Y%m%d)" --json > exports/sql_reports/daily_runtime_summary_$(date -u +%Y%m%d).json
+PY="$(zsh ./scripts/ops/runtime_python.sh)"
+"$PY" scripts/daily_runtime_summary.py --day "$(date -u +%Y%m%d)" --json > exports/sql_reports/daily_runtime_summary_$(date -u +%Y%m%d).json
 ```
 
 ### One Numbers report
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./.venv312/bin/python scripts/build_one_numbers_report.py --day "$(date -u +%Y%m%d)"
+PY="$(zsh ./scripts/ops/runtime_python.sh)"
+"$PY" scripts/build_one_numbers_report.py
 ```
+This writes the single canonical One Numbers report:
+- `exports/one_numbers/latest.csv`
+- `exports/one_numbers/latest.md`
+
+Those files include the day, month-to-date, and all-time rollups in one document.
 
 ### Unified lane scorecard
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./.venv312/bin/python scripts/unified_lane_scorecard.py --json
+PY="$(zsh ./scripts/ops/runtime_python.sh)"
+"$PY" scripts/unified_lane_scorecard.py --json
 ```
 
 ## Training

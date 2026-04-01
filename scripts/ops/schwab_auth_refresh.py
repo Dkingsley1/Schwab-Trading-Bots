@@ -37,15 +37,51 @@ def _token_status(path: Path) -> Dict[str, Any]:
     except Exception:
         return status
 
-    expires_at = str(payload.get("expires_at") or "").strip()
-    status["expires_at"] = expires_at
-    if expires_at:
-        try:
-            expires_epoch = float(expires_at)
-            status["expires_in_seconds"] = expires_epoch - datetime.now(timezone.utc).timestamp()
-        except Exception:
-            status["expires_in_seconds"] = None
+    if isinstance(payload, dict):
+        expiry_sources = [payload]
+        nested = payload.get("token")
+        if isinstance(nested, dict):
+            expiry_sources.insert(0, nested)
+
+        exp_value: Any = ""
+        for source in expiry_sources:
+            for key in ("expires_at", "expiresAt", "expires", "expires_time"):
+                raw = source.get(key)
+                if raw not in (None, ""):
+                    exp_value = raw
+                    break
+            if exp_value not in (None, ""):
+                break
+
+        if exp_value not in (None, ""):
+            status["expires_at"] = str(exp_value)
+            try:
+                if isinstance(exp_value, (int, float)):
+                    expires_epoch = float(exp_value)
+                else:
+                    norm = str(exp_value).strip().replace("Z", "+00:00")
+                    if norm.replace(".", "", 1).isdigit():
+                        expires_epoch = float(norm)
+                    else:
+                        dt = datetime.fromisoformat(norm)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        expires_epoch = dt.astimezone(timezone.utc).timestamp()
+                status["expires_in_seconds"] = expires_epoch - datetime.now(timezone.utc).timestamp()
+            except Exception:
+                status["expires_in_seconds"] = None
     return status
+
+
+def _token_needs_refresh(status: Dict[str, Any], min_expires_seconds: float) -> tuple[bool, str]:
+    if not bool(status.get("exists")):
+        return True, "missing_token"
+    if int(status.get("size_bytes") or 0) < 64:
+        return True, "token_too_small"
+    expires_in = status.get("expires_in_seconds")
+    if expires_in is not None and float(expires_in) <= max(float(min_expires_seconds), 0.0):
+        return True, f"token_expiring_soon:{float(expires_in):.1f}"
+    return False, "token_ready"
 
 
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
@@ -60,6 +96,11 @@ def main() -> int:
     parser.add_argument("--token-path", default=str(DEFAULT_TOKEN_PATH))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--callback-timeout-seconds", type=float, default=300.0)
+    parser.add_argument(
+        "--min-expires-seconds",
+        type=float,
+        default=float(os.getenv("SCHWAB_AUTH_MIN_EXPIRES_SECONDS", os.getenv("PREMARKET_TOKEN_MIN_EXPIRES_SECONDS", "600"))),
+    )
     parser.add_argument("--requested-browser", default="")
     parser.add_argument("--skip-account-probe", action="store_true")
     parser.add_argument("--json", action="store_true")
@@ -104,7 +145,9 @@ def main() -> int:
         sys.path.insert(0, str(PROJECT_ROOT))
 
     os.environ["SCHWAB_AUTH_INTERACTIVE"] = "1"
-    os.environ["SCHWAB_MAX_TOKEN_AGE_SECONDS"] = "0"
+    # Force the interactive flow to mint a genuinely new token instead of silently
+    # accepting an already-near-expiry token from disk.
+    os.environ["SCHWAB_MAX_TOKEN_AGE_SECONDS"] = os.getenv("SCHWAB_INTERACTIVE_FORCE_MAX_TOKEN_AGE_SECONDS", "1")
     os.environ["SCHWAB_AUTH_CALLBACK_TIMEOUT_SECONDS"] = str(max(float(args.callback_timeout_seconds), 5.0))
     if args.requested_browser:
         os.environ["SCHWAB_AUTH_REQUESTED_BROWSER"] = args.requested_browser
@@ -136,6 +179,15 @@ def main() -> int:
         payload["reason"] = f"auth_error:{type(exc).__name__}:{exc}"
 
     payload["token_after"] = _token_status(token_path)
+    refresh_needed_after, refresh_reason_after = _token_needs_refresh(
+        payload["token_after"],
+        min_expires_seconds=max(float(args.min_expires_seconds), 0.0),
+    )
+    payload["refresh_needed_after"] = bool(refresh_needed_after)
+    payload["refresh_reason_after"] = refresh_reason_after
+    if payload["ok"] and refresh_needed_after:
+        payload["ok"] = False
+        payload["reason"] = f"token_not_ready_after_auth:{refresh_reason_after}"
     _write_json(out_path, payload)
     if args.json:
         print(json.dumps(payload, indent=2, ensure_ascii=True))

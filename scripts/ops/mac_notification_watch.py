@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -29,6 +30,12 @@ IMESSAGE_EVENT_ALLOWLIST_ENV = "MAC_NOTIFICATION_WATCH_IMESSAGE_EVENT_ALLOWLIST"
 DEFAULT_MAX_ALERT_AGE_SECONDS = 900.0
 DEFAULT_IMESSAGE_MIN_SEVERITY = "warn"
 DEFAULT_IMESSAGE_EVENT_ALLOWLIST = ""
+PMSET_POWER_LOG_TAIL_LINES = 240
+PMSET_POWER_LOG_TIMEOUT_SECONDS = 8.0
+PMSET_LINE_RE = re.compile(
+    r"^(?P<stamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4})\s+"
+    r"(?P<kind>\S+)\s+(?P<message>.*)$"
+)
 SEVERITY_RANK = {"info": 0, "warn": 1, "warning": 1, "critical": 2}
 
 
@@ -99,6 +106,10 @@ def _imessage_event_allowed(key: str, allowlist: set[str]) -> bool:
 
 def _event_severity(key: str, message: str) -> str:
     normalized_key = str(key or "").strip().lower()
+    if normalized_key.startswith("power_clamshell_sleep:"):
+        return "critical"
+    if normalized_key.startswith("power_lid_open:"):
+        return "info"
     if normalized_key.startswith("critical_alert:"):
         parts = normalized_key.split(":", 2)
         if len(parts) >= 3:
@@ -118,6 +129,10 @@ def _event_severity(key: str, message: str) -> str:
 
 def _notification_heading(key: str, message: str) -> Tuple[str, str]:
     severity = _event_severity(key, message)
+    if key.startswith("power_clamshell_sleep:"):
+        return ("Trading Bot Critical", "Laptop Closed")
+    if key.startswith("power_lid_open:"):
+        return ("Trading Bot Incident", "Laptop Opened")
     if key.startswith("critical_alert:"):
         if severity == "warn":
             return ("Trading Bot Warning", "Guardrail Warning")
@@ -271,6 +286,66 @@ def _is_recent(payload: Dict[str, Any], max_age_seconds: float) -> bool:
     return 0.0 <= age <= max_age_seconds
 
 
+def _parse_pmset_timestamp(raw: str) -> datetime | None:
+    try:
+        return datetime.strptime(str(raw).strip(), "%Y-%m-%d %H:%M:%S %z").astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _recent_pmset_lines(limit: int = PMSET_POWER_LOG_TAIL_LINES) -> List[str]:
+    tail = max(int(limit), 1)
+    proc = subprocess.run(
+        ["/bin/zsh", "-lc", f"/usr/bin/pmset -g log | tail -n {tail}"],
+        capture_output=True,
+        text=True,
+        timeout=PMSET_POWER_LOG_TIMEOUT_SECONDS,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return []
+    return [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
+
+
+def _power_event_candidates(max_age_seconds: float) -> List[Tuple[str, str]]:
+    latest_close: Tuple[str, str, datetime] | None = None
+    latest_open: Tuple[str, str, datetime] | None = None
+    for line in _recent_pmset_lines():
+        match = PMSET_LINE_RE.match(line)
+        if match is None:
+            continue
+        ts = _parse_pmset_timestamp(match.group("stamp"))
+        if ts is None:
+            continue
+        age = (datetime.now(timezone.utc) - ts).total_seconds()
+        if age < 0.0 or age > max_age_seconds:
+            continue
+        kind = match.group("kind").strip().lower()
+        message = match.group("message").strip()
+        local_stamp = ts.astimezone().strftime("%Y-%m-%d %I:%M:%S %p %Z")
+        if kind == "sleep" and "Clamshell Sleep" in message and "Entering Sleep state" in message:
+            latest_close = (
+                f"power_clamshell_sleep:{ts.isoformat()}",
+                "MacBook lid closed\n"
+                f"Sleep: {local_stamp}\n"
+                "Live bot collection/training pauses while the laptop sleeps.",
+                ts,
+            )
+        elif "lidopen" in message:
+            latest_open = (
+                f"power_lid_open:{ts.isoformat()}",
+                "MacBook lid opened\n"
+                f"Wake: {local_stamp}",
+                ts,
+            )
+    out: List[Tuple[str, str]] = []
+    if latest_close is not None:
+        out.append((latest_close[0], latest_close[1]))
+    if latest_open is not None:
+        out.append((latest_open[0], latest_open[1]))
+    return out
+
+
 def _tripwire_event(payload: Dict[str, Any]) -> Tuple[str, str] | None:
     if not bool(payload.get("active", False)):
         return None
@@ -371,6 +446,7 @@ def _load_state(path: Path) -> Dict[str, Any]:
 
 def _event_candidates(max_age_seconds: float) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
+    out.extend(_power_event_candidates(max_age_seconds))
     for event in (
         _tripwire_event(_read_json(TRIPWIRE_PATH)),
         _global_halt_event(),

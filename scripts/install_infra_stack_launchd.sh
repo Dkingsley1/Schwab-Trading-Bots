@@ -60,6 +60,7 @@ fi
 
 # Install companion jobs via existing installers
 [[ -x "$PROJECT_ROOT/scripts/install_shadow_watchdog_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_shadow_watchdog_launchd.sh"
+[[ -x "$PROJECT_ROOT/scripts/install_storage_eject_guard_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_storage_eject_guard_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/install_caffeinate_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_caffeinate_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/install_daily_log_refresh_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_daily_log_refresh_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/install_daily_auto_verify_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_daily_auto_verify_launchd.sh"

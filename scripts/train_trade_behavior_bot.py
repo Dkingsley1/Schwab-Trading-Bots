@@ -93,6 +93,16 @@ def _safe_read_json(path: Path) -> Dict[str, Any]:
         return {}
 
 
+def _fresh_health_payload(payload: Dict[str, Any], *, max_age_hours: float) -> Tuple[Dict[str, Any], bool]:
+    if not isinstance(payload, dict) or not payload:
+        return {}, False
+    ts = _parse_ts_epoch(payload.get("timestamp_utc"), -1.0)
+    if ts <= 0:
+        return payload, False
+    age_hours = max(datetime.now(timezone.utc).timestamp() - ts, 0.0) / 3600.0
+    return payload, age_hours <= max(max_age_hours, 0.0)
+
+
 def _softmax(z: np.ndarray) -> np.ndarray:
     z = z - np.max(z, axis=1, keepdims=True)
     ez = np.exp(z)
@@ -1066,7 +1076,10 @@ def _data_quality_gate(project_root: Path, *, require_walk_forward_ok: bool) -> 
     coverage = _safe_read_json(health / "snapshot_coverage_latest.json")
     replay = _safe_read_json(health / "replay_preopen_sanity_latest.json")
     drift = _safe_read_json(health / "preopen_replay_drift_latest.json")
-    divergence = _safe_read_json(health / "data_source_divergence_latest.json")
+    divergence, divergence_fresh = _fresh_health_payload(
+        _safe_read_json(health / "data_source_divergence_latest.json"),
+        max_age_hours=float(os.getenv("TRADE_BEHAVIOR_PROMOTION_DIVERGENCE_MAX_AGE_HOURS", "8")),
+    )
 
     min_coverage_ratio = float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MIN_COVERAGE_RATIO", "0.30"))
     max_divergence_spread = float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MAX_DIVERGENCE_SPREAD", "0.04"))
@@ -1103,6 +1116,8 @@ def _data_quality_gate(project_root: Path, *, require_walk_forward_ok: bool) -> 
         "min_coverage_ratio": min_coverage_ratio,
         "worst_relative_spread": worst_relative_spread,
         "max_divergence_spread": max_divergence_spread,
+        "divergence_timestamp_utc": divergence.get("timestamp_utc", ""),
+        "divergence_fresh": divergence_fresh,
         "row_drift": row_drift,
         "max_row_drift": max_row_drift,
         "stale_drift": stale_drift,

@@ -8,6 +8,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VENV_PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
 SHADOW_LOOP = PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py"
+DRIP_SYNC = PROJECT_ROOT / "scripts" / "collect_dividend_drip_state.py"
 LOAD_RUNTIME_ENV = PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh"
 
 DEFAULT_DIVIDEND_SYMBOLS = (
@@ -47,6 +48,33 @@ def _bootstrap_runtime_env(base_env: dict[str, str], profile: str) -> dict[str, 
     return merged
 
 
+def _sync_dividend_drip_state(env: dict[str, str]) -> None:
+    if not DRIP_SYNC.exists():
+        return
+    cmd = [
+        str(VENV_PY),
+        str(DRIP_SYNC),
+        "--lookback-days",
+        str(int(env.get("DIVIDEND_DRIP_LOOKBACK_DAYS", "400") or 400)),
+        "--recent-window-days",
+        str(int(env.get("DIVIDEND_DRIP_RECENT_WINDOW_DAYS", "180") or 180)),
+        "--json",
+    ]
+    result = subprocess.run(
+        cmd,
+        cwd=str(PROJECT_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or result.stdout or "").strip()
+        print(f"[DividendDRIP] sync_failed rc={result.returncode} detail={stderr}")
+    elif result.stdout.strip():
+        print(f"[DividendDRIP] {result.stdout.strip()}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run dedicated dividend shadow masterbot profile.")
     parser.add_argument("--broker", default=os.getenv("DATA_BROKER", "schwab"), choices=["schwab", "coinbase"])
@@ -79,6 +107,9 @@ def main() -> int:
     env["DIVIDEND_STRATEGY_MODE"] = args.strategy_mode
     env["DIVIDEND_QUALITY_SYMBOLS"] = args.quality_symbols
     env.setdefault("SHADOW_THRESHOLD_SHIFT", "+0.03")
+
+    if (not args.simulate) and env.get("DIVIDEND_DRIP_SYNC_ON_START", "1").strip() == "1":
+        _sync_dividend_drip_state(env)
 
     cmd = [
         str(VENV_PY),

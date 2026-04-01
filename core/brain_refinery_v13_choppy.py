@@ -1,16 +1,42 @@
-import mlx.core as mx
-import mlx.nn as nn
-import mlx.optimizers as optim
 import numpy as np
-import json
-from datetime import datetime
-import os
 
-from indicator_bot_common import train_price_indicator_bot
+from indicator_bot_common import train_price_indicator_bot, train_runtime_indicator_bot
+from runtime_training_common import (
+    feature_ema,
+    feature_std,
+    future_realized_vol,
+    future_return,
+    observation_feature,
+    price_change,
+)
 
-# -----------------------------
-# Feature engineering helpers
-# -----------------------------
+_CHOPPY_RUNTIME_MODES = [
+    "shadow_equities",
+    "shadow_aggressive_equities",
+    "shadow_conservative_equities",
+    "shadow_dividend_equities",
+    "shadow_intraday_aggressive_equities",
+]
+_CHOPPY_SYMBOLS = [
+    "SPY",
+    "QQQ",
+    "DIA",
+    "IWM",
+    "XLK",
+    "XLF",
+    "XLI",
+    "XLV",
+    "XLP",
+    "XLU",
+    "XLRE",
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "AMZN",
+    "META",
+]
+
+
 def ema(x, span):
     alpha = 2 / (span + 1)
     out = np.zeros_like(x)
@@ -18,6 +44,7 @@ def ema(x, span):
     for i in range(1, len(x)):
         out[i] = alpha * x[i] + (1 - alpha) * out[i - 1]
     return out
+
 
 def rsi(prices, period=14):
     deltas = np.diff(prices, prepend=prices[0])
@@ -28,132 +55,14 @@ def rsi(prices, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
+
 def rolling_std(x, window):
     out = np.zeros_like(x)
     for i in range(len(x)):
         start = max(0, i - window + 1)
-        out[i] = np.std(x[start:i+1])
+        out[i] = np.std(x[start : i + 1])
     return out
 
-# -----------------------------
-# Model
-# -----------------------------
-class TradingBrain(nn.Module):
-    def __init__(self, input_dim):
-        super().__init__()
-        self.layer1 = nn.Linear(input_dim, 128)
-        self.layer2 = nn.Linear(128, 64)
-        self.layer3 = nn.Linear(64, 32)
-        self.out = nn.Linear(32, 1)
-
-    def __call__(self, x):
-        x = nn.relu(self.layer1(x))
-        x = nn.relu(self.layer2(x))
-        x = nn.relu(self.layer3(x))
-        return self.out(x)
-
-def loss_fn(model, x, y):
-    logits = model(x)
-    probs = mx.sigmoid(logits)
-    return nn.losses.binary_cross_entropy(probs, y)
-
-# -----------------------------
-# Data pipeline
-# -----------------------------
-def make_dataset(prices, window=30):
-    returns = np.log(prices[1:] / prices[:-1])
-    returns = np.concatenate([[0.0], returns])
-
-    sma = np.convolve(prices, np.ones(10)/10, mode="same")
-    ema10 = ema(prices, 10)
-    rsi14 = rsi(prices, 14)
-    vol10 = rolling_std(returns, 10)
-
-    features = np.stack([returns, sma, ema10, rsi14, vol10], axis=1)
-
-    mean = features.mean(axis=0, keepdims=True)
-    std = features.std(axis=0, keepdims=True) + 1e-8
-    features = (features - mean) / std
-
-    X = []
-    y = []
-
-    for i in range(len(features) - window - 1):
-        window_feats = features[i:i+window].reshape(-1)
-        X.append(window_feats)
-
-        next_ret = returns[i + window + 1]
-        y.append(1.0 if next_ret > 0 else 0.0)
-
-    X = mx.array(np.array(X), dtype=mx.float32)
-    y = mx.array(np.array(y).reshape(-1, 1), dtype=mx.float32)
-    return X, y
-
-def split_data(X, y, train_ratio=0.7, val_ratio=0.15):
-    n = X.shape[0]
-    n_train = int(n * train_ratio)
-    n_val = int(n * val_ratio)
-    X_train, y_train = X[:n_train], y[:n_train]
-    X_val, y_val = X[n_train:n_train+n_val], y[n_train:n_train+n_val]
-    X_test, y_test = X[n_train+n_val:], y[n_train+n_val:]
-    return X_train, y_train, X_val, y_val, X_test, y_test
-
-# -----------------------------
-# Saving artifacts
-# -----------------------------
-def save_artifacts(model, config, metrics, run_tag):
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    models_dir = os.path.join(base_dir, "models")
-    logs_dir = os.path.join(base_dir, "logs")
-    os.makedirs(models_dir, exist_ok=True)
-    os.makedirs(logs_dir, exist_ok=True)
-
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base_name = f"{run_tag}_{ts}"
-
-    params = model.parameters()
-    state = {f"p{i}": p for i, p in enumerate(params)}
-    model_path = os.path.join(models_dir, f"{base_name}.npz")
-    np.savez(model_path, **{k: np.array(v) for k, v in state.items()})
-
-    log_path = os.path.join(logs_dir, f"{base_name}.json")
-    payload = {
-        "timestamp": ts,
-        "model_path": model_path,
-        "config": config,
-        "metrics": metrics,
-    }
-    with open(log_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
-
-    print(f"Saved model: {model_path}")
-    print(f"Saved log: {log_path}")
-
-# -----------------------------
-# Loading artifacts
-# -----------------------------
-def load_model(model, npz_path):
-    data = np.load(npz_path)
-    params = model.parameters()
-    for i, p in enumerate(params):
-        key = f"p{i}"
-        if key in data:
-            p[:] = mx.array(data[key])
-    return model
-
-# -----------------------------
-# Predict demo
-# -----------------------------
-def predict_demo(model, sample_input):
-    x = mx.array(sample_input, dtype=mx.float32).reshape(1, -1)
-    y = model(x)
-    mx.eval(y)
-    print(f"Prediction: {float(y.squeeze())}")
-
-# -----------------------------
-# Simulation generators
-# -----------------------------
-# Choppy: high noise, frequent reversals around a flat mean
 
 def simulate_choppy(n=5000):
     prices = np.zeros(n)
@@ -163,14 +72,9 @@ def simulate_choppy(n=5000):
     vol = 1.0
     for i in range(1, n):
         noise = vol * np.random.randn()
-        mean_pull = theta * (mu - prices[i-1])
-        prices[i] = max(0.1, prices[i-1] + mean_pull + noise)
+        mean_pull = theta * (mu - prices[i - 1])
+        prices[i] = max(0.1, prices[i - 1] + mean_pull + noise)
     return prices
-
-# -----------------------------
-# Training
-# -----------------------------
-FEATURE_SOURCE = "prices"
 
 
 def build_features(prices):
@@ -183,13 +87,201 @@ def build_features(prices):
     return np.stack([returns, sma, ema10, rsi14, vol10], axis=1)
 
 
-def train_brain():
+def _runtime_feature_vector(sequence, idx):
+    obs = sequence[idx]
+    return np.asarray(
+        [
+            observation_feature(obs, "pct_from_close"),
+            observation_feature(obs, "mom_5m"),
+            observation_feature(obs, "vol_30m"),
+            observation_feature(obs, "range_pos"),
+            observation_feature(obs, "spread_bps"),
+            observation_feature(obs, "ctx_VIX_X_pct_from_close"),
+            observation_feature(obs, "breadth_advance_decline_norm"),
+            observation_feature(obs, "breadth_risk_off_norm"),
+            observation_feature(obs, "options_negative_bias_norm"),
+            observation_feature(obs, "options_vol_expectation_norm"),
+            observation_feature(obs, "data_quality_quote_agreement_norm", 1.0),
+            observation_feature(obs, "data_quality_quote_deviation_norm"),
+            observation_feature(obs, "behavior_prior"),
+            observation_feature(obs, "day_regime_chop_norm"),
+            observation_feature(obs, "day_regime_trend_norm"),
+            observation_feature(obs, "day_regime_alignment_norm"),
+            observation_feature(obs, "market_micro_relative_volume_norm"),
+            observation_feature(obs, "market_micro_order_flow_imbalance_norm"),
+            price_change(sequence, idx, 1),
+            price_change(sequence, idx, 3),
+            feature_std(sequence, idx, "pct_from_close", 6),
+            feature_std(sequence, idx, "vol_30m", 6),
+            feature_ema(sequence, idx, "pct_from_close", 4),
+            feature_ema(sequence, idx, "behavior_prior", 4),
+        ],
+        dtype=np.float32,
+    )
+
+
+def _clip01(value):
+    return float(np.clip(value, 0.0, 1.0))
+
+
+def _stretch_direction(obs):
+    range_component = (observation_feature(obs, "range_pos") - 0.5) * 2.0
+    price_component = observation_feature(obs, "pct_from_close") * 140.0
+    momentum_component = observation_feature(obs, "mom_5m") * 110.0
+    return float((0.45 * range_component) + (0.30 * price_component) + (0.25 * momentum_component))
+
+
+def _chop_support(obs):
+    return _clip01(
+        (0.30 * observation_feature(obs, "day_regime_chop_norm"))
+        + (0.18 * _clip01(1.0 - observation_feature(obs, "day_regime_alignment_norm")))
+        + (0.14 * _clip01(1.0 - abs(observation_feature(obs, "behavior_prior")) * 2.0))
+        + (0.12 * _clip01(abs(_stretch_direction(obs)) / 1.2))
+        + (0.10 * observation_feature(obs, "data_quality_quote_agreement_norm", 1.0))
+        + (0.08 * observation_feature(obs, "options_vol_expectation_norm"))
+        + (0.08 * _clip01(abs(observation_feature(obs, "market_micro_order_flow_imbalance_norm"))))
+    )
+
+
+def _runtime_sample_filter(sequence, idx, horizon):
+    obs = sequence[idx]
+    stretch = abs(_stretch_direction(obs))
+    return (
+        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.84
+        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.22
+        and abs(observation_feature(obs, "spread_bps")) <= 24.0
+        and observation_feature(obs, "day_regime_chop_norm") >= 0.28
+        and observation_feature(obs, "day_regime_trend_norm") <= 0.58
+        and observation_feature(obs, "day_regime_alignment_norm") <= 0.54
+        and observation_feature(obs, "market_micro_relative_volume_norm") >= 0.18
+        and abs(observation_feature(obs, "behavior_prior")) <= 0.36
+        and stretch >= 0.22
+    )
+
+
+def _runtime_confidence(sequence, idx, horizon):
+    obs = sequence[idx]
+    edge_stretch = _clip01(abs(_stretch_direction(obs)) / 1.2)
+    quote_ok = _clip01(
+        0.70 * observation_feature(obs, "data_quality_quote_agreement_norm", 1.0)
+        + 0.30 * (1.0 - observation_feature(obs, "data_quality_quote_deviation_norm", 0.0))
+    )
+    anti_trend = _clip01(1.0 - observation_feature(obs, "day_regime_trend_norm"))
+    anti_alignment = _clip01(1.0 - observation_feature(obs, "day_regime_alignment_norm"))
+    return (
+        (0.30 * _chop_support(obs))
+        + (0.22 * edge_stretch)
+        + (0.16 * anti_trend)
+        + (0.12 * anti_alignment)
+        + (0.10 * _clip01(1.0 - abs(observation_feature(obs, "behavior_prior")) * 2.0))
+        + (0.10 * quote_ok)
+    )
+
+
+def _runtime_choppy_label(sequence, idx, horizon):
+    obs = sequence[idx]
+    chop = _chop_support(obs)
+    stretch = _stretch_direction(obs)
+    anti_trend = _clip01(1.0 - observation_feature(obs, "day_regime_trend_norm"))
+    if chop < 0.30 or anti_trend < 0.42 or abs(stretch) < 0.24:
+        return None
+
+    expected_up = stretch < 0.0
+    fwd_ret = future_return(sequence, idx, horizon)
+    realized = future_realized_vol(sequence, idx, horizon)
+    signed_ret = fwd_ret if expected_up else -fwd_ret
+    move_threshold = max(0.00035, 0.00095 - (0.00040 * chop))
+    if abs(fwd_ret) < move_threshold and realized < 0.017:
+        return None
+
+    success_score = (
+        signed_ret
+        + (0.0011 * chop)
+        + (0.0005 * anti_trend)
+        - (0.17 * realized)
+        - (0.00025 * observation_feature(obs, "breadth_risk_off_norm"))
+    )
+    failure_score = (
+        (-signed_ret)
+        + (0.14 * realized)
+        + (0.00010 * observation_feature(obs, "breadth_risk_off_norm"))
+    )
+    if success_score >= 0.00035:
+        return 1.0 if expected_up else 0.0
+    if failure_score >= 0.00050:
+        return 0.0 if expected_up else 1.0
+    return None
+
+
+def _train_synthetic():
     return train_price_indicator_bot(
         run_tag="brain_refinery_v13_choppy",
         feature_names=["returns", "sma10", "ema10", "rsi14", "vol10"],
         feature_builder=build_features,
         price_simulator=simulate_choppy,
     )
+
+
+def train_brain():
+    return train_runtime_indicator_bot(
+        run_tag="brain_refinery_v13_choppy",
+        feature_names=[
+            "pct_from_close",
+            "mom_5m",
+            "vol_30m",
+            "range_pos",
+            "spread_bps",
+            "ctx_VIX_X_pct_from_close",
+            "breadth_advance_decline_norm",
+            "breadth_risk_off_norm",
+            "options_negative_bias_norm",
+            "options_vol_expectation_norm",
+            "data_quality_quote_agreement_norm",
+            "data_quality_quote_deviation_norm",
+            "behavior_prior",
+            "day_regime_chop_norm",
+            "day_regime_trend_norm",
+            "day_regime_alignment_norm",
+            "market_micro_relative_volume_norm",
+            "market_micro_order_flow_imbalance_norm",
+            "ret_1",
+            "ret_3",
+            "pct_from_close_std_6",
+            "vol_30m_std_6",
+            "pct_from_close_ema_4",
+            "behavior_prior_ema_4",
+        ],
+        runtime_feature_builder=_runtime_feature_vector,
+        runtime_label_builder=_runtime_choppy_label,
+        mode_allowlist=_CHOPPY_RUNTIME_MODES,
+        symbol_allowlist=_CHOPPY_SYMBOLS,
+        sample_filter=_runtime_sample_filter,
+        confidence_builder=_runtime_confidence,
+        min_confidence=0.42,
+        sample_stride=3,
+        lookback_days=45,
+        window=18,
+        horizon=2,
+        min_samples=128,
+        min_sequences=6,
+        min_positive_samples=24,
+        min_negative_samples=24,
+        acted_prob_threshold=0.60,
+        fallback_trainer=_train_synthetic,
+        allow_fallback_on_insufficient_data=False,
+        max_best_val_loss=0.6925,
+        max_final_val_loss=0.7050,
+        min_long_precision=0.53,
+        min_short_precision=0.53,
+        require_both_sides_precision=True,
+        min_acted_accuracy=0.55,
+        min_long_acted_count=4,
+        min_short_acted_count=4,
+        min_accuracy_lift_over_majority=0.02,
+        min_label_balance_score=0.20,
+        min_precision_balance_score=0.40,
+    )
+
 
 if __name__ == "__main__":
     train_brain()

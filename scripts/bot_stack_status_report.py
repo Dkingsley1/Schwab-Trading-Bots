@@ -2,11 +2,17 @@ import argparse
 import csv
 import json
 import gzip
+import os
 import re
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover - Python without zoneinfo
+    ZoneInfo = None
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +20,7 @@ REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
 WATCHDOG_DIR = PROJECT_ROOT / "governance" / "watchdog"
 OUTPUT_DIR = PROJECT_ROOT / "exports" / "bot_stack_status"
 DEFAULT_TOP = 10
+_ET_ZONE = ZoneInfo("America/New_York") if ZoneInfo is not None else timezone.utc
 
 DECISION_LOGS = {
     "schwab_conservative": PROJECT_ROOT / "decision_explanations" / "shadow_conservative_equities" / "latest_decisions.log",
@@ -62,6 +69,25 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _classify_lane(row: Dict[str, Any]) -> str:
+    role = str(row.get("bot_role") or "").strip().lower()
+    bot_id = str(row.get("bot_id") or "").strip().lower()
+
+    if role == "infrastructure_sub_bot":
+        return "infrastructure"
+    if role == "options_sub_bot":
+        return "options"
+    if role == "futures_sub_bot":
+        return "futures"
+    if any(tok in bot_id for tok in ("long_term", "dividend_quality_compounder", "dividend_yield_trap_avoidance")):
+        return "long_term"
+    if any(tok in bot_id for tok in ("intraday", "scalp", "open_close", "ultrafast", "day_trade", "daytrading")):
+        return "day"
+    if any(tok in bot_id for tok in ("swing", "position_1m_3m", "1w_3w", "2d_5d")):
+        return "swing"
+    return "equities"
+
+
 def _registry_summary(registry: Dict[str, Any], top_n: int) -> Dict[str, Any]:
     sub_bots = registry.get("sub_bots", []) if isinstance(registry, dict) else []
     sub_bots = sub_bots if isinstance(sub_bots, list) else []
@@ -83,6 +109,35 @@ def _registry_summary(registry: Dict[str, Any], top_n: int) -> Dict[str, Any]:
         ),
         reverse=True,
     )
+
+    lane_map: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in active_sorted:
+        lane_map[_classify_lane(row)].append(row)
+
+    lane_summary: Dict[str, Any] = {}
+    for lane, rows in sorted(
+        lane_map.items(),
+        key=lambda item: (
+            -sum(_safe_float(r.get("weight"), 0.0) for r in item[1]),
+            item[0],
+        ),
+    ):
+        lane_summary[lane] = {
+            "active_count": len(rows),
+            "active_weight": round(sum(_safe_float(r.get("weight"), 0.0) for r in rows), 6),
+            "roles": dict(Counter(str(r.get("bot_role") or "unknown") for r in rows)),
+            "bots": [
+                {
+                    "bot_id": r.get("bot_id"),
+                    "bot_role": r.get("bot_role"),
+                    "weight": _safe_float(r.get("weight"), 0.0),
+                    "quality_score": _safe_float(r.get("quality_score"), 0.0),
+                    "test_accuracy": r.get("test_accuracy"),
+                    "reason": r.get("reason"),
+                }
+                for r in rows[:top_n]
+            ],
+        }
 
     risk_rows = [
         b for b in sub_bots
@@ -109,6 +164,7 @@ def _registry_summary(registry: Dict[str, Any], top_n: int) -> Dict[str, Any]:
             "active": dict(role_active),
             "total": dict(role_total),
         },
+        "lanes": lane_summary,
         "top_active": [
             {
                 "bot_id": b.get("bot_id"),
@@ -327,7 +383,7 @@ def _resolve_watchdog_file() -> Optional[Path]:
 def _parse_watchdog() -> Dict[str, Any]:
     source = _resolve_watchdog_file()
     if source is None:
-        return {"exists": False, "path": str(WATCHDOG_DIR), "latest": None, "targets": []}
+        return {"exists": False, "path": str(WATCHDOG_DIR), "latest": None, "latest_timestamp_utc": None, "targets": []}
 
     latest: Optional[Dict[str, Any]] = None
     try:
@@ -355,7 +411,7 @@ def _parse_watchdog() -> Dict[str, Any]:
         pass
 
     if not latest:
-        return {"exists": True, "path": str(source), "latest": None, "targets": []}
+        return {"exists": True, "path": str(source), "latest": None, "latest_timestamp_utc": None, "targets": []}
 
     return {
         "exists": True,
@@ -365,8 +421,40 @@ def _parse_watchdog() -> Dict[str, Any]:
     }
 
 
-def _overall_health(registry_counts: Dict[str, int], decision_summaries: Dict[str, Dict[str, Any]], watchdog: Dict[str, Any]) -> Dict[str, Any]:
+def _session_window_et() -> tuple[int, int]:
+    try:
+        start_hour = int(float(os.getenv("MARKET_SESSION_START_HOUR", "8")))
+    except Exception:
+        start_hour = 8
+    try:
+        end_hour = int(float(os.getenv("MARKET_SESSION_END_HOUR", "20")))
+    except Exception:
+        end_hour = 20
+    return max(start_hour, 0), min(max(end_hour, 0), 24)
+
+
+def _flow_expected_live(name: str, now: Optional[datetime] = None) -> bool:
+    local_now = now or datetime.now(timezone.utc).astimezone(_ET_ZONE)
+    if str(name) == "coinbase_crypto":
+        return True
+    if not str(name).startswith("schwab_"):
+        return True
+    if local_now.weekday() >= 5:
+        return False
+    start_hour, end_hour = _session_window_et()
+    current_hour = local_now.hour + (local_now.minute / 60.0)
+    return float(start_hour) <= current_hour < float(end_hour)
+
+
+def _overall_health(
+    registry_counts: Dict[str, int],
+    decision_summaries: Dict[str, Dict[str, Any]],
+    watchdog: Dict[str, Any],
+    *,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
     checks: List[Tuple[str, bool, str]] = []
+    local_now = now or datetime.now(timezone.utc).astimezone(_ET_ZONE)
 
     active = _safe_int(registry_counts.get("active"), 0)
     checks.append(("active_sub_bots", active >= 15, f"active={active} (target>=15)"))
@@ -376,19 +464,41 @@ def _overall_health(registry_counts: Dict[str, int], decision_summaries: Dict[st
     for name, summary in decision_summaries.items():
         has_loop = bool(summary.get("latest_loop"))
         has_decision_activity = _safe_int(summary.get("decision_lines"), 0) > 0
-        healthy_activity = has_loop or has_decision_activity
+        expected_live = _flow_expected_live(name, local_now)
+        healthy_activity = (has_loop or has_decision_activity) if expected_live else True
         loops_ok = loops_ok and healthy_activity
+        state = "ok" if healthy_activity else "missing"
+        if not expected_live:
+            state = "off_session"
         loop_notes.append(
-            f"{name}={'ok' if healthy_activity else 'missing'}(loop={'yes' if has_loop else 'no'},decisions={summary.get('decision_lines', 0)})"
+            f"{name}={state}(loop={'yes' if has_loop else 'no'},decisions={summary.get('decision_lines', 0)})"
         )
     checks.append(("live_shadow_loops", loops_ok, ", ".join(loop_notes)))
 
     targets = watchdog.get("targets", []) or []
     target_map = {str(t.get("name", "")): t for t in targets if isinstance(t, dict)}
-    schwab_live = bool(target_map.get("schwab_parallel", {}).get("live"))
-    coinbase_live = bool(target_map.get("coinbase_shadow", {}).get("live"))
-    checks.append(("watchdog_schwab_live", schwab_live, f"live={schwab_live}"))
-    checks.append(("watchdog_coinbase_live", coinbase_live, f"live={coinbase_live}"))
+    schwab_expected = any(_flow_expected_live(name, local_now) for name in decision_summaries if name.startswith("schwab_"))
+    schwab_live = bool(target_map.get("schwab_parallel", {}).get("live")) or any(
+        bool((decision_summaries.get(name) or {}).get("latest_loop")) or _safe_int((decision_summaries.get(name) or {}).get("decision_lines"), 0) > 0
+        for name in decision_summaries
+        if name.startswith("schwab_")
+    )
+    if not schwab_expected:
+        schwab_live = True
+        schwab_note = "off_session"
+    else:
+        schwab_note = f"live={bool(target_map.get('schwab_parallel', {}).get('live'))} fallback_activity={schwab_live}"
+    coinbase_summary = decision_summaries.get("coinbase_crypto", {})
+    coinbase_activity = bool(coinbase_summary.get("latest_loop")) or _safe_int(coinbase_summary.get("decision_lines"), 0) > 0
+    coinbase_watchdog_live = bool(target_map.get("coinbase_shadow", {}).get("live"))
+    coinbase_live = bool(coinbase_watchdog_live or coinbase_activity)
+    coinbase_note = (
+        f"live={coinbase_watchdog_live} fallback_activity={coinbase_activity}"
+        if targets
+        else f"watchdog_unavailable fallback_activity={coinbase_activity}"
+    )
+    checks.append(("watchdog_schwab_live", schwab_live, schwab_note))
+    checks.append(("watchdog_coinbase_live", coinbase_live, coinbase_note))
 
     status = "healthy" if all(ok for _, ok, _ in checks) else "degraded"
     return {
@@ -463,6 +573,20 @@ def _render_markdown(payload: Dict[str, Any]) -> str:
     else:
         lines.append("- active_roles=none")
     lines.append("")
+    lines.append("### Active By Lane")
+    if registry["lanes"]:
+        for lane, info in registry["lanes"].items():
+            top = ", ".join(
+                f"{row['bot_id']}({row['weight']:.4f})"
+                for row in info.get("bots", [])[:4]
+            ) or "none"
+            lines.append(
+                f"- {lane}: count={info['active_count']} weight={info['active_weight']:.4f} "
+                f"roles={info['roles']} top={top}"
+            )
+    else:
+        lines.append("- none")
+    lines.append("")
     lines.append("### Top Active (by weight)")
     if registry["top_active"]:
         for row in registry["top_active"]:
@@ -470,6 +594,18 @@ def _render_markdown(payload: Dict[str, Any]) -> str:
                 f"- {row['bot_id']} role={row['bot_role']} weight={row['weight']:.4f} "
                 f"quality={row['quality_score']:.4f} acc={row['test_accuracy']}"
             )
+    else:
+        lines.append("- none")
+    lines.append("")
+    lines.append("### Sleeve View")
+    if registry["lanes"]:
+        for lane, info in registry["lanes"].items():
+            lines.append(f"- {lane}")
+            for row in info.get("bots", []):
+                lines.append(
+                    f"  - {row['bot_id']} role={row['bot_role']} weight={row['weight']:.4f} "
+                    f"quality={row['quality_score']:.4f} reason={row['reason']}"
+                )
     else:
         lines.append("- none")
     lines.append("")
@@ -496,22 +632,22 @@ def _render_markdown(payload: Dict[str, Any]) -> str:
         lines.append(f"- actions={actions}")
         lines.append(f"- statuses={statuses}")
         lines.append(f"- master_bias_votes={biases}")
-        gm = summary["grand_master"]
-        opt = summary["options_master"]
+        gm = summary.get("grand_master") or {}
+        opt = summary.get("options_master") or {}
         lines.append(
-            f"- grand_master samples={gm['samples']} avg_score={gm['avg_score']} avg_weights={gm['avg_weights'] or 'n/a'}"
+            f"- grand_master samples={gm.get('samples')} avg_score={gm.get('avg_score')} avg_weights={gm.get('avg_weights') or 'n/a'}"
         )
-        lines.append(f"- options_master samples={opt['samples']} avg_score={opt['avg_score']}")
-        latest = summary["latest_loop"]
+        lines.append(f"- options_master samples={opt.get('samples')} avg_score={opt.get('avg_score')}")
+        latest = summary.get("latest_loop")
         if latest:
             lines.append(
-                f"- latest_loop iter={latest['iter']} symbol={latest['symbol']} grand_action={latest['grand_action']} "
-                f"options_action={latest['options_action']} active_bots={latest['active_bots']} recs={latest['recs']}"
+                f"- latest_loop iter={latest.get('iter')} symbol={latest.get('symbol')} grand_action={latest.get('grand_action')} "
+                f"options_action={latest.get('options_action')} active_bots={latest.get('active_bots')} recs={latest.get('recs')}"
             )
         else:
             lines.append("- latest_loop none")
-        lines.append("- top_sub_bot_mentions=" + (", ".join(f"{k}:{v}" for k, v in summary["sub_bot_mentions"].items()) or "none"))
-        lines.append("- top_contributors=" + (", ".join(f"{k}:{v}" for k, v in summary["top_contributors"].items()) or "none"))
+        lines.append("- top_sub_bot_mentions=" + (", ".join(f"{k}:{v}" for k, v in (summary.get("sub_bot_mentions") or {}).items()) or "none"))
+        lines.append("- top_contributors=" + (", ".join(f"{k}:{v}" for k, v in (summary.get("top_contributors") or {}).items()) or "none"))
         lines.append("")
 
     lines.append("## Watchdog")

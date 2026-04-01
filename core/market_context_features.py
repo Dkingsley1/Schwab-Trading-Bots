@@ -88,13 +88,21 @@ _NEWS_SOURCE_QUALITY = {
     "bloomberg": 1.0,
     "associated press": 0.98,
     "ap": 0.96,
+    "coinbase status": 0.96,
+    "coinbase market notices": 0.95,
+    "coinbase derivatives": 0.94,
     "wsj": 0.94,
     "wall street journal": 0.94,
     "financial times": 0.93,
     "dow jones": 0.92,
+    "coindesk": 0.90,
+    "the block": 0.88,
     "benzinga": 0.82,
+    "cointelegraph": 0.80,
+    "decrypt": 0.79,
     "marketwatch": 0.80,
     "seeking alpha": 0.74,
+    "bitcoin magazine": 0.74,
     "yahoo finance": 0.70,
     "business wire": 0.69,
     "globenewswire": 0.66,
@@ -412,6 +420,13 @@ def summarize_breadth_context(
     new_highs = _to_float(snapshot.get("new_highs"), 0.0)
     new_lows = _to_float(snapshot.get("new_lows"), 0.0)
     sector_dispersion = _to_float(snapshot.get("sector_dispersion"), 0.0)
+    sector_adv = _to_float(snapshot.get("sector_advancers"), 0.0)
+    sector_dec = _to_float(snapshot.get("sector_decliners"), 0.0)
+    sector_rotation = _to_float(snapshot.get("sector_rotation_score"), 0.0)
+    sector_leader = _to_float(snapshot.get("sector_leader_strength"), 0.0)
+    sector_laggard = abs(_to_float(snapshot.get("sector_laggard_strength"), 0.0))
+    index_alignment = _clamp01(_to_float(snapshot.get("index_alignment_score"), 0.0))
+    risk_on_score = _clamp01(_to_float(snapshot.get("risk_on_score"), 0.5))
     snapshot_available = 0.0
 
     if adv <= 0.0 and dec <= 0.0:
@@ -441,8 +456,21 @@ def summarize_breadth_context(
     ad_ratio = (adv - dec) / max(adv + dec, 1.0)
     uv_ratio = (up_vol - down_vol) / max(up_vol + down_vol, 1.0)
     nh_nl_ratio = (new_highs - new_lows) / max(new_highs + new_lows, 1.0) if (new_highs + new_lows) > 0.0 else ad_ratio
+    if sector_adv > 0.0 or sector_dec > 0.0:
+        sector_ad_ratio = (sector_adv - sector_dec) / max(sector_adv + sector_dec, 1.0)
+        ad_ratio = (0.75 * ad_ratio) + (0.25 * sector_ad_ratio)
+    sector_dispersion = max(
+        sector_dispersion,
+        sector_rotation,
+        max(sector_leader, sector_laggard) * 0.5,
+    )
     thrust = max((adv / max(adv + dec, 1.0)) - 0.50, 0.0) * 2.0
-    risk_off = _clamp01((0.55 * (1.0 - _signed_centered_norm(ad_ratio, 1.0))) + (0.45 * _clamp01(sector_dispersion / 0.03)))
+    risk_off = _clamp01(
+        (0.40 * (1.0 - _signed_centered_norm(ad_ratio, 1.0)))
+        + (0.25 * _clamp01(sector_dispersion / 0.03))
+        + (0.20 * (1.0 - index_alignment))
+        + (0.15 * (1.0 - risk_on_score))
+    )
 
     out.update(
         {

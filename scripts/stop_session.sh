@@ -14,8 +14,8 @@ pkill -f "run_shadow_training_loop.py" 2>/dev/null || true
 pkill -f "shadow_watchdog.py" 2>/dev/null || true
 sleep 2
 
-"$PY" "$PROJECT_ROOT/scripts/link_jsonl_to_sql.py" --mode sqlite
-"$PY" "$PROJECT_ROOT/scripts/build_one_numbers_report.py" --day "$DAY_UTC"
+"$PY" "$PROJECT_ROOT/scripts/ops/sql_link_shard_manager.py" --once --json
+"$PY" "$PROJECT_ROOT/scripts/build_one_numbers_report.py"
 "$PY" "$PROJECT_ROOT/scripts/daily_auto_verify.py" --day "$DAY_UTC" || true
 "$PY" "$PROJECT_ROOT/scripts/safe_mode_guard.py" --trip-streak "${SAFE_MODE_TRIP_STREAK_REQUIRED:-3}" --clear-streak "${SAFE_MODE_CLEAR_STREAK_REQUIRED:-2}" || true
 "$PY" "$PROJECT_ROOT/scripts/global_risk_killswitch.py" || true

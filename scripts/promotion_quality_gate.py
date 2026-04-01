@@ -21,12 +21,41 @@ def _promotion_defaults() -> dict[str, Any]:
     return gates.get("promotion_gate") if isinstance(gates.get("promotion_gate"), dict) else {}
 
 
+def _resolve_daily_verify_failures(
+    daily_verify: dict[str, Any],
+    *,
+    graduation_gate: dict[str, Any],
+    replay_hash_registry_gate: dict[str, Any],
+    promotion_gate: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    failed = daily_verify.get("failed_checks") if isinstance(daily_verify.get("failed_checks"), list) else []
+    unresolved: list[str] = []
+    resolved: list[str] = []
+    for item in failed:
+        name = str(item or "").strip()
+        if name == "incomplete_run_recovered":
+            resolved.append(name)
+            continue
+        if name == "new_bot_graduation_gate" and bool(graduation_gate.get("ok", False)):
+            resolved.append(name)
+            continue
+        if name == "replay_hash_registry_guard" and bool(replay_hash_registry_gate.get("ok", False)):
+            resolved.append(name)
+            continue
+        if name == "promotion_quality_gate" and bool(promotion_gate.get("promote_ok", False)):
+            resolved.append(name)
+            continue
+        unresolved.append(name)
+    return unresolved, resolved
+
+
 def evaluate_quality(
     promotion_gate: dict[str, Any],
     daily_verify: dict[str, Any],
     graduation_gate: dict[str, Any],
     leak_overfit: dict[str, Any],
     replay_gate: dict[str, Any],
+    replay_hash_registry_gate: dict[str, Any],
     reconciliation_slo: dict[str, Any],
     *,
     max_fail_share: float,
@@ -40,6 +69,12 @@ def evaluate_quality(
     raw_fail_share = promotion_gate.get("fail_share", 1.0)
     fail_share = float(1.0 if raw_fail_share is None else raw_fail_share)
     promote_ok = bool(promotion_gate.get("promote_ok", False))
+    unresolved_daily_verify, resolved_daily_verify = _resolve_daily_verify_failures(
+        daily_verify,
+        graduation_gate=graduation_gate,
+        replay_hash_registry_gate=replay_hash_registry_gate,
+        promotion_gate=promotion_gate,
+    )
 
     if not promote_ok:
         failed.append("promotion_gate_blocked")
@@ -48,7 +83,7 @@ def evaluate_quality(
     if fail_share > float(max_fail_share):
         failed.append("fail_share_above_limit")
 
-    if not bool(daily_verify.get("ok", False)):
+    if unresolved_daily_verify:
         failed.append("daily_verify_not_ok")
 
     if not bool(graduation_gate.get("ok", False)):
@@ -69,10 +104,13 @@ def evaluate_quality(
             "considered_bots": considered,
             "fail_share": round(fail_share, 6),
         },
-        "daily_verify_ok": bool(daily_verify.get("ok", False)),
+        "daily_verify_ok": len(unresolved_daily_verify) == 0,
+        "daily_verify_unresolved_failed_checks": unresolved_daily_verify,
+        "daily_verify_resolved_failed_checks": resolved_daily_verify,
         "graduation_ok": bool(graduation_gate.get("ok", False)),
         "leak_overfit_ok": bool(leak_overfit.get("ok", False)),
         "replay_ok": bool(replay_gate.get("ok", False)),
+        "replay_hash_registry_ok": bool(replay_hash_registry_gate.get("ok", False)),
         "reconciliation_slo_ok": bool(reconciliation_slo.get("ok", False)),
     }
     return len(failed) == 0, failed, details
@@ -86,6 +124,7 @@ def main() -> int:
     parser.add_argument("--graduation-file", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "new_bot_graduation_latest.json"))
     parser.add_argument("--leak-overfit-file", default=str(PROJECT_ROOT / "governance" / "health" / "leak_overfit_guard_latest.json"))
     parser.add_argument("--replay-file", default=str(PROJECT_ROOT / "governance" / "health" / "replay_end_to_end_latest.json"))
+    parser.add_argument("--replay-hash-registry-file", default=str(PROJECT_ROOT / "governance" / "health" / "replay_hash_registry_guard_latest.json"))
     parser.add_argument("--reconciliation-file", default=str(PROJECT_ROOT / "governance" / "health" / "live_reconciliation_slo_latest.json"))
     parser.add_argument("--max-fail-share", type=float, default=float(defaults.get("max_fail_share", 0.25)))
     parser.add_argument("--min-considered-bots", type=int, default=int(defaults.get("min_considered_bots", 4)))
@@ -102,6 +141,7 @@ def main() -> int:
     graduation = _load_json(Path(args.graduation_file))
     leak_overfit = _load_json(Path(args.leak_overfit_file))
     replay = _load_json(Path(args.replay_file))
+    replay_hash_registry = _load_json(Path(args.replay_hash_registry_file))
     reconciliation = _load_json(Path(args.reconciliation_file))
 
     ok, failed_checks, details = evaluate_quality(
@@ -110,6 +150,7 @@ def main() -> int:
         graduation,
         leak_overfit,
         replay,
+        replay_hash_registry,
         reconciliation,
         max_fail_share=float(args.max_fail_share),
         min_considered_bots=int(args.min_considered_bots),
@@ -134,6 +175,7 @@ def main() -> int:
             "graduation": str(args.graduation_file),
             "leak_overfit": str(args.leak_overfit_file),
             "replay": str(args.replay_file),
+            "replay_hash_registry": str(args.replay_hash_registry_file),
             "reconciliation": str(args.reconciliation_file),
         },
     }

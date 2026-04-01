@@ -1,11 +1,23 @@
 import argparse
 import json
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_QUEUE_DB = Path(
+    str(
+        os.getenv(
+            "SQL_LINK_SERVICE_QUEUE_DB",
+            os.getenv(
+                "BOT_CHANNEL_QUEUE_DB",
+                str(PROJECT_ROOT / "local_fallback_storage" / "data" / "bot_channel_queue.sqlite3"),
+            ),
+        )
+    )
+).expanduser()
 
 
 def _now_utc() -> datetime:
@@ -125,7 +137,7 @@ def _cleanup_consumer_state(conn: sqlite3.Connection, *, cutoff: str, limit: int
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prune safely acknowledged rows from bot_channel_queue SQLite.")
-    parser.add_argument("--db", default=str(PROJECT_ROOT / "data" / "bot_channel_queue.sqlite3"))
+    parser.add_argument("--db", default=str(DEFAULT_QUEUE_DB))
     parser.add_argument("--acked-days", type=int, default=7)
     parser.add_argument("--batch-size", type=int, default=50000)
     parser.add_argument("--max-rows", type=int, default=0, help="Maximum rows to delete in one pass (0 = unlimited).")

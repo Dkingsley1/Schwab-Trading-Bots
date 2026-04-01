@@ -2,14 +2,16 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PY="$PROJECT_ROOT/.venv312/bin/python"
+source "$PROJECT_ROOT/scripts/ops/runtime_python.sh"
+PY="$(resolve_runtime_python)"
 
 FORCE_RESTART=0
 WITH_COINBASE=1
 SIMULATE=0
 DISABLE_BREAKERS=0
-COINBASE_PAPER=0
-COINBASE_SIMULATE="${COINBASE_START_SIMULATE:-1}"
+SCHWAB_PAPER=1
+COINBASE_PAPER=1
+COINBASE_SIMULATE="${COINBASE_START_SIMULATE:-0}"
 PROFILE="${BOT_RUNTIME_PROFILE:-}"
 ORCHESTRATOR_MODE="${STACK_ORCHESTRATOR_MODE:-watchdog}"
 
@@ -19,6 +21,7 @@ while [[ $# -gt 0 ]]; do
     --no-coinbase) WITH_COINBASE=0 ;;
     --simulate) SIMULATE=1 ;;
     --disable-circuit-breakers) DISABLE_BREAKERS=1 ;;
+    --paper|--schwab-paper) SCHWAB_PAPER=1 ;;
     --coinbase-paper) COINBASE_PAPER=1; COINBASE_SIMULATE=0 ;;
     --coinbase-live-data|--coinbase-no-simulate) COINBASE_SIMULATE=0 ;;
     --coinbase-simulate) COINBASE_SIMULATE=1 ;;
@@ -45,6 +48,24 @@ if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
   source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" "$PROFILE" --quiet
 fi
 
+coinbase_spot_process_lines() {
+  ps -axo pid,command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v " --profile crypto_futures" | grep -v grep || true
+}
+
+coinbase_spot_running() {
+  coinbase_spot_process_lines | grep -q .
+}
+
+kill_coinbase_spot_loops() {
+  local pids
+  pids="$(coinbase_spot_process_lines | awk '{print $1}')"
+  if [[ -n "${pids//[[:space:]]/}" ]]; then
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && kill "$pid" >/dev/null 2>&1 || true
+    done <<< "$pids"
+  fi
+}
+
 echo "runtime_profile=$PROFILE"
 echo "orchestrator_mode=$ORCHESTRATOR_MODE"
 
@@ -56,7 +77,8 @@ if [[ "$FORCE_RESTART" == "1" ]]; then
   pkill -f "scripts/run_dividend_shadow.py" || true
   pkill -f "scripts/run_bond_shadow.py" || true
   pkill -f "scripts/run_shadow_training_loop.py --broker schwab" || true
-  pkill -f "scripts/run_shadow_training_loop.py --broker coinbase" || true
+  kill_coinbase_spot_loops
+  pkill -f "scripts/run_shadow_training_loop.py --broker coinbase --profile crypto_futures" || true
   sleep 1
 fi
 
@@ -73,6 +95,15 @@ fi
 
 export MARKET_DATA_ONLY="${MARKET_DATA_ONLY:-1}"
 export ALLOW_ORDER_EXECUTION="${ALLOW_ORDER_EXECUTION:-0}"
+export TOP_BOT_PAPER_TRADING_ENABLED="${TOP_BOT_PAPER_TRADING_ENABLED:-1}"
+export TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED="${TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED:-1}"
+export PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"
+export PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"
+export LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"
+export LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"
+export LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"
+export LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"
+export LOG_FUTURES_MASTER_DECISIONS="${LOG_FUTURES_MASTER_DECISIONS:-1}"
 
 if [[ "$ORCHESTRATOR_MODE" == "watchdog" ]]; then
   WD_MATCH="scripts/shadow_watchdog.py"
@@ -137,13 +168,35 @@ if [[ "$DISABLE_BREAKERS" == "1" ]]; then
   CMD+=(--disable-circuit-breakers)
 fi
 
-PYTHONUNBUFFERED=1 nohup "${CMD[@]}" > "$LOG_ALL" 2>&1 & disown
+if [[ "$SCHWAB_PAPER" == "1" ]]; then
+  SCHWAB_PAPER_TOP_N="${SCHWAB_TOP_BOT_PAPER_TRADING_TOP_N:-${TOP_BOT_PAPER_TRADING_TOP_N:-5}}"
+  SCHWAB_PAPER_MIN_ACC="${SCHWAB_TOP_BOT_PAPER_TRADING_MIN_ACC:-${TOP_BOT_PAPER_TRADING_MIN_ACC:-0.58}}"
+  SCHWAB_PAPER_PROFILES="${SCHWAB_TOP_BOT_PAPER_TRADING_PROFILES:-${TOP_BOT_PAPER_TRADING_PROFILES:-}}"
+  SCHWAB_OPTIONS_PAPER_TOP_N="${SCHWAB_OPTIONS_TOP_BOT_PAPER_TRADING_TOP_N:-${TOP_BOT_PAPER_TRADING_OPTIONS_TOP_N:-2}}"
+  SCHWAB_OPTIONS_PAPER_MIN_ACC="${SCHWAB_OPTIONS_TOP_BOT_PAPER_TRADING_MIN_ACC:-${TOP_BOT_PAPER_TRADING_OPTIONS_MIN_ACC:-$SCHWAB_PAPER_MIN_ACC}}"
+  SCHWAB_OPTIONS_PAPER_PROFILES="${SCHWAB_OPTIONS_TOP_BOT_PAPER_TRADING_PROFILES:-${TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES:-${SCHWAB_PAPER_PROFILES:-}}}"
+  echo "schwab_paper=enabled top_n=$SCHWAB_PAPER_TOP_N min_acc=$SCHWAB_PAPER_MIN_ACC profiles=${SCHWAB_PAPER_PROFILES:-all}"
+  echo "schwab_options_paper=enabled top_n=$SCHWAB_OPTIONS_PAPER_TOP_N min_acc=$SCHWAB_OPTIONS_PAPER_MIN_ACC profiles=${SCHWAB_OPTIONS_PAPER_PROFILES:-all}"
+  TOP_BOT_PAPER_TRADING_ENABLED=1 \
+  TOP_BOT_PAPER_TRADING_TOP_N="$SCHWAB_PAPER_TOP_N" \
+  TOP_BOT_PAPER_TRADING_MIN_ACC="$SCHWAB_PAPER_MIN_ACC" \
+  TOP_BOT_PAPER_TRADING_PROFILES="$SCHWAB_PAPER_PROFILES" \
+  TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED="${TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED:-1}" \
+  TOP_BOT_PAPER_TRADING_OPTIONS_TOP_N="$SCHWAB_OPTIONS_PAPER_TOP_N" \
+  TOP_BOT_PAPER_TRADING_OPTIONS_MIN_ACC="$SCHWAB_OPTIONS_PAPER_MIN_ACC" \
+  TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES="$SCHWAB_OPTIONS_PAPER_PROFILES" \
+  PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}" \
+  PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}" \
+  PYTHONUNBUFFERED=1 nohup "${CMD[@]}" > "$LOG_ALL" 2>&1 & disown
+else
+  PYTHONUNBUFFERED=1 nohup "${CMD[@]}" > "$LOG_ALL" 2>&1 & disown
+fi
 
 echo "all_sleeves_log=$LOG_ALL"
 
 if [[ "$WITH_COINBASE" == "1" ]]; then
-  if ps -axo command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v grep >/dev/null 2>&1; then
-    EXISTING_PID="$(ps -axo pid,command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v grep | awk 'NR==1{print $1}')"
+  if coinbase_spot_running; then
+    EXISTING_PID="$(coinbase_spot_process_lines | awk 'NR==1{print $1}')"
     echo "coinbase_loop=already_running pid=$EXISTING_PID"
   else
     LOG_CB="logs/coinbase_live_$(date -u +%Y%m%d_%H%M%S).log"
@@ -169,7 +222,7 @@ if [[ "$WITH_COINBASE" == "1" ]]; then
     fi
 
     sleep 2
-    if ps -axo command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v grep >/dev/null 2>&1; then
+    if coinbase_spot_running; then
       echo "coinbase_log=$LOG_CB"
       echo "coinbase_mode simulate=$COINBASE_SIMULATE paper=$COINBASE_PAPER"
     else

@@ -4,7 +4,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -212,6 +212,23 @@ def loss_fn(model, x, y):
     return nn.losses.binary_cross_entropy(probs, y)
 
 
+def weighted_loss_fn(
+    model,
+    x,
+    y,
+    *,
+    sample_weight=None,
+    pos_weight: float = 1.0,
+    neg_weight: float = 1.0,
+):
+    probs = mx.sigmoid(model(x))
+    losses = nn.losses.binary_cross_entropy(probs, y)
+    class_weight = (y * float(pos_weight)) + ((1.0 - y) * float(neg_weight))
+    if sample_weight is not None:
+        class_weight = class_weight * sample_weight
+    return mx.sum(losses * class_weight) / (mx.sum(class_weight) + 1e-6)
+
+
 def split_data(X, y, train_ratio=0.7, val_ratio=0.15):
     n = X.shape[0]
     n_train = int(n * train_ratio)
@@ -269,6 +286,17 @@ def _assign_param_tree(target, flat: Dict[str, np.ndarray], prefix: str = "") ->
         return
     if prefix in flat:
         target[:] = mx.array(flat[prefix])
+
+
+def _snapshot_model_params(model: nn.Module) -> Dict[str, np.ndarray]:
+    mx.eval(model.parameters())
+    flat = _flatten_param_tree(model.parameters())
+    return {key: np.array(value, copy=True) for key, value in flat.items()}
+
+
+def _restore_model_params(model: nn.Module, flat: Dict[str, np.ndarray]) -> None:
+    _assign_param_tree(model.parameters(), flat)
+    mx.eval(model.parameters())
 
 
 def load_model(model, npz_path):
@@ -571,6 +599,8 @@ def train_indicator_bot(
     loss_and_grad_fn = nn.value_and_grad(brain, loss_fn)
 
     best_val = float("inf")
+    best_epoch = -1
+    best_params = _snapshot_model_params(brain)
     patience_left = patience
 
     print("Training...")
@@ -617,8 +647,18 @@ def train_indicator_bot(
                 break
 
     preds = mx.sigmoid(brain(X_test))
-    pred_labels = (preds > 0.5).astype(mx.float32)
-    acc = float(mx.mean((pred_labels == y_test).astype(mx.float32)))
+    pred_probs_np = np.asarray(preds).reshape(-1)
+    y_test_np = np.asarray(y_test).reshape(-1)
+    y_all_np = np.asarray(y).reshape(-1)
+    dataset_positive_rate = float(np.mean(y_all_np)) if y_all_np.size else 0.0
+    acted_threshold = 0.65
+    quality_metrics = _classification_quality_metrics(
+        pred_probs_np,
+        y_test_np,
+        acted_threshold=acted_threshold,
+        positive_rate=dataset_positive_rate,
+    )
+    acc = float(quality_metrics["test_accuracy"])
     print(f"Test accuracy: {acc:.4f}")
 
     config = {
@@ -636,6 +676,7 @@ def train_indicator_bot(
         "best_val_loss": float(best_val),
         "final_val_loss": float(val_loss),
         "test_accuracy": float(acc),
+        **quality_metrics,
     }
     if distillation_enabled:
         metrics["distillation_active"] = True
@@ -751,8 +792,18 @@ def train_price_indicator_bot(
                 break
 
     preds = mx.sigmoid(brain(X_test))
-    pred_labels = (preds > 0.5).astype(mx.float32)
-    acc = float(mx.mean((pred_labels == y_test).astype(mx.float32)))
+    pred_probs_np = np.asarray(preds).reshape(-1)
+    y_test_np = np.asarray(y_test).reshape(-1)
+    y_all_np = np.asarray(y).reshape(-1)
+    dataset_positive_rate = float(np.mean(y_all_np)) if y_all_np.size else 0.0
+    acted_threshold = 0.65
+    quality_metrics = _classification_quality_metrics(
+        pred_probs_np,
+        y_test_np,
+        acted_threshold=acted_threshold,
+        positive_rate=dataset_positive_rate,
+    )
+    acc = float(quality_metrics["test_accuracy"])
     print(f"Test accuracy: {acc:.4f}")
 
     config = {
@@ -775,6 +826,7 @@ def train_price_indicator_bot(
         "best_val_loss": float(best_val),
         "final_val_loss": float(val_loss),
         "test_accuracy": float(acc),
+        **quality_metrics,
     }
     if distillation_enabled:
         metrics["distillation_active"] = True
@@ -795,6 +847,7 @@ def train_runtime_indicator_bot(
     sample_filter: Optional[RuntimeSampleFilter] = None,
     confidence_builder: Optional[RuntimeConfidenceBuilder] = None,
     min_confidence: float = 0.0,
+    sample_stride: int = 1,
     window: int = 30,
     horizon: int = 3,
     learning_rate: float = 0.0008,
@@ -803,8 +856,22 @@ def train_runtime_indicator_bot(
     patience: int = 18,
     min_samples: int = 256,
     min_sequences: int = 2,
+    min_positive_samples: int = 0,
+    min_negative_samples: int = 0,
     acted_prob_threshold: float = 0.65,
     fallback_trainer: Optional[Callable[[], TradingBrain]] = None,
+    allow_fallback_on_insufficient_data: bool = True,
+    max_best_val_loss: Optional[float] = None,
+    max_final_val_loss: Optional[float] = None,
+    min_long_precision: float = 0.0,
+    min_short_precision: float = 0.0,
+    require_both_sides_precision: bool = False,
+    min_acted_accuracy: float = 0.0,
+    min_long_acted_count: int = 0,
+    min_short_acted_count: int = 0,
+    min_accuracy_lift_over_majority: Optional[float] = None,
+    min_label_balance_score: Optional[float] = None,
+    min_precision_balance_score: float = 0.0,
 ) -> TradingBrain:
     np.random.seed(42)
     project_root = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -844,6 +911,7 @@ def train_runtime_indicator_bot(
         sample_filter=sample_filter,
         confidence_builder=confidence_builder,
         min_confidence=min_confidence,
+        sample_stride=sample_stride,
         window=window,
         horizon=horizon,
     )
@@ -860,14 +928,17 @@ def train_runtime_indicator_bot(
         runtime_meta.pop("_sample_confidence", np.ones((sample_count,), dtype=np.float32)),
         dtype=np.float32,
     ).reshape(-1)
+    labels_np = np.asarray(y_np).reshape(-1)
     positive_rate = float(runtime_meta.get("positive_rate", 0.0) or 0.0)
+    positive_samples = int(np.sum(labels_np >= 0.5))
+    negative_samples = int(sample_count - positive_samples)
     if (
         sample_count < max(int(min_samples), batch_size * 2)
         or int(runtime_meta.get("eligible_sequences", 0) or 0) < max(int(min_sequences), 1)
         or positive_rate <= 0.02
         or positive_rate >= 0.98
     ):
-        if fallback_trainer is not None:
+        if fallback_trainer is not None and allow_fallback_on_insufficient_data:
             print(
                 "[RuntimeTraining] fallback "
                 f"run_tag={run_tag} samples={sample_count} "
@@ -881,6 +952,14 @@ def train_runtime_indicator_bot(
             f"samples={sample_count} eligible_sequences={runtime_meta.get('eligible_sequences', 0)} "
             f"positive_rate={positive_rate:.4f}"
         )
+    if positive_samples < max(int(min_positive_samples), 0) or negative_samples < max(int(min_negative_samples), 0):
+        if fallback_trainer is not None and allow_fallback_on_insufficient_data:
+            return fallback_trainer()
+        raise RuntimeError(
+            f"insufficient_runtime_training_side_samples run_tag={run_tag} "
+            f"positive_samples={positive_samples} negative_samples={negative_samples} "
+            f"min_positive_samples={int(min_positive_samples)} min_negative_samples={int(min_negative_samples)}"
+        )
 
     feat_mean = X_np.mean(axis=0, keepdims=True)
     feat_std = X_np.std(axis=0, keepdims=True) + 1e-8
@@ -891,13 +970,37 @@ def train_runtime_indicator_bot(
     X_train, y_train, X_val, y_val, X_test, y_test = split_data(X, y)
     n_train = int(sample_count * 0.7)
     n_val = int(sample_count * 0.15)
+    sample_confidence_train = sample_confidence[:n_train]
+    sample_confidence_val = sample_confidence[n_train : n_train + n_val]
     sample_confidence_test = sample_confidence[n_train + n_val :]
 
     brain = TradingBrain(int(X.shape[1]))
     mx.eval(brain.parameters())
 
     optimizer = optim.Adam(learning_rate=learning_rate)
-    loss_and_grad_fn = nn.value_and_grad(brain, loss_fn)
+    train_positive_rate = float(np.mean(np.asarray(y_train).reshape(-1))) if X_train.shape[0] else positive_rate
+    train_positive_samples = int(np.sum(np.asarray(y_train).reshape(-1) >= 0.5)) if X_train.shape[0] else 0
+    train_negative_samples = int(X_train.shape[0] - train_positive_samples)
+    val_positive_samples = int(np.sum(np.asarray(y_val).reshape(-1) >= 0.5)) if X_val.shape[0] else 0
+    val_negative_samples = int(X_val.shape[0] - val_positive_samples)
+    test_positive_samples = int(np.sum(np.asarray(y_test).reshape(-1) >= 0.5)) if X_test.shape[0] else 0
+    test_negative_samples = int(X_test.shape[0] - test_positive_samples)
+    class_pos_weight = float(np.clip(0.5 / max(train_positive_rate, 1e-6), 0.5, 4.0))
+    class_neg_weight = float(np.clip(0.5 / max(1.0 - train_positive_rate, 1e-6), 0.5, 4.0))
+    train_sample_weights = np.clip(0.25 + (0.75 * sample_confidence_train.reshape(-1)), 0.25, 1.0).astype(np.float32)
+    val_sample_weights = np.clip(0.25 + (0.75 * sample_confidence_val.reshape(-1)), 0.25, 1.0).astype(np.float32)
+
+    def runtime_loss(model, x, y, sample_weight):
+        return weighted_loss_fn(
+            model,
+            x,
+            y,
+            sample_weight=sample_weight,
+            pos_weight=class_pos_weight,
+            neg_weight=class_neg_weight,
+        )
+
+    loss_and_grad_fn = nn.value_and_grad(brain, runtime_loss)
 
     best_val = float("inf")
     patience_left = patience
@@ -912,15 +1015,17 @@ def train_runtime_indicator_bot(
             bidx = mx.array(idx[start : start + batch_size])
             xb = mx.take(X_train, bidx, axis=0)
             yb = mx.take(y_train, bidx, axis=0)
+            wb = mx.array(train_sample_weights[idx[start : start + batch_size]].reshape(-1, 1), dtype=mx.float32)
 
-            loss, grads = loss_and_grad_fn(brain, xb, yb)
+            loss, grads = loss_and_grad_fn(brain, xb, yb, wb)
             optimizer.update(brain, grads)
             mx.eval(brain.parameters(), optimizer.state)
 
             total_loss += float(loss)
             batches += 1
 
-        val_loss = float(loss_fn(brain, X_val, y_val))
+        val_weight = mx.array(val_sample_weights.reshape(-1, 1), dtype=mx.float32)
+        val_loss = float(runtime_loss(brain, X_val, y_val, val_weight))
         if epoch % 10 == 0:
             print(
                 f"Epoch {epoch} | Train {total_loss / max(batches, 1):.6f} | Val {val_loss:.6f}",
@@ -929,6 +1034,8 @@ def train_runtime_indicator_bot(
 
         if val_loss < best_val:
             best_val = val_loss
+            best_epoch = epoch
+            best_params = _snapshot_model_params(brain)
             patience_left = patience
         else:
             patience_left -= 1
@@ -936,26 +1043,43 @@ def train_runtime_indicator_bot(
                 print("Early stopping.", flush=True)
                 break
 
-    preds = mx.sigmoid(brain(X_test))
-    pred_labels = (preds > 0.5).astype(mx.float32)
-    acc = float(mx.mean((pred_labels == y_test).astype(mx.float32)))
-    print(f"Test accuracy: {acc:.4f}")
-    pred_probs_np = np.asarray(preds).reshape(-1)
-    pred_labels_np = (pred_probs_np > 0.5).astype(np.float32)
-    y_test_np = np.asarray(y_test).reshape(-1)
-    acted_threshold = float(min(max(acted_prob_threshold, 0.5), 0.95))
-    acted_mask = (pred_probs_np >= acted_threshold) | (pred_probs_np <= (1.0 - acted_threshold))
-    acted_coverage = float(np.mean(acted_mask.astype(np.float32))) if acted_mask.size else 0.0
-    acted_accuracy = (
-        float(np.mean((pred_labels_np[acted_mask] == y_test_np[acted_mask]).astype(np.float32)))
-        if np.any(acted_mask)
-        else 0.0
+    if best_params:
+        _restore_model_params(brain, best_params)
+
+    configured_acted_threshold = float(min(max(acted_prob_threshold, 0.5), 0.95))
+    val_weight = mx.array(val_sample_weights.reshape(-1, 1), dtype=mx.float32)
+    val_loss = float(runtime_loss(brain, X_val, y_val, val_weight))
+    val_pred_probs_np = np.asarray(mx.sigmoid(brain(X_val))).reshape(-1) if X_val.shape[0] else np.zeros((0,), dtype=np.float32)
+    y_val_np = np.asarray(y_val).reshape(-1)
+    desired_long_actions = min(max(int(min_long_acted_count), 2), 6) if int(min_long_acted_count) > 0 else 2
+    desired_short_actions = min(max(int(min_short_acted_count), 2), 6) if int(min_short_acted_count) > 0 else 2
+    long_acted_threshold, short_acted_threshold, threshold_meta = _select_calibrated_action_thresholds(
+        val_pred_probs_np,
+        y_val_np,
+        default_threshold=configured_acted_threshold,
+        sample_confidence=sample_confidence_val,
+        min_long_acted_count=desired_long_actions,
+        min_short_acted_count=desired_short_actions,
     )
-    long_mask = pred_probs_np >= acted_threshold
-    short_mask = pred_probs_np <= (1.0 - acted_threshold)
-    long_precision = float(np.mean(y_test_np[long_mask])) if np.any(long_mask) else 0.0
-    short_precision = float(np.mean(1.0 - y_test_np[short_mask])) if np.any(short_mask) else 0.0
-    pred_confidence = np.abs(pred_probs_np - 0.5) * 2.0
+    preds = mx.sigmoid(brain(X_test))
+    pred_probs_np = np.asarray(preds).reshape(-1)
+    y_test_np = np.asarray(y_test).reshape(-1)
+    quality_metrics = _classification_quality_metrics(
+        pred_probs_np,
+        y_test_np,
+        long_acted_threshold=long_acted_threshold,
+        short_acted_threshold=short_acted_threshold,
+        sample_confidence=sample_confidence_test,
+        positive_rate=positive_rate,
+    )
+    acc = float(quality_metrics["test_accuracy"])
+    acted_accuracy = float(quality_metrics["acted_accuracy"])
+    long_precision = float(quality_metrics["long_precision"])
+    short_precision = float(quality_metrics["short_precision"])
+    accuracy_lift_over_majority = float(quality_metrics["accuracy_lift_over_majority"])
+    label_balance_score = float(quality_metrics["label_balance_score"])
+    precision_balance_score = float(quality_metrics["precision_balance_score"])
+    print(f"Test accuracy: {acc:.4f}")
 
     config = {
         "window": window,
@@ -975,7 +1099,27 @@ def train_runtime_indicator_bot(
             "sample_filter_active": bool(sample_filter is not None),
             "confidence_builder_active": bool(confidence_builder is not None),
             "min_confidence": float(min_confidence),
-            "acted_prob_threshold": float(acted_threshold),
+            "sample_stride": int(max(sample_stride, 1)),
+            "acted_prob_threshold": float(long_acted_threshold),
+            "short_acted_prob_threshold": float(short_acted_threshold),
+            "configured_acted_prob_threshold": float(configured_acted_threshold),
+            "acted_threshold_calibration": threshold_meta,
+            "positive_samples": int(positive_samples),
+            "negative_samples": int(negative_samples),
+            "min_positive_samples": int(min_positive_samples),
+            "min_negative_samples": int(min_negative_samples),
+            "train_positive_rate": float(train_positive_rate),
+            "train_positive_samples": int(train_positive_samples),
+            "train_negative_samples": int(train_negative_samples),
+            "val_positive_samples": int(val_positive_samples),
+            "val_negative_samples": int(val_negative_samples),
+            "test_positive_samples": int(test_positive_samples),
+            "test_negative_samples": int(test_negative_samples),
+            "class_pos_weight": float(class_pos_weight),
+            "class_neg_weight": float(class_neg_weight),
+            "train_sample_weight_mean": float(np.mean(train_sample_weights)) if train_sample_weights.size else 0.0,
+            "val_sample_weight_mean": float(np.mean(val_sample_weights)) if val_sample_weights.size else 0.0,
+            "best_epoch": int(best_epoch),
             **runtime_meta,
         },
         "distillation": {
@@ -987,16 +1131,295 @@ def train_runtime_indicator_bot(
     metrics = {
         "best_val_loss": float(best_val),
         "final_val_loss": float(val_loss),
-        "test_accuracy": float(acc),
-        "positive_rate": float(positive_rate),
-        "acted_prob_threshold": float(acted_threshold),
-        "acted_coverage": float(acted_coverage),
-        "acted_accuracy": float(acted_accuracy),
-        "long_precision": float(long_precision),
-        "short_precision": float(short_precision),
-        "pred_confidence_mean": float(np.mean(pred_confidence)) if pred_confidence.size else 0.0,
-        "pred_confidence_max": float(np.max(pred_confidence)) if pred_confidence.size else 0.0,
-        "input_confidence_mean": float(np.mean(sample_confidence_test)) if sample_confidence_test.size else 0.0,
+        **quality_metrics,
     }
+    quality_failures: list[str] = []
+    if max_best_val_loss is not None and float(best_val) > float(max_best_val_loss):
+        quality_failures.append(
+            f"best_val_loss={float(best_val):.6f} > max_best_val_loss={float(max_best_val_loss):.6f}"
+        )
+    if max_final_val_loss is not None and float(val_loss) > float(max_final_val_loss):
+        quality_failures.append(
+            f"final_val_loss={float(val_loss):.6f} > max_final_val_loss={float(max_final_val_loss):.6f}"
+        )
+    if float(long_precision) < float(min_long_precision):
+        quality_failures.append(
+            f"long_precision={float(long_precision):.4f} < min_long_precision={float(min_long_precision):.4f}"
+        )
+    if float(short_precision) < float(min_short_precision):
+        quality_failures.append(
+            f"short_precision={float(short_precision):.4f} < min_short_precision={float(min_short_precision):.4f}"
+        )
+    if require_both_sides_precision and (float(long_precision) <= 0.0 or float(short_precision) <= 0.0):
+        quality_failures.append(
+            f"require_both_sides_precision long_precision={float(long_precision):.4f} short_precision={float(short_precision):.4f}"
+        )
+    if float(acted_accuracy) < float(min_acted_accuracy):
+        quality_failures.append(
+            f"acted_accuracy={float(acted_accuracy):.4f} < min_acted_accuracy={float(min_acted_accuracy):.4f}"
+        )
+    if int(quality_metrics["long_acted_count"]) < int(min_long_acted_count):
+        quality_failures.append(
+            f"long_acted_count={int(quality_metrics['long_acted_count'])} < min_long_acted_count={int(min_long_acted_count)}"
+        )
+    if int(quality_metrics["short_acted_count"]) < int(min_short_acted_count):
+        quality_failures.append(
+            f"short_acted_count={int(quality_metrics['short_acted_count'])} < min_short_acted_count={int(min_short_acted_count)}"
+        )
+    if min_accuracy_lift_over_majority is not None and float(accuracy_lift_over_majority) < float(min_accuracy_lift_over_majority):
+        quality_failures.append(
+            "accuracy_lift_over_majority="
+            f"{float(accuracy_lift_over_majority):.4f} < min_accuracy_lift_over_majority={float(min_accuracy_lift_over_majority):.4f}"
+        )
+    if min_label_balance_score is not None and float(label_balance_score) < float(min_label_balance_score):
+        quality_failures.append(
+            f"label_balance_score={float(label_balance_score):.4f} < min_label_balance_score={float(min_label_balance_score):.4f}"
+        )
+    if float(precision_balance_score) < float(min_precision_balance_score):
+        quality_failures.append(
+            "precision_balance_score="
+            f"{float(precision_balance_score):.4f} < min_precision_balance_score={float(min_precision_balance_score):.4f}"
+        )
+    if quality_failures:
+        raise RuntimeError(
+            f"runtime_training_quality_guard_failed run_tag={run_tag} "
+            + "; ".join(quality_failures)
+        )
     save_artifacts(brain, config, metrics, run_tag=run_tag)
     return brain
+
+
+def _classification_quality_metrics(
+    pred_probs_np: np.ndarray,
+    y_true_np: np.ndarray,
+    *,
+    acted_threshold: float = 0.65,
+    long_acted_threshold: Optional[float] = None,
+    short_acted_threshold: Optional[float] = None,
+    sample_confidence: Optional[np.ndarray] = None,
+    positive_rate: Optional[float] = None,
+) -> Dict[str, float]:
+    pred_probs = np.asarray(pred_probs_np, dtype=np.float32).reshape(-1)
+    y_true = np.asarray(y_true_np, dtype=np.float32).reshape(-1)
+    pred_labels = (pred_probs > 0.5).astype(np.float32)
+    symmetric_threshold = float(min(max(float(acted_threshold), 0.5), 0.95))
+    long_threshold = float(
+        min(
+            max(float(long_acted_threshold if long_acted_threshold is not None else symmetric_threshold), 0.5),
+            0.95,
+        )
+    )
+    short_threshold = float(
+        max(
+            min(float(short_acted_threshold if short_acted_threshold is not None else (1.0 - symmetric_threshold)), 0.5),
+            0.05,
+        )
+    )
+    if short_threshold > long_threshold:
+        long_threshold = symmetric_threshold
+        short_threshold = 1.0 - symmetric_threshold
+
+    test_accuracy = float(np.mean((pred_labels == y_true).astype(np.float32))) if y_true.size else 0.0
+    used_positive_rate = float(np.mean(y_true)) if positive_rate is None and y_true.size else float(positive_rate or 0.0)
+    majority_class_accuracy = max(used_positive_rate, 1.0 - used_positive_rate)
+    accuracy_lift_over_majority = test_accuracy - majority_class_accuracy
+    label_balance_score = float(np.clip(1.0 - (2.0 * abs(used_positive_rate - 0.5)), 0.0, 1.0))
+
+    long_mask = pred_probs >= long_threshold
+    short_mask = pred_probs <= short_threshold
+    acted_mask = long_mask | short_mask
+    acted_coverage = float(np.mean(acted_mask.astype(np.float32))) if acted_mask.size else 0.0
+    acted_pred = np.zeros_like(pred_probs, dtype=np.float32)
+    acted_pred[long_mask] = 1.0
+    acted_accuracy = (
+        float(np.mean((acted_pred[acted_mask] == y_true[acted_mask]).astype(np.float32)))
+        if np.any(acted_mask)
+        else 0.0
+    )
+    long_acted_count = int(np.sum(long_mask))
+    short_acted_count = int(np.sum(short_mask))
+    long_precision = float(np.mean(y_true[long_mask])) if np.any(long_mask) else 0.0
+    short_precision = float(np.mean(1.0 - y_true[short_mask])) if np.any(short_mask) else 0.0
+    precision_high = max(long_precision, short_precision)
+    precision_low = min(long_precision, short_precision)
+    precision_balance_score = float(precision_low / precision_high) if precision_high > 0.0 else 0.0
+    pred_confidence = np.abs(pred_probs - 0.5) * 2.0
+    sample_conf = np.asarray(sample_confidence, dtype=np.float32).reshape(-1) if sample_confidence is not None else np.zeros((0,), dtype=np.float32)
+
+    return {
+        "test_accuracy": float(test_accuracy),
+        "positive_rate": float(used_positive_rate),
+        "majority_class_accuracy": float(majority_class_accuracy),
+        "accuracy_lift_over_majority": float(accuracy_lift_over_majority),
+        "label_balance_score": float(label_balance_score),
+        "acted_prob_threshold": float(long_threshold),
+        "short_acted_prob_threshold": float(short_threshold),
+        "acted_coverage": float(acted_coverage),
+        "acted_count": int(np.sum(acted_mask)),
+        "acted_accuracy": float(acted_accuracy),
+        "long_acted_count": int(long_acted_count),
+        "short_acted_count": int(short_acted_count),
+        "long_precision": float(long_precision),
+        "short_precision": float(short_precision),
+        "precision_balance_score": float(precision_balance_score),
+        "pred_confidence_mean": float(np.mean(pred_confidence)) if pred_confidence.size else 0.0,
+        "pred_confidence_max": float(np.max(pred_confidence)) if pred_confidence.size else 0.0,
+        "input_confidence_mean": float(np.mean(sample_conf)) if sample_conf.size else 0.0,
+    }
+
+
+def _select_calibrated_action_thresholds(
+    pred_probs_np: np.ndarray,
+    y_true_np: np.ndarray,
+    *,
+    default_threshold: float,
+    sample_confidence: Optional[np.ndarray] = None,
+    min_long_acted_count: int = 2,
+    min_short_acted_count: int = 2,
+) -> tuple[float, float, Dict[str, Any]]:
+    default_threshold = float(min(max(default_threshold, 0.5), 0.95))
+    pred_probs = np.asarray(pred_probs_np, dtype=np.float32).reshape(-1)
+    y_true = np.asarray(y_true_np, dtype=np.float32).reshape(-1)
+    if pred_probs.size == 0 or y_true.size == 0:
+        return default_threshold, 1.0 - default_threshold, {
+            "calibrated": False,
+            "reason": "empty_validation_split",
+            "selected_threshold": float(default_threshold),
+            "selected_long_threshold": float(default_threshold),
+            "selected_short_threshold": float(1.0 - default_threshold),
+            "default_threshold": float(default_threshold),
+            "candidate_count": 0,
+        }
+
+    long_candidates = sorted(
+        {
+            float(default_threshold),
+            0.50,
+            0.51,
+            0.52,
+            0.53,
+            0.54,
+            0.55,
+            0.56,
+            0.58,
+            0.60,
+            0.62,
+            0.64,
+            0.66,
+            0.68,
+            0.70,
+            0.72,
+        }
+    )
+    short_candidates = sorted(
+        {
+            float(1.0 - default_threshold),
+            0.28,
+            0.30,
+            0.32,
+            0.34,
+            0.36,
+            0.38,
+            0.40,
+            0.42,
+            0.44,
+            0.45,
+            0.46,
+            0.47,
+            0.48,
+            0.49,
+            0.50,
+        }
+    )
+    best_long_threshold = float(default_threshold)
+    best_short_threshold = float(1.0 - default_threshold)
+    best_metrics = _classification_quality_metrics(
+        pred_probs,
+        y_true,
+        long_acted_threshold=best_long_threshold,
+        short_acted_threshold=best_short_threshold,
+        sample_confidence=sample_confidence,
+    )
+    best_key = (
+        1
+        if (
+            int(best_metrics["long_acted_count"]) >= int(min_long_acted_count)
+            and int(best_metrics["short_acted_count"]) >= int(min_short_acted_count)
+        )
+        else 0,
+        1 if int(best_metrics["acted_count"]) >= max(int(min_long_acted_count) + int(min_short_acted_count), 6) else 0,
+        min(int(best_metrics["long_acted_count"]), int(best_metrics["short_acted_count"])),
+        float(best_metrics["precision_balance_score"]),
+        float(best_metrics["acted_accuracy"]),
+        float(best_metrics["accuracy_lift_over_majority"]),
+        -(
+            abs(float(best_long_threshold) - float(default_threshold))
+            + abs(float(best_short_threshold) - float(1.0 - default_threshold))
+        ),
+    )
+
+    for long_threshold in long_candidates:
+        for short_threshold in short_candidates:
+            if float(short_threshold) > float(long_threshold):
+                continue
+            metrics = _classification_quality_metrics(
+                pred_probs,
+                y_true,
+                long_acted_threshold=float(long_threshold),
+                short_acted_threshold=float(short_threshold),
+                sample_confidence=sample_confidence,
+            )
+            key = (
+                1
+                if (
+                    int(metrics["long_acted_count"]) >= int(min_long_acted_count)
+                    and int(metrics["short_acted_count"]) >= int(min_short_acted_count)
+                )
+                else 0,
+                1 if int(metrics["acted_count"]) >= max(int(min_long_acted_count) + int(min_short_acted_count), 6) else 0,
+                min(int(metrics["long_acted_count"]), int(metrics["short_acted_count"])),
+                float(metrics["precision_balance_score"]),
+                float(metrics["acted_accuracy"]),
+                float(metrics["accuracy_lift_over_majority"]),
+                -(
+                    abs(float(long_threshold) - float(default_threshold))
+                    + abs(float(short_threshold) - float(1.0 - default_threshold))
+                ),
+            )
+            if key > best_key:
+                best_long_threshold = float(long_threshold)
+                best_short_threshold = float(short_threshold)
+                best_metrics = metrics
+                best_key = key
+
+    return best_long_threshold, best_short_threshold, {
+        "calibrated": bool(
+            (abs(best_long_threshold - default_threshold) > 1e-9)
+            or (abs(best_short_threshold - (1.0 - default_threshold)) > 1e-9)
+        ),
+        "reason": "validation_grid_search",
+        "selected_threshold": float(best_long_threshold),
+        "selected_long_threshold": float(best_long_threshold),
+        "selected_short_threshold": float(best_short_threshold),
+        "default_threshold": float(default_threshold),
+        "candidate_count": int(len(long_candidates) * len(short_candidates)),
+        "validation_metrics": best_metrics,
+    }
+
+
+def _select_calibrated_acted_threshold(
+    pred_probs_np: np.ndarray,
+    y_true_np: np.ndarray,
+    *,
+    default_threshold: float,
+    sample_confidence: Optional[np.ndarray] = None,
+) -> tuple[float, Dict[str, Any]]:
+    long_threshold, short_threshold, meta = _select_calibrated_action_thresholds(
+        pred_probs_np,
+        y_true_np,
+        default_threshold=default_threshold,
+        sample_confidence=sample_confidence,
+    )
+    meta = dict(meta)
+    meta["selected_threshold"] = float(max(long_threshold, 1.0 - short_threshold))
+    return float(meta["selected_threshold"]), meta

@@ -1,7 +1,15 @@
 from pathlib import Path
+import sys
 
 import mlx.core as mx
 import numpy as np
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CORE_ROOT = PROJECT_ROOT / "core"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+if str(CORE_ROOT) not in sys.path:
+    sys.path.insert(0, str(CORE_ROOT))
 
 from core import indicator_bot_common as common
 
@@ -24,6 +32,21 @@ def test_flatten_and_load_model_round_trip(tmp_path: Path) -> None:
     restored_flat = common._flatten_param_tree(restored.parameters())
     for key, value in flat.items():
         np.testing.assert_allclose(restored_flat[key], value)
+
+
+def test_snapshot_and_restore_model_round_trip() -> None:
+    model = common.TradingBrain(8)
+    mx.eval(model.parameters())
+    baseline = common._snapshot_model_params(model)
+
+    mutated = {key: (value + 1.0) for key, value in baseline.items()}
+    common._assign_param_tree(model.parameters(), mutated)
+    mx.eval(model.parameters())
+
+    common._restore_model_params(model, baseline)
+    restored = common._flatten_param_tree(model.parameters())
+    for key, value in baseline.items():
+        np.testing.assert_allclose(restored[key], value)
 
 
 def test_teacher_soft_targets_align_to_student_anchors(monkeypatch) -> None:

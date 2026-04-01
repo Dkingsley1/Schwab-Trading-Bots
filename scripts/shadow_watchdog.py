@@ -18,13 +18,15 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.halt_flags import inspect_halt_flag
+from core.runtime_python import resolve_runtime_python
 
-VENV_PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
+VENV_PY = resolve_runtime_python(PROJECT_ROOT)
 PARALLEL_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_parallel_shadows.py"
 PARALLEL_AGGRESSIVE_SCRIPT = PROJECT_ROOT / "scripts" / "run_parallel_aggressive_modes.py"
 SHADOW_LOOP_SCRIPT = PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py"
 DIVIDEND_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_dividend_shadow.py"
 BOND_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_bond_shadow.py"
+FX_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_fx_shadow.py"
 OPSCTL_SCRIPT = PROJECT_ROOT / "scripts" / "ops" / "opsctl.sh"
 WATCHDOG_DIR = PROJECT_ROOT / "governance" / "watchdog"
 HEALTH_DIR = PROJECT_ROOT / "governance" / "health"
@@ -50,6 +52,7 @@ class Target:
     heartbeat_profiles: tuple[str, ...] = ()
     allow_processless_heartbeat_live: bool = False
     exclude_matches: tuple[str, ...] = ()
+    terminate_excluded_conflicts: bool = True
     unhealthy_streak: int = 0
     tripwire_open: bool = False
 
@@ -116,6 +119,7 @@ def _start_cmd_executable_hints() -> tuple[str, ...]:
 def _start_cmd_executable_suffixes() -> tuple[str, ...]:
     return (
         ".venv312/bin/python",
+        ".venv314/bin/python",
         "/scripts/ops/opsctl.sh",
     )
 
@@ -126,6 +130,7 @@ def _start_cmd_python_script_suffixes() -> tuple[str, ...]:
         "/scripts/run_parallel_aggressive_modes.py",
         "/scripts/run_dividend_shadow.py",
         "/scripts/run_bond_shadow.py",
+        "/scripts/run_fx_shadow.py",
         "/scripts/run_shadow_training_loop.py",
     )
 
@@ -163,7 +168,7 @@ def _decode_start_cmd(start_cmd: str | Sequence[str] | None) -> list[str]:
         if not executable:
             continue
         remainder = raw[len(executable):].lstrip()
-        if executable.endswith(".venv312/bin/python") and remainder:
+        if executable.endswith((".venv312/bin/python", ".venv314/bin/python")) and remainder:
             for script_suffix in _start_cmd_python_script_suffixes():
                 script_end = remainder.find(script_suffix)
                 if script_end < 0:
@@ -354,6 +359,22 @@ def _find_matching_rows(rows: list[tuple[int, str]], match: str, exclude_matches
     return out
 
 
+def _find_excluded_conflicts(rows: list[tuple[int, str]], match: str, exclude_matches: Iterable[str] = ()) -> list[tuple[int, str]]:
+    excludes = [x for x in (exclude_matches or ()) if x]
+    if not excludes:
+        return []
+    out: list[tuple[int, str]] = []
+    for pid, cmd in rows:
+        if "scripts/shadow_watchdog.py" in cmd:
+            continue
+        if match not in cmd:
+            continue
+        if not any(ex in cmd for ex in excludes):
+            continue
+        out.append((pid, cmd))
+    return out
+
+
 def _terminate_pids(pids: list[int], timeout_seconds: float = 8.0) -> None:
     if not pids:
         return
@@ -435,6 +456,18 @@ def _build_default_coinbase_futures_cmd() -> str:
     )
 
 
+def _build_default_schwab_futures_cmd() -> str:
+    return (
+        f"{VENV_PY} {SHADOW_LOOP_SCRIPT} "
+        "--broker schwab "
+        "--profile schwab_futures "
+        "--domain equities "
+        "--symbols /ES,/NQ,/YM,/RTY,/CL,/GC,/ZN "
+        "--context-symbols SPY,UUP,GLD "
+        "--interval-seconds 12"
+    )
+
+
 def _build_default_dividend_cmd(simulate: bool) -> str:
     base = f"{VENV_PY} {DIVIDEND_SHADOW_SCRIPT} --interval-seconds 60"
     if simulate:
@@ -444,6 +477,13 @@ def _build_default_dividend_cmd(simulate: bool) -> str:
 
 def _build_default_bond_cmd(simulate: bool) -> str:
     base = f"{VENV_PY} {BOND_SHADOW_SCRIPT} --interval-seconds 90"
+    if simulate:
+        return base + " --simulate"
+    return base
+
+
+def _build_default_fx_cmd(simulate: bool) -> str:
+    base = f"{VENV_PY} {FX_SHADOW_SCRIPT} --broker schwab --interval-seconds 45"
     if simulate:
         return base + " --simulate"
     return base
@@ -811,6 +851,14 @@ def _run_iteration(
     entries: list[dict] = []
 
     for target in targets:
+        conflicting_matches = _find_excluded_conflicts(rows, target.match, target.exclude_matches)
+        conflicting_pids = [pid for pid, _ in conflicting_matches]
+        if conflicting_pids and target.terminate_excluded_conflicts:
+            if not dry_run:
+                _terminate_pids(conflicting_pids)
+            rows = [(pid, cmd) for pid, cmd in rows if pid not in set(conflicting_pids)]
+            rows_by_pid = {pid: cmd for pid, cmd in rows}
+
         matches = _find_matching_rows(rows, target.match, target.exclude_matches)
         pids = [pid for pid, _ in matches]
         proc_live = len(matches) > 0
@@ -832,6 +880,8 @@ def _run_iteration(
             note_parts.append(f"heartbeat_live_process_count={hb_live_count}")
             if hb_age is not None:
                 note_parts.append(f"heartbeat_age_s={hb_age:.1f}")
+        if conflicting_pids:
+            note_parts.append(f"conflicting_excluded_pids={len(conflicting_pids)}")
 
         entry: Dict[str, object] = {
             "name": target.name,
@@ -845,6 +895,9 @@ def _run_iteration(
             "action": "none",
             "note": ",".join(note_parts),
         }
+        if conflicting_pids:
+            entry["conflicting_match_pids"] = conflicting_pids
+            entry["conflicting_match_cmds"] = [_note_safe(cmd, limit=220) for _, cmd in conflicting_matches[:6]]
 
         if live:
             pass
@@ -956,24 +1009,32 @@ def main() -> int:
 
     parser.add_argument("--simulate-schwab", action="store_true", help="Default Schwab start command adds --simulate.")
     parser.add_argument("--schwab-start-cmd", default=None)
+    parser.add_argument("--schwab-futures-start-cmd", default=None)
     parser.add_argument("--coinbase-start-cmd", default=None)
     parser.add_argument("--coinbase-futures-start-cmd", default=None)
     parser.add_argument("--aggressive-modes-start-cmd", default=None)
     parser.add_argument("--dividend-start-cmd", default=None)
     parser.add_argument("--bond-start-cmd", default=None)
+    parser.add_argument("--fx-start-cmd", default=None)
+    parser.add_argument("--watch-schwab-futures", action="store_true")
     parser.add_argument("--watch-coinbase", action="store_true")
     parser.add_argument("--watch-coinbase-futures", action="store_true")
     parser.add_argument("--watch-aggressive-modes", action="store_true")
     parser.add_argument("--watch-dividend", action="store_true")
     parser.add_argument("--watch-bond", action="store_true")
+    parser.add_argument("--watch-fx", action="store_true")
+    parser.add_argument("--schwab-futures-optional", action="store_true")
     parser.add_argument("--coinbase-optional", action="store_true")
     parser.add_argument("--coinbase-futures-optional", action="store_true")
     parser.add_argument("--dividend-optional", action="store_true")
     parser.add_argument("--bond-optional", action="store_true")
+    parser.add_argument("--fx-optional", action="store_true")
 
     parser.add_argument("--schwab-heartbeat-stale-seconds", type=int, default=120)
+    parser.add_argument("--schwab-futures-heartbeat-stale-seconds", type=int, default=180)
     parser.add_argument("--coinbase-heartbeat-stale-seconds", type=int, default=180)
     parser.add_argument("--schwab-min-heartbeats", type=int, default=2)
+    parser.add_argument("--schwab-futures-min-heartbeats", type=int, default=1)
     parser.add_argument("--coinbase-min-heartbeats", type=int, default=1)
     parser.add_argument("--aggressive-modes-heartbeat-stale-seconds", type=int, default=180)
     parser.add_argument("--aggressive-modes-min-heartbeats", type=int, default=2)
@@ -981,6 +1042,8 @@ def main() -> int:
     parser.add_argument("--dividend-min-heartbeats", type=int, default=1)
     parser.add_argument("--bond-heartbeat-stale-seconds", type=int, default=240)
     parser.add_argument("--bond-min-heartbeats", type=int, default=1)
+    parser.add_argument("--fx-heartbeat-stale-seconds", type=int, default=240)
+    parser.add_argument("--fx-min-heartbeats", type=int, default=1)
 
     parser.add_argument(
         "--auto-clear-global-halt",
@@ -1095,11 +1158,13 @@ def main() -> int:
     args = parser.parse_args()
 
     schwab_cmd = args.schwab_start_cmd or _build_default_schwab_cmd(simulate=args.simulate_schwab)
+    schwab_futures_cmd = args.schwab_futures_start_cmd or _build_default_schwab_futures_cmd()
     coinbase_cmd = args.coinbase_start_cmd or _build_default_coinbase_cmd()
     coinbase_futures_cmd = args.coinbase_futures_start_cmd or _build_default_coinbase_futures_cmd()
     aggressive_modes_cmd = args.aggressive_modes_start_cmd or _build_default_aggressive_modes_cmd(simulate=args.simulate_schwab)
     dividend_cmd = args.dividend_start_cmd or _build_default_dividend_cmd(simulate=args.simulate_schwab)
     bond_cmd = args.bond_start_cmd or _build_default_bond_cmd(simulate=args.simulate_schwab)
+    fx_cmd = args.fx_start_cmd or _build_default_fx_cmd(simulate=args.simulate_schwab)
 
     targets: list[Target] = [
         Target(
@@ -1116,6 +1181,19 @@ def main() -> int:
         )
     ]
 
+    if args.watch_schwab_futures:
+        targets.append(
+            Target(
+                name="schwab_futures_shadow",
+                match="scripts/run_shadow_training_loop.py --broker schwab --profile schwab_futures",
+                start_cmd=schwab_futures_cmd,
+                required=not args.schwab_futures_optional,
+                heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*schwab_futures*_equities_schwab_*.json"),
+                heartbeat_stale_seconds=max(args.schwab_futures_heartbeat_stale_seconds, 30),
+                min_healthy_heartbeats=max(args.schwab_futures_min_heartbeats, 1),
+            )
+        )
+
     if args.watch_coinbase:
         targets.append(
             Target(
@@ -1127,6 +1205,7 @@ def main() -> int:
                 heartbeat_stale_seconds=max(args.coinbase_heartbeat_stale_seconds, 30),
                 min_healthy_heartbeats=max(args.coinbase_min_heartbeats, 1),
                 exclude_matches=("--profile crypto_futures",),
+                terminate_excluded_conflicts=False,
             )
         )
 
@@ -1140,6 +1219,8 @@ def main() -> int:
                 heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*crypto_futures*_crypto_coinbase_*.json"),
                 heartbeat_stale_seconds=max(args.coinbase_heartbeat_stale_seconds, 30),
                 min_healthy_heartbeats=max(args.coinbase_min_heartbeats, 1),
+                heartbeat_profiles=("crypto_futures",),
+                allow_processless_heartbeat_live=True,
             )
         )
 
@@ -1183,6 +1264,22 @@ def main() -> int:
                 heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*bond*_equities_schwab_*.json"),
                 heartbeat_stale_seconds=max(args.bond_heartbeat_stale_seconds, 30),
                 min_healthy_heartbeats=max(args.bond_min_heartbeats, 1),
+                exclude_matches=(() if args.simulate_schwab else ("--simulate",)),
+            )
+        )
+
+    if args.watch_fx:
+        targets.append(
+            Target(
+                name="fx_shadow",
+                match="scripts/run_fx_shadow.py",
+                start_cmd=fx_cmd,
+                required=not args.fx_optional,
+                heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*fx*_equities_schwab_*.json"),
+                heartbeat_stale_seconds=max(args.fx_heartbeat_stale_seconds, 30),
+                min_healthy_heartbeats=max(args.fx_min_heartbeats, 1),
+                heartbeat_profiles=("fx",),
+                allow_processless_heartbeat_live=True,
                 exclude_matches=(() if args.simulate_schwab else ("--simulate",)),
             )
         )

@@ -25,10 +25,70 @@ except Exception:
 
 DEFAULT_COUNTRIES = "United States,Euro Area,China,Japan,United Kingdom,Canada"
 DEFAULT_MARKET_SYMBOLS = (
-    "spy:us,qqq:us,iwm:us,dia:us,tlt:us,ief:us,shy:us,tip:us,hyg:us,lqd:us,"
-    "coin:us,mstr:us,tsla:us,nvda:us,btcusd:cur,ethusd:cur,gld:com"
+    "spy:us,qqq:us,iwm:us,dia:us,voo:us,vti:us,rsp:us,mdy:us,"
+    "xlk:us,xlf:us,xle:us,xli:us,xlv:us,xlp:us,xly:us,xlc:us,xlu:us,xlb:us,xlre:us,"
+    "smh:us,soxx:us,kre:us,arkk:us,"
+    "tlt:us,ief:us,shy:us,tip:us,hyg:us,lqd:us,gld:com,uup:us,"
+    "coin:us,mstr:us,tsla:us,nvda:us,amd:us,avgo:us,"
+    "btcusd:cur,ethusd:cur"
 )
 DEFAULT_AUTH = "guest:guest"
+
+_SECTOR_PROXY_SYMBOLS = {
+    "XLB": "materials",
+    "XLC": "communication_services",
+    "XLE": "energy",
+    "XLF": "financials",
+    "XLI": "industrials",
+    "XLK": "technology",
+    "XLP": "consumer_staples",
+    "XLRE": "real_estate",
+    "XLU": "utilities",
+    "XLV": "health_care",
+    "XLY": "consumer_discretionary",
+    "SMH": "semiconductors",
+    "SOXX": "semiconductors",
+    "KRE": "regional_banks",
+    "ARKK": "innovation",
+}
+
+_INDEX_PROXY_SYMBOLS = {
+    "SPY": "broad_market",
+    "VOO": "broad_market",
+    "VTI": "total_market",
+    "QQQ": "growth",
+    "IWM": "small_cap",
+    "MDY": "mid_cap",
+    "DIA": "dow",
+    "RSP": "equal_weight",
+}
+
+_RISK_ON_PROXY_SYMBOLS = {
+    "QQQ",
+    "IWM",
+    "RSP",
+    "MDY",
+    "SMH",
+    "SOXX",
+    "KRE",
+    "ARKK",
+    "XLY",
+    "XLI",
+    "XLF",
+}
+
+_DEFENSIVE_PROXY_SYMBOLS = {
+    "TLT",
+    "IEF",
+    "SHY",
+    "TIP",
+    "LQD",
+    "GLD",
+    "UUP",
+    "XLP",
+    "XLU",
+    "XLV",
+}
 
 
 def _load_env_file(path: Path) -> None:
@@ -193,6 +253,17 @@ def _value_from_row(row: Dict[str, Any]) -> Optional[float]:
     return None
 
 
+def _market_symbol_token(row: Dict[str, Any]) -> str:
+    raw = _row_get_ci(row, "symbol", "ticker", "historicaldatasymbol")
+    text = str(raw or "").strip().upper()
+    if not text:
+        return ""
+    for sep in (":", ".", "/"):
+        if sep in text:
+            text = text.split(sep, 1)[0]
+    return text.strip()
+
+
 def _fractional_pct(value: Any) -> Optional[float]:
     num = _try_float(value)
     if num is None:
@@ -320,6 +391,10 @@ def _derive_macro_backfill(
 def _derive_market_breadth(market_rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     pct_moves: List[float] = []
     weights: List[float] = []
+    sector_moves: Dict[str, List[float]] = {}
+    index_moves: Dict[str, float] = {}
+    risk_on_samples: List[float] = []
+    defensive_samples: List[float] = []
     for row in market_rows:
         pct = None
         for key in ("changepercent", "percentchange", "pctchange", "change_pct", "changepercentage"):
@@ -334,8 +409,17 @@ def _derive_market_breadth(market_rows: Sequence[Dict[str, Any]]) -> Dict[str, A
         if pct is None or not math.isfinite(pct):
             continue
         weight = _to_float(_row_get_ci(row, "volume", "turnover", "marketcap"), 0.0)
+        symbol = _market_symbol_token(row)
         pct_moves.append(pct)
         weights.append(weight if weight > 0.0 else (1.0 + abs(pct)))
+        if symbol in _SECTOR_PROXY_SYMBOLS:
+            sector_moves.setdefault(_SECTOR_PROXY_SYMBOLS[symbol], []).append(pct)
+        if symbol in _INDEX_PROXY_SYMBOLS:
+            index_moves[_INDEX_PROXY_SYMBOLS[symbol]] = pct
+        if symbol in _RISK_ON_PROXY_SYMBOLS:
+            risk_on_samples.append(pct)
+        if symbol in _DEFENSIVE_PROXY_SYMBOLS:
+            defensive_samples.append(pct)
 
     if not pct_moves:
         return {
@@ -351,6 +435,25 @@ def _derive_market_breadth(market_rows: Sequence[Dict[str, Any]]) -> Dict[str, A
     new_highs = float(sum(1 for pct in pct_moves if pct >= 0.015))
     new_lows = float(sum(1 for pct in pct_moves if pct <= -0.015))
     sector_dispersion = float(statistics.pstdev(pct_moves)) if len(pct_moves) > 1 else 0.0
+    sector_avg_moves = {
+        sector: float(sum(values) / max(len(values), 1))
+        for sector, values in sector_moves.items()
+        if values
+    }
+    sector_advancers = float(sum(1 for move in sector_avg_moves.values() if move > 0.0))
+    sector_decliners = float(sum(1 for move in sector_avg_moves.values() if move < 0.0))
+    sector_rotation_score = float(statistics.pstdev(list(sector_avg_moves.values()))) if len(sector_avg_moves) > 1 else 0.0
+    sector_leader_strength = max((float(move) for move in sector_avg_moves.values()), default=0.0)
+    sector_laggard_strength = min((float(move) for move in sector_avg_moves.values()), default=0.0)
+    index_values = list(index_moves.values())
+    index_alignment_score = 0.0
+    if index_values:
+        positives = sum(1 for move in index_values if move > 0.0)
+        negatives = sum(1 for move in index_values if move < 0.0)
+        index_alignment_score = abs(positives - negatives) / max(len(index_values), 1)
+    risk_on_mean = float(sum(risk_on_samples) / max(len(risk_on_samples), 1)) if risk_on_samples else 0.0
+    defensive_mean = float(sum(defensive_samples) / max(len(defensive_samples), 1)) if defensive_samples else 0.0
+    risk_on_score = max(min(0.5 + ((risk_on_mean - defensive_mean) * 16.0), 1.0), 0.0)
 
     return {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -363,6 +466,15 @@ def _derive_market_breadth(market_rows: Sequence[Dict[str, Any]]) -> Dict[str, A
         "new_highs": new_highs,
         "new_lows": new_lows,
         "sector_dispersion": sector_dispersion,
+        "sector_advancers": sector_advancers,
+        "sector_decliners": sector_decliners,
+        "sector_rotation_score": sector_rotation_score,
+        "sector_leader_strength": sector_leader_strength,
+        "sector_laggard_strength": sector_laggard_strength,
+        "index_alignment_score": index_alignment_score,
+        "risk_on_score": risk_on_score,
+        "sector_average_moves": sector_avg_moves,
+        "index_moves": index_moves,
     }
 
 

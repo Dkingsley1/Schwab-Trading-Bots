@@ -186,6 +186,7 @@ def main() -> int:
         running = _proc_running(
             "scripts/run_shadow_training_loop.py --broker coinbase",
             exclude=[
+                "--profile crypto_futures",
                 "scripts/ops/preflight_autofix.py",
                 "scripts/shadow_preflight.py",
             ],

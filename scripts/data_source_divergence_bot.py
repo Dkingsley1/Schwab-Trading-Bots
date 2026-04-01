@@ -34,6 +34,47 @@ def _meta_key(**kwargs):
     return tuple(sorted((str(k), str(v)) for k, v in kwargs.items() if str(v).strip()))
 
 
+def _candidate_master_control_paths(project_root: Path, since: datetime):
+    governance_root = project_root / "governance"
+    min_date = (since.date() - timedelta(days=1))
+    for path in governance_root.glob("shadow*/master_control_*.jsonl"):
+        stem = path.stem
+        raw_day = stem.rsplit("_", 1)[-1]
+        try:
+            day = datetime.strptime(raw_day, "%Y%m%d").date()
+        except Exception:
+            yield path
+            continue
+        if day >= min_date:
+            yield path
+
+
+def _row_is_simulated(row) -> bool:
+    if not isinstance(row, dict):
+        return False
+    simulate_raw = row.get("simulate")
+    if isinstance(simulate_raw, bool):
+        return simulate_raw
+    if str(simulate_raw or "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+
+    market = row.get("market", {}) if isinstance(row.get("market", {}), dict) else {}
+    try:
+        spread_bps = float(market.get("spread_bps", 0.0) or 0.0)
+        bid_size = float(market.get("bid_size", 0.0) or 0.0)
+        ask_size = float(market.get("ask_size", 0.0) or 0.0)
+    except Exception:
+        return False
+
+    # Backward-compatible filter for older simulated rows that were written
+    # before governance payloads carried an explicit `simulate` flag.
+    return (
+        abs(spread_bps - 8.0) <= 1e-9
+        and abs(bid_size - 1000.0) <= 1e-9
+        and abs(ask_size - 1000.0) <= 1e-9
+    )
+
+
 def _summarize_bucket_map(
     bucket_map,
     *,
@@ -93,8 +134,9 @@ def build_divergence_payloads(project_root: Path, *, hours: int, max_relative_sp
     scope_buckets = defaultdict(lambda: defaultdict(list))
     profile_buckets = defaultdict(lambda: defaultdict(list))
     scope_dirs = defaultdict(set)
+    skipped_simulated_rows = 0
 
-    for path in (project_root / "governance").glob("shadow*/master_control_*.jsonl"):
+    for path in _candidate_master_control_paths(project_root, since):
         shadow_dir = path.parent.name
         scope = _scope_for_shadow_dir(shadow_dir)
         scope_dirs[scope].add(shadow_dir)
@@ -107,6 +149,9 @@ def build_divergence_payloads(project_root: Path, *, hours: int, max_relative_sp
                         continue
                     ts = _parse_ts(row.get("timestamp_utc"))
                     if ts is None or ts < since:
+                        continue
+                    if _row_is_simulated(row):
+                        skipped_simulated_rows += 1
                         continue
                     sym = str(row.get("symbol", "") or "").strip().upper()
                     if not sym:
@@ -123,7 +168,7 @@ def build_divergence_payloads(project_root: Path, *, hours: int, max_relative_sp
             continue
 
     timestamp_utc = datetime.now(timezone.utc).isoformat()
-    global_payload = _summarize_bucket_map(
+    cross_profile_payload = _summarize_bucket_map(
         global_buckets,
         max_relative_spread=max_relative_spread,
         timestamp_utc=timestamp_utc,
@@ -171,8 +216,39 @@ def build_divergence_payloads(project_root: Path, *, hours: int, max_relative_sp
             profile_dirs=[shadow_dir],
         )
 
-    global_payload["scopes"] = scope_payloads
-    global_payload["profiles"] = profile_payloads
+    scope_offenders = []
+    scope_compared = 0
+    scope_worst = 0.0
+    scope_ok = True
+    for payload in scope_payloads.values():
+        if not isinstance(payload, dict):
+            continue
+        scope_offenders.extend(list(payload.get("offenders", [])))
+        scope_compared += int(payload.get("compared_buckets", 0) or 0)
+        scope_worst = max(scope_worst, float(payload.get("worst_relative_spread", 0.0) or 0.0))
+        scope_ok = scope_ok and bool(payload.get("ok", False))
+
+    summary_compared = int(scope_compared) if scope_compared > 0 else int(cross_profile_payload.get("compared_buckets", 0) or 0)
+    summary_worst = max(scope_worst, float(cross_profile_payload.get("worst_relative_spread", 0.0) or 0.0))
+    summary_offenders = scope_offenders[:50] if scope_offenders else list(cross_profile_payload.get("offenders", []))[:50]
+
+    global_payload = {
+        "timestamp_utc": timestamp_utc,
+        "ok": bool(scope_ok),
+        "window_hours": int(hours),
+        "compared_buckets": int(summary_compared),
+        "worst_relative_spread": round(summary_worst, 6),
+        "max_relative_spread": float(max_relative_spread),
+        "offenders": summary_offenders,
+        "comparison_mode": "scope_health_summary",
+        "scope": "all_profiles",
+        "profile_dirs": sorted({d for dirs in scope_dirs.values() for d in dirs}),
+        "summary_source": ("scope" if scope_compared > 0 else "cross_profile_fallback"),
+        "scopes": scope_payloads,
+        "profiles": profile_payloads,
+        "skipped_simulated_rows": int(skipped_simulated_rows),
+        "cross_profile": cross_profile_payload,
+    }
     return global_payload, scope_payloads
 
 

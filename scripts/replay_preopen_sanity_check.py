@@ -9,6 +9,14 @@ from typing import Any, Dict, Iterable, List, Optional
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _load_json(path: Path) -> Dict[str, Any]:
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
 def _parse_ts(raw: Any) -> Optional[datetime]:
     if not raw:
         return None
@@ -77,6 +85,54 @@ def _stale_windows(stamps: List[datetime], stale_seconds: int) -> int:
     return out
 
 
+def _summary_candidate_paths(day_utc: str, previous_day_utc: str) -> List[Path]:
+    sql_root = PROJECT_ROOT / 'exports' / 'sql_reports'
+    return [
+        sql_root / f'daily_runtime_summary_{day_utc}.json',
+        sql_root / f'daily_runtime_summary_{previous_day_utc}.json',
+        sql_root / 'daily_runtime_summary_latest.json',
+        PROJECT_ROOT / 'governance' / 'health' / 'daily_runtime_summary_latest.json',
+    ]
+
+
+def _summary_metrics(now: datetime, *, profile: str, domain: str) -> Optional[Dict[str, Any]]:
+    if profile or domain:
+        return None
+
+    day_utc = now.strftime("%Y%m%d")
+    previous_day_utc = (now - timedelta(days=1)).strftime("%Y%m%d")
+    best: Optional[Dict[str, Any]] = None
+    best_rows = -1
+    for path in _summary_candidate_paths(day_utc, previous_day_utc):
+        payload = _load_json(path)
+        if not payload:
+            continue
+        payload_day = str(payload.get('day', '')).strip()
+        if payload_day not in {'', day_utc, previous_day_utc}:
+            continue
+        decision = payload.get('decision', {}) if isinstance(payload.get('decision'), dict) else {}
+        governance = payload.get('governance', {}) if isinstance(payload.get('governance'), dict) else {}
+        candidate = {
+            'source': 'daily_runtime_summary',
+            'path': str(path),
+            'decision': {
+                'rows': int(decision.get('rows', 0) or 0),
+                'files': len(decision.get('files', []) or []),
+                'stale_windows': int(decision.get('stale_windows', 0) or 0),
+            },
+            'governance': {
+                'rows': int(governance.get('rows', 0) or 0),
+                'files': len(governance.get('files', []) or []),
+                'stale_windows': int(governance.get('stale_windows', 0) or 0),
+            },
+        }
+        total_rows = int(candidate['decision']['rows']) + int(candidate['governance']['rows'])
+        if total_rows > best_rows:
+            best = candidate
+            best_rows = total_rows
+    return best
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description='24h replay pre-open sanity check over decision/governance logs.')
     parser.add_argument('--hours', type=int, default=24)
@@ -94,24 +150,43 @@ def main() -> int:
     now = datetime.now(timezone.utc)
     since_ts = now - timedelta(hours=max(args.hours, 1))
 
-    decision_paths = _iter_paths(
-        PROJECT_ROOT / 'decision_explanations',
-        'shadow*/decision_explanations_*.jsonl',
-        profile=args.profile,
-        domain=args.domain,
-    )
-    governance_paths = _iter_paths(
-        PROJECT_ROOT / 'governance',
-        'shadow*/master_control_*.jsonl',
-        profile=args.profile,
-        domain=args.domain,
-    )
+    metrics = _summary_metrics(now, profile=args.profile, domain=args.domain)
+    if metrics is not None:
+        decision = {
+            'rows': int(metrics['decision']['rows']),
+            'files': int(metrics['decision']['files']),
+            'timestamps': [],
+        }
+        governance = {
+            'rows': int(metrics['governance']['rows']),
+            'files': int(metrics['governance']['files']),
+            'timestamps': [],
+        }
+        decision_stale = int(metrics['decision']['stale_windows'])
+        governance_stale = int(metrics['governance']['stale_windows'])
+        data_source = str(metrics.get('source') or 'daily_runtime_summary')
+        data_source_path = str(metrics.get('path') or '')
+    else:
+        decision_paths = _iter_paths(
+            PROJECT_ROOT / 'decision_explanations',
+            'shadow*/decision_explanations_*.jsonl',
+            profile=args.profile,
+            domain=args.domain,
+        )
+        governance_paths = _iter_paths(
+            PROJECT_ROOT / 'governance',
+            'shadow*/master_control_*.jsonl',
+            profile=args.profile,
+            domain=args.domain,
+        )
 
-    decision = _scan_jsonl_rows(decision_paths, since_ts)
-    governance = _scan_jsonl_rows(governance_paths, since_ts)
+        decision = _scan_jsonl_rows(decision_paths, since_ts)
+        governance = _scan_jsonl_rows(governance_paths, since_ts)
 
-    decision_stale = _stale_windows(decision['timestamps'], max(args.stale_seconds, 1))
-    governance_stale = _stale_windows(governance['timestamps'], max(args.stale_seconds, 1))
+        decision_stale = _stale_windows(decision['timestamps'], max(args.stale_seconds, 1))
+        governance_stale = _stale_windows(governance['timestamps'], max(args.stale_seconds, 1))
+        data_source = 'jsonl_scan'
+        data_source_path = ''
 
     failed: List[str] = []
     if decision['rows'] < max(args.min_decision_rows, 1):
@@ -135,6 +210,8 @@ def main() -> int:
             'profile': args.profile or 'all',
             'domain': args.domain or 'all',
         },
+        'data_source': data_source,
+        'data_source_path': data_source_path,
         'decision': {
             'rows': int(decision['rows']),
             'files_scanned': int(decision['files']),

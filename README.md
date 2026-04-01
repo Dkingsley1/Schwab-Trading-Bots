@@ -39,7 +39,7 @@ flowchart TD
 ## Auto-Refreshed Highlights
 
 <!-- SHOWCASE_HIGHLIGHTS_START -->
-_Generated at 2026-03-22 15:34 UTC_
+_Generated at 2026-03-22 15:51 UTC_
 
 - Active registry lineup: `15` of `96` bots are active.
 - Live collection snapshot: `2/9` lane artifacts are reporting `running`.

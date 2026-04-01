@@ -6,10 +6,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 SEGMENTS = {
-    "trend": ["trend", "breakout", "donchian"],
-    "mean_revert": ["mean_revert", "vwap", "bollinger", "keltner"],
-    "shock": ["flash", "shock", "event", "crash", "anomaly"],
-    "liquidity": ["liquidity", "spread", "order_flow", "microstructure"],
+    "trend": ["trend", "breakout", "donchian", "momentum", "dmi", "relative_strength", "gap_open", "seasonal"],
+    "mean_revert": ["mean_revert", "vwap", "bollinger", "keltner", "bond", "dividend", "yield", "income", "defensive", "drip", "compound", "quality", "allocator", "risk_budget"],
+    "shock": ["flash", "shock", "event", "crash", "anomaly", "macro", "inflation", "pmi", "rates", "credit", "futures", "term_structure", "vol", "news"],
+    "liquidity": ["liquidity", "spread", "order_flow", "microstructure", "execution", "latency", "position_1m_3m"],
 }
 
 
@@ -53,6 +53,29 @@ def _read_recent_jsonl(path: Path, limit: int) -> list[dict]:
     return rows[-max(limit, 1) :]
 
 
+def _fail_priority(row: dict) -> tuple[float, float, str]:
+    bot_id = str((row or {}).get("bot_id", "")).strip()
+    failed = (row or {}).get("failed_gates", {}) if isinstance((row or {}).get("failed_gates"), dict) else {}
+    forward_mean = float((row or {}).get("forward_mean", 0.0) or 0.0)
+    delta = float((row or {}).get("delta", 0.0) or 0.0)
+    severity = 0.0
+    if bool(failed.get("forward_mean")):
+        severity += max(0.53 - forward_mean, 0.0) + 0.5
+    if bool(failed.get("delta")):
+        severity += max((-0.01) - delta, 0.0) + 0.75
+    if bool(failed.get("trading_quality_score")):
+        severity += 0.25
+    if bool(failed.get("overfit_gap")):
+        severity += 0.2
+    return (-severity, float((row or {}).get("runs", 0) or 0.0), bot_id)
+
+
+def _recommended_regime_focus(seg_counts: dict[str, int], top_n: int = 2) -> str:
+    ranked = sorted(seg_counts.items(), key=lambda kv: (-int(kv[1] or 0), kv[0]))
+    picks = [seg for seg, _ in ranked if seg in {"trend", "mean_revert", "shock", "liquidity", "other"}]
+    return ",".join(picks[: max(int(top_n), 1)])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Daily promotion readiness summary and history.")
     parser.add_argument("--gate-file", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "promotion_gate_latest.json"))
@@ -69,22 +92,38 @@ def main() -> int:
 
     thresholds = gate.get("thresholds") if isinstance(gate.get("thresholds"), dict) else {}
     fail_examples = gate.get("fail_examples") if isinstance(gate.get("fail_examples"), list) else []
+    near_pass_examples = gate.get("near_pass_examples") if isinstance(gate.get("near_pass_examples"), list) else []
 
     failed_bots = [str((r or {}).get("bot_id", "")).strip() for r in fail_examples if str((r or {}).get("bot_id", "")).strip()]
     failed_bots = sorted(set(failed_bots))
+    near_pass_bots = [str((r or {}).get("bot_id", "")).strip() for r in near_pass_examples if str((r or {}).get("bot_id", "")).strip()]
+    near_pass_bots = sorted(set(near_pass_bots))
 
     wf_bots = wf.get("bots") if isinstance(wf.get("bots"), dict) else {}
     seg_counts: dict[str, int] = {}
-    for bot_id in failed_bots:
-        row = wf_bots.get(bot_id, {}) if isinstance(wf_bots, dict) else {}
+    fail_examples_scoped: list[dict] = []
+    for fail_row in fail_examples:
+        if not isinstance(fail_row, dict):
+            continue
+        bot_id = str(fail_row.get("bot_id", "")).strip()
+        if not bot_id:
+            continue
+        wf_row = wf_bots.get(bot_id, {}) if isinstance(wf_bots, dict) else {}
         seg = _segment(bot_id)
         # prefer explicit tag if upstream ever adds it
-        if isinstance(row, dict) and isinstance(row.get("segment"), str) and row.get("segment"):
-            seg = str(row.get("segment")).strip().lower()
+        if isinstance(wf_row, dict) and isinstance(wf_row.get("segment"), str) and wf_row.get("segment"):
+            seg = str(wf_row.get("segment")).strip().lower()
         seg_counts[seg] = seg_counts.get(seg, 0) + 1
+        fail_examples_scoped.append({**fail_row, **{"segment": seg}})
+
+    prioritized_fail_examples = sorted(fail_examples_scoped, key=_fail_priority)
+    recommended_bot_ids = [str(row.get("bot_id", "")).strip() for row in prioritized_fail_examples[:3] if str(row.get("bot_id", "")).strip()]
+    recommended_regime_focus = _recommended_regime_focus(seg_counts)
+    canary_watchlist = [str((row or {}).get("bot_id", "")).strip() for row in near_pass_examples[:5] if str((row or {}).get("bot_id", "")).strip()]
 
     now = datetime.now(timezone.utc).isoformat()
-    fail_share = float(gate.get("fail_share", 1.0) or 1.0)
+    raw_fail_share = gate.get("fail_share", 1.0)
+    fail_share = float(1.0 if raw_fail_share is None else raw_fail_share)
     max_fail_share = float(thresholds.get("max_fail_share", 0.25) or 0.25)
     readiness_margin = round(max_fail_share - fail_share, 6)
 
@@ -104,8 +143,16 @@ def main() -> int:
             "min_considered_bots": thresholds.get("min_considered_bots"),
         },
         "top_fail_examples": fail_examples[:10],
+        "near_pass_examples": near_pass_examples[:10],
         "failed_bots_list": failed_bots,
+        "near_pass_bots_list": near_pass_bots,
         "failed_by_segment": seg_counts,
+        "recommended_retrain": {
+            "include_bot_ids": recommended_bot_ids,
+            "regime_focus": recommended_regime_focus,
+            "top_fail_segments": sorted(seg_counts.items(), key=lambda kv: (-int(kv[1] or 0), kv[0]))[:3],
+            "watchlist_bot_ids": canary_watchlist,
+        },
     }
 
     history_path = Path(args.history_jsonl)

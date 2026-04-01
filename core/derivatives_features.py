@@ -40,6 +40,14 @@ OPTIONS_FEATURE_KEYS = [
     "options_put_wall_distance_norm",
     "options_oi_concentration_norm",
     "options_unusual_flow_norm",
+    "options_0dte_share_norm",
+    "options_net_call_premium_bias_norm",
+    "options_sweep_flow_norm",
+    "options_block_flow_norm",
+    "options_iv_percentile_norm",
+    "options_iv_realized_spread_norm",
+    "options_gamma_front_share_norm",
+    "options_gamma_expiry_skew_norm",
 ]
 
 FUTURES_FEATURE_KEYS = [
@@ -63,6 +71,14 @@ FUTURES_FEATURE_KEYS = [
     "futures_roll_yield_norm",
     "futures_expiry_days",
     "futures_expiry_norm",
+    "futures_taker_imbalance_norm",
+    "futures_cvd_norm",
+    "futures_liquidation_risk_norm",
+    "futures_long_short_ratio_norm",
+    "futures_basis_divergence_norm",
+    "futures_mark_index_dislocation_norm",
+    "futures_session_volume_profile_norm",
+    "futures_calendar_spread_curve_norm",
 ]
 
 CALENDAR_FEATURE_KEYS = [
@@ -193,6 +209,29 @@ def _first_numeric(node: Any, keys: Iterable[str]) -> Optional[float]:
     return None
 
 
+def _all_numeric(node: Any, keys: Iterable[str]) -> List[float]:
+    key_set = {str(k).lower() for k in keys}
+    out: List[float] = []
+    for d in _iter_dict_nodes(node):
+        for k, v in d.items():
+            if str(k).lower() not in key_set:
+                continue
+            num = _to_float(v, float("nan"))
+            if math.isfinite(num):
+                out.append(float(num))
+    return out
+
+
+def _dict_get_ci(row: Dict[str, Any], *keys: str) -> Any:
+    if not isinstance(row, dict):
+        return None
+    key_map = {str(k).lower(): v for k, v in row.items()}
+    for key in keys:
+        if key.lower() in key_map:
+            return key_map[key.lower()]
+    return None
+
+
 def default_options_features() -> Dict[str, float]:
     return {k: 0.0 for k in OPTIONS_FEATURE_KEYS}
 
@@ -313,6 +352,7 @@ def summarize_option_chain(
     *,
     symbol: str = "",
     underlying_price: float = 0.0,
+    realized_vol: Optional[float] = None,
     now_ts: Optional[float] = None,
     max_contracts: int = 1200,
 ) -> Dict[str, float]:
@@ -353,6 +393,13 @@ def summarize_option_chain(
     call_wall_oi: Dict[float, float] = {}
     put_wall_oi: Dict[float, float] = {}
     gamma_exposure = 0.0
+    gamma_front = 0.0
+    gamma_back = 0.0
+    zero_dte_oi = 0.0
+    call_premium = 0.0
+    put_premium = 0.0
+    sweep_premium = 0.0
+    block_premium = 0.0
 
     atm_strike = 0.0
     atm_iv = 0.0
@@ -435,8 +482,31 @@ def summarize_option_chain(
             call_volume += volume
         elif side == "PUT":
             put_volume += volume
+        mark_for_premium = _to_float(
+            row.get("mark")
+            if row.get("mark") is not None
+            else row.get("last"),
+            0.0,
+        )
+        if mark_for_premium <= 0.0:
+            bid_for_mid = _to_float(row.get("bid"), 0.0)
+            ask_for_mid = _to_float(row.get("ask"), 0.0)
+            if bid_for_mid > 0.0 and ask_for_mid > bid_for_mid:
+                mark_for_premium = 0.5 * (bid_for_mid + ask_for_mid)
+        premium_notional = max(mark_for_premium, 0.0) * max(volume, 0.0) * 100.0
+        if side == "CALL":
+            call_premium += premium_notional
+        elif side == "PUT":
+            put_premium += premium_notional
         if volume > 0.0:
             unusual_flow_ratios.append(min(volume / max(oi, 1.0), 4.0))
+        if dte is not None and dte <= 1.0:
+            zero_dte_oi += oi
+        if dte is not None and dte <= 7.0 and volume > 0.0 and premium_notional > 0.0:
+            if volume / max(oi, 1.0) >= 1.5:
+                sweep_premium += premium_notional
+        if premium_notional >= 50000.0 or volume >= 500.0:
+            block_premium += premium_notional
 
         d = row.get("delta")
         if d is not None:
@@ -448,7 +518,12 @@ def summarize_option_chain(
             g_val = abs(_to_float(g, 0.0))
             if g_val <= 5.0:
                 gamma_vals.append(g_val)
-                gamma_exposure += g_val * max(oi, 0.0)
+                gamma_piece = g_val * max(oi, 0.0)
+                gamma_exposure += gamma_piece
+                if dte is not None and dte <= 7.0:
+                    gamma_front += gamma_piece
+                elif dte is not None and dte >= 30.0:
+                    gamma_back += gamma_piece
         t = row.get("theta")
         if t is not None:
             t_val = abs(_to_float(t, 0.0))
@@ -524,6 +599,24 @@ def summarize_option_chain(
     roll_yield = _clamp01((near_iv - far_iv + 0.25) / 0.50)
     vwap_bias = _clamp01(abs(_safe_mean(mark_mid_bias)) * 12.0)
     vol_expect = _clamp01((0.65 * _clamp01(atm_iv / 1.20)) + (0.35 * _clamp01((near_iv + max(iv_term, 0.0)) / 1.20)))
+    total_premium = max(call_premium + put_premium, 1.0)
+    net_call_premium = (call_premium - put_premium) / total_premium
+    zero_dte_share = zero_dte_oi / max(total_oi, 1.0)
+    sweep_flow = sweep_premium / total_premium
+    block_flow = block_premium / total_premium
+    iv_percentile = 0.5
+    if iv_all and atm_iv > 0.0:
+        iv_percentile = sum(1.0 for val in iv_all if val <= atm_iv) / max(len(iv_all), 1)
+    realized_proxy = 0.0
+    if realized_vol is not None and float(realized_vol) > 0.0:
+        realized_proxy = min(max(float(realized_vol), 0.0) * 12.0, 2.0)
+    elif iv_mean > 0.0:
+        realized_proxy = min(max(iv_mean * 0.85, 0.0), 2.0)
+    iv_realized_spread = _clamp01((atm_iv - realized_proxy + 0.40) / 0.80)
+    gamma_front_share = gamma_front / max(gamma_exposure, 1.0)
+    gamma_expiry_skew = 0.0
+    if gamma_exposure > 0.0:
+        gamma_expiry_skew = (gamma_front - gamma_back) / max(gamma_exposure, 1.0)
 
     out.update(
         {
@@ -562,6 +655,14 @@ def summarize_option_chain(
             "options_put_wall_distance_norm": _clamp01(put_wall_distance / 0.20),
             "options_oi_concentration_norm": _clamp01(oi_concentration),
             "options_unusual_flow_norm": _clamp01(_safe_mean(unusual_flow_ratios) / 4.0),
+            "options_0dte_share_norm": _clamp01(zero_dte_share),
+            "options_net_call_premium_bias_norm": _signed_centered_norm(net_call_premium, 1.0),
+            "options_sweep_flow_norm": _clamp01(sweep_flow),
+            "options_block_flow_norm": _clamp01(block_flow),
+            "options_iv_percentile_norm": _clamp01(iv_percentile),
+            "options_iv_realized_spread_norm": iv_realized_spread,
+            "options_gamma_front_share_norm": _clamp01(gamma_front_share),
+            "options_gamma_expiry_skew_norm": _signed_centered_norm(gamma_expiry_skew, 1.0),
         }
     )
     return out
@@ -633,6 +734,39 @@ def summarize_order_book(
     return out
 
 
+def _extract_futures_curve_rows(payload: Any, *, now_ts: float) -> List[Tuple[float, float]]:
+    rows: List[Tuple[float, float]] = []
+    seen: set[Tuple[int, int]] = set()
+    for node in _iter_dict_nodes(payload):
+        if not isinstance(node, dict):
+            continue
+        dte = None
+        for key in ("daysToExpiration", "days_to_expiration", "daysToExpiry", "expiry", "expirationDate", "expiryDate", "maturityDate"):
+            if key in node:
+                dte = _days_to_expiry(node.get(key), now_ts=now_ts)
+                if dte is not None:
+                    break
+        if dte is None:
+            continue
+        mark = _to_float(_dict_get_ci(node, "markPrice", "mark", "mark_price"), 0.0)
+        index = _to_float(_dict_get_ci(node, "indexPrice", "index", "index_price", "spotPrice", "spot_price"), 0.0)
+        last = _to_float(_dict_get_ci(node, "lastPrice", "last", "price"), 0.0)
+        basis_bps = None
+        if mark > 0.0 and index > 0.0:
+            basis_bps = ((mark - index) / index) * 10000.0
+        elif mark > 0.0 and last > 0.0:
+            basis_bps = ((mark - last) / last) * 10000.0
+        if basis_bps is None:
+            continue
+        key = (int(round(dte)), int(round(basis_bps)))
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append((max(float(dte), 0.0), float(basis_bps)))
+    rows.sort(key=lambda item: item[0])
+    return rows
+
+
 def summarize_futures_quote_features(
     payload: Any,
     *,
@@ -657,12 +791,38 @@ def summarize_futures_quote_features(
     basis_mark = _first_numeric(payload, ("markPrice", "mark", "mark_price"))
     basis_index = _first_numeric(payload, ("indexPrice", "index", "index_price", "spotPrice", "spot_price"))
     vwap = _first_numeric(payload, ("vwap", "VWAP", "volumeWeightedAveragePrice"))
+    taker_buy = _first_numeric(payload, ("takerBuyVolume", "taker_buy_volume", "buyVolume", "buyQty", "takerBuyVol", "buyVol"))
+    taker_sell = _first_numeric(payload, ("takerSellVolume", "taker_sell_volume", "sellVolume", "sellQty", "takerSellVol", "sellVol"))
+    cvd_raw = _first_numeric(payload, ("cvd", "cumulativeVolumeDelta", "cumulative_volume_delta", "volumeDelta", "deltaVolume"))
+    long_short_ratio = _first_numeric(payload, ("longShortRatio", "long_short_ratio", "globalLongShortRatio", "accountLongShortRatio", "longShortAccountRatio"))
+    session_profile = _first_numeric(payload, ("sessionVolumeProfile", "session_volume_profile", "relativeVolume", "relative_volume", "volumeProfile", "volume_profile", "volumeZscore", "volume_zscore"))
 
     basis_bps = 0.0
     if basis_mark is not None and basis_index is not None and basis_index > 0.0:
         basis_bps = ((basis_mark - basis_index) / basis_index) * 10000.0
     elif basis_mark is not None and last_price > 0.0:
         basis_bps = ((basis_mark - last_price) / max(last_price, 1e-8)) * 10000.0
+
+    dislocation_bps = 0.0
+    if basis_mark is not None and basis_index is not None and basis_index > 0.0:
+        dislocation_bps = abs((basis_mark - basis_index) / basis_index) * 10000.0
+
+    reference_prices = [
+        float(x)
+        for x in (
+            basis_mark,
+            basis_index,
+            _first_numeric(payload, ("oraclePrice", "oracle_price", "fairPrice", "fair_value", "indicativePrice", "premiumIndex")),
+            _first_numeric(payload, ("spotPrice", "spot_price", "index", "indexPrice")),
+            float(last_price or 0.0),
+        )
+        if x is not None and float(x) > 0.0
+    ]
+    basis_divergence_bps = 0.0
+    if len(reference_prices) >= 2:
+        ref_min = min(reference_prices)
+        ref_max = max(reference_prices)
+        basis_divergence_bps = ((ref_max - ref_min) / max(ref_min, 1e-8)) * 10000.0
 
     expiry_days = 0.0
     for key in ("daysToExpiration", "days_to_expiration", "daysToExpiry", "expiry"):
@@ -692,6 +852,59 @@ def summarize_futures_quote_features(
     if abs(funding_val) > 0.5:
         funding_val /= 100.0
 
+    taker_imbalance = 0.0
+    buy_flow = max(float(taker_buy or 0.0), 0.0)
+    sell_flow = max(float(taker_sell or 0.0), 0.0)
+    if buy_flow > 0.0 or sell_flow > 0.0:
+        taker_imbalance = (buy_flow - sell_flow) / max(buy_flow + sell_flow, 1e-8)
+
+    if cvd_raw is None and (buy_flow > 0.0 or sell_flow > 0.0):
+        cvd_raw = buy_flow - sell_flow
+    cvd_scale = max(buy_flow + sell_flow, abs(float(cvd_raw or 0.0)), 1.0)
+
+    liq_long = sum(
+        abs(v)
+        for v in _all_numeric(
+            payload,
+            (
+                "longLiquidationVolume",
+                "longLiquidationQty",
+                "longLiquidationUsd",
+                "longLiquidations",
+                "liquidationLong",
+                "liquidationsLong",
+            ),
+        )
+    )
+    liq_short = sum(
+        abs(v)
+        for v in _all_numeric(
+            payload,
+            (
+                "shortLiquidationVolume",
+                "shortLiquidationQty",
+                "shortLiquidationUsd",
+                "shortLiquidations",
+                "liquidationShort",
+                "liquidationsShort",
+            ),
+        )
+    )
+    liq_total = max(
+        liq_long + liq_short,
+        sum(abs(v) for v in _all_numeric(payload, ("liquidationVolume", "liquidationQty", "liquidationUsd", "liquidations"))),
+    )
+
+    curve_rows = _extract_futures_curve_rows(payload, now_ts=ts_now)
+    curve_norm = 0.5
+    if len(curve_rows) >= 2:
+        near_dte, near_basis = curve_rows[0]
+        far_dte, far_basis = curve_rows[-1]
+        slope_bps_per_month = (far_basis - near_basis) / max((far_dte - near_dte) / 30.0, 1e-6)
+        curve_norm = _clamp01((slope_bps_per_month + 150.0) / 300.0)
+    elif expiry_days > 0.0:
+        curve_norm = _clamp01((basis_bps / max(expiry_days, 1.0) * 30.0 + 150.0) / 300.0)
+
     term_structure = _clamp01((basis_bps + 300.0) / 600.0)
     negative_bias = _clamp01(
         (0.45 * _clamp01((-funding_val * 100.0 + 2.0) / 4.0))
@@ -699,6 +912,14 @@ def summarize_futures_quote_features(
         + (0.20 * _clamp01((-basis_bps + 250.0) / 500.0))
     )
     roll_yield = _clamp01((basis_bps / max(expiry_days, 1.0) + 20.0) / 40.0)
+    if session_profile is None:
+        session_profile_norm = 0.0
+    else:
+        raw = float(session_profile)
+        if abs(raw) > 4.0:
+            session_profile_norm = _clamp01(math.log1p(abs(raw)) / 4.0)
+        else:
+            session_profile_norm = _clamp01((raw + 2.0) / 4.0)
 
     out.update(
         {
@@ -722,6 +943,14 @@ def summarize_futures_quote_features(
             "futures_roll_yield_norm": roll_yield,
             "futures_expiry_days": float(max(expiry_days, 0.0)),
             "futures_expiry_norm": _clamp01(max(expiry_days, 0.0) / 120.0),
+            "futures_taker_imbalance_norm": _signed_centered_norm(taker_imbalance, 1.0),
+            "futures_cvd_norm": _signed_centered_norm(float(cvd_raw or 0.0), max(cvd_scale, 1.0)),
+            "futures_liquidation_risk_norm": _clamp01(math.log1p(max(liq_total, 0.0)) / 12.0),
+            "futures_long_short_ratio_norm": _clamp01((max(float(long_short_ratio or 1.0), 0.0) - 0.5) / 2.0),
+            "futures_basis_divergence_norm": _clamp01(basis_divergence_bps / 400.0),
+            "futures_mark_index_dislocation_norm": _clamp01(dislocation_bps / 300.0),
+            "futures_session_volume_profile_norm": session_profile_norm,
+            "futures_calendar_spread_curve_norm": curve_norm,
         }
     )
     return out

@@ -56,6 +56,8 @@ def main() -> int:
     parser.add_argument("--day", default=datetime.now(timezone.utc).strftime("%Y%m%d"))
     parser.add_argument("--stale-seconds", type=int, default=180)
     parser.add_argument("--out-dir", default=None)
+    parser.add_argument("--full-db-summary", action="store_true")
+    parser.add_argument("--sqlite-timeout-seconds", type=float, default=15.0)
     args = parser.parse_args()
 
     db_path = Path(args.db)
@@ -71,21 +73,27 @@ def main() -> int:
     day_governance_like = f"governance/%/master_control_{day}.jsonl"
     day_watchdog_like = f"governance/watchdog/watchdog_events_{day}.jsonl"
 
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), timeout=max(float(args.sqlite_timeout_seconds), 1.0))
+    conn.execute(f"PRAGMA busy_timeout={int(max(float(args.sqlite_timeout_seconds), 1.0) * 1000)}")
+    conn.execute("PRAGMA query_only=ON")
 
-    total_rows = _rows(conn, "SELECT COUNT(*) FROM jsonl_records")[0][0]
-    min_ing, max_ing = _rows(conn, "SELECT MIN(ingested_at), MAX(ingested_at) FROM jsonl_records")[0]
-
-    top_sources = _rows(
-        conn,
-        """
-        SELECT source_rel, COUNT(*) AS rows
-        FROM jsonl_records
-        GROUP BY source_rel
-        ORDER BY rows DESC
-        LIMIT 50
-        """,
-    )
+    total_rows = None
+    min_ing = None
+    max_ing = None
+    top_sources: list[tuple] = []
+    if args.full_db_summary:
+        total_rows = _rows(conn, "SELECT COUNT(*) FROM jsonl_records")[0][0]
+        min_ing, max_ing = _rows(conn, "SELECT MIN(ingested_at), MAX(ingested_at) FROM jsonl_records")[0]
+        top_sources = _rows(
+            conn,
+            """
+            SELECT source_rel, COUNT(*) AS rows
+            FROM jsonl_records
+            GROUP BY source_rel
+            ORDER BY rows DESC
+            LIMIT 50
+            """,
+        )
     _write_csv(out_dir / "top_sources.csv", ["source_rel", "rows"], top_sources)
 
     decision_status = _rows(
@@ -210,8 +218,11 @@ def main() -> int:
     md_lines.append("")
     md_lines.append(f"Generated (UTC): {datetime.now(timezone.utc).isoformat()}")
     md_lines.append(f"Database: `{db_path}`")
-    md_lines.append(f"Total rows in `jsonl_records`: **{total_rows:,}**")
-    md_lines.append(f"Ingested range: `{min_ing}` to `{max_ing}`")
+    if total_rows is not None:
+        md_lines.append(f"Total rows in `jsonl_records`: **{int(total_rows):,}**")
+        md_lines.append(f"Ingested range: `{min_ing}` to `{max_ing}`")
+    else:
+        md_lines.append("Global DB totals skipped in fast mode.")
     md_lines.append("")
     md_lines.append("## What Is Going On")
 
@@ -252,6 +263,7 @@ def main() -> int:
     report_path = out_dir / "runtime_sql_report.md"
     report_path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
 
+    conn.close()
     print(f"Wrote report: {report_path}")
     print(f"Wrote CSV files under: {out_dir}")
     return 0

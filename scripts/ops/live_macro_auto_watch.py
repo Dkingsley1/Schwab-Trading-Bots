@@ -1256,7 +1256,7 @@ def _fetch_schwab_calendar_correlation(args: argparse.Namespace, target: Dict[st
 
     api_key = os.getenv("SCHWAB_API_KEY", "").strip()
     secret = os.getenv("SCHWAB_SECRET", "").strip()
-    redirect = os.getenv("SCHWAB_REDIRECT", "https://127.0.0.1:8080").strip()
+    redirect = os.getenv("SCHWAB_REDIRECT", "https://127.0.0.1:8182").strip()
     if not api_key or not secret or api_key == "YOUR_KEY_HERE" or secret == "YOUR_SECRET_HERE":
         return {
             "calendar_correlation_enabled": True,

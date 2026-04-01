@@ -7,8 +7,18 @@ PLIST_PATH="$HOME/Library/LaunchAgents/com.dankingsley.schwab.logrefresh.plist"
 LOG_DIR="$HOME/Library/Logs/schwab_trading_bot"
 OUT_LOG="$LOG_DIR/logrefresh_launchd.out.log"
 ERR_LOG="$LOG_DIR/logrefresh_launchd.err.log"
+REFRESH_ENABLED="${FINDER_LOG_REFRESH_LAUNCHD_ENABLED:-0}"
+REFRESH_INTERVAL_SECONDS="${FINDER_LOG_REFRESH_INTERVAL_SECONDS:-1800}"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
+
+if [[ "$REFRESH_ENABLED" != "1" ]]; then
+  launchctl unload "$PLIST_PATH" >/dev/null 2>&1 || true
+  rm -f "$PLIST_PATH"
+  echo "Legacy finder log refresh is disabled."
+  echo "Set FINDER_LOG_REFRESH_LAUNCHD_ENABLED=1 to re-enable it."
+  exit 0
+fi
 
 cat > "$PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -41,7 +51,7 @@ cat > "$PLIST_PATH" <<PLIST
   <true/>
 
   <key>StartInterval</key>
-  <integer>300</integer>
+  <integer>$REFRESH_INTERVAL_SECONDS</integer>
 
   <key>StandardOutPath</key>
   <string>$OUT_LOG</string>
@@ -55,5 +65,5 @@ launchctl unload "$PLIST_PATH" >/dev/null 2>&1 || true
 launchctl load "$PLIST_PATH"
 
 echo "Installed and loaded: $PLIST_PATH"
-echo "Schedule: every 300 seconds"
+echo "Schedule: every $REFRESH_INTERVAL_SECONDS seconds"
 echo "Logs: $OUT_LOG and $ERR_LOG"

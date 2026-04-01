@@ -77,12 +77,12 @@ def _infer_lane(row: dict) -> str:
     role = str((row or {}).get("bot_role", "")).strip().lower()
     bot_id = str((row or {}).get("bot_id", "")).strip().lower()
 
+    if any(tok in bot_id for tok in ("long_term", "dividend_quality_compounder", "dividend_yield_trap_avoidance")):
+        return "long_term"
     if role == "options_sub_bot" or any(tok in bot_id for tok in ("options", "greek", "iv_", "vol_surface", "put_call")):
         return "options"
     if role == "futures_sub_bot" or any(tok in bot_id for tok in ("futures", "funding", "basis", "order_book", "open_interest", "term_structure")):
         return "futures"
-    if any(tok in bot_id for tok in ("long_term", "dividend_quality_compounder", "dividend_yield_trap_avoidance")):
-        return "long_term"
     if any(tok in bot_id for tok in ("intraday", "scalp", "open_close", "ultrafast", "day_trade", "daytrading")):
         return "day"
     if any(tok in bot_id for tok in ("swing", "position_1m_3m", "1w_3w", "2d_5d")):
@@ -100,6 +100,35 @@ def _is_canary_row(row: dict) -> bool:
 
 def _counter_to_int_dict(counter: Counter[str]) -> dict[str, int]:
     return {k: int(counter[k]) for k in sorted(counter.keys())}
+
+
+def _protected_collection_lanes(registry: dict) -> set[str]:
+    master_policy = registry.get("master_policy") if isinstance(registry.get("master_policy"), dict) else {}
+    raw = master_policy.get("protected_collection_lanes", ["options", "long_term"])
+    if isinstance(raw, str):
+        items = [part.strip().lower() for part in raw.split(",")]
+    elif isinstance(raw, list):
+        items = [str(part).strip().lower() for part in raw]
+    else:
+        items = []
+    return {item for item in items if item}
+
+
+def _protected_collection_lane_floors(registry: dict) -> dict[str, int]:
+    master_policy = registry.get("master_policy") if isinstance(registry.get("master_policy"), dict) else {}
+    raw = master_policy.get("protected_collection_lane_floors", {"options": 2, "long_term": 2})
+    if isinstance(raw, dict):
+        out: dict[str, int] = {}
+        for key, value in raw.items():
+            lane = str(key).strip().lower()
+            if not lane:
+                continue
+            try:
+                out[lane] = max(int(value), 0)
+            except Exception:
+                continue
+        return out
+    return {}
 
 
 def main() -> int:
@@ -181,6 +210,17 @@ def main() -> int:
     reg = json.loads(registry_path.read_text(encoding="utf-8"))
     original_reg = json.loads(json.dumps(reg))
     sub_bots = reg.get("sub_bots") if isinstance(reg.get("sub_bots"), list) else []
+    protected_lanes = _protected_collection_lanes(reg)
+    protected_lane_floors = _protected_collection_lane_floors(reg)
+    active_lane_counts: Counter[str] = Counter()
+    for row in sub_bots:
+        if not isinstance(row, dict):
+            continue
+        if bool(row.get("deleted_from_rotation", False)):
+            continue
+        if not bool(row.get("active", False)):
+            continue
+        active_lane_counts[_infer_lane(row)] += 1
 
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=max(int(args.lookback_days), 1))
@@ -225,6 +265,7 @@ def main() -> int:
                 "bot_id": bot_id,
                 "lane": lane,
                 "is_canary": bool(is_canary),
+                "is_active": bool(row.get("active", False)),
                 "fail_days": fd,
                 "no_improvement_streak": streak,
                 "required_fail_days": lane_fail_req,
@@ -243,6 +284,7 @@ def main() -> int:
 
     selected: list[dict] = []
     selected_lane_counts: Counter[str] = Counter()
+    selected_active_lane_counts: Counter[str] = Counter()
     max_retire_total = max(int(args.max_retire_per_run), 0)
     for row in candidates:
         if len(selected) >= max_retire_total:
@@ -253,8 +295,15 @@ def main() -> int:
             continue
         if lane_cap > 0 and selected_lane_counts[lane] >= lane_cap:
             continue
+        if bool(row.get("is_active", False)) and lane in protected_lanes:
+            lane_floor = int(protected_lane_floors.get(lane, 0))
+            remaining_active = int(active_lane_counts.get(lane, 0)) - int(selected_active_lane_counts.get(lane, 0))
+            if lane_floor > 0 and (remaining_active - 1) < lane_floor:
+                continue
         selected.append(row)
         selected_lane_counts[lane] += 1
+        if bool(row.get("is_active", False)):
+            selected_active_lane_counts[lane] += 1
 
     guard_ok = True
     guard_reason = "disabled"

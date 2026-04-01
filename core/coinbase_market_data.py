@@ -620,6 +620,7 @@ class CoinbaseMarketDataClient:
             vol_std = vol_var ** 0.5
             if vol_std > 0.0:
                 volume_zscore = (vol_tail[-1] - vol_mean) / vol_std
+        futures["futures_session_volume_profile_norm"] = min(max((volume_zscore + 2.0) / 4.0, 0.0), 1.0)
         queue_depth = max(float(futures.get("futures_bid_size", 0.0)), 0.0) + max(float(futures.get("futures_ask_size", 0.0)), 0.0)
 
         out = {

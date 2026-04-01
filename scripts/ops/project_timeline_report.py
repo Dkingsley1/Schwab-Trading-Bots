@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import html
 import json
@@ -17,6 +18,12 @@ from typing import Any, Dict, List
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT_DIR = PROJECT_ROOT / "exports" / "reports" / "project_timeline"
 DEFAULT_STATE_PATH = PROJECT_ROOT / "governance" / "health" / "project_timeline_state.json"
+DEFAULT_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "project_timeline_report.lock"
+APP_BROWSER_CANDIDATES = (
+    Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+    Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+    Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+)
 
 TIMELINE_MD_PDF_RE = re.compile(r"^project_timeline_(\d{8}_\d{6})\.(?:md|pdf)$")
 TIMELINE_PRINT_RE = re.compile(r"^project_timeline_print_(\d{8}_\d{6})\.html$")
@@ -36,6 +43,7 @@ RECENT_ACTIVITY_GLOBS = [
     "governance/watchdog/*.jsonl",
     "data/**/*.json",
     "data/**/*.jsonl",
+    "exports/external_context/*.json",
     "exports/sql_reports/*.json",
     "exports/sql_reports/*.md",
     "exports/reports/**/*.json",
@@ -67,6 +75,15 @@ MILESTONE_SUBJECT_WEIGHTS = (
     ("report", 7),
 )
 
+BUILDOUT_THEME_PATTERNS = (
+    ("Control room and orchestration", ("main control room", "orchestration", "launcher", "all sleeves", "control room")),
+    ("Sleeve expansion", ("dividend", "bond", "futures", "fx", "coinbase", "crypto", "sector", "core etf")),
+    ("Cross-sleeve intelligence", ("correlation", "cross-sleeve", "cross asset", "market context", "fx market", "overlap", "alignment")),
+    ("Training and promotion", ("retrain", "promotion", "walk-forward", "walk forward", "champion", "rollback", "calibration", "training")),
+    ("Ops automation and reporting", ("watchdog", "launchd", "report", "timeline", "commands", "runbook", "autofix")),
+    ("Reliability and storage", ("storage", "retention", "sql", "failback", "guardrail", "gate", "drip", "broker truth", "memory", "resource")),
+)
+
 SIGNIFICANT_CODE_PREFIXES = (
     "core/",
     "scripts/",
@@ -91,7 +108,11 @@ SIGNIFICANT_ARTIFACT_PREFIXES = (
     "governance/health/storage_failback_sync_",
     "governance/health/jsonl_sql_ingestion_health_",
     "governance/health/sql_link_service_",
+    "governance/health/market_crypto_correlation_sync_",
+    "governance/health/fx_market_context_sync_",
     "governance/walk_forward/",
+    "exports/external_context/market_crypto_correlation_",
+    "exports/external_context/fx_market_context_",
     "logs/coinbase_live_",
     "logs/coinbase_futures_live_",
     "logs/all_sleeves_",
@@ -110,6 +131,34 @@ TOKEN_DISPLAY_MAP = {
 
 def _env_flag(name: str, default: str = "0") -> bool:
     return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _default_allow_gui_pdf_renderer() -> bool:
+    return any(candidate.exists() for candidate in APP_BROWSER_CANDIDATES)
+
+
+def _acquire_singleton_lock(lock_path: Path, *, blocking: bool):
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_path, "a+", encoding="utf-8")
+    lock_mode = fcntl.LOCK_EX
+    if not blocking:
+        lock_mode |= fcntl.LOCK_NB
+    try:
+        fcntl.flock(fh.fileno(), lock_mode)
+    except BlockingIOError:
+        try:
+            fh.seek(0)
+            owner = fh.read().strip()
+        except Exception:
+            owner = "unknown"
+        fh.close()
+        return None, owner or "unknown"
+
+    fh.seek(0)
+    fh.truncate(0)
+    fh.write(f"pid={os.getpid()} started={datetime.now(timezone.utc).isoformat()} cmd={' '.join(os.sys.argv)}")
+    fh.flush()
+    return fh, ""
 
 
 def _run(cmd: List[str]) -> tuple[int, str, str]:
@@ -680,6 +729,8 @@ def _path_area(path: str) -> str:
         return "Runtime"
     if txt.startswith("logs/"):
         return "Logs"
+    if txt.startswith("exports/external_context/"):
+        return "Intelligence"
     if txt.startswith("exports/reports/"):
         return "Reports"
     if txt.startswith("data/"):
@@ -750,6 +801,10 @@ def _describe_working_change(path: str, status: str) -> Dict[str, str]:
         title = "Timeline report generator"
     elif txt == "scripts/ops/opsctl.sh":
         title = "Ops control entrypoint"
+    elif txt == "scripts/collect_market_crypto_correlation_context.py":
+        title = "Cross-sleeve correlation collector"
+    elif txt == "scripts/collect_fx_market_context.py":
+        title = "FX market context collector"
     elif txt in {"README.md", "COMMANDS.md"}:
         title = "Project documentation"
     elif txt.startswith("scripts/run_long_term_core_etf_shadow.py"):
@@ -846,6 +901,34 @@ def _describe_artifact_change(path: str) -> Dict[str, str]:
             "detail": "SQL link service health refreshed",
         }
 
+    if name == "market_crypto_correlation_sync_latest.json":
+        return {
+            "area": "Intelligence",
+            "title": "Cross-sleeve correlation context",
+            "detail": "market/crypto overlap and correlation snapshot refreshed",
+        }
+
+    if name == "fx_market_context_sync_latest.json":
+        return {
+            "area": "Intelligence",
+            "title": "FX market context",
+            "detail": "FX cross-market context snapshot refreshed",
+        }
+
+    if name == "market_crypto_correlation_latest.json":
+        return {
+            "area": "Intelligence",
+            "title": "Cross-sleeve correlation export",
+            "detail": "market/crypto external context export refreshed",
+        }
+
+    if name == "fx_market_context_latest.json":
+        return {
+            "area": "Intelligence",
+            "title": "FX market context export",
+            "detail": "FX external context export refreshed",
+        }
+
     if txt.startswith("governance/walk_forward/"):
         return {
             "area": "Training",
@@ -917,6 +1000,11 @@ def _working_change_score(path: str, status: str) -> int:
         score += 16
     elif txt == "scripts/ops/opsctl.sh":
         score += 14
+    elif txt in {
+        "scripts/collect_market_crypto_correlation_context.py",
+        "scripts/collect_fx_market_context.py",
+    }:
+        score += 15
     elif txt in {"README.md", "COMMANDS.md"}:
         score += 12
     elif txt.startswith("core/"):
@@ -933,7 +1021,7 @@ def _working_change_score(path: str, status: str) -> int:
     if action == "added":
         score += 3
 
-    if any(token in txt for token in ("timeline", "retrain", "dividend", "long_term", "coinbase", "schwab")):
+    if any(token in txt for token in ("timeline", "retrain", "dividend", "long_term", "coinbase", "schwab", "correlation", "market_context", "cross_asset")):
         score += 3
 
     return score
@@ -969,6 +1057,12 @@ def _artifact_change_score(path: str) -> int:
         "preflight_autofix_latest.json",
         "storage_failback_sync_latest.json",
     }:
+        score += 14
+    elif name == "market_crypto_correlation_sync_latest.json":
+        score += 17
+    elif name == "fx_market_context_sync_latest.json":
+        score += 16
+    elif name in {"market_crypto_correlation_latest.json", "fx_market_context_latest.json"}:
         score += 14
 
     if any(token in txt for token in ("long_term_core_etf", "crypto_futures", "default_crypto_coinbase")):
@@ -1268,6 +1362,219 @@ def _build_significant_changes(context: Dict[str, Any], limit: int = 18) -> List
     )
 
 
+def _high_signal_artifact_title(title: str) -> bool:
+    txt = str(title or "").strip()
+    return txt in {
+        "Retrain scorecard",
+        "Training success verdict",
+        "Model card export",
+        "Preflight autofix snapshot",
+        "Storage failback sync",
+        "JSONL-to-SQL ingestion health",
+        "SQL link service",
+        "Cross-sleeve correlation context",
+        "FX market context",
+        "Walk-forward gate snapshot",
+    }
+
+
+def _high_signal_working_title(title: str) -> bool:
+    txt = str(title or "").strip()
+    return txt in {
+        "Bot registry update",
+        "Timeline report generator",
+        "Ops automation",
+        "Trading workflow script",
+        "Cross-sleeve correlation collector",
+        "FX market context collector",
+        "Core trading engine",
+        "Project documentation",
+    }
+
+
+def _build_project_milestone_timeline(context: Dict[str, Any], limit: int = 16) -> List[Dict[str, Any]]:
+    timeline: List[Dict[str, Any]] = []
+    for row in _build_major_milestones(context, limit=max(int(limit) * 2, 12)):
+        if not isinstance(row, dict):
+            continue
+        source = str(row.get("source", "")).strip()
+        title = str(row.get("title", "")).strip()
+        score = int(row.get("score", 0) or 0)
+        if (
+            source == "commit"
+            or _high_signal_artifact_title(title)
+            or (source == "working" and _high_signal_working_title(title) and score >= 16)
+        ):
+            timeline.append(row)
+
+    for row in _build_current_phase_changes(context, limit=max(int(limit), 8)):
+        if not isinstance(row, dict):
+            continue
+        source = str(row.get("source", "")).strip()
+        title = str(row.get("title", "")).strip()
+        if source == "working" and _high_signal_working_title(title):
+            timeline.append(row)
+        elif source == "artifact" and _high_signal_artifact_title(title):
+            timeline.append(row)
+
+    timeline = _collapse_ranked_rows(
+        sorted(
+            timeline,
+            key=lambda row: (
+                int(row.get("score", 0) or 0),
+                float(row.get("sort_epoch", 0.0) or 0.0),
+                str(row.get("reference", "")),
+            ),
+            reverse=True,
+        )
+    )
+    selected = _select_ranked_rows_with_date_coverage(timeline, limit=limit, guarantee_dates=6, guarantee_per_date=1)
+    return sorted(selected, key=lambda row: (float(row.get("sort_epoch", 0.0) or 0.0), str(row.get("reference", ""))))
+
+
+def _build_current_phase_changes(context: Dict[str, Any], limit: int = 8) -> List[Dict[str, Any]]:
+    focused: List[Dict[str, Any]] = []
+    for row in _build_significant_changes(context, limit=max(int(limit) * 3, 18)):
+        if not isinstance(row, dict):
+            continue
+        source = str(row.get("source", "")).strip()
+        title = str(row.get("title", "")).strip()
+        area = str(row.get("area", "")).strip()
+
+        if source == "commit":
+            focused.append(row)
+            continue
+        if source == "working" and area in {"Core", "Scripts", "Ops", "Config", "Docs", "Registry", "Tests"}:
+            focused.append(row)
+            continue
+        if source == "artifact" and _high_signal_artifact_title(title):
+            focused.append(row)
+
+    focused = _collapse_ranked_rows(focused)
+    return focused[: max(int(limit), 1)]
+
+
+def _build_buildout_summary(
+    milestone_timeline: List[Dict[str, Any]],
+    current_phase: List[Dict[str, Any]],
+    git_data: Dict[str, Any],
+) -> List[str]:
+    rows = list(milestone_timeline) + list(current_phase)
+    summaries: List[str] = []
+    seen_labels: set[str] = set()
+
+    for label, needles in BUILDOUT_THEME_PATTERNS:
+        matched: List[Dict[str, Any]] = []
+        for row in rows:
+            haystack = " ".join(
+                [
+                    str(row.get("title", "")),
+                    str(row.get("detail", "")),
+                    str(row.get("reference", "")),
+                    str(row.get("area", "")),
+                ]
+            ).lower()
+            if any(needle in haystack for needle in needles):
+                matched.append(row)
+        if not matched:
+            continue
+
+        first_row = min(matched, key=lambda row: float(row.get("sort_epoch", 0.0) or 0.0))
+        last_row = max(matched, key=lambda row: float(row.get("sort_epoch", 0.0) or 0.0))
+        summaries.append(
+            f"{label}: {len(matched)} high-signal milestones from `{_fmt(first_row.get('date_local'))}` through `{_fmt(last_row.get('date_local'))}`."
+        )
+        seen_labels.add(label)
+
+    commit_count = len(git_data.get("commits", []) if isinstance(git_data.get("commits"), list) else [])
+    if commit_count:
+        summaries.insert(
+            0,
+            f"Overall buildout: `{commit_count}` commits tracked across the project timeline, with the report centered on milestone-level build steps instead of routine runtime heartbeats.",
+        )
+
+    return summaries[:6]
+
+
+def _project_span(git_data: Dict[str, Any]) -> Dict[str, Any]:
+    commits = git_data.get("commits", []) if isinstance(git_data.get("commits"), list) else []
+    if not commits:
+        return {
+            "start_local": "n/a",
+            "end_local": "n/a",
+            "days": 0,
+        }
+
+    start_epoch, start_local = _parse_datetime_to_local(commits[0].get("date"))
+    end_epoch, end_local = _parse_datetime_to_local(commits[-1].get("date"))
+    days = 0
+    if start_epoch and end_epoch and end_epoch >= start_epoch:
+        days = int((end_epoch - start_epoch) // 86400)
+    return {
+        "start_local": start_local,
+        "end_local": end_local,
+        "days": days,
+    }
+
+
+def _pair_metric_value(payload: Dict[str, Any], left: str, right: str) -> str:
+    pairs = payload.get("derived", {}).get("pair_metrics", []) if isinstance(payload.get("derived"), dict) else []
+    if not isinstance(pairs, list):
+        return "n/a"
+    for row in pairs:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("left")) == left and str(row.get("right")) == right:
+            corr = row.get("corr")
+            points = row.get("points")
+            mode = row.get("mode")
+            if corr is None:
+                return "n/a"
+            return f"corr={_fmt(corr)} points={_fmt(points)} mode={_fmt(mode)}"
+    return "n/a"
+
+
+def _build_cross_sleeve_summary(ops_data: Dict[str, Any]) -> List[str]:
+    rows: List[str] = []
+    corr_sync = ops_data.get("market_crypto_correlation_sync") if isinstance(ops_data.get("market_crypto_correlation_sync"), dict) else {}
+    corr_latest = ops_data.get("market_crypto_correlation") if isinstance(ops_data.get("market_crypto_correlation"), dict) else {}
+    fx_sync = ops_data.get("fx_market_context_sync") if isinstance(ops_data.get("fx_market_context_sync"), dict) else {}
+    fx_sources = fx_sync.get("sources") if isinstance(fx_sync.get("sources"), dict) else {}
+    twelve_data = fx_sources.get("twelve_data") if isinstance(fx_sources.get("twelve_data"), dict) else {}
+
+    if corr_sync:
+        rows.append(
+            "Correlation layer: "
+            f"`ok={_fmt(corr_sync.get('ok'))}` "
+            f"`mode={_fmt(corr_sync.get('mode'))}` "
+            f"`exact/aligned={_fmt(corr_sync.get('exact_aligned_pairs'))}/{_fmt(corr_sync.get('aligned_pairs'))}` "
+            f"`rows_scanned={_fmt(corr_sync.get('rows_scanned'))}` "
+            f"`timestamp={_fmt(corr_sync.get('timestamp_utc'))}`"
+        )
+    if corr_latest:
+        rows.append(
+            "Cross-market pair updates: "
+            f"`basket_vs_crypto={_pair_metric_value(corr_latest, 'stock_risk_basket', 'crypto_basket')}` "
+            f"`SPY_vs_BTC={_pair_metric_value(corr_latest, 'SPY', 'BTC-USD')}` "
+            f"`QQQ_vs_BTC={_pair_metric_value(corr_latest, 'QQQ', 'BTC-USD')}`"
+        )
+    if fx_sync:
+        rows.append(
+            "FX context layer: "
+            f"`ok_sources={_fmt(fx_sync.get('ok_source_count'))}/{_fmt(fx_sync.get('source_count'))}` "
+            f"`official_pairs={_fmt(fx_sync.get('official_pairs'))}` "
+            f"`proxy_symbols={_fmt(fx_sync.get('proxy_symbols_observed'))}` "
+            f"`twelve_data_pairs_ok={_fmt(twelve_data.get('pairs_ok'))}` "
+            f"`warnings={_fmt(fx_sync.get('warning_count'))}` "
+            f"`timestamp={_fmt(fx_sync.get('timestamp_utc'))}`"
+        )
+    if corr_sync or fx_sync:
+        rows.append(
+            "Cross-sleeve structure: stocks, bonds, dollar, gold, crypto, futures, and FX are being tracked as a shared context layer instead of isolated sleeves."
+        )
+    return rows
+
+
 def _collect_ops_snapshot() -> Dict[str, Any]:
     promotion = _load_json(PROJECT_ROOT / "governance" / "walk_forward" / "promotion_gate_latest.json")
     graduation = _load_json(PROJECT_ROOT / "governance" / "walk_forward" / "new_bot_graduation_latest.json")
@@ -1275,6 +1582,9 @@ def _collect_ops_snapshot() -> Dict[str, Any]:
     leak = _load_json(PROJECT_ROOT / "governance" / "health" / "leak_overfit_guard_latest.json")
     preflight = _load_json(PROJECT_ROOT / "governance" / "health" / "preflight_autofix_latest.json")
     storage = _load_json(PROJECT_ROOT / "governance" / "health" / "storage_failback_sync_latest.json")
+    market_crypto_correlation_sync = _load_json(PROJECT_ROOT / "governance" / "health" / "market_crypto_correlation_sync_latest.json")
+    fx_market_context_sync = _load_json(PROJECT_ROOT / "governance" / "health" / "fx_market_context_sync_latest.json")
+    market_crypto_correlation = _load_json(PROJECT_ROOT / "exports" / "external_context" / "market_crypto_correlation_latest.json")
 
     preflight_events: List[Dict[str, str]] = []
     for path in sorted(PROJECT_ROOT.glob("logs/all_sleeves_*.log"), key=lambda p: p.name):
@@ -1303,6 +1613,9 @@ def _collect_ops_snapshot() -> Dict[str, Any]:
         "leak": leak,
         "preflight": preflight,
         "storage": storage,
+        "market_crypto_correlation_sync": market_crypto_correlation_sync,
+        "market_crypto_correlation": market_crypto_correlation,
+        "fx_market_context_sync": fx_market_context_sync,
         "latest_all_sleeves_log": _latest_file_name("logs/all_sleeves_*.log"),
         "latest_coinbase_log": _latest_file_name("logs/coinbase_live_*.log"),
         "preflight_events": preflight_events,
@@ -1320,6 +1633,8 @@ def _build_signature(git_data: Dict[str, Any], ops_data: Dict[str, Any]) -> str:
         "promotion_ts": (ops_data.get("promotion") or {}).get("timestamp_utc", ""),
         "graduation_ts": (ops_data.get("graduation") or {}).get("timestamp_utc", ""),
         "retrain_ts": (ops_data.get("retrain") or {}).get("timestamp_utc", ""),
+        "market_crypto_correlation_ts": (ops_data.get("market_crypto_correlation_sync") or {}).get("timestamp_utc", ""),
+        "fx_market_context_ts": (ops_data.get("fx_market_context_sync") or {}).get("timestamp_utc", ""),
         "recent_activity_latest_path": activity_probe.get("latest_path", ""),
         "recent_activity_latest_mtime_utc": activity_probe.get("latest_mtime_utc", ""),
         "recent_activity_count": activity_probe.get("count", 0),
@@ -1363,11 +1678,7 @@ def _pdf_renderer_binary(allow_gui_renderer: bool) -> tuple[str, str]:
             return candidate, "browser"
 
     if allow_gui_renderer:
-        for candidate in (
-            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-            Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
-            Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
-        ):
+        for candidate in APP_BROWSER_CANDIDATES:
             if candidate.exists():
                 return str(candidate), "browser"
 
@@ -1400,10 +1711,12 @@ def _render_markdown(context: Dict[str, Any]) -> str:
     git_data = context["git"]
     ops_data = context["ops"]
     counts = _classify_status(git_data["status_lines"])
-    major_milestones = _build_major_milestones(context, limit=14)
-    significant_changes = _build_significant_changes(context, limit=18)
+    milestone_timeline = _build_project_milestone_timeline(context, limit=24)
+    current_phase = _build_current_phase_changes(context, limit=14)
+    buildout_summary = _build_buildout_summary(milestone_timeline, current_phase, git_data)
+    cross_sleeve_summary = _build_cross_sleeve_summary(ops_data)
     include_detailed_timeline = bool(context.get("include_detailed_timeline"))
-    show_detailed_timeline = include_detailed_timeline or (not major_milestones and not significant_changes)
+    show_detailed_timeline = include_detailed_timeline or (not milestone_timeline and not current_phase)
     live_timeline = _build_live_timeline_events(context, limit=80) if show_detailed_timeline else []
 
     promotion = ops_data.get("promotion") or {}
@@ -1414,6 +1727,7 @@ def _render_markdown(context: Dict[str, Any]) -> str:
     storage = ops_data.get("storage") or {}
     recent_project_activity = ops_data.get("recent_project_activity") if isinstance(ops_data.get("recent_project_activity"), list) else []
     recent_project_hours = int(ops_data.get("recent_project_activity_hours", 48) or 48)
+    span = _project_span(git_data)
 
     md: List[str] = []
     md.append("# Project Timeline Report")
@@ -1427,6 +1741,7 @@ def _render_markdown(context: Dict[str, Any]) -> str:
     md.append(f"- Branch: `{git_data['branch']}`")
     md.append(f"- HEAD: `{git_data['head']}`")
     md.append(f"- Total commits: `{git_data['commit_count']}`")
+    md.append(f"- Project span: `{span['start_local']}` -> `{span['end_local']}` (`{span['days']}` days)")
     if git_data["commits"]:
         md.append(
             f"- First commit: `{git_data['commits'][0]['date']}` `{git_data['commits'][0]['sha']}` "
@@ -1437,9 +1752,25 @@ def _render_markdown(context: Dict[str, Any]) -> str:
             f"{git_data['commits'][-1]['subject']}"
         )
     md.append("")
-    md.append("## Major Milestones")
-    if major_milestones:
-        for idx, row in enumerate(major_milestones, start=1):
+    md.append("## Buildout Summary")
+    if buildout_summary:
+        for line in buildout_summary:
+            md.append(f"- {line}")
+    else:
+        md.append("- No buildout summary signals identified.")
+    md.append("")
+    md.append("## Cross-Sleeve Intelligence")
+    md.append("- This section tracks the shared context work tying sleeves together through correlation, overlap, and FX/market context updates.")
+    if cross_sleeve_summary:
+        for line in cross_sleeve_summary:
+            md.append(f"- {line}")
+    else:
+        md.append("- No cross-sleeve intelligence updates found.")
+    md.append("")
+    md.append("## Milestone Timeline")
+    md.append("- This section is intentionally milestone-first and tracks the major project buildout from the first commit to the latest significant system step.")
+    if milestone_timeline:
+        for idx, row in enumerate(milestone_timeline, start=1):
             md.append(
                 f"{idx}. `{row.get('date_local', 'n/a')}` | `{row.get('area', 'n/a')}` | "
                 f"`{row.get('title', 'n/a')}` | {row.get('detail', '')} "
@@ -1448,16 +1779,17 @@ def _render_markdown(context: Dict[str, Any]) -> str:
     else:
         md.append("1. No milestone-level events identified.")
     md.append("")
-    md.append("## Significant Recent Changes")
-    if significant_changes:
-        for idx, row in enumerate(significant_changes, start=1):
+    md.append("## Current Phase")
+    md.append("- This section keeps only high-signal current work and excludes routine loop heartbeats and generic runtime churn.")
+    if current_phase:
+        for idx, row in enumerate(current_phase, start=1):
             md.append(
                 f"{idx}. `{row.get('date_local', 'n/a')}` | `{row.get('area', 'n/a')}` | "
                 f"`{row.get('title', 'n/a')}` | {row.get('detail', '')} "
                 f"(ref: `{row.get('reference', 'n/a')}`)"
             )
     else:
-        md.append("1. No significant recent changes identified.")
+        md.append("1. No high-signal current changes identified.")
     if show_detailed_timeline:
         md.append("")
         md.append("## Detailed Recent Timeline")
@@ -1477,16 +1809,18 @@ def _render_markdown(context: Dict[str, Any]) -> str:
     md.append(f"- Renamed: `{counts['renamed']}`")
     md.append(f"- Untracked: `{counts['untracked']}`")
     md.append(f"- Other: `{counts['other']}`")
-    if git_data["status_lines"]:
+    if include_detailed_timeline and git_data["status_lines"]:
         md.append("")
         md.append("### Files")
         for line in git_data["status_lines"]:
             md.append(f"- `{line}`")
-    else:
+    elif not git_data["status_lines"]:
         md.append("- Working tree is clean.")
+    else:
+        md.append("- Detailed file-by-file working tree output is hidden by default.")
 
     recent_rows = git_data.get("recent_working_tree_changes") if isinstance(git_data, dict) else []
-    if isinstance(recent_rows, list) and recent_rows:
+    if include_detailed_timeline and isinstance(recent_rows, list) and recent_rows:
         md.append("")
         md.append("### Recent Working File Activity (mtime local)")
         for row in recent_rows:
@@ -1496,21 +1830,22 @@ def _render_markdown(context: Dict[str, Any]) -> str:
             size_txt = _fmt(row.get("size_bytes"), "0")
             md.append(f"- `{status}` `{path_txt}` | mtime=`{mtime_local}` | size_bytes=`{size_txt}`")
 
-    md.append("")
-    md.append(f"## Recent Project Activity (Last {recent_project_hours} Hours)")
-    daily_counts = _recent_activity_daily_counts(recent_project_activity, max_days=7)
-    if daily_counts:
-        summary = ", ".join([f"`{row['date']}`=`{row['count']}`" for row in daily_counts])
-        md.append(f"- Daily file-change counts (local): {summary}")
-    if recent_project_activity:
-        for row in recent_project_activity:
-            md.append(
-                f"- `{_fmt(row.get('mtime_local'), 'missing')}` | "
-                f"`{_fmt(row.get('path'), 'n/a')}` | "
-                f"size_bytes=`{_fmt(row.get('size_bytes'), '0')}`"
-            )
-    else:
-        md.append("- No project artifacts changed in this time window.")
+    if include_detailed_timeline:
+        md.append("")
+        md.append(f"## Recent Project Activity (Last {recent_project_hours} Hours)")
+        daily_counts = _recent_activity_daily_counts(recent_project_activity, max_days=7)
+        if daily_counts:
+            summary = ", ".join([f"`{row['date']}`=`{row['count']}`" for row in daily_counts])
+            md.append(f"- Daily file-change counts (local): {summary}")
+        if recent_project_activity:
+            for row in recent_project_activity:
+                md.append(
+                    f"- `{_fmt(row.get('mtime_local'), 'missing')}` | "
+                    f"`{_fmt(row.get('path'), 'n/a')}` | "
+                    f"size_bytes=`{_fmt(row.get('size_bytes'), '0')}`"
+                )
+        else:
+            md.append("- No project artifacts changed in this time window.")
 
     md.append("")
     md.append("## Runtime and Gates")
@@ -1550,21 +1885,22 @@ def _render_markdown(context: Dict[str, Any]) -> str:
     )
     md.append(f"- Latest all_sleeves log: `{_fmt(ops_data.get('latest_all_sleeves_log'))}`")
     md.append(f"- Latest coinbase log: `{_fmt(ops_data.get('latest_coinbase_log'))}`")
-    md.append("")
-    md.append("## Preflight Milestones (from logs)")
-    if ops_data["preflight_events"]:
-        for event in ops_data["preflight_events"]:
-            detail = f" | fail=`{event['detail']}`" if event.get("detail") else ""
-            md.append(f"- `{event['stamp']}` | `{event['result']}`{detail}")
-    else:
-        md.append("- No preflight events found.")
-    md.append("")
-    md.append("## Git Commit History")
-    if git_data["commits"]:
-        for idx, row in enumerate(git_data["commits"], start=1):
-            md.append(f"{idx}. `{row['date']}` | `{row['sha']}` | {row['subject']}")
-    else:
-        md.append("1. No git history available.")
+    if include_detailed_timeline:
+        md.append("")
+        md.append("## Preflight Milestones (from logs)")
+        if ops_data["preflight_events"]:
+            for event in ops_data["preflight_events"]:
+                detail = f" | fail=`{event['detail']}`" if event.get("detail") else ""
+                md.append(f"- `{event['stamp']}` | `{event['result']}`{detail}")
+        else:
+            md.append("- No preflight events found.")
+        md.append("")
+        md.append("## Git Commit History")
+        if git_data["commits"]:
+            for idx, row in enumerate(git_data["commits"], start=1):
+                md.append(f"{idx}. `{row['date']}` | `{row['sha']}` | {row['subject']}")
+        else:
+            md.append("1. No git history available.")
     md.append("")
     md.append("## Auto-Update")
     md.append("- This file is generated by `scripts/ops/project_timeline_report.py`.")
@@ -1579,10 +1915,12 @@ def _render_html(context: Dict[str, Any]) -> str:
     git_data = context["git"]
     ops_data = context["ops"]
     counts = _classify_status(git_data["status_lines"])
-    major_milestones = _build_major_milestones(context, limit=14)
-    significant_changes = _build_significant_changes(context, limit=18)
+    milestone_timeline = _build_project_milestone_timeline(context, limit=24)
+    current_phase = _build_current_phase_changes(context, limit=14)
+    buildout_summary = _build_buildout_summary(milestone_timeline, current_phase, git_data)
+    cross_sleeve_summary = _build_cross_sleeve_summary(ops_data)
     include_detailed_timeline = bool(context.get("include_detailed_timeline"))
-    show_detailed_timeline = include_detailed_timeline or (not major_milestones and not significant_changes)
+    show_detailed_timeline = include_detailed_timeline or (not milestone_timeline and not current_phase)
     live_timeline = _build_live_timeline_events(context, limit=80) if show_detailed_timeline else []
 
     promotion = ops_data.get("promotion") or {}
@@ -1594,6 +1932,7 @@ def _render_html(context: Dict[str, Any]) -> str:
     maturity = graduation.get("maturity") if isinstance(graduation.get("maturity"), dict) else {}
     recent_project_activity = ops_data.get("recent_project_activity") if isinstance(ops_data.get("recent_project_activity"), list) else []
     recent_project_hours = int(ops_data.get("recent_project_activity_hours", 48) or 48)
+    span = _project_span(git_data)
 
     commit_rows = []
     for idx, row in enumerate(git_data["commits"], start=1):
@@ -1669,7 +2008,7 @@ def _render_html(context: Dict[str, Any]) -> str:
         live_timeline_rows.append("<tr><td colspan='5'>No live timeline events found.</td></tr>")
 
     milestone_rows = []
-    for idx, row in enumerate(major_milestones, start=1):
+    for idx, row in enumerate(milestone_timeline, start=1):
         milestone_rows.append(
             "<tr>"
             f"<td>{idx}</td>"
@@ -1684,7 +2023,7 @@ def _render_html(context: Dict[str, Any]) -> str:
         milestone_rows.append("<tr><td colspan='6'>No milestone-level events identified.</td></tr>")
 
     significant_change_rows = []
-    for idx, row in enumerate(significant_changes, start=1):
+    for idx, row in enumerate(current_phase, start=1):
         significant_change_rows.append(
             "<tr>"
             f"<td>{idx}</td>"
@@ -1696,10 +2035,66 @@ def _render_html(context: Dict[str, Any]) -> str:
             "</tr>"
         )
     if not significant_change_rows:
-        significant_change_rows.append("<tr><td colspan='6'>No significant recent changes identified.</td></tr>")
+        significant_change_rows.append("<tr><td colspan='6'>No high-signal current changes identified.</td></tr>")
 
     def li(label: str, value: Any) -> str:
         return f"<li><b>{html.escape(label)}:</b> <code>{html.escape(_fmt(value))}</code></li>"
+
+    detailed_timeline_html = (
+        "<h2>Detailed Recent Timeline</h2><table><thead><tr><th>#</th><th>Date (Local)</th><th>Type</th><th>Reference</th><th>Detail</th></tr></thead><tbody>"
+        + "".join(live_timeline_rows)
+        + "</tbody></table>"
+        if show_detailed_timeline
+        else ""
+    )
+    working_tree_details_html = (
+        "<table><thead><tr><th>Files</th></tr></thead><tbody>"
+        + "".join(status_rows)
+        + "</tbody></table>"
+        if include_detailed_timeline
+        else "<div>Detailed working tree file output is hidden by default.</div>"
+    )
+    working_file_activity_html = (
+        "<h3>Recent Working File Activity (mtime local)</h3><table><thead><tr><th>Status</th><th>Path</th><th>Modified (Local)</th><th>Size Bytes</th></tr></thead><tbody>"
+        + "".join(activity_rows)
+        + "</tbody></table>"
+        if include_detailed_timeline
+        else ""
+    )
+    daily_counts_text = ", ".join([f"{row['date']}={row['count']}" for row in daily_counts]) if daily_counts else "n/a"
+    recent_project_activity_html = (
+        f"<h2>Recent Project Activity (Last {recent_project_hours} Hours)</h2>"
+        f"<div><b>Daily file-change counts (local):</b> {html.escape(daily_counts_text)}</div>"
+        "<table><thead><tr><th>Modified (Local)</th><th>Path</th><th>Size Bytes</th></tr></thead><tbody>"
+        + "".join(recent_project_activity_rows)
+        + "</tbody></table>"
+        if include_detailed_timeline
+        else ""
+    )
+    preflight_html = (
+        "<h2>Preflight Milestones (from logs)</h2><table><thead><tr><th>Stamp</th><th>Result</th><th>First Fail Detail</th></tr></thead><tbody>"
+        + "".join(preflight_rows)
+        + "</tbody></table>"
+        if include_detailed_timeline
+        else ""
+    )
+    commit_history_html = (
+        "<h2>Git Commit History</h2><table><thead><tr><th>#</th><th>Date</th><th>SHA</th><th>Subject</th></tr></thead><tbody>"
+        + "".join(commit_rows)
+        + "</tbody></table>"
+        if include_detailed_timeline
+        else ""
+    )
+    buildout_summary_html = (
+        "<ul>" + "".join([f"<li>{html.escape(line)}</li>" for line in buildout_summary]) + "</ul>"
+        if buildout_summary
+        else "<div>No buildout summary signals identified.</div>"
+    )
+    cross_sleeve_summary_html = (
+        "<ul>" + "".join([f"<li>{html.escape(line)}</li>" for line in cross_sleeve_summary]) + "</ul>"
+        if cross_sleeve_summary
+        else "<div>No cross-sleeve intelligence updates found.</div>"
+    )
 
     html_doc = f"""<!doctype html>
 <html lang=\"en\">
@@ -1787,11 +2182,20 @@ def _render_html(context: Dict[str, Any]) -> str:
     {li("Branch", git_data["branch"])}
     {li("HEAD", git_data["head"])}
     {li("Total commits", git_data["commit_count"])}
+    {li("Project span", f"{span['start_local']} -> {span['end_local']} ({span['days']} days)")}
     {li("First commit", f"{git_data['commits'][0]['date']} {git_data['commits'][0]['sha']} {git_data['commits'][0]['subject']}" if git_data["commits"] else "n/a")}
     {li("Latest commit", f"{git_data['commits'][-1]['date']} {git_data['commits'][-1]['sha']} {git_data['commits'][-1]['subject']}" if git_data["commits"] else "n/a")}
   </ul>
 
-  <h2>Major Milestones</h2>
+  <h2>Buildout Summary</h2>
+  {buildout_summary_html}
+
+  <h2>Cross-Sleeve Intelligence</h2>
+  <div>This tracks the shared context work tying sleeves together through correlation, overlap, and FX/market context updates.</div>
+  {cross_sleeve_summary_html}
+
+  <h2>Milestone Timeline</h2>
+  <div>This report is milestone-first and tracks the major buildout from the first commit to the latest significant system step.</div>
   <table>
     <thead><tr><th>#</th><th>Date (Local)</th><th>Area</th><th>Milestone</th><th>Detail</th><th>Reference</th></tr></thead>
     <tbody>
@@ -1799,7 +2203,8 @@ def _render_html(context: Dict[str, Any]) -> str:
     </tbody>
   </table>
 
-  <h2>Significant Recent Changes</h2>
+  <h2>Current Phase</h2>
+  <div>This keeps only high-signal current work and excludes routine loop heartbeats and generic runtime churn.</div>
   <table>
     <thead><tr><th>#</th><th>Date (Local)</th><th>Area</th><th>Change</th><th>Detail</th><th>Reference</th></tr></thead>
     <tbody>
@@ -1807,7 +2212,7 @@ def _render_html(context: Dict[str, Any]) -> str:
     </tbody>
   </table>
 
-  {"<h2>Detailed Recent Timeline</h2><table><thead><tr><th>#</th><th>Date (Local)</th><th>Type</th><th>Reference</th><th>Detail</th></tr></thead><tbody>" + "".join(live_timeline_rows) + "</tbody></table>" if show_detailed_timeline else ""}
+  {detailed_timeline_html}
 
   <h2>Working Tree</h2>
   <div class=\"grid\">
@@ -1826,29 +2231,11 @@ def _render_html(context: Dict[str, Any]) -> str:
       <div><code>{html.escape(git_data["status_branch_line"] or "n/a")}</code></div>
     </div>
   </div>
-  <table>
-    <thead><tr><th>Files</th></tr></thead>
-    <tbody>
-      {"".join(status_rows)}
-    </tbody>
-  </table>
+  {working_tree_details_html}
 
-  <h3>Recent Working File Activity (mtime local)</h3>
-  <table>
-    <thead><tr><th>Status</th><th>Path</th><th>Modified (Local)</th><th>Size Bytes</th></tr></thead>
-    <tbody>
-      {"".join(activity_rows)}
-    </tbody>
-  </table>
+  {working_file_activity_html}
 
-  <h2>Recent Project Activity (Last {recent_project_hours} Hours)</h2>
-  <div><b>Daily file-change counts (local):</b> {html.escape(", ".join([f"{row['date']}={row['count']}" for row in daily_counts]) if daily_counts else "n/a")}</div>
-  <table>
-    <thead><tr><th>Modified (Local)</th><th>Path</th><th>Size Bytes</th></tr></thead>
-    <tbody>
-      {"".join(recent_project_activity_rows)}
-    </tbody>
-  </table>
+  {recent_project_activity_html}
 
   <h2>Runtime and Gates</h2>
   <ul>
@@ -1869,21 +2256,9 @@ def _render_html(context: Dict[str, Any]) -> str:
     {li("Latest coinbase log", ops_data.get("latest_coinbase_log"))}
   </ul>
 
-  <h2>Preflight Milestones (from logs)</h2>
-  <table>
-    <thead><tr><th>Stamp</th><th>Result</th><th>First Fail Detail</th></tr></thead>
-    <tbody>
-      {"".join(preflight_rows)}
-    </tbody>
-  </table>
+  {preflight_html}
 
-  <h2>Git Commit History</h2>
-  <table>
-    <thead><tr><th>#</th><th>Date</th><th>SHA</th><th>Subject</th></tr></thead>
-    <tbody>
-      {"".join(commit_rows)}
-    </tbody>
-  </table>
+  {commit_history_html}
 </body>
 </html>
 """
@@ -1955,6 +2330,25 @@ def main() -> int:
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    lock_path = Path(os.getenv("PROJECT_TIMELINE_LOCK_PATH", str(DEFAULT_LOCK_PATH)))
+    lock_fh, lock_owner = _acquire_singleton_lock(lock_path, blocking=not bool(args.auto))
+    if lock_fh is None:
+        latest_pdf = Path(args.output_dir) / "project_timeline_latest.pdf"
+        payload = {
+            "changed": False,
+            "busy": True,
+            "skipped_reason": "lock_busy",
+            "lock_path": str(lock_path),
+            "lock_owner": lock_owner,
+            "latest_markdown": str(Path(args.output_dir) / "project_timeline_latest.md"),
+            "latest_printable_html": str(Path(args.output_dir) / "project_timeline_print_latest.html"),
+            "latest_pdf": str(latest_pdf) if latest_pdf.exists() else "",
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=True))
+        else:
+            print(f"project_timeline_report busy lock_path={lock_path} owner={lock_owner}")
+        return 0
 
     if args.render_pdf is None:
         render_pdf = _env_flag("PROJECT_TIMELINE_AUTO_RENDER_PDF", "0") if args.auto else _env_flag("PROJECT_TIMELINE_RENDER_PDF", "1")
@@ -1962,7 +2356,10 @@ def main() -> int:
         render_pdf = bool(args.render_pdf)
 
     if args.allow_gui_pdf_renderer is None:
-        allow_gui_pdf_renderer = _env_flag("PROJECT_TIMELINE_ALLOW_GUI_PDF_RENDERER", "0")
+        allow_gui_pdf_renderer = _env_flag(
+            "PROJECT_TIMELINE_ALLOW_GUI_PDF_RENDERER",
+            "1" if _default_allow_gui_pdf_renderer() else "0",
+        )
     else:
         allow_gui_pdf_renderer = bool(args.allow_gui_pdf_renderer)
 
@@ -2017,6 +2414,7 @@ def main() -> int:
         payload = {
             "changed": False,
             "signature": signature,
+            "lock_path": str(lock_path),
             "latest_markdown": str(latest_md),
             "latest_printable_html": str(latest_html),
             "latest_pdf": str(latest_pdf) if latest_pdf.exists() else "",
@@ -2086,6 +2484,7 @@ def main() -> int:
     state_payload = {
         "signature": signature,
         "generated_utc": generated_utc,
+        "lock_path": str(lock_path),
         "latest_markdown": str(latest_md),
         "latest_printable_html": str(latest_html),
         "latest_pdf": str(latest_pdf) if latest_pdf.exists() else "",
@@ -2110,6 +2509,7 @@ def main() -> int:
     payload = {
         "changed": True,
         "signature": signature,
+        "lock_path": str(lock_path),
         "latest_markdown": str(latest_md),
         "latest_printable_html": str(latest_html),
         "latest_pdf": str(latest_pdf) if latest_pdf.exists() else "",

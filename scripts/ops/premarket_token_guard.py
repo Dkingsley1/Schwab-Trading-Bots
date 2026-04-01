@@ -9,13 +9,18 @@ from pathlib import Path
 from typing import Any, Dict, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_python import resolve_runtime_python
+
 DEFAULT_TOKEN_PATH = PROJECT_ROOT / 'token.json'
 DEFAULT_OUT_PATH = PROJECT_ROOT / 'governance' / 'health' / 'premarket_token_guard_latest.json'
 DEFAULT_EVENT_DIR = PROJECT_ROOT / 'governance' / 'events'
 FALLBACK_OUT_PATH = Path('/tmp/premarket_token_guard_latest.json')
 FALLBACK_EVENT_PATH = Path('/tmp/premarket_token_guard_events.jsonl')
 ALERT_ROUTER = PROJECT_ROOT / 'scripts' / 'pager_alert_router.py'
-PY = PROJECT_ROOT / '.venv312' / 'bin' / 'python'
+PY = resolve_runtime_python(PROJECT_ROOT)
 
 
 
@@ -171,7 +176,11 @@ def _token_status(path: Path) -> Dict[str, Any]:
 
 
 
-def _token_needs_refresh(status: Dict[str, Any], max_age_seconds: float) -> tuple[bool, str]:
+def _token_needs_refresh(
+    status: Dict[str, Any],
+    max_age_seconds: float,
+    min_expires_seconds: float,
+) -> tuple[bool, str]:
     if not bool(status.get('exists')):
         return True, 'missing_token'
 
@@ -183,8 +192,9 @@ def _token_needs_refresh(status: Dict[str, Any], max_age_seconds: float) -> tupl
     if age is not None and float(age) > max(float(max_age_seconds), 0.0):
         return True, f'token_age_high:{float(age):.1f}'
 
+    expires_floor = max(float(min_expires_seconds), 0.0)
     expires_in = status.get('expires_in_seconds')
-    if expires_in is not None and float(expires_in) <= 3600:
+    if expires_in is not None and float(expires_in) <= expires_floor:
         return True, f'token_expiring_soon:{float(expires_in):.1f}'
 
     return False, 'token_fresh'
@@ -266,6 +276,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description='Premarket Schwab token guard with auto-refresh + alerting.')
     parser.add_argument('--token-path', default=str(DEFAULT_TOKEN_PATH))
     parser.add_argument('--max-token-age-seconds', type=float, default=float(os.getenv('PREMARKET_TOKEN_MAX_AGE_SECONDS', '43200')))
+    parser.add_argument(
+        '--min-expires-seconds',
+        type=float,
+        default=float(os.getenv('PREMARKET_TOKEN_MIN_EXPIRES_SECONDS', '600')),
+    )
     parser.add_argument('--auth-timeout-seconds', type=float, default=float(os.getenv('PREMARKET_TOKEN_AUTH_TIMEOUT_SECONDS', '30')))
     parser.add_argument('--always-auth', dest='always_auth', action='store_true', help='Always run non-interactive auth, even when token looks fresh.')
     parser.add_argument('--no-always-auth', dest='always_auth', action='store_false', help='Skip auth when token is fresh.')
@@ -295,7 +310,12 @@ def main() -> int:
     now_iso = _now_iso()
     token_path = Path(args.token_path)
     before = _token_status(token_path)
-    needs_refresh, refresh_reason = _token_needs_refresh(before, max_age_seconds=max(args.max_token_age_seconds, 60.0))
+    min_expires_seconds = max(float(args.min_expires_seconds), 0.0)
+    needs_refresh, refresh_reason = _token_needs_refresh(
+        before,
+        max_age_seconds=max(args.max_token_age_seconds, 60.0),
+        min_expires_seconds=min_expires_seconds,
+    )
 
     network = {
         'checked': not bool(args.skip_network_check),
@@ -323,7 +343,18 @@ def main() -> int:
             }
 
     after = _token_status(token_path)
-    still_stale, stale_reason_after = _token_needs_refresh(after, max_age_seconds=max(args.max_token_age_seconds, 60.0))
+    still_stale, stale_reason_after = _token_needs_refresh(
+        after,
+        max_age_seconds=max(args.max_token_age_seconds, 60.0),
+        min_expires_seconds=min_expires_seconds,
+    )
+
+    if auth.get('attempted') and auth.get('ok') and still_stale:
+        auth = {
+            **auth,
+            'ok': False,
+            'reason': f"auth_succeeded_but_token_not_ready:{stale_reason_after}",
+        }
 
     ok = bool(after.get('exists')) and int(after.get('size_bytes') or 0) >= 64 and bool(network['ok']) and (not still_stale)
     if auth.get('attempted') and not auth.get('ok'):

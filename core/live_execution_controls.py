@@ -19,6 +19,8 @@ TRADE_ACTIONS = {
     "BUY_TO_CLOSE",
     "SELL_TO_OPEN",
     "SELL_TO_CLOSE",
+    "CLOSE",
+    "ROLL",
 }
 
 
@@ -128,6 +130,7 @@ class LiveExecutionGuard:
         quantity: float,
         reference_price: float,
         intended_price: float = 0.0,
+        notional_multiplier: float = 1.0,
         now_ts: Optional[float] = None,
     ) -> GuardDecision:
         side = str(action or "").strip().upper()
@@ -237,7 +240,8 @@ class LiveExecutionGuard:
             )
 
         if ref > 0.0 and self.config.max_order_notional > 0.0:
-            order_notional = abs(ref * qty)
+            notional_scale = max(float(notional_multiplier or 1.0), 1.0)
+            order_notional = abs(ref * qty * notional_scale)
             if order_notional > self.config.max_order_notional:
                 return GuardDecision(
                     ok=False,
@@ -247,6 +251,7 @@ class LiveExecutionGuard:
                         "symbol": symbol_key,
                         "reference_price": float(ref),
                         "quantity": float(qty),
+                        "notional_multiplier": float(notional_scale),
                         "order_notional": float(order_notional),
                         "max_order_notional": float(self.config.max_order_notional),
                     },

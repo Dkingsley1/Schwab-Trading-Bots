@@ -45,6 +45,48 @@ def _role_map(registry: dict) -> dict[str, str]:
     return out
 
 
+def _registry_teacher_candidates(
+    registry: dict,
+    *,
+    min_accuracy: float,
+    min_quality: float,
+    min_runs: int,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in registry.get("sub_bots", []) if isinstance(registry, dict) else []:
+        if not isinstance(row, dict):
+            continue
+        if not bool(row.get("active", False)):
+            continue
+        if bool(row.get("deleted_from_rotation", False)):
+            continue
+        bot_id = str((row or {}).get("bot_id", "")).strip()
+        role = str((row or {}).get("bot_role", "unknown")).strip() or "unknown"
+        if not bot_id:
+            continue
+        acc = _safe_float(row.get("test_accuracy"), _safe_float(row.get("candidate_test_accuracy"), 0.0))
+        quality = max(
+            _safe_float(row.get("quality_score"), 0.0),
+            _safe_float(row.get("candidate_quality_score"), 0.0),
+        )
+        prev_best = _safe_float(row.get("previous_best_accuracy"), acc)
+        if acc < min_accuracy or quality < min_quality:
+            continue
+        delta = acc - prev_best
+        out.append(
+            {
+                "bot_id": bot_id,
+                "role": role,
+                "runs": max(int(min_runs), 1),
+                "forward_mean": acc,
+                "delta": delta,
+                "score": acc + max(delta, -0.02) + (0.05 * quality),
+                "source": "registry_active",
+            }
+        )
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Teacher-student distillation planner for new bots.")
     parser.add_argument("--walk-forward", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "walk_forward_latest.json"))
@@ -56,6 +98,8 @@ def main() -> int:
     parser.add_argument("--student-max-runs", type=int, default=6)
     parser.add_argument("--teachers-per-student", type=int, default=3)
     parser.add_argument("--teacher-weight", type=float, default=0.30, help="Soft-target blend weight for teacher signals.")
+    parser.add_argument("--teacher-min-registry-accuracy", type=float, default=0.65)
+    parser.add_argument("--teacher-min-registry-quality", type=float, default=0.75)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -99,14 +143,44 @@ def main() -> int:
                 }
             )
 
-    teacher_candidates.sort(key=lambda x: (x["score"], x["forward_mean"], x["runs"]), reverse=True)
-    teachers = teacher_candidates[: max(args.teacher_max, 1)]
+    teacher_candidates.extend(
+        _registry_teacher_candidates(
+            registry,
+            min_accuracy=args.teacher_min_registry_accuracy,
+            min_quality=args.teacher_min_registry_quality,
+            min_runs=args.teacher_min_runs,
+        )
+    )
+
+    teacher_by_id: dict[str, dict[str, Any]] = {}
+    for candidate in teacher_candidates:
+        bot_id = str(candidate.get("bot_id", "")).strip()
+        if not bot_id:
+            continue
+        prev = teacher_by_id.get(bot_id)
+        if prev is None or (
+            candidate.get("score", 0.0),
+            candidate.get("forward_mean", 0.0),
+            candidate.get("runs", 0),
+        ) > (
+            prev.get("score", 0.0),
+            prev.get("forward_mean", 0.0),
+            prev.get("runs", 0),
+        ):
+            teacher_by_id[bot_id] = candidate
+
+    teachers = sorted(
+        teacher_by_id.values(),
+        key=lambda x: (x["score"], x["forward_mean"], x["runs"]),
+        reverse=True,
+    )[: max(args.teacher_max, 1)]
 
     assignments: list[dict[str, Any]] = []
     per_student_n = max(args.teachers_per_student, 1)
     for s in students:
-        same_role = [t for t in teachers if t.get("role") == s.get("role")]
-        pool = same_role if same_role else teachers
+        same_role = [t for t in teachers if t.get("role") == s.get("role") and t.get("bot_id") != s.get("bot_id")]
+        fallback_pool = [t for t in teachers if t.get("bot_id") != s.get("bot_id")]
+        pool = same_role if same_role else fallback_pool
         selected = pool[:per_student_n]
         assignments.append(
             {
@@ -137,6 +211,8 @@ def main() -> int:
             "student_max_runs": args.student_max_runs,
             "teachers_per_student": args.teachers_per_student,
             "teacher_weight": args.teacher_weight,
+            "teacher_min_registry_accuracy": args.teacher_min_registry_accuracy,
+            "teacher_min_registry_quality": args.teacher_min_registry_quality,
         },
         "summary": {
             "teacher_count": len(teachers),

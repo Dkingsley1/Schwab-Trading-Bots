@@ -2,7 +2,8 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PYTHON_BIN="${BOT_PYTHON_BIN:-$PROJECT_ROOT/.venv312/bin/python}"
+source "$PROJECT_ROOT/scripts/ops/runtime_python.sh"
+PYTHON_BIN="$(resolve_runtime_python)"
 PROFILE="${BOT_RUNTIME_PROFILE:-live}"
 
 if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
@@ -10,4 +11,9 @@ if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
   source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" "$PROFILE" --quiet
 fi
 
-exec "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/premarket_token_guard.py" "$@"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/premarket_token_guard.py" "$@"
+rc=$?
+if [[ $rc -ne 0 ]]; then
+  echo "[WARN] premarket_token_guard exit_code=$rc"
+fi
+exit 0

@@ -11,6 +11,31 @@ DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "python314_canary_latest.
 DEFAULT_LOCK = PROJECT_ROOT / "config" / "requirements.lock.txt"
 DEFAULT_VENV = PROJECT_ROOT / ".venv314"
 DEFAULT_SKIP = "numba,llvmlite,mlx,mlx-metal,mlx-lm"
+DEFAULT_RUNTIME_PACKAGES = ("mlx", "mlx-metal", "mlx-lm")
+DEFAULT_TEST_PACKAGES = ("pytest",)
+DEFAULT_IMPORT_SMOKES = (
+    (
+        "mlx_core_import",
+        "import mlx.core as mx; print(mx.__name__)",
+    ),
+    (
+        "mlx_lm_import",
+        "import mlx_lm; print(mlx_lm.__name__)",
+    ),
+    (
+        "pytest_import",
+        "import pytest; print(pytest.__version__)",
+    ),
+    (
+        "indicator_bot_common_import",
+        (
+            "import sys; "
+            "sys.path.insert(0, 'core'); "
+            "import indicator_bot_common as mod; "
+            "print(mod.__file__)"
+        ),
+    ),
+)
 
 
 def _now_utc() -> str:
@@ -27,6 +52,10 @@ def _run(cmd: list[str]) -> tuple[int, str, str]:
         env=os.environ.copy(),
     )
     return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
+
+
+def _normalize_package_name(name: str) -> str:
+    return name.strip().lower().replace("_", "-")
 
 
 def _tail(text: str, n: int = 8) -> str:
@@ -61,6 +90,17 @@ def _step(name: str, cmd: list[str], accepted_rc: set[int] | None = None) -> dic
     }
 
 
+def _parse_version_lines(lines: list[str]) -> dict[str, str]:
+    versions: dict[str, str] = {}
+    for raw in lines:
+        line = raw.strip()
+        if (not line) or line.startswith("#") or ("==" not in line):
+            continue
+        pkg, version = line.split("==", 1)
+        versions[_normalize_package_name(pkg)] = version.strip()
+    return versions
+
+
 def _venv_python(venv_dir: Path) -> Path:
     return venv_dir / "bin" / "python"
 
@@ -82,6 +122,81 @@ def _normalize_lock_lines(lock_file: Path) -> list[str]:
     return out
 
 
+def _load_lock_versions(lock_file: Path) -> dict[str, str]:
+    return _parse_version_lines(_normalize_lock_lines(lock_file))
+
+
+def _load_installed_versions(venv_py: Path) -> tuple[dict[str, str], dict]:
+    rc, out, err = _run([str(venv_py), "-m", "pip", "list", "--format=freeze"])
+    step = {
+        "name": "installed_package_inventory",
+        "ok": rc == 0,
+        "rc": rc,
+        "command": f"{venv_py} -m pip list --format=freeze",
+        "accepted_rc": [0],
+        "stdout_tail": _tail(out),
+        "stderr_tail": _tail(err),
+    }
+    return _parse_version_lines(out.splitlines()) if rc == 0 else {}, step
+
+
+def _package_alignment(lock_versions: dict[str, str], installed_versions: dict[str, str]) -> dict:
+    missing_packages = sorted(pkg for pkg in lock_versions if pkg not in installed_versions)
+    extra_packages = sorted(pkg for pkg in installed_versions if pkg not in lock_versions)
+    version_mismatches = [
+        {
+            "package": pkg,
+            "lock_version": lock_versions[pkg],
+            "installed_version": installed_versions[pkg],
+        }
+        for pkg in sorted(lock_versions)
+        if pkg in installed_versions and lock_versions[pkg] != installed_versions[pkg]
+    ]
+    return {
+        "ok": (not missing_packages) and (not version_mismatches),
+        "missing_packages": missing_packages,
+        "extra_packages": extra_packages,
+        "version_mismatches": version_mismatches,
+        "missing_count": len(missing_packages),
+        "extra_count": len(extra_packages),
+        "mismatch_count": len(version_mismatches),
+    }
+
+
+def _alignment_step(lock_file: Path, lock_versions: dict[str, str], installed_versions: dict[str, str]) -> dict:
+    alignment = _package_alignment(lock_versions, installed_versions)
+    return {
+        "name": "lock_alignment",
+        "ok": alignment["ok"],
+        "rc": 0 if alignment["ok"] else 1,
+        "command": str(lock_file),
+        "accepted_rc": [0],
+        "stdout_tail": (
+            f"missing={alignment['missing_count']} "
+            f"extra={alignment['extra_count']} "
+            f"mismatched={alignment['mismatch_count']}"
+        ),
+        "stderr_tail": "",
+        **alignment,
+    }
+
+
+def _required_packages_step(name: str, installed_versions: dict[str, str], packages: tuple[str, ...]) -> dict:
+    required = sorted(_normalize_package_name(pkg) for pkg in packages)
+    missing = [pkg for pkg in required if pkg not in installed_versions]
+    return {
+        "name": name,
+        "ok": not missing,
+        "rc": 0 if not missing else 1,
+        "command": "package_presence",
+        "accepted_rc": [0],
+        "stdout_tail": f"required={','.join(required)} missing={len(missing)}",
+        "stderr_tail": "",
+        "required_packages": required,
+        "missing_packages": missing,
+    }
+
+
 def _filtered_requirements(lock_file: Path, out_file: Path, skip_packages: set[str], relaxed: bool) -> Path:
     rows: list[str] = []
     skip = {x.strip().lower() for x in skip_packages if x.strip()}
@@ -97,6 +212,10 @@ def _filtered_requirements(lock_file: Path, out_file: Path, skip_packages: set[s
     out_file.parent.mkdir(parents=True, exist_ok=True)
     out_file.write_text("\n".join(dedup) + "\n", encoding="utf-8")
     return out_file
+
+
+def _import_step(name: str, venv_py: Path, code: str) -> dict:
+    return _step(name, [str(venv_py), "-c", code])
 
 
 def main() -> int:
@@ -194,9 +313,33 @@ def main() -> int:
         if bootstrap_ok:
             (venv_dir / ".bootstrapped").write_text(_now_utc(), encoding="utf-8")
 
+    lock_versions: dict[str, str] = {}
+    installed_versions: dict[str, str] = {}
     if venv_py.exists():
         steps.append(_step("pip_check", [str(venv_py), "-m", "pip", "check"]))
         bootstrap_ok = bootstrap_ok and steps[-1]["ok"]
+
+        if lock_file.exists():
+            lock_versions = _load_lock_versions(lock_file)
+            installed_versions, inventory_step = _load_installed_versions(venv_py)
+            steps.append(inventory_step)
+            bootstrap_ok = bootstrap_ok and inventory_step["ok"]
+
+            if inventory_step["ok"]:
+                steps.append(_alignment_step(lock_file, lock_versions, installed_versions))
+                bootstrap_ok = bootstrap_ok and steps[-1]["ok"]
+
+                steps.append(_required_packages_step("critical_runtime_packages", installed_versions, DEFAULT_RUNTIME_PACKAGES))
+                bootstrap_ok = bootstrap_ok and steps[-1]["ok"]
+
+                steps.append(_required_packages_step("test_tooling_packages", installed_versions, DEFAULT_TEST_PACKAGES))
+                bootstrap_ok = bootstrap_ok and steps[-1]["ok"]
+
+    import_steps: list[dict] = []
+    if venv_py.exists():
+        for name, code in DEFAULT_IMPORT_SMOKES:
+            import_steps.append(_import_step(name, venv_py, code))
+        bootstrap_ok = bootstrap_ok and all(step["ok"] for step in import_steps)
 
     smoke: list[dict] = []
     if bootstrap_ok:
@@ -227,6 +370,7 @@ def main() -> int:
         "bootstrap_ok": bool(bootstrap_ok),
         "smoke_ok": bool(smoke_ok),
         "bootstrap_steps": steps,
+        "import_steps": import_steps,
         "smoke_steps": smoke,
     }
 

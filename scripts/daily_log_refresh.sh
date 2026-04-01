@@ -2,17 +2,60 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON_BIN="$PROJECT_ROOT/.venv312/bin/python"
+source "$PROJECT_ROOT/scripts/ops/runtime_python.sh"
+PYTHON_BIN="$(resolve_runtime_python)"
 TODAY_UTC="$(date -u +%Y%m%d)"
 
 cd "$PROJECT_ROOT"
 
 [[ -f "$PROJECT_ROOT/scripts/load_ops_thresholds_env.sh" ]] && source "$PROJECT_ROOT/scripts/load_ops_thresholds_env.sh"
+[[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]] && source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" live --quiet
+
+wait_for_sqlite_maintenance() {
+  local timeout_s="${DAILY_SQLITE_MAINT_WAIT_SECONDS:-300}"
+  local poll_s="${DAILY_SQLITE_MAINT_WAIT_POLL_SECONDS:-5}"
+  local waited=0
+  while (( waited < timeout_s )); do
+    if ! pgrep -f "scripts/sql_hot_retention.py|scripts/sqlite_performance_maintenance.py" >/dev/null 2>&1; then
+      return 0
+    fi
+    echo "sqlite_maintenance_busy waited=${waited}s"
+    sleep "$poll_s"
+    waited=$((waited + poll_s))
+  done
+  echo "[WARN] sqlite maintenance still active after ${timeout_s}s; continuing anyway"
+  return 0
+}
 
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_tradingeconomics_guest_data.py" --json \
   || echo "[WARN] collect_tradingeconomics_guest_data failed; continuing daily refresh"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_bls_census_data.py" \
+  || echo "[WARN] collect_bls_census_data failed; continuing daily refresh"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_official_macro_context.py" --json \
+  || echo "[WARN] collect_official_macro_context failed; continuing daily refresh"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_market_micro_context.py" \
+  --lookback-days "${MARKET_MICRO_LOOKBACK_DAYS:-21}" \
+  --finra-lookback-days "${MARKET_MICRO_FINRA_LOOKBACK_DAYS:-15}" \
+  --symbols "${MARKET_MICRO_SYMBOLS:-}" \
+  --json \
+  || echo "[WARN] collect_market_micro_context failed; continuing daily refresh"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_sec_edgar_context.py" --json \
+  || echo "[WARN] collect_sec_edgar_context failed; continuing daily refresh"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_extended_quant_context.py" --json \
+  || echo "[WARN] collect_extended_quant_context failed; continuing daily refresh"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_tastytrade_context.py" --json \
+  || echo "[WARN] collect_tastytrade_context failed; continuing daily refresh"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_crypto_market_context.py" --json \
+  || echo "[WARN] collect_crypto_market_context failed; continuing daily refresh"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_market_crypto_correlation_context.py" --json \
+  || echo "[WARN] collect_market_crypto_correlation_context failed; continuing daily refresh"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_fx_market_context.py" --json \
+  || echo "[WARN] collect_fx_market_context failed; continuing daily refresh"
 
-"$PYTHON_BIN" "$PROJECT_ROOT/scripts/link_jsonl_to_sql.py" --mode sqlite
+wait_for_sqlite_maintenance
+# Keep all ingestion on the shard-managed path so refresh jobs do not compete
+# with the long-running SQL writer service or rebuild stale backpressure.
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/sql_link_shard_manager.py" --once --json
 
 # Explicit SQLite maintenance step (non-fatal so the rest of daily refresh still runs).
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/sqlite_performance_maintenance.py" \
@@ -22,7 +65,12 @@ cd "$PROJECT_ROOT"
   || echo "[WARN] sqlite_performance_maintenance failed; continuing daily refresh"
 
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ingestion_backpressure_guard.py"
-"$PYTHON_BIN" "$PROJECT_ROOT/scripts/sql_runtime_report.py" --day "$TODAY_UTC"
+if [[ "${DAILY_ENABLE_SQL_RUNTIME_REPORT:-0}" == "1" ]]; then
+  "$PYTHON_BIN" "$PROJECT_ROOT/scripts/sql_runtime_report.py" --day "$TODAY_UTC" \
+    || echo "[WARN] sql_runtime_report failed; continuing daily refresh"
+else
+  echo "sql_runtime_report skipped (set DAILY_ENABLE_SQL_RUNTIME_REPORT=1 to enable)"
+fi
 DAILY_RUNTIME_SUMMARY_JSON="$PROJECT_ROOT/exports/sql_reports/daily_runtime_summary_${TODAY_UTC}.json"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/daily_runtime_summary.py" --day "$TODAY_UTC" --json \
   > "$DAILY_RUNTIME_SUMMARY_JSON"
@@ -30,11 +78,12 @@ cp "$DAILY_RUNTIME_SUMMARY_JSON" "$PROJECT_ROOT/exports/sql_reports/daily_runtim
 mkdir -p "$PROJECT_ROOT/governance/health"
 cp "$DAILY_RUNTIME_SUMMARY_JSON" "$PROJECT_ROOT/governance/health/daily_runtime_summary_latest.json" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_data_center.py"
-"$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_one_numbers_report.py" --day "$TODAY_UTC"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_one_numbers_report.py"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/bot_stack_status_report.py"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/export_model_card.py" --json || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/export_bot_explainability.py" --json || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/paper_execution_calibration_report.py" --hours 24 --json || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/paper_performance_report.py" --day "$TODAY_UTC" --week-days 7 --json || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/strategy_attribution_report.py" --day "$TODAY_UTC" --json || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/post_trade_analysis.py" --day "$TODAY_UTC" --hours 24 --json || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/sleeve_slo_guard.py" --day "$TODAY_UTC" --once || true
@@ -57,6 +106,9 @@ cp "$DAILY_RUNTIME_SUMMARY_JSON" "$PROJECT_ROOT/governance/health/daily_runtime_
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/canary_diagnostics_loop.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/promotion_bottleneck_focus.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/weekly_gate_blocker_report.py" || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/data_source_divergence_bot.py" --json || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/macro_crosscheck_report.py" --json || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/source_verification_report.py" --json || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/model_lifecycle_hygiene.py" \
   --keep-backups "${MODEL_LIFECYCLE_KEEP_BACKUPS:-25}" \
   --min-free-gb "${MODEL_LIFECYCLE_MIN_FREE_GB:-10}" \
@@ -73,6 +125,7 @@ cp "$DAILY_RUNTIME_SUMMARY_JSON" "$PROJECT_ROOT/governance/health/daily_runtime_
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/daily_auto_verify.py" --day "$TODAY_UTC" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/observability_exporter.py"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/report_pdf_bundle.py" --json || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/update_showcase_highlights.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/event_bus_relay.py" --day "$TODAY_UTC" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/safe_mode_guard.py" --trip-streak "${SAFE_MODE_TRIP_STREAK_REQUIRED:-3}" --clear-streak "${SAFE_MODE_CLEAR_STREAK_REQUIRED:-2}" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/global_risk_killswitch.py" || true

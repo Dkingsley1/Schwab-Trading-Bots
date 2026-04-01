@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import filecmp
 import shutil
+from fnmatch import fnmatchcase
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -31,6 +33,7 @@ class StorageRoutingResult:
     autosync_copied_files: int = 0
     autosync_copy_errors: int = 0
     autosync_pruned_files: int = 0
+    autosync_error_details: tuple[str, ...] = ()
     split_brain_conflicts: int = 0
 
 
@@ -106,6 +109,35 @@ def _external_root_ready(path: Path) -> bool:
     return free_bytes >= min_free_bytes
 
 
+def _failback_skip_patterns() -> tuple[str, ...]:
+    raw = os.getenv("BOT_LOGS_FAILBACK_SKIP_PATHS", "").strip()
+    patterns = [token.strip().replace("\\", "/").lstrip("./") for token in raw.split(",") if token.strip()]
+    if not patterns:
+        patterns = [
+            "data/jsonl_link.sqlite3",
+            "data/bot_channel_queue.sqlite3",
+            "data/snapshot_context.sqlite3",
+        ]
+    return tuple(patterns)
+
+
+def _should_skip_failback_rel(rel_path: str) -> bool:
+    rel_norm = str(rel_path).replace("\\", "/").lstrip("./")
+    if not rel_norm:
+        return False
+    for pattern in _failback_skip_patterns():
+        if fnmatchcase(rel_norm, pattern):
+            return True
+    return False
+
+
+def _record_autosync_error(details: list[str], rel_path: str, exc: Exception) -> None:
+    if len(details) >= max(int(os.getenv("BOT_LOGS_AUTO_SYNC_ERROR_DETAIL_LIMIT", "8") or 8), 1):
+        return
+    rel = str(rel_path or "").replace("\\", "/").lstrip("./") or "unknown"
+    details.append(f"{rel}:{exc.__class__.__name__}:{exc}")
+
+
 def _auto_sync_local_to_external(
     local_root: Path,
     external_root: Path,
@@ -113,20 +145,21 @@ def _auto_sync_local_to_external(
     *,
     prune_local: bool,
     max_copy_files: int,
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, list[str]]:
     copied = 0
     errors = 0
     pruned = 0
+    error_details: list[str] = []
 
     if max_copy_files <= 0:
-        return 0, 0, 0
+        return 0, 0, 0, error_details
 
     try:
         same_root = local_root.resolve(strict=False) == external_root.resolve(strict=False)
     except Exception:
         same_root = False
     if same_root:
-        return 0, 0, 0
+        return 0, 0, 0, error_details
 
     for rel_name in link_dirs:
         name = str(rel_name).strip().strip("/")
@@ -144,8 +177,9 @@ def _auto_sync_local_to_external(
             dst_base = dst_dir / rel_dir
             try:
                 dst_base.mkdir(parents=True, exist_ok=True)
-            except Exception:
+            except Exception as exc:
                 errors += len(files)
+                _record_autosync_error(error_details, str(dst_base.relative_to(external_root)), exc)
                 continue
 
             for fname in files:
@@ -154,6 +188,10 @@ def _auto_sync_local_to_external(
 
                 src_file = root_path / fname
                 dst_file = dst_base / fname
+                rel_file = str(src_file.relative_to(local_root))
+
+                if _should_skip_failback_rel(rel_file):
+                    continue
 
                 if dst_file.exists():
                     try:
@@ -183,8 +221,13 @@ def _auto_sync_local_to_external(
                         if prune_local:
                             src_file.unlink()
                             pruned += 1
-                    except Exception:
+                    except FileNotFoundError:
+                        # The local fallback file may disappear between os.walk() and copy/stat.
+                        # Treat that as already reconciled rather than a hard autosync error.
+                        continue
+                    except Exception as exc:
                         errors += 1
+                        _record_autosync_error(error_details, rel_file, exc)
                     continue
 
                 try:
@@ -196,10 +239,14 @@ def _auto_sync_local_to_external(
                             pruned += 1
                         except Exception:
                             pass
-                except Exception:
+                except FileNotFoundError:
+                    # A concurrently removed local fallback file does not need failback action.
+                    continue
+                except Exception as exc:
                     errors += 1
+                    _record_autosync_error(error_details, rel_file, exc)
 
-    return copied, errors, pruned
+    return copied, errors, pruned, error_details
 
 def _scan_tree_signature(base: Path, link_dirs: Iterable[str], *, max_files: int) -> dict[str, tuple[int, int]]:
     out: dict[str, tuple[int, int]] = {}
@@ -226,6 +273,8 @@ def _scan_tree_signature(base: Path, link_dirs: Iterable[str], *, max_files: int
                 except Exception:
                     continue
                 rel = str(fp.relative_to(base))
+                if _should_skip_failback_rel(rel):
+                    continue
                 out[rel] = (int(st.st_size), int(st.st_mtime))
     return out
 
@@ -287,9 +336,21 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
     autosync_copied = 0
     autosync_errors = 0
     autosync_pruned = 0
+    autosync_error_details: list[str] = []
     split_brain_conflicts = 0
 
     link_dirs_tuple = tuple(link_dirs)
+
+    if mode == "external" and _env_flag("BOT_LOGS_AUTO_SYNC_ON_RECONNECT", "1"):
+        prune_local = _env_flag("BOT_LOGS_AUTO_SYNC_PRUNE_LOCAL", "1")
+        max_copy_files = max(int(os.getenv("BOT_LOGS_AUTO_SYNC_MAX_FILES", "50000") or 50000), 1)
+        autosync_copied, autosync_errors, autosync_pruned, autosync_error_details = _auto_sync_local_to_external(
+            local_root=local_root,
+            external_root=external_root,
+            link_dirs=link_dirs_tuple,
+            prune_local=prune_local,
+            max_copy_files=max_copy_files,
+        )
 
     if mode == "external" and _env_flag("BOT_LOGS_BLOCK_SPLIT_BRAIN", "1"):
         scan_max_files = max(int(os.getenv("BOT_LOGS_SPLIT_BRAIN_SCAN_MAX_FILES", "5000") or 5000), 100)
@@ -307,17 +368,6 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
 
     if not _is_writable_directory(active_root):
         raise RuntimeError(f"active storage root is not writable: {active_root}")
-
-    if mode == "external" and _env_flag("BOT_LOGS_AUTO_SYNC_ON_RECONNECT", "1"):
-        prune_local = _env_flag("BOT_LOGS_AUTO_SYNC_PRUNE_LOCAL", "1")
-        max_copy_files = max(int(os.getenv("BOT_LOGS_AUTO_SYNC_MAX_FILES", "50000") or 50000), 1)
-        autosync_copied, autosync_errors, autosync_pruned = _auto_sync_local_to_external(
-            local_root=local_root,
-            external_root=external_root,
-            link_dirs=link_dirs_tuple,
-            prune_local=prune_local,
-            max_copy_files=max_copy_files,
-        )
 
     for rel_name in link_dirs_tuple:
         name = str(rel_name).strip().strip("/")
@@ -348,6 +398,7 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
     os.environ["BOT_LOGS_AUTOSYNC_COPIED_FILES"] = str(autosync_copied)
     os.environ["BOT_LOGS_AUTOSYNC_COPY_ERRORS"] = str(autosync_errors)
     os.environ["BOT_LOGS_AUTOSYNC_PRUNED_FILES"] = str(autosync_pruned)
+    os.environ["BOT_LOGS_AUTOSYNC_ERROR_DETAILS"] = json.dumps(autosync_error_details, ensure_ascii=True)
     os.environ["BOT_LOGS_SPLIT_BRAIN_CONFLICTS"] = str(split_brain_conflicts)
     return StorageRoutingResult(
         mode=mode,
@@ -357,6 +408,7 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
         autosync_copied_files=int(autosync_copied),
         autosync_copy_errors=int(autosync_errors),
         autosync_pruned_files=int(autosync_pruned),
+        autosync_error_details=tuple(autosync_error_details),
         split_brain_conflicts=int(split_brain_conflicts),
     )
 

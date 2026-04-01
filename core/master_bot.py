@@ -82,6 +82,9 @@ class MasterBot:
         self.min_active_bots = max(int(min_active_bots), 0)
         self.correlation_prune_threshold = float(correlation_prune_threshold)
         self.signal_group_weight_target = float(os.getenv("SIGNAL_GROUP_WEIGHT_TARGET", "0.78"))
+        self.min_active_options_bots = max(int(os.getenv("MASTER_MIN_ACTIVE_OPTIONS_BOTS", "4")), 0)
+        self.min_active_infrastructure_bots = max(int(os.getenv("MASTER_MIN_ACTIVE_INFRASTRUCTURE_BOTS", "4")), 0)
+        self.infrastructure_floor_min_quality_score = float(os.getenv("MASTER_INFRA_FLOOR_MIN_QUALITY_SCORE", "0.44"))
         self.walk_forward_fail_penalty = float(os.getenv("WALK_FORWARD_FAIL_PENALTY", "0.82"))
         self.walk_forward_min_forward_mean = float(os.getenv("WALK_FORWARD_MIN_FORWARD_MEAN", "0.51"))
         self.graduation_gate_enabled = os.getenv("MASTER_GRADUATION_GATE_ENABLED", "1").strip() == "1"
@@ -119,7 +122,9 @@ class MasterBot:
         self._refresh_deletion_guard()
         outcomes = self._load_outcomes()
         statuses = self._evaluate_statuses(outcomes)
+        statuses = self._carry_forward_missing_statuses(statuses, outcomes)
         statuses = self._enforce_bucket_diversity(statuses)
+        statuses = self._enforce_role_floors(statuses)
         statuses = self._enforce_min_active_bots(statuses)
         statuses = self._apply_correlation_pruning(statuses)
         statuses = self._enforce_active_streak_cap(statuses)
@@ -477,6 +482,58 @@ class MasterBot:
                 c.preference_score = max(self._preference_score(c.test_accuracy or 0.5), 1e-6)
         return statuses
 
+    def _role_floor_override_eligible(self, status: BotStatus, role: str) -> bool:
+        if self._is_manual_quarantine(status):
+            return False
+        if status.deleted_from_rotation:
+            return False
+        if status.candidate_test_accuracy is None:
+            return False
+
+        if role == "infrastructure_sub_bot":
+            candidate_quality = max(float(status.candidate_quality_score or 0.0), float(status.quality_score or 0.0))
+            return candidate_quality >= self.infrastructure_floor_min_quality_score
+
+        return self._rotation_override_eligible(status)
+
+    def _enforce_role_floors(self, statuses: List[BotStatus]) -> List[BotStatus]:
+        role_floors = {
+            "options_sub_bot": self.min_active_options_bots,
+            "infrastructure_sub_bot": self.min_active_infrastructure_bots,
+        }
+
+        for role, need in role_floors.items():
+            if need <= 0:
+                continue
+            active = [s for s in statuses if s.active and s.bot_role == role]
+            if len(active) >= need:
+                continue
+
+            candidates = sorted(
+                [
+                    s
+                    for s in statuses
+                    if (not s.active)
+                    and s.bot_role == role
+                    and self._role_floor_override_eligible(s, role)
+                ],
+                key=lambda s: (s.candidate_quality_score, s.candidate_test_accuracy or 0.0, s.quality_score),
+                reverse=True,
+            )
+
+            for st in candidates[: max(need - len(active), 0)]:
+                st.active = True
+                st.reason = f"role_floor_{role}"
+                st.deleted_from_rotation = False
+                st.delete_reason = ""
+                if st.test_accuracy is None and st.candidate_test_accuracy is not None:
+                    st.test_accuracy = st.candidate_test_accuracy
+                if st.quality_score <= 0.0:
+                    st.quality_score = max(st.candidate_quality_score, 0.01)
+                st.preference_score = max(self._preference_score(st.test_accuracy or 0.50), 1e-6)
+
+        return statuses
+
     def _apply_correlation_pruning(self, statuses: List[BotStatus]) -> List[BotStatus]:
         active = [s for s in statuses if s.active and s.bot_role == "signal_sub_bot"]
         if len(active) < 2 or not self.correlation_map:
@@ -525,7 +582,14 @@ class MasterBot:
             prev_best = self.prev_best_accuracy_by_bot.get(o.bot_id)
             prev_row = self.prev_status_by_bot.get(o.bot_id, {})
             prev_streak = self.prev_streak_by_bot.get(o.bot_id, 0)
-            prev_candidate_log_file = str(prev_row.get("candidate_log_file") or "")
+            prev_candidate_log_file = str(prev_row.get("candidate_log_file") or prev_row.get("log_file") or "")
+
+            if prev_row and (
+                (prev_candidate_log_file and o.log_file == prev_candidate_log_file)
+                or self._registry_snapshot_is_newer_than(o.log_file)
+            ):
+                statuses.append(self._status_from_registry_row(prev_row))
+                continue
 
             prev_deleted = bool(prev_row.get("deleted_from_rotation", False))
             if prev_deleted:
@@ -728,6 +792,71 @@ class MasterBot:
 
         return statuses
 
+    def _status_from_registry_row(self, row: Dict[str, object]) -> BotStatus:
+        normalized = self._normalize_registry_row(row if isinstance(row, dict) else {})
+        bot_id = str(normalized.get("bot_id", "")).strip()
+        test_accuracy = self._as_float(normalized.get("test_accuracy"))
+        candidate_test_accuracy = self._as_float(normalized.get("candidate_test_accuracy"))
+        if candidate_test_accuracy is None:
+            candidate_test_accuracy = test_accuracy
+        quality_score = self._as_float(normalized.get("quality_score"))
+        if quality_score is None:
+            quality_score = 0.0
+        candidate_quality_score = self._as_float(normalized.get("candidate_quality_score"))
+        if candidate_quality_score is None:
+            candidate_quality_score = quality_score
+        previous_best_accuracy = self._as_float(normalized.get("previous_best_accuracy"))
+        if previous_best_accuracy is None:
+            previous_best_accuracy = test_accuracy
+        preference_score = self._as_float(normalized.get("preference_score"))
+        if preference_score is None:
+            accuracy_for_preference = test_accuracy if test_accuracy is not None else candidate_test_accuracy
+            preference_score = self._preference_score(accuracy_for_preference) if accuracy_for_preference is not None else 0.0
+
+        return BotStatus(
+            bot_id=bot_id,
+            bot_role=str(normalized.get("bot_role") or self._infer_bot_role(bot_id)),
+            active=bool(normalized.get("active", False)),
+            reason=str(normalized.get("reason") or ""),
+            weight=float(normalized.get("weight") or 0.0),
+            preference_score=float(preference_score or 0.0),
+            quality_score=float(quality_score),
+            test_accuracy=test_accuracy,
+            candidate_test_accuracy=candidate_test_accuracy,
+            candidate_quality_score=float(candidate_quality_score),
+            previous_best_accuracy=previous_best_accuracy,
+            no_improvement_streak=self._as_int(normalized.get("no_improvement_streak"), 0),
+            deleted_from_rotation=bool(normalized.get("deleted_from_rotation", False)),
+            delete_reason=str(normalized.get("delete_reason") or ""),
+            promoted=bool(normalized.get("promoted", False)),
+            promotion_reason=str(normalized.get("promotion_reason") or ""),
+            model_path=normalized.get("model_path"),
+            log_file=str(normalized.get("log_file") or ""),
+            candidate_log_file=str(normalized.get("candidate_log_file") or ""),
+        )
+
+    def _registry_snapshot_is_newer_than(self, path: str) -> bool:
+        if (not path) or (not os.path.exists(path)) or (not os.path.exists(self.registry_path)):
+            return False
+        try:
+            return os.path.getmtime(path) <= os.path.getmtime(self.registry_path)
+        except OSError:
+            return False
+
+    def _carry_forward_missing_statuses(self, statuses: List[BotStatus], outcomes: List[BotOutcome]) -> List[BotStatus]:
+        if not self.prev_status_by_bot:
+            return statuses
+
+        seen_bot_ids = {status.bot_id for status in statuses}
+        outcome_bot_ids = {outcome.bot_id for outcome in outcomes}
+
+        for bot_id in sorted(self.prev_status_by_bot):
+            if bot_id in seen_bot_ids or bot_id in outcome_bot_ids:
+                continue
+            statuses.append(self._status_from_registry_row(self.prev_status_by_bot[bot_id]))
+
+        return statuses
+
     def _enforce_min_active_bots(self, statuses: List[BotStatus]) -> List[BotStatus]:
         active_count = sum(1 for s in statuses if s.active)
         if active_count >= self.min_active_bots:
@@ -886,6 +1015,9 @@ class MasterBot:
                 "strict_live_pass_only": self.strict_live_pass_only,
                 "require_confirmed_training_success": self.require_confirmed_training_success,
                 "confirmed_training_success_max_age_hours": self.confirmed_training_success_max_age_hours,
+                "min_active_options_bots": self.min_active_options_bots,
+                "min_active_infrastructure_bots": self.min_active_infrastructure_bots,
+                "infrastructure_floor_min_quality_score": self.infrastructure_floor_min_quality_score,
                 "quality_score_formula": {
                     "accuracy_weight": 0.65,
                     "val_f1_weight": 0.25,
@@ -1031,19 +1163,50 @@ class MasterBot:
             dd_abs = abs(float(max_drawdown))
             dd_component = self._clamp(1.0 - min(dd_abs / 0.20, 1.0))
 
+        acted_component = acc_component
+        precision_component = acc_component
+        balance_component = 0.5
+        lift_component = acc_component
         no_trade_component = 0.5
         if raw_metrics:
             nt = self._as_float(raw_metrics.get("neutral_f1") or raw_metrics.get("hold_f1") or raw_metrics.get("flat_f1"))
             if nt is not None:
                 no_trade_component = self._clamp(nt)
+            acted_accuracy = self._as_float(raw_metrics.get("acted_accuracy"))
+            acted_coverage = self._as_float(raw_metrics.get("acted_coverage"))
+            long_precision = self._as_float(raw_metrics.get("long_precision"))
+            short_precision = self._as_float(raw_metrics.get("short_precision"))
+            label_balance_score = self._as_float(raw_metrics.get("label_balance_score"))
+            precision_balance_score = self._as_float(raw_metrics.get("precision_balance_score"))
+            accuracy_lift = self._as_float(raw_metrics.get("accuracy_lift_over_majority"))
+            if acted_accuracy is not None:
+                acted_accuracy_component = self._clamp((acted_accuracy - 0.50) / 0.18)
+                coverage_component = self._clamp(((acted_coverage or 0.0) - 0.05) / 0.35)
+                acted_component = acted_accuracy_component * (0.55 + (0.45 * coverage_component))
+            if long_precision is not None or short_precision is not None:
+                precision_values = [x for x in (long_precision, short_precision) if x is not None]
+                if precision_values:
+                    precision_component = self._clamp((sum(precision_values) / len(precision_values) - 0.50) / 0.18)
+            if label_balance_score is not None or precision_balance_score is not None:
+                label_component = self._clamp(label_balance_score if label_balance_score is not None else 0.5)
+                precision_balance_component = self._clamp(
+                    precision_balance_score if precision_balance_score is not None else 0.5
+                )
+                balance_component = (0.60 * label_component) + (0.40 * precision_balance_component)
+            if accuracy_lift is not None:
+                lift_component = self._clamp((accuracy_lift + 0.02) / 0.12)
 
         return (
-            0.45 * acc_component
-            + 0.18 * f1_component
-            + 0.10 * macro_component
-            + 0.10 * loss_component
-            + 0.10 * dd_component
-            + 0.07 * no_trade_component
+            0.18 * acc_component
+            + 0.16 * acted_component
+            + 0.14 * precision_component
+            + 0.10 * balance_component
+            + 0.10 * lift_component
+            + 0.12 * f1_component
+            + 0.08 * macro_component
+            + 0.07 * loss_component
+            + 0.03 * dd_component
+            + 0.02 * no_trade_component
         )
 
     def _preference_score(self, accuracy: float) -> float:

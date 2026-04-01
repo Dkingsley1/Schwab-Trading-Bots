@@ -69,7 +69,13 @@ def test_summarize_option_chain_emits_bias_roll_vwap_term_and_vol_expectation() 
         ]
     }
 
-    out = summarize_option_chain(payload, symbol="XYZ", underlying_price=100.0, now_ts=datetime.now(timezone.utc).timestamp())
+    out = summarize_option_chain(
+        payload,
+        symbol="XYZ",
+        underlying_price=100.0,
+        realized_vol=0.22,
+        now_ts=datetime.now(timezone.utc).timestamp(),
+    )
 
     assert out["options_chain_available"] == 1.0
     assert 0.0 <= out["options_negative_bias_norm"] <= 1.0
@@ -81,6 +87,14 @@ def test_summarize_option_chain_emits_bias_roll_vwap_term_and_vol_expectation() 
     assert 0.0 <= out["options_put_wall_distance_norm"] <= 1.0
     assert 0.0 <= out["options_oi_concentration_norm"] <= 1.0
     assert 0.0 <= out["options_unusual_flow_norm"] <= 1.0
+    assert 0.0 <= out["options_0dte_share_norm"] <= 1.0
+    assert 0.0 <= out["options_net_call_premium_bias_norm"] <= 1.0
+    assert 0.0 <= out["options_sweep_flow_norm"] <= 1.0
+    assert 0.0 <= out["options_block_flow_norm"] <= 1.0
+    assert 0.0 <= out["options_iv_percentile_norm"] <= 1.0
+    assert 0.0 <= out["options_iv_realized_spread_norm"] <= 1.0
+    assert 0.0 <= out["options_gamma_front_share_norm"] <= 1.0
+    assert 0.0 <= out["options_gamma_expiry_skew_norm"] <= 1.0
     assert "options_iv_term_structure" in out
 
 
@@ -96,6 +110,15 @@ def test_summarize_futures_quote_emits_funding_basis_term_vwap_negative_bias_and
         "indexPrice": 100.0,
         "vwap": 99.6,
         "daysToExpiration": 35,
+        "takerBuyVolume": 18000,
+        "takerSellVolume": 12000,
+        "longShortRatio": 1.35,
+        "sessionVolumeProfile": 1.1,
+        "liquidationVolume": 125000,
+        "curve": [
+            {"daysToExpiration": 35, "markPrice": 100.5, "indexPrice": 100.0},
+            {"daysToExpiration": 70, "markPrice": 101.7, "indexPrice": 100.1},
+        ],
     }
 
     out = summarize_futures_quote_features(payload, last_price=100.1)
@@ -106,6 +129,14 @@ def test_summarize_futures_quote_emits_funding_basis_term_vwap_negative_bias_and
     assert 0.0 <= out["futures_negative_bias_norm"] <= 1.0
     assert 0.0 <= out["futures_roll_yield_norm"] <= 1.0
     assert 0.0 <= out["futures_vwap_bias_norm"] <= 1.0
+    assert 0.0 <= out["futures_taker_imbalance_norm"] <= 1.0
+    assert 0.0 <= out["futures_cvd_norm"] <= 1.0
+    assert 0.0 <= out["futures_liquidation_risk_norm"] <= 1.0
+    assert 0.0 <= out["futures_long_short_ratio_norm"] <= 1.0
+    assert 0.0 <= out["futures_basis_divergence_norm"] <= 1.0
+    assert 0.0 <= out["futures_mark_index_dislocation_norm"] <= 1.0
+    assert 0.0 <= out["futures_session_volume_profile_norm"] <= 1.0
+    assert 0.0 <= out["futures_calendar_spread_curve_norm"] <= 1.0
 
 
 def test_summarize_calendar_payload_emits_event_proximity_and_expiry_week() -> None:

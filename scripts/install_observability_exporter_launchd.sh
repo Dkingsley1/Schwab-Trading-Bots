@@ -2,9 +2,12 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON_BIN="$PROJECT_ROOT/.venv312/bin/python"
+RUNTIME_PY_SCRIPT="$PROJECT_ROOT/scripts/ops/runtime_python.sh"
+PYTHON_BIN="$($RUNTIME_PY_SCRIPT)"
 RUN_SCRIPT="$PROJECT_ROOT/scripts/observability_exporter.py"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.dankingsley.observability_exporter.plist"
+LABEL="com.dankingsley.observability_exporter"
+UID_NUM="$(id -u)"
 LOG_DIR="$PROJECT_ROOT/logs"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
@@ -29,6 +32,8 @@ cat > "$PLIST_PATH" <<PLIST
 </plist>
 PLIST
 
-launchctl unload "$PLIST_PATH" >/dev/null 2>&1 || true
-launchctl load "$PLIST_PATH"
+launchctl bootout "gui/$UID_NUM" "$PLIST_PATH" >/dev/null 2>&1 || true
+launchctl bootstrap "gui/$UID_NUM" "$PLIST_PATH"
+launchctl enable "gui/$UID_NUM/$LABEL" || true
+launchctl kickstart -k "gui/$UID_NUM/$LABEL" || true
 echo "Installed and loaded: $PLIST_PATH"

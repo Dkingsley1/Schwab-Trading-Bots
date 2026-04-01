@@ -9,6 +9,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+DEFAULT_QUEUE_DB_NAME = "bot_channel_queue.sqlite3"
+DEFAULT_LOCAL_FALLBACK_ROOT = "local_fallback_storage"
+
 
 def _now_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -27,6 +30,24 @@ def _parse_ts_utc(raw: str) -> Optional[datetime]:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _local_queue_root(project_root: str | Path) -> Path:
+    configured = str(os.getenv("BOT_CHANNEL_QUEUE_LOCAL_ROOT", "") or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path(project_root) / DEFAULT_LOCAL_FALLBACK_ROOT
+
+
+def local_queue_db_path(project_root: str | Path) -> str:
+    root = Path(project_root) if str(project_root or "").strip() else Path()
+    if not str(root):
+        return ""
+    return str(_local_queue_root(root) / "data" / DEFAULT_QUEUE_DB_NAME)
 
 
 @dataclass
@@ -337,9 +358,33 @@ class ChannelQueue:
             "db_path": str(self.db_path),
         }
 
+    def pending_count(self, *, consumer: str, channel: str) -> int:
+        cons = str(consumer or "").strip()
+        ch = str(channel or "").strip()
+        if not cons or not ch:
+            return 0
+
+        state = self.consumer_state(consumer=cons, channel=ch)
+        last_id = int(state.get("last_id") or 0)
+
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM channel_messages WHERE channel=? AND id>?",
+                (ch, last_id),
+            ).fetchone()
+        finally:
+            conn.close()
+        return int(row[0] if row and row[0] is not None else 0)
+
 
 def default_queue_db_path(project_root: str | Path) -> str:
-    return str(Path(project_root) / "data" / "bot_channel_queue.sqlite3")
+    override = str(os.getenv("BOT_CHANNEL_QUEUE_DB", "") or "").strip()
+    if override:
+        return str(Path(override).expanduser())
+    if _env_flag("BOT_CHANNEL_QUEUE_PREFER_LOCAL", "1"):
+        return local_queue_db_path(project_root)
+    return str(Path(project_root) / "data" / DEFAULT_QUEUE_DB_NAME)
 
 
 def queue_enabled() -> bool:

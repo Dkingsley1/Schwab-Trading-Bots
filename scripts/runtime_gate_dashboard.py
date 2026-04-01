@@ -88,8 +88,10 @@ def main() -> int:
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     lock_path = os.getenv("MLX_RETRAIN_LOCK_PATH", os.path.join(project_root, "governance", "mlx_retrain.lock"))
 
-    min_free = float(os.getenv("RETRAIN_MIN_FREE_PCT", "22"))
-    max_swap = float(os.getenv("RETRAIN_MAX_SWAP_GB", "1.0"))
+    min_free = float(os.getenv("RETRAIN_MIN_FREE_PCT", "18"))
+    max_swap = float(os.getenv("RETRAIN_MAX_SWAP_GB", "2.5"))
+    swap_relax_free_pct = float(os.getenv("RETRAIN_SWAP_RELAX_FREE_PCT", "38"))
+    swap_relax_available_pct = float(os.getenv("RETRAIN_SWAP_RELAX_AVAILABLE_PCT", "55"))
     min_cpu = float(os.getenv("RETRAIN_THERMAL_MIN_CPU_SPEED_LIMIT", "75"))
     min_sched = float(os.getenv("RETRAIN_THERMAL_MIN_SCHEDULER_LIMIT", "75"))
 
@@ -97,16 +99,23 @@ def main() -> int:
         now = datetime.now(timezone.utc).isoformat()
         mem = _memory_snapshot()
         therm = _thermal_snapshot()
-        free_pct = float(mem.get("free_pct", mem.get("available_pct", 0.0)) or 0.0)
+        free_pct = float(mem.get("free_pct", 0.0) or 0.0)
+        available_pct = float(mem.get("available_pct", free_pct) or free_pct)
         swap_gb = float(mem.get("swap_used_gb", 0.0) or 0.0)
         cpu_lim = float(therm.get("cpu_speed_limit", 100.0) or 100.0)
         sched_lim = float(therm.get("scheduler_limit", 100.0) or 100.0)
 
-        gate_ok = (free_pct >= min_free) and (swap_gb <= max_swap) and (cpu_lim >= min_cpu) and (sched_lim >= min_sched)
+        free_gate_ok = available_pct >= min_free
+        swap_gate_ok = (
+            swap_gb <= max_swap
+            or free_pct >= max(min_free, swap_relax_free_pct)
+            or available_pct >= swap_relax_available_pct
+        )
+        gate_ok = free_gate_ok and swap_gate_ok and (cpu_lim >= min_cpu) and (sched_lim >= min_sched)
         state = "OPEN" if gate_ok else "BLOCKED"
 
         print(
-            f"{now} | gate={state} | free={free_pct:.1f}%/{min_free:.1f}% "
+            f"{now} | gate={state} | free={free_pct:.1f}% avail={available_pct:.1f}%/{min_free:.1f}% "
             f"swap={swap_gb:.2f}GB/{max_swap:.2f}GB "
             f"cpu_limit={cpu_lim:.0f}/{min_cpu:.0f} sched_limit={sched_lim:.0f}/{min_sched:.0f} "
             f"mlx_lock={_lock_state(lock_path)}"

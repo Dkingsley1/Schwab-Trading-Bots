@@ -38,6 +38,42 @@ def _i(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _near_pass_reason(
+    *,
+    runs: int,
+    failed_gates: dict[str, bool],
+    forward_mean: float,
+    delta: float,
+    trading_quality_score: float,
+    min_forward_mean: float,
+    min_delta: float,
+    min_trading_quality_score: float,
+    min_runs_per_bot: int,
+    forward_slack: float,
+    delta_slack: float,
+    min_extra_runs: int,
+    min_tq_cushion: float,
+) -> str:
+    failed = [name for name, is_failed in failed_gates.items() if bool(is_failed)]
+    if len(failed) != 1:
+        return ""
+    if int(runs) < max(int(min_runs_per_bot) + int(min_extra_runs), int(min_runs_per_bot)):
+        return ""
+    if float(trading_quality_score) < (float(min_trading_quality_score) + float(min_tq_cushion)):
+        return ""
+
+    failed_gate = failed[0]
+    if failed_gate == "forward_mean":
+        miss = max(float(min_forward_mean) - float(forward_mean), 0.0)
+        if miss <= float(forward_slack):
+            return f"forward_mean_within_slack:{round(miss, 6)}"
+    if failed_gate == "delta":
+        miss = max(float(min_delta) - float(delta), 0.0)
+        if miss <= float(delta_slack):
+            return f"delta_within_slack:{round(miss, 6)}"
+    return ""
+
+
 def _normalize_registry_row(row: dict[str, Any]) -> dict[str, Any]:
     deleted = bool(row.get("deleted_from_rotation", False))
     active = bool(row.get("active", False)) and (not deleted)
@@ -110,6 +146,10 @@ def main() -> int:
     parser.add_argument("--max-severe-overfit-share", type=float, default=float(os.getenv("PROMOTION_GATE_MAX_SEVERE_OVERFIT_SHARE", str(defaults.get("max_severe_overfit_share", 0.10)))))
     parser.add_argument("--min-runs-per-bot", type=int, default=int(os.getenv("PROMOTION_GATE_MIN_RUNS", str(defaults.get("min_runs_per_bot", 12)))))
     parser.add_argument("--min-considered-bots", type=int, default=int(os.getenv("PROMOTION_GATE_MIN_CONSIDERED", str(defaults.get("min_considered_bots", 4)))))
+    parser.add_argument("--near-pass-forward-slack", type=float, default=float(os.getenv("PROMOTION_GATE_NEAR_PASS_FORWARD_SLACK", "0.025")))
+    parser.add_argument("--near-pass-delta-slack", type=float, default=float(os.getenv("PROMOTION_GATE_NEAR_PASS_DELTA_SLACK", "0.015")))
+    parser.add_argument("--near-pass-min-extra-runs", type=int, default=int(os.getenv("PROMOTION_GATE_NEAR_PASS_MIN_EXTRA_RUNS", "2")))
+    parser.add_argument("--near-pass-min-tq-cushion", type=float, default=float(os.getenv("PROMOTION_GATE_NEAR_PASS_MIN_TQ_CUSHION", "0.06")))
     parser.add_argument(
         "--require-active-registry",
         action=argparse.BooleanOptionalAction,
@@ -136,9 +176,11 @@ def main() -> int:
 
     considered = 0
     fails = 0
+    raw_fails = 0
     severe_overfit = 0
     tq_sum = 0.0
     fail_reasons = []
+    near_pass_examples = []
     excluded_counts: dict[str, int] = {}
 
     for bot_id, row in bots.items():
@@ -174,29 +216,48 @@ def main() -> int:
         gate_overfit = overfit_gap <= float(args.max_overfit_gap)
 
         ok = gate_fwd and gate_delta and gate_tq and gate_overfit
+        row_out = {
+            "bot_id": bot_id,
+            "runs": runs,
+            "forward_mean": round(fwd, 6),
+            "delta": round(delta, 6),
+            "trading_quality_score": round(tq, 6),
+            "overfit_gap": round(overfit_gap, 6),
+            "failed_gates": {
+                "forward_mean": not gate_fwd,
+                "delta": not gate_delta,
+                "trading_quality_score": not gate_tq,
+                "overfit_gap": not gate_overfit,
+            },
+        }
         if not ok:
-            fails += 1
-            fail_reasons.append(
-                {
-                    "bot_id": bot_id,
-                    "runs": runs,
-                    "forward_mean": round(fwd, 6),
-                    "delta": round(delta, 6),
-                    "trading_quality_score": round(tq, 6),
-                    "overfit_gap": round(overfit_gap, 6),
-                    "failed_gates": {
-                        "forward_mean": not gate_fwd,
-                        "delta": not gate_delta,
-                        "trading_quality_score": not gate_tq,
-                        "overfit_gap": not gate_overfit,
-                    },
-                }
+            raw_fails += 1
+            near_pass_reason = _near_pass_reason(
+                runs=runs,
+                failed_gates=row_out["failed_gates"],
+                forward_mean=fwd,
+                delta=delta,
+                trading_quality_score=tq,
+                min_forward_mean=float(args.min_forward_mean),
+                min_delta=float(args.min_delta),
+                min_trading_quality_score=float(args.min_trading_quality_score),
+                min_runs_per_bot=int(args.min_runs_per_bot),
+                forward_slack=float(args.near_pass_forward_slack),
+                delta_slack=float(args.near_pass_delta_slack),
+                min_extra_runs=int(args.near_pass_min_extra_runs),
+                min_tq_cushion=float(args.near_pass_min_tq_cushion),
             )
+            if near_pass_reason:
+                near_pass_examples.append({**row_out, "near_pass_reason": near_pass_reason})
+            else:
+                fails += 1
+                fail_reasons.append(row_out)
 
         if overfit_gap > float(args.max_overfit_gap) * 1.5:
             severe_overfit += 1
 
     fail_share = fails / max(considered, 1)
+    raw_fail_share = raw_fails / max(considered, 1)
     severe_overfit_share = severe_overfit / max(considered, 1)
     coverage_ok = considered >= int(args.min_considered_bots)
     mean_trading_quality_score = tq_sum / max(considered, 1)
@@ -212,6 +273,9 @@ def main() -> int:
         "considered_bots": considered,
         "failed_bots": fails,
         "fail_share": round(fail_share, 6),
+        "raw_failed_bots": raw_fails,
+        "raw_fail_share": round(raw_fail_share, 6),
+        "near_pass_bots": len(near_pass_examples),
         "severe_overfit_bots": severe_overfit,
         "severe_overfit_share": round(severe_overfit_share, 6),
         "mean_trading_quality_score": round(mean_trading_quality_score, 6),
@@ -226,6 +290,10 @@ def main() -> int:
             "max_severe_overfit_share": float(args.max_severe_overfit_share),
             "min_runs_per_bot": int(args.min_runs_per_bot),
             "min_considered_bots": int(args.min_considered_bots),
+            "near_pass_forward_slack": float(args.near_pass_forward_slack),
+            "near_pass_delta_slack": float(args.near_pass_delta_slack),
+            "near_pass_min_extra_runs": int(args.near_pass_min_extra_runs),
+            "near_pass_min_tq_cushion": float(args.near_pass_min_tq_cushion),
         },
         "registry_filter": {
             "enabled": bool(registry_rows),
@@ -234,6 +302,7 @@ def main() -> int:
         },
         "excluded_counts": excluded_counts,
         "fail_examples": fail_reasons[:30],
+        "near_pass_examples": near_pass_examples[:30],
     }
 
     out_path = Path(args.out_file)

@@ -12,7 +12,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PY = PROJECT_ROOT / '.venv312' / 'bin' / 'python'
+import sys
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_python import resolve_runtime_python
+
+PY = resolve_runtime_python(PROJECT_ROOT)
 DEFAULT_STATE_PATH = PROJECT_ROOT / 'governance' / 'health' / 'process_watchdog_state.json'
 DEFAULT_OUT_PATH = PROJECT_ROOT / 'governance' / 'health' / 'process_watchdog_latest.json'
 FALLBACK_STATE_PATH = Path('/tmp/process_watchdog_state.json')
@@ -21,6 +28,10 @@ DEFAULT_STORAGE_MOUNT_GUARD_PATH = PROJECT_ROOT / 'governance' / 'health' / 'sto
 FALLBACK_STORAGE_MOUNT_GUARD_PATH = Path('/tmp/storage_mount_guard_latest.json')
 SNAPSHOT_SCRIPT = PROJECT_ROOT / 'scripts' / 'collect_debug_snapshot.sh'
 ALERT_ROUTER = PROJECT_ROOT / 'scripts' / 'pager_alert_router.py'
+DEFAULT_MAINTENANCE_TIMEOUT_SECONDS = max(
+    float(os.getenv('OPS_WATCHDOG_MAINTENANCE_TIMEOUT_SECONDS', '45') or 45.0),
+    1.0,
+)
 
 
 def _env_flag(name: str, default: str = '0') -> bool:
@@ -31,10 +42,39 @@ def _split_csv(raw: str) -> List[str]:
     return [x.strip() for x in (raw or '').split(',') if x.strip()]
 
 
-def _proc_running(pattern: str) -> int:
+def _proc_running(pattern: str, exclude_patterns: List[str] | None = None) -> int:
     p = subprocess.run(['ps', '-axo', 'command'], capture_output=True, text=True, check=False)
     out = p.stdout or ''
-    return sum(1 for line in out.splitlines() if pattern in line)
+    excludes = [x for x in (exclude_patterns or []) if x]
+    return sum(
+        1
+        for line in out.splitlines()
+        if pattern in line and not any(marker in line for marker in excludes)
+    )
+
+
+def _proc_elapsed_seconds(pattern: str, exclude_patterns: List[str] | None = None) -> float | None:
+    p = subprocess.run(['ps', '-axo', 'etimes,command'], capture_output=True, text=True, check=False)
+    out = p.stdout or ''
+    excludes = [x for x in (exclude_patterns or []) if x]
+    matched: list[float] = []
+    for line in out.splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        parts = raw.split(maxsplit=1)
+        if len(parts) != 2:
+            continue
+        etimes_raw, cmd = parts
+        if pattern not in cmd or any(marker in cmd for marker in excludes):
+            continue
+        try:
+            matched.append(float(etimes_raw))
+        except Exception:
+            continue
+    if not matched:
+        return None
+    return max(matched)
 
 
 def _spawn(cmd: List[str], log_path: Path) -> int:
@@ -44,9 +84,24 @@ def _spawn(cmd: List[str], log_path: Path) -> int:
     return int(p.pid)
 
 
-def _run(cmd: List[str]) -> Tuple[int, str, str]:
-    p = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=False)
-    return p.returncode, (p.stdout or '').strip(), (p.stderr or '').strip()
+def _run(cmd: List[str], *, timeout_seconds: float | None = None) -> Tuple[int, str, str]:
+    try:
+        p = subprocess.run(
+            cmd,
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=(None if timeout_seconds is None else max(float(timeout_seconds), 0.1)),
+        )
+        return p.returncode, (p.stdout or '').strip(), (p.stderr or '').strip()
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b'').decode('utf-8', errors='ignore')
+        stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b'').decode('utf-8', errors='ignore')
+        detail = f'timeout_after_seconds={max(float(timeout_seconds or 0.0), 0.1):.1f}'
+        if stderr.strip():
+            detail = f'{detail} {stderr.strip()}'
+        return 124, stdout.strip(), detail
 
 
 def _latest_heartbeat_age_seconds(glob_pattern: str) -> float:
@@ -149,12 +204,34 @@ def _copy_if_exists(src: Path, dst: Path) -> bool:
     return True
 
 
-def _refresh_runtime_reports(max_age_seconds: int) -> Dict[str, Any]:
+def _resource_guard_allows_job(job_name: str, profile: str = 'optional') -> tuple[bool, str]:
+    guard_script = PROJECT_ROOT / 'scripts' / 'resource_guard.py'
+    if not guard_script.exists():
+        return True, 'resource_guard_missing'
+    rc, stdout, err = _run([str(PY), str(guard_script), '--profile', profile])
+    detail = (stdout or err or '').strip()
+    if not detail:
+        detail = f'rc={rc}'
+    return rc == 0, f'{job_name}:{detail}'
+
+
+def _refresh_runtime_reports(
+    max_age_seconds: int,
+    *,
+    backpressure_max_age_seconds: int | None = None,
+    divergence_max_age_seconds: int | None = None,
+) -> Dict[str, Any]:
     day = datetime.now(timezone.utc).strftime('%Y%m%d')
     one_numbers = PROJECT_ROOT / 'exports' / 'one_numbers' / 'one_numbers_summary.json'
     one_numbers_health = PROJECT_ROOT / 'governance' / 'health' / 'one_numbers_latest.json'
     daily_summary = PROJECT_ROOT / 'exports' / 'sql_reports' / f'daily_runtime_summary_{day}.json'
     daily_summary_health = PROJECT_ROOT / 'governance' / 'health' / 'daily_runtime_summary_latest.json'
+    paper_performance = PROJECT_ROOT / 'governance' / 'health' / 'paper_performance_latest.json'
+    backpressure = PROJECT_ROOT / 'governance' / 'health' / 'ingestion_backpressure_latest.json'
+    divergence = PROJECT_ROOT / 'governance' / 'health' / 'data_source_divergence_latest.json'
+    backpressure_age = max(int(backpressure_max_age_seconds or max_age_seconds), 60)
+    divergence_age = max(int(divergence_max_age_seconds or max_age_seconds), 60)
+    stuck_refresh_seconds = max(int(os.getenv('OPS_WATCHDOG_REFRESH_STUCK_SECONDS', '900') or 900), 120)
 
     out: Dict[str, Any] = {
         'one_numbers': {
@@ -165,6 +242,14 @@ def _refresh_runtime_reports(max_age_seconds: int) -> Dict[str, Any]:
             'error': '',
             'synced_health': False,
         },
+        'paper_performance': {
+            'path': str(paper_performance),
+            'refreshed': False,
+            'age_seconds_before': round(_file_age_seconds(paper_performance), 2),
+            'rc': 0,
+            'error': '',
+            'synced_health': True,
+        },
         'daily_runtime_summary': {
             'path': str(daily_summary),
             'refreshed': False,
@@ -173,19 +258,79 @@ def _refresh_runtime_reports(max_age_seconds: int) -> Dict[str, Any]:
             'error': '',
             'synced_health': False,
         },
+        'ingestion_backpressure': {
+            'path': str(backpressure),
+            'refreshed': False,
+            'age_seconds_before': round(_file_age_seconds(backpressure), 2),
+            'rc': 0,
+            'error': '',
+        },
+        'data_source_divergence': {
+            'path': str(divergence),
+            'refreshed': False,
+            'age_seconds_before': round(_file_age_seconds(divergence), 2),
+            'rc': 0,
+            'error': '',
+        },
     }
 
     if _file_age_seconds(one_numbers) > float(max_age_seconds):
-        if _proc_running('scripts/build_one_numbers_report.py') > 0:
-            out['one_numbers']['error'] = 'refresh_already_running'
+        guard_ok, guard_detail = _resource_guard_allows_job('one_numbers_refresh', profile='refresh')
+        out['one_numbers']['resource_guard_ok'] = bool(guard_ok)
+        out['one_numbers']['resource_guard_detail'] = guard_detail
+        if not guard_ok:
+            out['one_numbers']['error'] = 'resource_guard_blocked'
+        elif _proc_running('scripts/build_one_numbers_report.py') > 0:
+            running_seconds = _proc_elapsed_seconds('scripts/build_one_numbers_report.py')
+            out['one_numbers']['running_seconds'] = round(float(running_seconds), 2) if running_seconds is not None else None
+            out['one_numbers']['error'] = (
+                'refresh_stuck_suspected'
+                if running_seconds is not None and float(running_seconds) >= float(stuck_refresh_seconds)
+                else 'refresh_already_running'
+            )
         else:
-            rc, _stdout, err = _run([str(PY), str(PROJECT_ROOT / 'scripts' / 'build_one_numbers_report.py'), '--day', day])
+            rc, _stdout, err = _run([
+                str(PY),
+                str(PROJECT_ROOT / 'scripts' / 'build_one_numbers_report.py'),
+                '--lightweight',
+                '--no-sql-write',
+            ])
             out['one_numbers']['refreshed'] = rc == 0
             out['one_numbers']['rc'] = int(rc)
             out['one_numbers']['error'] = err[-500:] if err else ''
 
     out['one_numbers']['synced_health'] = _copy_if_exists(one_numbers, one_numbers_health)
     out['one_numbers']['age_seconds_after'] = round(_file_age_seconds(one_numbers), 2)
+
+    if _file_age_seconds(paper_performance) > float(max_age_seconds):
+        guard_ok, guard_detail = _resource_guard_allows_job('paper_performance_refresh', profile='refresh')
+        out['paper_performance']['resource_guard_ok'] = bool(guard_ok)
+        out['paper_performance']['resource_guard_detail'] = guard_detail
+        if not guard_ok:
+            out['paper_performance']['error'] = 'resource_guard_blocked'
+        elif _proc_running('scripts/paper_performance_report.py') > 0:
+            running_seconds = _proc_elapsed_seconds('scripts/paper_performance_report.py')
+            out['paper_performance']['running_seconds'] = round(float(running_seconds), 2) if running_seconds is not None else None
+            out['paper_performance']['error'] = (
+                'refresh_stuck_suspected'
+                if running_seconds is not None and float(running_seconds) >= float(stuck_refresh_seconds)
+                else 'refresh_already_running'
+            )
+        else:
+            rc, _stdout, err = _run([
+                str(PY),
+                str(PROJECT_ROOT / 'scripts' / 'paper_performance_report.py'),
+                '--day',
+                day,
+                '--week-days',
+                os.getenv('PAPER_PERFORMANCE_REFRESH_WEEK_DAYS', '7'),
+                '--json-only',
+            ])
+            out['paper_performance']['refreshed'] = rc == 0
+            out['paper_performance']['rc'] = int(rc)
+            out['paper_performance']['error'] = err[-500:] if err else ''
+
+    out['paper_performance']['age_seconds_after'] = round(_file_age_seconds(paper_performance), 2)
 
     if _file_age_seconds(daily_summary) > float(max_age_seconds):
         rc, stdout, err = _run([str(PY), str(PROJECT_ROOT / 'scripts' / 'daily_runtime_summary.py'), '--day', day, '--json'])
@@ -202,6 +347,56 @@ def _refresh_runtime_reports(max_age_seconds: int) -> Dict[str, Any]:
 
     out['daily_runtime_summary']['synced_health'] = _copy_if_exists(daily_summary, daily_summary_health)
     out['daily_runtime_summary']['age_seconds_after'] = round(_file_age_seconds(daily_summary), 2)
+
+    if _file_age_seconds(backpressure) > float(backpressure_age):
+        guard_ok, guard_detail = _resource_guard_allows_job('ingestion_backpressure_refresh', profile='refresh')
+        out['ingestion_backpressure']['resource_guard_ok'] = bool(guard_ok)
+        out['ingestion_backpressure']['resource_guard_detail'] = guard_detail
+        if not guard_ok:
+            out['ingestion_backpressure']['error'] = 'resource_guard_blocked'
+        elif _proc_running('scripts/ingestion_backpressure_guard.py') > 0:
+            running_seconds = _proc_elapsed_seconds('scripts/ingestion_backpressure_guard.py')
+            out['ingestion_backpressure']['running_seconds'] = round(float(running_seconds), 2) if running_seconds is not None else None
+            out['ingestion_backpressure']['error'] = (
+                'refresh_stuck_suspected'
+                if running_seconds is not None and float(running_seconds) >= float(stuck_refresh_seconds)
+                else 'refresh_already_running'
+            )
+        else:
+            rc, _stdout, err = _run([
+                str(PY),
+                str(PROJECT_ROOT / 'scripts' / 'ingestion_backpressure_guard.py'),
+                '--json',
+            ])
+            out['ingestion_backpressure']['refreshed'] = rc == 0
+            out['ingestion_backpressure']['rc'] = int(rc)
+            out['ingestion_backpressure']['error'] = err[-500:] if err else ''
+    out['ingestion_backpressure']['age_seconds_after'] = round(_file_age_seconds(backpressure), 2)
+
+    if _file_age_seconds(divergence) > float(divergence_age):
+        guard_ok, guard_detail = _resource_guard_allows_job('data_source_divergence_refresh', profile='refresh')
+        out['data_source_divergence']['resource_guard_ok'] = bool(guard_ok)
+        out['data_source_divergence']['resource_guard_detail'] = guard_detail
+        if not guard_ok:
+            out['data_source_divergence']['error'] = 'resource_guard_blocked'
+        elif _proc_running('scripts/data_source_divergence_bot.py') > 0:
+            running_seconds = _proc_elapsed_seconds('scripts/data_source_divergence_bot.py')
+            out['data_source_divergence']['running_seconds'] = round(float(running_seconds), 2) if running_seconds is not None else None
+            out['data_source_divergence']['error'] = (
+                'refresh_stuck_suspected'
+                if running_seconds is not None and float(running_seconds) >= float(stuck_refresh_seconds)
+                else 'refresh_already_running'
+            )
+        else:
+            rc, _stdout, err = _run([
+                str(PY),
+                str(PROJECT_ROOT / 'scripts' / 'data_source_divergence_bot.py'),
+                '--json',
+            ])
+            out['data_source_divergence']['refreshed'] = rc in {0, 2}
+            out['data_source_divergence']['rc'] = int(rc)
+            out['data_source_divergence']['error'] = err[-500:] if err else ''
+    out['data_source_divergence']['age_seconds_after'] = round(_file_age_seconds(divergence), 2)
     return out
 
 
@@ -267,6 +462,24 @@ def _build_all_sleeves_target(heartbeat_max_age_seconds: int) -> Dict[str, Any]:
         'broker': broker,
         'simulate': simulate,
         'heartbeat_glob': str(PROJECT_ROOT / 'governance' / 'health' / 'shadow_loop_*_equities_schwab_*.json'),
+        'heartbeat_max_age_seconds': max(int(heartbeat_max_age_seconds), 60),
+    }
+
+
+def _build_execution_lane_target(mode: str, *, heartbeat_max_age_seconds: int) -> Dict[str, Any]:
+    safe_mode = str(mode or 'paper').strip().lower() or 'paper'
+    return {
+        'name': f'execution_lane_{safe_mode}',
+        'pattern': f'scripts/run_execution_lane.py --mode {safe_mode}',
+        'alt_patterns': [],
+        'cmd': [
+            str(PY),
+            str(PROJECT_ROOT / 'scripts' / 'run_execution_lane.py'),
+            '--mode',
+            safe_mode,
+        ],
+        'log': PROJECT_ROOT / 'logs' / f'watchdog_execution_lane_{safe_mode}.log',
+        'heartbeat_glob': str(PROJECT_ROOT / 'governance' / 'health' / f'execution_lane_{safe_mode}_latest.json'),
         'heartbeat_max_age_seconds': max(int(heartbeat_max_age_seconds), 60),
     }
 
@@ -454,10 +667,12 @@ def main() -> int:
     parser.add_argument('--max-restarts-per-hour', type=int, default=int(os.getenv('OPS_WATCHDOG_MAX_RESTARTS_PER_HOUR', '6')))
     parser.add_argument('--require-all-sleeves', action='store_true', default=os.getenv('OPS_WATCHDOG_REQUIRE_ALL_SLEEVES', '1') == '1')
     parser.add_argument('--require-coinbase', action='store_true', default=os.getenv('OPS_WATCHDOG_REQUIRE_COINBASE', '1') == '1')
+    parser.add_argument('--require-paper-executor', action='store_true', default=os.getenv('OPS_WATCHDOG_REQUIRE_PAPER_EXECUTOR', '1') == '1')
     parser.add_argument('--refresh-reports', action='store_true', default=os.getenv('OPS_WATCHDOG_REFRESH_REPORTS', '1') == '1')
     parser.add_argument('--refresh-max-age-seconds', type=int, default=int(os.getenv('OPS_WATCHDOG_REFRESH_MAX_AGE_SECONDS', '7200')))
     parser.add_argument('--all-sleeves-heartbeat-stale-seconds', type=int, default=int(os.getenv('OPS_WATCHDOG_ALL_SLEEVES_HEARTBEAT_STALE_SECONDS', '360')))
     parser.add_argument('--coinbase-heartbeat-stale-seconds', type=int, default=int(os.getenv('OPS_WATCHDOG_COINBASE_HEARTBEAT_STALE_SECONDS', '420')))
+    parser.add_argument('--paper-executor-heartbeat-stale-seconds', type=int, default=int(os.getenv('OPS_WATCHDOG_PAPER_EXECUTOR_HEARTBEAT_STALE_SECONDS', '240')))
     parser.add_argument('--network-guard', action='store_true', default=_env_flag('OPS_WATCHDOG_NETWORK_GUARD', '1'))
     parser.add_argument('--network-hosts', default=os.getenv('OPS_WATCHDOG_NETWORK_HOSTS', 'api.schwabapi.com:443,api.exchange.coinbase.com:443'))
     parser.add_argument('--network-timeout-seconds', type=float, default=float(os.getenv('OPS_WATCHDOG_NETWORK_TIMEOUT_SECONDS', '2.5')))
@@ -465,6 +680,7 @@ def main() -> int:
     parser.add_argument('--restart-storm-threshold', type=int, default=int(os.getenv('OPS_WATCHDOG_RESTART_STORM_THRESHOLD', '4')))
     parser.add_argument('--restart-storm-window-seconds', type=int, default=int(os.getenv('OPS_WATCHDOG_RESTART_STORM_WINDOW_SECONDS', '3600')))
     parser.add_argument('--alert-suppress-seconds', type=int, default=int(os.getenv('OPS_WATCHDOG_ALERT_SUPPRESS_SECONDS', '600')))
+    parser.add_argument('--maintenance-timeout-seconds', type=float, default=DEFAULT_MAINTENANCE_TIMEOUT_SECONDS)
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args()
 
@@ -484,7 +700,7 @@ def main() -> int:
         ('storage_failback_sync', _storage_failback_sync_cmd()),
         ('canary_auto_tuner', [str(PY), str(PROJECT_ROOT / 'scripts' / 'ops' / 'canary_auto_tuner.py'), '--json']),
     ]:
-        rc, out, err = _run(cmd)
+        rc, out, err = _run(cmd, timeout_seconds=float(args.maintenance_timeout_seconds))
         row: Dict[str, Any] = {
             'name': name,
             'ok': rc == 0,
@@ -544,7 +760,10 @@ def main() -> int:
         else:
             recovery: Dict[str, Any] = {'attempted': False}
             if storage_mode != 'external':
-                rc, out, err = _run(_storage_failback_sync_cmd())
+                rc, out, err = _run(
+                    _storage_failback_sync_cmd(),
+                    timeout_seconds=float(args.maintenance_timeout_seconds),
+                )
                 try:
                     recovery_payload = json.loads(out) if out else {}
                 except Exception:
@@ -581,7 +800,11 @@ def main() -> int:
 
     refresh_payload: Dict[str, Any] = {}
     if args.refresh_reports:
-        refresh_payload = _refresh_runtime_reports(max_age_seconds=max(int(args.refresh_max_age_seconds), 60))
+        refresh_payload = _refresh_runtime_reports(
+            max_age_seconds=max(int(args.refresh_max_age_seconds), 60),
+            backpressure_max_age_seconds=max(int(os.getenv('OPS_WATCHDOG_BACKPRESSURE_MAX_AGE_SECONDS', '300')), 60),
+            divergence_max_age_seconds=max(int(os.getenv('OPS_WATCHDOG_DIVERGENCE_MAX_AGE_SECONDS', '600')), 60),
+        )
 
     network_payload: Dict[str, Any] = {'enabled': bool(args.network_guard), 'results': []}
     network_outage_active = False
@@ -635,10 +858,10 @@ def main() -> int:
     targets: List[Dict[str, Any]] = [
         {
             'name': 'sql_link_writer',
-            'pattern': 'scripts/ops/sql_link_writer_service.py',
-            'cmd': [str(PY), str(PROJECT_ROOT / 'scripts' / 'ops' / 'sql_link_writer_service.py')],
+            'pattern': 'scripts/ops/sql_link_shard_manager.py',
+            'cmd': [str(PROJECT_ROOT / 'scripts' / 'ops' / 'run_sql_link_writer_launchd.sh')],
             'log': PROJECT_ROOT / 'logs' / 'watchdog_sql_link_writer.log',
-            'alt_patterns': [],
+            'alt_patterns': ['scripts/ops/sql_link_writer_service.py'],
             'heartbeat_glob': '',
             'heartbeat_max_age_seconds': 0,
         },
@@ -646,6 +869,14 @@ def main() -> int:
 
     if args.require_all_sleeves:
         targets.append(_build_all_sleeves_target(heartbeat_max_age_seconds=args.all_sleeves_heartbeat_stale_seconds))
+
+    if args.require_paper_executor:
+        targets.append(
+            _build_execution_lane_target(
+                'paper',
+                heartbeat_max_age_seconds=args.paper_executor_heartbeat_stale_seconds,
+            )
+        )
 
     if args.require_coinbase:
         coinbase_cmd: List[str] = [
@@ -666,6 +897,7 @@ def main() -> int:
             {
                 'name': 'coinbase_loop',
                 'pattern': 'scripts/run_shadow_training_loop.py --broker coinbase',
+                'exclude_patterns': ['--profile crypto_futures'],
                 'cmd': coinbase_cmd,
                 'log': PROJECT_ROOT / 'logs' / 'watchdog_coinbase_loop.log',
                 'alt_patterns': [],
@@ -679,8 +911,12 @@ def main() -> int:
     alerts: List[Dict[str, Any]] = []
 
     for t in targets:
-        running = _proc_running(t['pattern'])
-        alt_running = sum(_proc_running(p) for p in t.get('alt_patterns', []) if p)
+        running = _proc_running(t['pattern'], exclude_patterns=t.get('exclude_patterns', []))
+        alt_running = sum(
+            _proc_running(p, exclude_patterns=t.get('exclude_patterns', []))
+            for p in t.get('alt_patterns', [])
+            if p
+        )
         heartbeat_glob = str(t.get('heartbeat_glob', '') or '')
         heartbeat_required = bool(heartbeat_glob)
         heartbeat_age = _latest_heartbeat_age_seconds(heartbeat_glob) if heartbeat_required else 0.0

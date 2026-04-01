@@ -14,7 +14,18 @@ HOT_RETENTION_SCRIPT = PROJECT_ROOT / 'scripts' / 'sql_hot_retention.py'
 QUEUE_RETENTION_SCRIPT = PROJECT_ROOT / 'scripts' / 'sql_queue_retention.py'
 SQLITE_MAINTENANCE_SCRIPT = PROJECT_ROOT / 'scripts' / 'sqlite_performance_maintenance.py'
 SQLITE_DB_PATH = PROJECT_ROOT / 'data' / 'jsonl_link.sqlite3'
-QUEUE_DB_PATH = PROJECT_ROOT / 'data' / 'bot_channel_queue.sqlite3'
+QUEUE_DB_PATH = Path(
+    str(
+        os.getenv(
+            'SQL_LINK_SERVICE_QUEUE_DB',
+            os.getenv(
+                'BOT_CHANNEL_QUEUE_DB',
+                str(PROJECT_ROOT / 'local_fallback_storage' / 'data' / 'bot_channel_queue.sqlite3'),
+            ),
+        )
+    )
+).expanduser()
+PROGRESS_HEALTH = PROJECT_ROOT / 'governance' / 'health' / 'sql_link_service_progress_latest.json'
 
 
 def _db_size_gb(path: Path) -> float:
@@ -37,6 +48,27 @@ def _parse_json_output(text: str) -> dict:
     except Exception:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _busy_progress_summary() -> dict:
+    if not PROGRESS_HEALTH.exists():
+        return {}
+    try:
+        payload = json.loads(PROGRESS_HEALTH.read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    summary = {
+        'timestamp_utc': str(payload.get('timestamp_utc') or ''),
+        'status': str(payload.get('status') or ''),
+        'current_step': str(payload.get('current_step') or ''),
+        'completed_shard_count': int(payload.get('completed_shard_count') or 0),
+        'completed_merge_count': int(payload.get('completed_merge_count') or 0),
+        'merged_rows_this_cycle': int(payload.get('merged_rows_this_cycle') or 0),
+        'primary_db': str(payload.get('primary_db') or ''),
+    }
+    return {k: v for k, v in summary.items() if v not in ('', 0)}
 
 
 def _run_link(timeout_s: int, lock_retries: int, retry_delay_s: float, *, skip_json_files: bool = False) -> tuple[int, str, str]:
@@ -70,6 +102,7 @@ def _run_hot_retention(
     archive_root: str,
     archive_period: str,
     archive_retention_days: int,
+    archive_prune_vacuum: bool,
     cold_export_root: str,
     cold_export_format: str,
     cold_export_batch_size: int,
@@ -88,6 +121,8 @@ def _run_hot_retention(
         '--archive-retention-days', str(max(archive_retention_days, 0)),
         '--json',
     ]
+    if archive_prune_vacuum:
+        cmd.append('--archive-prune-vacuum')
     if str(archive_root or '').strip():
         cmd.extend(['--archive-root', str(archive_root)])
     if str(cold_export_root or '').strip():
@@ -195,11 +230,12 @@ def main() -> int:
     parser.add_argument('--hot-retention-batch-size', type=int, default=int(os.getenv('SQL_LINK_SERVICE_HOT_BATCH_SIZE', '120000')))
     parser.add_argument('--hot-retention-max-rows', type=int, default=int(os.getenv('SQL_LINK_SERVICE_HOT_MAX_ROWS', '1000000')))
     parser.add_argument('--hot-retention-min-interval-seconds', type=int, default=int(os.getenv('SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS', '300')))
-    parser.add_argument('--hot-retention-vacuum-threshold-gb', type=float, default=float(os.getenv('SQL_LINK_SERVICE_HOT_VACUUM_THRESHOLD_GB', '400')))
+    parser.add_argument('--hot-retention-vacuum-threshold-gb', type=float, default=float(os.getenv('SQL_LINK_SERVICE_HOT_VACUUM_THRESHOLD_GB', '150')))
     parser.add_argument('--hot-retention-archive-db', default=os.getenv('SQL_LINK_SERVICE_HOT_ARCHIVE_DB', str(PROJECT_ROOT / 'data' / 'jsonl_link_archive.sqlite3')))
     parser.add_argument('--hot-retention-archive-root', default=os.getenv('SQL_LINK_SERVICE_HOT_ARCHIVE_ROOT', str(PROJECT_ROOT / 'data' / 'jsonl_link_archives')))
-    parser.add_argument('--hot-retention-archive-period', choices=('single', 'month'), default=os.getenv('SQL_LINK_SERVICE_HOT_ARCHIVE_PERIOD', 'month'))
+    parser.add_argument('--hot-retention-archive-period', choices=('single', 'day', 'month'), default=os.getenv('SQL_LINK_SERVICE_HOT_ARCHIVE_PERIOD', 'day'))
     parser.add_argument('--hot-retention-archive-retention-days', type=int, default=int(os.getenv('SQL_LINK_SERVICE_HOT_ARCHIVE_RETENTION_DAYS', '365')))
+    parser.add_argument('--hot-retention-archive-prune-vacuum', action='store_true', default=os.getenv('SQL_LINK_SERVICE_HOT_ARCHIVE_PRUNE_VACUUM', '1') == '1')
     parser.add_argument('--hot-retention-cold-export-root', default=os.getenv('SQL_LINK_SERVICE_HOT_COLD_ARCHIVE_ROOT', ''))
     parser.add_argument('--hot-retention-cold-export-format', choices=('parquet',), default=os.getenv('SQL_LINK_SERVICE_HOT_COLD_ARCHIVE_FORMAT', 'parquet'))
     parser.add_argument('--hot-retention-cold-export-batch-size', type=int, default=int(os.getenv('SQL_LINK_SERVICE_HOT_COLD_ARCHIVE_BATCH_SIZE', '50000')))
@@ -229,7 +265,21 @@ def main() -> int:
         fh.seek(0)
         owner = fh.read().strip()
         msg = {'ok': False, 'reason': 'writer_lock_busy', 'lock_path': str(lock_path), 'owner': owner}
-        print(json.dumps(msg, ensure_ascii=True) if args.json else f"sql_link_writer_service busy owner={owner or 'unknown'}")
+        progress = _busy_progress_summary()
+        if progress:
+            msg['service_progress'] = progress
+        if args.json:
+            print(json.dumps(msg, ensure_ascii=True))
+        else:
+            detail = ""
+            if progress:
+                detail = (
+                    f" current_step={progress.get('current_step', 'unknown')}"
+                    f" completed_shards={progress.get('completed_shard_count', 0)}"
+                    f" completed_merges={progress.get('completed_merge_count', 0)}"
+                    f" merged_rows={progress.get('merged_rows_this_cycle', 0)}"
+                )
+            print(f"sql_link_writer_service busy owner={owner or 'unknown'}{detail}")
         return 0
 
     fh.seek(0)
@@ -308,6 +358,7 @@ def main() -> int:
             'archive_root': str(args.hot_retention_archive_root or ''),
             'archive_period': str(args.hot_retention_archive_period),
             'archive_retention_days': int(args.hot_retention_archive_retention_days),
+            'archive_prune_vacuum': bool(args.hot_retention_archive_prune_vacuum),
             'cold_export_root': str(args.hot_retention_cold_export_root or ''),
             'cold_export_format': str(args.hot_retention_cold_export_format),
             'batch_size': int(args.hot_retention_batch_size),
@@ -332,6 +383,7 @@ def main() -> int:
                     archive_root=str(args.hot_retention_archive_root or ''),
                     archive_period=str(args.hot_retention_archive_period),
                     archive_retention_days=int(args.hot_retention_archive_retention_days),
+                    archive_prune_vacuum=bool(args.hot_retention_archive_prune_vacuum),
                     cold_export_root=str(args.hot_retention_cold_export_root or ''),
                     cold_export_format=str(args.hot_retention_cold_export_format),
                     cold_export_batch_size=int(args.hot_retention_cold_export_batch_size),

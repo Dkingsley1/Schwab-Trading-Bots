@@ -15,6 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 SHOCK_SYMBOLS = {"UVXY", "VIXY", "SOXL", "SOXS", "MSTR", "SMCI", "COIN", "TSLA"}
 MEAN_REVERT_SYMBOLS = {"TLT", "IEF", "SHY", "BND", "AGG", "GLD", "XLU", "XLP"}
+DEFENSIVE_DIVIDEND_SYMBOLS = {"SCHD", "VYM", "DVY", "XLP", "XLU", "PG", "MO", "XOM", "O", "CVX", "KO", "PEP", "JNJ"}
 
 BASE_FEATURE_NAMES = [
     "pnl_scaled",
@@ -158,11 +159,11 @@ def _role_index(role: str) -> int:
 def _regime_bucket(symbol: str, tx_type: str, pnl: float) -> str:
     s = (symbol or "").upper()
     t = (tx_type or "").lower()
-    if s in SHOCK_SYMBOLS or abs(float(pnl)) >= 300.0:
+    if s in SHOCK_SYMBOLS or abs(float(pnl)) >= 300.0 or any(k in t for k in ("event", "macro", "futures", "shock", "crash", "hedge")):
         return "shock"
-    if s in MEAN_REVERT_SYMBOLS or any(k in t for k in ("bond", "dividend", "rebalance", "income")):
+    if s in MEAN_REVERT_SYMBOLS or s in DEFENSIVE_DIVIDEND_SYMBOLS or any(k in t for k in ("bond", "dividend", "rebalance", "income", "yield", "drip", "compound", "defensive")):
         return "mean_revert"
-    if any(k in t for k in ("trend", "breakout", "momentum", "swing")):
+    if any(k in t for k in ("trend", "breakout", "momentum", "swing", "rotation")):
         return "trend"
     return "other"
 

@@ -7,7 +7,8 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-ARCHIVE_FILE_RE = re.compile(r"^jsonl_link_archive_(\d{4})_(\d{2})\.sqlite3$")
+ARCHIVE_MONTH_FILE_RE = re.compile(r"^jsonl_link_archive_(\d{4})_(\d{2})\.sqlite3$")
+ARCHIVE_DAY_FILE_RE = re.compile(r"^jsonl_link_archive_(\d{4})_(\d{2})_(\d{2})\.sqlite3$")
 
 
 def _now_utc() -> datetime:
@@ -43,6 +44,8 @@ def _ensure_archive_schema(src: sqlite3.Connection, dst: sqlite3.Connection) -> 
 
 def _archive_key(ingested_at: str, period: str) -> str:
     raw = str(ingested_at or "")
+    if period == "day" and len(raw) >= 10:
+        return raw[:10].replace("-", "_")
     if period == "month" and len(raw) >= 7:
         return raw[:7].replace("-", "_")
     return "single"
@@ -76,12 +79,20 @@ def _archive_db_candidates(*, archive_db: Path, archive_root: Path | None) -> li
     return out
 
 
-def _archive_month_fully_before_cutoff(path: Path, cutoff_dt: datetime) -> bool:
-    match = ARCHIVE_FILE_RE.match(path.name)
-    if match is None:
+def _archive_file_fully_before_cutoff(path: Path, cutoff_dt: datetime) -> bool:
+    day_match = ARCHIVE_DAY_FILE_RE.match(path.name)
+    if day_match is not None:
+        year = int(day_match.group(1))
+        month = int(day_match.group(2))
+        day = int(day_match.group(3))
+        next_day = datetime(year, month, day, tzinfo=timezone.utc) + timedelta(days=1)
+        return next_day <= cutoff_dt
+
+    month_match = ARCHIVE_MONTH_FILE_RE.match(path.name)
+    if month_match is None:
         return False
-    year = int(match.group(1))
-    month = int(match.group(2))
+    year = int(month_match.group(1))
+    month = int(month_match.group(2))
     if month == 12:
         next_month = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
     else:
@@ -256,7 +267,7 @@ def _prune_archive_storage(
     }
 
     for path in _archive_db_candidates(archive_db=archive_db, archive_root=archive_root):
-        if archive_root is not None and path.parent == archive_root and _archive_month_fully_before_cutoff(path, cutoff_dt):
+        if archive_root is not None and path.parent == archive_root and _archive_file_fully_before_cutoff(path, cutoff_dt):
             row_count = _count_archive_rows(path)
             if cold_export_root is not None:
                 export_target = _export_output_path(path, cold_export_root=cold_export_root, cold_export_format=cold_export_format)
@@ -323,7 +334,7 @@ def main() -> int:
     parser.add_argument("--db", default=str(PROJECT_ROOT / "data" / "jsonl_link.sqlite3"))
     parser.add_argument("--archive-db", default=str(PROJECT_ROOT / "data" / "jsonl_link_archive.sqlite3"))
     parser.add_argument("--archive-root", default="")
-    parser.add_argument("--archive-period", choices=("single", "month"), default="single")
+    parser.add_argument("--archive-period", choices=("single", "day", "month"), default="single")
     parser.add_argument("--archive-retention-days", type=int, default=0, help="Prune archived rows/files older than this many days (0 = disabled).")
     parser.add_argument("--archive-prune-vacuum", action="store_true", help="Vacuum archive DBs after row-level pruning when rows remain.")
     parser.add_argument("--cold-export-root", default="", help="Optional root for compressed cold archive exports before old monthly archive files are deleted.")

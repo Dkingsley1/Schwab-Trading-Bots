@@ -36,8 +36,8 @@ fi
 "$PY" "$PROJECT_ROOT/scripts/restore_state_probe.py" || true
 "$PY" "$PROJECT_ROOT/scripts/global_risk_killswitch.py" --auto-clear || true
 
-"$PY" "$PROJECT_ROOT/scripts/link_jsonl_to_sql.py" --mode sqlite
-"$PY" "$PROJECT_ROOT/scripts/build_one_numbers_report.py" --day "$DAY_UTC"
+"$PY" "$PROJECT_ROOT/scripts/ops/sql_link_shard_manager.py" --once --json
+"$PY" "$PROJECT_ROOT/scripts/build_one_numbers_report.py"
 "$PY" "$PROJECT_ROOT/scripts/daily_auto_verify.py" --day "$DAY_UTC" || true
 
 if [[ -f "$HOME/Library/LaunchAgents/com.dankingsley.shadow_watchdog.plist" ]]; then

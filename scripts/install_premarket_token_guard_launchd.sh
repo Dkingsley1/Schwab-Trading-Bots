@@ -10,7 +10,7 @@ LOG_DIR="$HOME/Library/Logs/schwab_trading_bot"
 OUT_LOG="$LOG_DIR/premarket_token_guard.out.log"
 ERR_LOG="$LOG_DIR/premarket_token_guard.err.log"
 RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-live}"
-CHECK_INTERVAL_SECONDS="${PREMARKET_TOKEN_CHECK_INTERVAL_SECONDS:-1800}"
+CHECK_INTERVAL_SECONDS="${PREMARKET_TOKEN_CHECK_INTERVAL_SECONDS:-600}"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
 chmod +x "$RUN_SCRIPT"

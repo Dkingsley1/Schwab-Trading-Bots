@@ -18,9 +18,14 @@ except Exception:
 
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from core.runtime_python import resolve_runtime_python
+
 CORE_DIR = os.path.join(PROJECT_ROOT, "core")
 REGISTRY_PATH = os.path.join(PROJECT_ROOT, "master_bot_registry.json")
-VENV_PY = os.path.join(PROJECT_ROOT, ".venv312", "bin", "python")
+VENV_PY = str(resolve_runtime_python(PROJECT_ROOT))
 MASTER_RUNNER = os.path.join(PROJECT_ROOT, "scripts", "run_master_bot.py")
 TRADE_DATASET_BUILDER = os.path.join(PROJECT_ROOT, "scripts", "build_behavior_dataset_from_decisions.py")
 TRADE_DATASET_BUILDER_LEGACY = os.path.join(PROJECT_ROOT, "scripts", "build_trade_learning_dataset.py")
@@ -51,6 +56,7 @@ DATA_RETENTION_POLICY = os.path.join(PROJECT_ROOT, "scripts", "data_retention_po
 DATA_DIVERGENCE_GLOBAL_FILE = os.path.join(PROJECT_ROOT, "governance", "health", "data_source_divergence_latest.json")
 DATA_DIVERGENCE_BOND_FILE = os.path.join(PROJECT_ROOT, "governance", "health", "data_source_divergence_bond_latest.json")
 DATA_DIVERGENCE_NON_BOND_FILE = os.path.join(PROJECT_ROOT, "governance", "health", "data_source_divergence_non_bond_latest.json")
+RETRAIN_OPERATOR_NOTES_PATH = os.path.join(PROJECT_ROOT, "governance", "health", "retrain_operator_notes_latest.json")
 
 
 _MLX_LOCK_HANDLE = None
@@ -91,10 +97,18 @@ def _normalized_bot_id_from_script(path: str) -> str:
 
 
 SEGMENT_KEYWORDS = {
-    "trend": ["trend", "breakout", "donchian"],
-    "mean_revert": ["mean_revert", "vwap", "bollinger", "keltner"],
-    "shock": ["flash", "shock", "event", "crash", "anomaly"],
-    "liquidity": ["liquidity", "spread", "order_flow", "microstructure"],
+    "trend": ["trend", "breakout", "donchian", "momentum", "dmi", "relative_strength", "gap_open", "seasonal"],
+    "mean_revert": ["mean_revert", "vwap", "bollinger", "keltner", "bond", "dividend", "yield", "income", "defensive", "drip", "compound", "quality", "allocator", "risk_budget"],
+    "shock": ["flash", "shock", "event", "crash", "anomaly", "macro", "inflation", "pmi", "rates", "credit", "futures", "term_structure", "vol", "news"],
+    "liquidity": ["liquidity", "spread", "order_flow", "microstructure", "execution", "latency", "position_1m_3m"],
+}
+
+_OPERATOR_NOTE_SEGMENT_HINTS = {
+    "guard_heavy_regime": "shock",
+    "defensive_dividend_repeat": "mean_revert",
+    "futures_event_risk": "shock",
+    "crypto_throttle_repeat": "liquidity",
+    "stock_crypto_overlap": "other",
 }
 
 
@@ -160,6 +174,78 @@ def _apply_included_bot_ids(targets: list[str], included_bot_ids: str) -> list[s
     return out
 
 
+def _should_include_deleted_targets(args: argparse.Namespace, explicit_include_requested: bool) -> bool:
+    return bool(args.include_deleted or explicit_include_requested)
+
+
+def _dedupe_targets_preserve_order(targets: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for target in targets:
+        bot_id = _normalized_bot_id_from_script(target)
+        if bot_id in seen:
+            continue
+        seen.add(bot_id)
+        out.append(target)
+    return out
+
+
+def _reshape_target_queue(
+    targets: list[str],
+    *,
+    allow_auto_queue_reshaping: bool,
+    regime_focus: str,
+    regime_balance: bool,
+    exclude_bot_ids: str,
+    canary_priority_file: str,
+    canary_priority_top_n: int,
+    distillation_priority: bool,
+    distill_assign_map: dict[str, dict],
+    distillation_extra_pass: int,
+    new_bot_boost: bool,
+    new_bot_targets: list[str],
+    new_bot_extra_pass: int,
+) -> tuple[list[str], int, int]:
+    canary_priority_selected = 0
+    distill_selected = 0
+
+    if allow_auto_queue_reshaping:
+        if regime_focus:
+            focused = _apply_regime_focus(targets, str(regime_focus))
+            if focused:
+                targets = focused
+
+        if regime_balance:
+            targets = _apply_regime_balanced_order(targets)
+
+        targets = _apply_excluded_bot_ids(targets, str(exclude_bot_ids or ""))
+
+        targets, canary_priority_selected = _apply_canary_priority(
+            targets,
+            diagnostics_file=str(canary_priority_file),
+            top_n=int(canary_priority_top_n),
+        )
+
+        if distillation_priority and distill_assign_map:
+            targets, distill_selected = _prioritize_targets_for_distillation(targets, distill_assign_map)
+
+        if distillation_priority and distill_assign_map and int(distillation_extra_pass) > 0:
+            student_targets = [t for t in targets if _normalized_bot_id_from_script(t) in distill_assign_map]
+            extra_n = min(max(int(distillation_extra_pass), 0), len(student_targets))
+            if extra_n > 0:
+                targets = targets + student_targets[:extra_n]
+
+        if new_bot_boost and new_bot_targets and int(new_bot_extra_pass) > 0:
+            extra_new_n = min(max(int(new_bot_extra_pass), 0), len(new_bot_targets))
+            if extra_new_n > 0:
+                targets = targets + new_bot_targets[:extra_new_n]
+    else:
+        targets = _apply_excluded_bot_ids(targets, str(exclude_bot_ids or ""))
+    targets = _dedupe_targets_preserve_order(targets)
+
+    return targets, int(canary_priority_selected), int(distill_selected)
+
+
 def _resolve_data_divergence_file(scope: str, fallback_file: str) -> tuple[str, str]:
     token = str(scope or "").strip().lower()
     if token in {"", "all", "global", "all_profiles"}:
@@ -182,11 +268,89 @@ def _load_json_file(path: str) -> dict:
         return {}
 
 
+def _parse_ts(raw: str) -> datetime | None:
+    if not raw:
+        return None
+    s = str(raw).strip().replace("Z", "+00:00")
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _fresh_health_payload(payload: dict, *, max_age_hours: float) -> tuple[dict, bool]:
+    if not isinstance(payload, dict) or not payload:
+        return {}, False
+    ts = _parse_ts(str(payload.get("timestamp_utc") or ""))
+    if ts is None:
+        return payload, False
+    age_hours = max((datetime.now(timezone.utc) - ts).total_seconds(), 0.0) / 3600.0
+    return payload, age_hours <= max(max_age_hours, 0.0)
+
+
 def _log_schema_version() -> int:
     try:
         return max(int(os.getenv("LOG_SCHEMA_VERSION", "2")), 1)
     except Exception:
         return 2
+
+
+def _load_retrain_operator_notes(path: str) -> dict:
+    payload = _load_json_file(path)
+    if not payload:
+        return {}
+    observations = [str(item).strip() for item in (payload.get("observations") or []) if str(item).strip()]
+    training_guidance = [str(item).strip() for item in (payload.get("training_guidance") or []) if str(item).strip()]
+    tags = [str(item).strip() for item in (payload.get("tags") or []) if str(item).strip()]
+    out = {
+        "title": str(payload.get("title", "") or "").strip(),
+        "timestamp_utc": str(payload.get("timestamp_utc", "") or "").strip(),
+        "timestamp_local": str(payload.get("timestamp_local", "") or "").strip(),
+        "requested_by": str(payload.get("requested_by", "") or "").strip(),
+        "source": str(payload.get("source", "") or "").strip(),
+        "summary": str(payload.get("summary", "") or "").strip(),
+        "tags": tags,
+        "observations": observations,
+        "training_guidance": training_guidance,
+        "metrics": payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {},
+    }
+    return {k: v for k, v in out.items() if v not in ("", [], {}, None)}
+
+
+def _derive_regime_focus_from_operator_notes(path: str, top_n: int = 2) -> str:
+    notes = _load_retrain_operator_notes(path)
+    if not notes:
+        return ""
+    picks: list[str] = []
+    for tag in notes.get("tags", []) or []:
+        seg = _OPERATOR_NOTE_SEGMENT_HINTS.get(str(tag).strip().lower())
+        if seg and seg not in picks:
+            picks.append(seg)
+    text_blobs = [
+        str(notes.get("summary", "") or ""),
+        *[str(item) for item in (notes.get("observations") or [])],
+        *[str(item) for item in (notes.get("training_guidance") or [])],
+    ]
+    lowered = " ".join(text_blobs).lower()
+    keyword_hints = [
+        ("guard-heavy", "shock"),
+        ("event-risk", "shock"),
+        ("futures", "shock"),
+        ("defensive", "mean_revert"),
+        ("dividend", "mean_revert"),
+        ("crypto throttle", "liquidity"),
+        ("risk-control", "liquidity"),
+    ]
+    for needle, seg in keyword_hints:
+        if needle in lowered and seg not in picks:
+            picks.append(seg)
+    filtered = [seg for seg in picks if seg in {"trend", "mean_revert", "shock", "liquidity", "other"}]
+    return ",".join(filtered[: max(int(top_n), 1)])
 
 
 def _sha256_file(path: str) -> str:
@@ -283,7 +447,10 @@ def _check_data_quality_floor(
     max_divergence_spread: float,
 ) -> tuple[bool, str, dict]:
     coverage = _load_json_file(coverage_file)
-    divergence = _load_json_file(divergence_file)
+    divergence, divergence_fresh = _fresh_health_payload(
+        _load_json_file(divergence_file),
+        max_age_hours=float(os.getenv("RETRAIN_DATA_DIVERGENCE_MAX_AGE_HOURS", "8")),
+    )
 
     coverage_ratio = float(coverage.get("coverage_ratio", 0.0) or 0.0)
     worst_spread = float(divergence.get("worst_relative_spread", 0.0) or 0.0)
@@ -302,6 +469,8 @@ def _check_data_quality_floor(
             "min_coverage_ratio": float(min_coverage_ratio),
             "worst_relative_spread": worst_spread,
             "max_divergence_spread": float(max_divergence_spread),
+            "divergence_timestamp_utc": divergence.get("timestamp_utc", ""),
+            "divergence_fresh": divergence_fresh,
         }
 
     return True, "ok", {
@@ -309,6 +478,8 @@ def _check_data_quality_floor(
         "min_coverage_ratio": float(min_coverage_ratio),
         "worst_relative_spread": worst_spread,
         "max_divergence_spread": float(max_divergence_spread),
+        "divergence_timestamp_utc": divergence.get("timestamp_utc", ""),
+        "divergence_fresh": divergence_fresh,
     }
 
 
@@ -360,6 +531,7 @@ def _write_retrain_scorecard(
     ended_utc: str,
     target_count: int,
     failures: list[str],
+    failure_details: list[dict],
     skipped_by_memory: list[str],
     target_outcomes: list[dict],
     prev_registry_snapshot: dict[str, float],
@@ -370,7 +542,9 @@ def _write_retrain_scorecard(
     data_quality_summary: dict,
     canary_priority_selected: int,
     distill_selected: int,
+    operator_notes: dict | None = None,
     lineage: dict | None = None,
+    dry_run: bool = False,
 ) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     out_dir = os.path.join(PROJECT_ROOT, "exports", "sql_reports")
@@ -417,9 +591,13 @@ def _write_retrain_scorecard(
             "degraded": degraded,
             "unchanged": unchanged,
         },
+        "target_outcomes": target_outcomes,
         "failures": failures,
+        "failure_details": failure_details,
         "skipped_by_memory": skipped_by_memory,
     }
+    if operator_notes:
+        payload["operator_notes"] = operator_notes
     if lineage:
         payload["lineage"] = lineage
 
@@ -427,7 +605,8 @@ def _write_retrain_scorecard(
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=True, indent=2)
 
-    latest_json = os.path.join(PROJECT_ROOT, "governance", "health", "retrain_scorecard_latest.json")
+    latest_name = "retrain_scorecard_dry_run_latest.json" if dry_run else "retrain_scorecard_latest.json"
+    latest_json = os.path.join(PROJECT_ROOT, "governance", "health", latest_name)
     os.makedirs(os.path.dirname(latest_json), exist_ok=True)
     with open(latest_json, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=True, indent=2)
@@ -444,6 +623,30 @@ def _write_retrain_scorecard(
         f"- Canary-priority selected: {int(canary_priority_selected)}",
         f"- Distillation-priority selected: {int(distill_selected)}",
     ]
+    if failure_details:
+        lines.append("")
+        lines.append("## Failure Details")
+        for row in failure_details:
+            bot_id = str((row or {}).get("bot_id", "") or "").strip() or "unknown_bot"
+            rc = (row or {}).get("rc", "n/a")
+            reason = str((row or {}).get("reason", "") or "").strip() or "command_failed_without_output"
+            lines.append(f"- {bot_id}: rc={rc} reason={reason}")
+    if operator_notes:
+        title = str(operator_notes.get("title", "") or "").strip() or "Operator Notes"
+        lines.append("")
+        lines.append(f"## {title}")
+        summary = str(operator_notes.get("summary", "") or "").strip()
+        if summary:
+            lines.append(f"- Summary: {summary}")
+        tags = [str(item) for item in (operator_notes.get("tags") or []) if str(item).strip()]
+        if tags:
+            lines.append(f"- Tags: {', '.join(tags)}")
+        observations = [str(item) for item in (operator_notes.get("observations") or []) if str(item).strip()]
+        for item in observations[:8]:
+            lines.append(f"- Observation: {item}")
+        training_guidance = [str(item) for item in (operator_notes.get("training_guidance") or []) if str(item).strip()]
+        for item in training_guidance[:8]:
+            lines.append(f"- Training guidance: {item}")
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
@@ -453,28 +656,32 @@ def _write_training_success_marker(
     *,
     target_outcomes: list[dict],
     failures: list[str],
+    failure_details: list[dict],
     skipped_by_memory: list[str],
     master_update_status: str,
     data_quality_summary: dict,
+    operator_notes: dict | None = None,
     lineage: dict | None = None,
+    dry_run: bool = False,
 ) -> str:
     trained_count = sum(1 for row in target_outcomes if str((row or {}).get("status", "")) == "trained")
     failure_count = len(failures)
     precheck_ok = str(master_update_status).startswith("updated")
     data_quality_ok = bool((data_quality_summary or {}).get("ok", False))
+    training_completed_ok = (failure_count == 0) and (trained_count > 0)
 
     if failure_count > 0:
         reason = f"training_failures_present:{failure_count}"
     elif trained_count <= 0:
         reason = "no_trained_targets"
     elif not precheck_ok:
-        reason = f"master_update_not_updated:{master_update_status}"
+        reason = f"trained_not_promoted:{master_update_status}"
     elif not data_quality_ok:
         reason = "data_quality_not_ok"
     else:
         reason = "ok"
 
-    confirmed = (failure_count == 0) and (trained_count > 0) and precheck_ok and data_quality_ok
+    confirmed = training_completed_ok and precheck_ok and data_quality_ok
 
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -482,17 +689,24 @@ def _write_training_success_marker(
         "run_id": str(os.getenv("CORRELATION_RUN_ID", "") or "").strip(),
         "iter_id": str(os.getenv("CORRELATION_ITER_ID", "") or "").strip(),
         "confirmed_training_success": bool(confirmed),
+        "training_completed_ok": bool(training_completed_ok),
+        "promotion_applied": bool(precheck_ok),
+        "data_quality_ok": bool(data_quality_ok),
         "reason": reason,
         "trained_count": int(trained_count),
         "failure_count": int(failure_count),
+        "failure_details": list(failure_details or []),
         "skipped_by_memory_count": int(len(skipped_by_memory)),
         "master_update_status": str(master_update_status),
         "data_quality_ok": bool(data_quality_ok),
     }
+    if operator_notes:
+        payload["operator_notes"] = operator_notes
     if lineage:
         payload["lineage"] = lineage
 
-    out_path = os.path.join(PROJECT_ROOT, "governance", "health", "training_success_latest.json")
+    out_name = "training_success_dry_run_latest.json" if dry_run else "training_success_latest.json"
+    out_path = os.path.join(PROJECT_ROOT, "governance", "health", out_name)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=True, indent=2)
@@ -655,18 +869,29 @@ def _memory_ready(min_free_pct: float, max_swap_gb: float) -> tuple[bool, str, d
     snap = _memory_snapshot()
 
     free_pct = snap.get("free_pct")
-    if free_pct is not None and free_pct < min_free_pct:
-        return False, f"free_pct={free_pct:.1f} < min_free_pct={min_free_pct:.1f}", snap
+    available_pct = snap.get("available_pct")
+    effective_free_pct = available_pct if available_pct is not None else free_pct
+    if effective_free_pct is not None and effective_free_pct < min_free_pct:
+        free_metric = "available_pct" if available_pct is not None else "free_pct"
+        return False, f"{free_metric}={effective_free_pct:.1f} < min_free_pct={min_free_pct:.1f}", snap
 
     swap_gb = snap.get("swap_used_gb")
     if swap_gb is not None and swap_gb > max_swap_gb:
         # macOS can keep swap allocated long after pressure clears; allow progress when free memory is healthy.
-        swap_relax_free_pct = float(os.getenv("RETRAIN_SWAP_RELAX_FREE_PCT", "72"))
+        swap_relax_free_pct = float(os.getenv("RETRAIN_SWAP_RELAX_FREE_PCT", "38"))
+        swap_relax_available_pct = float(os.getenv("RETRAIN_SWAP_RELAX_AVAILABLE_PCT", "55"))
         relax_floor = max(float(min_free_pct), float(swap_relax_free_pct))
-        if free_pct is not None and free_pct >= relax_floor:
+        free_ok = free_pct is not None and free_pct >= relax_floor
+        available_ok = available_pct is not None and available_pct >= swap_relax_available_pct
+        if free_ok or available_ok:
+            relaxed_on = (
+                f"free_pct={free_pct:.1f} >= relax_floor={relax_floor:.1f}"
+                if free_ok
+                else f"available_pct={available_pct:.1f} >= swap_relax_available_pct={swap_relax_available_pct:.1f}"
+            )
             return True, (
                 f"swap_relaxed swap_used_gb={swap_gb:.2f} > max_swap_gb={max_swap_gb:.2f} "
-                f"but free_pct={free_pct:.1f} >= relax_floor={relax_floor:.1f}"
+                f"but {relaxed_on}"
             ), snap
         return False, f"swap_used_gb={swap_gb:.2f} > max_swap_gb={max_swap_gb:.2f}", snap
 
@@ -801,6 +1026,51 @@ def run_cmd(cmd: list[str], dry_run: bool, env: dict[str, str], extra_nice: int 
     return proc.returncode
 
 
+def run_cmd_capture(
+    cmd: list[str],
+    dry_run: bool,
+    env: dict[str, str],
+    extra_nice: int = 0,
+) -> tuple[int, str, str]:
+    full_cmd = cmd
+    if extra_nice > 0:
+        full_cmd = ["/usr/bin/nice", "-n", str(extra_nice)] + cmd
+    print("$ " + " ".join(full_cmd))
+    if dry_run:
+        return 0, "", ""
+    proc = subprocess.run(
+        full_cmd,
+        cwd=PROJECT_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if proc.stdout:
+        print(proc.stdout, end="")
+    if proc.stderr:
+        print(proc.stderr, end="", file=sys.stderr)
+    return proc.returncode, str(proc.stdout or ""), str(proc.stderr or "")
+
+
+def _tail_text(text: str, max_lines: int = 40) -> str:
+    lines = [str(line).rstrip() for line in str(text or "").splitlines() if str(line).strip()]
+    if len(lines) > max_lines:
+        lines = lines[-max_lines:]
+    return "\n".join(lines)
+
+
+def _extract_failure_reason(stdout_text: str, stderr_text: str) -> str:
+    for blob in (stderr_text, stdout_text):
+        lines = [str(line).strip() for line in str(blob or "").splitlines() if str(line).strip()]
+        if not lines:
+            continue
+        for line in reversed(lines):
+            if line.startswith("Traceback"):
+                continue
+            return line
+    return "command_failed_without_output"
+
+
 
 def _registry_snapshot(path: str) -> dict[str, float]:
     if not os.path.exists(path):
@@ -877,6 +1147,46 @@ def _load_active_bot_map(registry_path: str) -> dict[str, bool]:
     return out
 
 
+def _load_registry_rows(registry_path: str) -> dict[str, dict]:
+    if not os.path.exists(registry_path):
+        return {}
+    try:
+        with open(registry_path, "r", encoding="utf-8") as f:
+            reg = json.load(f)
+    except Exception:
+        return {}
+
+    out: dict[str, dict] = {}
+    for row in reg.get("sub_bots", []):
+        if not isinstance(row, dict):
+            continue
+        bot_id = str(row.get("bot_id", "")).strip().lower()
+        if not bot_id:
+            continue
+        out[bot_id] = dict(row)
+    return out
+
+
+def _low_readiness_retrain_reason(row: dict | None) -> str:
+    if not isinstance(row, dict):
+        return ""
+    reason = str(row.get("reason", "") or "").strip()
+    promotion_reason = str(row.get("promotion_reason", "") or "").strip()
+    reason_text = " ".join(tok for tok in [reason, promotion_reason] if tok).lower()
+    quality = float(row.get("quality_score", row.get("test_accuracy", 0.0)) or 0.0)
+    test_accuracy = float(row.get("test_accuracy", 0.0) or 0.0)
+    streak = int(row.get("no_improvement_streak", 0) or 0)
+    if reason_text.startswith("manual_canary_restore") and (quality < 0.42 or streak >= 3):
+        return "manual_canary_restore_low_readiness"
+    if reason.startswith("min_active_floor_override_") and (quality < 0.50 or test_accuracy < 0.55):
+        return "min_active_floor_low_readiness"
+    if reason.startswith("protected_collection_floor_") and (quality < 0.30 or test_accuracy <= 0.50 or streak >= 2):
+        return "protected_collection_floor_low_readiness"
+    if reason.startswith("bucket_diversity_") and (quality < 0.25 and test_accuracy < 0.50):
+        return "bucket_diversity_low_readiness"
+    return ""
+
+
 def _latest_model_age_hours(bot_id: str) -> float | None:
     model_glob = os.path.join(PROJECT_ROOT, "models", f"{bot_id}_*.npz")
     paths = sorted(glob.glob(model_glob))
@@ -896,13 +1206,20 @@ def _filter_targets_for_efficiency(
     active_only: bool,
     max_targets: int,
     min_model_age_hours: float,
+    skip_low_readiness: bool,
 ) -> tuple[list[str], dict[str, int]]:
     active_map = _load_active_bot_map(REGISTRY_PATH)
+    registry_rows = _load_registry_rows(REGISTRY_PATH) if skip_low_readiness else {}
 
     rows: list[tuple[str, str, bool, float]] = []
+    low_readiness_skipped = 0
     for t in targets:
         bot_id = _normalized_bot_id_from_script(t)
         is_active = bool(active_map.get(bot_id, False))
+        low_readiness_reason = _low_readiness_retrain_reason(registry_rows.get(bot_id)) if registry_rows else ""
+        if low_readiness_reason:
+            low_readiness_skipped += 1
+            continue
         age_h = _latest_model_age_hours(bot_id)
         if age_h is None:
             age_h = 1e9  # prioritize bots without prior model artifact
@@ -926,6 +1243,7 @@ def _filter_targets_for_efficiency(
         "pre": pre,
         "post": len(filtered),
         "active_selected": sum(1 for r in rows if r[2]),
+        "low_readiness_skipped": int(low_readiness_skipped),
     }
     return filtered, stats
 
@@ -1099,13 +1417,13 @@ def main() -> int:
     parser.add_argument(
         "--min-free-pct",
         type=float,
-        default=float(os.getenv("RETRAIN_MIN_FREE_PCT", "22")),
+        default=float(os.getenv("RETRAIN_MIN_FREE_PCT", "18")),
         help="Minimum free memory percentage required before launching next model.",
     )
     parser.add_argument(
         "--max-swap-gb",
         type=float,
-        default=float(os.getenv("RETRAIN_MAX_SWAP_GB", "1.0")),
+        default=float(os.getenv("RETRAIN_MAX_SWAP_GB", "2.5")),
         help="Maximum allowed swap usage (GB) before launching next model.",
     )
     parser.add_argument(
@@ -1117,13 +1435,13 @@ def main() -> int:
     parser.add_argument(
         "--adaptive-swap-step-gb",
         type=float,
-        default=float(os.getenv("RETRAIN_ADAPTIVE_SWAP_STEP_GB", "0.4")),
+        default=float(os.getenv("RETRAIN_ADAPTIVE_SWAP_STEP_GB", "0.6")),
         help="Step increase for adaptive swap gate.",
     )
     parser.add_argument(
         "--adaptive-swap-max-gb",
         type=float,
-        default=float(os.getenv("RETRAIN_ADAPTIVE_SWAP_MAX_GB", "3.5")),
+        default=float(os.getenv("RETRAIN_ADAPTIVE_SWAP_MAX_GB", "6.0")),
         help="Upper cap for adaptive swap gate relaxation.",
     )
     parser.add_argument(
@@ -1549,12 +1867,15 @@ def main() -> int:
             print("Retrain blocked by artifact freshness guard.")
             return 1
 
+    explicit_include_requested = bool(str(args.include_bot_ids or "").strip())
+
     if args.promotion_bottleneck_priority and os.path.exists(PROMOTION_BOTTLENECK_SCRIPT):
         _ = run_cmd([VENV_PY, PROMOTION_BOTTLENECK_SCRIPT, "--json"], args.dry_run, os.environ.copy(), extra_nice=max(args.ops_extra_nice, 0))
 
     effective_canary_priority_top_n = int(args.canary_priority_top_n)
     effective_distillation_extra_pass = int(args.distillation_student_extra_pass)
     effective_regime_focus = str(args.regime_focus or "")
+    operator_note_focus = _derive_regime_focus_from_operator_notes(RETRAIN_OPERATOR_NOTES_PATH, top_n=2)
 
     if args.new_bot_boost:
         effective_canary_priority_top_n = _effective_int(effective_canary_priority_top_n, 30)
@@ -1580,18 +1901,24 @@ def main() -> int:
             pass
         try:
             rec_targets = int(rec.get("RETRAIN_MAX_TARGETS", 0) or 0)
-            if rec_targets > 0:
+            if rec_targets > 0 and not explicit_include_requested:
                 args.max_targets = min(int(args.max_targets), rec_targets) if int(args.max_targets) > 0 else rec_targets
         except Exception:
             pass
+    if (not str(args.regime_focus or "").strip()) and operator_note_focus:
+        if (not effective_regime_focus) or str(effective_regime_focus).strip().lower() == "other":
+            effective_regime_focus = operator_note_focus
 
+    include_deleted_targets = _should_include_deleted_targets(args, explicit_include_requested)
     deleted_ids = _load_deleted_bot_ids(REGISTRY_PATH)
-    targets = build_targets(include_deleted=args.include_deleted)
+    targets = build_targets(include_deleted=include_deleted_targets)
     if not targets:
         print("ERROR: no brain_refinery targets found")
         return 2
 
-    if str(args.include_bot_ids or "").strip():
+    if explicit_include_requested:
+        if include_deleted_targets and not args.include_deleted:
+            print("Include-bot-ids override: allowing explicitly requested deleted targets.")
         targets = _apply_included_bot_ids(targets, str(args.include_bot_ids or ""))
         if not targets:
             print(f"ERROR: include_bot_ids selected zero targets: {args.include_bot_ids}")
@@ -1599,49 +1926,41 @@ def main() -> int:
 
     base_targets = list(targets)
     effective_active_only = bool(args.active_only)
-    if str(args.include_bot_ids or "").strip() and effective_active_only:
+    if explicit_include_requested and effective_active_only:
         effective_active_only = False
         print("Include-bot-ids override: bypassing active_only filter.")
 
     min_age = max(float(args.min_model_age_hours), 0.0)
+    effective_max_targets = 0 if explicit_include_requested else max(int(args.max_targets), 0)
+    effective_min_model_age_hours = 0.0 if explicit_include_requested else min_age
+    if explicit_include_requested:
+        print("Include-bot-ids override: bypassing max_targets/min_model_age_hours and preserving explicit target set.")
+
     targets, target_stats = _filter_targets_for_efficiency(
         targets,
         active_only=effective_active_only,
-        max_targets=max(int(args.max_targets), 0),
-        min_model_age_hours=min_age,
+        max_targets=effective_max_targets,
+        min_model_age_hours=effective_min_model_age_hours,
+        skip_low_readiness=not explicit_include_requested,
     )
     if not targets and min_age > 0:
         print("WARN: age filter selected zero targets; retrying with min_model_age_hours=0")
         targets, target_stats = _filter_targets_for_efficiency(
             base_targets,
             active_only=effective_active_only,
-            max_targets=max(int(args.max_targets), 0),
+            max_targets=effective_max_targets,
             min_model_age_hours=0.0,
+            skip_low_readiness=not explicit_include_requested,
         )
     if not targets:
         print("WARN: efficiency filter selected zero targets; falling back to full target set")
         targets = base_targets
         target_stats = {"pre": len(base_targets), "post": len(base_targets), "active_selected": 0}
 
-    targets = _apply_retrain_curriculum(targets, REGISTRY_PATH)
-
-    if effective_regime_focus:
-        focused = _apply_regime_focus(targets, str(effective_regime_focus))
-        if focused:
-            targets = focused
-        else:
-            print(f"WARN: regime_focus produced zero targets, keeping original list: {effective_regime_focus}")
-
-    if args.regime_balance:
-        targets = _apply_regime_balanced_order(targets)
-
-    targets = _apply_excluded_bot_ids(targets, str(args.exclude_bot_ids or ""))
-
-    targets, canary_priority_selected = _apply_canary_priority(
-        targets,
-        diagnostics_file=str(args.canary_priority_file),
-        top_n=int(effective_canary_priority_top_n),
-    )
+    if not explicit_include_requested:
+        targets = _apply_retrain_curriculum(targets, REGISTRY_PATH)
+    elif effective_regime_focus:
+        print(f"Include-bot-ids override: ignoring regime_focus filter for explicit targets: {effective_regime_focus}")
 
     wf_runs = _load_walk_forward_runs(str(args.walk_forward_file))
     new_bot_targets = _select_new_bot_targets(targets, wf_runs, int(args.new_bot_max_runs)) if args.new_bot_boost else []
@@ -1649,20 +1968,21 @@ def main() -> int:
 
     distill_plan = _load_distillation_plan(args.distillation_plan) if args.distillation_priority else {}
     distill_assign_map = _distillation_assignment_map(distill_plan)
-    distill_selected = 0
-    if args.distillation_priority and distill_assign_map:
-        targets, distill_selected = _prioritize_targets_for_distillation(targets, distill_assign_map)
-
-    if args.distillation_priority and distill_assign_map and int(effective_distillation_extra_pass) > 0:
-        student_targets = [t for t in targets if _normalized_bot_id_from_script(t) in distill_assign_map]
-        extra_n = min(max(int(effective_distillation_extra_pass), 0), len(student_targets))
-        if extra_n > 0:
-            targets = targets + student_targets[:extra_n]
-
-    if args.new_bot_boost and new_bot_targets and int(args.new_bot_extra_pass) > 0:
-        extra_new_n = min(max(int(args.new_bot_extra_pass), 0), len(new_bot_targets))
-        if extra_new_n > 0:
-            targets = targets + new_bot_targets[:extra_new_n]
+    targets, canary_priority_selected, distill_selected = _reshape_target_queue(
+        targets,
+        allow_auto_queue_reshaping=not explicit_include_requested,
+        regime_focus=str(effective_regime_focus or ""),
+        regime_balance=bool(args.regime_balance),
+        exclude_bot_ids=str(args.exclude_bot_ids or ""),
+        canary_priority_file=str(args.canary_priority_file),
+        canary_priority_top_n=int(effective_canary_priority_top_n),
+        distillation_priority=bool(args.distillation_priority),
+        distill_assign_map=distill_assign_map,
+        distillation_extra_pass=int(effective_distillation_extra_pass),
+        new_bot_boost=bool(args.new_bot_boost),
+        new_bot_targets=new_bot_targets,
+        new_bot_extra_pass=int(args.new_bot_extra_pass),
+    )
 
     child_env = _build_child_env(args.thread_cap)
     child_env["DISTILLATION_ENABLED"] = "1" if args.distillation_priority else "0"
@@ -1681,13 +2001,15 @@ def main() -> int:
         f"OPENBLAS={child_env.get('OPENBLAS_NUM_THREADS')} "
         f"VECLIB={child_env.get('VECLIB_MAXIMUM_THREADS')}"
     )
-    swap_relax_free_pct = float(os.getenv("RETRAIN_SWAP_RELAX_FREE_PCT", "72"))
+    swap_relax_free_pct = float(os.getenv("RETRAIN_SWAP_RELAX_FREE_PCT", "38"))
+    swap_relax_available_pct = float(os.getenv("RETRAIN_SWAP_RELAX_AVAILABLE_PCT", "55"))
     print(
         "Memory gate: "
         f"enabled={args.memory_guard} "
         f"min_free_pct={args.min_free_pct:.1f} "
         f"max_swap_gb={args.max_swap_gb:.2f} "
         f"swap_relax_free_pct={swap_relax_free_pct:.1f} "
+        f"swap_relax_available_pct={swap_relax_available_pct:.1f} "
         f"adaptive={args.adaptive_swap_gate} "
         f"adaptive_step_gb={args.adaptive_swap_step_gb:.2f} "
         f"adaptive_cap_gb={args.adaptive_swap_max_gb:.2f} "
@@ -1710,7 +2032,8 @@ def main() -> int:
         f"active_only={effective_active_only} "
         f"max_targets={args.max_targets} "
         f"min_model_age_hours={args.min_model_age_hours:.1f} "
-        f"selected={target_stats.get('post', 0)}/{target_stats.get('pre', 0)}"
+        f"selected={target_stats.get('post', 0)}/{target_stats.get('pre', 0)} "
+        f"low_readiness_skipped={target_stats.get('low_readiness_skipped', 0)}"
     )
     print(
         "Queue strategy: "
@@ -1722,6 +2045,18 @@ def main() -> int:
         f"new_bot_boost={args.new_bot_boost} "
         f"bottleneck_profile_used={bool(bottleneck_profile)}"
     )
+
+    operator_notes = _load_retrain_operator_notes(RETRAIN_OPERATOR_NOTES_PATH)
+    if operator_notes:
+        print(
+            "Operator note loaded: "
+            f"title={operator_notes.get('title', 'operator_note')} "
+            f"observations={len(operator_notes.get('observations', []) or [])} "
+            f"guidance={len(operator_notes.get('training_guidance', []) or [])}"
+        )
+        summary = str(operator_notes.get("summary", "") or "").strip()
+        if summary:
+            print(f"Operator note summary: {summary}")
 
     started = datetime.now(timezone.utc).isoformat()
     print(f"Weekly retrain start (UTC): {started}")
@@ -1737,6 +2072,7 @@ def main() -> int:
     print("Efficiency tip: keep streaming/video/browser load low during retrain windows.")
 
     failures: list[str] = []
+    failure_details: list[dict] = []
     skipped_by_memory: list[str] = []
     target_outcomes: list[dict] = []
     dynamic_max_swap_gb = float(args.max_swap_gb)
@@ -1811,10 +2147,20 @@ def main() -> int:
         else:
             target_env["DISTILLATION_STUDENT"] = "0"
 
-        rc = run_cmd([VENV_PY, target], args.dry_run, target_env)
+        rc, captured_stdout, captured_stderr = run_cmd_capture([VENV_PY, target], args.dry_run, target_env)
         if rc != 0:
             failures.append(target)
-            target_outcomes.append({"bot_id": _normalized_bot_id_from_script(target), "target": target, "status": "failed", "rc": rc})
+            failure_detail = {
+                "bot_id": _normalized_bot_id_from_script(target),
+                "target": target,
+                "status": "failed",
+                "rc": rc,
+                "reason": _extract_failure_reason(captured_stdout, captured_stderr),
+                "stdout_tail": _tail_text(captured_stdout),
+                "stderr_tail": _tail_text(captured_stderr),
+            }
+            failure_details.append(failure_detail)
+            target_outcomes.append(dict(failure_detail))
             print(f"FAIL: {target} (exit={rc})")
             if not args.continue_on_error:
                 break
@@ -1937,10 +2283,13 @@ def main() -> int:
     marker_path = _write_training_success_marker(
         target_outcomes=target_outcomes,
         failures=failures,
+        failure_details=failure_details,
         skipped_by_memory=skipped_by_memory,
         master_update_status=master_update_status,
         data_quality_summary=data_quality_summary,
+        operator_notes=operator_notes,
         lineage=marker_lineage,
+        dry_run=args.dry_run,
     )
     print(f"Training success marker written: {marker_path}")
 
@@ -1981,6 +2330,33 @@ def main() -> int:
         print(f"Completed with {len(failures)} failures.")
         for f in failures:
             print(f" - {f}")
+        scorecard_lineage = _build_retrain_lineage(
+            stage="final_scorecard",
+            registry_path=REGISTRY_PATH,
+            registry_backup_path=registry_backup_path,
+            target_count=len(targets),
+        )
+        scorecard_path = _write_retrain_scorecard(
+            started_utc=started,
+            ended_utc=ended,
+            target_count=len(targets),
+            failures=failures,
+            failure_details=failure_details,
+            skipped_by_memory=skipped_by_memory,
+            target_outcomes=target_outcomes,
+            prev_registry_snapshot=prev_registry_snapshot,
+            curr_registry_snapshot=curr_registry_snapshot,
+            prev_acc=prev_acc_map,
+            curr_acc=curr_acc_map,
+            master_update_status=master_update_status,
+            data_quality_summary=data_quality_summary,
+            canary_priority_selected=canary_priority_selected,
+            distill_selected=distill_selected,
+            operator_notes=operator_notes,
+            lineage=scorecard_lineage,
+            dry_run=args.dry_run,
+        )
+        print(f"Retrain scorecard written: {scorecard_path}")
         return 1
 
     enable_trade_behavior_retrain = os.getenv("ENABLE_TRADE_BEHAVIOR_RETRAIN", "1").strip() == "1"
@@ -2161,6 +2537,7 @@ def main() -> int:
         ended_utc=ended,
         target_count=len(targets),
         failures=failures,
+        failure_details=failure_details,
         skipped_by_memory=skipped_by_memory,
         target_outcomes=target_outcomes,
         prev_registry_snapshot=prev_registry_snapshot,
@@ -2171,7 +2548,9 @@ def main() -> int:
         data_quality_summary=data_quality_summary,
         canary_priority_selected=canary_priority_selected,
         distill_selected=distill_selected,
+        operator_notes=operator_notes,
         lineage=scorecard_lineage,
+        dry_run=args.dry_run,
     )
     print(f"Retrain scorecard written: {scorecard_path}")
 

@@ -23,13 +23,18 @@ class DailyRuntimeSummaryTests(unittest.TestCase):
         rows = [
             {"timestamp_utc": base.isoformat(), "status": "SHADOW_ONLY"},
             {"timestamp_utc": (base + timedelta(seconds=60)).isoformat(), "status": "BLOCKED"},
-            {"timestamp_utc": (base + timedelta(seconds=400)).isoformat(), "status": "DATA_ONLY_BLOCKED"},
+            {
+                "timestamp_utc": (base + timedelta(seconds=400)).isoformat(),
+                "status": "DATA_ONLY_BLOCKED",
+                "safety": {"market_data_only": True, "execution_enabled": False},
+            },
         ]
 
         summary = module._summarize_status_rows(rows, stale_seconds=180, skipped_statuses={"BLOCKED", "DATA_ONLY_BLOCKED"})
 
         self.assertEqual(summary["rows"], 3)
-        self.assertEqual(summary["skipped_decisions"], 2)
+        self.assertEqual(summary["skipped_decisions"], 1)
+        self.assertEqual(summary["observe_only_data_blocked"], 1)
         self.assertEqual(summary["status_counts"]["SHADOW_ONLY"], 1)
         self.assertEqual(summary["stale_windows"], 1)
 

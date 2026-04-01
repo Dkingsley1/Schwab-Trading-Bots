@@ -17,12 +17,42 @@ def _load_json(path: Path) -> dict:
         return {}
 
 
-def _first_non_empty_json(paths: List[Path]) -> Tuple[dict, str]:
+def _parse_iso_utc(raw: object) -> datetime | None:
+    text = str(raw or '').strip()
+    if not text:
+        return None
+    text = text.replace('Z', '+00:00')
+    try:
+        dt = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _payload_timestamp(payload: dict, path: Path) -> float:
+    for key in ('timestamp_utc', 'updated_at_utc', 'updated_at', 'created_at', 'ended_utc', 'started_utc'):
+        ts = _parse_iso_utc(payload.get(key))
+        if ts is not None:
+            return float(ts.timestamp())
+    try:
+        return float(path.stat().st_mtime)
+    except Exception:
+        return 0.0
+
+
+def _freshest_non_empty_json(paths: List[Path]) -> Tuple[dict, str]:
+    candidates: List[Tuple[float, dict, str]] = []
     for p in paths:
         payload = _load_json(p)
         if payload:
-            return payload, str(p)
-    return {}, ''
+            candidates.append((_payload_timestamp(payload, p), payload, str(p)))
+    if not candidates:
+        return {}, ''
+    candidates.sort(key=lambda row: row[0])
+    _, payload, source = candidates[-1]
+    return payload, source
 
 
 def _latest_match(root: Path, pattern: str) -> Path:
@@ -57,6 +87,10 @@ def _to_int(value, default: int = 0) -> int:
         return int(default)
 
 
+def _effective_blocked_rate(data_blocked_rate: float, risk_blocked_rate: float, *, risk_weight: float = 0.25) -> float:
+    return min(max(float(data_blocked_rate), 0.0) + (max(float(risk_blocked_rate), 0.0) * max(float(risk_weight), 0.0)), 1.0)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description='Compute single health score and hard gate flags.')
     parser.add_argument('--project-root', default=str(PROJECT_ROOT))
@@ -82,14 +116,14 @@ def main() -> int:
         project_root / 'exports' / 'one_numbers' / 'one_numbers_summary.json',
         project_root / 'exports' / 'one_numbers' / 'latest' / 'one_numbers_summary.json',
     ]
-    one_numbers, one_numbers_source = _first_non_empty_json(one_numbers_paths)
+    one_numbers, one_numbers_source = _freshest_non_empty_json(one_numbers_paths)
 
     daily_summary_paths = [
         project_root / 'governance' / 'health' / 'daily_runtime_summary_latest.json',
         project_root / 'exports' / 'sql_reports' / 'daily_runtime_summary_latest.json',
         project_root / 'exports' / 'sql_reports' / f'daily_runtime_summary_{day}.json',
     ]
-    daily_summary, daily_summary_source = _first_non_empty_json(daily_summary_paths)
+    daily_summary, daily_summary_source = _freshest_non_empty_json(daily_summary_paths)
 
     if not daily_summary:
         latest_daily = _latest_match(project_root / 'exports' / 'sql_reports', 'daily_runtime_summary_*.json')
@@ -100,15 +134,27 @@ def main() -> int:
 
     ingestion_health_paths = [
         project_root / 'governance' / 'health' / 'jsonl_sql_ingestion_health_latest.json',
+        project_root / 'governance' / 'health' / 'jsonl_sql_ingestion_health_trading_latest.json',
+        project_root / 'governance' / 'health' / 'jsonl_sql_ingestion_health_data_latest.json',
+        project_root / 'governance' / 'health' / 'jsonl_sql_ingestion_health_governance_latest.json',
     ]
-    ingestion_health, ingestion_health_source = _first_non_empty_json(ingestion_health_paths)
+    ingestion_health, ingestion_health_source = _freshest_non_empty_json(ingestion_health_paths)
 
     backpressure_paths = [
         project_root / 'governance' / 'health' / 'ingestion_backpressure_latest.json',
     ]
-    backpressure, backpressure_source = _first_non_empty_json(backpressure_paths)
+    backpressure, backpressure_source = _freshest_non_empty_json(backpressure_paths)
 
-    blocked_rate = float(one_numbers.get('combined_blocked_rate', 0.0) or 0.0)
+    combined_blocked_rate = float(one_numbers.get('combined_blocked_rate', 0.0) or 0.0)
+    data_blocked_raw = one_numbers.get('data_blocked_rate')
+    risk_blocked_raw = one_numbers.get('risk_blocked_rate')
+    if data_blocked_raw is None and risk_blocked_raw is None:
+        data_blocked_rate = combined_blocked_rate
+        risk_blocked_rate = 0.0
+    else:
+        data_blocked_rate = float(data_blocked_raw or 0.0)
+        risk_blocked_rate = float(risk_blocked_raw or 0.0)
+    blocked_rate = _effective_blocked_rate(data_blocked_rate, risk_blocked_rate)
     stale_windows = int(one_numbers.get('decision_stale_windows_4h', 0) or one_numbers.get('decision_stale_windows', 0) or 0)
     watchdog_restarts = int((daily_summary.get('watchdog', {}) or {}).get('restarts', one_numbers.get('watchdog_restarts', 0) or 0))
 
@@ -166,6 +212,10 @@ def main() -> int:
         },
         'inputs': {
             'blocked_rate': blocked_rate,
+            'combined_blocked_rate': combined_blocked_rate,
+            'data_blocked_rate': data_blocked_rate,
+            'risk_blocked_rate': risk_blocked_rate,
+            'blocked_rate_risk_weight': 0.25,
             'stale_windows': stale_windows,
             'watchdog_restarts': watchdog_restarts,
             'ingest_pending_lines': ingest_pending_lines,

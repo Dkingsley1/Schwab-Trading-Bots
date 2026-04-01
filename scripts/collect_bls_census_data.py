@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import argparse
+from http.client import RemoteDisconnected
 import json
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +13,9 @@ from urllib.request import Request, urlopen
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+FRED_SERIES_ALIASES = {
+    "GOLDAMGBD228NLBM": ["GOLDPMGBD228NLBM"],
+}
 
 
 def _load_env_file(path: Path) -> None:
@@ -61,6 +66,88 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
 
 
+def _to_float(value: Any) -> Optional[float]:
+    try:
+        num = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(num):
+        return None
+    return num
+
+
+def _latest_numeric(rows: Any) -> Optional[float]:
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        value = _to_float(row.get("value"))
+        if value is not None:
+            return value
+    return None
+
+
+def _merge_mapping(base: Any, overlay: Any) -> dict:
+    out = dict(base) if isinstance(base, dict) else {}
+    if isinstance(overlay, dict):
+        for key, value in overlay.items():
+            if isinstance(value, dict) and isinstance(out.get(key), dict):
+                nested = dict(out[key])
+                nested.update(value)
+                out[key] = nested
+            else:
+                out[key] = value
+    return out
+
+
+def _derive_fred_macro_context(fred_payload: dict[str, Any]) -> dict[str, Any]:
+    responses = fred_payload.get("responses") if isinstance(fred_payload.get("responses"), dict) else {}
+    latest = {
+        series_id: _latest_numeric((payload or {}).get("observations"))
+        for series_id, payload in responses.items()
+        if isinstance(payload, dict)
+    }
+
+    treasury_yields = {
+        "2y": latest.get("DGS2"),
+        "5y": latest.get("DGS5"),
+        "10y": latest.get("DGS10"),
+        "30y": latest.get("DGS30"),
+        "real_10y": latest.get("DFII10"),
+    }
+    treasury_yields = {k: float(v) for k, v in treasury_yields.items() if v is not None}
+
+    gold_fix = latest.get("GOLDAMGBD228NLBM")
+    if gold_fix is None:
+        gold_fix = latest.get("GOLDPMGBD228NLBM")
+
+    cross_asset = {
+        "vix": latest.get("VIXCLS"),
+        "dollar_index_broad": latest.get("DTWEXBGS"),
+        "gold_fix": gold_fix,
+        "wti_spot": latest.get("DCOILWTICO"),
+        "high_yield_oas_bps": latest.get("BAMLH0A0HYM2"),
+    }
+    cross_asset = {k: float(v) for k, v in cross_asset.items() if v is not None}
+
+    bond_reference_overlay = {
+        "timestamp_utc": fred_payload.get("timestamp_utc"),
+        "provider": "fred",
+        "treasury_yields": treasury_yields,
+    }
+    if "high_yield_oas_bps" in cross_asset:
+        bond_reference_overlay["credit_spread_bps"] = float(cross_asset["high_yield_oas_bps"])
+
+    return {
+        "timestamp_utc": fred_payload.get("timestamp_utc"),
+        "provider": "fred",
+        "treasury_yields": treasury_yields,
+        "cross_asset": cross_asset,
+        "bond_reference_overlay": bond_reference_overlay,
+    }
+
+
 def collect(args: argparse.Namespace) -> int:
     _bootstrap_env()
 
@@ -82,7 +169,21 @@ def collect(args: argparse.Namespace) -> int:
     census_for = os.getenv("CENSUS_FOR", "us:1")
 
     fred_key = os.getenv("FRED_API_KEY", "").strip()
-    fred_series = [s.strip() for s in (os.getenv("FRED_SERIES_IDS", "GDP,UNRATE,CPIAUCSL")).split(",") if s.strip()]
+    fred_series = [
+        s.strip()
+        for s in (
+            os.getenv(
+                "FRED_SERIES_IDS",
+                "GDP,UNRATE,CPIAUCSL,DGS2,DGS5,DGS10,DGS30,DFII10,VIXCLS,DCOILWTICO,DTWEXBGS,BAMLH0A0HYM2",
+            )
+        ).split(",")
+        if s.strip()
+    ]
+    fred_required = {
+        s.strip().upper()
+        for s in (os.getenv("FRED_REQUIRED_SERIES_IDS", "GDP,UNRATE,CPIAUCSL")).split(",")
+        if s.strip()
+    }
     fred_limit = max(int(os.getenv("FRED_LIMIT", "5")), 1)
 
     bea_key = os.getenv("BEA_API_KEY", "").strip()
@@ -121,7 +222,7 @@ def collect(args: argparse.Namespace) -> int:
             }
             _write_json(bls_root / f"bls_{stamp}.json", bls_payload)
             _write_json(bls_root / "latest.json", bls_payload)
-    except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+    except (HTTPError, URLError, TimeoutError, ValueError, RemoteDisconnected, OSError) as exc:
         status["bls"]["error"] = str(exc)
 
     # Census
@@ -141,7 +242,7 @@ def collect(args: argparse.Namespace) -> int:
             }
             _write_json(census_root / f"census_{stamp}.json", census_payload)
             _write_json(census_root / "latest.json", census_payload)
-    except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+    except (HTTPError, URLError, TimeoutError, ValueError, RemoteDisconnected, OSError) as exc:
         status["census"]["error"] = str(exc)
 
     # FRED
@@ -156,25 +257,44 @@ def collect(args: argparse.Namespace) -> int:
             status["fred"]["url"] = _sanitize_url(sample_url)
 
         fred_collected: dict[str, Any] = {}
-        fred_ok = True
-        fred_error: Optional[str] = None
+        fred_errors: list[str] = []
+        fred_warnings: list[str] = []
+        fred_aliases_used: dict[str, str] = {}
         for series_id in fred_series:
-            fred_url = fred_base_url + "?" + urlencode(
-                {"series_id": series_id, "api_key": fred_key, "file_type": "json", "sort_order": "desc", "limit": fred_limit}
-            )
-            try:
-                resp = _http_json(fred_url, method="GET")
-                if not isinstance(resp, dict):
-                    raise ValueError(f"unexpected_response_shape series_id={series_id}")
-                fred_collected[series_id] = resp
-            except (HTTPError, URLError, TimeoutError, ValueError) as exc:
-                fred_ok = False
-                fred_error = f"series_id={series_id} error={exc}"
-                break
+            candidate_ids = [series_id, *FRED_SERIES_ALIASES.get(series_id, [])]
+            candidate_errors: list[str] = []
+            for candidate_id in candidate_ids:
+                fred_url = fred_base_url + "?" + urlencode(
+                    {"series_id": candidate_id, "api_key": fred_key, "file_type": "json", "sort_order": "desc", "limit": fred_limit}
+                )
+                try:
+                    resp = _http_json(fred_url, method="GET")
+                    if not isinstance(resp, dict):
+                        raise ValueError(f"unexpected_response_shape series_id={candidate_id}")
+                    if candidate_id != series_id:
+                        resp = dict(resp)
+                        resp["series_id_requested"] = series_id
+                        resp["series_id_resolved"] = candidate_id
+                        fred_aliases_used[series_id] = candidate_id
+                    fred_collected[series_id] = resp
+                    break
+                except (HTTPError, URLError, TimeoutError, ValueError, RemoteDisconnected, OSError) as exc:
+                    candidate_errors.append(f"{candidate_id}:{exc}")
+            if series_id not in fred_collected:
+                message = f"series_id={series_id} error={' | '.join(candidate_errors)}"
+                if series_id in fred_required:
+                    fred_errors.append(message)
+                else:
+                    fred_warnings.append(message)
 
+        fred_ok = all(series_id in fred_collected for series_id in fred_required)
         status["fred"]["ok"] = fred_ok
-        if not fred_ok and fred_error:
-            status["fred"]["error"] = fred_error
+        if fred_aliases_used:
+            status["fred"]["aliases_used"] = fred_aliases_used
+        if fred_errors:
+            status["fred"]["error"] = "; ".join(fred_errors)
+        if fred_warnings:
+            status["fred"]["warnings"] = fred_warnings
 
         if not args.test_only:
             fred_payload = {
@@ -184,6 +304,20 @@ def collect(args: argparse.Namespace) -> int:
             }
             _write_json(fred_root / f"fred_{stamp}.json", fred_payload)
             _write_json(fred_root / "latest.json", fred_payload)
+
+            external_context_root = PROJECT_ROOT / "exports" / "external_context"
+            macro_context = _derive_fred_macro_context(fred_payload)
+            if macro_context:
+                _write_json(external_context_root / "macro_cross_asset_latest.json", macro_context)
+                existing_bond_reference_path = external_context_root / "bond_reference_latest.json"
+                existing_bond_reference: dict[str, Any] = {}
+                if existing_bond_reference_path.exists():
+                    try:
+                        existing_bond_reference = json.loads(existing_bond_reference_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        existing_bond_reference = {}
+                merged_bond_reference = _merge_mapping(existing_bond_reference, macro_context.get("bond_reference_overlay"))
+                _write_json(existing_bond_reference_path, merged_bond_reference)
 
     # BEA (dataset list metadata pull)
     if not bea_key:
@@ -211,7 +345,7 @@ def collect(args: argparse.Namespace) -> int:
                 }
                 _write_json(bea_root / f"bea_{stamp}.json", bea_payload)
                 _write_json(bea_root / "latest.json", bea_payload)
-        except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+        except (HTTPError, URLError, TimeoutError, ValueError, RemoteDisconnected, OSError) as exc:
             status["bea"]["error"] = str(exc)
 
     _write_json(out_root / "latest_status.json", status)

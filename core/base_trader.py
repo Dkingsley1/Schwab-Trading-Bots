@@ -10,6 +10,7 @@ import urllib.request
 import uuid
 import time
 from datetime import datetime, timezone
+from math import gcd
 
 try:
     from zoneinfo import ZoneInfo
@@ -20,11 +21,60 @@ from typing import Any, Dict, List, Optional, Tuple
 from schwab.auth import easy_client
 
 from core.decision_logger import DecisionLogger
+from core.derivatives_features import _days_to_expiry, _extract_option_rows, _option_row_strike, _option_side
 from core.live_execution_controls import LiveExecutionGuard, LiveRiskConfig
 from core.path_registry import auth_events_path, decision_explanations_paths, execution_guard_path, live_softguard_path
 
 from core.accountability import current_correlation, now_utc_iso, safe_append_jsonl, safe_append_channel_event, safe_write_json_atomic
 from core.halt_flags import write_halt_flag_atomic
+
+
+_FUTURES_MONTH_CODES = {
+    1: "F",
+    2: "G",
+    3: "H",
+    4: "J",
+    5: "K",
+    6: "M",
+    7: "N",
+    8: "Q",
+    9: "U",
+    10: "V",
+    11: "X",
+    12: "Z",
+}
+_FUTURES_CODE_TO_MONTH = {v: k for k, v in _FUTURES_MONTH_CODES.items()}
+_QUARTERLY_FUTURES_ROOTS = {
+    "ES", "MES", "NQ", "MNQ", "YM", "MYM", "RTY", "M2K", "ZB", "ZN", "ZF", "ZT", "6E", "6J", "6B",
+}
+_FUTURES_CONTRACT_MULTIPLIERS = {
+    "ES": 50.0,
+    "MES": 5.0,
+    "NQ": 20.0,
+    "MNQ": 2.0,
+    "YM": 5.0,
+    "MYM": 0.5,
+    "RTY": 50.0,
+    "M2K": 5.0,
+    "CL": 1000.0,
+    "MCL": 100.0,
+    "GC": 100.0,
+    "MGC": 10.0,
+    "SI": 5000.0,
+    "SIL": 1000.0,
+    "HG": 25000.0,
+    "NG": 10000.0,
+    "RB": 42000.0,
+    "HO": 42000.0,
+    "ZB": 1000.0,
+    "ZN": 1000.0,
+    "ZF": 1000.0,
+    "ZT": 2000.0,
+    "6E": 125000.0,
+    "6J": 12500000.0,
+    "6B": 62500.0,
+}
+_FUTURES_CONTRACT_RE = re.compile(r"^/?([A-Z0-9]+?)([FGHJKMNQUVXZ])(\d{1,4})$")
 
 
 class BaseTrader:
@@ -57,6 +107,11 @@ class BaseTrader:
         self.live_risk_config = LiveRiskConfig.from_env()
         self.live_guard = LiveExecutionGuard(self.live_risk_config)
         self.live_account_hash = os.getenv("SCHWAB_ACCOUNT_HASH", "").strip()
+        self.live_account_hash_auto_discover = os.getenv("SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER", "1").strip() == "1"
+        self.live_accounts_snapshot_allow_global_fallback = (
+            os.getenv("LIVE_ACCOUNTS_SNAPSHOT_ALLOW_GLOBAL_FALLBACK", "0").strip() == "1"
+        )
+        self._live_account_hash_last_refresh_ts = 0.0
         self.live_position_reconcile_tolerance = max(
             float(os.getenv("LIVE_POSITION_RECONCILE_TOLERANCE", "0.0001")),
             0.0,
@@ -98,6 +153,11 @@ class BaseTrader:
         self.live_api_retry_backoff_multiplier = max(float(os.getenv("LIVE_API_RETRY_BACKOFF_MULTIPLIER", "2.0")), 1.0)
         self.live_api_retry_max_backoff_seconds = max(float(os.getenv("LIVE_API_RETRY_MAX_BACKOFF_SECONDS", "3.0")), 0.0)
         self.live_api_retry_jitter_seconds = max(float(os.getenv("LIVE_API_RETRY_JITTER_SECONDS", "0.1")), 0.0)
+        self.live_accounts_snapshot_soft_fail_grace = max(
+            int(os.getenv("LIVE_ACCOUNTS_SNAPSHOT_SOFT_FAIL_GRACE", "3")),
+            1,
+        )
+        self._accounts_snapshot_soft_fail_streak = 0
         retryable_codes = os.getenv("LIVE_API_RETRYABLE_STATUS_CODES", "408,425,429,500,502,503,504").strip()
         parsed_codes: set[int] = set()
         for token in retryable_codes.split(","):
@@ -258,6 +318,55 @@ class BaseTrader:
 
         return status
 
+    def _extract_account_hash_rows(self, payload: Any) -> List[Dict[str, str]]:
+        rows: List[Dict[str, str]] = []
+        if not isinstance(payload, list):
+            return rows
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            account_hash = str(item.get("hashValue") or item.get("account_hash") or "").strip()
+            if not account_hash:
+                continue
+            rows.append(
+                {
+                    "account_hash": account_hash,
+                    "account_number": str(item.get("accountNumber") or item.get("account_number") or "").strip(),
+                }
+            )
+        return rows
+
+    def _discover_live_account_hash(self, *, force: bool = False) -> str:
+        if self.client is None:
+            return str(self.live_account_hash or "").strip()
+        if not self.live_account_hash_auto_discover:
+            return str(self.live_account_hash or "").strip()
+        if self.live_account_hash and not force:
+            return str(self.live_account_hash).strip()
+
+        now_ts = time.time()
+        if not force and (now_ts - float(self._live_account_hash_last_refresh_ts)) < 30.0:
+            return str(self.live_account_hash or "").strip()
+        self._live_account_hash_last_refresh_ts = now_ts
+
+        fn = getattr(self.client, "get_account_numbers", None)
+        if not callable(fn):
+            return str(self.live_account_hash or "").strip()
+
+        try:
+            response = fn()
+            status_code = self._as_int(getattr(response, "status_code", 0), 0)
+            if status_code >= 400:
+                raise RuntimeError(f"http_status_{status_code}")
+            payload = self._coerce_json_obj_or_list(response)
+            rows = self._extract_account_hash_rows(payload)
+            if rows:
+                self.live_account_hash = str(rows[0].get("account_hash") or "").strip()
+        except Exception:
+            pass
+
+        return str(self.live_account_hash or "").strip()
+
     def _log_auth_event(
         self,
         *,
@@ -332,6 +441,8 @@ class BaseTrader:
                 interactive=interactive,
                 requested_browser=requested_browser,
             )
+            if not self.live_account_hash:
+                self._discover_live_account_hash(force=True)
             self._log_auth_event(
                 event="auth_success",
                 status="ok",
@@ -340,6 +451,7 @@ class BaseTrader:
                     "callback_timeout_seconds": float(callback_timeout),
                     "requested_browser": requested_browser,
                     "max_token_age_seconds": max_token_age,
+                    "account_hash_configured": bool(self.live_account_hash),
                 },
             )
             print("Handshake Successful.")
@@ -373,6 +485,8 @@ class BaseTrader:
             "BUY_TO_CLOSE",
             "SELL_TO_OPEN",
             "SELL_TO_CLOSE",
+            "CLOSE",
+            "ROLL",
         }
 
     def _as_float(self, value: Any, default: float = 0.0) -> float:
@@ -1104,6 +1218,8 @@ class BaseTrader:
                     if status_code >= 400:
                         raise RuntimeError(f"http_status_{status_code}")
 
+                    if operation == "get_accounts_snapshot":
+                        self._accounts_snapshot_soft_fail_streak = 0
                     self.live_guard.record_api_success("broker_api")
                     latency_ms = round((time.time() - started) * 1000.0, 3)
                     payload = {
@@ -1245,8 +1361,63 @@ class BaseTrader:
                 "max_attempts": max_attempts,
             }
 
-        opened = self.live_guard.record_api_failure("broker_api")
         attempts_made = int(final_failure.get("attempt", len(attempt_failures)) or len(attempt_failures) or 1)
+        if operation == "get_accounts_snapshot":
+            self._accounts_snapshot_soft_fail_streak += 1
+            soft_streak = int(self._accounts_snapshot_soft_fail_streak)
+            soft_grace = int(self.live_accounts_snapshot_soft_fail_grace)
+            if soft_streak <= soft_grace:
+                details = {
+                    "method": str(final_failure.get("method", "")),
+                    "latency_ms": float(final_failure.get("latency_ms", 0.0) or 0.0),
+                    "retryable": bool(final_failure.get("retryable", False)),
+                    "status_code": int(final_failure.get("status_code", 0) or 0),
+                    "attempt": int(final_failure.get("attempt", attempts_made) or attempts_made),
+                    "attempts_made": attempts_made,
+                    "max_attempts": max_attempts,
+                    "soft_fail_streak": soft_streak,
+                    "soft_fail_grace": soft_grace,
+                    **(context or {}),
+                }
+                self._log_live_guard_event(
+                    event=operation,
+                    status="warn",
+                    reason=str(final_failure.get("error", "accounts_snapshot_transient_failure")),
+                    details=details,
+                )
+                self._log_softguard_event(
+                    event="accounts_snapshot_transient_failure",
+                    status="warn",
+                    reason=str(final_failure.get("error", "accounts_snapshot_transient_failure")),
+                    details={
+                        "operation": operation,
+                        "attempts_made": attempts_made,
+                        "max_attempts": max_attempts,
+                        "soft_fail_streak": soft_streak,
+                        "soft_fail_grace": soft_grace,
+                        **(context or {}),
+                    },
+                )
+                return {
+                    "ok": False,
+                    "operation": operation,
+                    "method": str(final_failure.get("method", "")),
+                    "error": str(final_failure.get("error", "api_call_failed")),
+                    "latency_ms": float(final_failure.get("latency_ms", 0.0) or 0.0),
+                    "status_code": int(final_failure.get("status_code", 0) or 0),
+                    "retryable": bool(final_failure.get("retryable", False)),
+                    "attempts_made": attempts_made,
+                    "max_attempts": max_attempts,
+                    "circuit_opened": False,
+                    "soft_failure": True,
+                    "soft_fail_streak": soft_streak,
+                    "soft_fail_grace": soft_grace,
+                    "details": {
+                        "failures": attempt_failures[-max_attempts:],
+                    },
+                }
+
+        opened = self.live_guard.record_api_failure("broker_api")
 
         self._log_live_guard_event(
             event=operation,
@@ -1307,7 +1478,733 @@ class BaseTrader:
             return mapping[side]
         raise ValueError(f"unsupported_order_action:{side}")
 
-    def _build_live_order_spec(
+    def _quote_client_candidates(self, *, symbol: str) -> List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]]:
+        symbol_value = str(symbol or "").strip().upper()
+        return [
+            ("get_quote", (symbol_value,), {}),
+            ("quote", (symbol_value,), {}),
+            ("get_quotes", ((symbol_value,),), {}),
+            ("get_quotes", ([symbol_value],), {}),
+            ("quotes", ((symbol_value,),), {}),
+            ("quotes", ([symbol_value],), {}),
+        ]
+
+    def _extract_quote_payload(self, raw: Any, symbol: str) -> Dict[str, Any]:
+        if not isinstance(raw, dict):
+            return {}
+        sym = str(symbol or "").strip().upper()
+        if sym in raw and isinstance(raw[sym], dict):
+            return raw[sym]
+
+        normalized = re.sub(r"[^A-Z0-9]", "", sym)
+        for key, value in raw.items():
+            if not isinstance(key, str) or not isinstance(value, dict):
+                continue
+            if key.upper() == sym:
+                return value
+            if re.sub(r"[^A-Z0-9]", "", key.upper()) == normalized:
+                return value
+
+        dict_children = [v for v in raw.values() if isinstance(v, dict)]
+        if len(dict_children) == 1:
+            return dict_children[0]
+        return {}
+
+    def _quote_field(self, payload: Dict[str, Any], *keys: str) -> Any:
+        if not isinstance(payload, dict):
+            return None
+
+        containers: List[Dict[str, Any]] = [payload]
+        for nested in ("quote", "regular", "reference", "extended", "fundamental"):
+            child = payload.get(nested)
+            if isinstance(child, dict):
+                containers.append(child)
+
+        for container in containers:
+            for key in keys:
+                if key in container and container.get(key) is not None:
+                    return container.get(key)
+        return None
+
+    def _fetch_live_quote(self, *, symbol: str) -> Dict[str, Any]:
+        out = self._invoke_client_candidates(
+            operation="get_quote",
+            candidates=self._quote_client_candidates(symbol=symbol),
+            context={"symbol": str(symbol).upper()},
+        )
+        if not out.get("ok"):
+            return out
+
+        payload = self._coerce_json_obj_or_list(out.get("response"))
+        if not isinstance(payload, dict):
+            return {
+                "ok": False,
+                "operation": "get_quote",
+                "error": "invalid_quote_payload",
+                "details": {"symbol": str(symbol).upper()},
+            }
+
+        quote_payload = self._extract_quote_payload(payload, symbol)
+        out["payload"] = payload
+        out["quote_payload"] = quote_payload
+        return out
+
+    def _option_chain_client_candidates(self, *, symbol: str, strike_count: int) -> List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]]:
+        symbol_value = str(symbol or "").strip().upper()
+        arg_sets = [
+            ((symbol_value,), {"strike_count": strike_count, "include_quotes": True}),
+            ((symbol_value,), {"strike_count": strike_count}),
+            ((symbol_value,), {"include_quotes": True}),
+            ((symbol_value,), {}),
+            ((), {"symbol": symbol_value, "strike_count": strike_count, "include_quotes": True}),
+            ((), {"symbol": symbol_value, "strike_count": strike_count}),
+            ((), {"symbol": symbol_value, "include_quotes": True}),
+            ((), {"symbol": symbol_value}),
+        ]
+        out: List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]] = []
+        for method_name in (
+            "get_option_chain",
+            "get_options_chain",
+            "option_chain",
+            "options_chain",
+            "get_option_chain_for_symbol",
+        ):
+            for args, kwargs in arg_sets:
+                out.append((method_name, args, dict(kwargs)))
+        return out
+
+    def _fetch_live_option_chain(self, *, symbol: str) -> Dict[str, Any]:
+        strike_count = max(int(os.getenv("SCHWAB_OPTIONS_CHAIN_STRIKE_COUNT", "18") or 18), 4)
+        out = self._invoke_client_candidates(
+            operation="get_option_chain",
+            candidates=self._option_chain_client_candidates(symbol=symbol, strike_count=strike_count),
+            context={"symbol": str(symbol).upper(), "strike_count": strike_count},
+        )
+        if not out.get("ok"):
+            return out
+
+        payload = self._coerce_json_obj_or_list(out.get("response"))
+        if not isinstance(payload, dict):
+            return {
+                "ok": False,
+                "operation": "get_option_chain",
+                "error": "invalid_option_chain_payload",
+                "details": {"symbol": str(symbol).upper()},
+            }
+
+        out["payload"] = payload
+        return out
+
+    def _option_contract_symbol_from_row(self, row: Dict[str, Any]) -> str:
+        for key in ("symbol", "optionSymbol", "option_symbol"):
+            raw = row.get(key)
+            if raw is not None and str(raw).strip():
+                return str(raw).strip().upper()
+        return ""
+
+    def _option_quote_from_row(self, row: Dict[str, Any], *, instruction: str) -> float:
+        bid = max(self._as_float(row.get("bidPrice"), 0.0), self._as_float(row.get("bid"), 0.0))
+        ask = max(self._as_float(row.get("askPrice"), 0.0), self._as_float(row.get("ask"), 0.0))
+        mark = max(self._as_float(row.get("mark"), 0.0), self._as_float(row.get("markPrice"), 0.0))
+        last = max(self._as_float(row.get("last"), 0.0), self._as_float(row.get("lastPrice"), 0.0))
+        if instruction in {"BUY_TO_OPEN", "BUY_TO_CLOSE", "BUY", "BUY_TO_COVER"}:
+            return max(ask, mark, last, bid, 0.0)
+        return max(bid, mark, last, ask, 0.0)
+
+    def _option_leg_instruction(self, *, overall_action: str, leg_side: str) -> str:
+        side = str(leg_side or overall_action or "").strip().upper()
+        overall = str(overall_action or "").strip().upper()
+        close_reverse = {
+            "BUY_TO_OPEN": "SELL_TO_CLOSE",
+            "SELL_TO_OPEN": "BUY_TO_CLOSE",
+            "BUY": "SELL",
+            "SELL": "BUY_TO_COVER",
+        }
+        if overall in {"CLOSE", "BUY_TO_CLOSE", "SELL_TO_CLOSE"}:
+            side = close_reverse.get(side, side)
+        return self._order_instruction(side)
+
+    def _pick_option_chain_contract(
+        self,
+        *,
+        symbol: str,
+        payload: Dict[str, Any],
+        leg: Dict[str, Any],
+        overall_action: str,
+        now_ts: float,
+    ) -> Dict[str, Any]:
+        option_type = str(leg.get("type") or leg.get("option_type") or "").strip().upper()
+        target_strike = max(self._as_float(leg.get("strike"), 0.0), 0.0)
+        target_expiry_days = max(self._as_float(leg.get("expiry_days"), 0.0), 0.0)
+        requested_qty = max(int(round(self._as_float(leg.get("quantity"), 1.0))), 1)
+        if option_type not in {"CALL", "PUT"}:
+            raise ValueError(f"unsupported_option_type:{option_type or 'UNKNOWN'}")
+
+        instruction = self._option_leg_instruction(overall_action=overall_action, leg_side=str(leg.get("side") or ""))
+        best_match: Optional[Dict[str, Any]] = None
+        best_score = float("inf")
+
+        for row in _extract_option_rows(payload, now_ts=now_ts):
+            if _option_side(row) != option_type:
+                continue
+
+            contract_symbol = self._option_contract_symbol_from_row(row)
+            if not contract_symbol:
+                continue
+
+            strike_value = _option_row_strike(row, None)
+            expiry_value = _days_to_expiry(
+                row.get("daysToExpiration") if row.get("daysToExpiration") is not None else row.get("expirationDate"),
+                now_ts=now_ts,
+            )
+            if strike_value <= 0.0 or expiry_value is None:
+                continue
+
+            strike_gap = abs(strike_value - target_strike)
+            expiry_gap = abs(float(expiry_value) - target_expiry_days)
+            target_strike_denom = max(target_strike, 1.0)
+            target_expiry_denom = max(target_expiry_days, 1.0)
+            quote_value = self._option_quote_from_row(row, instruction=instruction)
+
+            bid = max(self._as_float(row.get("bidPrice"), 0.0), self._as_float(row.get("bid"), 0.0))
+            ask = max(self._as_float(row.get("askPrice"), 0.0), self._as_float(row.get("ask"), 0.0))
+            spread_penalty = 0.0
+            mid = (bid + ask) / 2.0 if bid > 0.0 and ask > 0.0 else 0.0
+            if mid > 0.0 and ask >= bid:
+                spread_penalty = min((ask - bid) / mid, 1.0)
+            elif quote_value <= 0.0:
+                spread_penalty = 1.0
+
+            score = (
+                7.0 * (strike_gap / target_strike_denom)
+                + 3.0 * (expiry_gap / target_expiry_denom)
+                + 0.5 * spread_penalty
+            )
+            if score >= best_score:
+                continue
+
+            best_score = score
+            best_match = {
+                "contract_symbol": contract_symbol,
+                "instruction": instruction,
+                "option_type": option_type,
+                "target_strike": float(target_strike),
+                "resolved_strike": float(strike_value),
+                "strike_gap": float(strike_gap),
+                "target_expiry_days": float(target_expiry_days),
+                "resolved_expiry_days": float(expiry_value),
+                "expiry_gap": float(expiry_gap),
+                "quantity": int(requested_qty),
+                "quote": float(quote_value),
+                "row": dict(row),
+            }
+
+        if best_match is None:
+            raise ValueError(f"option_contract_not_found:{str(symbol).upper()}:{option_type}:{target_strike:.2f}:{target_expiry_days:.1f}")
+
+        max_strike_gap = max(target_strike * 0.12, 3.0)
+        max_expiry_gap = max(target_expiry_days * 0.75, 14.0)
+        if best_match["strike_gap"] > max_strike_gap or best_match["expiry_gap"] > max_expiry_gap:
+            raise ValueError(
+                "option_contract_resolution_too_wide:"
+                f"{best_match['contract_symbol']}:strike_gap={best_match['strike_gap']:.2f}:expiry_gap={best_match['expiry_gap']:.2f}"
+            )
+        return best_match
+
+    def _strategy_unit_quantity(self, quantities: List[int]) -> int:
+        unit_qty = 0
+        for raw_qty in quantities:
+            qty = max(int(raw_qty), 1)
+            unit_qty = qty if unit_qty == 0 else gcd(unit_qty, qty)
+        return max(unit_qty, 1)
+
+    def _options_complex_strategy_type(self, *, options_style: str, legs: List[Dict[str, Any]], action: str = "") -> str:
+        style = str(options_style or "").strip().upper()
+        if str(action or "").strip().upper() == "ROLL":
+            if style in {
+                "BULL_PUT_CREDIT_SPREAD",
+                "BEAR_CALL_CREDIT_SPREAD",
+                "BULL_CALL_DEBIT_SPREAD",
+                "BEAR_PUT_DEBIT_SPREAD",
+            }:
+                return "VERTICAL_ROLL"
+            return "CUSTOM"
+        if len(legs) <= 1:
+            return "NONE"
+
+        mapping = {
+            "PROTECTIVE_COLLAR": "COLLAR_SYNTHETIC",
+            "EVENT_VOL_STRADDLE": "STRADDLE",
+            "EVENT_VOL_STRANGLE": "STRANGLE",
+            "POOR_MANS_COVERED_CALL": "DIAGONAL",
+            "BULL_PUT_CREDIT_SPREAD": "VERTICAL",
+            "BEAR_CALL_CREDIT_SPREAD": "VERTICAL",
+            "BULL_CALL_DEBIT_SPREAD": "VERTICAL",
+            "BEAR_PUT_DEBIT_SPREAD": "VERTICAL",
+            "CALL_CALENDAR_SPREAD": "CALENDAR",
+            "PUT_CALENDAR_SPREAD": "CALENDAR",
+            "DIAGONAL_CALENDAR_SPREAD": "DIAGONAL",
+            "IRON_CONDOR": "IRON_CONDOR",
+            "IRON_BUTTERFLY": "CUSTOM",
+            "BROKEN_WING_BUTTERFLY": "CUSTOM",
+            "RISK_REVERSAL_BULLISH": "CUSTOM",
+            "RISK_REVERSAL_BEARISH": "CUSTOM",
+        }
+        return mapping.get(style, "CUSTOM")
+
+    def _options_roll_leg_specs(self, *, options_plan: Dict[str, Any]) -> List[Dict[str, Any]]:
+        raw_legs = options_plan.get("legs")
+        if not isinstance(raw_legs, list) or not raw_legs:
+            return []
+        current_dte = max(int(round(self._as_float(options_plan.get("dte_days"), 0.0))), 0)
+        target_dte = max(int(round(self._as_float(options_plan.get("roll_target_dte_days"), 0.0))), 0)
+        if current_dte <= 0:
+            current_dte = max(int(round(max(self._as_float(leg.get("expiry_days"), 0.0), 0.0))) for leg in raw_legs if isinstance(leg, dict))
+        if target_dte <= 0:
+            target_dte = current_dte + max(int(os.getenv("OPTIONS_ROLL_FORWARD_DAYS", "21") or 21), 7)
+        delta_dte = max(target_dte - max(current_dte, 1), 7)
+
+        close_legs: List[Dict[str, Any]] = []
+        open_legs: List[Dict[str, Any]] = []
+        for raw_leg in raw_legs:
+            if not isinstance(raw_leg, dict):
+                continue
+            close_leg = dict(raw_leg)
+            close_leg["_execution_mode"] = "CLOSE"
+            close_legs.append(close_leg)
+
+            open_leg = dict(raw_leg)
+            open_leg["expiry_days"] = max(int(round(self._as_float(raw_leg.get("expiry_days"), current_dte))) + delta_dte, target_dte)
+            open_leg["_execution_mode"] = "OPEN"
+            open_legs.append(open_leg)
+        return close_legs + open_legs
+
+    def _futures_month_cycle(self, root_symbol: str) -> List[int]:
+        root = str(root_symbol or "").strip().upper()
+        if root in _QUARTERLY_FUTURES_ROOTS:
+            return [3, 6, 9, 12]
+        return list(range(1, 13))
+
+    def _normalize_futures_root_symbol(self, symbol: str) -> str:
+        raw = str(symbol or "").strip().upper()
+        if not raw:
+            return ""
+        if raw.startswith("/"):
+            raw = raw[1:]
+        if raw.endswith("=F"):
+            raw = raw[:-2]
+        match = _FUTURES_CONTRACT_RE.match(raw)
+        if match:
+            return match.group(1)
+        return raw
+
+    def _parse_futures_contract_symbol(self, symbol: str) -> Optional[Tuple[str, int, int]]:
+        raw = str(symbol or "").strip().upper()
+        match = _FUTURES_CONTRACT_RE.match(raw)
+        if not match:
+            return None
+        root, month_code, year_text = match.groups()
+        month = _FUTURES_CODE_TO_MONTH.get(month_code)
+        if month is None:
+            return None
+        year_value = int(year_text)
+        if year_value < 100:
+            year_value += 2000
+        return root, month, year_value
+
+    def _futures_contract_multiplier(self, root_symbol: str) -> float:
+        root = self._normalize_futures_root_symbol(root_symbol)
+        return max(float(_FUTURES_CONTRACT_MULTIPLIERS.get(root, float(os.getenv("FUTURES_CONTRACT_MULTIPLIER_DEFAULT", "50") or 50.0))), 1.0)
+
+    def _advance_futures_cycle(self, *, month: int, year: int, cycle: List[int], offset_contracts: int) -> Tuple[int, int]:
+        target_month = int(month)
+        target_year = int(year)
+        cycle_sorted = list(sorted(int(x) for x in cycle if 1 <= int(x) <= 12)) or list(range(1, 13))
+        current_index = cycle_sorted.index(target_month) if target_month in cycle_sorted else 0
+        remaining = max(int(offset_contracts), 0)
+        while remaining > 0:
+            current_index += 1
+            if current_index >= len(cycle_sorted):
+                current_index = 0
+                target_year += 1
+            remaining -= 1
+        return cycle_sorted[current_index], target_year
+
+    def _candidate_futures_symbols(self, *, root_symbol: str, month: int, year: int, prefer_slash: bool) -> List[str]:
+        root = self._normalize_futures_root_symbol(root_symbol)
+        code = _FUTURES_MONTH_CODES[int(month)]
+        yy = str(year)[-2:]
+        y = str(year)[-1:]
+        variants = [f"{root}{code}{yy}", f"{root}{code}{y}", f"{root}{code}{year}"]
+        out: List[str] = []
+        for base in variants:
+            if prefer_slash:
+                out.append(f"/{base}")
+            out.append(base)
+            if not prefer_slash:
+                out.append(f"/{base}")
+        seen: set[str] = set()
+        uniq: List[str] = []
+        for candidate in out:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            uniq.append(candidate)
+        return uniq
+
+    def _futures_active_symbol_hints(self, payload: Dict[str, Any]) -> List[str]:
+        hints: List[str] = []
+        for key in (
+            "futureActiveSymbol",
+            "activeSymbol",
+            "activeContractSymbol",
+            "futureSymbol",
+            "symbol",
+        ):
+            raw = self._quote_field(payload, key)
+            if raw is None or not str(raw).strip():
+                continue
+            hints.append(str(raw).strip().upper())
+        seen: set[str] = set()
+        uniq: List[str] = []
+        for hint in hints:
+            if hint in seen:
+                continue
+            seen.add(hint)
+            uniq.append(hint)
+        return uniq
+
+    def _resolve_live_futures_contract_symbol(self, *, symbol: str, month_offset: int) -> Dict[str, Any]:
+        root_symbol = self._normalize_futures_root_symbol(symbol)
+        if not root_symbol:
+            raise ValueError("missing_futures_root_symbol")
+
+        prefer_slash = str(symbol or "").strip().startswith("/")
+        parsed = self._parse_futures_contract_symbol(symbol)
+        if parsed is not None:
+            base_root, base_month, base_year = parsed
+            cycle = self._futures_month_cycle(base_root)
+            target_month, target_year = self._advance_futures_cycle(
+                month=base_month,
+                year=base_year,
+                cycle=cycle,
+                offset_contracts=max(int(month_offset), 0),
+            )
+            for candidate in self._candidate_futures_symbols(
+                root_symbol=base_root,
+                month=target_month,
+                year=target_year,
+                prefer_slash=prefer_slash,
+            ):
+                quote = self._fetch_live_quote(symbol=candidate)
+                if quote.get("ok") and isinstance(quote.get("quote_payload"), dict) and quote.get("quote_payload"):
+                    return {
+                        "contract_symbol": candidate,
+                        "quote_payload": quote.get("quote_payload"),
+                        "method": str(quote.get("method", "")),
+                    }
+
+        root_quote = self._fetch_live_quote(symbol=symbol)
+        if root_quote.get("ok"):
+            quote_payload = root_quote.get("quote_payload") if isinstance(root_quote.get("quote_payload"), dict) else {}
+            for hint in self._futures_active_symbol_hints(quote_payload):
+                parsed_hint = self._parse_futures_contract_symbol(hint)
+                if parsed_hint is None:
+                    continue
+                hint_root, hint_month, hint_year = parsed_hint
+                cycle = self._futures_month_cycle(hint_root)
+                target_month, target_year = self._advance_futures_cycle(
+                    month=hint_month,
+                    year=hint_year,
+                    cycle=cycle,
+                    offset_contracts=max(int(month_offset), 0),
+                )
+                for candidate in self._candidate_futures_symbols(
+                    root_symbol=hint_root,
+                    month=target_month,
+                    year=target_year,
+                    prefer_slash=hint.startswith("/"),
+                ):
+                    quote = self._fetch_live_quote(symbol=candidate)
+                    if quote.get("ok") and isinstance(quote.get("quote_payload"), dict) and quote.get("quote_payload"):
+                        return {
+                            "contract_symbol": candidate,
+                            "quote_payload": quote.get("quote_payload"),
+                            "method": str(quote.get("method", "")),
+                        }
+
+        now_utc = datetime.now(timezone.utc)
+        cycle = self._futures_month_cycle(root_symbol)
+        candidate_month = cycle[0]
+        candidate_year = now_utc.year
+        for cycle_month in cycle:
+            if cycle_month >= now_utc.month:
+                candidate_month = cycle_month
+                break
+        else:
+            candidate_month = cycle[0]
+            candidate_year += 1
+
+        target_month, target_year = self._advance_futures_cycle(
+            month=candidate_month,
+            year=candidate_year,
+            cycle=cycle,
+            offset_contracts=max(int(month_offset), 0),
+        )
+        for candidate in self._candidate_futures_symbols(
+            root_symbol=root_symbol,
+            month=target_month,
+            year=target_year,
+            prefer_slash=prefer_slash,
+        ):
+            quote = self._fetch_live_quote(symbol=candidate)
+            if quote.get("ok") and isinstance(quote.get("quote_payload"), dict) and quote.get("quote_payload"):
+                return {
+                    "contract_symbol": candidate,
+                    "quote_payload": quote.get("quote_payload"),
+                    "method": str(quote.get("method", "")),
+                }
+
+        raise ValueError(f"futures_contract_not_found:{str(symbol).upper()}:offset={int(month_offset)}")
+
+    def _build_live_futures_order(
+        self,
+        *,
+        symbol: str,
+        action: str,
+        quantity: float,
+        limit_price: float,
+        futures_plan: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        plan_action = str(action or "").strip().upper()
+        raw_legs = futures_plan.get("roll_legs") if plan_action == "ROLL" else futures_plan.get("legs")
+        if not isinstance(raw_legs, list) or not raw_legs:
+            raise ValueError("missing_futures_plan_legs")
+
+        order_legs: List[Dict[str, Any]] = []
+        resolved_legs: List[Dict[str, Any]] = []
+        reference_price = 0.0
+        contract_multiplier = self._futures_contract_multiplier(symbol)
+        signed_price_total = 0.0
+        final_quantities: List[int] = []
+
+        for raw_leg in raw_legs:
+            if not isinstance(raw_leg, dict):
+                continue
+            side = self._order_instruction(str(raw_leg.get("side") or plan_action or "BUY"))
+            resolved = self._resolve_live_futures_contract_symbol(
+                symbol=str(symbol),
+                month_offset=max(int(raw_leg.get("month_offset", 0) or 0), 0),
+            )
+            contract_symbol = str(resolved.get("contract_symbol", "") or "").upper()
+            if not contract_symbol:
+                raise ValueError("resolved_futures_contract_missing_symbol")
+            quote_payload = resolved.get("quote_payload") if isinstance(resolved.get("quote_payload"), dict) else {}
+            quote_ref = max(
+                self._as_float(self._quote_field(quote_payload, "lastPrice", "mark", "markPrice", "closePrice"), 0.0),
+                0.0,
+            )
+            if quote_ref > 0.0:
+                reference_price = max(reference_price, quote_ref)
+            leg_qty = max(int(round(self._as_float(raw_leg.get("quantity"), quantity))), 1)
+            signed_leg_price = quote_ref if side.startswith("BUY") else -quote_ref
+            signed_price_total += signed_leg_price * leg_qty
+            final_quantities.append(leg_qty)
+            order_legs.append(
+                {
+                    "instruction": side,
+                    "quantity": float(leg_qty),
+                    "instrument": {
+                        "symbol": contract_symbol,
+                        "assetType": "FUTURE",
+                    },
+                }
+            )
+            resolved_legs.append(
+                {
+                    "contract_symbol": contract_symbol,
+                    "instruction": side,
+                    "quantity": leg_qty,
+                    "month_offset": int(raw_leg.get("month_offset", 0) or 0),
+                }
+            )
+
+        if not order_legs:
+            raise ValueError("empty_futures_order_legs")
+
+        price_value = max(self._as_float(limit_price, 0.0), 0.0)
+        order_spec: Dict[str, Any] = {
+            "orderType": "MARKET" if price_value <= 0.0 else "LIMIT",
+            "session": "NORMAL",
+            "duration": "DAY",
+            "orderStrategyType": "SINGLE",
+            "orderLegCollection": order_legs,
+        }
+        if price_value > 0.0:
+            order_spec["price"] = round(price_value, 6)
+
+        strategy_units = self._strategy_unit_quantity(final_quantities)
+        estimated_unit_price = abs(signed_price_total) / max(float(strategy_units), 1.0)
+        reference_value = float(price_value if price_value > 0.0 else (estimated_unit_price if estimated_unit_price > 0.0 else reference_price))
+
+        return {
+            "order_spec": order_spec,
+            "reference_price": reference_value,
+            "intended_price": reference_value,
+            "notional_multiplier": float(contract_multiplier),
+            "details": {
+                "futures_style": str(futures_plan.get("futures_style", "")),
+                "strategy_family": str(futures_plan.get("strategy_family", "")),
+                "resolved_legs": resolved_legs,
+                "estimated_unit_price": float(estimated_unit_price),
+            },
+        }
+
+    def _build_live_options_order(
+        self,
+        *,
+        symbol: str,
+        action: str,
+        quantity: float,
+        limit_price: float,
+        options_plan: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        raw_legs = options_plan.get("legs")
+        if not isinstance(raw_legs, list) or not raw_legs:
+            raise ValueError("missing_options_plan_legs")
+
+        plan_action = str(action or "").strip().upper()
+
+        fetch = self._fetch_live_option_chain(symbol=symbol)
+        if not fetch.get("ok"):
+            raise RuntimeError(str(fetch.get("error", "option_chain_unavailable")))
+
+        payload = fetch.get("payload") if isinstance(fetch.get("payload"), dict) else {}
+        now_ts = time.time()
+
+        requested_qty = max(int(round(self._as_float(quantity, 0.0))), 0)
+        plan_contracts = max(int(round(self._as_float(options_plan.get("contracts"), 0.0))), 0)
+        scale = 1
+        if plan_contracts > 0 and requested_qty > 0:
+            raw_scale = requested_qty / max(plan_contracts, 1)
+            rounded_scale = int(round(raw_scale))
+            if abs(raw_scale - rounded_scale) > 1e-6:
+                raise ValueError("non_integer_options_quantity_scale")
+            scale = max(rounded_scale, 1)
+        elif requested_qty > 0 and plan_contracts <= 0:
+            scale = max(requested_qty, 1)
+
+        leg_specs: List[Dict[str, Any]]
+        if plan_action == "ROLL":
+            leg_specs = self._options_roll_leg_specs(options_plan=options_plan)
+            if not leg_specs:
+                raise ValueError("options_roll_leg_specs_missing")
+        else:
+            leg_specs = [dict(leg) for leg in raw_legs if isinstance(leg, dict)]
+
+        order_legs: List[Dict[str, Any]] = []
+        resolved_legs: List[Dict[str, Any]] = []
+        signed_price_total = 0.0
+        final_quantities: List[int] = []
+        for raw_leg in leg_specs:
+            execution_mode = str(raw_leg.get("_execution_mode", "") or "").strip().upper()
+            overall_action = "CLOSE" if execution_mode == "CLOSE" else action
+
+            resolved = self._pick_option_chain_contract(
+                symbol=symbol,
+                payload=payload,
+                leg=raw_leg,
+                overall_action=overall_action,
+                now_ts=now_ts,
+            )
+            final_qty = max(int(resolved["quantity"]) * scale, 1)
+            instruction = str(resolved["instruction"])
+            quote_value = max(float(resolved["quote"]), 0.0)
+            signed_leg_price = quote_value if instruction.startswith("BUY") else -quote_value
+            signed_price_total += signed_leg_price * final_qty
+            final_quantities.append(final_qty)
+
+            order_legs.append(
+                {
+                    "instruction": instruction,
+                    "quantity": float(final_qty),
+                    "instrument": {
+                        "symbol": str(resolved["contract_symbol"]),
+                        "assetType": "OPTION",
+                    },
+                }
+            )
+            resolved_legs.append(
+                {
+                    "contract_symbol": str(resolved["contract_symbol"]),
+                    "instruction": instruction,
+                    "quantity": int(final_qty),
+                    "quote": float(quote_value),
+                    "resolved_strike": float(resolved["resolved_strike"]),
+                    "resolved_expiry_days": float(resolved["resolved_expiry_days"]),
+                    "execution_mode": execution_mode or ("OPEN" if plan_action == "ROLL" else "TRADE"),
+                }
+            )
+
+        if not order_legs:
+            raise ValueError("empty_options_order_legs")
+
+        strategy_units = self._strategy_unit_quantity(final_quantities)
+        estimated_unit_price = abs(signed_price_total) / max(float(strategy_units), 1.0)
+        explicit_limit = max(self._as_float(limit_price, 0.0), 0.0)
+
+        if len(order_legs) == 1:
+            effective_price = explicit_limit if explicit_limit > 0.0 else estimated_unit_price
+            order_type = "LIMIT" if effective_price > 0.0 else "MARKET"
+            price_value = effective_price
+        else:
+            effective_price = explicit_limit if explicit_limit > 0.0 else estimated_unit_price
+            if abs(signed_price_total) <= 0.005 * max(float(strategy_units), 1.0):
+                order_type = "NET_ZERO"
+                price_value = 0.0
+            elif signed_price_total > 0.0:
+                order_type = "NET_DEBIT"
+                price_value = effective_price
+            else:
+                order_type = "NET_CREDIT"
+                price_value = effective_price
+            if order_type != "NET_ZERO" and price_value <= 0.0:
+                raise ValueError("options_net_price_unavailable")
+
+        order_spec: Dict[str, Any] = {
+            "orderType": order_type,
+            "session": "NORMAL",
+            "duration": "DAY",
+            "orderStrategyType": "SINGLE",
+            "orderLegCollection": order_legs,
+        }
+
+        complex_type = self._options_complex_strategy_type(
+            options_style=str(options_plan.get("options_style", "")),
+            legs=order_legs,
+            action=plan_action,
+        )
+        if complex_type != "NONE":
+            order_spec["complexOrderStrategyType"] = complex_type
+
+        if price_value > 0.0 and order_type != "MARKET":
+            order_spec["price"] = round(price_value, 2)
+
+        return {
+            "order_spec": order_spec,
+            "reference_price": float(explicit_limit if explicit_limit > 0.0 else estimated_unit_price),
+            "intended_price": float(explicit_limit if explicit_limit > 0.0 else estimated_unit_price),
+            "notional_multiplier": 100.0,
+            "details": {
+                "option_chain_method": str(fetch.get("method", "")),
+                "options_style": str(options_plan.get("options_style", "")),
+                "strategy_family": str(options_plan.get("strategy_family", "")),
+                "resolved_legs": resolved_legs,
+                "estimated_unit_price": float(estimated_unit_price),
+            },
+        }
+
+    def _build_live_single_order_spec(
         self,
         *,
         symbol: str,
@@ -1344,6 +2241,112 @@ class BaseTrader:
             out["orderType"] = "LIMIT"
             out["price"] = round(limit, 6)
         return out
+
+    def _build_live_order_spec(
+        self,
+        *,
+        symbol: str,
+        action: str,
+        quantity: float,
+        limit_price: float = 0.0,
+        asset_type: str = "EQUITY",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        md = metadata if isinstance(metadata, dict) else {}
+        options_plan = md.get("options_plan") if isinstance(md.get("options_plan"), dict) else {}
+        futures_plan = md.get("futures_plan") if isinstance(md.get("futures_plan"), dict) else {}
+        if isinstance(options_plan, dict) and options_plan.get("legs"):
+            return self._build_live_options_order(
+                symbol=symbol,
+                action=action,
+                quantity=quantity,
+                limit_price=limit_price,
+                options_plan=options_plan,
+            )["order_spec"]
+        if isinstance(futures_plan, dict) and futures_plan.get("legs"):
+            return self._build_live_futures_order(
+                symbol=symbol,
+                action=action,
+                quantity=quantity,
+                limit_price=limit_price,
+                futures_plan=futures_plan,
+            )["order_spec"]
+        return self._build_live_single_order_spec(
+            symbol=symbol,
+            action=action,
+            quantity=quantity,
+            limit_price=limit_price,
+            asset_type=asset_type,
+        )
+
+    def _prepare_live_order(
+        self,
+        *,
+        symbol: str,
+        action: str,
+        quantity: float,
+        limit_price: float = 0.0,
+        asset_type: str = "EQUITY",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        md = metadata if isinstance(metadata, dict) else {}
+        options_plan = md.get("options_plan") if isinstance(md.get("options_plan"), dict) else {}
+        futures_plan = md.get("futures_plan") if isinstance(md.get("futures_plan"), dict) else {}
+
+        if isinstance(options_plan, dict) and options_plan.get("legs"):
+            try:
+                preview = self._build_live_options_order(
+                    symbol=symbol,
+                    action=action,
+                    quantity=quantity,
+                    limit_price=limit_price,
+                    options_plan=options_plan,
+                )
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "error": f"options_order_prep_failed:{type(exc).__name__}:{exc}",
+                    "details": {
+                        "options_style": str(options_plan.get("options_style", "")),
+                        "strategy_family": str(options_plan.get("strategy_family", "")),
+                    },
+                }
+            return {"ok": True, **preview}
+
+        if isinstance(futures_plan, dict) and futures_plan.get("legs"):
+            try:
+                preview = self._build_live_futures_order(
+                    symbol=symbol,
+                    action=action,
+                    quantity=quantity,
+                    limit_price=limit_price,
+                    futures_plan=futures_plan,
+                )
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "error": f"futures_order_prep_failed:{type(exc).__name__}:{exc}",
+                    "details": {
+                        "futures_style": str(futures_plan.get("futures_style", "")),
+                        "strategy_family": str(futures_plan.get("strategy_family", "")),
+                    },
+                }
+            return {"ok": True, **preview}
+
+        return {
+            "ok": True,
+            "order_spec": self._build_live_single_order_spec(
+                symbol=symbol,
+                action=action,
+                quantity=quantity,
+                limit_price=limit_price,
+                asset_type=asset_type,
+            ),
+            "reference_price": 0.0,
+            "intended_price": 0.0,
+            "notional_multiplier": 1.0,
+            "details": {},
+        }
 
     def _live_place_order(
         self,
@@ -1638,17 +2641,38 @@ class BaseTrader:
         return sorted(order_ids)
 
     def _live_fetch_accounts_payload(self) -> Dict[str, Any]:
-        candidates: List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]] = []
-        if self.live_account_hash:
-            candidates.append(("get_account", (self.live_account_hash,), {}))
-        candidates.append(("get_accounts", tuple(), {}))
-        candidates.append(("get_account", tuple(), {}))
+        if not self.live_account_hash:
+            self._discover_live_account_hash(force=True)
+
+        def _snapshot_candidates() -> List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]]:
+            candidates: List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]] = []
+            if self.live_account_hash:
+                candidates.append(("get_account", (self.live_account_hash,), {}))
+            if (not candidates) or self.live_accounts_snapshot_allow_global_fallback:
+                candidates.append(("get_accounts", tuple(), {}))
+                candidates.append(("get_account", tuple(), {}))
+            return candidates
 
         out = self._invoke_client_candidates(
             operation="get_accounts_snapshot",
-            candidates=candidates,
-            context={},
+            candidates=_snapshot_candidates(),
+            context={"account_hash_configured": bool(self.live_account_hash)},
         )
+        if (not out.get("ok")) and self.live_account_hash:
+            status_code = self._as_int(out.get("status_code", 0), 0)
+            if status_code in {401, 403, 404}:
+                previous_hash = str(self.live_account_hash)
+                self.live_account_hash = ""
+                refreshed_hash = self._discover_live_account_hash(force=True)
+                if refreshed_hash and refreshed_hash != previous_hash:
+                    out = self._invoke_client_candidates(
+                        operation="get_accounts_snapshot",
+                        candidates=_snapshot_candidates(),
+                        context={
+                            "account_hash_configured": bool(self.live_account_hash),
+                            "account_hash_refreshed": True,
+                        },
+                    )
         if not out.get("ok"):
             return out
 
@@ -2322,12 +3346,64 @@ class BaseTrader:
                     metadata=md,
                     features=features,
                 )
+                asset_type = str(md.get("asset_type") or "EQUITY").strip().upper() or "EQUITY"
+                prepared_order = self._prepare_live_order(
+                    symbol=symbol,
+                    action=action,
+                    quantity=quantity,
+                    limit_price=limit_price,
+                    asset_type=asset_type,
+                    metadata=md,
+                )
+                if not prepared_order.get("ok"):
+                    unsupported = bool(prepared_order.get("unsupported", False))
+                    status = "LIVE_UNSUPPORTED_DERIVATIVES_ORDER" if unsupported else "LIVE_ORDER_PREP_FAILED"
+                    reason = str(prepared_order.get("error", "order_prep_failed"))
+                    self._log_softguard_event(
+                        event="derivatives_execution_guard" if unsupported else "order_prep_failed",
+                        status="blocked" if unsupported else "error",
+                        reason=reason,
+                        details={
+                            "symbol": str(symbol).upper(),
+                            "action": str(action).upper(),
+                            "quantity": float(quantity),
+                            **(prepared_order.get("details", {}) if isinstance(prepared_order.get("details"), dict) else {}),
+                        },
+                    )
+                    result = {
+                        "status": status,
+                        "mode": self.mode,
+                        "decision": decision_entry,
+                        "live_order": {
+                            "symbol": str(symbol).upper(),
+                            "action": str(action).upper(),
+                            "quantity": float(quantity),
+                            "error": reason,
+                            "details": prepared_order.get("details", {}),
+                        },
+                        "live_guard": self.live_guard.snapshot(),
+                    }
+                    self._emit_decision_explanation(
+                        status=status,
+                        decision_entry=decision_entry,
+                        safety=safety,
+                    )
+                    return result
+
+                guard_reference_price = float(prepared_order.get("reference_price", 0.0) or 0.0)
+                if guard_reference_price <= 0.0:
+                    guard_reference_price = ref_price
+                guard_intended_price = float(prepared_order.get("intended_price", 0.0) or 0.0)
+                if guard_intended_price <= 0.0:
+                    guard_intended_price = intended_price
+                notional_multiplier = max(float(prepared_order.get("notional_multiplier", 1.0) or 1.0), 1.0)
                 guard_decision = self.live_guard.pre_trade_check(
                     symbol=symbol,
                     action=action,
                     quantity=quantity,
-                    reference_price=ref_price,
-                    intended_price=intended_price,
+                    reference_price=guard_reference_price,
+                    intended_price=guard_intended_price,
+                    notional_multiplier=notional_multiplier,
                 )
 
                 if not guard_decision.ok:
@@ -2402,14 +3478,7 @@ class BaseTrader:
                         "live_guard": self.live_guard.snapshot(),
                     }
                 else:
-                    asset_type = str(md.get("asset_type") or "EQUITY").strip().upper() or "EQUITY"
-                    order_spec = self._build_live_order_spec(
-                        symbol=symbol,
-                        action=action,
-                        quantity=quantity,
-                        limit_price=limit_price,
-                        asset_type=asset_type,
-                    )
+                    order_spec = prepared_order.get("order_spec") if isinstance(prepared_order.get("order_spec"), dict) else {}
                     place = self._live_place_order(
                         symbol=symbol,
                         action=action,
@@ -2429,7 +3498,10 @@ class BaseTrader:
                                 "quantity": float(quantity),
                                 "order_spec": order_spec,
                                 "error": place.get("error", "submit_failed"),
-                                "details": place.get("details", {}),
+                                "details": {
+                                    **(prepared_order.get("details", {}) if isinstance(prepared_order.get("details"), dict) else {}),
+                                    **(place.get("details", {}) if isinstance(place.get("details"), dict) else {}),
+                                },
                             },
                             "live_guard": self.live_guard.snapshot(),
                         }
@@ -2467,6 +3539,7 @@ class BaseTrader:
                                     "latency_ms": place.get("latency_ms", 0.0),
                                     "status_code": place.get("status_code", 0),
                                 },
+                                "details": prepared_order.get("details", {}),
                             },
                             "fills": fills,
                             "position_reconcile": reconcile,

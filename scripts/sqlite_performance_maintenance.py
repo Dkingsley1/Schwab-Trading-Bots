@@ -11,6 +11,36 @@ DEFAULT_DB = PROJECT_ROOT / "data" / "jsonl_link.sqlite3"
 DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "sqlite_maintenance_latest.json"
 
 
+def _emit_progress(message: str, *, as_json: bool) -> None:
+    stream = os.sys.stderr if as_json else os.sys.stdout
+    print(message, file=stream, flush=True)
+
+
+def _read_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _default_db_path() -> Path:
+    configured = str(os.getenv("SQL_LINK_SERVICE_PRIMARY_DB", "") or "").strip()
+    if configured:
+        return Path(configured)
+    progress = _read_json(PROJECT_ROOT / "governance" / "health" / "sql_link_service_progress_latest.json")
+    primary_db = str(progress.get("primary_db") or "").strip()
+    if primary_db:
+        return Path(primary_db)
+    latest = _read_json(PROJECT_ROOT / "governance" / "health" / "sql_link_service_latest.json")
+    latest_db = str(latest.get("db_path") or latest.get("primary_db") or "").strip()
+    if latest_db:
+        return Path(latest_db)
+    return DEFAULT_DB
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
     return row is not None
@@ -86,8 +116,9 @@ def _emit(payload: dict, out_path: Path, as_json: bool) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Apply SQLite performance tuning and maintenance.")
-    parser.add_argument("--db", default=str(DEFAULT_DB))
+    parser.add_argument("--db", default=str(_default_db_path()))
     parser.add_argument("--vacuum", action="store_true")
+    parser.add_argument("--no-auto-vacuum", action="store_true")
     parser.add_argument("--checkpoint-only", action="store_true")
     parser.add_argument("--wal-checkpoint-threshold-gb", type=float, default=float(os.getenv("SQLITE_WAL_CHECKPOINT_THRESHOLD_GB", "0.25")))
     parser.add_argument("--wal-truncate-max-gb", type=float, default=float(os.getenv("SQLITE_WAL_TRUNCATE_MAX_GB", "8")))
@@ -149,10 +180,17 @@ def main() -> int:
         "wal_checkpoint_threshold_gb": float(args.wal_checkpoint_threshold_gb),
         "wal_truncate_max_gb": float(args.wal_truncate_max_gb),
         "auto_vacuum_over_gb": float(args.auto_vacuum_over_gb),
+        "no_auto_vacuum": bool(args.no_auto_vacuum),
         "vacuum_min_interval_hours": float(args.vacuum_min_interval_hours),
     }
 
     try:
+        _emit_progress(
+            f"sqlite_maintenance start db={db_path} size_gb={size_gb_before:.3f} "
+            f"wal_gb={wal_size_gb_before:.3f} checkpoint_only={str(bool(args.checkpoint_only)).lower()} "
+            f"no_auto_vacuum={str(bool(args.no_auto_vacuum)).lower()}",
+            as_json=args.json,
+        )
         conn = sqlite3.connect(str(db_path), timeout=max(float(args.sqlite_timeout_seconds), 1.0))
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
@@ -162,6 +200,7 @@ def main() -> int:
         conn.execute(f"PRAGMA busy_timeout={int(max(float(args.sqlite_timeout_seconds), 1.0) * 1000)}")
 
         if (not args.checkpoint_only) and _table_exists(conn, "jsonl_records"):
+            _emit_progress("sqlite_maintenance step=index_jsonl_records", as_json=args.json)
             idx_sql = [
                 "CREATE INDEX IF NOT EXISTS idx_jsonl_source_rel_ingested ON jsonl_records(source_rel, ingested_at)",
                 "CREATE INDEX IF NOT EXISTS idx_jsonl_source_rel_line ON jsonl_records(source_rel, line_no)",
@@ -179,6 +218,7 @@ def main() -> int:
                 created_indexes += 1
 
         if (not args.checkpoint_only) and _table_exists(conn, "json_file_records"):
+            _emit_progress("sqlite_maintenance step=index_json_file_records", as_json=args.json)
             idx_sql = [
                 "CREATE INDEX IF NOT EXISTS idx_json_file_source_rel_ingested ON json_file_records(source_rel, ingested_at)",
                 "CREATE INDEX IF NOT EXISTS idx_json_file_stream_ingested ON json_file_records(stream, ingested_at)",
@@ -209,6 +249,7 @@ def main() -> int:
         )
 
         if not args.checkpoint_only:
+            _emit_progress("sqlite_maintenance step=analyze_optimize", as_json=args.json)
             _sqlite_exec_with_retry(
                 conn,
                 "ANALYZE",
@@ -229,6 +270,7 @@ def main() -> int:
         elif wal_size_gb_before < checkpoint_threshold_gb:
             payload["checkpoint_skipped_reason"] = "wal_below_threshold"
         else:
+            _emit_progress("sqlite_maintenance step=wal_checkpoint", as_json=args.json)
             checkpoint_mode_applied = _checkpoint_mode_for_wal(
                 wal_size_gb=wal_size_gb_before,
                 requested_mode=str(args.wal_checkpoint_mode),
@@ -266,7 +308,12 @@ def main() -> int:
                 last_vacuum_ts = None
 
         do_vacuum = bool(args.vacuum and (not args.checkpoint_only))
-        if (not args.checkpoint_only) and (not do_vacuum) and size_gb_before >= float(args.auto_vacuum_over_gb):
+        if (
+            (not args.checkpoint_only)
+            and (not args.no_auto_vacuum)
+            and (not do_vacuum)
+            and size_gb_before >= float(args.auto_vacuum_over_gb)
+        ):
             if last_vacuum_ts is None:
                 do_vacuum = True
             else:
@@ -274,6 +321,7 @@ def main() -> int:
                 do_vacuum = elapsed_h >= float(args.vacuum_min_interval_hours)
 
         if do_vacuum:
+            _emit_progress("sqlite_maintenance step=vacuum", as_json=args.json)
             _sqlite_exec_with_retry(
                 conn,
                 "VACUUM",
@@ -282,6 +330,7 @@ def main() -> int:
             )
 
         if _table_exists(conn, "jsonl_records"):
+            _emit_progress("sqlite_maintenance step=count_jsonl_records", as_json=args.json)
             row = _sqlite_exec_with_retry(
                 conn,
                 "SELECT COUNT(*) FROM jsonl_records",
@@ -318,6 +367,11 @@ def main() -> int:
                 "wal_size_gb_after": round(wal_size_gb_after, 3),
             }
         )
+        _emit_progress(
+            f"sqlite_maintenance complete ok=true vacuum_ran={str(bool(do_vacuum)).lower()} "
+            f"checkpoint_ran={str(bool(payload.get('checkpoint_ran', False))).lower()}",
+            as_json=args.json,
+        )
     except Exception as exc:
         size_gb_after = db_path.stat().st_size / (1024 ** 3) if db_path.exists() else 0.0
         wal_size_gb_after = _size_gb(wal_path)
@@ -332,6 +386,7 @@ def main() -> int:
                 "wal_size_gb_after": round(wal_size_gb_after, 3),
             }
         )
+        _emit_progress(f"sqlite_maintenance error={exc}", as_json=args.json)
     finally:
         if conn is not None:
             try:

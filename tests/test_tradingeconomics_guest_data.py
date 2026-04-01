@@ -55,15 +55,21 @@ def test_derive_market_breadth_builds_snapshot_from_quote_rows() -> None:
         {"Symbol": "QQQ:US", "PercentChange": 0.8, "Volume": 1200},
         {"Symbol": "IWM:US", "PercentChange": -0.4, "Volume": 800},
         {"Symbol": "DIA:US", "PercentChange": 0.1, "Volume": 700},
+        {"Symbol": "XLK:US", "PercentChange": 1.4, "Volume": 650},
+        {"Symbol": "XLF:US", "PercentChange": -0.6, "Volume": 620},
     ]
 
     out = te_guest._derive_market_breadth(rows)
 
-    assert out["row_count"] == 4
-    assert out["advancers"] == 3.0
-    assert out["decliners"] == 1.0
+    assert out["row_count"] == 6
+    assert out["advancers"] == 4.0
+    assert out["decliners"] == 2.0
     assert out["up_volume"] > out["down_volume"]
     assert out["sector_dispersion"] > 0.0
+    assert out["sector_advancers"] == 1.0
+    assert out["sector_decliners"] == 1.0
+    assert "technology" in out["sector_average_moves"]
+    assert out["index_alignment_score"] > 0.0
 
 
 def test_external_feeds_context_backfills_from_tradingeconomics_latest(tmp_path: Path) -> None:

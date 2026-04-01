@@ -2,6 +2,8 @@ import hashlib
 import json
 import os
 import subprocess
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -86,6 +88,97 @@ HOT_QUEUE_CHANNELS = {
 }
 
 
+_LOW_SIGNAL_RECENT: Dict[str, float] = {}
+_LOW_SIGNAL_RECENT_LOCK = threading.Lock()
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return float(value) != 0.0
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _low_signal_thinning_enabled() -> bool:
+    return os.getenv("LOW_SIGNAL_LOG_THINNING_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _low_signal_decision_window_seconds() -> float:
+    return max(float(os.getenv("LOW_SIGNAL_DECISION_WINDOW_SECONDS", "60") or 60.0), 1.0)
+
+
+def _low_signal_execution_guard_window_seconds() -> float:
+    return max(float(os.getenv("LOW_SIGNAL_EXECUTION_GUARD_WINDOW_SECONDS", "60") or 60.0), 1.0)
+
+
+def _low_signal_signature(path: str, payload: Dict[str, Any]) -> tuple[str, float] | None:
+    norm_path = str(path or "").replace("\\", "/")
+    status = str(payload.get("status") or "").strip()
+
+    if "/decision_explanations/" in norm_path and status in {"DATA_ONLY_BLOCKED", "SHADOW_ONLY", "PAPER_GUARD_BLOCKED"}:
+        safety = payload.get("safety") if isinstance(payload.get("safety"), dict) else {}
+        observe_only = _as_bool(safety.get("market_data_only")) and (not _as_bool(safety.get("execution_enabled")))
+        if status == "DATA_ONLY_BLOCKED" and (not observe_only):
+            return None
+        symbol = str(payload.get("symbol") or "UNKNOWN").strip()
+        action = str(payload.get("action") or "UNKNOWN").strip()
+        strategy = str(payload.get("strategy") or "UNKNOWN").strip()
+        reasons = payload.get("reasons") if isinstance(payload.get("reasons"), list) else []
+        reason = str(reasons[0] or "").strip() if reasons else ""
+        signature = f"decision:{status}:{symbol}:{action}:{strategy}:{reason}"
+        return signature, _low_signal_decision_window_seconds()
+
+    if os.path.basename(norm_path).startswith("paper_execution_guard_"):
+        event = str(payload.get("event") or "").strip()
+        if event != "pre_trade_check":
+            return None
+        guard_status = str(payload.get("status") or "").strip().lower()
+        if guard_status not in {"blocked", "skip", "skipped"}:
+            return None
+        details = payload.get("details") if isinstance(payload.get("details"), dict) else {}
+        symbol = str(details.get("symbol") or payload.get("symbol") or "UNKNOWN").strip()
+        action = str(details.get("action") or payload.get("action") or "UNKNOWN").strip()
+        reason = str(payload.get("reason") or details.get("reason") or "").strip()
+        gate = str(details.get("gate") or "").strip()
+        mode = str(payload.get("mode") or "").strip()
+        signature = f"execution_guard:{guard_status}:{mode}:{symbol}:{action}:{reason}:{gate}"
+        return signature, _low_signal_execution_guard_window_seconds()
+
+    return None
+
+
+def _thin_low_signal_payloads(path: str, payloads: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows = [dict(p or {}) for p in payloads]
+    if (not rows) or (not _low_signal_thinning_enabled()):
+        return rows
+
+    now = time.time()
+    retention_window = max(_low_signal_decision_window_seconds(), _low_signal_execution_guard_window_seconds(), 300.0) * 2.0
+    kept: List[Dict[str, Any]] = []
+    norm_path = os.path.abspath(path)
+
+    with _LOW_SIGNAL_RECENT_LOCK:
+        stale_keys = [key for key, ts in _LOW_SIGNAL_RECENT.items() if (now - ts) >= retention_window]
+        for key in stale_keys:
+            _LOW_SIGNAL_RECENT.pop(key, None)
+
+        for payload in rows:
+            sig = _low_signal_signature(norm_path, payload)
+            if sig is None:
+                kept.append(payload)
+                continue
+            signature, window_seconds = sig
+            cache_key = f"{norm_path}:{signature}"
+            last_seen = _LOW_SIGNAL_RECENT.get(cache_key)
+            if last_seen is not None and (now - last_seen) < window_seconds:
+                continue
+            _LOW_SIGNAL_RECENT[cache_key] = now
+            kept.append(payload)
+
+    return kept
+
+
 def _schema_errors(payload: Dict[str, Any], *, schema: str) -> List[str]:
     req = CHANNEL_SCHEMA_REQUIRED.get(str(schema or "").strip(), ())
     if not req:
@@ -138,7 +231,15 @@ def safe_append_jsonl_batch(
 
 
 def _default_queue_db(project_root: str) -> str:
-    return str(Path(project_root) / "data" / "bot_channel_queue.sqlite3") if project_root else ""
+    if not project_root:
+        return ""
+    override = str(os.getenv("BOT_CHANNEL_QUEUE_DB", "") or "").strip()
+    if override:
+        return override
+    local_root = str(os.getenv("BOT_CHANNEL_QUEUE_LOCAL_ROOT", "") or "").strip()
+    if local_root:
+        return str(Path(local_root).expanduser() / "data" / "bot_channel_queue.sqlite3")
+    return str(Path(project_root) / "local_fallback_storage" / "data" / "bot_channel_queue.sqlite3")
 
 
 def _queue_publish(
@@ -262,6 +363,10 @@ def safe_append_channel_batch(
             payload["schema_valid"] = True
         valid_payloads.append(payload)
 
+    if not valid_payloads:
+        return 0
+
+    valid_payloads = _thin_low_signal_payloads(path, valid_payloads)
     if not valid_payloads:
         return 0
 

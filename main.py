@@ -24,7 +24,7 @@ import os
 # Your Schwab Credentials (Keep these secret!)
 API_KEY = os.getenv("SCHWAB_API_KEY", "YOUR_KEY_HERE")
 SECRET = os.getenv("SCHWAB_SECRET", "YOUR_SECRET_HERE")
-REDIRECT = os.getenv("SCHWAB_REDIRECT", "https://127.0.0.1:8080")
+REDIRECT = os.getenv("SCHWAB_REDIRECT", "https://127.0.0.1:8182")
 
 
 def _has_real_credentials() -> bool:

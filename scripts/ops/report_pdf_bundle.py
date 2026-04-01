@@ -183,6 +183,13 @@ def _build_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "pdf_path": reports_dir / "daily_ops_report_latest.pdf",
         },
         {
+            "slug": "market_crypto_correlation",
+            "title": "Market Correlation Overlap",
+            "kind": "markdown",
+            "source_path": reports_dir / "market_crypto_correlation_latest.md",
+            "pdf_path": reports_dir / "market_crypto_correlation_latest.pdf",
+        },
+        {
             "slug": "retrain_scorecard",
             "title": "Retrain Scorecard",
             "kind": "markdown",
@@ -209,6 +216,20 @@ def _build_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "kind": "json",
             "source_path": _existing(governance_health_dir / "daily_auto_verify_latest.json") or _latest_artifact(str(sql_reports_dir / "daily_auto_verify_*.json")),
             "pdf_path": sql_reports_dir / "daily_auto_verify_latest.pdf",
+        },
+        {
+            "slug": "macro_crosscheck",
+            "title": "Macro Crosscheck",
+            "kind": "markdown",
+            "source_path": reports_dir / "macro_crosscheck_latest.md",
+            "pdf_path": reports_dir / "macro_crosscheck_latest.pdf",
+        },
+        {
+            "slug": "source_verification",
+            "title": "Source Verification",
+            "kind": "markdown",
+            "source_path": reports_dir / "source_verification_latest.md",
+            "pdf_path": reports_dir / "source_verification_latest.pdf",
         },
         {
             "slug": "model_card",

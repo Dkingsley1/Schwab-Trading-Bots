@@ -15,6 +15,7 @@ from typing import Any, Dict, List
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT_DIR = PROJECT_ROOT / "exports" / "reports" / "training_reports"
 LATEST_METADATA_PATH = PROJECT_ROOT / "governance" / "health" / "training_report_latest.json"
+OPERATOR_NOTES_PATH = PROJECT_ROOT / "governance" / "health" / "retrain_operator_notes_latest.json"
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -41,6 +42,27 @@ def _load_json(path: Path) -> Dict[str, Any]:
         return obj if isinstance(obj, dict) else {}
     except Exception:
         return {}
+
+
+def _normalize_operator_notes(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict) or not payload:
+        return {}
+    observations = [str(item).strip() for item in (payload.get("observations") or []) if str(item).strip()]
+    training_guidance = [str(item).strip() for item in (payload.get("training_guidance") or []) if str(item).strip()]
+    tags = [str(item).strip() for item in (payload.get("tags") or []) if str(item).strip()]
+    metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+    out = {
+        "title": str(payload.get("title", "") or "").strip(),
+        "summary": str(payload.get("summary", "") or "").strip(),
+        "timestamp_local": _fmt_ts_local(payload.get("timestamp_utc")) or str(payload.get("timestamp_local", "") or "").strip(),
+        "source": str(payload.get("source", "") or "").strip(),
+        "requested_by": str(payload.get("requested_by", "") or "").strip(),
+        "tags": tags,
+        "observations": observations,
+        "training_guidance": training_guidance,
+        "metrics": metrics,
+    }
+    return {k: v for k, v in out.items() if v not in ("", [], {}, None)}
 
 
 def _latest(pattern: str) -> Path | None:
@@ -175,6 +197,7 @@ def _assessment_lines(context: Dict[str, Any]) -> List[str]:
     promotion_gate = context.get("promotion_gate") if isinstance(context.get("promotion_gate"), dict) else {}
     trade = context.get("trade_behavior") if isinstance(context.get("trade_behavior"), dict) else {}
     divergence = context.get("data_divergence") if isinstance(context.get("data_divergence"), dict) else {}
+    operator_notes = context.get("operator_notes") if isinstance(context.get("operator_notes"), dict) else {}
 
     target_count = int(summary.get("target_count", 0) or 0)
     trained_count = int(summary.get("trained_count", 0) or 0)
@@ -218,6 +241,11 @@ def _assessment_lines(context: Dict[str, Any]) -> List[str]:
         if worst is not None and ceiling is not None:
             lines.append(f"Data divergence is above the allowed threshold ({worst:.4f} vs {ceiling:.4f}).")
 
+    if operator_notes:
+        note_summary = str(operator_notes.get("summary", "") or "").strip()
+        if note_summary:
+            lines.append(f"Operator note carried into this retrain: {note_summary}")
+
     return lines
 
 
@@ -241,9 +269,15 @@ def _build_context(
     daily_verify = _load_json(daily_verify_path)
     data_divergence = _load_json(data_divergence_path)
     lane_scorecard = _load_json(lane_scorecard_path)
+    fallback_operator_notes = _load_json(OPERATOR_NOTES_PATH)
 
     resolved_trade_log = _resolve_trade_log(trade_log_path, scorecard)
     trade = _load_json(resolved_trade_log) if resolved_trade_log is not None else {}
+    operator_notes = _normalize_operator_notes(
+        scorecard.get("operator_notes") if isinstance(scorecard.get("operator_notes"), dict)
+        else success.get("operator_notes") if isinstance(success.get("operator_notes"), dict)
+        else fallback_operator_notes
+    )
 
     candidate_score = _coerce_float(trade.get("candidate_score"))
     previous_score = _coerce_float(trade.get("previous_score"))
@@ -341,6 +375,7 @@ def _build_context(
             "ok": bool(daily_verify.get("ok", False)),
             "failed_checks": daily_verify_failed_checks,
         },
+        "operator_notes": operator_notes,
         "sources": {
             "retrain_scorecard": str(scorecard_path),
             "training_success": str(training_success_path),
@@ -351,6 +386,7 @@ def _build_context(
             "data_divergence": str(data_divergence_path),
             "unified_lane_scorecard": str(lane_scorecard_path),
             "trade_behavior_log": str(resolved_trade_log) if resolved_trade_log is not None else "",
+            "operator_notes": str(OPERATOR_NOTES_PATH),
         },
     }
     context["assessment"] = _assessment_lines(context)
@@ -366,6 +402,7 @@ def _render_markdown(context: Dict[str, Any]) -> str:
     trade = context["trade_behavior"]
     lane_scorecard = context["lane_scorecard"]
     divergence = context["data_divergence"]
+    operator_notes = context.get("operator_notes") if isinstance(context.get("operator_notes"), dict) else {}
 
     lines = [
         f"# Training Report ({context['generated_utc']})",
@@ -383,6 +420,24 @@ def _render_markdown(context: Dict[str, Any]) -> str:
     ]
     for line in context["assessment"]:
         lines.append(f"- {line}")
+
+    if operator_notes:
+        lines.extend(["", "## Operator Notes"])
+        title = str(operator_notes.get("title", "") or "").strip()
+        summary_text = str(operator_notes.get("summary", "") or "").strip()
+        if title:
+            lines.append(f"- Title: {title}")
+        if summary_text:
+            lines.append(f"- Summary: {summary_text}")
+        if operator_notes.get("timestamp_local"):
+            lines.append(f"- Captured: {operator_notes['timestamp_local']}")
+        tags = [str(item) for item in (operator_notes.get("tags") or []) if str(item).strip()]
+        if tags:
+            lines.append(f"- Tags: {', '.join(tags)}")
+        for item in [str(item) for item in (operator_notes.get("observations") or []) if str(item).strip()]:
+            lines.append(f"- Observation: {item}")
+        for item in [str(item) for item in (operator_notes.get("training_guidance") or []) if str(item).strip()]:
+            lines.append(f"- Training guidance: {item}")
 
     lines.extend(
         [
@@ -492,6 +547,7 @@ def _render_html(context: Dict[str, Any]) -> str:
     trade = context["trade_behavior"]
     test_metrics = trade["test_metrics"]
     divergence = context["data_divergence"]
+    operator_notes = context.get("operator_notes") if isinstance(context.get("operator_notes"), dict) else {}
 
     assessment_html = "".join(f"<li>{html.escape(line)}</li>" for line in context["assessment"])
     promotion_reasons_html = "".join(f"<li>{html.escape(str(line))}</li>" for line in trade["promotion_reasons"][:8])
@@ -508,6 +564,36 @@ def _render_html(context: Dict[str, Any]) -> str:
         f"<li><strong>{html.escape(label)}</strong>: {html.escape(str(path))}</li>"
         for label, path in context["sources"].items()
     )
+    operator_notes_html = ""
+    if operator_notes:
+        operator_lines: list[str] = []
+        title = str(operator_notes.get("title", "") or "").strip()
+        summary_text = str(operator_notes.get("summary", "") or "").strip()
+        if title:
+            operator_lines.append(f"<li><strong>Title</strong>: {html.escape(title)}</li>")
+        if summary_text:
+            operator_lines.append(f"<li><strong>Summary</strong>: {html.escape(summary_text)}</li>")
+        if operator_notes.get("timestamp_local"):
+            operator_lines.append(f"<li><strong>Captured</strong>: {html.escape(str(operator_notes['timestamp_local']))}</li>")
+        tags = [str(item) for item in (operator_notes.get("tags") or []) if str(item).strip()]
+        if tags:
+            operator_lines.append(f"<li><strong>Tags</strong>: {html.escape(', '.join(tags))}</li>")
+        operator_lines.extend(
+            f"<li><strong>Observation</strong>: {html.escape(str(item))}</li>"
+            for item in (operator_notes.get("observations") or [])
+            if str(item).strip()
+        )
+        operator_lines.extend(
+            f"<li><strong>Training guidance</strong>: {html.escape(str(item))}</li>"
+            for item in (operator_notes.get("training_guidance") or [])
+            if str(item).strip()
+        )
+        operator_notes_html = (
+            "\n    <section class=\"section\">\n"
+            "      <h2>Operator Notes</h2>\n"
+            f"      <ul>{''.join(operator_lines)}</ul>\n"
+            "    </section>\n"
+        )
 
     return f"""<!DOCTYPE html>
 <html lang=\"en\">
@@ -563,6 +649,7 @@ def _render_html(context: Dict[str, Any]) -> str:
       <h2>Assessment</h2>
       <ul>{assessment_html}</ul>
     </section>
+{operator_notes_html}
 
     <section class=\"section\">
       <h2>Gate Summary</h2>

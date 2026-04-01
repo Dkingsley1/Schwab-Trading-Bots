@@ -10,7 +10,12 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 HALT_FLAG_PATH = PROJECT_ROOT / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
-VENV_PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_python import resolve_runtime_python
+
+VENV_PY = resolve_runtime_python(PROJECT_ROOT)
 SHADOW_LOOP = PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py"
 TOKEN_PATH = PROJECT_ROOT / "token.json"
 RESOURCE_GUARD_SCRIPT = PROJECT_ROOT / "scripts" / "resource_guard.py"

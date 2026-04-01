@@ -18,7 +18,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -40,6 +40,7 @@ from core.risk_engine import apply_risk_limits
 from core.position_sizing import size_from_action
 from core.portfolio_optimizer import allocate_quantity
 from core.execution_queue import ExecutionQueue, OrderRequest
+from core.execution_lane_pipeline import publish_execution_intent
 from core.coinbase_market_data import CoinbaseMarketDataClient, MarketDataAPIError
 from core.derivatives_features import (
     CALENDAR_FEATURE_KEYS,
@@ -74,6 +75,7 @@ from core.market_context_features import (
     summarize_data_quality_context,
     summarize_structured_news_items,
 )
+from core.runtime_python import resolve_runtime_python
 from core.runtime_layers import (
     BackpressureController,
     CanaryRollout,
@@ -91,8 +93,123 @@ from core.path_registry import (
     default_channel_mirror_paths,
     governance_master_control_path,
     ingress_state_path,
-    runtime_event_legacy_path,
+runtime_event_legacy_path,
 )
+
+TWELVE_DATA_TIME_SERIES_URL = "https://api.twelvedata.com/time_series"
+FX_TWELVE_DATA_SYMBOL_MAP = {
+    "EURUSD": "EUR/USD",
+    "USDJPY": "USD/JPY",
+    "GBPUSD": "GBP/USD",
+    "USDCHF": "USD/CHF",
+    "USDCAD": "USD/CAD",
+    "AUDUSD": "AUD/USD",
+}
+_FX_REALTIME_SNAPSHOT_CACHE: Dict[str, Dict[str, Any]] = {}
+
+_MARKET_MICRO_FEATURE_KEYS = [
+    "market_micro_premarket_pressure_norm",
+    "market_micro_opening_auction_norm",
+    "market_micro_power_hour_pressure_norm",
+    "market_micro_closing_auction_norm",
+    "market_micro_relative_volume_norm",
+    "market_micro_order_flow_imbalance_norm",
+    "market_micro_options_flow_norm",
+    "market_micro_short_pressure_norm",
+    "market_micro_credit_flow_norm",
+    "market_micro_gap_continuation_norm",
+    "market_micro_reversal_risk_norm",
+    "market_micro_trend_persistence_norm",
+    "market_micro_range_expansion_norm",
+    "market_micro_block_trade_norm",
+]
+
+_EXTERNAL_CONTEXT_FEATURE_KEYS = [
+    "sec_filing_count_7d_norm",
+    "sec_high_impact_7d_norm",
+    "sec_earnings_7d_norm",
+    "sec_guidance_7d_norm",
+    "sec_regulatory_7d_norm",
+    "sec_ownership_30d_norm",
+    "sec_insider_30d_norm",
+    "sec_recent_proximity_norm",
+    "sec_recent_symbols_norm",
+    "sec_recent_filings_1d_norm",
+    "sec_recent_high_impact_1d_norm",
+    "cot_equity_risk_on_norm",
+    "cot_equity_crowding_norm",
+    "cot_bond_risk_off_norm",
+    "cot_usd_bullish_norm",
+    "cot_macro_positioning_stress_norm",
+    "cot_risk_on_norm",
+    "sofr_level_norm",
+    "sofr_30d_avg_norm",
+    "sofr_90d_avg_norm",
+    "sofr_180d_avg_norm",
+    "sofr_term_pressure_norm",
+    "sofr_funding_stress_norm",
+    "sofr_index_norm",
+    "cboe_total_put_call_norm",
+    "cboe_index_put_call_norm",
+    "cboe_equity_put_call_norm",
+    "cboe_put_call_stress_norm",
+    "cboe_vix_spot_norm",
+    "short_threshold_listed_norm",
+    "short_threshold_rule3210_norm",
+    "short_threshold_symbol_share_norm",
+    "short_threshold_total_listed_norm",
+    "short_threshold_recency_norm",
+    "short_ftd_presence_norm",
+    "short_ftd_quantity_norm",
+    "short_ftd_symbol_share_norm",
+    "short_ftd_total_hits_norm",
+    "tasty_iv_rank_norm",
+    "tasty_implied_volatility_index_norm",
+    "tasty_liquidity_rating_norm",
+    "tasty_expected_move_norm",
+    "tasty_beta_norm",
+    "tasty_watchlist_presence_norm",
+    "crypto_deribit_futures_oi_norm",
+    "crypto_deribit_options_oi_norm",
+    "crypto_deribit_mark_iv_norm",
+    "crypto_deribit_basis_norm",
+    "crypto_kraken_volume_norm",
+    "crypto_kraken_range_norm",
+    "crypto_hyperliquid_funding_norm",
+    "crypto_hyperliquid_open_interest_norm",
+    "crypto_hyperliquid_basis_norm",
+    "crypto_coinmetrics_tx_count_norm",
+    "crypto_coinmetrics_active_addr_norm",
+    "crypto_coingecko_volume_norm",
+    "crypto_coingecko_momentum_norm",
+    "crypto_cross_provider_price_agreement_norm",
+    "crypto_defillama_stablecoin_growth_norm",
+    "crypto_defillama_dex_volume_growth_norm",
+    "crypto_etherscan_gas_norm",
+    "market_crypto_risk_corr_norm",
+    "market_crypto_spy_corr_norm",
+    "market_crypto_qqq_corr_norm",
+    "market_crypto_tlt_corr_norm",
+    "market_crypto_uup_inverse_corr_norm",
+    "market_crypto_gold_corr_norm",
+    "market_crypto_current_alignment_norm",
+    "market_crypto_divergence_norm",
+    "market_crypto_corr_confidence_norm",
+    "fx_official_data_available",
+    "fx_eurusd_level_norm",
+    "fx_eurusd_momentum_norm",
+    "fx_usdjpy_level_norm",
+    "fx_usdjpy_momentum_norm",
+    "fx_gbpusd_level_norm",
+    "fx_gbpusd_momentum_norm",
+    "fx_usd_strength_norm",
+    "fx_usd_broad_index_norm",
+    "fx_proxy_agreement_norm",
+    "fx_risk_on_alignment_norm",
+    "fx_crypto_alignment_norm",
+    "fx_macro_dispersion_norm",
+    "fx_corr_confidence_norm",
+]
 
 
 @dataclass
@@ -104,6 +221,71 @@ class SubBot:
     test_accuracy: Optional[float]
     promoted: bool = False
     bot_role: str = "signal_sub_bot"
+
+
+def _intent_message_id(*parts: Any) -> str:
+    payload = "||".join(str(part or "").strip() for part in parts)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _publish_execution_lane_intent(
+    *,
+    broker: str,
+    symbol: str,
+    action: str,
+    quantity: float,
+    model_score: float,
+    threshold: float,
+    features: Dict[str, Any],
+    gates: Dict[str, Any],
+    reasons: List[str],
+    strategy: str,
+    metadata: Dict[str, Any],
+    intent_kind: str,
+    target_mode: str = "paper",
+) -> None:
+    qty = max(float(quantity or 0.0), 0.0)
+    if str(action or "").strip().upper() not in {"BUY", "SELL"} or qty <= 0.0:
+        return
+
+    md = dict(metadata or {})
+    snapshot_id = str(md.get("snapshot_id") or "")
+    bot_id = str(md.get("bot_id") or "")
+    message_id = str(md.get("decision_id") or "") or _intent_message_id(
+        intent_kind,
+        strategy,
+        symbol,
+        action,
+        qty,
+        snapshot_id,
+        bot_id,
+        md.get("source_profile"),
+        md.get("shadow_domain"),
+    )
+    payload = {
+        "message_id": message_id,
+        "parent_message_id": str(md.get("parent_decision_id") or ""),
+        "source_mode": "shadow",
+        "target_mode": str(target_mode or "paper"),
+        "intent_kind": str(intent_kind or "master"),
+        "symbol": str(symbol or ""),
+        "action": str(action or "").upper(),
+        "quantity": qty,
+        "model_score": float(model_score or 0.0),
+        "threshold": float(threshold or 0.0),
+        "features": dict(features or {}),
+        "gates": dict(gates or {}),
+        "reasons": list(reasons or []),
+        "strategy": str(strategy or ""),
+        "metadata": md,
+        "run_id": str(md.get("run_id") or ""),
+        "iter_id": str(md.get("iter_id") or ""),
+    }
+    publish_execution_intent(project_root=PROJECT_ROOT, payload=payload)
+    print(
+        f"[ExecutionIntent] kind={intent_kind} target={target_mode} broker={broker} "
+        f"symbol={symbol} action={action} qty={qty:.4f} strategy={strategy}"
+    )
 
 
 def _parse_bot_weight_boosts(raw: str) -> Dict[str, float]:
@@ -179,7 +361,11 @@ def _lock_safe_token(raw: str) -> str:
 
 def _shadow_lock_key(broker: str) -> str:
     profile = _shadow_profile_name() or "default"
-    return f"{_lock_safe_token((broker or 'unknown').lower())}_{_lock_safe_token(profile.lower())}"
+    instance = _shadow_ingress_instance()
+    base = f"{_lock_safe_token((broker or 'unknown').lower())}_{_lock_safe_token(profile.lower())}"
+    if not instance:
+        return base
+    return f"{base}_{_lock_safe_token(instance.lower())}"
 
 
 def _release_shadow_singleton_lock() -> None:
@@ -222,13 +408,20 @@ def _acquire_shadow_singleton_lock(project_root: str, broker: str) -> bool:
 
         fh.seek(0)
         fh.truncate(0)
-        fh.write(f"pid={os.getpid()} started={time.time():.0f} broker={broker} profile={_shadow_profile_name() or 'default'} cmd={' '.join(sys.argv)}")
+        fh.write(
+            f"pid={os.getpid()} started={time.time():.0f} broker={broker} "
+            f"profile={_shadow_profile_name() or 'default'} ingress_instance={_shadow_ingress_instance() or 'default'} "
+            f"cmd={' '.join(sys.argv)}"
+        )
         fh.flush()
 
         global _SHADOW_SINGLETON_LOCK_FH
         _SHADOW_SINGLETON_LOCK_FH = fh
         atexit.register(_release_shadow_singleton_lock)
-        print(f"[ShadowLock] acquired lock_path={lock_path} pid={os.getpid()} broker={broker} profile={_shadow_profile_name() or 'default'}")
+        print(
+            f"[ShadowLock] acquired lock_path={lock_path} pid={os.getpid()} broker={broker} "
+            f"profile={_shadow_profile_name() or 'default'} ingress_instance={_shadow_ingress_instance() or 'default'}"
+        )
         return True
     except Exception as exc:
         print(f"[ShadowLock] warning lock setup failed: {exc}")
@@ -279,12 +472,12 @@ def _bot_lane_key(bot: SubBot) -> str:
     role = str(bot.bot_role or "").strip().lower()
     bot_id = str(bot.bot_id or "").strip().lower()
 
+    if any(tok in bot_id for tok in ("long_term", "dividend_quality_compounder", "dividend_yield_trap_avoidance")):
+        return "long_term"
     if role == "options_sub_bot" or any(tok in bot_id for tok in ("options", "greek", "iv_", "vol_surface", "put_call")):
         return "options"
     if role == "futures_sub_bot" or any(tok in bot_id for tok in ("futures", "funding", "basis", "order_book", "open_interest", "term_structure")):
         return "futures"
-    if any(tok in bot_id for tok in ("long_term", "dividend_quality_compounder", "dividend_yield_trap_avoidance")):
-        return "long_term"
     if any(tok in bot_id for tok in ("intraday", "scalp", "open_close", "ultrafast", "day_trade", "daytrading")):
         return "day"
     if any(tok in bot_id for tok in ("swing", "position_1m_3m", "1w_3w", "2d_5d")):
@@ -515,6 +708,16 @@ _LIVE_MACRO_SOURCE_TOKENS = (
 )
 
 
+_DIVIDEND_DRIP_FEATURE_KEYS = [
+    "dividend_drip_active_norm",
+    "dividend_drip_recent_reinvest_norm",
+    "dividend_drip_cash_only_norm",
+    "dividend_drip_share_credit_norm",
+    "dividend_drip_event_recency_norm",
+    "dividend_drip_confidence_norm",
+]
+
+
 _DIVIDEND_FEATURE_KEYS = [
     "dividend_signal_available",
     "dividend_yield_pct",
@@ -538,6 +741,7 @@ _DIVIDEND_FEATURE_KEYS = [
     "dividend_strategy_mode_capture",
     "dividend_strategy_mode_compound",
     "dividend_strategy_mode_hybrid",
+    *_DIVIDEND_DRIP_FEATURE_KEYS,
     "dividend_safety_composite_norm",
     "dividend_ex_slippage_risk_norm",
     "dividend_tax_qualified_hold_norm",
@@ -627,6 +831,325 @@ def _default_lane_strategy_features() -> Dict[str, float]:
 
 def _default_capital_flow_features() -> Dict[str, float]:
     return {k: 0.0 for k in _CAPITAL_FLOW_FEATURE_KEYS}
+
+
+_FLOW_AWARENESS_FEATURE_KEYS = [
+    "flow_direction_signed",
+    "flow_conviction_norm",
+    "flow_defensive_rotation_norm",
+    "flow_risk_on_norm",
+    "flow_risk_off_norm",
+    "flow_stress_norm",
+]
+
+
+def _default_flow_awareness_features() -> Dict[str, float]:
+    return {k: 0.0 for k in _FLOW_AWARENESS_FEATURE_KEYS}
+
+
+_LEAD_LAG_FEATURE_KEYS = [
+    "lead_lag_signal_signed",
+    "lead_lag_alignment_norm",
+    "lead_lag_confirmation_norm",
+    "lead_lag_break_norm",
+    "lead_lag_gap_norm",
+    "lead_lag_confidence_norm",
+]
+
+
+_ALLOCATION_FEATURE_KEYS = [
+    "allocation_trade_edge_norm",
+    "allocation_confidence_norm",
+    "allocation_confidence_scale",
+    "allocation_conflict_norm",
+    "regime_dislocation_norm",
+]
+
+
+def _default_lead_lag_features() -> Dict[str, float]:
+    return {k: 0.0 for k in _LEAD_LAG_FEATURE_KEYS}
+
+
+def _default_allocation_features() -> Dict[str, float]:
+    return {k: 0.0 for k in _ALLOCATION_FEATURE_KEYS}
+
+
+def _centered_norm_to_signed(value: float) -> float:
+    return _clamp11((float(value) - 0.5) * 2.0)
+
+
+def _scaled_signed(value: float, scale: float) -> float:
+    return _clamp11(float(value) / max(float(scale), 1e-6))
+
+
+def _derive_flow_awareness_features(features: Dict[str, float]) -> Dict[str, float]:
+    capital_signed = _clamp11(float(features.get("capital_flow_signed_scaled", 0.0) or 0.0))
+    capital_in = _clamp01(float(features.get("capital_flow_inflow_norm", 0.0) or 0.0))
+    capital_out = _clamp01(float(features.get("capital_flow_outflow_norm", 0.0) or 0.0))
+    micro_order = _centered_norm_to_signed(float(features.get("market_micro_order_flow_imbalance_norm", 0.5) or 0.5))
+    micro_options = _clamp01(float(features.get("market_micro_options_flow_norm", 0.0) or 0.0))
+    micro_credit = _clamp01(float(features.get("market_micro_credit_flow_norm", 0.0) or 0.0))
+    micro_short = _clamp01(float(features.get("market_micro_short_pressure_norm", 0.0) or 0.0))
+    micro_rel_vol = _clamp01(float(features.get("market_micro_relative_volume_norm", 0.0) or 0.0))
+    bond_hy_ig = _centered_norm_to_signed(float(features.get("bond_hy_ig_flow_norm", 0.5) or 0.5))
+    bond_etf = _clamp01(float(features.get("bond_etf_flow_5d_norm", 0.0) or 0.0))
+    breadth_volume = _centered_norm_to_signed(float(features.get("breadth_up_down_volume_norm", 0.5) or 0.5))
+    futures_order = _centered_norm_to_signed(float(features.get("futures_order_book_imbalance_norm", 0.5) or 0.5))
+    futures_taker = _centered_norm_to_signed(float(features.get("futures_taker_imbalance_norm", 0.5) or 0.5))
+    futures_basis = _centered_norm_to_signed(float(features.get("futures_basis_bps_norm", 0.5) or 0.5))
+    futures_term = _centered_norm_to_signed(float(features.get("futures_term_structure_norm", 0.5) or 0.5))
+    options_neg_bias = _clamp01(float(features.get("options_negative_bias_norm", 0.0) or 0.0))
+    futures_neg_bias = _clamp01(float(features.get("futures_negative_bias_norm", 0.0) or 0.0))
+
+    direction = _clamp11(
+        0.24 * capital_signed
+        + 0.16 * micro_order
+        + 0.12 * breadth_volume
+        + 0.14 * futures_order
+        + 0.10 * futures_taker
+        + 0.08 * futures_basis
+        + 0.08 * futures_term
+        + 0.08 * ((micro_rel_vol - 0.5) * 2.0)
+    )
+    conviction = _clamp01(
+        0.24 * abs(direction)
+        + 0.16 * micro_options
+        + 0.14 * micro_rel_vol
+        + 0.12 * abs(breadth_volume)
+        + 0.14 * abs(futures_order)
+        + 0.10 * abs(futures_taker)
+        + 0.10 * ((capital_in + capital_out) * 0.5)
+    )
+    defensive = _clamp01(
+        0.24 * capital_out
+        + 0.18 * micro_credit
+        + 0.14 * micro_short
+        + 0.14 * bond_etf
+        + 0.12 * max(-bond_hy_ig, 0.0)
+        + 0.10 * max(options_neg_bias, futures_neg_bias)
+        + 0.08 * max(-direction, 0.0)
+    )
+    risk_on = _clamp01(
+        0.24 * capital_in
+        + 0.18 * max(direction, 0.0)
+        + 0.14 * max(breadth_volume, 0.0)
+        + 0.12 * max(bond_hy_ig, 0.0)
+        + 0.10 * micro_rel_vol
+        + 0.10 * micro_options
+        + 0.06 * max(futures_basis, 0.0)
+        + 0.06 * max(futures_term, 0.0)
+    )
+    risk_off = _clamp01(
+        0.24 * capital_out
+        + 0.18 * micro_credit
+        + 0.14 * micro_short
+        + 0.12 * bond_etf
+        + 0.10 * max(-bond_hy_ig, 0.0)
+        + 0.10 * max(-direction, 0.0)
+        + 0.06 * max(-breadth_volume, 0.0)
+        + 0.06 * max(-futures_basis, 0.0)
+    )
+    stress = _clamp01(
+        0.34 * defensive
+        + 0.18 * max(options_neg_bias, futures_neg_bias)
+        + 0.16 * abs(min(direction, 0.0))
+        + 0.16 * max(micro_credit, micro_short)
+        + 0.16 * bond_etf
+    )
+
+    return {
+        "flow_direction_signed": direction,
+        "flow_conviction_norm": conviction,
+        "flow_defensive_rotation_norm": defensive,
+        "flow_risk_on_norm": risk_on,
+        "flow_risk_off_norm": risk_off,
+        "flow_stress_norm": stress,
+    }
+
+
+def _derive_lead_lag_features(features: Dict[str, float]) -> Dict[str, float]:
+    def _ctx_value(symbol: str, suffix: str) -> float:
+        return _hint_float(features.get(f"ctx_{_feature_symbol_key(symbol)}_{suffix}", 0.0), 0.0)
+
+    symbol_signal = _clamp11(
+        0.58 * _scaled_signed(float(features.get("pct_from_close", 0.0) or 0.0), 0.018)
+        + 0.42 * _scaled_signed(float(features.get("mom_5m", 0.0) or 0.0), 0.006)
+    )
+    risk_moves = [_ctx_value(sym, "pct_from_close") for sym in ("SPY", "QQQ", "IWM")]
+    risk_moms = [_ctx_value(sym, "mom_5m") for sym in ("SPY", "QQQ", "IWM")]
+    benchmark_signal = _clamp11(
+        0.62 * _scaled_signed(_safe_mean(risk_moves), 0.010)
+        + 0.38 * _scaled_signed(_safe_mean(risk_moms), 0.0045)
+    )
+    defensive_signal = _clamp11(
+        0.55 * _scaled_signed(_ctx_value("TLT", "pct_from_close"), 0.010)
+        + 0.25 * _scaled_signed(_ctx_value("UUP", "pct_from_close"), 0.008)
+        + 0.20 * _scaled_signed(_ctx_value("GLD", "pct_from_close"), 0.010)
+    )
+    flow_direction = _clamp11(float(features.get("flow_direction_signed", 0.0) or 0.0))
+    flow_conviction = _clamp01(float(features.get("flow_conviction_norm", 0.0) or 0.0))
+    flow_stress = _clamp01(float(features.get("flow_stress_norm", 0.0) or 0.0))
+    micro_rel_vol = _clamp01(float(features.get("market_micro_relative_volume_norm", 0.0) or 0.0))
+    micro_short = _clamp01(float(features.get("market_micro_short_pressure_norm", 0.0) or 0.0))
+    micro_credit = _clamp01(float(features.get("market_micro_credit_flow_norm", 0.0) or 0.0))
+    crypto_align = _centered_norm_to_signed(float(features.get("market_crypto_current_alignment_norm", 0.5) or 0.5))
+    fx_risk_on = _centered_norm_to_signed(float(features.get("fx_risk_on_alignment_norm", 0.5) or 0.5))
+    corr_conf = _clamp01(
+        max(
+            float(features.get("market_crypto_corr_confidence_norm", 0.0) or 0.0),
+            float(features.get("fx_corr_confidence_norm", 0.0) or 0.0),
+        )
+    )
+
+    leader_signal = _clamp11(
+        0.52 * benchmark_signal
+        - 0.20 * defensive_signal
+        + 0.18 * flow_direction
+        + 0.06 * crypto_align
+        + 0.04 * fx_risk_on
+    )
+    alignment_votes: List[float] = []
+    for probe in (symbol_signal, benchmark_signal, flow_direction, leader_signal):
+        if abs(probe) < 0.08:
+            continue
+        alignment_votes.append(1.0 if (probe * leader_signal) > 0.0 else 0.0)
+    alignment = 0.5 if not alignment_votes else _clamp01(_safe_mean(alignment_votes))
+    gap_norm = _clamp01(abs(leader_signal - symbol_signal))
+    confirmation = _clamp01(
+        0.34 * alignment
+        + 0.18 * abs(leader_signal)
+        + 0.16 * flow_conviction
+        + 0.12 * micro_rel_vol
+        + 0.10 * abs(symbol_signal)
+        + 0.10 * corr_conf
+    )
+    break_norm = _clamp01(
+        0.30 * gap_norm
+        + 0.24 * (1.0 - alignment)
+        + 0.18 * flow_stress
+        + 0.14 * max(micro_short, micro_credit)
+        + 0.14 * abs(defensive_signal)
+    )
+    confidence = _clamp01(
+        0.38 * confirmation
+        + 0.24 * (1.0 - break_norm)
+        + 0.18 * corr_conf
+        + 0.10 * _clamp01(abs(leader_signal))
+        + 0.10 * _clamp01(abs(symbol_signal))
+    )
+    signal = _clamp11(
+        0.58 * leader_signal
+        + 0.22 * flow_direction
+        + 0.20 * symbol_signal
+    )
+    return {
+        "lead_lag_signal_signed": signal,
+        "lead_lag_alignment_norm": alignment,
+        "lead_lag_confirmation_norm": confirmation,
+        "lead_lag_break_norm": break_norm,
+        "lead_lag_gap_norm": gap_norm,
+        "lead_lag_confidence_norm": confidence,
+    }
+
+
+def _trade_action_edge_norm(action: str, score: float, threshold: float) -> float:
+    action_key = str(action or "HOLD").upper()
+    score_val = _clamp01(float(score))
+    threshold_val = _clamp01(float(threshold))
+    if action_key == "BUY":
+        return _clamp01(max(score_val - threshold_val, 0.0) / max(1.0 - threshold_val, 1e-6))
+    if action_key == "SELL":
+        inverse_threshold = 1.0 - threshold_val
+        return _clamp01(max(inverse_threshold - score_val, 0.0) / max(inverse_threshold, 1e-6))
+    return 0.0
+
+
+def _allocation_confidence_overlay(
+    *,
+    action: str,
+    score: float,
+    threshold: float,
+    features: Dict[str, float],
+) -> Dict[str, float]:
+    out = _default_allocation_features()
+    action_key = str(action or "HOLD").upper()
+    min_scale = max(float(os.getenv("ALLOCATION_CONFIDENCE_MIN_SCALE", "0.30") or 0.30), 0.0)
+    max_scale = max(float(os.getenv("ALLOCATION_CONFIDENCE_MAX_SCALE", "1.15") or 1.15), min_scale)
+    edge_norm = _trade_action_edge_norm(action_key, score, threshold)
+    flow_conf = _clamp01(float(features.get("flow_conviction_norm", 0.0) or 0.0))
+    lead_conf = _clamp01(float(features.get("lead_lag_confidence_norm", 0.0) or 0.0))
+    lead_break = _clamp01(float(features.get("lead_lag_break_norm", 0.0) or 0.0))
+    infra_conf = _clamp01(float(features.get("infra_confidence_calibrator_scale_norm", 0.5) or 0.5))
+    infra_risk = _clamp01(float(features.get("infra_risk_throttle_norm", 0.0) or 0.0))
+    flow_stress = _clamp01(float(features.get("flow_stress_norm", 0.0) or 0.0))
+    lead_signal = _clamp11(float(features.get("lead_lag_signal_signed", 0.0) or 0.0))
+    flow_direction = _clamp11(float(features.get("flow_direction_signed", 0.0) or 0.0))
+
+    conflict = 0.0
+    if action_key == "BUY":
+        conflict = max(max(-lead_signal, 0.0), max(-flow_direction, 0.0))
+    elif action_key == "SELL":
+        conflict = max(max(lead_signal, 0.0), max(flow_direction, 0.0))
+
+    confidence = 0.0
+    scale = 0.0 if action_key not in {"BUY", "SELL"} else min_scale
+    if action_key in {"BUY", "SELL"}:
+        confidence = _clamp01(
+            0.34 * edge_norm
+            + 0.18 * flow_conf
+            + 0.18 * lead_conf
+            + 0.12 * infra_conf
+            + 0.10 * abs(lead_signal)
+            + 0.08 * abs(flow_direction)
+            - 0.16 * lead_break
+            - 0.14 * flow_stress
+            - 0.12 * infra_risk
+            - 0.16 * conflict
+        )
+        scale = min_scale + ((max_scale - min_scale) * confidence)
+        if conflict >= 0.75 or lead_break >= 0.85:
+            scale = min(scale, min_scale + (0.35 * (max_scale - min_scale)))
+
+    out.update(
+        {
+            "allocation_trade_edge_norm": edge_norm,
+            "allocation_confidence_norm": confidence,
+            "allocation_confidence_scale": scale,
+            "allocation_conflict_norm": _clamp01(conflict),
+        }
+    )
+    return out
+
+
+def _regime_dislocation_norm(features: Dict[str, float]) -> float:
+    return _clamp01(
+        0.34 * _clamp01(float(features.get("lead_lag_break_norm", 0.0) or 0.0))
+        + 0.26 * _clamp01(float(features.get("flow_stress_norm", 0.0) or 0.0))
+        + 0.18 * _clamp01(float(features.get("infra_risk_throttle_norm", 0.0) or 0.0))
+        + 0.12 * _clamp01(
+            float(
+                features.get(
+                    "infra_cross_venue_divergence_risk_norm",
+                    features.get("snapshot_divergence_ratio", 0.0),
+                )
+                or 0.0
+            )
+        )
+        + 0.10 * _clamp01(float(features.get("allocation_conflict_norm", 0.0) or 0.0))
+    )
+
+
+def _flow_bot_bias(bot_id: str) -> str:
+    bot_key = str(bot_id or "").strip().lower()
+    if any(token in bot_key for token in ("dividend", "bond", "yield", "credit", "duration", "defensive", "quality", "compounder", "risk_off")):
+        return "defensive"
+    if any(token in bot_key for token in ("trend", "breakout", "momentum", "dmi", "donchian", "relative_strength", "rotation", "position")):
+        return "trend"
+    if any(token in bot_key for token in ("mean", "revert", "bollinger", "vwap", "keltner", "choppy")):
+        return "mean_revert"
+    if any(token in bot_key for token in ("futures", "order_flow", "liquidity", "basis", "term_structure", "crypto", "intraday", "ultrafast", "micro")):
+        return "tactical"
+    return "generic"
 
 
 def _clamp11(value: float) -> float:
@@ -1083,6 +1606,180 @@ def _merge_calendar_feature_sets(
     return out
 
 
+def _market_micro_feature_set(snapshot: Dict[str, Any], *, symbol: str) -> Dict[str, float]:
+    out = {k: 0.0 for k in _MARKET_MICRO_FEATURE_KEYS}
+    if not isinstance(snapshot, dict):
+        return out
+    derived = snapshot.get("derived") if isinstance(snapshot.get("derived"), dict) else {}
+    global_features = derived.get("global_features") if isinstance(derived.get("global_features"), dict) else {}
+    symbol_features = derived.get("symbol_features") if isinstance(derived.get("symbol_features"), dict) else {}
+    symbol_row = symbol_features.get(str(symbol or "").strip().upper())
+    if not isinstance(symbol_row, dict):
+        symbol_row = {}
+    for key in _MARKET_MICRO_FEATURE_KEYS:
+        raw = symbol_row.get(key, global_features.get(key, 0.0))
+        try:
+            out[key] = float(raw or 0.0)
+        except Exception:
+            out[key] = 0.0
+    return out
+
+
+def _merge_calendar_feature_map(base: Dict[str, float], incoming: Mapping[str, Any]) -> Dict[str, float]:
+    out = dict(base)
+    for key, raw in incoming.items():
+        try:
+            value = float(raw)
+        except Exception:
+            continue
+        if value is None or not math.isfinite(value):
+            continue
+        current = _hint_float(out.get(key), 0.0)
+        if key in {"calendar_macro_surprise_norm", "calendar_macro_revision_norm"}:
+            current_delta = abs((current if current is not None else 0.5) - 0.5)
+            value_delta = abs(value - 0.5)
+            if value_delta >= current_delta:
+                out[key] = _clamp01(value)
+            continue
+        if key == "calendar_next_event_norm":
+            current_num = float(current or 0.0)
+            if current_num <= 0.0:
+                out[key] = _clamp01(value)
+            elif value > 0.0:
+                out[key] = _clamp01(min(current_num, value))
+            continue
+        out[key] = max(float(current or 0.0), _clamp01(value))
+    return out
+
+
+def _merge_external_context_news_features(base: Dict[str, float], snapshot: Dict[str, Any], *, symbol: str = "") -> Dict[str, float]:
+    out = dict(base)
+    if not isinstance(snapshot, dict):
+        return out
+    derived = snapshot.get("derived") if isinstance(snapshot.get("derived"), dict) else {}
+    news_features = derived.get("news_features") if isinstance(derived.get("news_features"), dict) else {}
+    symbol_news = derived.get("news_symbol_features") if isinstance(derived.get("news_symbol_features"), dict) else {}
+    symbol_row = symbol_news.get(str(symbol or "").strip().upper()) if isinstance(symbol_news, dict) else {}
+    if not isinstance(symbol_row, dict):
+        symbol_row = {}
+    for node in (news_features, symbol_row):
+        for key, raw in node.items():
+            value = _hint_float(raw, float("nan"))
+            if not math.isfinite(value):
+                continue
+            if key == "news_sentiment":
+                if abs(value) >= abs(_hint_float(out.get(key), 0.0)):
+                    out[key] = _clamp11(value)
+            else:
+                out[key] = max(_hint_float(out.get(key), 0.0), value)
+    return out
+
+
+def _merge_external_context_calendar_features(base: Dict[str, float], snapshot: Dict[str, Any]) -> Dict[str, float]:
+    if not isinstance(snapshot, dict):
+        return dict(base)
+    derived = snapshot.get("derived") if isinstance(snapshot.get("derived"), dict) else {}
+    calendar_features = derived.get("calendar_features") if isinstance(derived.get("calendar_features"), dict) else {}
+    return _merge_calendar_feature_map(dict(base), calendar_features)
+
+
+def _external_context_feature_set(snapshot: Dict[str, Any], *, symbol: str) -> Dict[str, float]:
+    out = {key: 0.0 for key in _EXTERNAL_CONTEXT_FEATURE_KEYS}
+    if not isinstance(snapshot, dict):
+        return out
+    derived = snapshot.get("derived") if isinstance(snapshot.get("derived"), dict) else {}
+    global_features = derived.get("global_features") if isinstance(derived.get("global_features"), dict) else {}
+    symbol_features = derived.get("symbol_features") if isinstance(derived.get("symbol_features"), dict) else {}
+    symbol_row = symbol_features.get(str(symbol or "").strip().upper())
+    if not isinstance(symbol_row, dict):
+        symbol_row = {}
+    for key in _EXTERNAL_CONTEXT_FEATURE_KEYS:
+        out[key] = _hint_float(symbol_row.get(key, global_features.get(key, 0.0)), 0.0)
+    return out
+
+
+def _dividend_drip_feature_set(snapshot: Dict[str, Any], *, symbol: str) -> Dict[str, float]:
+    out = {key: 0.0 for key in _DIVIDEND_DRIP_FEATURE_KEYS}
+    if not isinstance(snapshot, dict):
+        return out
+    derived = snapshot.get("derived") if isinstance(snapshot.get("derived"), dict) else {}
+    global_features = derived.get("global_features") if isinstance(derived.get("global_features"), dict) else {}
+    symbol_features = derived.get("symbol_features") if isinstance(derived.get("symbol_features"), dict) else {}
+    symbol_row = symbol_features.get(str(symbol or "").strip().upper())
+    if not isinstance(symbol_row, dict):
+        symbol_row = {}
+    for key in _DIVIDEND_DRIP_FEATURE_KEYS:
+        out[key] = _hint_float(symbol_row.get(key, global_features.get(key, 0.0)), 0.0)
+    return out
+
+
+def _parse_external_context_ts(raw: Any) -> float:
+    text = str(raw or "").strip()
+    if not text:
+        return 0.0
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _coinbase_proxy_context_market(
+    snapshot: Dict[str, Any],
+    *,
+    proxy_symbols: List[str],
+    now_ts: float,
+    max_stale_seconds: float,
+) -> Dict[str, Dict[str, float]]:
+    out: Dict[str, Dict[str, float]] = {}
+    if not isinstance(snapshot, dict):
+        return out
+    derived = snapshot.get("derived") if isinstance(snapshot.get("derived"), dict) else {}
+    latest_snapshots = derived.get("latest_snapshots") if isinstance(derived.get("latest_snapshots"), dict) else {}
+    snapshot_ts = _parse_external_context_ts(snapshot.get("timestamp_utc"))
+    for symbol in proxy_symbols:
+        norm_symbol = str(symbol or "").strip().upper()
+        if not norm_symbol:
+            continue
+        row = latest_snapshots.get(norm_symbol)
+        if not isinstance(row, dict):
+            continue
+        row_ts = _hint_float(row.get("ts"), 0.0)
+        if row_ts <= 0.0:
+            row_ts = snapshot_ts
+        if row_ts > 0.0 and (now_ts - row_ts) > max(float(max_stale_seconds), 30.0):
+            continue
+        out[norm_symbol] = {
+            "last_price": _hint_float(row.get("last_price"), 0.0),
+            "pct_from_close": _hint_float(row.get("pct_from_close"), 0.0),
+            "mom_5m": _hint_float(row.get("mom_5m"), 0.0),
+            "return_1m": _hint_float(row.get("return_1m"), 0.0),
+            "vol_30m": _hint_float(row.get("vol_30m"), 0.0),
+            "snapshot_ts_utc": row_ts,
+        }
+    return out
+
+
+def _merge_market_snapshots(
+    base: Dict[str, Dict[str, float]],
+    extra: Dict[str, Dict[str, float]],
+) -> Dict[str, Dict[str, float]]:
+    if not extra:
+        return base
+    out = dict(base)
+    for symbol, row in extra.items():
+        if not isinstance(row, dict):
+            continue
+        current = out.get(symbol)
+        if not isinstance(current, dict):
+            out[symbol] = dict(row)
+            continue
+        current_ts = _hint_float(current.get("snapshot_ts_utc"), 0.0)
+        new_ts = _hint_float(row.get("snapshot_ts_utc"), 0.0)
+        if new_ts >= current_ts:
+            out[symbol] = dict(row)
+    return out
+
+
 def _external_macro_calendar_proxy_features(project_root: str) -> Dict[str, float]:
     feats = default_calendar_features()
     try:
@@ -1427,6 +2124,192 @@ def _is_usable_market_snapshot(mkt: Dict[str, float]) -> bool:
     return False
 
 
+def _fx_realtime_pair_symbol(symbol: str) -> str:
+    token = str(symbol or "").strip().upper().replace("/", "").replace("-", "")
+    return token if token in FX_TWELVE_DATA_SYMBOL_MAP else ""
+
+
+def _fx_realtime_quotes_enabled() -> bool:
+    return (
+        (_shadow_profile_name() == "fx")
+        and str(os.getenv("FX_REALTIME_QUOTES_ENABLED", "1")).strip().lower() in {"1", "true", "yes", "on"}
+        and bool(str(os.getenv("TWELVE_DATA_API_KEY", "")).strip())
+    )
+
+
+def _fx_twelve_data_cache_ttl_seconds() -> float:
+    return max(float(str(os.getenv("FX_TWELVE_DATA_CACHE_TTL_SECONDS", "900") or "900")), 60.0)
+
+
+def _fx_twelve_data_stale_grace_seconds() -> float:
+    default_grace = max(_fx_twelve_data_cache_ttl_seconds() * 2.0, 1800.0)
+    return max(float(str(os.getenv("FX_TWELVE_DATA_STALE_GRACE_SECONDS", str(default_grace)) or str(default_grace))), _fx_twelve_data_cache_ttl_seconds())
+
+
+def _in_forex_session_window(now_et: datetime) -> tuple[bool, str]:
+    week_start_raw = str(os.getenv("FX_FOREX_SESSION_WEEK_START", "17:00") or "17:00").strip()
+    week_end_raw = str(os.getenv("FX_FOREX_SESSION_WEEK_END", "17:00") or "17:00").strip()
+    try:
+        week_start_hour, week_start_minute = [max(0, int(part)) for part in week_start_raw.split(":", 1)]
+    except Exception:
+        week_start_hour, week_start_minute = 17, 0
+    try:
+        week_end_hour, week_end_minute = [max(0, int(part)) for part in week_end_raw.split(":", 1)]
+    except Exception:
+        week_end_hour, week_end_minute = 17, 0
+    local_clock = now_et.timetz().replace(tzinfo=None)
+    weekday = int(now_et.isoweekday())
+    week_start = local_clock.replace(hour=min(week_start_hour, 23), minute=min(week_start_minute, 59))
+    week_end = local_clock.replace(hour=min(week_end_hour, 23), minute=min(week_end_minute, 59))
+
+    if weekday == 7:
+        return (local_clock >= week_start), ("forex_session_open" if local_clock >= week_start else "forex_pre_open")
+    if weekday in {1, 2, 3, 4}:
+        return True, "forex_session_open"
+    if weekday == 5:
+        return (local_clock < week_end), ("forex_session_open" if local_clock < week_end else "forex_post_close")
+    return False, "forex_weekend_closed"
+
+
+def _market_snapshot_from_twelve_data(symbol: str) -> Dict[str, float]:
+    api_key = str(os.getenv("TWELVE_DATA_API_KEY", "")).strip()
+    if not api_key:
+        raise RuntimeError(f"twelve_data_api_key_missing symbol={symbol}")
+    pair_symbol = _fx_realtime_pair_symbol(symbol)
+    feed_symbol = FX_TWELVE_DATA_SYMBOL_MAP.get(pair_symbol, "")
+    if not pair_symbol or not feed_symbol:
+        raise RuntimeError(f"unsupported_fx_pair symbol={symbol}")
+
+    cache_ttl_seconds = _fx_twelve_data_cache_ttl_seconds()
+    stale_grace_seconds = _fx_twelve_data_stale_grace_seconds()
+    now_ts = time.time()
+    cached_row = _FX_REALTIME_SNAPSHOT_CACHE.get(pair_symbol)
+    if isinstance(cached_row, dict):
+        cached_ts = float(cached_row.get("ts", 0.0) or 0.0)
+        cached_snapshot = cached_row.get("snapshot")
+        cached_age = max(now_ts - cached_ts, 0.0)
+        if isinstance(cached_snapshot, dict) and cached_age <= cache_ttl_seconds:
+            snap = dict(cached_snapshot)
+            snap["fx_quote_cache_hit"] = 1.0
+            snap["fx_quote_stale_seconds"] = float(cached_age)
+            return snap
+
+    interval = str(os.getenv("FX_TWELVE_DATA_INTERVAL", "5min") or "5min").strip() or "5min"
+    outputsize = max(int(str(os.getenv("FX_TWELVE_DATA_OUTPUTSIZE", "72") or "72")), 4)
+    timeout = max(float(str(os.getenv("FX_TWELVE_DATA_REQUEST_TIMEOUT_SECONDS", "12") or "12")), 5.0)
+    url = (
+        f"{TWELVE_DATA_TIME_SERIES_URL}?{urlencode({'symbol': feed_symbol, 'interval': interval, 'outputsize': outputsize, 'apikey': api_key, 'format': 'JSON'})}"
+    )
+    req = Request(url=url, headers={"User-Agent": "schwab-trading-bot/1.0"})
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+    except (HTTPError, URLError, TimeoutError, OSError) as exc:
+        if isinstance(cached_row, dict):
+            cached_ts = float(cached_row.get("ts", 0.0) or 0.0)
+            cached_snapshot = cached_row.get("snapshot")
+            cached_age = max(now_ts - cached_ts, 0.0)
+            if isinstance(cached_snapshot, dict) and cached_age <= stale_grace_seconds:
+                snap = dict(cached_snapshot)
+                snap["fx_quote_cache_fallback"] = 1.0
+                snap["fx_quote_stale_seconds"] = float(cached_age)
+                snap["fx_quote_source"] = "twelve_data_cache_fallback"
+                return snap
+        raise RuntimeError(f"twelve_data_request_failed symbol={symbol} err={type(exc).__name__}:{exc}") from exc
+
+    try:
+        payload = json.loads(raw)
+    except Exception as exc:
+        raise RuntimeError(f"twelve_data_parse_failed symbol={symbol} err={type(exc).__name__}:{exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"twelve_data_invalid_payload symbol={symbol}")
+    if str(payload.get("status", "")).strip().lower() == "error":
+        message = str(payload.get("message", "")).strip() or "twelve_data_error"
+        code = str(payload.get("code", "")).strip()
+        if isinstance(cached_row, dict):
+            cached_ts = float(cached_row.get("ts", 0.0) or 0.0)
+            cached_snapshot = cached_row.get("snapshot")
+            cached_age = max(now_ts - cached_ts, 0.0)
+            if isinstance(cached_snapshot, dict) and cached_age <= stale_grace_seconds:
+                snap = dict(cached_snapshot)
+                snap["fx_quote_cache_fallback"] = 1.0
+                snap["fx_quote_stale_seconds"] = float(cached_age)
+                snap["fx_quote_source"] = "twelve_data_cache_fallback"
+                return snap
+        raise RuntimeError(f"twelve_data_error symbol={symbol} code={code or 'none'} msg={message}")
+
+    values = payload.get("values")
+    if not isinstance(values, list):
+        raise RuntimeError(f"twelve_data_missing_values symbol={symbol}")
+    rows: List[Tuple[str, float, float, float]] = []
+    for row in values:
+        if not isinstance(row, dict):
+            continue
+        ts = str(row.get("datetime") or "").strip()
+        close_value = _to_float(row.get("close"), math.nan)
+        high_value = _to_float(row.get("high"), close_value)
+        low_value = _to_float(row.get("low"), close_value)
+        if ts and math.isfinite(close_value) and close_value > 0.0:
+            rows.append((ts, close_value, high_value if math.isfinite(high_value) else close_value, low_value if math.isfinite(low_value) else close_value))
+    rows.sort(key=lambda item: item[0])
+    if len(rows) < 2:
+        raise RuntimeError(f"twelve_data_insufficient_rows symbol={symbol}")
+
+    latest_ts, last_price, _, _ = rows[-1]
+    prev_bar_ts, prev_bar_close, _, _ = rows[-2]
+    _ = prev_bar_ts
+    session_close = rows[0][1]
+    closes = [row[1] for row in rows]
+    highs = [row[2] for row in rows]
+    lows = [row[3] for row in rows]
+
+    ret = []
+    for i in range(1, len(closes)):
+        p0 = closes[i - 1]
+        p1 = closes[i]
+        if p0 > 0.0 and p1 > 0.0:
+            ret.append((p1 - p0) / p0)
+    vol_30m = math.sqrt(sum(r * r for r in ret[-6:]) / max(len(ret[-6:]), 1))
+    mom_5m = (last_price - prev_bar_close) / max(prev_bar_close, 1e-8)
+    prev_close = session_close if session_close > 0.0 else prev_bar_close
+    pct_from_close = (last_price - prev_close) / max(prev_close, 1e-8)
+    day_high = max(highs) if highs else last_price
+    day_low = min(lows) if lows else last_price
+    range_pos = 0.5
+    if day_high > day_low:
+        range_pos = (last_price - day_low) / (day_high - day_low)
+    snapshot_ts = time.time()
+    try:
+        snapshot_ts = datetime.fromisoformat(latest_ts.replace(" ", "T")).replace(tzinfo=timezone.utc).timestamp()
+    except Exception:
+        pass
+
+    default_spread_bps = max(float(os.getenv("FX_TWELVE_DATA_DEFAULT_SPREAD_BPS", "6") or "6"), 0.0)
+    bid_size = max(float(os.getenv("FX_TWELVE_DATA_DEFAULT_BID_SIZE", "1000") or "1000"), 1.0)
+    ask_size = max(float(os.getenv("FX_TWELVE_DATA_DEFAULT_ASK_SIZE", "1000") or "1000"), 1.0)
+    snapshot = {
+        "last_price": float(last_price),
+        "prev_close": float(prev_close),
+        "pct_from_close": float(pct_from_close),
+        "vol_30m": float(vol_30m),
+        "mom_5m": float(mom_5m),
+        "range_pos": float(min(max(range_pos, 0.0), 1.0)),
+        "spread_bps": float(default_spread_bps),
+        "bid_size": float(bid_size),
+        "ask_size": float(ask_size),
+        "snapshot_ts_utc": float(snapshot_ts),
+        "quote_history_relative_deviation": 0.0,
+        "quote_history_agreement_norm": 1.0,
+        "fx_pair_symbol": pair_symbol,
+        "fx_quote_source": "twelve_data",
+    }
+    _FX_REALTIME_SNAPSHOT_CACHE[pair_symbol] = {
+        "ts": float(now_ts),
+        "snapshot": dict(snapshot),
+    }
+    return snapshot
+
+
 def _market_snapshot_from_schwab(client: Any, symbol: str) -> Dict[str, float]:
     try:
         quote_resp = client.get_quote(symbol)
@@ -1471,6 +2354,7 @@ def _market_snapshot_from_schwab(client: Any, symbol: str) -> Dict[str, float]:
     closes = [_to_float(c.get("close")) for c in candles if _to_float(c.get("close")) > 0]
     highs = [_to_float(c.get("high")) for c in candles if _to_float(c.get("high")) > 0]
     lows = [_to_float(c.get("low")) for c in candles if _to_float(c.get("low")) > 0]
+    volumes = [max(_to_float(c.get("volume"), 0.0), 0.0) for c in candles if _to_float(c.get("close")) > 0]
 
     last_price = _to_float(_quote_field(quote, "lastPrice", "regularMarketLastPrice"), 0.0)
     if last_price <= 0:
@@ -1541,6 +2425,15 @@ def _market_snapshot_from_schwab(client: Any, symbol: str) -> Dict[str, float]:
         last_price=float(last_price),
         now_ts=now_ts,
     ) if _symbol_is_probably_futures(symbol) else default_futures_features()
+    if _symbol_is_probably_futures(symbol) and len(volumes) >= 5:
+        vol_tail = volumes[-30:]
+        vol_mean = sum(vol_tail) / max(len(vol_tail), 1)
+        vol_var = sum((v - vol_mean) ** 2 for v in vol_tail) / max(len(vol_tail) - 1, 1)
+        vol_std = math.sqrt(max(vol_var, 0.0))
+        volume_zscore = 0.0
+        if vol_std > 0.0:
+            volume_zscore = (vol_tail[-1] - vol_mean) / vol_std
+        futures_quote["futures_session_volume_profile_norm"] = _clamp01((volume_zscore + 2.0) / 4.0)
 
     dividend_yield_pct = max(
         _to_float(
@@ -1767,8 +2660,32 @@ def _specialist_bot_signal(bot: SubBot, features: Dict[str, float], *, segment: 
         neg_bias = float(features.get("options_negative_bias_norm", 0.0) or 0.0)
         event_prox = float(features.get("calendar_event_proximity_norm", 0.0) or 0.0)
         term = float(features.get("options_iv_term_structure_norm", 0.5) or 0.5) - 0.5
+        zero_dte = float(features.get("options_0dte_share_norm", 0.0) or 0.0)
+        premium_bias = float(features.get("options_net_call_premium_bias_norm", 0.5) or 0.5) - 0.5
+        sweep = float(features.get("options_sweep_flow_norm", 0.0) or 0.0)
+        block = float(features.get("options_block_flow_norm", 0.0) or 0.0)
+        iv_percentile = float(features.get("options_iv_percentile_norm", 0.5) or 0.5) - 0.5
+        iv_realized = float(features.get("options_iv_realized_spread_norm", 0.5) or 0.5) - 0.5
+        gamma_front = float(features.get("options_gamma_front_share_norm", 0.5) or 0.5) - 0.5
+        gamma_skew = float(features.get("options_gamma_expiry_skew_norm", 0.5) or 0.5) - 0.5
+        tasty_iv_rank = float(features.get("tasty_iv_rank_norm", 0.0) or 0.0)
+        tasty_ivi = float(features.get("tasty_implied_volatility_index_norm", 0.0) or 0.0)
+        tasty_liquidity = float(features.get("tasty_liquidity_rating_norm", 0.0) or 0.0)
+        tasty_expected_move = float(features.get("tasty_expected_move_norm", 0.0) or 0.0)
+        tasty_beta = (float(features.get("tasty_beta_norm", 0.5) or 0.5) - 0.5)
+        tasty_watch = float(features.get("tasty_watchlist_presence_norm", 0.0) or 0.0)
 
         edge = 0.55 * mom + 0.30 * pct - 0.18 * iv - 0.22 * pcr - 0.20 * neg_bias - 0.10 * event_prox - 0.08 * term + 0.12 * skew
+        flow_intensity = 0.60 * sweep + 0.40 * block
+        expiry_heat = max(zero_dte - 0.25, 0.0)
+        direction_hint = premium_bias if abs(premium_bias) > 0.02 else (mom if abs(mom) > 1e-6 else pct)
+        edge += 0.22 * premium_bias + 0.10 * gamma_skew + 0.08 * gamma_front
+        edge += 0.16 * premium_bias * (0.75 + flow_intensity)
+        edge += math.copysign(0.06 * expiry_heat, direction_hint if abs(direction_hint) > 1e-6 else 1.0)
+        edge -= 0.12 * max(iv_realized, 0.0) + 0.06 * abs(iv_percentile)
+        edge += 0.14 * (tasty_iv_rank - 0.5) + 0.06 * (tasty_ivi - 0.5)
+        edge += 0.08 * tasty_watch + 0.08 * tasty_liquidity
+        edge -= 0.10 * tasty_expected_move + 0.05 * abs(tasty_beta)
         edge_scale = _super_trader_env_float("OPTIONS_SUPER_TRADER_EDGE_SCALE", 1.32) if super_mode else 1.0
         conf_gain = _super_trader_env_float("OPTIONS_SUPER_TRADER_CONFIDENCE_GAIN", 1.18) if super_mode else 1.0
         threshold_shift = _super_trader_env_float("OPTIONS_SUPER_TRADER_THRESHOLD_SHIFT", -0.035) if super_mode else 0.0
@@ -1782,6 +2699,11 @@ def _specialist_bot_signal(bot: SubBot, features: Dict[str, float], *, segment: 
             f"iv={iv:.3f}",
             f"skew={skew:.3f}",
             f"pcr_norm={pcr + 0.5:.3f}",
+            f"premium_bias_norm={premium_bias + 0.5:.3f}",
+            f"sweep_flow={sweep:.3f}",
+            f"gamma_skew_norm={gamma_skew + 0.5:.3f}",
+            f"tasty_iv_rank={tasty_iv_rank:.3f}",
+            f"tasty_liquidity={tasty_liquidity:.3f}",
         ]
         if super_mode:
             reasons = reasons + [
@@ -1797,8 +2719,32 @@ def _specialist_bot_signal(bot: SubBot, features: Dict[str, float], *, segment: 
         basis = (float(features.get("futures_basis_bps_norm", 0.5) or 0.5) - 0.5)
         term = (float(features.get("futures_term_structure_norm", 0.5) or 0.5) - 0.5)
         neg_bias = float(features.get("futures_negative_bias_norm", 0.0) or 0.0)
+        taker = (float(features.get("futures_taker_imbalance_norm", 0.5) or 0.5) - 0.5)
+        cvd = (float(features.get("futures_cvd_norm", 0.5) or 0.5) - 0.5)
+        liq_risk = float(features.get("futures_liquidation_risk_norm", 0.0) or 0.0)
+        long_short = (float(features.get("futures_long_short_ratio_norm", 0.5) or 0.5) - 0.5)
+        basis_divergence = float(features.get("futures_basis_divergence_norm", 0.0) or 0.0)
+        mark_dislocation = float(features.get("futures_mark_index_dislocation_norm", 0.0) or 0.0)
+        session_profile = (float(features.get("futures_session_volume_profile_norm", 0.5) or 0.5) - 0.5)
+        curve = (float(features.get("futures_calendar_spread_curve_norm", 0.5) or 0.5) - 0.5)
+        crypto_deribit_iv = float(features.get("crypto_deribit_mark_iv_norm", 0.0) or 0.0)
+        crypto_deribit_basis = float(features.get("crypto_deribit_basis_norm", 0.5) or 0.5) - 0.5
+        crypto_hl_funding = float(features.get("crypto_hyperliquid_funding_norm", 0.5) or 0.5) - 0.5
+        crypto_hl_oi = float(features.get("crypto_hyperliquid_open_interest_norm", 0.0) or 0.0)
+        crypto_hl_basis = float(features.get("crypto_hyperliquid_basis_norm", 0.5) or 0.5) - 0.5
+        crypto_cg_momentum = float(features.get("crypto_coingecko_momentum_norm", 0.5) or 0.5) - 0.5
+        crypto_price_agreement = float(features.get("crypto_cross_provider_price_agreement_norm", 0.0) or 0.0)
+        crypto_stablecoin_growth = float(features.get("crypto_defillama_stablecoin_growth_norm", 0.5) or 0.5) - 0.5
+        crypto_dex_growth = float(features.get("crypto_defillama_dex_volume_growth_norm", 0.5) or 0.5) - 0.5
+        crypto_gas = float(features.get("crypto_etherscan_gas_norm", 0.0) or 0.0)
 
         edge = 0.45 * mom + 0.30 * pct + 0.35 * imbalance + 0.10 * depth + 0.14 * basis + 0.10 * term - 0.20 * funding - 0.18 * neg_bias
+        edge += 0.22 * taker + 0.16 * cvd + 0.12 * curve + 0.08 * session_profile
+        edge -= 0.08 * long_short + 0.16 * liq_risk + 0.12 * basis_divergence + 0.10 * mark_dislocation
+        edge += 0.12 * crypto_deribit_basis + 0.10 * crypto_hl_basis + 0.08 * crypto_cg_momentum
+        edge += 0.08 * crypto_stablecoin_growth + 0.06 * crypto_dex_growth + 0.04 * crypto_hl_oi
+        edge += 0.06 * crypto_price_agreement
+        edge -= 0.10 * crypto_deribit_iv + 0.08 * abs(crypto_hl_funding) + 0.06 * crypto_gas
         edge_scale = _super_trader_env_float("FUTURES_SUPER_TRADER_EDGE_SCALE", 1.35) if super_mode else 1.0
         conf_gain = _super_trader_env_float("FUTURES_SUPER_TRADER_CONFIDENCE_GAIN", 1.20) if super_mode else 1.0
         threshold_shift = _super_trader_env_float("FUTURES_SUPER_TRADER_THRESHOLD_SHIFT", -0.035) if super_mode else 0.0
@@ -1812,6 +2758,11 @@ def _specialist_bot_signal(bot: SubBot, features: Dict[str, float], *, segment: 
             f"imbalance={imbalance:.3f}",
             f"funding_norm={funding + 0.5:.3f}",
             f"basis_norm={basis + 0.5:.3f}",
+            f"taker_norm={taker + 0.5:.3f}",
+            f"liq_risk={liq_risk:.3f}",
+            f"curve_norm={curve + 0.5:.3f}",
+            f"crypto_agreement={crypto_price_agreement:.3f}",
+            f"crypto_momentum={crypto_cg_momentum + 0.5:.3f}",
         ]
         if super_mode:
             reasons = reasons + [
@@ -1879,23 +2830,330 @@ def _derive_specialist_aux_features(options_rows: List[Dict[str, Any]], futures_
         "futures_specialist_vote": fut_vote,
     }
 
-def _sub_bot_signal(bot: SubBot, mkt: Dict[str, float]) -> tuple[str, float, float, List[str]]:
+
+def _weighted_direction_vote(decisions: List[Dict[str, Any]]) -> float:
+    if not decisions:
+        return 0.0
+    num = 0.0
+    den = 0.0
+    for row in decisions:
+        weight = max(float(row.get("weight", 0.0) or 0.0), 1e-6)
+        direction = float(row.get("direction", 0.0) or 0.0)
+        num += weight * direction
+        den += weight
+    return _clamp11(num / max(den, 1e-8))
+
+
+def _infrastructure_observer_signal(
+    bot: SubBot,
+    features: Dict[str, float],
+    decisions: List[Dict[str, Any]],
+) -> tuple[str, float, float, List[str], Dict[str, float]]:
+    bot_id = str(bot.bot_id or "").strip().lower()
+    core_vote = _weighted_direction_vote(decisions)
+    options_vote = _clamp11(float(features.get("options_specialist_vote", 0.0) or 0.0))
+    futures_vote = _clamp11(float(features.get("futures_specialist_vote", 0.0) or 0.0))
+    derivatives_vote = _clamp11(0.5 * options_vote + 0.5 * futures_vote)
+
+    news_sentiment = _clamp11(float(features.get("news_sentiment", 0.0) or 0.0))
+    news_impact = _clamp01(float(features.get("news_recent_impact", 0.0) or 0.0))
+    calendar_surprise = _clamp11((float(features.get("calendar_macro_surprise_norm", 0.5) or 0.5) - 0.5) * 2.0)
+    calendar_impact = _clamp01(float(features.get("calendar_high_impact_24h_norm", 0.0) or 0.0))
+    live_macro_bias = _clamp11(0.55 * news_sentiment + 0.45 * calendar_surprise)
+    macro_impact = _clamp01(max(news_impact, calendar_impact))
+    micro_open = _clamp01(float(features.get("market_micro_opening_auction_norm", 0.0) or 0.0))
+    micro_close = _clamp01(float(features.get("market_micro_closing_auction_norm", 0.0) or 0.0))
+    micro_rel_vol = _clamp01(float(features.get("market_micro_relative_volume_norm", 0.0) or 0.0))
+    micro_order_flow = _clamp11((float(features.get("market_micro_order_flow_imbalance_norm", 0.5) or 0.5) - 0.5) * 2.0)
+    micro_options_flow = _clamp01(float(features.get("market_micro_options_flow_norm", 0.0) or 0.0))
+    micro_short = _clamp01(float(features.get("market_micro_short_pressure_norm", 0.0) or 0.0))
+    micro_credit = _clamp01(float(features.get("market_micro_credit_flow_norm", 0.0) or 0.0))
+    micro_block = _clamp01(float(features.get("market_micro_block_trade_norm", 0.0) or 0.0))
+    flow_direction = _clamp11(float(features.get("flow_direction_signed", 0.0) or 0.0))
+    flow_stress = _clamp01(float(features.get("flow_stress_norm", 0.0) or 0.0))
+    flow_risk_on = _clamp01(float(features.get("flow_risk_on_norm", 0.0) or 0.0))
+    flow_risk_off = _clamp01(float(features.get("flow_risk_off_norm", 0.0) or 0.0))
+    lead_lag_signal = _clamp11(float(features.get("lead_lag_signal_signed", 0.0) or 0.0))
+    lead_lag_conf = _clamp01(float(features.get("lead_lag_confidence_norm", 0.0) or 0.0))
+    lead_lag_break = _clamp01(float(features.get("lead_lag_break_norm", 0.0) or 0.0))
+
+    feed_risk = _clamp01(
+        max(
+            1.0 - _clamp01(float(features.get("data_quality_quote_agreement_norm", 1.0) or 1.0)),
+            _clamp01(float(features.get("data_quality_quote_deviation_norm", 0.0) or 0.0)),
+            _clamp01(float(features.get("data_quality_stale_streak_norm", 0.0) or 0.0)),
+            _clamp01(float(features.get("data_quality_fail_streak_norm", 0.0) or 0.0)),
+            _clamp01(float(features.get("data_quality_quarantine_hits_norm", 0.0) or 0.0)),
+            _clamp01(float(features.get("data_quality_market_data_latency_norm", 0.0) or 0.0)),
+            1.0 - _clamp01(float(features.get("feature_freshness_ok", 1.0) or 1.0)),
+            1.0 - _clamp01(float(features.get("external_feeds_ok", 1.0) or 1.0)),
+            1.0 - _clamp01(float(features.get("external_feeds_recency_norm", 1.0) or 1.0)),
+        )
+    )
+
+    exec_risk = _clamp01(
+        max(
+            _clamp01(float(features.get("day_execution_cost_risk_norm", 0.0) or 0.0)),
+            _clamp01(float(features.get("lag_slippage_bps", 0.0) or 0.0) / 40.0),
+            _clamp01(float(features.get("lag_latency_ms", 0.0) or 0.0) / 2500.0),
+            _clamp01(float(features.get("lag_impact_bps", 0.0) or 0.0) / 35.0),
+            _clamp01(float(features.get("spread_bps", 0.0) or 0.0) / 35.0),
+            1.0 - _clamp01(float(features.get("queue_depth_norm", 0.0) or 0.0)),
+            max(micro_open, micro_close) * 0.85,
+        )
+    )
+
+    divergence_risk = _clamp01(
+        max(
+            _clamp01(float(features.get("snapshot_divergence_ratio", 0.0) or 0.0)),
+            _clamp01(float(features.get("snapshot_triprate_ratio", 0.0) or 0.0)),
+            _clamp01(float(features.get("snapshot_queue_pressure_ratio", 0.0) or 0.0)),
+            _clamp01(float(features.get("day_liquidity_vacuum_risk_norm", 0.0) or 0.0)),
+            0.80 * lead_lag_break,
+            0.75 * micro_credit + 0.60 * micro_short,
+        )
+    )
+
+    confidence_scale = _clamp01(
+        0.50
+        + 0.30 * (1.0 - feed_risk)
+        + 0.20 * (1.0 - exec_risk)
+        + 0.15 * (1.0 - divergence_risk)
+        + 0.10 * macro_impact
+        + 0.08 * lead_lag_conf
+        - 0.10 * lead_lag_break
+    )
+
+    threshold = _shift_threshold(0.57)
+    vote = core_vote
+    reasons: List[str] = []
+    risk = 0.0
+
+    if "meta_ranker" in bot_id:
+        vote = _calibrate_vote(0.66 * core_vote + 0.16 * derivatives_vote + 0.12 * live_macro_bias + 0.08 * micro_order_flow + 0.06 * micro_block - 0.18 * feed_risk - 0.16 * divergence_risk, scale=0.82)
+        reasons = [
+            "infra_meta_ranker",
+            f"core_vote={core_vote:.3f}",
+            f"derivatives_vote={derivatives_vote:.3f}",
+        ]
+        threshold = _shift_threshold(0.56)
+    elif "confidence_calibrator" in bot_id:
+        signed_conf = _clamp11(core_vote) * (0.35 + 0.65 * confidence_scale)
+        vote = _calibrate_vote(signed_conf, scale=0.75)
+        reasons = [
+            "infra_confidence_calibrator",
+            f"confidence_scale={confidence_scale:.3f}",
+            f"core_vote={core_vote:.3f}",
+        ]
+        threshold = _shift_threshold(0.58)
+    elif "feed_health" in bot_id:
+        risk = feed_risk
+        vote = _calibrate_vote(-0.90 * feed_risk + 0.10 * core_vote, scale=0.90)
+        reasons = [
+            "infra_feed_health_arbiter",
+            f"feed_risk={feed_risk:.3f}",
+            f"freshness_ok={_clamp01(float(features.get('feature_freshness_ok', 1.0) or 1.0)):.0f}",
+        ]
+        threshold = _shift_threshold(0.60)
+    elif "macro_event" in bot_id:
+        vote = _calibrate_vote(
+            (0.25 + 0.75 * macro_impact) * live_macro_bias
+            + 0.12 * derivatives_vote
+            + 0.10 * micro_options_flow
+            - 0.10 * micro_short
+            - 0.08 * micro_credit
+            + 0.08 * lead_lag_signal
+            - 0.06 * lead_lag_break,
+            scale=0.88,
+        )
+        reasons = [
+            "infra_macro_event_arbiter",
+            f"macro_bias={live_macro_bias:.3f}",
+            f"macro_impact={macro_impact:.3f}",
+        ]
+        threshold = _shift_threshold(0.56)
+    elif "execution_feasibility" in bot_id:
+        risk = exec_risk
+        vote = _calibrate_vote(-0.88 * exec_risk + 0.12 * core_vote, scale=0.90)
+        reasons = [
+            "infra_execution_feasibility_sentinel",
+            f"execution_risk={exec_risk:.3f}",
+            f"queue_depth_norm={_clamp01(float(features.get('queue_depth_norm', 0.0) or 0.0)):.3f}",
+        ]
+        threshold = _shift_threshold(0.60)
+    elif "cross_venue_divergence" in bot_id:
+        risk = divergence_risk
+        vote = _calibrate_vote(-0.92 * divergence_risk + 0.08 * core_vote, scale=0.92)
+        reasons = [
+            "infra_cross_venue_divergence_sentinel",
+            f"divergence_risk={divergence_risk:.3f}",
+            f"triprate={_clamp01(float(features.get('snapshot_triprate_ratio', 0.0) or 0.0)):.3f}",
+        ]
+        threshold = _shift_threshold(0.60)
+    else:
+        reasons = ["infra_generic_observer", f"core_vote={core_vote:.3f}"]
+
+    score = _vote_to_score(vote)
+    if score >= threshold:
+        action = "BUY"
+    elif score <= (1.0 - threshold):
+        action = "SELL"
+    else:
+        action = "HOLD"
+
+    reasons = reasons + [f"observer_vote={vote:.3f}"]
+    meta = {
+        "vote": float(vote),
+        "risk": float(max(risk, 0.0)),
+        "confidence_scale": float(confidence_scale),
+        "macro_impact": float(macro_impact),
+        "feed_risk": float(feed_risk),
+        "execution_risk": float(exec_risk),
+        "divergence_risk": float(divergence_risk),
+        "micro_short": float(micro_short),
+        "micro_credit": float(micro_credit),
+        "micro_options_flow": float(micro_options_flow),
+        "micro_rel_vol": float(micro_rel_vol),
+        "lead_lag_signal": float(lead_lag_signal),
+        "lead_lag_confidence": float(lead_lag_conf),
+        "lead_lag_break": float(lead_lag_break),
+    }
+    return action, score, threshold, reasons, meta
+
+
+def _infrastructure_signal_batch(
+    bots: List[SubBot],
+    features: Dict[str, float],
+    decisions: List[Dict[str, Any]],
+) -> List[Tuple[SubBot, str, float, float, List[str], Dict[str, float]]]:
+    out: List[Tuple[SubBot, str, float, float, List[str], Dict[str, float]]] = []
+    for b in bots:
+        action, score, threshold, reasons, meta = _infrastructure_observer_signal(
+            b,
+            features,
+            decisions,
+        )
+        out.append((b, action, score, threshold, reasons, meta))
+    return out
+
+
+def _derive_infrastructure_aux_features(rows: List[Dict[str, Any]]) -> Dict[str, float]:
+    out = {
+        "infra_active": 1.0 if rows else 0.0,
+        "infra_vote": 0.0,
+        "infra_meta_ranker_vote": 0.0,
+        "infra_macro_event_vote": 0.0,
+        "infra_confidence_calibrator_scale_norm": 0.5,
+        "infra_feed_health_risk_norm": 0.0,
+        "infra_execution_feasibility_risk_norm": 0.0,
+        "infra_cross_venue_divergence_risk_norm": 0.0,
+        "infra_risk_throttle_norm": 0.0,
+        "infra_veto_active": 0.0,
+    }
+    if not rows:
+        return out
+
+    out["infra_vote"] = _weighted_direction_vote(rows)
+
+    meta_rows = [r for r in rows if isinstance(r.get("observer_meta"), dict)]
+    meta_ranker_votes: List[float] = []
+    macro_votes: List[float] = []
+    conf_scales: List[float] = []
+    feed_risks: List[float] = []
+    exec_risks: List[float] = []
+    divergence_risks: List[float] = []
+    for row in meta_rows:
+        bot_id = str(row.get("bot_id", "")).strip().lower()
+        meta = dict(row.get("observer_meta") or {})
+        vote = float(meta.get("vote", 0.0) or 0.0)
+        if "meta_ranker" in bot_id:
+            meta_ranker_votes.append(vote)
+        elif "macro_event" in bot_id:
+            macro_votes.append(vote)
+        elif "confidence_calibrator" in bot_id:
+            conf_scales.append(float(meta.get("confidence_scale", 0.5) or 0.5))
+        elif "feed_health" in bot_id:
+            feed_risks.append(float(meta.get("feed_risk", meta.get("risk", 0.0)) or 0.0))
+        elif "execution_feasibility" in bot_id:
+            exec_risks.append(float(meta.get("execution_risk", meta.get("risk", 0.0)) or 0.0))
+        elif "cross_venue_divergence" in bot_id:
+            divergence_risks.append(float(meta.get("divergence_risk", meta.get("risk", 0.0)) or 0.0))
+
+    if meta_ranker_votes:
+        out["infra_meta_ranker_vote"] = _clamp11(sum(meta_ranker_votes) / max(len(meta_ranker_votes), 1))
+    if macro_votes:
+        out["infra_macro_event_vote"] = _clamp11(sum(macro_votes) / max(len(macro_votes), 1))
+    if conf_scales:
+        out["infra_confidence_calibrator_scale_norm"] = _clamp01(sum(conf_scales) / max(len(conf_scales), 1))
+    if feed_risks:
+        out["infra_feed_health_risk_norm"] = _clamp01(sum(feed_risks) / max(len(feed_risks), 1))
+    if exec_risks:
+        out["infra_execution_feasibility_risk_norm"] = _clamp01(sum(exec_risks) / max(len(exec_risks), 1))
+    if divergence_risks:
+        out["infra_cross_venue_divergence_risk_norm"] = _clamp01(sum(divergence_risks) / max(len(divergence_risks), 1))
+
+    out["infra_risk_throttle_norm"] = _clamp01(
+        0.40 * out["infra_feed_health_risk_norm"]
+        + 0.35 * out["infra_execution_feasibility_risk_norm"]
+        + 0.25 * out["infra_cross_venue_divergence_risk_norm"]
+    )
+    out["infra_veto_active"] = 1.0 if (
+        out["infra_feed_health_risk_norm"] >= 0.85
+        or out["infra_execution_feasibility_risk_norm"] >= 0.88
+        or out["infra_cross_venue_divergence_risk_norm"] >= 0.88
+    ) else 0.0
+    return out
+
+def _sub_bot_signal(bot: SubBot, features: Dict[str, float]) -> tuple[str, float, float, List[str]]:
     acc = bot.test_accuracy if bot.test_accuracy is not None else 0.50
     trend_alpha = 0.9 + 0.4 * _hash_unit(bot.bot_id + "_trend")
     mean_rev_alpha = 0.8 + 0.4 * _hash_unit(bot.bot_id + "_meanrev")
     vol_alpha = 0.7 + 0.6 * _hash_unit(bot.bot_id + "_vol")
 
     base = 0.5
-    base += 0.28 * trend_alpha * mkt["mom_5m"]
-    base += 0.18 * trend_alpha * mkt["pct_from_close"]
-    base -= 0.16 * mean_rev_alpha * (mkt["range_pos"] - 0.5)
-    base -= 0.08 * vol_alpha * mkt["vol_30m"]
+    base += 0.28 * trend_alpha * float(features.get("mom_5m", 0.0) or 0.0)
+    base += 0.18 * trend_alpha * float(features.get("pct_from_close", 0.0) or 0.0)
+    base -= 0.16 * mean_rev_alpha * (float(features.get("range_pos", 0.5) or 0.5) - 0.5)
+    base -= 0.08 * vol_alpha * float(features.get("vol_30m", 0.0) or 0.0)
     base += 0.10 * (acc - 0.5)
+
+    flow_direction = _clamp11(float(features.get("flow_direction_signed", 0.0) or 0.0))
+    flow_conviction = _clamp01(float(features.get("flow_conviction_norm", 0.0) or 0.0))
+    flow_defensive = _clamp01(float(features.get("flow_defensive_rotation_norm", 0.0) or 0.0))
+    flow_risk_on = _clamp01(float(features.get("flow_risk_on_norm", 0.0) or 0.0))
+    flow_risk_off = _clamp01(float(features.get("flow_risk_off_norm", 0.0) or 0.0))
+    flow_stress = _clamp01(float(features.get("flow_stress_norm", 0.0) or 0.0))
+    lead_lag_signal = _clamp11(float(features.get("lead_lag_signal_signed", 0.0) or 0.0))
+    lead_lag_conf = _clamp01(float(features.get("lead_lag_confidence_norm", 0.0) or 0.0))
+    lead_lag_break = _clamp01(float(features.get("lead_lag_break_norm", 0.0) or 0.0))
+    capital_signed = _clamp11(float(features.get("capital_flow_signed_scaled", 0.0) or 0.0))
+    micro_order = _centered_norm_to_signed(float(features.get("market_micro_order_flow_imbalance_norm", 0.5) or 0.5))
+    bond_flow = _centered_norm_to_signed(float(features.get("bond_hy_ig_flow_norm", 0.5) or 0.5))
+
+    flow_bias = _flow_bot_bias(bot.bot_id)
+    if flow_bias == "defensive":
+        base += 0.14 * flow_risk_off + 0.10 * flow_defensive - 0.08 * max(flow_direction, 0.0)
+        base += 0.08 * lead_lag_break + 0.04 * max(-lead_lag_signal, 0.0)
+    elif flow_bias == "trend":
+        base += 0.14 * flow_direction + 0.10 * flow_conviction + 0.08 * flow_risk_on - 0.10 * flow_stress
+        base += 0.12 * lead_lag_signal + 0.08 * lead_lag_conf - 0.10 * lead_lag_break
+    elif flow_bias == "mean_revert":
+        base += -0.10 * flow_direction - 0.06 * flow_conviction + 0.10 * flow_stress + 0.06 * flow_defensive
+        base += -0.08 * lead_lag_signal + 0.10 * lead_lag_break
+    elif flow_bias == "tactical":
+        base += 0.12 * micro_order + 0.10 * flow_direction + 0.08 * capital_signed + 0.08 * flow_conviction - 0.08 * flow_stress
+        base += 0.10 * lead_lag_signal + 0.08 * lead_lag_conf - 0.10 * lead_lag_break
+    else:
+        base += 0.10 * flow_direction + 0.08 * capital_signed + 0.06 * flow_conviction - 0.08 * flow_stress + 0.04 * bond_flow
+        base += 0.08 * lead_lag_signal + 0.06 * lead_lag_conf - 0.08 * lead_lag_break
 
     score = min(max(base, 0.01), 0.99)
     # Per-bot confidence calibration keeps weaker/infra bots from saturating confidence.
     role_mult = 0.92 if bot.bot_role == "infrastructure_sub_bot" else 1.0
     confidence_cal = min(max((0.72 + 2.2 * (acc - 0.5)) * role_mult, 0.55), 1.20)
+    flow_conf_multiplier = min(max(0.90 + 0.18 * flow_conviction - 0.14 * flow_stress, 0.75), 1.18)
+    lead_lag_conf_multiplier = min(max(0.90 + 0.16 * lead_lag_conf - 0.18 * lead_lag_break, 0.72), 1.18)
+    confidence_cal = min(max(confidence_cal * flow_conf_multiplier * lead_lag_conf_multiplier, 0.55), 1.20)
     score = 0.5 + (score - 0.5) * confidence_cal
     score = min(max(score, 0.01), 0.99)
     if _is_day_trading_bot(bot):
@@ -1913,7 +3171,14 @@ def _sub_bot_signal(bot: SubBot, mkt: Dict[str, float]) -> tuple[str, float, flo
         action = "HOLD"
         reasons = ["inside_no_trade_band", "confidence_not_extreme"]
 
-    reasons = reasons + [f"confidence_calibration={confidence_cal:.3f}"]
+    reasons = reasons + [
+        f"confidence_calibration={confidence_cal:.3f}",
+        f"flow_bias={flow_bias}",
+        f"flow_dir={flow_direction:+.3f}",
+        f"flow_stress={flow_stress:.3f}",
+        f"lead_lag_signal={lead_lag_signal:+.3f}",
+        f"lead_lag_break={lead_lag_break:.3f}",
+    ]
     return action, score, threshold, reasons
 
 
@@ -2402,10 +3667,18 @@ def _apply_long_term_turnover_cap(
 
 
 def _event_blackout_windows() -> List[tuple[int, int]]:
-    raw = os.getenv(
-        "EVENT_LOCK_WINDOWS_ET",
-        os.getenv("EVENT_BLACKOUT_WINDOWS_ET", "08:29-08:36,09:59-10:06,13:58-14:05,15:57-16:05"),
-    ).strip()
+    default_windows = "08:29-08:36,09:59-10:06,13:58-14:05,15:57-16:05"
+    raw = ""
+    if (_shadow_profile_name() or "").strip().lower() == "fx":
+        raw = os.getenv(
+            "FX_EVENT_LOCK_WINDOWS_ET",
+            os.getenv("FX_EVENT_BLACKOUT_WINDOWS_ET", ""),
+        ).strip()
+    if not raw:
+        raw = os.getenv(
+            "EVENT_LOCK_WINDOWS_ET",
+            os.getenv("EVENT_BLACKOUT_WINDOWS_ET", default_windows),
+        ).strip()
     windows: List[tuple[int, int]] = []
     if not raw:
         return windows
@@ -2587,6 +3860,26 @@ def _master_vote_variant(
     futures_vote = float(features.get("futures_specialist_vote", 0.0) or 0.0)
     options_neg_bias = float(features.get("options_negative_bias_norm", 0.0) or 0.0)
     futures_neg_bias = float(features.get("futures_negative_bias_norm", 0.0) or 0.0)
+    infra_meta_vote = _clamp11(float(features.get("infra_meta_ranker_vote", 0.0) or 0.0))
+    infra_macro_vote = _clamp11(float(features.get("infra_macro_event_vote", 0.0) or 0.0))
+    infra_conf_scale = _clamp01(float(features.get("infra_confidence_calibrator_scale_norm", 0.5) or 0.5))
+    infra_risk = _clamp01(float(features.get("infra_risk_throttle_norm", 0.0) or 0.0))
+    infra_veto = _clamp01(float(features.get("infra_veto_active", 0.0) or 0.0))
+    micro_open = _clamp01(float(features.get("market_micro_opening_auction_norm", 0.0) or 0.0))
+    micro_close = _clamp01(float(features.get("market_micro_closing_auction_norm", 0.0) or 0.0))
+    micro_rel_vol = _clamp01(float(features.get("market_micro_relative_volume_norm", 0.0) or 0.0))
+    micro_order_flow = _clamp11((float(features.get("market_micro_order_flow_imbalance_norm", 0.5) or 0.5) - 0.5) * 2.0)
+    micro_options_flow = _clamp01(float(features.get("market_micro_options_flow_norm", 0.0) or 0.0))
+    micro_short = _clamp01(float(features.get("market_micro_short_pressure_norm", 0.0) or 0.0))
+    micro_credit = _clamp01(float(features.get("market_micro_credit_flow_norm", 0.0) or 0.0))
+    micro_block = _clamp01(float(features.get("market_micro_block_trade_norm", 0.0) or 0.0))
+    flow_direction = _clamp11(float(features.get("flow_direction_signed", 0.0) or 0.0))
+    flow_risk_on = _clamp01(float(features.get("flow_risk_on_norm", 0.0) or 0.0))
+    flow_risk_off = _clamp01(float(features.get("flow_risk_off_norm", 0.0) or 0.0))
+    flow_stress = _clamp01(float(features.get("flow_stress_norm", 0.0) or 0.0))
+    lead_lag_signal = _clamp11(float(features.get("lead_lag_signal_signed", 0.0) or 0.0))
+    lead_lag_conf = _clamp01(float(features.get("lead_lag_confidence_norm", 0.0) or 0.0))
+    lead_lag_break = _clamp01(float(features.get("lead_lag_break_norm", 0.0) or 0.0))
 
     if _derivatives_super_trader_mode():
         master_vote_mult = _super_trader_env_float("DERIVATIVES_SUPER_TRADER_MASTER_VOTE_MULT", 1.55)
@@ -2602,22 +3895,51 @@ def _master_vote_variant(
 
     if name == "trend":
         vote += 0.40 * mom + 0.25 * pct + 0.10 * options_vote + 0.12 * futures_vote
+        vote += 0.10 * micro_order_flow + 0.08 * (micro_rel_vol - 0.5) + 0.05 * micro_block
+        vote += 0.10 * flow_direction + 0.06 * flow_risk_on - 0.08 * flow_stress
+        vote += 0.12 * lead_lag_signal + 0.08 * lead_lag_conf - 0.10 * lead_lag_break
+        vote += 0.18 * infra_meta_vote + 0.08 * infra_macro_vote
         reasons = base_reasons + ["trend_master_bias"]
     elif name == "mean_revert":
         vote += -0.45 * (range_pos - 0.5) - 0.25 * mom + 0.10 * (options_neg_bias - 0.5)
+        vote += -0.10 * micro_rel_vol - 0.08 * micro_order_flow + 0.05 * micro_short
+        vote += -0.08 * flow_direction + 0.06 * flow_stress
+        vote += -0.10 * lead_lag_signal + 0.10 * lead_lag_break - 0.04 * lead_lag_conf
+        vote += 0.12 * infra_meta_vote - 0.06 * infra_macro_vote
         reasons = base_reasons + ["mean_revert_master_bias"]
     elif name == "shock":
         vote += -0.35 * vix_pct - 0.20 * vol + 0.30 * float(features.get("aux_flash_direction", 0.0))
         vote += 0.10 * futures_vote - 0.12 * max(options_neg_bias, futures_neg_bias)
+        vote += 0.14 * micro_options_flow - 0.12 * micro_short - 0.10 * micro_credit - 0.08 * max(micro_open, micro_close)
+        vote += 0.12 * flow_risk_off + 0.08 * flow_stress - 0.06 * flow_risk_on
+        vote += 0.12 * lead_lag_break - 0.08 * lead_lag_conf - 0.04 * lead_lag_signal
+        vote += 0.22 * infra_macro_vote - 0.18 * infra_risk
         reasons = base_reasons + ["shock_master_bias"]
     else:
         reasons = base_reasons + ["default_master_bias"]
+
+    infra_damp = min(max(0.72 + 0.45 * infra_conf_scale - 0.35 * infra_risk, 0.35), 1.10)
+    vote *= infra_damp
+    if infra_veto > 0.0:
+        vote *= 0.75
 
     if _derivatives_super_trader_mode():
         reasons = reasons + [
             f"derivatives_super_trader master_vote_mult={master_vote_mult:.2f}",
             f"derivatives_super_trader risk_penalty_mult={risk_penalty_mult:.2f}",
         ]
+    reasons = reasons + [
+        f"infra_meta_vote={infra_meta_vote:.3f}",
+        f"infra_macro_vote={infra_macro_vote:.3f}",
+        f"micro_short={micro_short:.3f}",
+        f"micro_credit={micro_credit:.3f}",
+        f"flow_dir={flow_direction:+.3f}",
+        f"flow_stress={flow_stress:.3f}",
+        f"flow_risk_off={flow_risk_off:.3f}",
+        f"lead_lag_signal={lead_lag_signal:+.3f}",
+        f"lead_lag_break={lead_lag_break:.3f}",
+        f"infra_damp={infra_damp:.3f}",
+    ]
 
     vote = _calibrate_vote(vote, scale=0.85)
     score = _vote_to_score(vote)
@@ -2638,6 +3960,25 @@ def _grand_master_weights(features: Dict[str, float]) -> Dict[str, float]:
     shock_strength = abs(float(features.get("ctx_VIX_X_pct_from_close", 0.0))) + float(features.get("vol_30m", 0.0))
     shock_strength += 0.45 * float(features.get("options_vol_expectation_norm", 0.0) or 0.0)
     shock_strength += 0.35 * abs((float(features.get("futures_term_structure_norm", 0.5) or 0.5) - 0.5) * 2.0)
+    trend_strength += 0.20 * abs((float(features.get("market_micro_order_flow_imbalance_norm", 0.5) or 0.5) - 0.5) * 2.0)
+    trend_strength += 0.12 * float(features.get("market_micro_relative_volume_norm", 0.0) or 0.0)
+    chop_strength += 0.10 * float(features.get("market_micro_opening_auction_norm", 0.0) or 0.0)
+    shock_strength += 0.18 * float(features.get("market_micro_options_flow_norm", 0.0) or 0.0)
+    shock_strength += 0.18 * float(features.get("market_micro_short_pressure_norm", 0.0) or 0.0)
+    shock_strength += 0.14 * float(features.get("market_micro_credit_flow_norm", 0.0) or 0.0)
+    flow_direction = abs(float(features.get("flow_direction_signed", 0.0) or 0.0))
+    flow_risk_on = float(features.get("flow_risk_on_norm", 0.0) or 0.0)
+    flow_risk_off = float(features.get("flow_risk_off_norm", 0.0) or 0.0)
+    flow_stress = float(features.get("flow_stress_norm", 0.0) or 0.0)
+    lead_lag_signal = abs(float(features.get("lead_lag_signal_signed", 0.0) or 0.0))
+    lead_lag_conf = float(features.get("lead_lag_confidence_norm", 0.0) or 0.0)
+    lead_lag_break = float(features.get("lead_lag_break_norm", 0.0) or 0.0)
+    trend_strength += 0.18 * flow_direction + 0.14 * flow_risk_on
+    chop_strength += 0.10 * max(flow_stress - flow_direction, 0.0)
+    shock_strength += 0.18 * flow_stress + 0.12 * flow_risk_off
+    trend_strength += 0.16 * lead_lag_signal + 0.12 * lead_lag_conf
+    chop_strength += 0.12 * lead_lag_break
+    shock_strength += 0.16 * lead_lag_break + 0.08 * max(flow_stress - lead_lag_conf, 0.0)
 
     prof = _shadow_profile_name()
     if prof in {"dividend", "long_term_dividend"}:
@@ -2678,6 +4019,7 @@ def _grand_master_weights(features: Dict[str, float]) -> Dict[str, float]:
 def _grand_master_vote(
     master_outputs: Dict[str, Dict[str, Any]],
     weights: Dict[str, float],
+    features: Optional[Dict[str, float]] = None,
 ) -> tuple[str, float, float, List[str], Dict[str, float]]:
     if not master_outputs:
         return "HOLD", 0.5, _shift_threshold(0.55), ["no_master_outputs"], {"vote": 0.0}
@@ -2690,18 +4032,31 @@ def _grand_master_vote(
         vote += w * v
         details.append(f"{name}:{w:.2f}")
 
+    features = dict(features or {})
+    infra_vote = _clamp11(float(features.get("infra_vote", 0.0) or 0.0))
+    infra_risk = _clamp01(float(features.get("infra_risk_throttle_norm", 0.0) or 0.0))
+    infra_veto = _clamp01(float(features.get("infra_veto_active", 0.0) or 0.0))
+    vote += 0.12 * infra_vote
+    vote *= min(max(1.0 - 0.55 * infra_risk, 0.25), 1.0)
     vote = _calibrate_vote(vote, scale=0.80)
     score = _vote_to_score(vote)
     threshold = _shift_threshold(0.60)
 
-    if vote > 0.24:
+    if infra_veto > 0.0 and abs(vote) < 0.45:
+        action = "HOLD"
+    elif vote > 0.24:
         action = "BUY"
     elif vote < -0.20:
         action = "SELL"
     else:
         action = "HOLD"
 
-    reasons = ["grand_master_routing", "master_weights=" + ",".join(details)]
+    reasons = [
+        "grand_master_routing",
+        "master_weights=" + ",".join(details),
+        f"infra_vote={infra_vote:.3f}",
+        f"infra_risk={infra_risk:.3f}",
+    ]
     return action, score, threshold, reasons, {"vote": vote}
 
 
@@ -2717,6 +4072,24 @@ def _options_master_signal(
     dollar_mom = float(features.get("ctx_UUP_mom_5m", 0.0))
     options_vote = float(features.get("options_specialist_vote", 0.0) or 0.0)
     futures_vote = float(features.get("futures_specialist_vote", 0.0) or 0.0)
+    micro_open = float(features.get("market_micro_opening_auction_norm", 0.0) or 0.0)
+    micro_rel_vol = float(features.get("market_micro_relative_volume_norm", 0.0) or 0.0)
+    micro_options = float(features.get("market_micro_options_flow_norm", 0.0) or 0.0)
+    micro_short = float(features.get("market_micro_short_pressure_norm", 0.0) or 0.0)
+    zero_dte = float(features.get("options_0dte_share_norm", 0.0) or 0.0)
+    premium_bias = float(features.get("options_net_call_premium_bias_norm", 0.5) or 0.5) - 0.5
+    sweep = float(features.get("options_sweep_flow_norm", 0.0) or 0.0)
+    block = float(features.get("options_block_flow_norm", 0.0) or 0.0)
+    iv_percentile = float(features.get("options_iv_percentile_norm", 0.5) or 0.5) - 0.5
+    iv_realized = float(features.get("options_iv_realized_spread_norm", 0.5) or 0.5) - 0.5
+    gamma_front = float(features.get("options_gamma_front_share_norm", 0.5) or 0.5) - 0.5
+    gamma_skew = float(features.get("options_gamma_expiry_skew_norm", 0.5) or 0.5) - 0.5
+    tasty_iv_rank = float(features.get("tasty_iv_rank_norm", 0.0) or 0.0)
+    tasty_ivi = float(features.get("tasty_implied_volatility_index_norm", 0.0) or 0.0)
+    tasty_liquidity = float(features.get("tasty_liquidity_rating_norm", 0.0) or 0.0)
+    tasty_expected_move = float(features.get("tasty_expected_move_norm", 0.0) or 0.0)
+    tasty_beta = float(features.get("tasty_beta_norm", 0.5) or 0.5) - 0.5
+    tasty_watch = float(features.get("tasty_watchlist_presence_norm", 0.0) or 0.0)
 
     super_mode = _derivatives_super_trader_mode()
 
@@ -2724,9 +4097,17 @@ def _options_master_signal(
     net = float(grand_vote)
     net += 0.20 * (grand_score - 0.5)
     net += 0.16 * options_vote + 0.10 * futures_vote
+    net += 0.12 * micro_options + 0.08 * (micro_rel_vol - 0.5)
     net -= 0.25 * max(vix_pct, 0.0)
     net -= 0.20 * vol
+    net -= 0.12 * micro_short + 0.08 * micro_open
     net += -0.10 * dollar_mom
+    flow_pressure = premium_bias * (0.75 + sweep + 0.50 * block)
+    expiry_heat = max(zero_dte - 0.30, 0.0)
+    net += 0.18 * premium_bias + 0.12 * flow_pressure + 0.10 * gamma_skew + 0.06 * gamma_front
+    net -= 0.10 * max(iv_realized, 0.0) + 0.06 * abs(iv_percentile) + 0.08 * expiry_heat * (0.5 + micro_open)
+    net += 0.10 * (tasty_iv_rank - 0.5) + 0.05 * (tasty_ivi - 0.5) + 0.05 * tasty_liquidity + 0.04 * tasty_watch
+    net -= 0.08 * tasty_expected_move + 0.04 * abs(tasty_beta)
 
     if super_mode:
         net_scale = _super_trader_env_float("OPTIONS_SUPER_TRADER_MASTER_NET_SCALE", 1.28)
@@ -2757,6 +4138,13 @@ def _options_master_signal(
         f"vol_30m={vol:.4f}",
         f"options_vote={options_vote:.3f}",
         f"futures_vote={futures_vote:.3f}",
+        f"micro_options={micro_options:.3f}",
+        f"micro_short={micro_short:.3f}",
+        f"premium_bias_norm={premium_bias + 0.5:.3f}",
+        f"sweep_flow={sweep:.3f}",
+        f"gamma_skew_norm={gamma_skew + 0.5:.3f}",
+        f"tasty_iv_rank={tasty_iv_rank:.3f}",
+        f"tasty_expected_move={tasty_expected_move:.3f}",
     ]
     if super_mode:
         reasons = reasons + [
@@ -2791,6 +4179,14 @@ def _build_options_plan(
     event_prox = float(mkt.get("calendar_event_proximity_norm", 0.0) or 0.0)
     high_impact = float(mkt.get("calendar_high_impact_24h_norm", 0.0) or 0.0)
     expiry_week = float(mkt.get("calendar_options_expiry_week_norm", 0.0) or 0.0)
+    zero_dte = float(mkt.get("options_0dte_share_norm", 0.0) or 0.0)
+    premium_bias = float(mkt.get("options_net_call_premium_bias_norm", 0.5) or 0.5) - 0.5
+    sweep_flow = float(mkt.get("options_sweep_flow_norm", 0.0) or 0.0)
+    block_flow = float(mkt.get("options_block_flow_norm", 0.0) or 0.0)
+    iv_percentile = float(mkt.get("options_iv_percentile_norm", 0.5) or 0.5)
+    iv_realized = float(mkt.get("options_iv_realized_spread_norm", 0.5) or 0.5)
+    gamma_front = float(mkt.get("options_gamma_front_share_norm", 0.5) or 0.5)
+    gamma_skew = float(mkt.get("options_gamma_expiry_skew_norm", 0.5) or 0.5) - 0.5
 
     near_exp_days = max(float(mkt.get("options_near_expiry_days", 0.0) or 0.0), 7.0)
     far_exp_days = max(float(mkt.get("options_far_expiry_days", 0.0) or 0.0), near_exp_days + 7.0)
@@ -2814,11 +4210,14 @@ def _build_options_plan(
     }
 
     can_cover = covered_call_shares >= 100
-    high_vol_regime = (vol_expect >= 0.62) or (iv_atm_norm >= 0.60) or (vol >= 0.020)
-    bearish_bias = (put_call_norm >= 0.58) or (neg_bias >= 0.58)
-    low_event_risk = event_prox <= 0.55
+    flow_pressure = premium_bias * (0.75 + sweep_flow + 0.50 * block_flow)
+    bullish_flow = flow_pressure >= 0.08 or gamma_skew >= 0.08
+    bearish_flow = flow_pressure <= -0.08 or gamma_skew <= -0.08
+    high_vol_regime = (vol_expect >= 0.62) or (iv_atm_norm >= 0.60) or (vol >= 0.020) or (iv_percentile >= 0.62) or (iv_realized >= 0.62) or (zero_dte >= 0.12)
+    bearish_bias = (put_call_norm >= 0.58) or (neg_bias >= 0.58) or bearish_flow
+    low_event_risk = event_prox <= 0.55 and zero_dte <= 0.70
     liquid_chain = spread_norm <= 0.80
-    event_vol_edge = (event_prox >= 0.65) and (high_impact >= 0.40) and (vol_expect >= 0.50) and liquid_chain
+    event_vol_edge = (event_prox >= 0.65) and (high_impact >= 0.40) and (vol_expect >= 0.50) and liquid_chain and ((zero_dte >= 0.10) or (sweep_flow >= 0.08) or (block_flow >= 0.08) or (gamma_front >= 0.55))
 
     contracts = 1
     if can_cover:
@@ -2841,7 +4240,7 @@ def _build_options_plan(
         }
 
     # 1) Protective collar for covered inventory during elevated downside/event risk.
-    if can_cover and liquid_chain and ((event_prox >= 0.68) or bearish_bias):
+    if can_cover and liquid_chain and ((event_prox >= 0.68) or bearish_bias or (zero_dte >= 0.12 and bearish_flow)):
         action = "BUY_TO_OPEN"
         score = max(0.60, master_score)
         reasons = [
@@ -2849,6 +4248,7 @@ def _build_options_plan(
             "has_covered_shares",
             f"event_prox={event_prox:.3f}",
             f"neg_bias={neg_bias:.3f}",
+            f"premium_bias_norm={premium_bias + 0.5:.3f}",
         ]
         plan = {
             "symbol": symbol,
@@ -2897,6 +4297,7 @@ def _build_options_plan(
             "no_covered_shares",
             f"iv_atm_norm={iv_atm_norm:.3f}",
             f"vol_expect={vol_expect:.3f}",
+            f"premium_bias_norm={premium_bias + 0.5:.3f}",
         ]
         put_strike_mult = 0.96 if high_vol_regime else 0.97
         plan = {
@@ -2915,22 +4316,24 @@ def _build_options_plan(
     elif event_vol_edge and master_action in {"BUY", "SELL", "HOLD"}:
         action = "BUY_TO_OPEN"
         score = max(master_score, 0.58)
+        event_dte = 1 if zero_dte >= 0.18 else max(front_dte, 7)
         if abs(iv_skew_norm - 0.5) <= 0.08:
             reasons = [
                 "event_vol_long_straddle",
                 f"event_prox={event_prox:.3f}",
                 f"vol_expect={vol_expect:.3f}",
+                f"zero_dte={zero_dte:.3f}",
             ]
             plan = {
                 "symbol": symbol,
                 "options_style": "EVENT_VOL_STRADDLE",
                 "strategy_family": "event_vol",
                 "underlying_price": px,
-                "dte_days": max(front_dte, 7),
+                "dte_days": event_dte,
                 "contracts": 1,
                 "legs": [
-                    _leg("BUY_TO_OPEN", "CALL", 1.00, max(front_dte, 7), 1),
-                    _leg("BUY_TO_OPEN", "PUT", 1.00, max(front_dte, 7), 1),
+                    _leg("BUY_TO_OPEN", "CALL", 1.00, event_dte, 1),
+                    _leg("BUY_TO_OPEN", "PUT", 1.00, event_dte, 1),
                 ],
                 "strike": round(px, 2),
             }
@@ -2939,17 +4342,18 @@ def _build_options_plan(
                 "event_vol_long_strangle",
                 f"event_prox={event_prox:.3f}",
                 f"iv_skew_norm={iv_skew_norm:.3f}",
+                f"sweep_flow={sweep_flow:.3f}",
             ]
             plan = {
                 "symbol": symbol,
                 "options_style": "EVENT_VOL_STRANGLE",
                 "strategy_family": "event_vol",
                 "underlying_price": px,
-                "dte_days": max(front_dte, 7),
+                "dte_days": event_dte,
                 "contracts": 1,
                 "legs": [
-                    _leg("BUY_TO_OPEN", "CALL", 1.03, max(front_dte, 7), 1),
-                    _leg("BUY_TO_OPEN", "PUT", 0.97, max(front_dte, 7), 1),
+                    _leg("BUY_TO_OPEN", "CALL", 1.03, event_dte, 1),
+                    _leg("BUY_TO_OPEN", "PUT", 0.97, event_dte, 1),
                 ],
                 "strike": None,
             }
@@ -2980,13 +4384,14 @@ def _build_options_plan(
             }
 
         # 6) Risk reversal bullish.
-        elif low_event_risk and liquid_chain and (master_score >= threshold + 0.05) and (put_call_norm <= 0.55):
+        elif low_event_risk and liquid_chain and (master_score >= threshold + 0.05) and (put_call_norm <= 0.55) and (not bearish_flow):
             action = "BUY_TO_OPEN"
             score = max(master_score, 0.58)
             reasons = [
                 "risk_reversal_bullish",
                 f"put_call_norm={put_call_norm:.3f}",
                 f"neg_bias={neg_bias:.3f}",
+                f"flow_pressure={flow_pressure:+.3f}",
             ]
             plan = {
                 "symbol": symbol,
@@ -3009,6 +4414,7 @@ def _build_options_plan(
                 "bull_put_credit_spread",
                 f"vol_expect={vol_expect:.3f}",
                 f"roll_yield={roll_yield:.3f}",
+                f"iv_realized_norm={iv_realized:.3f}",
             ]
             plan = {
                 "symbol": symbol,
@@ -3075,6 +4481,7 @@ def _build_options_plan(
                 "put_calendar_spread",
                 f"term_structure={iv_term_norm:.3f}",
                 f"put_call_norm={put_call_norm:.3f}",
+                f"gamma_skew_norm={gamma_skew + 0.5:.3f}",
             ]
             plan = {
                 "symbol": symbol,
@@ -3098,6 +4505,7 @@ def _build_options_plan(
                 "risk_reversal_bearish",
                 f"put_call_norm={put_call_norm:.3f}",
                 f"neg_bias={neg_bias:.3f}",
+                f"flow_pressure={flow_pressure:+.3f}",
             ]
             plan = {
                 "symbol": symbol,
@@ -3294,6 +4702,14 @@ def _build_options_plan(
         "options_roll_yield_norm": roll_yield,
         "options_vwap_bias_norm": vwap_bias,
         "options_vol_expectation_norm": vol_expect,
+        "options_0dte_share_norm": zero_dte,
+        "options_net_call_premium_bias_norm": premium_bias + 0.5,
+        "options_sweep_flow_norm": sweep_flow,
+        "options_block_flow_norm": block_flow,
+        "options_iv_percentile_norm": iv_percentile,
+        "options_iv_realized_spread_norm": iv_realized,
+        "options_gamma_front_share_norm": gamma_front,
+        "options_gamma_expiry_skew_norm": gamma_skew + 0.5,
         "calendar_event_proximity_norm": event_prox,
         "calendar_options_expiry_week_norm": expiry_week,
     }
@@ -3398,6 +4814,28 @@ def _futures_master_signal(
     term = float(features.get("futures_term_structure_norm", 0.5) or 0.5) - 0.5
     roll = float(features.get("futures_roll_yield_norm", 0.5) or 0.5) - 0.5
     neg_bias = float(features.get("futures_negative_bias_norm", 0.5) or 0.5) - 0.5
+    micro_order_flow = (float(features.get("market_micro_order_flow_imbalance_norm", 0.5) or 0.5) - 0.5)
+    micro_rel_vol = float(features.get("market_micro_relative_volume_norm", 0.0) or 0.0)
+    micro_short = float(features.get("market_micro_short_pressure_norm", 0.0) or 0.0)
+    micro_credit = float(features.get("market_micro_credit_flow_norm", 0.0) or 0.0)
+    taker = float(features.get("futures_taker_imbalance_norm", 0.5) or 0.5) - 0.5
+    cvd = float(features.get("futures_cvd_norm", 0.5) or 0.5) - 0.5
+    liq_risk = float(features.get("futures_liquidation_risk_norm", 0.0) or 0.0)
+    long_short = float(features.get("futures_long_short_ratio_norm", 0.5) or 0.5) - 0.5
+    basis_div = float(features.get("futures_basis_divergence_norm", 0.0) or 0.0)
+    mark_dislocation = float(features.get("futures_mark_index_dislocation_norm", 0.0) or 0.0)
+    session_profile = float(features.get("futures_session_volume_profile_norm", 0.5) or 0.5) - 0.5
+    curve = float(features.get("futures_calendar_spread_curve_norm", 0.5) or 0.5) - 0.5
+    crypto_deribit_iv = float(features.get("crypto_deribit_mark_iv_norm", 0.0) or 0.0)
+    crypto_deribit_basis = float(features.get("crypto_deribit_basis_norm", 0.5) or 0.5) - 0.5
+    crypto_hl_funding = float(features.get("crypto_hyperliquid_funding_norm", 0.5) or 0.5) - 0.5
+    crypto_hl_oi = float(features.get("crypto_hyperliquid_open_interest_norm", 0.0) or 0.0)
+    crypto_hl_basis = float(features.get("crypto_hyperliquid_basis_norm", 0.5) or 0.5) - 0.5
+    crypto_cg_momentum = float(features.get("crypto_coingecko_momentum_norm", 0.5) or 0.5) - 0.5
+    crypto_price_agreement = float(features.get("crypto_cross_provider_price_agreement_norm", 0.0) or 0.0)
+    crypto_stablecoin_growth = float(features.get("crypto_defillama_stablecoin_growth_norm", 0.5) or 0.5) - 0.5
+    crypto_dex_growth = float(features.get("crypto_defillama_dex_volume_growth_norm", 0.5) or 0.5) - 0.5
+    crypto_gas = float(features.get("crypto_etherscan_gas_norm", 0.0) or 0.0)
 
     super_mode = _derivatives_super_trader_mode()
 
@@ -3405,8 +4843,16 @@ def _futures_master_signal(
     net += 0.22 * (grand_score - 0.5)
     net += 0.20 * futures_vote + 0.08 * options_vote
     net += 0.24 * imbalance + 0.16 * basis + 0.14 * term + 0.10 * roll
+    net += 0.10 * micro_order_flow + 0.08 * (micro_rel_vol - 0.5)
     net -= 0.15 * neg_bias
+    net -= 0.12 * micro_short + 0.10 * micro_credit
     net -= 0.20 * event_prox + 0.18 * high_impact + 0.16 * vol
+    net += 0.18 * taker + 0.14 * cvd + 0.12 * curve + 0.08 * session_profile
+    net -= 0.08 * long_short + 0.14 * liq_risk + 0.10 * basis_div + 0.10 * mark_dislocation
+    net += 0.10 * crypto_deribit_basis + 0.10 * crypto_hl_basis + 0.08 * crypto_cg_momentum
+    net += 0.08 * crypto_stablecoin_growth + 0.06 * crypto_dex_growth + 0.04 * crypto_hl_oi
+    net += 0.06 * crypto_price_agreement
+    net -= 0.08 * crypto_deribit_iv + 0.08 * abs(crypto_hl_funding) + 0.06 * crypto_gas
 
     if super_mode:
         net_scale = _super_trader_env_float("FUTURES_SUPER_TRADER_MASTER_NET_SCALE", 1.30)
@@ -3438,6 +4884,11 @@ def _futures_master_signal(
         f"futures_vote={futures_vote:.3f}",
         f"imbalance={imbalance:+.3f}",
         f"basis={basis:+.3f}",
+        f"taker_norm={taker + 0.5:.3f}",
+        f"liq_risk={liq_risk:.3f}",
+        f"curve_norm={curve + 0.5:.3f}",
+        f"crypto_agreement={crypto_price_agreement:.3f}",
+        f"crypto_momentum={crypto_cg_momentum + 0.5:.3f}",
     ]
     if super_mode:
         reasons = reasons + [
@@ -3498,18 +4949,30 @@ def _build_futures_plan(
     vwap = float(mkt.get("futures_vwap_bias_norm", 0.5) or 0.5) - 0.5
     neg_bias = float(mkt.get("futures_negative_bias_norm", 0.5) or 0.5) - 0.5
     funding = float(mkt.get("futures_funding_rate_norm", 0.5) or 0.5) - 0.5
+    taker = float(mkt.get("futures_taker_imbalance_norm", 0.5) or 0.5) - 0.5
+    cvd = float(mkt.get("futures_cvd_norm", 0.5) or 0.5) - 0.5
+    liq_risk = float(mkt.get("futures_liquidation_risk_norm", 0.0) or 0.0)
+    long_short = float(mkt.get("futures_long_short_ratio_norm", 0.5) or 0.5) - 0.5
+    basis_div = float(mkt.get("futures_basis_divergence_norm", 0.0) or 0.0)
+    mark_dislocation = float(mkt.get("futures_mark_index_dislocation_norm", 0.0) or 0.0)
+    session_profile = float(mkt.get("futures_session_volume_profile_norm", 0.5) or 0.5) - 0.5
+    curve = float(mkt.get("futures_calendar_spread_curve_norm", 0.5) or 0.5) - 0.5
 
     event_prox = float(mkt.get("calendar_event_proximity_norm", 0.0) or 0.0)
     high_impact = float(mkt.get("calendar_high_impact_24h_norm", 0.0) or 0.0)
 
     contracts = max(int(os.getenv("FUTURES_DEFAULT_CONTRACTS", "1") or 1), 1)
     max_contracts = max(int(os.getenv("FUTURES_MAX_CONTRACTS", "4") or 4), contracts)
-    if abs(master_vote) >= 0.35 and abs(imbalance) >= 0.18:
+    if abs(master_vote) >= 0.35 and abs(imbalance) >= 0.18 and abs(taker) >= 0.10:
         contracts = min(max_contracts, contracts + 1)
+    if liq_risk >= 0.70 or mark_dislocation >= 0.70 or basis_div >= 0.80:
+        contracts = max(1, contracts - 1)
 
-    low_event_risk = event_prox <= 0.55 and high_impact <= 0.55
-    liquid = spread_norm <= 0.85 and depth_norm >= 0.10
-    high_conviction = abs(master_vote) >= 0.22 or abs(master_score - 0.5) >= 0.12
+    low_event_risk = event_prox <= 0.55 and high_impact <= 0.55 and liq_risk <= 0.85
+    liquid = spread_norm <= 0.85 and depth_norm >= 0.10 and mark_dislocation <= 0.85
+    high_conviction = abs(master_vote) >= 0.22 or abs(master_score - 0.5) >= 0.12 or abs(taker) >= 0.12 or abs(cvd) >= 0.12
+    bullish_flow = (imbalance >= 0.08 and taker >= -0.02 and cvd >= -0.02) or (taker >= 0.12 and cvd >= 0.05)
+    bearish_flow = (imbalance <= -0.08 and taker <= 0.02 and cvd <= 0.02) or (taker <= -0.12 and cvd <= -0.05)
 
     def _fleg(side: str, month: str, qty: int, offset: int) -> Dict[str, Any]:
         return {
@@ -3539,7 +5002,7 @@ def _build_futures_plan(
         }
 
     # 2) Calendar/basis carry spread.
-    elif low_event_risk and liquid and (abs(basis) >= 0.18 or abs(term) >= 0.18) and abs(roll) >= 0.08:
+    elif low_event_risk and liquid and (abs(basis) >= 0.18 or abs(term) >= 0.18 or abs(curve) >= 0.10) and abs(roll) >= 0.08 and basis_div <= 0.75:
         carry_long = ((basis >= 0.0) and (term >= -0.05)) or (roll > 0.12)
         action = "BUY" if carry_long else "SELL"
         score = max(master_score, 0.58)
@@ -3548,6 +5011,7 @@ def _build_futures_plan(
             f"basis={basis:+.3f}",
             f"term={term:+.3f}",
             f"roll={roll:+.3f}",
+            f"curve_norm={curve + 0.5:.3f}",
         ]
         if carry_long:
             legs = [_fleg("BUY", "M1", min(contracts, 2), 0), _fleg("SELL", "M2", min(contracts, 2), 1)]
@@ -3563,7 +5027,7 @@ def _build_futures_plan(
         }
 
     # 3) Funding dislocation mean reversion.
-    elif low_event_risk and liquid and abs(funding) >= 0.15 and abs(imbalance) >= 0.10 and abs(basis) <= 0.18:
+    elif low_event_risk and liquid and abs(funding) >= 0.15 and abs(imbalance) >= 0.10 and abs(basis) <= 0.18 and abs(long_short) >= 0.05:
         action = "SELL" if funding > 0.0 else "BUY"
         score = max(master_score, 0.57)
         reasons = [
@@ -3571,6 +5035,7 @@ def _build_futures_plan(
             f"funding={funding:+.3f}",
             f"imbalance={imbalance:+.3f}",
             f"basis={basis:+.3f}",
+            f"long_short_norm={long_short + 0.5:.3f}",
         ]
         plan = {
             "symbol": symbol,
@@ -3582,7 +5047,7 @@ def _build_futures_plan(
         }
 
     # 4) Order-book imbalance breakout.
-    elif low_event_risk and liquid and (master_action in {"BUY", "SELL"}) and high_conviction and abs(imbalance) >= 0.22 and ((master_action == "BUY" and mom_5m >= 0.0 and range_pos >= 0.52 and vwap >= -0.08) or (master_action == "SELL" and mom_5m <= 0.0 and range_pos <= 0.48 and vwap <= 0.08)):
+    elif low_event_risk and liquid and (master_action in {"BUY", "SELL"}) and high_conviction and abs(imbalance) >= 0.22 and ((master_action == "BUY" and bullish_flow and mom_5m >= 0.0 and range_pos >= 0.52 and vwap >= -0.08) or (master_action == "SELL" and bearish_flow and mom_5m <= 0.0 and range_pos <= 0.48 and vwap <= 0.08)):
         action = master_action
         score = max(master_score, 0.58)
         reasons = [
@@ -3590,6 +5055,7 @@ def _build_futures_plan(
             f"imbalance={imbalance:+.3f}",
             f"mom_5m={mom_5m:+.4f}",
             f"range_pos={range_pos:.3f}",
+            f"taker_norm={taker + 0.5:.3f}",
         ]
         plan = {
             "symbol": symbol,
@@ -3601,7 +5067,26 @@ def _build_futures_plan(
         }
 
     # 5) Trend breakout / pullback continuation.
-    elif low_event_risk and liquid and (master_action in {"BUY", "SELL"}) and high_conviction and ((master_action == "BUY" and mom_5m >= 0.0 and range_pos >= 0.56) or (master_action == "SELL" and mom_5m <= 0.0 and range_pos <= 0.44)):
+    elif low_event_risk and liquid and abs(session_profile) >= 0.10 and (master_action in {"BUY", "SELL"}) and high_conviction and ((master_action == "BUY" and bullish_flow and mom_5m >= 0.0 and range_pos >= 0.54) or (master_action == "SELL" and bearish_flow and mom_5m <= 0.0 and range_pos <= 0.46)):
+        action = master_action
+        score = max(master_score, 0.59)
+        reasons = [
+            "futures_session_volume_breakout",
+            f"session_volume_norm={session_profile + 0.5:.3f}",
+            f"taker_norm={taker + 0.5:.3f}",
+            f"cvd_norm={cvd + 0.5:.3f}",
+        ]
+        plan = {
+            "symbol": symbol,
+            "futures_style": "FUTURES_SESSION_VOLUME_BREAKOUT",
+            "strategy_family": "directional",
+            "contracts": contracts,
+            "legs": [_fleg("BUY" if action == "BUY" else "SELL", "M1", contracts, 0)],
+            "front_month": "M1",
+        }
+
+    # 5) Trend breakout / pullback continuation.
+    elif low_event_risk and liquid and (master_action in {"BUY", "SELL"}) and high_conviction and ((master_action == "BUY" and bullish_flow and mom_5m >= 0.0 and range_pos >= 0.56) or (master_action == "SELL" and bearish_flow and mom_5m <= 0.0 and range_pos <= 0.44)):
         action = master_action
         score = max(master_score, 0.57)
         reasons = [
@@ -3620,6 +5105,25 @@ def _build_futures_plan(
         }
 
     # 6) VWAP/imbalance mean reversion.
+    elif low_event_risk and liquid and basis_div >= 0.20 and mark_dislocation >= 0.18 and abs(taker) <= 0.12:
+        action = "SELL" if basis > 0 else "BUY"
+        score = max(master_score, 0.56)
+        reasons = [
+            "futures_mark_index_dislocation_fade",
+            f"basis_divergence={basis_div:.3f}",
+            f"mark_dislocation={mark_dislocation:.3f}",
+            f"basis={basis:+.3f}",
+        ]
+        plan = {
+            "symbol": symbol,
+            "futures_style": "FUTURES_MARK_INDEX_DISLOCATION_FADE",
+            "strategy_family": "mean_revert",
+            "contracts": contracts,
+            "legs": [_fleg("BUY" if action == "BUY" else "SELL", "M1", contracts, 0)],
+            "front_month": "M1",
+        }
+
+    # 7) VWAP/imbalance mean reversion.
     elif low_event_risk and liquid and (abs(vwap) >= 0.12) and (abs(imbalance) >= 0.10):
         action = "SELL" if vwap > 0 else "BUY"
         score = max(master_score, 0.55)
@@ -3627,6 +5131,7 @@ def _build_futures_plan(
             "futures_vwap_imbalance_mean_revert",
             f"vwap={vwap:+.3f}",
             f"imbalance={imbalance:+.3f}",
+            f"liq_risk={liq_risk:.3f}",
         ]
         plan = {
             "symbol": symbol,
@@ -3638,8 +5143,8 @@ def _build_futures_plan(
         }
 
     # 7) Term-structure roll rotation.
-    elif low_event_risk and liquid and (abs(term) >= 0.10) and (abs(roll) >= 0.12):
-        direction_score = term + roll - 0.35 * neg_bias - 0.15 * funding
+    elif low_event_risk and liquid and (abs(term) >= 0.10 or abs(curve) >= 0.10) and (abs(roll) >= 0.12):
+        direction_score = term + roll + 0.40 * curve - 0.35 * neg_bias - 0.15 * funding
         action = "BUY" if direction_score >= 0.0 else "SELL"
         score = max(master_score, 0.56)
         reasons = [
@@ -3647,6 +5152,7 @@ def _build_futures_plan(
             f"term={term:+.3f}",
             f"roll={roll:+.3f}",
             f"neg_bias={neg_bias:+.3f}",
+            f"curve_norm={curve + 0.5:.3f}",
         ]
         if action == "BUY":
             legs = [_fleg("BUY", "M2", min(contracts, 2), 1), _fleg("SELL", "M1", min(contracts, 2), 0)]
@@ -3671,6 +5177,14 @@ def _build_futures_plan(
         "futures_roll_yield_norm": roll + 0.5,
         "futures_vwap_bias_norm": vwap + 0.5,
         "futures_negative_bias_norm": neg_bias + 0.5,
+        "futures_taker_imbalance_norm": taker + 0.5,
+        "futures_cvd_norm": cvd + 0.5,
+        "futures_liquidation_risk_norm": liq_risk,
+        "futures_long_short_ratio_norm": long_short + 0.5,
+        "futures_basis_divergence_norm": basis_div,
+        "futures_mark_index_dislocation_norm": mark_dislocation,
+        "futures_session_volume_profile_norm": session_profile + 0.5,
+        "futures_calendar_spread_curve_norm": curve + 0.5,
         "calendar_event_proximity_norm": event_prox,
         "calendar_high_impact_24h_norm": high_impact,
         "vol_30m": vol,
@@ -3716,11 +5230,59 @@ def _latest_trade_behavior_model_quantized(project_root: str) -> Optional[str]:
     return paths[-1]
 
 
+def _trade_behavior_model_candidates(project_root: str, *, prefer_quantized: bool) -> List[str]:
+    if prefer_quantized:
+        quantized = sorted(
+            glob.glob(os.path.join(project_root, "models", "trade_behavior_policy_*_quantized.npz")),
+            reverse=True,
+        )
+        if quantized:
+            return quantized
+    return sorted(
+        glob.glob(os.path.join(project_root, "models", "trade_behavior_policy_*.npz")),
+        reverse=True,
+    )
+
+
+def _trade_behavior_log_for_model(project_root: str, model_path: str) -> Dict[str, Any]:
+    name = os.path.basename(str(model_path or ""))
+    if not name:
+        return {}
+    stamp = name.replace("trade_behavior_policy_", "").replace("_quantized.npz", "").replace(".npz", "")
+    log_path = os.path.join(project_root, "logs", f"trade_behavior_policy_{stamp}.json")
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _select_deployed_trade_behavior_model(project_root: str, *, prefer_quantized: bool) -> Optional[str]:
+    candidates = _trade_behavior_model_candidates(project_root, prefer_quantized=prefer_quantized)
+    if not candidates:
+        return None
+
+    legacy_fallback: Optional[str] = None
+    for path in candidates:
+        payload = _trade_behavior_log_for_model(project_root, path)
+        if not payload:
+            if legacy_fallback is None:
+                legacy_fallback = path
+            continue
+        if bool(payload.get("promoted", False)) or bool(payload.get("deployed_from_previous", False)):
+            return path
+
+    return legacy_fallback
+
+
 def _load_trade_behavior_model(project_root: str) -> Optional[Dict[str, Any]]:
     if np is None:
         return None
     prefer_quantized = os.getenv("TRADE_BEHAVIOR_PREFER_QUANTIZED", "1").strip() == "1"
-    path = _latest_trade_behavior_model_quantized(project_root) if prefer_quantized else None
+    path = _select_deployed_trade_behavior_model(project_root, prefer_quantized=prefer_quantized)
+    if not path:
+        path = _latest_trade_behavior_model_quantized(project_root) if prefer_quantized else None
     if not path:
         path = _latest_trade_behavior_model(project_root)
     if not path:
@@ -3938,6 +5500,12 @@ _BEHAVIOR_FEATURE_NAMES_V2 = [
     "dividend_strategy_mode_capture",
     "dividend_strategy_mode_compound",
     "dividend_strategy_mode_hybrid",
+    "dividend_drip_active_norm",
+    "dividend_drip_recent_reinvest_norm",
+    "dividend_drip_cash_only_norm",
+    "dividend_drip_share_credit_norm",
+    "dividend_drip_event_recency_norm",
+    "dividend_drip_confidence_norm",
     "futures_order_book_imbalance_norm",
     "futures_funding_rate_norm",
     "futures_basis_bps_norm",
@@ -3986,6 +5554,58 @@ _BEHAVIOR_FEATURE_NAMES_V2 = [
     "external_bls_cpi_mom_norm",
     "external_census_population_log_norm",
     "external_bea_dataset_count_norm",
+    "external_micro_auction_norm",
+    "external_micro_relative_volume_norm",
+    "external_micro_options_flow_norm",
+    "external_micro_short_pressure_norm",
+    "external_micro_credit_flow_norm",
+    "external_micro_block_trade_norm",
+    "tasty_iv_rank_norm",
+    "tasty_implied_volatility_index_norm",
+    "tasty_liquidity_rating_norm",
+    "tasty_expected_move_norm",
+    "tasty_beta_norm",
+    "tasty_watchlist_presence_norm",
+    "crypto_deribit_futures_oi_norm",
+    "crypto_deribit_options_oi_norm",
+    "crypto_deribit_mark_iv_norm",
+    "crypto_deribit_basis_norm",
+    "crypto_kraken_volume_norm",
+    "crypto_kraken_range_norm",
+    "crypto_hyperliquid_funding_norm",
+    "crypto_hyperliquid_open_interest_norm",
+    "crypto_hyperliquid_basis_norm",
+    "crypto_coinmetrics_tx_count_norm",
+    "crypto_coinmetrics_active_addr_norm",
+    "crypto_coingecko_volume_norm",
+    "crypto_coingecko_momentum_norm",
+    "crypto_cross_provider_price_agreement_norm",
+    "crypto_defillama_stablecoin_growth_norm",
+    "crypto_defillama_dex_volume_growth_norm",
+    "crypto_etherscan_gas_norm",
+    "market_crypto_risk_corr_norm",
+    "market_crypto_spy_corr_norm",
+    "market_crypto_qqq_corr_norm",
+    "market_crypto_tlt_corr_norm",
+    "market_crypto_uup_inverse_corr_norm",
+    "market_crypto_gold_corr_norm",
+    "market_crypto_current_alignment_norm",
+    "market_crypto_divergence_norm",
+    "market_crypto_corr_confidence_norm",
+    "fx_official_data_available",
+    "fx_eurusd_level_norm",
+    "fx_eurusd_momentum_norm",
+    "fx_usdjpy_level_norm",
+    "fx_usdjpy_momentum_norm",
+    "fx_gbpusd_level_norm",
+    "fx_gbpusd_momentum_norm",
+    "fx_usd_strength_norm",
+    "fx_usd_broad_index_norm",
+    "fx_proxy_agreement_norm",
+    "fx_risk_on_alignment_norm",
+    "fx_crypto_alignment_norm",
+    "fx_macro_dispersion_norm",
+    "fx_corr_confidence_norm",
 ]
 
 _BEHAVIOR_LANE_FEATURE_NAMES = [
@@ -4018,9 +5638,24 @@ _BEHAVIOR_LANE_FEATURE_NAMES = [
 ]
 
 _BEHAVIOR_CAPITAL_FLOW_FEATURE_NAMES = list(_CAPITAL_FLOW_FEATURE_KEYS)
+_BEHAVIOR_FLOW_AWARENESS_FEATURE_NAMES = list(_FLOW_AWARENESS_FEATURE_KEYS)
+_BEHAVIOR_LEAD_LAG_FEATURE_NAMES = list(_LEAD_LAG_FEATURE_KEYS)
+_BEHAVIOR_ALLOCATION_FEATURE_NAMES = list(_ALLOCATION_FEATURE_KEYS)
+_BEHAVIOR_PAPER_FEATURE_NAMES = [
+    "paper_snapshot_trade_count_norm",
+    "paper_snapshot_slippage_bps_norm",
+    "paper_snapshot_return_proxy_signed_scaled",
+    "paper_recent_trade_count_norm",
+    "paper_recent_slippage_bps_norm",
+    "paper_recent_return_proxy_signed_scaled",
+]
 
 _BEHAVIOR_FEATURE_NAMES_V2.extend(_BEHAVIOR_LANE_FEATURE_NAMES)
+_BEHAVIOR_FEATURE_NAMES_V2.extend(_BEHAVIOR_PAPER_FEATURE_NAMES)
 _BEHAVIOR_FEATURE_NAMES_V2.extend(_BEHAVIOR_CAPITAL_FLOW_FEATURE_NAMES)
+_BEHAVIOR_FEATURE_NAMES_V2.extend(_BEHAVIOR_FLOW_AWARENESS_FEATURE_NAMES)
+_BEHAVIOR_FEATURE_NAMES_V2.extend(_BEHAVIOR_LEAD_LAG_FEATURE_NAMES)
+_BEHAVIOR_FEATURE_NAMES_V2.extend(_BEHAVIOR_ALLOCATION_FEATURE_NAMES)
 _BEHAVIOR_SNAPSHOT_CONTEXT_CACHE: Dict[str, Any] = {"loaded_at_ts": 0.0, "values": {}}
 
 
@@ -4039,6 +5674,31 @@ def _behavior_load_json(path: str) -> Dict[str, Any]:
         return obj if isinstance(obj, dict) else {}
     except Exception:
         return {}
+
+
+def _behavior_parse_ts(raw: Any) -> Optional[datetime]:
+    if raw is None:
+        return None
+    s = str(raw).strip().replace("Z", "+00:00")
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _behavior_fresh_health_payload(payload: Dict[str, Any], *, max_age_hours: float) -> Tuple[Dict[str, Any], bool]:
+    if not isinstance(payload, dict) or not payload:
+        return {}, False
+    ts = _behavior_parse_ts(payload.get('timestamp_utc'))
+    if ts is None:
+        return payload, False
+    age_hours = max((datetime.now(timezone.utc) - ts).total_seconds(), 0.0) / 3600.0
+    return payload, age_hours <= max(max_age_hours, 0.0)
 
 
 def _behavior_snapshot_context(project_root: str) -> Dict[str, float]:
@@ -4068,7 +5728,7 @@ def _behavior_snapshot_context(project_root: str) -> Dict[str, float]:
                         values[key] = _behavior_clamp01(float(raw or 0.0))
                     except Exception:
                         values[key] = 0.0
-                elif key.startswith('external_'):
+                elif key.startswith(('external_', 'tasty_', 'crypto_', 'market_crypto_')):
                     raw = external_context.get(key, 0.0) if isinstance(external_context, dict) else 0.0
                     try:
                         values[key] = _behavior_clamp01(float(raw or 0.0))
@@ -4096,7 +5756,10 @@ def _behavior_snapshot_context(project_root: str) -> Dict[str, float]:
     coverage = _behavior_load_json(os.path.join(health, 'snapshot_coverage_latest.json'))
     replay = _behavior_load_json(os.path.join(health, 'replay_preopen_sanity_latest.json'))
     drift = _behavior_load_json(os.path.join(health, 'preopen_replay_drift_latest.json'))
-    divergence = _behavior_load_json(os.path.join(health, 'data_source_divergence_latest.json'))
+    divergence, _ = _behavior_fresh_health_payload(
+        _behavior_load_json(os.path.join(health, 'data_source_divergence_latest.json')),
+        max_age_hours=float(os.getenv('TRADE_BEHAVIOR_DIVERGENCE_MAX_AGE_HOURS', '8')),
+    )
     triprate = _behavior_load_json(os.path.join(health, 'guardrail_triprate_latest.json'))
     queue_stress = _behavior_load_json(os.path.join(health, 'execution_queue_stress_latest.json'))
 
@@ -4386,6 +6049,12 @@ def _behavior_feature_vector_v2(symbol: str, action_hint: str, features: Dict[st
         'dividend_strategy_mode_capture': _behavior_clamp01(float(features.get('dividend_strategy_mode_capture', 0.0) or 0.0)),
         'dividend_strategy_mode_compound': _behavior_clamp01(float(features.get('dividend_strategy_mode_compound', 0.0) or 0.0)),
         'dividend_strategy_mode_hybrid': _behavior_clamp01(float(features.get('dividend_strategy_mode_hybrid', 0.0) or 0.0)),
+        'dividend_drip_active_norm': _behavior_clamp01(float(features.get('dividend_drip_active_norm', 0.0) or 0.0)),
+        'dividend_drip_recent_reinvest_norm': _behavior_clamp01(float(features.get('dividend_drip_recent_reinvest_norm', 0.0) or 0.0)),
+        'dividend_drip_cash_only_norm': _behavior_clamp01(float(features.get('dividend_drip_cash_only_norm', 0.0) or 0.0)),
+        'dividend_drip_share_credit_norm': _behavior_clamp01(float(features.get('dividend_drip_share_credit_norm', 0.0) or 0.0)),
+        'dividend_drip_event_recency_norm': _behavior_clamp01(float(features.get('dividend_drip_event_recency_norm', 0.0) or 0.0)),
+        'dividend_drip_confidence_norm': _behavior_clamp01(float(features.get('dividend_drip_confidence_norm', 0.0) or 0.0)),
         'futures_order_book_imbalance_norm': _behavior_clamp01(float(features.get('futures_order_book_imbalance_norm', 0.0) or 0.0)),
         'futures_funding_rate_norm': _behavior_clamp01(float(features.get('futures_funding_rate_norm', 0.0) or 0.0)),
         'futures_basis_bps_norm': _behavior_clamp01(float(features.get('futures_basis_bps_norm', 0.0) or 0.0)),
@@ -4434,14 +6103,90 @@ def _behavior_feature_vector_v2(symbol: str, action_hint: str, features: Dict[st
         'external_bls_cpi_mom_norm': _behavior_clamp01(float(snapshot_ctx.get('external_bls_cpi_mom_norm', features.get('external_bls_cpi_mom_norm', 0.0)) or 0.0)),
         'external_census_population_log_norm': _behavior_clamp01(float(snapshot_ctx.get('external_census_population_log_norm', features.get('external_census_population_log_norm', 0.0)) or 0.0)),
         'external_bea_dataset_count_norm': _behavior_clamp01(float(snapshot_ctx.get('external_bea_dataset_count_norm', features.get('external_bea_dataset_count_norm', 0.0)) or 0.0)),
+        'external_micro_auction_norm': _behavior_clamp01(float(snapshot_ctx.get('external_micro_auction_norm', features.get('external_micro_auction_norm', 0.0)) or 0.0)),
+        'external_micro_relative_volume_norm': _behavior_clamp01(float(snapshot_ctx.get('external_micro_relative_volume_norm', features.get('external_micro_relative_volume_norm', 0.0)) or 0.0)),
+        'external_micro_options_flow_norm': _behavior_clamp01(float(snapshot_ctx.get('external_micro_options_flow_norm', features.get('external_micro_options_flow_norm', 0.0)) or 0.0)),
+        'external_micro_short_pressure_norm': _behavior_clamp01(float(snapshot_ctx.get('external_micro_short_pressure_norm', features.get('external_micro_short_pressure_norm', 0.0)) or 0.0)),
+        'external_micro_credit_flow_norm': _behavior_clamp01(float(snapshot_ctx.get('external_micro_credit_flow_norm', features.get('external_micro_credit_flow_norm', 0.0)) or 0.0)),
+        'external_micro_block_trade_norm': _behavior_clamp01(float(snapshot_ctx.get('external_micro_block_trade_norm', features.get('external_micro_block_trade_norm', 0.0)) or 0.0)),
+        'tasty_iv_rank_norm': _behavior_clamp01(float(snapshot_ctx.get('tasty_iv_rank_norm', features.get('tasty_iv_rank_norm', 0.0)) or 0.0)),
+        'tasty_implied_volatility_index_norm': _behavior_clamp01(float(snapshot_ctx.get('tasty_implied_volatility_index_norm', features.get('tasty_implied_volatility_index_norm', 0.0)) or 0.0)),
+        'tasty_liquidity_rating_norm': _behavior_clamp01(float(snapshot_ctx.get('tasty_liquidity_rating_norm', features.get('tasty_liquidity_rating_norm', 0.0)) or 0.0)),
+        'tasty_expected_move_norm': _behavior_clamp01(float(snapshot_ctx.get('tasty_expected_move_norm', features.get('tasty_expected_move_norm', 0.0)) or 0.0)),
+        'tasty_beta_norm': _behavior_clamp01(float(snapshot_ctx.get('tasty_beta_norm', features.get('tasty_beta_norm', 0.0)) or 0.0)),
+        'tasty_watchlist_presence_norm': _behavior_clamp01(float(snapshot_ctx.get('tasty_watchlist_presence_norm', features.get('tasty_watchlist_presence_norm', 0.0)) or 0.0)),
+        'crypto_deribit_futures_oi_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_deribit_futures_oi_norm', features.get('crypto_deribit_futures_oi_norm', 0.0)) or 0.0)),
+        'crypto_deribit_options_oi_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_deribit_options_oi_norm', features.get('crypto_deribit_options_oi_norm', 0.0)) or 0.0)),
+        'crypto_deribit_mark_iv_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_deribit_mark_iv_norm', features.get('crypto_deribit_mark_iv_norm', 0.0)) or 0.0)),
+        'crypto_deribit_basis_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_deribit_basis_norm', features.get('crypto_deribit_basis_norm', 0.0)) or 0.0)),
+        'crypto_kraken_volume_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_kraken_volume_norm', features.get('crypto_kraken_volume_norm', 0.0)) or 0.0)),
+        'crypto_kraken_range_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_kraken_range_norm', features.get('crypto_kraken_range_norm', 0.0)) or 0.0)),
+        'crypto_hyperliquid_funding_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_hyperliquid_funding_norm', features.get('crypto_hyperliquid_funding_norm', 0.0)) or 0.0)),
+        'crypto_hyperliquid_open_interest_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_hyperliquid_open_interest_norm', features.get('crypto_hyperliquid_open_interest_norm', 0.0)) or 0.0)),
+        'crypto_hyperliquid_basis_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_hyperliquid_basis_norm', features.get('crypto_hyperliquid_basis_norm', 0.0)) or 0.0)),
+        'crypto_coinmetrics_tx_count_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_coinmetrics_tx_count_norm', features.get('crypto_coinmetrics_tx_count_norm', 0.0)) or 0.0)),
+        'crypto_coinmetrics_active_addr_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_coinmetrics_active_addr_norm', features.get('crypto_coinmetrics_active_addr_norm', 0.0)) or 0.0)),
+        'crypto_coingecko_volume_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_coingecko_volume_norm', features.get('crypto_coingecko_volume_norm', 0.0)) or 0.0)),
+        'crypto_coingecko_momentum_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_coingecko_momentum_norm', features.get('crypto_coingecko_momentum_norm', 0.0)) or 0.0)),
+        'crypto_cross_provider_price_agreement_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_cross_provider_price_agreement_norm', features.get('crypto_cross_provider_price_agreement_norm', 0.0)) or 0.0)),
+        'crypto_defillama_stablecoin_growth_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_defillama_stablecoin_growth_norm', features.get('crypto_defillama_stablecoin_growth_norm', 0.0)) or 0.0)),
+        'crypto_defillama_dex_volume_growth_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_defillama_dex_volume_growth_norm', features.get('crypto_defillama_dex_volume_growth_norm', 0.0)) or 0.0)),
+        'crypto_etherscan_gas_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_etherscan_gas_norm', features.get('crypto_etherscan_gas_norm', 0.0)) or 0.0)),
+        'market_crypto_risk_corr_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_risk_corr_norm', features.get('market_crypto_risk_corr_norm', 0.0)) or 0.0)),
+        'market_crypto_spy_corr_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_spy_corr_norm', features.get('market_crypto_spy_corr_norm', 0.0)) or 0.0)),
+        'market_crypto_qqq_corr_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_qqq_corr_norm', features.get('market_crypto_qqq_corr_norm', 0.0)) or 0.0)),
+        'market_crypto_tlt_corr_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_tlt_corr_norm', features.get('market_crypto_tlt_corr_norm', 0.0)) or 0.0)),
+        'market_crypto_uup_inverse_corr_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_uup_inverse_corr_norm', features.get('market_crypto_uup_inverse_corr_norm', 0.0)) or 0.0)),
+        'market_crypto_gold_corr_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_gold_corr_norm', features.get('market_crypto_gold_corr_norm', 0.0)) or 0.0)),
+        'market_crypto_current_alignment_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_current_alignment_norm', features.get('market_crypto_current_alignment_norm', 0.0)) or 0.0)),
+        'market_crypto_divergence_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_divergence_norm', features.get('market_crypto_divergence_norm', 0.0)) or 0.0)),
+        'market_crypto_corr_confidence_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_corr_confidence_norm', features.get('market_crypto_corr_confidence_norm', 0.0)) or 0.0)),
+        'fx_official_data_available': _behavior_clamp01(float(snapshot_ctx.get('fx_official_data_available', features.get('fx_official_data_available', 0.0)) or 0.0)),
+        'fx_eurusd_level_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_eurusd_level_norm', features.get('fx_eurusd_level_norm', 0.0)) or 0.0)),
+        'fx_eurusd_momentum_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_eurusd_momentum_norm', features.get('fx_eurusd_momentum_norm', 0.0)) or 0.0)),
+        'fx_usdjpy_level_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_usdjpy_level_norm', features.get('fx_usdjpy_level_norm', 0.0)) or 0.0)),
+        'fx_usdjpy_momentum_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_usdjpy_momentum_norm', features.get('fx_usdjpy_momentum_norm', 0.0)) or 0.0)),
+        'fx_gbpusd_level_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_gbpusd_level_norm', features.get('fx_gbpusd_level_norm', 0.0)) or 0.0)),
+        'fx_gbpusd_momentum_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_gbpusd_momentum_norm', features.get('fx_gbpusd_momentum_norm', 0.0)) or 0.0)),
+        'fx_usd_strength_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_usd_strength_norm', features.get('fx_usd_strength_norm', 0.0)) or 0.0)),
+        'fx_usd_broad_index_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_usd_broad_index_norm', features.get('fx_usd_broad_index_norm', 0.0)) or 0.0)),
+        'fx_proxy_agreement_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_proxy_agreement_norm', features.get('fx_proxy_agreement_norm', 0.0)) or 0.0)),
+        'fx_risk_on_alignment_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_risk_on_alignment_norm', features.get('fx_risk_on_alignment_norm', 0.0)) or 0.0)),
+        'fx_crypto_alignment_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_crypto_alignment_norm', features.get('fx_crypto_alignment_norm', 0.0)) or 0.0)),
+        'fx_macro_dispersion_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_macro_dispersion_norm', features.get('fx_macro_dispersion_norm', 0.0)) or 0.0)),
+        'fx_corr_confidence_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_corr_confidence_norm', features.get('fx_corr_confidence_norm', 0.0)) or 0.0)),
     }
 
     for key in _BEHAVIOR_LANE_FEATURE_NAMES:
         vec_map[key] = _behavior_clamp01(float(features.get(key, 0.0) or 0.0))
+    for key in _BEHAVIOR_PAPER_FEATURE_NAMES:
+        raw = float(features.get(key, 0.0) or 0.0)
+        if key.endswith("_signed_scaled"):
+            vec_map[key] = max(-1.0, min(raw, 1.0))
+        else:
+            vec_map[key] = _behavior_clamp01(raw)
     for key in _BEHAVIOR_CAPITAL_FLOW_FEATURE_NAMES:
         raw = float(features.get(key, 0.0) or 0.0)
         if key == "capital_flow_signed_scaled":
             vec_map[key] = max(-1.0, min(raw, 1.0))
+        else:
+            vec_map[key] = _behavior_clamp01(raw)
+    for key in _BEHAVIOR_FLOW_AWARENESS_FEATURE_NAMES:
+        raw = float(features.get(key, 0.0) or 0.0)
+        if key == "flow_direction_signed":
+            vec_map[key] = max(-1.0, min(raw, 1.0))
+        else:
+            vec_map[key] = _behavior_clamp01(raw)
+    for key in _BEHAVIOR_LEAD_LAG_FEATURE_NAMES:
+        raw = float(features.get(key, 0.0) or 0.0)
+        if key == "lead_lag_signal_signed":
+            vec_map[key] = max(-1.0, min(raw, 1.0))
+        else:
+            vec_map[key] = _behavior_clamp01(raw)
+    for key in _BEHAVIOR_ALLOCATION_FEATURE_NAMES:
+        raw = float(features.get(key, 0.0) or 0.0)
+        if key == "allocation_confidence_scale":
+            vec_map[key] = _behavior_clamp01(raw / 1.25)
         else:
             vec_map[key] = _behavior_clamp01(raw)
 
@@ -4766,14 +6511,28 @@ def _top_paper_mirror_bots(
     *,
     top_n: int,
     min_accuracy: float,
+    segment: str = "core",
 ) -> List[SubBot]:
     if top_n <= 0:
         return []
-    ranked = sorted(
-        [
+    segment_name = str(segment or "core").strip().lower()
+    if segment_name == "options":
+        eligible = [
+            b for b in active_bots
+            if b.active and _is_options_sub_bot(b)
+        ]
+    elif segment_name == "futures":
+        eligible = [
+            b for b in active_bots
+            if b.active and _is_futures_sub_bot(b)
+        ]
+    else:
+        eligible = [
             b for b in active_bots
             if b.active and b.bot_role != "infrastructure_sub_bot" and (not _is_options_sub_bot(b)) and (not _is_futures_sub_bot(b))
-        ],
+        ]
+    ranked = sorted(
+        eligible,
         key=lambda b: (float(b.test_accuracy or 0.0), float(b.weight or 0.0), b.bot_id),
         reverse=True,
     )
@@ -4787,10 +6546,10 @@ def _top_paper_mirror_bots(
     return out
 
 
-def _sub_bot_signal_batch(bots: List[SubBot], mkt: Dict[str, float]) -> List[Tuple[SubBot, str, float, float, List[str]]]:
+def _sub_bot_signal_batch(bots: List[SubBot], features: Dict[str, float]) -> List[Tuple[SubBot, str, float, float, List[str]]]:
     out: List[Tuple[SubBot, str, float, float, List[str]]] = []
     for b in bots:
-        action, score, threshold, reasons = _sub_bot_signal(b, mkt)
+        action, score, threshold, reasons = _sub_bot_signal(b, features)
         out.append((b, action, score, threshold, reasons))
     return out
 
@@ -4883,6 +6642,19 @@ def _run_log_maintenance(project_root: str, *, max_ops: int = 200) -> Dict[str, 
 
 def _shadow_profile_name() -> str:
     return os.getenv("SHADOW_PROFILE", "").strip().lower()
+
+
+def _shadow_ingress_instance() -> str:
+    raw = os.getenv("SHADOW_INGRESS_INSTANCE", "").strip().lower()
+    if not raw:
+        return ""
+    out = []
+    for ch in raw:
+        if ch.isalnum() or ch in {"-", "_"}:
+            out.append(ch)
+        else:
+            out.append("_")
+    return "".join(out).strip("_")
 
 
 def _shadow_domain_name(broker: Optional[str] = None) -> str:
@@ -4985,6 +6757,10 @@ def _dividend_quality_score(symbol: str, features: Dict[str, float]) -> float:
     payout_norm = _clamp01(float(features.get("dividend_payout_ratio_norm", 0.0) or 0.0))
     vol_norm = _clamp01(float(features.get("vol_30m", 0.0) or 0.0) / 0.03)
     calendar_quality = _clamp01(float(features.get("calendar_dividend_quality_signal_norm", 0.0) or 0.0))
+    tasty_liquidity = _clamp01(float(features.get("tasty_liquidity_rating_norm", 0.0) or 0.0))
+    tasty_expected_move = _clamp01(float(features.get("tasty_expected_move_norm", 0.0) or 0.0))
+    tasty_watch = _clamp01(float(features.get("tasty_watchlist_presence_norm", 0.0) or 0.0))
+    tasty_beta_penalty = _clamp01(abs((float(features.get("tasty_beta_norm", 0.5) or 0.5) - 0.5) * 2.0))
 
     sustainable_yield = _clamp01(1.0 - (abs(yield_norm - 0.35) / 0.35))
     payout_safety = _clamp01(1.0 - (max(payout_norm - 0.78, 0.0) / 0.22))
@@ -4992,10 +6768,14 @@ def _dividend_quality_score(symbol: str, features: Dict[str, float]) -> float:
     universe_bonus = 0.18 if symbol.upper() in _dividend_quality_symbols() else 0.0
 
     score = (
-        (0.34 * sustainable_yield)
-        + (0.32 * payout_safety)
-        + (0.20 * low_vol)
-        + (0.14 * calendar_quality)
+        (0.30 * sustainable_yield)
+        + (0.29 * payout_safety)
+        + (0.17 * low_vol)
+        + (0.12 * calendar_quality)
+        + (0.08 * tasty_liquidity)
+        + (0.04 * tasty_watch)
+        - (0.08 * tasty_expected_move)
+        - (0.04 * tasty_beta_penalty)
         + universe_bonus
     )
     return _clamp01(score)
@@ -5033,12 +6813,23 @@ def _apply_dividend_strategy_overlay(
     mkt_ex = _clamp01(float(features.get("dividend_ex_date_proximity_norm", 0.0) or 0.0))
     mkt_pay = _clamp01(float(features.get("dividend_pay_date_proximity_norm", 0.0) or 0.0))
     signal_available = _clamp01(float(features.get("dividend_signal_available", 0.0) or 0.0))
+    drip_active = _clamp01(float(features.get("dividend_drip_active_norm", 0.0) or 0.0))
+    drip_recent = _clamp01(float(features.get("dividend_drip_recent_reinvest_norm", 0.0) or 0.0))
+    drip_cash_only = _clamp01(float(features.get("dividend_drip_cash_only_norm", 0.0) or 0.0))
+    drip_conf = _clamp01(float(features.get("dividend_drip_confidence_norm", 0.0) or 0.0))
 
     ex_signal = max(cal_ex, mkt_ex)
     payout_signal = max(cal_pay, mkt_pay)
     capture_entry = _clamp01(((0.75 * ex_signal) + (0.25 * payout_signal)) * quality_score)
     capture_exit = _clamp01(max(cal_recent_ex, payout_signal * 0.75))
-    compound_bias = _clamp01((0.65 * quality_score) + (0.25 * cal_events) + (0.10 * signal_available))
+    compound_bias = _clamp01(
+        (0.54 * quality_score)
+        + (0.18 * cal_events)
+        + (0.08 * signal_available)
+        + (0.12 * drip_active * drip_conf)
+        + (0.08 * drip_recent)
+        - (0.06 * drip_cash_only * (1.0 - drip_active))
+    )
 
     out_features = {
         "dividend_strategy_mode_capture": 1.0 if mode == "capture" else 0.0,
@@ -5072,18 +6863,19 @@ def _apply_dividend_strategy_overlay(
 
     if mode in {"compound", "hybrid"}:
         if mode == "compound":
-            if new_action == "SELL" and quality_score >= 0.30 and payout_ratio_norm <= 0.95:
+            if new_action == "SELL" and ((quality_score >= 0.30 and payout_ratio_norm <= 0.95) or (drip_active * drip_conf) >= 0.30):
                 new_action, new_score = _force_action_score("HOLD", new_score, threshold)
-                new_reasons = new_reasons + ["dividend_compound_hold_override"]
-            if new_action in {"HOLD", "SELL"} and compound_bias >= 0.22:
+                new_reasons = new_reasons + [f"dividend_compound_hold_override drip={drip_active:.3f}"]
+            if new_action in {"HOLD", "SELL"} and compound_bias >= (0.18 if (drip_active * drip_conf) >= 0.30 else 0.22):
                 new_action, new_score = _force_action_score("BUY", new_score, threshold)
                 new_reasons = new_reasons + [
                     f"dividend_compound_buy_bias={compound_bias:.3f}",
                     f"dividend_quality={quality_score:.3f}",
+                    f"dividend_drip_active={drip_active:.3f}",
                 ]
         elif new_action == "SELL" and compound_bias >= 0.45 and capture_exit < 0.22:
             new_action, new_score = _force_action_score("HOLD", new_score, threshold)
-            new_reasons = new_reasons + ["dividend_hybrid_hold_bias"]
+            new_reasons = new_reasons + [f"dividend_hybrid_hold_bias drip={drip_active:.3f}"]
 
     return new_action, new_score, new_reasons, out_features
 
@@ -5109,6 +6901,10 @@ def _apply_dividend_safety_tax_overlay(
     vol_norm = _clamp01(float(features.get("vol_30m", 0.0) or 0.0) / 0.03)
     cal_quality = _clamp01(float(features.get("calendar_dividend_quality_signal_norm", 0.0) or 0.0))
     yield_norm = _clamp01(float(features.get("dividend_yield_norm", 0.0) or 0.0))
+    drip_active = _clamp01(float(features.get("dividend_drip_active_norm", 0.0) or 0.0))
+    drip_recent = _clamp01(float(features.get("dividend_drip_recent_reinvest_norm", 0.0) or 0.0))
+    drip_cash_only = _clamp01(float(features.get("dividend_drip_cash_only_norm", 0.0) or 0.0))
+    drip_conf = _clamp01(float(features.get("dividend_drip_confidence_norm", 0.0) or 0.0))
 
     yield_trap_risk = _clamp01(max(yield_norm - 0.70, 0.0) * 2.4 + max(payout_ratio - 0.85, 0.0) * 2.2)
     safety_composite = _clamp01(
@@ -5117,6 +6913,8 @@ def _apply_dividend_safety_tax_overlay(
         + (0.18 * (1.0 - vol_norm))
         + (0.14 * cal_quality)
         + (0.08 * (1.0 - yield_trap_risk))
+        + (0.08 * drip_active * drip_conf)
+        - (0.04 * drip_cash_only * (1.0 - drip_active))
     )
 
     ex_signal = max(
@@ -5130,6 +6928,8 @@ def _apply_dividend_safety_tax_overlay(
     mom = float(features.get("mom_5m", 0.0) or 0.0)
     compound_growth = _clamp01(float(features.get("dividend_compound_growth_norm", 0.0) or 0.0))
     growth_momentum = _clamp01((0.40 * _clamp01(max(news_sent, 0.0))) + (0.30 * _clamp01(max(mom, 0.0) / 0.01)) + (0.30 * compound_growth))
+    if drip_recent > 0.0:
+        growth_momentum = _clamp01(growth_momentum + (0.18 * drip_recent * drip_conf))
 
     row = state.setdefault(symbol.upper(), {"position_open": 0.0, "last_buy_iter": 0.0, "last_rebalance_iter": 0.0, "hold_iters": 0.0})
     position_open = float(row.get("position_open", 0.0) or 0.0)
@@ -5166,10 +6966,10 @@ def _apply_dividend_safety_tax_overlay(
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"dividend_ex_slippage_risk={ex_slippage_risk:.3f}"]
 
-    if new_action == "SELL" and mode in {"compound", "hybrid"} and tax_qualified_hold_norm < 0.95 and safety_composite >= 0.32:
+    if new_action == "SELL" and mode in {"compound", "hybrid"} and (tax_qualified_hold_norm < 0.95 or (drip_active * drip_conf) >= 0.30) and safety_composite >= 0.32:
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [
-            f"dividend_tax_hold_block qualified={tax_qualified_hold_norm:.3f} min_hold_iters={min_hold_iters}",
+            f"dividend_tax_hold_block qualified={tax_qualified_hold_norm:.3f} drip={drip_active:.3f} min_hold_iters={min_hold_iters}",
         ]
 
     cadence_ok = iters_since_rebalance >= rebalance_interval
@@ -5179,11 +6979,12 @@ def _apply_dividend_safety_tax_overlay(
             f"dividend_rebalance_cadence_wait iters_since_rebalance={iters_since_rebalance} min={rebalance_interval}",
         ]
 
-    if new_action == "HOLD" and mode in {"compound", "hybrid"} and growth_momentum >= 0.62 and safety_composite >= 0.45:
+    if new_action == "HOLD" and mode in {"compound", "hybrid"} and growth_momentum >= (0.56 if (drip_active * drip_conf) >= 0.30 else 0.62) and safety_composite >= 0.45:
         new_action, new_score = _force_action_score("BUY", new_score, threshold)
         new_reasons = new_reasons + [
             f"dividend_growth_accumulate growth_momentum={growth_momentum:.3f}",
             f"dividend_safety={safety_composite:.3f}",
+            f"dividend_drip_active={drip_active:.3f}",
         ]
 
     out_features = {
@@ -5211,11 +7012,22 @@ def _update_dividend_compound_metrics(
 
     quality = _clamp01(float(features.get("dividend_quality_score_norm", 0.0) or 0.0))
     enabled = mode in {"compound", "hybrid"} and quality >= 0.20
+    drip_active = _clamp01(float(features.get("dividend_drip_active_norm", 0.0) or 0.0))
+    drip_recent = _clamp01(float(features.get("dividend_drip_recent_reinvest_norm", 0.0) or 0.0))
+    drip_cash_only = _clamp01(float(features.get("dividend_drip_cash_only_norm", 0.0) or 0.0))
+    drip_share_credit = _clamp01(float(features.get("dividend_drip_share_credit_norm", 0.0) or 0.0))
+    drip_conf = _clamp01(float(features.get("dividend_drip_confidence_norm", 0.0) or 0.0))
 
     if enabled:
         periods_per_year = max(float(os.getenv("DIVIDEND_COMPOUND_PERIODS_PER_YEAR", "98280")), 390.0)
         annual_yield = _clamp01(float(features.get("dividend_yield_norm", 0.0) or 0.0)) * 0.12
-        dividend_carry = annual_yield / periods_per_year
+        drip_effective_strength = _clamp01(
+            (0.45 * drip_active)
+            + (0.25 * drip_recent)
+            + (0.15 * drip_share_credit)
+            + (0.15 * drip_conf)
+        )
+        dividend_carry = (annual_yield / periods_per_year) * _clamp01(0.30 + (0.70 * drip_effective_strength) - (0.25 * drip_cash_only))
         step_return = max(min(float(symbol_return_1m) + dividend_carry, 0.20), -0.20)
 
         equity = max(float(row.get("equity", 1.0) or 1.0) * (1.0 + step_return), 0.05)
@@ -5681,6 +7493,13 @@ def _apply_day_strategy_overlay(
     spread_bps = max(float(features.get("spread_bps", 0.0) or 0.0), 0.0)
     bid = max(float(features.get("bid_size", 0.0) or 0.0), 0.0)
     ask = max(float(features.get("ask_size", 0.0) or 0.0), 0.0)
+    micro_premarket = _clamp01(float(features.get("market_micro_premarket_pressure_norm", 0.0) or 0.0))
+    micro_power_hour = _clamp01(float(features.get("market_micro_power_hour_pressure_norm", 0.0) or 0.0))
+    micro_range_expansion = _clamp01(float(features.get("market_micro_range_expansion_norm", 0.0) or 0.0))
+    options_stress = _clamp01(max(float(features.get("cboe_put_call_stress_norm", 0.0) or 0.0), float(features.get("cboe_vix_spot_norm", 0.0) or 0.0)))
+    funding_stress = _clamp01(float(features.get("sofr_funding_stress_norm", 0.0) or 0.0))
+    threshold_short = _clamp01(float(features.get("short_threshold_listed_norm", 0.0) or 0.0))
+    ftd_pressure = _clamp01(float(features.get("short_ftd_presence_norm", 0.0) or 0.0) * max(float(features.get("short_ftd_quantity_norm", 0.0) or 0.0), 0.6))
     regime_trend, regime_chop, regime_alignment = _trend_chop_regime_metrics(features)
 
     imbalance = (bid - ask) / max((bid + ask), 1e-8)
@@ -5688,10 +7507,10 @@ def _apply_day_strategy_overlay(
     depth_ref = max(float(os.getenv("DAY_LIQUIDITY_DEPTH_REF", "1800") or 1800.0), 100.0)
     depth_norm = _clamp01((bid + ask) / depth_ref)
 
-    auction_signal = _clamp01(open_norm * ((0.40 * _clamp01(abs(mom) / 0.01)) + (0.35 * _clamp01(abs(imbalance))) + (0.25 * _clamp01(abs(pct) / 0.01))))
-    execution_cost_risk = _clamp01((0.70 * _clamp01(spread_bps / max_spread)) + (0.30 * _clamp01(vol / 0.05)))
-    liquidity_vacuum_risk = _clamp01(max(_clamp01((spread_bps - 18.0) / 24.0), 1.0 - depth_norm))
-    halt_resume_risk = _clamp01(max(execution_cost_risk, _clamp01(abs(pct) / 0.03), _clamp01(vol / 0.05)))
+    auction_signal = _clamp01(open_norm * ((0.34 * _clamp01(abs(mom) / 0.01)) + (0.28 * _clamp01(abs(imbalance))) + (0.20 * _clamp01(abs(pct) / 0.01)) + (0.18 * max(micro_premarket, micro_range_expansion))))
+    execution_cost_risk = _clamp01((0.48 * _clamp01(spread_bps / max_spread)) + (0.17 * _clamp01(vol / 0.05)) + (0.20 * micro_range_expansion) + (0.10 * options_stress) + (0.05 * funding_stress))
+    liquidity_vacuum_risk = _clamp01(max(_clamp01((spread_bps - 18.0) / 24.0), 1.0 - depth_norm, 0.85 * micro_range_expansion, 0.75 * options_stress, 0.70 * threshold_short, 0.70 * ftd_pressure))
+    halt_resume_risk = _clamp01(max(execution_cost_risk, _clamp01(abs(pct) / 0.03), _clamp01(vol / 0.05), 0.90 * micro_range_expansion, 0.85 * options_stress, 0.80 * threshold_short, 0.75 * ftd_pressure, 0.65 * funding_stress))
 
     halt_cooldown_s = max(int(os.getenv("DAY_HALT_RESUME_COOLDOWN_SECONDS", "180") or 180), 30)
     halt_trigger = _clamp01(float(os.getenv("DAY_HALT_TRIGGER_NORM", "0.90") or 0.90))
@@ -5735,11 +7554,11 @@ def _apply_day_strategy_overlay(
         if direct in {"BUY", "SELL"}:
             new_action, new_score = _force_action_score(direct, new_score, threshold)
             new_reasons = new_reasons + [f"day_regime_trend_bias trend={regime_trend:.3f} align={regime_alignment:.3f}"]
-    elif new_action == "HOLD" and power_norm >= 0.55 and abs(mom) >= 0.003 and execution_cost_risk < 0.65 and regime_trend >= 0.58:
+    elif new_action == "HOLD" and power_norm >= 0.55 and max(abs(mom) >= 0.003, micro_power_hour >= 0.62) and execution_cost_risk < 0.65 and regime_trend >= 0.58:
         direct = _directional_action_from_value(mom if regime_alignment >= 0.45 else pct)
         if direct in {"BUY", "SELL"}:
             new_action, new_score = _force_action_score(direct, new_score, threshold)
-            new_reasons = new_reasons + [f"day_power_hour_trend mom={mom:+.4f} trend={regime_trend:.3f}"]
+            new_reasons = new_reasons + [f"day_power_hour_trend mom={mom:+.4f} trend={regime_trend:.3f} micro_power={micro_power_hour:.3f}"]
 
     out_features = {
         "day_opening_auction_signal_norm": auction_signal,
@@ -5776,14 +7595,26 @@ def _apply_swing_strategy_overlay(
     news_shock = _clamp01(float(features.get("news_shock_rate", 0.0) or 0.0))
     event_prox = _clamp01(float(features.get("calendar_event_proximity_norm", 0.0) or 0.0))
     high_impact = _clamp01(float(features.get("calendar_high_impact_24h_norm", 0.0) or 0.0))
+    sec_earnings = _clamp01(float(features.get("sec_earnings_7d_norm", 0.0) or 0.0))
+    sec_guidance = _clamp01(float(features.get("sec_guidance_7d_norm", 0.0) or 0.0))
+    sec_regulatory = _clamp01(float(features.get("sec_regulatory_7d_norm", 0.0) or 0.0))
+    sec_recent = _clamp01(float(features.get("sec_recent_proximity_norm", 0.0) or 0.0))
+    threshold_short = _clamp01(float(features.get("short_threshold_listed_norm", 0.0) or 0.0))
+    ftd_pressure = _clamp01(float(features.get("short_ftd_presence_norm", 0.0) or 0.0) * max(float(features.get("short_ftd_quantity_norm", 0.0) or 0.0), 0.6))
+    options_stress = _clamp01(max(float(features.get("cboe_put_call_stress_norm", 0.0) or 0.0), float(features.get("cboe_vix_spot_norm", 0.0) or 0.0)))
+    funding_stress = _clamp01(float(features.get("sofr_funding_stress_norm", 0.0) or 0.0))
+    cot_risk_on = _clamp11((float(features.get("cot_risk_on_norm", 0.5) or 0.5) - 0.5) * 2.0)
+    micro_gap_cont = _clamp01(float(features.get("market_micro_gap_continuation_norm", 0.0) or 0.0))
+    micro_reversal = _clamp01(float(features.get("market_micro_reversal_risk_norm", 0.0) or 0.0))
+    micro_trend_persistence = _clamp01(float(features.get("market_micro_trend_persistence_norm", 0.0) or 0.0))
     regime_trend, regime_chop, regime_alignment = _trend_chop_regime_metrics(features)
 
     drift_strength = max(abs(news_sent), abs(mom), abs(pct))
-    post_earnings_drift = _clamp01(((0.55 * max(news_shock, event_prox)) + (0.45 * high_impact)) * _clamp01(drift_strength / 0.02))
+    post_earnings_drift = _clamp01(((0.38 * max(news_shock, event_prox)) + (0.22 * high_impact) + (0.14 * micro_trend_persistence) + (0.16 * max(sec_earnings, sec_guidance)) + (0.10 * sec_recent)) * _clamp01(drift_strength / 0.02))
 
     gap_strength = _clamp01(abs(pct) / 0.02)
-    continuation_norm = _clamp01(gap_strength if (pct * mom) > 0 else 0.0)
-    gap_fade_norm = _clamp01(gap_strength if (pct * mom) < 0 else 0.0)
+    continuation_norm = _clamp01(max(gap_strength if (pct * mom) > 0 else 0.0, micro_gap_cont, 0.45 * max(cot_risk_on, 0.0), 0.25 * sec_recent))
+    gap_fade_norm = _clamp01(max(gap_strength if (pct * mom) < 0 else 0.0, micro_reversal, 0.55 * sec_regulatory, 0.35 * options_stress, 0.30 * ftd_pressure, 0.25 * funding_stress))
 
     squeeze_max_vol = max(float(os.getenv("SWING_SQUEEZE_VOL_MAX", "0.012") or 0.012), 0.003)
     squeeze_tightness = _clamp01((squeeze_max_vol - vol) / squeeze_max_vol)
@@ -5793,7 +7624,7 @@ def _apply_swing_strategy_overlay(
     if abs(bench) <= 1e-8:
         bench = _ctx_pct_feature(features, "VOO")
     rel = pct - bench
-    sector_rs = _clamp01(0.5 + (rel * 25.0))
+    sector_rs = _clamp01(0.5 + (rel * 25.0) + (0.08 * cot_risk_on))
 
     ema_map = state.setdefault("weekly_trend_ema_by_symbol", {}) if isinstance(state, dict) else {}
     prev_ema = float(ema_map.get(symbol.upper(), 0.0) or 0.0)
@@ -5831,9 +7662,18 @@ def _apply_swing_strategy_overlay(
     if new_action in {"BUY", "SELL"} and regime_chop >= 0.70 and continuation_norm < 0.65 and squeeze_breakout < 0.60:
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"swing_regime_chop_guard chop={regime_chop:.3f} trend={regime_trend:.3f}"]
+    if new_action == "BUY" and max(sec_regulatory, funding_stress, options_stress) >= 0.76 and continuation_norm < 0.72:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"swing_risk_context_guard reg={sec_regulatory:.3f} funding={funding_stress:.3f} options={options_stress:.3f}"]
     if new_action == "BUY" and (gap_fade_norm >= 0.74) and (weekly_confirm <= 0.45):
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"swing_gap_fade_risk={gap_fade_norm:.3f}"]
+    if new_action == "BUY" and micro_reversal >= 0.72 and continuation_norm < 0.68:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"swing_micro_reversal_risk={micro_reversal:.3f}"]
+    if new_action == "BUY" and max(threshold_short, ftd_pressure) >= 0.75 and news_sent <= 0.0 and options_stress >= 0.72:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"swing_threshold_short_guard stress={options_stress:.3f} ftd={ftd_pressure:.3f}"]
     if new_action == "BUY" and sector_rs < 0.40:
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"swing_sector_rs_weak={sector_rs:.3f}"]
@@ -6608,6 +8448,152 @@ def _release_order_intent(state: Dict[str, Any], key: str) -> bool:
     return False
 
 
+def _load_json_dict(path: Path) -> Dict[str, Any]:
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            obj = json.load(fh)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+    return {}
+
+
+def _broker_truth_shared_snapshot_cache_path(project_root: str, broker: str) -> Path:
+    return Path(project_root) / "governance" / "health" / f"broker_truth_shared_snapshot_{broker}_latest.json"
+
+
+def _broker_truth_shared_snapshot_lock_path(project_root: str, broker: str) -> Path:
+    return Path(project_root) / "governance" / "health" / f"broker_truth_shared_snapshot_{broker}.lock"
+
+
+def _load_broker_truth_shared_snapshot(
+    *,
+    project_root: str,
+    broker: str,
+    max_age_seconds: float,
+) -> Optional[Dict[str, Any]]:
+    cache_path = _broker_truth_shared_snapshot_cache_path(project_root, broker)
+    cache_payload = _load_json_dict(cache_path)
+    if not cache_payload:
+        return None
+    if str(cache_payload.get("broker", "") or "").strip().lower() != str(broker).strip().lower():
+        return None
+    fetched = cache_payload.get("fetched")
+    if not isinstance(fetched, dict):
+        return None
+    cache_ts = _parse_external_context_ts(cache_payload.get("timestamp_utc"))
+    if cache_ts <= 0.0:
+        return None
+    age_seconds = max(time.time() - cache_ts, 0.0)
+    if age_seconds > max(max_age_seconds, 0.0):
+        return None
+    out = dict(fetched)
+    out["_shared_snapshot_cache_hit"] = True
+    out["_shared_snapshot_cache_age_seconds"] = float(age_seconds)
+    out["_shared_snapshot_cache_owner_pid"] = int(cache_payload.get("owner_pid", 0) or 0)
+    return out
+
+
+def _write_broker_truth_shared_snapshot(
+    *,
+    project_root: str,
+    broker: str,
+    fetched: Dict[str, Any],
+) -> None:
+    cache_path = _broker_truth_shared_snapshot_cache_path(project_root, broker)
+    safe_write_json_atomic(
+        str(cache_path),
+        {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "broker": str(broker).strip().lower(),
+            "owner_pid": int(os.getpid()),
+            "fetched": dict(fetched or {}),
+        },
+        project_root=project_root,
+        source="run_shadow_training_loop.broker_truth_shared_snapshot",
+    )
+
+
+def _shared_broker_truth_accounts_payload(
+    *,
+    trader: BaseTrader,
+    broker: str,
+) -> Dict[str, Any]:
+    if str(broker).strip().lower() != "schwab":
+        return trader._live_fetch_accounts_payload()
+
+    cache_max_age_seconds = max(
+        float(os.getenv("BROKER_TRUTH_SHARED_SNAPSHOT_MAX_AGE_SECONDS", "15") or 15.0),
+        0.5,
+    )
+    lock_wait_seconds = max(
+        float(os.getenv("BROKER_TRUTH_SHARED_SNAPSHOT_LOCK_WAIT_SECONDS", "1.25") or 1.25),
+        0.0,
+    )
+
+    cached = _load_broker_truth_shared_snapshot(
+        project_root=PROJECT_ROOT,
+        broker=broker,
+        max_age_seconds=cache_max_age_seconds,
+    )
+    if cached is not None:
+        return cached
+
+    lock_path = _broker_truth_shared_snapshot_lock_path(PROJECT_ROOT, broker)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.time() + lock_wait_seconds
+
+    with lock_path.open("a+", encoding="utf-8") as lock_fh:
+        acquired = False
+        while True:
+            try:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except BlockingIOError:
+                cached = _load_broker_truth_shared_snapshot(
+                    project_root=PROJECT_ROOT,
+                    broker=broker,
+                    max_age_seconds=cache_max_age_seconds,
+                )
+                if cached is not None:
+                    return cached
+                if time.time() >= deadline:
+                    break
+                time.sleep(0.05)
+
+        if acquired:
+            try:
+                cached = _load_broker_truth_shared_snapshot(
+                    project_root=PROJECT_ROOT,
+                    broker=broker,
+                    max_age_seconds=cache_max_age_seconds,
+                )
+                if cached is not None:
+                    return cached
+                fetched = trader._live_fetch_accounts_payload()
+                _write_broker_truth_shared_snapshot(
+                    project_root=PROJECT_ROOT,
+                    broker=broker,
+                    fetched=fetched,
+                )
+                return fetched
+            finally:
+                try:
+                    fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass
+
+    fetched = trader._live_fetch_accounts_payload()
+    _write_broker_truth_shared_snapshot(
+        project_root=PROJECT_ROOT,
+        broker=broker,
+        fetched=fetched,
+    )
+    return fetched
+
+
 def _fetch_broker_truth_snapshot(
     *,
     trader: BaseTrader,
@@ -6648,15 +8634,26 @@ def _fetch_broker_truth_snapshot(
         return out
 
     try:
-        fetched = trader._live_fetch_accounts_payload()
+        fetched = _shared_broker_truth_accounts_payload(trader=trader, broker=broker)
     except Exception as exc:
         fetched = {"ok": False, "error": f"{type(exc).__name__}:{exc}"}
 
     if not bool(fetched.get("ok", False)):
+        soft_failure = bool(fetched.get("soft_failure", False))
         out["ok"] = False
-        out["status"] = "error"
+        out["status"] = "transient_error" if soft_failure else "error"
         out["source"] = "schwab_accounts_snapshot"
         out["error"] = str(fetched.get("error", "accounts_fetch_failed"))
+        shared_snapshot_cache_hit = bool(fetched.get("_shared_snapshot_cache_hit", False))
+        if shared_snapshot_cache_hit:
+            out["shared_snapshot_cache_hit"] = True
+            out["shared_snapshot_cache_age_seconds"] = float(fetched.get("_shared_snapshot_cache_age_seconds", 0.0) or 0.0)
+        if soft_failure:
+            out["soft_failure"] = True
+            out["soft_fail_streak"] = int(fetched.get("soft_fail_streak", 0) or 0)
+            out["soft_fail_grace"] = int(fetched.get("soft_fail_grace", 0) or 0)
+            if shared_snapshot_cache_hit and int(fetched.get("_shared_snapshot_cache_owner_pid", 0) or 0) != int(os.getpid()):
+                out["alert_suppressed"] = True
         return out
 
     payload = fetched.get("payload")
@@ -6713,6 +8710,9 @@ def _fetch_broker_truth_snapshot(
             "status": "ok" if len(mismatch_examples) == 0 else "mismatch",
         }
     )
+    if bool(fetched.get("_shared_snapshot_cache_hit", False)):
+        out["shared_snapshot_cache_hit"] = True
+        out["shared_snapshot_cache_age_seconds"] = float(fetched.get("_shared_snapshot_cache_age_seconds", 0.0) or 0.0)
     return out
 
 
@@ -6828,7 +8828,12 @@ def _ingress_log_path(project_root: str, broker: str) -> str:
 
 
 def _ingress_state_path(project_root: str, broker: str) -> str:
-    return ingress_state_path(project_root, _path_context(broker=broker))
+    base = ingress_state_path(project_root, _path_context(broker=broker))
+    instance = _shadow_ingress_instance()
+    if not instance:
+        return base
+    root, ext = os.path.splitext(base)
+    return f"{root}_{instance}{ext}"
 
 
 def _log_gate_event(
@@ -7298,15 +9303,47 @@ def _mlx_retrain_lock_busy(project_root: str) -> tuple[bool, str]:
         return False, lock_path
 
 
-def _auto_retrain_memory_ok(min_free_pct: float, max_swap_gb: float) -> tuple[bool, Dict[str, float], str]:
+def _auto_retrain_memory_ok(
+    min_free_pct: float,
+    max_swap_gb: float,
+    *,
+    high_free_pct_swap_bypass: float | None = None,
+    soft_max_swap_gb: float | None = None,
+) -> tuple[bool, Dict[str, float], str]:
     snap = _memory_guard_snapshot()
 
     free_pct = snap.get("free_pct")
-    if free_pct is not None and free_pct < min_free_pct:
-        return False, snap, f"free_pct_below_threshold free_pct={free_pct:.1f} min_free_pct={min_free_pct:.1f}"
+    available_pct = snap.get("available_pct")
+    headroom_candidates = [float(v) for v in (free_pct, available_pct) if v is not None]
+    headroom_pct = max(headroom_candidates) if headroom_candidates else None
+    if headroom_pct is not None:
+        snap["headroom_pct"] = float(headroom_pct)
+    if headroom_pct is not None and headroom_pct < min_free_pct:
+        return False, snap, (
+            "headroom_pct_below_threshold "
+            f"headroom_pct={headroom_pct:.1f} "
+            f"min_free_pct={min_free_pct:.1f}"
+        )
 
     swap_used_gb = snap.get("swap_used_gb")
     if swap_used_gb is not None and swap_used_gb > max_swap_gb:
+        bypass_free_pct = float(high_free_pct_swap_bypass if high_free_pct_swap_bypass is not None else 0.0)
+        soft_swap_limit = float(soft_max_swap_gb if soft_max_swap_gb is not None else max_swap_gb)
+        if (
+            headroom_pct is not None
+            and headroom_pct >= bypass_free_pct
+            and soft_swap_limit > max_swap_gb
+            and swap_used_gb <= soft_swap_limit
+        ):
+            snap["swap_guard_bypassed"] = 1.0
+            snap["swap_guard_soft_max_gb"] = float(soft_swap_limit)
+            snap["swap_guard_bypass_free_pct"] = float(bypass_free_pct)
+            return True, snap, (
+                "swap_soft_bypass "
+                f"swap_used_gb={swap_used_gb:.2f} "
+                f"soft_max_swap_gb={soft_swap_limit:.2f} "
+                f"headroom_pct={headroom_pct:.1f}"
+            )
         return False, snap, f"swap_above_threshold swap_used_gb={swap_used_gb:.2f} max_swap_gb={max_swap_gb:.2f}"
 
     return True, snap, "ok"
@@ -7319,7 +9356,7 @@ def _spawn_auto_retrain(
     sample_recommendations: List[Dict[str, Any]],
     broker: Optional[str] = None,
 ) -> subprocess.Popen:
-    venv_py = os.path.join(project_root, ".venv312", "bin", "python")
+    venv_py = str(resolve_runtime_python(project_root))
     retrain_script = os.path.join(project_root, "scripts", "weekly_retrain.py")
     cmd = [venv_py, retrain_script, "--continue-on-error"]
 
@@ -7376,7 +9413,7 @@ def run_loop(
 
     api_key = os.getenv("SCHWAB_API_KEY", "YOUR_KEY_HERE")
     secret = os.getenv("SCHWAB_SECRET", "YOUR_SECRET_HERE")
-    redirect = os.getenv("SCHWAB_REDIRECT", "https://127.0.0.1:8080")
+    redirect = os.getenv("SCHWAB_REDIRECT", "https://127.0.0.1:8182")
     covered_call_shares = int(os.getenv("COVERED_CALL_SHARES", "0"))
 
     if broker == "schwab" and (not simulate) and (api_key == "YOUR_KEY_HERE" or secret == "YOUR_SECRET_HERE"):
@@ -7486,6 +9523,18 @@ def run_loop(
     memory_auto_throttle_enabled = os.getenv('MEMORY_AUTO_THROTTLE_ENABLED', '1').strip() == '1'
     memory_throttle_min_free_pct = float(os.getenv('MEMORY_THROTTLE_MIN_FREE_PCT', '12'))
     memory_throttle_max_swap_gb = float(os.getenv('MEMORY_THROTTLE_MAX_SWAP_GB', '2.8'))
+    memory_throttle_swap_soft_max_gb = float(
+        os.getenv(
+            'MEMORY_THROTTLE_SWAP_SOFT_MAX_GB',
+            str(max(memory_throttle_max_swap_gb, float(os.getenv("AUTO_RETRAIN_SWAP_SOFT_MAX_GB", "24")))),
+        )
+    )
+    memory_throttle_swap_ignore_if_free_pct_at_least = float(
+        os.getenv(
+            'MEMORY_THROTTLE_SWAP_IGNORE_IF_FREE_PCT_AT_LEAST',
+            os.getenv("AUTO_RETRAIN_SWAP_IGNORE_IF_FREE_PCT_AT_LEAST", "85"),
+        )
+    )
     memory_throttle_check_every_iters = max(int(os.getenv('MEMORY_THROTTLE_CHECK_EVERY_ITERS', '2')), 1)
     memory_throttle_step_up_seconds = max(int(os.getenv('MEMORY_THROTTLE_STEP_UP_SECONDS', '5')), 1)
     memory_throttle_recover_streak_needed = max(int(os.getenv('MEMORY_THROTTLE_RECOVER_STREAK', '3')), 1)
@@ -7584,10 +9633,38 @@ def run_loop(
     calendar_cache: Dict[str, Any] = {"ts": 0.0, "features": default_calendar_features()}
     calendar_method_state: Dict[str, Any] = {"disabled": False, "warned": False, "method": "", "source": ""}
     external_context_cache_ttl_seconds = max(float(os.getenv("EXTERNAL_CONTEXT_CACHE_TTL_SECONDS", "90")), 15.0)
+    market_crypto_corr_auto_refresh_enabled = os.getenv("MARKET_CRYPTO_CORRELATION_AUTO_REFRESH_ENABLED", "0").strip() == "1"
+    market_crypto_corr_max_stale_seconds = max(
+        float(os.getenv("MARKET_CRYPTO_CORRELATION_MAX_STALE_SECONDS", "1200")),
+        external_context_cache_ttl_seconds,
+    )
+    market_crypto_corr_refresh_cooldown_seconds = max(
+        float(os.getenv("MARKET_CRYPTO_CORRELATION_REFRESH_COOLDOWN_SECONDS", "300")),
+        30.0,
+    )
+    dividend_drip_auto_refresh_enabled = os.getenv("DIVIDEND_DRIP_AUTO_REFRESH_ENABLED", "1").strip() == "1"
+    dividend_drip_max_stale_seconds = max(
+        float(os.getenv("DIVIDEND_DRIP_MAX_STALE_SECONDS", "21600")),
+        external_context_cache_ttl_seconds,
+    )
+    dividend_drip_refresh_cooldown_seconds = max(
+        float(os.getenv("DIVIDEND_DRIP_REFRESH_COOLDOWN_SECONDS", "1800")),
+        60.0,
+    )
+    fx_market_context_auto_refresh_enabled = os.getenv("FX_MARKET_CONTEXT_AUTO_REFRESH_ENABLED", "1").strip() == "1"
+    fx_market_context_max_stale_seconds = max(
+        float(os.getenv("FX_MARKET_CONTEXT_MAX_STALE_SECONDS", "1800")),
+        external_context_cache_ttl_seconds,
+    )
+    fx_market_context_refresh_cooldown_seconds = max(
+        float(os.getenv("FX_MARKET_CONTEXT_REFRESH_COOLDOWN_SECONDS", "300")),
+        30.0,
+    )
     external_context_cache: Dict[str, Dict[str, Any]] = {
         "market_breadth": {"ts": 0.0, "payload": {}},
         "bond_reference": {"ts": 0.0, "payload": {}},
     }
+    external_context_refresh_state: Dict[str, Dict[str, Any]] = {}
 
     te_calendar_enabled = (
         calendar_context_enabled
@@ -7611,9 +9688,9 @@ def run_loop(
         else:
             te_auth_token = "guest:guest"
 
-    # Keep retrain-critical logs while reducing high-volume layer noise by default.
-    log_sub_bot_decisions = os.getenv("LOG_SUB_BOT_DECISIONS", "0").strip() == "1"
-    log_master_variant_decisions = os.getenv("LOG_MASTER_VARIANT_DECISIONS", "0").strip() == "1"
+    # Default to full decision logging so paper-only sleeves keep a durable audit trail.
+    log_sub_bot_decisions = os.getenv("LOG_SUB_BOT_DECISIONS", "1").strip() == "1"
+    log_master_variant_decisions = os.getenv("LOG_MASTER_VARIANT_DECISIONS", "1").strip() == "1"
     log_grand_master_decisions = os.getenv("LOG_GRAND_MASTER_DECISIONS", "1").strip() == "1"
     log_options_master_decisions = os.getenv("LOG_OPTIONS_MASTER_DECISIONS", "1").strip() == "1"
     log_futures_master_decisions = os.getenv("LOG_FUTURES_MASTER_DECISIONS", "1").strip() == "1"
@@ -7642,6 +9719,23 @@ def run_loop(
     options_specialist_weight = max(float(os.getenv("OPTIONS_SPECIALIST_WEIGHT", default_options_specialist_weight)), 0.001)
     futures_specialist_weight = max(float(os.getenv("FUTURES_SPECIALIST_WEIGHT", default_futures_specialist_weight)), 0.001)
     specialist_min_acc = float(os.getenv("DERIVATIVES_SPECIALIST_MIN_ACC", "0.58" if derivatives_super_mode else "0.54"))
+    always_on_infra_observers_enabled = os.getenv("ALWAYS_ON_INFRA_OBSERVERS_ENABLED", "1").strip() == "1"
+    infra_observers_raw = os.getenv(
+        "ALWAYS_ON_INFRA_OBSERVER_BOTS",
+        ",".join(
+            [
+                "infra_meta_ranker_observer",
+                "infra_confidence_calibrator_observer",
+                "infra_feed_health_arbiter_observer",
+                "infra_macro_event_arbiter_observer",
+                "infra_execution_feasibility_sentinel_observer",
+                "infra_cross_venue_divergence_sentinel_observer",
+            ]
+        ),
+    ).strip()
+    infra_observer_ids = [x.strip() for x in infra_observers_raw.split(",") if x.strip()]
+    infra_observer_weight = max(float(os.getenv("ALWAYS_ON_INFRA_OBSERVER_WEIGHT", "0.012")), 0.001)
+    infra_observer_min_acc = float(os.getenv("ALWAYS_ON_INFRA_OBSERVER_MIN_ACC", "0.56"))
 
     def _build_virtual_specialists(ids: List[str], role: str, weight: float) -> List[SubBot]:
         out: List[SubBot] = []
@@ -7659,6 +9753,22 @@ def run_loop(
             )
         return out
 
+    def _build_virtual_infrastructure_observers(ids: List[str], weight: float) -> List[SubBot]:
+        out: List[SubBot] = []
+        for bot_id in ids:
+            out.append(
+                SubBot(
+                    bot_id=str(bot_id),
+                    weight=float(weight),
+                    active=True,
+                    reason="virtual_infrastructure_observer",
+                    test_accuracy=infra_observer_min_acc,
+                    promoted=False,
+                    bot_role="infrastructure_sub_bot",
+                )
+            )
+        return out
+
 
     paper_mirror_enabled = os.getenv("TOP_BOT_PAPER_TRADING_ENABLED", "0").strip() == "1"
     paper_mirror_top_n = max(int(os.getenv("TOP_BOT_PAPER_TRADING_TOP_N", "2")), 0)
@@ -7667,25 +9777,65 @@ def run_loop(
     paper_mirror_profiles = {
         x.strip().lower() for x in paper_mirror_profiles_raw.split(",") if x.strip()
     }
+    paper_mirror_options_enabled = os.getenv(
+        "TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED",
+        "1" if paper_mirror_enabled else "0",
+    ).strip() == "1"
+    paper_mirror_options_top_n = max(int(os.getenv("TOP_BOT_PAPER_TRADING_OPTIONS_TOP_N", "2")), 0)
+    paper_mirror_options_min_accuracy = float(
+        os.getenv(
+            "TOP_BOT_PAPER_TRADING_OPTIONS_MIN_ACC",
+            os.getenv("TOP_BOT_PAPER_TRADING_MIN_ACC", "0.0"),
+        )
+    )
+    paper_mirror_options_profiles_raw = os.getenv(
+        "TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES",
+        paper_mirror_profiles_raw,
+    ).strip()
+    paper_mirror_options_profiles = {
+        x.strip().lower() for x in paper_mirror_options_profiles_raw.split(",") if x.strip()
+    }
     current_profile = (_shadow_profile_name() or "default").strip().lower()
     paper_profile_ok = (not paper_mirror_profiles) or (current_profile in paper_mirror_profiles)
+    paper_options_profile_ok = (not paper_mirror_options_profiles) or (current_profile in paper_mirror_options_profiles)
     paper_selected_ids: set[str] = set()
+    paper_selected_option_ids: set[str] = set()
+    execution_lane_enabled = os.getenv("EXECUTION_LANE_ENABLED", "1").strip() == "1"
+    master_execution_lane_enabled = execution_lane_enabled and (
+        os.getenv("MASTER_EXECUTION_LANE_ENABLED", "1").strip() == "1"
+    )
+    inline_paper_execution_enabled = os.getenv("INLINE_PAPER_EXECUTION_ENABLED", "0").strip() == "1"
 
     if paper_mirror_enabled and (not paper_profile_ok):
         print(
             f"[PaperMirror] disabled profile={current_profile or 'default'} "
             f"allowed={sorted(paper_mirror_profiles)}"
         )
+    if paper_mirror_options_enabled and (not paper_options_profile_ok):
+        print(
+            f"[PaperMirrorOptions] disabled profile={current_profile or 'default'} "
+            f"allowed={sorted(paper_mirror_options_profiles)}"
+        )
 
     paper_trader: Optional[BaseTrader] = None
-    if paper_mirror_enabled and paper_profile_ok and paper_mirror_top_n > 0:
+    paper_core_requested = paper_mirror_enabled and paper_profile_ok and paper_mirror_top_n > 0
+    paper_options_requested = paper_mirror_options_enabled and paper_options_profile_ok and paper_mirror_options_top_n > 0
+    if inline_paper_execution_enabled and (paper_core_requested or paper_options_requested):
         paper_trader = BaseTrader(api_key, secret, redirect, mode="paper")
         paper_trader.execution_enabled = True
         paper_trader.market_data_only = False
         print(
-            f"[PaperMirror] enabled top_n={paper_mirror_top_n} "
-            f"min_acc={paper_mirror_min_accuracy:.3f} "
+            f"[PaperMirror] enabled core_top_n={paper_mirror_top_n} "
+            f"core_min_acc={paper_mirror_min_accuracy:.3f} "
+            f"options_top_n={paper_mirror_options_top_n} "
+            f"options_min_acc={paper_mirror_options_min_accuracy:.3f} "
             f"profile={current_profile or 'default'}"
+        )
+    elif execution_lane_enabled and (paper_core_requested or paper_options_requested or master_execution_lane_enabled):
+        print(
+            f"[ExecutionLane] external_routing_enabled inline_paper={int(inline_paper_execution_enabled)} "
+            f"paper_core_requested={int(paper_core_requested)} paper_options_requested={int(paper_options_requested)} "
+            f"master_enabled={int(master_execution_lane_enabled)} profile={current_profile or 'default'}"
         )
 
     if resume_from_checkpoint:
@@ -7695,11 +9845,29 @@ def run_loop(
             iter_count = cp_iter
             print(f"[Checkpoint] resumed iter_count={iter_count}")
 
-    # Keep equities market-hours gated by default, but run crypto 24/7 by default.
-    default_session_gate = '0' if broker == 'coinbase' else '1'
-    default_blackout_gate = '0' if broker == 'coinbase' else '1'
-    session_gate_enabled = os.getenv('SESSION_GATE_ENABLED', default_session_gate).strip() == '1'
-    event_blackout_enabled = os.getenv('EVENT_LOCK_ENABLED', os.getenv('EVENT_BLACKOUT_ENABLED', default_blackout_gate)).strip() == '1'
+    # Keep equities market-hours gated by default, but run crypto and real-time FX 24/5 by default.
+    is_fx_profile = current_profile == "fx"
+    default_session_gate = '0' if (broker == 'coinbase' or is_fx_profile) else '1'
+    default_blackout_gate = '0' if (broker == 'coinbase' or is_fx_profile) else '1'
+    session_gate_setting = (
+        os.getenv('FX_SESSION_GATE_ENABLED', '').strip()
+        if is_fx_profile
+        else ''
+    )
+    if not session_gate_setting:
+        session_gate_setting = os.getenv('SESSION_GATE_ENABLED', default_session_gate).strip()
+    blackout_setting = (
+        os.getenv('FX_EVENT_LOCK_ENABLED', os.getenv('FX_EVENT_BLACKOUT_ENABLED', '')).strip()
+        if is_fx_profile
+        else ''
+    )
+    if not blackout_setting:
+        blackout_setting = os.getenv(
+            'EVENT_LOCK_ENABLED',
+            os.getenv('EVENT_BLACKOUT_ENABLED', default_blackout_gate),
+        ).strip()
+    session_gate_enabled = session_gate_setting == '1'
+    event_blackout_enabled = blackout_setting == '1'
     feature_freshness_enabled = os.getenv('FEATURE_FRESHNESS_GUARD_ENABLED', '1').strip() == '1'
     feature_freshness_max_age_seconds = float(os.getenv('FEATURE_FRESHNESS_MAX_AGE_SECONDS', '12'))
     feature_freshness_required = [
@@ -7851,6 +10019,12 @@ def run_loop(
     memory_guard_enabled = os.getenv("AUTO_RETRAIN_MEMORY_GUARD", "1").strip() == "1"
     auto_retrain_min_free_pct = float(os.getenv("AUTO_RETRAIN_MIN_FREE_PCT", "20"))
     auto_retrain_max_swap_gb = float(os.getenv("AUTO_RETRAIN_MAX_SWAP_GB", "2.2"))
+    auto_retrain_swap_soft_max_gb = float(
+        os.getenv("AUTO_RETRAIN_SWAP_SOFT_MAX_GB", str(max(auto_retrain_max_swap_gb, 24.0)))
+    )
+    auto_retrain_swap_ignore_if_free_pct_at_least = float(
+        os.getenv("AUTO_RETRAIN_SWAP_IGNORE_IF_FREE_PCT_AT_LEAST", "85")
+    )
     auto_retrain_healthy_streak_needed = max(int(os.getenv("AUTO_RETRAIN_HEALTHY_STREAK", "6")), 1)
     auto_retrain_healthy_streak = 0
     overload_mode = False
@@ -8079,6 +10253,9 @@ def run_loop(
             "context_total": int(len(context_symbols)),
             "log_schema_version": max(int(os.getenv("LOG_SCHEMA_VERSION", "2")), 1),
         }
+        ingress_instance = _shadow_ingress_instance()
+        if ingress_instance:
+            ingress_state["ingress_instance"] = ingress_instance
         if pause_gate:
             ingress_state["pause_gate"] = pause_gate
         if pause_reason:
@@ -8099,6 +10276,8 @@ def run_loop(
             "iter_error_count": int(ingress_error_count),
             "iter_error_rate": round(float(ingress_error_rate), 6),
         }
+        if ingress_instance:
+            event_row["ingress_instance"] = ingress_instance
         if pause_gate:
             event_row["pause_gate"] = pause_gate
         if pause_reason:
@@ -8158,18 +10337,27 @@ def run_loop(
             )
 
             if not bool(broker_truth_state.get("ok", False)):
-                _emit_critical_alert(
-                    project_root=PROJECT_ROOT,
-                    broker=broker,
-                    event="broker_truth_reconcile",
-                    message=str(broker_truth_state.get("status", "broker_truth_failed")),
-                    details={
-                        "iter": int(iter_count),
-                        "mismatch_count": int(broker_truth_state.get("mismatch_count", 0) or 0),
-                        "source": str(broker_truth_state.get("source", "")),
-                    },
-                    severity="critical",
-                )
+                broker_truth_status = str(broker_truth_state.get("status", "broker_truth_failed") or "broker_truth_failed")
+                broker_truth_source = str(broker_truth_state.get("source", "") or "")
+                broker_truth_soft_failure = bool(broker_truth_state.get("soft_failure", False))
+                broker_truth_alert_suppressed = bool(broker_truth_state.get("alert_suppressed", False))
+                alert_severity = "warn" if broker_truth_soft_failure else "critical"
+                if not broker_truth_alert_suppressed:
+                    _emit_critical_alert(
+                        project_root=PROJECT_ROOT,
+                        broker=broker,
+                        event="broker_truth_reconcile",
+                        message=broker_truth_status,
+                        details={
+                            "iter": int(iter_count),
+                            "mismatch_count": int(broker_truth_state.get("mismatch_count", 0) or 0),
+                            "source": broker_truth_source,
+                            "soft_failure": broker_truth_soft_failure,
+                            "soft_fail_streak": int(broker_truth_state.get("soft_fail_streak", 0) or 0),
+                            "soft_fail_grace": int(broker_truth_state.get("soft_fail_grace", 0) or 0),
+                        },
+                        severity=alert_severity,
+                    )
                 if bool(broker_truth_state.get("mismatch_count", 0)):
                     print(
                         f"[BrokerTruth] mismatch count={int(broker_truth_state.get('mismatch_count', 0) or 0)} "
@@ -8222,6 +10410,13 @@ def run_loop(
 
         if session_gate_enabled:
             open_now, closed_reason = _in_market_window(now_et, session_start_hour, session_end_hour)
+            if (not open_now) and _fx_realtime_quotes_enabled():
+                forex_open_now, forex_reason = _in_forex_session_window(now_et)
+                if forex_open_now:
+                    open_now = True
+                    closed_reason = "forex_session_open_twelve_data"
+                else:
+                    closed_reason = forex_reason
             _log_gate("*", "session_gate", bool(open_now), reason=(closed_reason if not open_now else "open"), now_et=now_et.isoformat())
             if not open_now:
                 if closed_reason != last_closed_reason:
@@ -8286,6 +10481,7 @@ def run_loop(
 
         options_virtual_bots_template: List[SubBot] = []
         futures_virtual_bots_template: List[SubBot] = []
+        infra_virtual_bots_template: List[SubBot] = []
         if derivatives_specialists_enabled and (not _is_long_term_profile()):
             if broker == "schwab":
                 options_virtual_bots_template = _build_virtual_specialists(
@@ -8304,6 +10500,11 @@ def run_loop(
                     "futures_sub_bot",
                     futures_specialist_weight,
                 )
+        if always_on_infra_observers_enabled:
+            infra_virtual_bots_template = _build_virtual_infrastructure_observers(
+                infra_observer_ids,
+                infra_observer_weight,
+            )
 
         active_bots = list(registry_active_bots)
         if _is_long_term_profile():
@@ -8324,11 +10525,15 @@ def run_loop(
                 )
 
         if paper_trader is not None:
-            top_paper_bots = _top_paper_mirror_bots(
-                active_bots,
-                top_n=paper_mirror_top_n,
-                min_accuracy=paper_mirror_min_accuracy,
-            )
+            if paper_core_requested:
+                top_paper_bots = _top_paper_mirror_bots(
+                    active_bots,
+                    top_n=paper_mirror_top_n,
+                    min_accuracy=paper_mirror_min_accuracy,
+                    segment="core",
+                )
+            else:
+                top_paper_bots = []
             new_selected_ids = {b.bot_id for b in top_paper_bots}
             if new_selected_ids != paper_selected_ids:
                 paper_selected_ids = new_selected_ids
@@ -8337,6 +10542,23 @@ def run_loop(
                     for b in top_paper_bots
                 ) or "none"
                 print(f"[PaperMirror] selected={selected_text}")
+            if paper_options_requested:
+                top_paper_options_bots = _top_paper_mirror_bots(
+                    options_virtual_bots_template,
+                    top_n=paper_mirror_options_top_n,
+                    min_accuracy=paper_mirror_options_min_accuracy,
+                    segment="options",
+                )
+            else:
+                top_paper_options_bots = []
+            new_selected_option_ids = {b.bot_id for b in top_paper_options_bots}
+            if new_selected_option_ids != paper_selected_option_ids:
+                paper_selected_option_ids = new_selected_option_ids
+                selected_options_text = ",".join(
+                    f"{b.bot_id}:{float(b.test_accuracy or 0.0):.3f}"
+                    for b in top_paper_options_bots
+                ) or "none"
+                print(f"[PaperMirrorOptions] selected={selected_options_text}")
 
 
         fast_bots, slow_bots = _split_bot_tiers(active_bots)
@@ -8394,9 +10616,21 @@ def run_loop(
 
             endpoint = "simulated_market_snapshot"
             ingress_source = "simulate"
+            use_fx_realtime_quotes = (
+                (not simulate)
+                and broker == "schwab"
+                and (_shadow_profile_name() == "fx")
+                and str(os.getenv("FX_REALTIME_QUOTES_ENABLED", "1")).strip().lower() in {"1", "true", "yes", "on"}
+                and bool(str(os.getenv("TWELVE_DATA_API_KEY", "")).strip())
+                and bool(_fx_realtime_pair_symbol(sym))
+            )
             if not simulate:
-                endpoint = "schwab.market_snapshot" if broker == "schwab" else "coinbase.market_snapshot"
-                ingress_source = "api"
+                if use_fx_realtime_quotes:
+                    endpoint = "twelve_data.market_snapshot"
+                    ingress_source = "external_fx"
+                else:
+                    endpoint = "schwab.market_snapshot" if broker == "schwab" else "coinbase.market_snapshot"
+                    ingress_source = "api"
 
             started = time.perf_counter()
             try:
@@ -8404,7 +10638,9 @@ def run_loop(
                     snap = _market_snapshot_simulated(sim_prices[sym])
                     sim_prices[sym] = snap["last_price"]
                 else:
-                    if broker == "schwab":
+                    if use_fx_realtime_quotes:
+                        snap = _market_snapshot_from_twelve_data(sym)
+                    elif broker == "schwab":
                         snap = _market_snapshot_from_schwab(client, sym)
                     else:
                         snap = _market_snapshot_from_coinbase(client, sym)
@@ -8549,6 +10785,7 @@ def run_loop(
                 payload,
                 symbol=sym,
                 underlying_price=float(mkt.get("last_price", 0.0) or 0.0),
+                realized_vol=float(mkt.get("vol_30m", 0.0) or 0.0),
                 now_ts=now_s,
                 max_contracts=max(int(os.getenv("SCHWAB_OPTIONS_CHAIN_MAX_CONTRACTS", "900")), 100),
             )
@@ -8693,6 +10930,148 @@ def run_loop(
                 payload = cache_row.get("payload")
                 return dict(payload) if isinstance(payload, dict) else {}
             payload = load_latest_external_context(PROJECT_ROOT, token)
+            if token == "market_crypto_correlation" and market_crypto_corr_auto_refresh_enabled:
+                age_seconds: Optional[float] = None
+                if isinstance(payload, Mapping):
+                    ts_raw = payload.get("timestamp_utc")
+                    if ts_raw:
+                        try:
+                            ts_dt = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+                            if ts_dt.tzinfo is None:
+                                ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+                            age_seconds = max(now_s - ts_dt.astimezone(timezone.utc).timestamp(), 0.0)
+                        except Exception:
+                            age_seconds = None
+                if age_seconds is None or age_seconds >= market_crypto_corr_max_stale_seconds:
+                    refresh_row = external_context_refresh_state.setdefault(
+                        token,
+                        {"last_attempt_ts": 0.0, "proc": None},
+                    )
+                    refresh_proc = refresh_row.get("proc")
+                    if isinstance(refresh_proc, subprocess.Popen) and refresh_proc.poll() is not None:
+                        refresh_row["proc"] = None
+                    can_refresh = True
+                    if isinstance(refresh_row.get("proc"), subprocess.Popen):
+                        can_refresh = False
+                    elif (now_s - float(refresh_row.get("last_attempt_ts", 0.0) or 0.0)) < market_crypto_corr_refresh_cooldown_seconds:
+                        can_refresh = False
+                    if can_refresh:
+                        try:
+                            refresh_cmd = [
+                                str(resolve_runtime_python(PROJECT_ROOT)),
+                                os.path.join(PROJECT_ROOT, "scripts", "collect_market_crypto_correlation_context.py"),
+                                "--json",
+                            ]
+                            refresh_proc = subprocess.Popen(
+                                refresh_cmd,
+                                cwd=PROJECT_ROOT,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            refresh_row["proc"] = refresh_proc
+                            refresh_row["last_attempt_ts"] = now_s
+                            print(
+                                f"[ExternalContext] auto_refresh_started category={token} pid={refresh_proc.pid} stale_seconds={age_seconds if age_seconds is not None else 'missing'}"
+                            )
+                        except Exception as exc:
+                            refresh_row["last_attempt_ts"] = now_s
+                            print(f"[ExternalContext] auto_refresh_failed category={token} error={exc}")
+            if token == "fx_market_context" and fx_market_context_auto_refresh_enabled:
+                age_seconds = None
+                if isinstance(payload, Mapping):
+                    ts_raw = payload.get("timestamp_utc")
+                    if ts_raw:
+                        try:
+                            ts_dt = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+                            if ts_dt.tzinfo is None:
+                                ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+                            age_seconds = max(now_s - ts_dt.astimezone(timezone.utc).timestamp(), 0.0)
+                        except Exception:
+                            age_seconds = None
+                if age_seconds is None or age_seconds >= fx_market_context_max_stale_seconds:
+                    refresh_row = external_context_refresh_state.setdefault(
+                        token,
+                        {"last_attempt_ts": 0.0, "proc": None},
+                    )
+                    refresh_proc = refresh_row.get("proc")
+                    if isinstance(refresh_proc, subprocess.Popen) and refresh_proc.poll() is not None:
+                        refresh_row["proc"] = None
+                    can_refresh = True
+                    if isinstance(refresh_row.get("proc"), subprocess.Popen):
+                        can_refresh = False
+                    elif (now_s - float(refresh_row.get("last_attempt_ts", 0.0) or 0.0)) < fx_market_context_refresh_cooldown_seconds:
+                        can_refresh = False
+                    if can_refresh:
+                        try:
+                            refresh_cmd = [
+                                str(resolve_runtime_python(PROJECT_ROOT)),
+                                os.path.join(PROJECT_ROOT, "scripts", "collect_fx_market_context.py"),
+                                "--json",
+                            ]
+                            refresh_proc = subprocess.Popen(
+                                refresh_cmd,
+                                cwd=PROJECT_ROOT,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            refresh_row["proc"] = refresh_proc
+                            refresh_row["last_attempt_ts"] = now_s
+                            print(
+                                f"[ExternalContext] auto_refresh_started category={token} pid={refresh_proc.pid} stale_seconds={age_seconds if age_seconds is not None else 'missing'}"
+                            )
+                        except Exception as exc:
+                            refresh_row["last_attempt_ts"] = now_s
+                            print(f"[ExternalContext] auto_refresh_failed category={token} error={exc}")
+            if token == "dividend_drip_state" and dividend_drip_auto_refresh_enabled and broker == "schwab" and (not simulate):
+                age_seconds = None
+                if isinstance(payload, Mapping):
+                    ts_raw = payload.get("timestamp_utc")
+                    if ts_raw:
+                        try:
+                            ts_dt = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+                            if ts_dt.tzinfo is None:
+                                ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+                            age_seconds = max(now_s - ts_dt.astimezone(timezone.utc).timestamp(), 0.0)
+                        except Exception:
+                            age_seconds = None
+                if age_seconds is None or age_seconds >= dividend_drip_max_stale_seconds:
+                    refresh_row = external_context_refresh_state.setdefault(
+                        token,
+                        {"last_attempt_ts": 0.0, "proc": None},
+                    )
+                    refresh_proc = refresh_row.get("proc")
+                    if isinstance(refresh_proc, subprocess.Popen) and refresh_proc.poll() is not None:
+                        refresh_row["proc"] = None
+                    can_refresh = True
+                    if isinstance(refresh_row.get("proc"), subprocess.Popen):
+                        can_refresh = False
+                    elif (now_s - float(refresh_row.get("last_attempt_ts", 0.0) or 0.0)) < dividend_drip_refresh_cooldown_seconds:
+                        can_refresh = False
+                    if can_refresh:
+                        try:
+                            refresh_cmd = [
+                                str(resolve_runtime_python(PROJECT_ROOT)),
+                                os.path.join(PROJECT_ROOT, "scripts", "collect_dividend_drip_state.py"),
+                                "--lookback-days",
+                                str(int(os.getenv("DIVIDEND_DRIP_LOOKBACK_DAYS", "400") or 400)),
+                                "--recent-window-days",
+                                str(int(os.getenv("DIVIDEND_DRIP_RECENT_WINDOW_DAYS", "180") or 180)),
+                                "--json",
+                            ]
+                            refresh_proc = subprocess.Popen(
+                                refresh_cmd,
+                                cwd=PROJECT_ROOT,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            refresh_row["proc"] = refresh_proc
+                            refresh_row["last_attempt_ts"] = now_s
+                            print(
+                                f"[ExternalContext] auto_refresh_started category={token} pid={refresh_proc.pid} stale_seconds={age_seconds if age_seconds is not None else 'missing'}"
+                            )
+                        except Exception as exc:
+                            refresh_row["last_attempt_ts"] = now_s
+                            print(f"[ExternalContext] auto_refresh_failed category={token} error={exc}")
             cache_row["ts"] = now_s
             cache_row["payload"] = dict(payload) if isinstance(payload, dict) else {}
             return dict(cache_row["payload"])
@@ -8719,6 +11098,33 @@ def run_loop(
                         if opened:
                             print(f"[CircuitBreaker] opened symbol={ctx_symbol} layer=context")
                         print(f"[Context] symbol={ctx_symbol} market_data_error={exc}")
+
+        live_macro_snapshot = _load_external_context_category("live_macro")
+        sec_edgar_snapshot = _load_external_context_category("sec_edgar")
+        extended_quant_snapshot = _load_external_context_category("extended_quant_context")
+        tastytrade_snapshot = _load_external_context_category("tastytrade_context")
+        crypto_market_snapshot = _load_external_context_category("crypto_market_context")
+        market_crypto_correlation_snapshot = _load_external_context_category("market_crypto_correlation")
+        fx_market_snapshot = _load_external_context_category("fx_market_context")
+        dividend_drip_snapshot = _load_external_context_category("dividend_drip_state")
+
+        if broker == "coinbase":
+            coinbase_proxy_symbols = _parse_symbols_optional(
+                os.getenv("COINBASE_PROXY_CONTEXT_SYMBOLS", "SPY,QQQ,TLT,UUP,GLD")
+            )
+            proxy_context_market = _coinbase_proxy_context_market(
+                market_crypto_correlation_snapshot,
+                proxy_symbols=coinbase_proxy_symbols,
+                now_ts=time.time(),
+                max_stale_seconds=float(
+                    os.getenv(
+                        "COINBASE_PROXY_CONTEXT_MAX_STALE_SECONDS",
+                        str(int(market_crypto_corr_max_stale_seconds)),
+                    )
+                ),
+            )
+            if proxy_context_market:
+                context_market = _merge_market_snapshots(context_market, proxy_context_market)
 
         now_ts = time.time()
         for symbol in symbols:
@@ -8911,8 +11317,6 @@ def run_loop(
                 context_features[f"ctx_{k}_vol_30m"] = ctx_mkt.get("vol_30m", 0.0)
                 context_features[f"ctx_{k}_mom_5m"] = ctx_mkt.get("mom_5m", 0.0)
 
-            live_macro_snapshot = _load_external_context_category("live_macro")
-
             news_features = _default_news_features()
             if news_context_enabled:
                 try:
@@ -8950,6 +11354,9 @@ def run_loop(
                     now_ts=now_ts,
                     snapshot=live_macro_snapshot,
                 )
+            for extra_snapshot in (sec_edgar_snapshot, extended_quant_snapshot, crypto_market_snapshot):
+                news_features = _merge_external_context_news_features(news_features, extra_snapshot, symbol=symbol)
+                calendar_features = _merge_external_context_calendar_features(calendar_features, extra_snapshot)
 
             news_features = _augment_news_features_with_event_proxy(
                 news_features,
@@ -8977,6 +11384,10 @@ def run_loop(
                 context_market=context_market,
                 external_snapshot=_load_external_context_category("market_breadth"),
             )
+            market_micro_features = _market_micro_feature_set(
+                _load_external_context_category("market_micro"),
+                symbol=symbol,
+            )
             bond_reference_features = summarize_bond_reference_context(
                 symbol=symbol,
                 market_snapshot=shared_features,
@@ -8992,13 +11403,27 @@ def run_loop(
             )
             execution_lag_features = dict(default_execution_lag_features())
             execution_lag_features.update(execution_lag_by_symbol.get(symbol, {}))
+            external_context_features = {}
+            external_context_features.update(_external_context_feature_set(sec_edgar_snapshot, symbol=symbol))
+            external_context_features.update(_external_context_feature_set(extended_quant_snapshot, symbol=symbol))
+            external_context_features.update(_external_context_feature_set(tastytrade_snapshot, symbol=symbol))
+            external_context_features.update(_external_context_feature_set(crypto_market_snapshot, symbol=symbol))
+            external_context_features.update(_external_context_feature_set(market_crypto_correlation_snapshot, symbol=symbol))
+            external_context_features.update(_external_context_feature_set(fx_market_snapshot, symbol=symbol))
+            dividend_drip_features = _dividend_drip_feature_set(dividend_drip_snapshot, symbol=symbol)
             shared_features = {
+                **_default_dividend_features(),
                 **shared_features,
                 **default_breadth_features(),
                 **default_bond_reference_features(),
                 **default_credit_context_features(),
                 **execution_lag_features,
                 **breadth_features,
+                **{k: 0.0 for k in _MARKET_MICRO_FEATURE_KEYS},
+                **{k: 0.0 for k in _EXTERNAL_CONTEXT_FEATURE_KEYS},
+                **market_micro_features,
+                **external_context_features,
+                **dividend_drip_features,
                 **bond_reference_features,
                 **credit_context_features,
             }
@@ -9053,18 +11478,42 @@ def run_loop(
                 if derivatives_specialists_enabled and symbol_is_futures
                 else []
             )
+            infra_observer_bots = list(infra_virtual_bots_template) if always_on_infra_observers_enabled else []
             active_options_sub_bots = len(options_specialist_bots)
             active_futures_sub_bots = len(futures_specialist_bots)
-            active_sub_bots_total = len(active_bots) + active_options_sub_bots + active_futures_sub_bots
+            active_infra_sub_bots = len(infra_observer_bots)
+            active_sub_bots_total = len(active_bots) + active_options_sub_bots + active_futures_sub_bots + active_infra_sub_bots
 
+            flow_awareness_features = _derive_flow_awareness_features(
+                {
+                    **shared_features,
+                    **_default_capital_flow_features(),
+                    **capital_flow_features,
+                }
+            )
+            lead_lag_features = _derive_lead_lag_features(
+                {
+                    **shared_features,
+                    **_default_capital_flow_features(),
+                    **capital_flow_features,
+                    **_default_flow_awareness_features(),
+                    **flow_awareness_features,
+                }
+            )
             shared_features = {
                 **shared_features,
                 "active_sub_bots": float(active_sub_bots_total),
                 "active_options_sub_bots": float(active_options_sub_bots),
                 "active_futures_sub_bots": float(active_futures_sub_bots),
+                "active_infra_sub_bots": float(active_infra_sub_bots),
                 **_default_lane_strategy_features(),
                 **_default_capital_flow_features(),
                 **capital_flow_features,
+                **_default_flow_awareness_features(),
+                **flow_awareness_features,
+                **_default_lead_lag_features(),
+                **lead_lag_features,
+                **_default_allocation_features(),
             }
 
             if _is_dividend_profile():
@@ -9138,7 +11587,7 @@ def run_loop(
                         row["reused"] = 1
                         reused_rows.append(row)
 
-            batched_rows = _sub_bot_signal_batch(eval_bots, mkt)
+            batched_rows = _sub_bot_signal_batch(eval_bots, shared_features)
 
             gates = {
                 "market_data_ok": mkt["last_price"] > 0,
@@ -9189,6 +11638,7 @@ def run_loop(
                     "direction": 1.0 if action == "BUY" else (-1.0 if action == "SELL" else 0.0),
                     "reasons": reasons,
                     "test_accuracy": b.test_accuracy,
+                    "promoted": bool(b.promoted),
                 }
                 sub_rows.append(row)
                 slow_bot_rows_cache.setdefault(symbol, {})[b.bot_id] = row
@@ -9201,36 +11651,59 @@ def run_loop(
                         reused["reused"] = 1
                         sub_rows.append(reused)
 
-            if paper_trader is not None and paper_selected_ids:
+            if paper_selected_ids:
                 for row in sub_rows:
                     bot_id = str(row.get("bot_id", ""))
                     action = str(row.get("action", "HOLD")).upper()
                     if bot_id not in paper_selected_ids or action not in {"BUY", "SELL"}:
                         continue
-                    try:
-                        paper_trader.execute_decision(
+                    metadata = {
+                        "layer": "sub_bot_paper_mirror",
+                        "snapshot_id": snapshot_id,
+                        "source_profile": _shadow_profile_name() or "default",
+                        "shadow_domain": _shadow_domain_name(broker=broker),
+                        "bot_weight": row.get("weight", 0.0),
+                        "test_accuracy": row.get("test_accuracy"),
+                        "bot_id": bot_id,
+                        "bot_promoted": bool(row.get("promoted", False)),
+                        "allow_live_promotion": False,
+                    }
+                    if execution_lane_enabled:
+                        _publish_execution_lane_intent(
+                            broker=broker,
                             symbol=symbol,
                             action=action,
-                            quantity=1,
+                            quantity=1.0,
                             model_score=float(row.get("score", 0.5)),
                             threshold=float(row.get("threshold", 0.55)),
                             features=shared_features,
                             gates=gates,
                             reasons=list(row.get("reasons", [])) + [f"paper_mirror_top_n={paper_mirror_top_n}", f"bot_id={bot_id}"],
                             strategy=f"paper_mirror::{bot_id}",
-                            metadata={
-                                "layer": "sub_bot_paper_mirror",
-                                "snapshot_id": snapshot_id,
-                                "source_profile": _shadow_profile_name() or "default",
-                                "bot_weight": row.get("weight", 0.0),
-                                "test_accuracy": row.get("test_accuracy"),
-                            },
+                            metadata=metadata,
+                            intent_kind="paper_mirror",
+                            target_mode="paper",
                         )
-                    except Exception as exc:
-                        print(f"[PaperMirror] order_failed symbol={symbol} bot_id={bot_id} err={exc}")
+                    elif paper_trader is not None:
+                        try:
+                            paper_trader.execute_decision(
+                                symbol=symbol,
+                                action=action,
+                                quantity=1,
+                                model_score=float(row.get("score", 0.5)),
+                                threshold=float(row.get("threshold", 0.55)),
+                                features=shared_features,
+                                gates=gates,
+                                reasons=list(row.get("reasons", [])) + [f"paper_mirror_top_n={paper_mirror_top_n}", f"bot_id={bot_id}"],
+                                strategy=f"paper_mirror::{bot_id}",
+                                metadata=metadata,
+                            )
+                        except Exception as exc:
+                            print(f"[PaperMirror] order_failed symbol={symbol} bot_id={bot_id} err={exc}")
 
             options_specialist_rows: List[Dict[str, Any]] = []
             futures_specialist_rows: List[Dict[str, Any]] = []
+            infra_observer_rows: List[Dict[str, Any]] = []
 
             if options_specialist_bots:
                 for b, action, score, threshold, reasons in _specialist_signal_batch(
@@ -9248,8 +11721,54 @@ def run_loop(
                         "direction": 1.0 if action == "BUY" else (-1.0 if action == "SELL" else 0.0),
                         "reasons": reasons,
                         "test_accuracy": b.test_accuracy,
+                        "promoted": bool(b.promoted),
                     }
                     options_specialist_rows.append(row)
+                    if paper_selected_option_ids and str(b.bot_id) in paper_selected_option_ids and action in {"BUY", "SELL"}:
+                        option_metadata = {
+                            "layer": "options_sub_bot_paper_mirror",
+                            "snapshot_id": snapshot_id,
+                            "source_profile": _shadow_profile_name() or "default",
+                            "shadow_domain": _shadow_domain_name(broker=broker),
+                            "bot_weight": row["weight"],
+                            "test_accuracy": b.test_accuracy,
+                            "bot_role": "options_sub_bot",
+                            "bot_id": b.bot_id,
+                            "bot_promoted": bool(b.promoted),
+                            "allow_live_promotion": False,
+                        }
+                        if execution_lane_enabled:
+                            _publish_execution_lane_intent(
+                                broker=broker,
+                                symbol=symbol,
+                                action=action,
+                                quantity=1.0,
+                                model_score=score,
+                                threshold=threshold,
+                                features=shared_features,
+                                gates=gates,
+                                reasons=reasons + [f"paper_mirror_options_top_n={paper_mirror_options_top_n}", f"bot_id={b.bot_id}", "bot_role=options_sub_bot"],
+                                strategy=f"paper_mirror_options::{b.bot_id}",
+                                metadata=option_metadata,
+                                intent_kind="paper_mirror_options",
+                                target_mode="paper",
+                            )
+                        elif paper_trader is not None:
+                            try:
+                                paper_trader.execute_decision(
+                                    symbol=symbol,
+                                    action=action,
+                                    quantity=1,
+                                    model_score=score,
+                                    threshold=threshold,
+                                    features=shared_features,
+                                    gates=gates,
+                                    reasons=reasons + [f"paper_mirror_options_top_n={paper_mirror_options_top_n}", f"bot_id={b.bot_id}", "bot_role=options_sub_bot"],
+                                    strategy=f"paper_mirror_options::{b.bot_id}",
+                                    metadata=option_metadata,
+                                )
+                            except Exception as exc:
+                                print(f"[PaperMirrorOptions] order_failed symbol={symbol} bot_id={b.bot_id} err={exc}")
                     if log_sub_bot_decisions:
                         trader.execute_decision(
                             symbol=symbol,
@@ -9311,11 +11830,58 @@ def run_loop(
             # Broadcast flash-crash + derivatives specialist context to all higher-level decisions.
             flash_aux = _derive_flash_aux_features(sub_rows)
             specialist_aux = _derive_specialist_aux_features(options_specialist_rows, futures_specialist_rows)
-            all_sub_rows = sub_rows + options_specialist_rows + futures_specialist_rows
+            infra_signal_features = {
+                **shared_features,
+                **flash_aux,
+                **specialist_aux,
+            }
+            infra_decision_context = sub_rows + options_specialist_rows + futures_specialist_rows
+            if infra_observer_bots:
+                for b, action, score, threshold, reasons, observer_meta in _infrastructure_signal_batch(
+                    infra_observer_bots,
+                    infra_signal_features,
+                    infra_decision_context,
+                ):
+                    row = {
+                        "bot_id": b.bot_id,
+                        "bot_role": b.bot_role,
+                        "action": action,
+                        "score": score,
+                        "threshold": threshold,
+                        "weight": b.weight if b.weight > 0 else 1.0 / max(len(infra_observer_bots), 1),
+                        "direction": 1.0 if action == "BUY" else (-1.0 if action == "SELL" else 0.0),
+                        "reasons": reasons,
+                        "test_accuracy": b.test_accuracy,
+                        "observer_meta": observer_meta,
+                    }
+                    infra_observer_rows.append(row)
+                    if log_sub_bot_decisions:
+                        trader.execute_decision(
+                            symbol=symbol,
+                            action=action,
+                            quantity=1,
+                            model_score=score,
+                            threshold=threshold,
+                            features=infra_signal_features,
+                            gates=gates,
+                            reasons=reasons + [f"bot_id={b.bot_id}", "bot_role=infrastructure_sub_bot"],
+                            strategy=b.bot_id,
+                            metadata={
+                                "layer": "infrastructure_sub_bot",
+                                "snapshot_id": snapshot_id,
+                                "bot_weight": row["weight"],
+                                "test_accuracy": b.test_accuracy,
+                                "bot_role": "infrastructure_sub_bot",
+                                "observer_meta": observer_meta,
+                            },
+                        )
+            infra_aux = _derive_infrastructure_aux_features(infra_observer_rows)
+            all_sub_rows = sub_rows + options_specialist_rows + futures_specialist_rows + infra_observer_rows
             shared_features = {
                 **shared_features,
                 **flash_aux,
                 **specialist_aux,
+                **infra_aux,
             }
             master_decision_started_at = time.perf_counter()
 
@@ -9348,7 +11914,11 @@ def run_loop(
                     )
 
             gm_weights = _grand_master_weights(shared_features)
-            gm_action, gm_score, gm_threshold, gm_reasons, gm_vote = _grand_master_vote(master_outputs, gm_weights)
+            gm_action, gm_score, gm_threshold, gm_reasons, gm_vote = _grand_master_vote(
+                master_outputs,
+                gm_weights,
+                shared_features,
+            )
             gm_action, gm_score, gm_reasons = _apply_transaction_cost_penalty(
                 action=gm_action,
                 score=gm_score,
@@ -9752,6 +12322,60 @@ def run_loop(
                 gm_reasons = gm_reasons + [f"lane_kill_switch_pause lane={lane_key}"]
 
             volatility_now = float(shared_features.get("volatility_1m", shared_features.get("vol", 0.0)) or 0.0)
+            allocation_conf_meta = _allocation_confidence_overlay(
+                action=gm_action,
+                score=gm_score,
+                threshold=gm_threshold,
+                features=shared_features,
+            )
+            shared_features = {
+                **shared_features,
+                **allocation_conf_meta,
+            }
+            regime_dislocation = _regime_dislocation_norm(shared_features)
+            shared_features["regime_dislocation_norm"] = regime_dislocation
+            regime_dislocation_threshold = _clamp01(
+                float(os.getenv("REGIME_DISLOCATION_KILL_SWITCH_THRESHOLD", "0.82") or 0.82)
+            )
+            regime_confidence_ceiling = _clamp01(
+                float(os.getenv("REGIME_DISLOCATION_KILL_SWITCH_MAX_CONFIDENCE", "0.58") or 0.58)
+            )
+            regime_dislocation_active = (
+                gm_action in {"BUY", "SELL"}
+                and regime_dislocation >= regime_dislocation_threshold
+                and float(shared_features.get("allocation_confidence_norm", 0.0) or 0.0) <= regime_confidence_ceiling
+            )
+            _log_gate(
+                symbol,
+                "regime_dislocation_guard",
+                (not regime_dislocation_active) or (gm_action not in {"BUY", "SELL"}),
+                reason=(
+                    "ok"
+                    if not regime_dislocation_active
+                    else (
+                        "regime_dislocation "
+                        f"severity={regime_dislocation:.3f} "
+                        f"threshold={regime_dislocation_threshold:.3f}"
+                    )
+                ),
+                regime_dislocation_norm=regime_dislocation,
+                allocation_confidence_norm=float(shared_features.get("allocation_confidence_norm", 0.0) or 0.0),
+                lead_lag_break_norm=float(shared_features.get("lead_lag_break_norm", 0.0) or 0.0),
+                flow_stress_norm=float(shared_features.get("flow_stress_norm", 0.0) or 0.0),
+            )
+            if regime_dislocation_active:
+                kill_switch_until_ts = max(kill_switch_until_ts, now_ts + kill_switch_cooldown_seconds)
+                gm_action = "HOLD"
+                gm_score = 0.5 + 0.5 * (gm_score - 0.5)
+                gm_reasons = gm_reasons + [
+                    (
+                        "regime_dislocation_kill_switch "
+                        f"severity={regime_dislocation:.3f} "
+                        f"lead_lag_break={float(shared_features.get('lead_lag_break_norm', 0.0) or 0.0):.3f} "
+                        f"flow_stress={float(shared_features.get('flow_stress_norm', 0.0) or 0.0):.3f}"
+                    )
+                ]
+
             raw_qty = size_from_action(
                 action=gm_action,
                 score=gm_score,
@@ -9760,6 +12384,15 @@ def run_loop(
                 equity_proxy=effective_equity_proxy,
                 max_notional_pct=max_notional_pct,
             )
+            if gm_action in {"BUY", "SELL"} and raw_qty > 0.0:
+                raw_qty = round(
+                    raw_qty * float(shared_features.get("allocation_confidence_scale", 0.0) or 0.0),
+                    6,
+                )
+                gm_reasons = gm_reasons + [
+                    f"allocation_confidence={float(shared_features.get('allocation_confidence_norm', 0.0) or 0.0):.3f}",
+                    f"allocation_scale={float(shared_features.get('allocation_confidence_scale', 0.0) or 0.0):.3f}",
+                ]
             alloc_qty = allocate_quantity(
                 raw_qty=raw_qty,
                 symbol=symbol,
@@ -9964,6 +12597,21 @@ def run_loop(
                     },
                 )
 
+            grand_master_metadata = {
+                "layer": "grand_master",
+                "snapshot_id": snapshot_id,
+                "master_weights": gm_weights,
+                "queue_depth": exec_queue.size(),
+                "intent_action": gm_intent_action,
+                "intent_score": gm_intent_score,
+                "guard_blocked_intent": guard_blocked_intent,
+                "runtime_lane": runtime_lane,
+                "lane_budget_mult": lane_budget_mult,
+                "source_profile": _shadow_profile_name() or "default",
+                "shadow_domain": _shadow_domain_name(broker=broker),
+                "allow_live_promotion": True,
+            }
+
             if log_grand_master_decisions:
                 trader.execute_decision(
                     symbol=symbol,
@@ -9975,15 +12623,24 @@ def run_loop(
                     gates=grand_gates,
                     reasons=gm_reasons,
                     strategy="grand_master_bot",
-                    metadata={
-                        "layer": "grand_master",
-                        "snapshot_id": snapshot_id,
-                        "master_weights": gm_weights,
-                        "queue_depth": exec_queue.size(),
-                        "intent_action": gm_intent_action,
-                        "intent_score": gm_intent_score,
-                        "guard_blocked_intent": guard_blocked_intent,
-                    },
+                    metadata=grand_master_metadata,
+                )
+
+            if master_execution_lane_enabled:
+                _publish_execution_lane_intent(
+                    broker=broker,
+                    symbol=symbol,
+                    action=gm_action,
+                    quantity=dispatch_qty,
+                    model_score=gm_score,
+                    threshold=gm_threshold,
+                    features=grand_features,
+                    gates=grand_gates,
+                    reasons=gm_reasons,
+                    strategy="grand_master_bot",
+                    metadata=grand_master_metadata,
+                    intent_kind="master",
+                    target_mode="paper",
                 )
 
             if _is_long_term_profile():
@@ -10264,6 +12921,8 @@ def run_loop(
                     layer = "options_sub_bot"
                 elif role == "futures_sub_bot":
                     layer = "futures_sub_bot"
+                elif role == "infrastructure_sub_bot":
+                    layer = "infrastructure_sub_bot"
                 _append_jsonl(
                     _pnl_attribution_path(PROJECT_ROOT, broker=broker),
                     {
@@ -10338,7 +12997,7 @@ def run_loop(
                         )
 
             broker_truth_snapshot = (
-                json.loads(json.dumps(broker_truth_state, ensure_ascii=True))
+                copy.deepcopy(broker_truth_state)
                 if isinstance(broker_truth_state, dict)
                 else {}
             )
@@ -10349,12 +13008,16 @@ def run_loop(
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                 "symbol": symbol,
                 "snapshot_id": snapshot_id,
+                "broker": broker,
+                "shadow_profile": _shadow_profile_name() or "default",
+                "simulate": bool(simulate),
                 "market": mkt,
                 "context_market": context_market,
                 "active_sub_bots": int(active_sub_bots_total),
                 "active_sub_bots_core": len([b for b in bots if b.active]),
                 "active_options_sub_bots": int(active_options_sub_bots),
                 "active_futures_sub_bots": int(active_futures_sub_bots),
+                "active_infra_sub_bots": int(active_infra_sub_bots),
                 "inactive_sub_bots": len([b for b in bots if not b.active]),
                 "master_action": gm_action,
                 "master_score": gm_score,
@@ -10369,6 +13032,20 @@ def run_loop(
                 "flash_aux": flash_aux,
                 "specialist_votes": {"options": float(shared_features.get("options_specialist_vote", 0.0) or 0.0), "futures": float(shared_features.get("futures_specialist_vote", 0.0) or 0.0)},
                 "specialist_rows": {"options": options_specialist_rows, "futures": futures_specialist_rows},
+                "infrastructure_votes": {
+                    "aggregate": float(shared_features.get("infra_vote", 0.0) or 0.0),
+                    "meta_ranker": float(shared_features.get("infra_meta_ranker_vote", 0.0) or 0.0),
+                    "macro_event": float(shared_features.get("infra_macro_event_vote", 0.0) or 0.0),
+                    "confidence_scale_norm": float(shared_features.get("infra_confidence_calibrator_scale_norm", 0.0) or 0.0),
+                },
+                "infrastructure_risks": {
+                    "feed_health": float(shared_features.get("infra_feed_health_risk_norm", 0.0) or 0.0),
+                    "execution_feasibility": float(shared_features.get("infra_execution_feasibility_risk_norm", 0.0) or 0.0),
+                    "cross_venue_divergence": float(shared_features.get("infra_cross_venue_divergence_risk_norm", 0.0) or 0.0),
+                    "throttle": float(shared_features.get("infra_risk_throttle_norm", 0.0) or 0.0),
+                    "veto_active": float(shared_features.get("infra_veto_active", 0.0) or 0.0),
+                },
+                "infrastructure_rows": infra_observer_rows,
                 "news_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in _NEWS_FEATURE_KEYS},
                 "options_chain_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in OPTIONS_FEATURE_KEYS},
                 "futures_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in FUTURES_FEATURE_KEYS},
@@ -10377,6 +13054,8 @@ def run_loop(
                 "long_term_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in _LONG_TERM_FEATURE_KEYS},
                 "lane_strategy_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in _LANE_STRATEGY_FEATURE_KEYS},
                 "breadth_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in BREADTH_FEATURE_KEYS},
+                "market_micro_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in _MARKET_MICRO_FEATURE_KEYS},
+                "external_context_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in _EXTERNAL_CONTEXT_FEATURE_KEYS},
                 "bond_reference_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in BOND_REFERENCE_FEATURE_KEYS},
                 "credit_context_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in CREDIT_CONTEXT_FEATURE_KEYS},
                 "data_quality_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in DATA_QUALITY_FEATURE_KEYS},
@@ -10397,6 +13076,15 @@ def run_loop(
                     "equity_delta": float(capital_flow_meta.get("equity_delta", 0.0) or 0.0),
                     "agreement_norm": float(capital_flow_meta.get("agreement_norm", 0.0) or 0.0),
                     **{k: float(shared_features.get(k, 0.0) or 0.0) for k in _CAPITAL_FLOW_FEATURE_KEYS},
+                },
+                "flow_awareness_features": {
+                    k: float(shared_features.get(k, 0.0) or 0.0) for k in _FLOW_AWARENESS_FEATURE_KEYS
+                },
+                "lead_lag_features": {
+                    k: float(shared_features.get(k, 0.0) or 0.0) for k in _LEAD_LAG_FEATURE_KEYS
+                },
+                "allocation_confidence": {
+                    k: float(shared_features.get(k, 0.0) or 0.0) for k in _ALLOCATION_FEATURE_KEYS
                 },
                 "order_idempotency": idempotency_meta,
                 "execution_guard": execution_guard_meta,
@@ -10443,6 +13131,11 @@ def run_loop(
                     "lane_kill_switch_until": float(lane_kill_until_ts.get(lane_key, 0.0) or 0.0),
                     "lane_pause_count": int(lane_pause_counts.get(lane_key, 0) or 0),
                     "intraday_drawdown_proxy": max(peak_intraday_pnl_proxy - intraday_pnl_proxy, 0.0),
+                    "regime_dislocation_active": bool(
+                        float(shared_features.get("regime_dislocation_norm", 0.0) or 0.0)
+                        >= _clamp01(float(os.getenv("REGIME_DISLOCATION_KILL_SWITCH_THRESHOLD", "0.82") or 0.82))
+                    ),
+                    "regime_dislocation_norm": float(shared_features.get("regime_dislocation_norm", 0.0) or 0.0),
                 },
                 "recommendations": recs,
                 "top_active": registry.get("summary", {}).get("top_active", []),
@@ -10514,6 +13207,8 @@ def run_loop(
                     memory_ok, memory_snapshot, memory_reason = _auto_retrain_memory_ok(
                         min_free_pct=auto_retrain_min_free_pct,
                         max_swap_gb=auto_retrain_max_swap_gb,
+                        high_free_pct_swap_bypass=auto_retrain_swap_ignore_if_free_pct_at_least,
+                        soft_max_swap_gb=auto_retrain_swap_soft_max_gb,
                     )
 
                 if memory_ok:
@@ -10578,6 +13273,8 @@ def run_loop(
             mem_ok, mem_snapshot, mem_reason = _auto_retrain_memory_ok(
                 min_free_pct=memory_throttle_min_free_pct,
                 max_swap_gb=memory_throttle_max_swap_gb,
+                high_free_pct_swap_bypass=memory_throttle_swap_ignore_if_free_pct_at_least,
+                soft_max_swap_gb=memory_throttle_swap_soft_max_gb,
             )
             latest_memory_snapshot = mem_snapshot
             if not mem_ok:

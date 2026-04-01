@@ -78,6 +78,7 @@ def _summarize_watchdog(rows: Iterable[Dict[str, Any]]) -> dict[str, int]:
 def _summarize_status_rows(rows: Iterable[Dict[str, Any]], *, stale_seconds: int, skipped_statuses: set[str]) -> dict[str, Any]:
     total_rows = 0
     skipped = 0
+    observe_only_data_blocked = 0
     status_counts: Counter[str] = Counter()
     stamps: List[datetime] = []
 
@@ -85,7 +86,14 @@ def _summarize_status_rows(rows: Iterable[Dict[str, Any]], *, stale_seconds: int
         total_rows += 1
         status = str(row.get("status", "UNKNOWN"))
         status_counts[status] += 1
-        if status in skipped_statuses:
+        is_observe_only_data_blocked = (
+            status == "DATA_ONLY_BLOCKED"
+            and bool(((row.get("safety") or {}).get("market_data_only")))
+            and (not bool(((row.get("safety") or {}).get("execution_enabled"))))
+        )
+        if is_observe_only_data_blocked:
+            observe_only_data_blocked += 1
+        elif status in skipped_statuses:
             skipped += 1
         ts = _parse_ts(row)
         if ts is not None:
@@ -94,6 +102,7 @@ def _summarize_status_rows(rows: Iterable[Dict[str, Any]], *, stale_seconds: int
     return {
         "rows": total_rows,
         "skipped_decisions": skipped,
+        "observe_only_data_blocked": observe_only_data_blocked,
         "status_counts": dict(status_counts),
         "stale_windows": _stale_windows_from_stamps(stamps, stale_seconds),
     }
@@ -161,6 +170,7 @@ def main() -> None:
         "decision": {
             "rows": decision_summary["rows"],
             "skipped_decisions": decision_summary["skipped_decisions"],
+            "observe_only_data_blocked": decision_summary["observe_only_data_blocked"],
             "status_counts": decision_summary["status_counts"],
             "stale_windows": decision_summary["stale_windows"],
             "files": [str(x) for x in decision_files],

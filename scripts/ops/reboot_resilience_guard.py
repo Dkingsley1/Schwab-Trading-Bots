@@ -2,13 +2,19 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_python import resolve_runtime_python
+
 ALERT_ROUTER = PROJECT_ROOT / 'scripts' / 'pager_alert_router.py'
-PY = PROJECT_ROOT / '.venv312' / 'bin' / 'python'
+PY = resolve_runtime_python(PROJECT_ROOT)
 DEFAULT_OUT_PATH = PROJECT_ROOT / 'governance' / 'health' / 'reboot_resilience_latest.json'
 FALLBACK_OUT_PATH = Path('/tmp/reboot_resilience_latest.json')
 

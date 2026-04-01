@@ -3,9 +3,25 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
 
+try:
+    import orjson as _fast_json
+except Exception:
+    _fast_json = None
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SQLITE_PATH = PROJECT_ROOT / "data" / "jsonl_link.sqlite3"
+
+
+def _json_loads(raw: Any) -> Any:
+    if _fast_json is not None:
+        try:
+            if isinstance(raw, str):
+                return _fast_json.loads(raw)
+            return _fast_json.loads(raw or b"")
+        except Exception:
+            pass
+    return json.loads(raw)
 
 
 def resolve_sqlite_path(raw: Any = None) -> Path:
@@ -91,7 +107,7 @@ def iter_sqlite_jsonl_rows(
             )
             for (payload_json,) in conn.execute(query, chunk):
                 try:
-                    obj = json.loads(payload_json)
+                    obj = _json_loads(payload_json)
                 except Exception:
                     continue
                 if isinstance(obj, dict):

@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-VENV_PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_python import resolve_runtime_python
+
+VENV_PY = resolve_runtime_python(PROJECT_ROOT)
 PAPER_REPLAY_SCRIPT = PROJECT_ROOT / "scripts" / "paper_replay_drill.py"
 PAPER_RECON_SCRIPT = PROJECT_ROOT / "scripts" / "paper_reconciliation_slo_guard.py"
 

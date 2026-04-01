@@ -2,9 +2,11 @@ import numpy as np
 
 from indicator_bot_common import ema, rolling_std, train_indicator_bot, train_runtime_indicator_bot
 from runtime_training_common import (
-    direction_label_builder,
     feature_ema,
     feature_std,
+    future_max_drawdown,
+    future_realized_vol,
+    future_return,
     observation_feature,
     price_change,
     rolling_drawdown as runtime_rolling_drawdown,
@@ -16,6 +18,13 @@ _CREDIT_ROLE_MAP = {
     "ig_credit": ["LQD", "IGIB"],
     "treasury": ["TLT", "IEF", "SHY", "TIP"],
 }
+_EXPANDED_CREDIT_SYMBOLS = sorted({sym for values in _CREDIT_ROLE_MAP.values() for sym in values})
+_CREDIT_RUNTIME_MODES = [
+    "shadow_bond_equities",
+    "shadow_conservative_equities",
+    "shadow_default_equities",
+    "shadow_dividend_equities",
+]
 
 
 def hold_sample(x, step):
@@ -53,8 +62,6 @@ def build_features(panel):
 
     vol = rolling_std(r, 120)
     tail_risk = np.maximum(-dd_fast, 0.0) + np.maximum(vol - ema(vol, 20), 0.0)
-
-    # Credit sleeve proxy: prefer widening relative strength, avoid tail-risk spikes.
     credit_rotation = spread_mom - 0.45 * tail_risk
 
     return np.stack([r, rel, rel_fast, rel_slow, spread_mom, dd, dd_fast, dd_slow, vol, tail_risk, credit_rotation], axis=1)
@@ -71,6 +78,13 @@ def _runtime_feature_vector(sequence, idx):
             observation_feature(obs, "range_pos"),
             observation_feature(obs, "spread_bps"),
             observation_feature(obs, "ctx_UUP_pct_from_close"),
+            observation_feature(obs, "fx_usd_strength_norm"),
+            observation_feature(obs, "fx_eurusd_momentum_norm"),
+            observation_feature(obs, "fx_usdjpy_momentum_norm"),
+            observation_feature(obs, "fx_proxy_agreement_norm"),
+            observation_feature(obs, "fx_risk_on_alignment_norm"),
+            observation_feature(obs, "fx_crypto_alignment_norm"),
+            observation_feature(obs, "fx_corr_confidence_norm"),
             observation_feature(obs, "bond_credit_risk_on_norm"),
             observation_feature(obs, "bond_credit_risk_off_norm"),
             observation_feature(obs, "bond_carry_roll_norm"),
@@ -87,6 +101,11 @@ def _runtime_feature_vector(sequence, idx):
             observation_feature(obs, "options_gamma_exposure_norm"),
             observation_feature(obs, "options_unusual_flow_norm"),
             observation_feature(obs, "breadth_risk_off_norm"),
+            observation_feature(obs, "data_quality_quote_agreement_norm", 1.0),
+            observation_feature(obs, "data_quality_quote_deviation_norm"),
+            observation_feature(obs, "market_micro_credit_flow_norm"),
+            observation_feature(obs, "market_micro_relative_volume_norm"),
+            observation_feature(obs, "behavior_prior"),
             price_change(sequence, idx, 3),
             price_change(sequence, idx, 6),
             feature_ema(sequence, idx, "bond_credit_risk_on_norm", 5),
@@ -99,6 +118,139 @@ def _runtime_feature_vector(sequence, idx):
         ],
         dtype=np.float32,
     )
+
+
+def _clip01(value):
+    return float(np.clip(value, 0.0, 1.0))
+
+
+def _credit_risk_on_signal(obs):
+    spread_level = _clip01(observation_feature(obs, "bond_credit_spread_level_norm"))
+    nav_stress = _clip01(observation_feature(obs, "bond_nav_stress_norm"))
+    breadth_risk_off = _clip01(observation_feature(obs, "breadth_risk_off_norm"))
+    return _clip01(
+        (0.24 * _clip01(observation_feature(obs, "bond_credit_risk_on_norm")))
+        + (0.18 * _clip01(observation_feature(obs, "bond_carry_roll_norm")))
+        + (0.16 * _clip01(1.0 - spread_level))
+        + (0.12 * _clip01(1.0 - nav_stress))
+        + (0.12 * _clip01(observation_feature(obs, "bond_hy_ig_flow_norm")))
+        + (0.10 * _clip01(1.0 - breadth_risk_off))
+        + (0.08 * _clip01(observation_feature(obs, "market_micro_credit_flow_norm")))
+    )
+
+
+def _credit_risk_off_signal(obs):
+    return _clip01(
+        (0.28 * _clip01(observation_feature(obs, "bond_credit_risk_off_norm")))
+        + (0.20 * _clip01(observation_feature(obs, "bond_nav_stress_norm")))
+        + (0.16 * _clip01(observation_feature(obs, "breadth_risk_off_norm")))
+        + (0.14 * _clip01(observation_feature(obs, "options_negative_bias_norm")))
+        + (0.12 * _clip01(observation_feature(obs, "options_gamma_exposure_norm")))
+        + (0.10 * _clip01(observation_feature(obs, "calendar_macro_surprise_norm")))
+    )
+
+
+def _credit_quality_signal(obs):
+    quote_quality = _clip01(
+        0.65 * observation_feature(obs, "data_quality_quote_agreement_norm", 1.0)
+        + 0.35 * (1.0 - observation_feature(obs, "data_quality_quote_deviation_norm", 0.0))
+    )
+    return _clip01(
+        (0.26 * _clip01(observation_feature(obs, "bond_carry_roll_norm")))
+        + (0.20 * _clip01(1.0 - observation_feature(obs, "bond_nav_discount_norm")))
+        + (0.18 * _clip01(1.0 - observation_feature(obs, "options_vol_expectation_norm")))
+        + (0.16 * _clip01(1.0 - observation_feature(obs, "spread_bps")))
+        + (0.10 * _clip01(observation_feature(obs, "behavior_prior")))
+        + (0.10 * quote_quality)
+    )
+
+
+def _role_supports(obs, roles):
+    risk_on = _credit_risk_on_signal(obs)
+    risk_off = _credit_risk_off_signal(obs)
+    quality = _credit_quality_signal(obs)
+    role_weight = max(sum(float(value) for value in roles.values()), 1.0)
+    support = (
+        (roles["role_hy_credit"] * risk_on)
+        + (roles["role_ig_credit"] * _clip01((0.55 * quality) + (0.25 * risk_on) + (0.20 * risk_off)))
+        + (roles["role_treasury"] * risk_off)
+    ) / role_weight
+    headwind = (
+        (roles["role_hy_credit"] * risk_off)
+        + (roles["role_ig_credit"] * _clip01((0.45 * risk_off) + (0.35 * (1.0 - quality)) + (0.20 * risk_on)))
+        + (roles["role_treasury"] * risk_on)
+    ) / role_weight
+    return _clip01(support), _clip01(headwind)
+
+
+def _runtime_sample_filter(sequence, idx, horizon):
+    obs = sequence[idx]
+    roles = symbol_role_features(str(obs.get("symbol") or ""), _CREDIT_ROLE_MAP)
+    role_support, role_headwind = _role_supports(obs, roles)
+    return (
+        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.74
+        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.34
+        and max(_credit_risk_on_signal(obs), _credit_risk_off_signal(obs), _credit_quality_signal(obs)) >= 0.18
+        and max(role_support, role_headwind) >= 0.18
+    )
+
+
+def _runtime_confidence(sequence, idx, horizon):
+    obs = sequence[idx]
+    roles = symbol_role_features(str(obs.get("symbol") or ""), _CREDIT_ROLE_MAP)
+    role_support, role_headwind = _role_supports(obs, roles)
+    quote_quality = _clip01(
+        0.65 * observation_feature(obs, "data_quality_quote_agreement_norm", 1.0)
+        + 0.35 * (1.0 - observation_feature(obs, "data_quality_quote_deviation_norm", 0.0))
+    )
+    return (
+        (0.24 * max(role_support, role_headwind))
+        + (0.22 * _credit_quality_signal(obs))
+        + (0.20 * _credit_risk_on_signal(obs))
+        + (0.18 * _credit_risk_off_signal(obs))
+        + (0.16 * quote_quality)
+    )
+
+
+def _runtime_credit_rotation_label(sequence, idx, horizon):
+    obs = sequence[idx]
+    roles = symbol_role_features(str(obs.get("symbol") or ""), _CREDIT_ROLE_MAP)
+    if sum(float(value) for value in roles.values()) <= 0.0:
+        return None
+
+    role_support, role_headwind = _role_supports(obs, roles)
+    if max(role_support, role_headwind) < 0.18 or abs(role_support - role_headwind) < 0.04:
+        return None
+
+    fwd_ret = future_return(sequence, idx, horizon)
+    dd = abs(future_max_drawdown(sequence, idx, horizon))
+    realized = future_realized_vol(sequence, idx, horizon)
+    spread_bps = _clip01(observation_feature(obs, "spread_bps"))
+    move_threshold = max(0.0008, 0.0018 - (0.0009 * max(role_support, role_headwind)))
+    if abs(fwd_ret) < move_threshold and dd < 0.012 and realized < 0.020:
+        return None
+
+    support_score = (
+        fwd_ret
+        + (0.0012 * role_support)
+        - (0.0006 * role_headwind)
+        - (0.0003 * spread_bps)
+        - (0.70 * dd)
+        - (0.24 * realized)
+    )
+    failure_score = (
+        (-fwd_ret)
+        + (0.0010 * role_headwind)
+        - (0.0004 * role_support)
+        + (0.55 * dd)
+        + (0.18 * realized)
+        + (0.0002 * spread_bps)
+    )
+    if support_score >= 0.0007 and role_support > role_headwind:
+        return 1.0
+    if failure_score >= 0.0009 and role_headwind >= role_support:
+        return 0.0
+    return None
 
 
 def _train_synthetic():
@@ -133,6 +285,13 @@ if __name__ == "__main__":
             "range_pos",
             "spread_bps",
             "ctx_UUP_pct_from_close",
+            "fx_usd_strength_norm",
+            "fx_eurusd_momentum_norm",
+            "fx_usdjpy_momentum_norm",
+            "fx_proxy_agreement_norm",
+            "fx_risk_on_alignment_norm",
+            "fx_crypto_alignment_norm",
+            "fx_corr_confidence_norm",
             "bond_credit_risk_on_norm",
             "bond_credit_risk_off_norm",
             "bond_carry_roll_norm",
@@ -149,6 +308,11 @@ if __name__ == "__main__":
             "options_gamma_exposure_norm",
             "options_unusual_flow_norm",
             "breadth_risk_off_norm",
+            "data_quality_quote_agreement_norm",
+            "data_quality_quote_deviation_norm",
+            "market_micro_credit_flow_norm",
+            "market_micro_relative_volume_norm",
+            "behavior_prior",
             "ret_3",
             "ret_6",
             "bond_credit_risk_on_ema_5",
@@ -160,12 +324,26 @@ if __name__ == "__main__":
             "role_treasury",
         ],
         runtime_feature_builder=_runtime_feature_vector,
-        runtime_label_builder=direction_label_builder(min_return=0.0),
-        lookback_days=30,
-        mode_allowlist=["shadow_bond_equities"],
-        window=28,
-        horizon=18,
+        runtime_label_builder=_runtime_credit_rotation_label,
+        lookback_days=45,
+        mode_allowlist=_CREDIT_RUNTIME_MODES,
+        symbol_allowlist=_EXPANDED_CREDIT_SYMBOLS,
+        sample_filter=_runtime_sample_filter,
+        confidence_builder=_runtime_confidence,
+        min_confidence=0.32,
+        window=24,
+        horizon=12,
         min_samples=192,
-        min_sequences=2,
+        min_sequences=4,
         fallback_trainer=_train_synthetic,
+        allow_fallback_on_insufficient_data=False,
+        max_best_val_loss=0.6925,
+        max_final_val_loss=0.7050,
+        min_long_precision=0.52,
+        min_short_precision=0.52,
+        require_both_sides_precision=True,
+        min_acted_accuracy=0.53,
+        min_accuracy_lift_over_majority=0.02,
+        min_label_balance_score=0.25,
+        min_precision_balance_score=0.35,
     )

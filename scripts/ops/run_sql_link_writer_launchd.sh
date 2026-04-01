@@ -14,4 +14,8 @@ fi
 
 export BOT_RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-$PROFILE}"
 
+if [[ -n "${SQL_LINK_SERVICE_SHARDS:-}" ]]; then
+  exec "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/sql_link_shard_manager.py"
+fi
+
 exec "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/sql_link_writer_service.py"

@@ -2,6 +2,7 @@ import argparse
 import csv
 import glob
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List
@@ -100,7 +101,17 @@ def _publish_latest_alias(out_dir: Path, named_file: Path, alias_name: str) -> N
     alias_path = out_dir / alias_name
     if not named_file.exists():
         return
-    alias_path.write_bytes(named_file.read_bytes())
+    try:
+        desired_target = Path(os.path.relpath(named_file, alias_path.parent))
+        if alias_path.is_symlink():
+            current_target = Path(os.readlink(alias_path))
+            if current_target == desired_target:
+                return
+        if alias_path.exists() or alias_path.is_symlink():
+            alias_path.unlink()
+        alias_path.symlink_to(desired_target)
+    except Exception:
+        alias_path.write_bytes(named_file.read_bytes())
 
 
 def main() -> None:
