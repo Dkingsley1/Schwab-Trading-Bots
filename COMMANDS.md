@@ -16,10 +16,10 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 caffeinate -dimsu
 ```
 
-### Start or refresh the full live stack
+### Start the full live stack
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh feed-refresh --source all
+./scripts/ops/opsctl.sh start
 ```
 
 ### Stop the stack
@@ -260,10 +260,23 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh paper-performance --day "$(date -u +%Y%m%d)" --week-days 7 --json
 ```
+The lead chart in the rendered report is now a daily line graph.
+
+### Sentiment report
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh sentiment-report --day "$(date -u +%Y%m%d)" --lookback-days 180 --allow-gui-pdf-renderer --json
+```
 
 ### Open the latest paper performance PDF
 ```bash
 ./scripts/ops/open_report_artifact.sh paper
+```
+
+### Open the latest sentiment report PDF
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/open_report_artifact.sh sentiment
 ```
 
 ## Reports
@@ -298,6 +311,13 @@ Build it first if it is missing.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/open_report_artifact.sh paper
+```
+
+### Open the latest sentiment report PDF
+Build it first if it is missing.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/open_report_artifact.sh sentiment
 ```
 
 ### Open the market correlation overlap PDF
@@ -343,6 +363,77 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh retrain
 ```
 
+## Strategy Research
+
+### Full strategy research lane refresh
+Runs attribution, counterfactual replay, the research sandbox, and promotion readiness into one canonical health artifact at `governance/health/strategy_research_latest.json`.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh strategy-research --day "$(date -u +%Y%m%d)" --json
+```
+
+### Fast strategy research snapshot
+Use this during the day when you want the latest summary without rerunning the heavier research sandbox refresh. This now honors freshness TTLs for the lighter artifacts too.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh strategy-research --day "$(date -u +%Y%m%d)" --skip-sandbox --max-age-minutes 90 --sandbox-max-age-minutes 720 --json
+```
+
+### Unified derived-state snapshot
+Roll allocator, portfolio risk, and execution budgets into one small canonical artifact at `governance/health/derived_state_latest.json`.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh derived-state --json
+```
+
+### Cold-lane research refresh
+Use this for the heavier background pass. It checks resource guard, skips fresh artifacts, and only reruns the full strategy research lane when the summary is stale.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh cold-lane-refresh --day "$(date -u +%Y%m%d)" --strategy-max-age-minutes 180 --sandbox-max-age-minutes 720 --json
+```
+
+## Infrastructure Lanes
+
+### Ops coordinator lane
+Runs the lightweight ops-control sweep outside the trading registry. It refreshes the watchdog, derived-state snapshot, fast strategy research view, and the platform control-plane summary into one artifact at `governance/health/ops_coordinator_latest.json`.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh ops-coordinator --day "$(date -u +%Y%m%d)" --strategy-max-age-minutes 90 --sandbox-max-age-minutes 720 --json
+```
+
+### Storage maintenance lane
+Runs guarded storage route sync, shard maintenance, SQLite checkpointing, the stale-artifact sweeper bot, the stale-artifact reaper bot, and retention cleanup into one artifact at `governance/health/storage_maintenance_latest.json`.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh storage-maintenance --json
+```
+
+### Stage stale artifacts into the stale holding area
+Use this when you want the dedicated infrastructure sweeper bot to move stale retention candidates into `data/stale_stage` without hard-deleting them yet.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh stale-sweeper --stale-stage-sections all --json
+```
+
+Expected useful signal: `summary.staged_files` should climb while `deleted_files` stays `0`, and the staged audit trail lands in `data/stale_stage/stale_manifest.jsonl`.
+
+### Reap aged stale-stage artifacts
+Use this when you want the dedicated deletion bot to purge files that have already been sitting in `data/stale_stage` longer than the configured review window.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh stale-reaper --stale-purge-days 30 --json
+```
+
+Expected useful signal: `summary.deleted_files` tells you how many already-staged artifacts were actually removed during the pass.
+
+### Deep storage maintenance pass
+Use this when you explicitly want the lane to run a heavier SQLite vacuum instead of checkpoint-only maintenance.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh storage-maintenance --vacuum --json
+```
+
 ## Python Runtime
 
 ### Audit Python 3.14 shadow readiness
@@ -352,6 +443,8 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 BOT_RUNTIME_LANE=shadow314 ./scripts/ops/opsctl.sh py314-canary --skip-install --json
 ```
 
+Expected healthy result: `ok=true` with successful `mlx_core_import`, `mlx_lm_import`, `pytest_import`, and `indicator_bot_common_import`.
+
 ### Rebuild or resync the Python 3.14 shadow lane
 Use this after the current retrain is finished, or any time you want to rebuild `.venv314` from the lockfile path and then rerun the readiness audit.
 ```bash
@@ -359,7 +452,220 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 BOT_RUNTIME_LANE=shadow314 ./scripts/ops/opsctl.sh py314-canary --refresh-deps --json
 ```
 
-Expected healthy result: `ok=true` with successful `mlx_core_import`, `mlx_lm_import`, `pytest_import`, and `indicator_bot_common_import`.
+### Audit SQL access runtime
+Checks the installed SQL access stack against the lock, runs `pip check`, and smoke-tests both DuckDB-through-SQLAlchemy and ADBC SQLite support.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh sql-audit --json
+```
+
+Expected healthy result: `ok=true` with successful `duckdb_sqlalchemy_smoke` and `adbc_sqlite_smoke`.
+
+### Audit registry-wide training readiness
+Builds a single view of which registry bots are sample-starved, quality-failing, still brand-new, or missing diagnostics so you can separate shared runtime-input problems from bot-specific labeling/filter problems.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh training-registry-audit --json
+```
+
+Expected useful signal: active bots with `inferred_cause=shared_runtime_input_gap` point to shared snapshot/loader coverage issues, while `quality_guard_failure` points to bot-specific label/threshold work.
+
+### Audit label quality and abstention behavior
+Use this after the registry audit when the issue looks like over-filtering, under-filtering, side imbalance, or runaway acted coverage instead of a shared runtime snapshot gap.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh training-label-audit --json
+```
+
+Expected useful signal: `top_actions` should tell you whether the next fix is `relax_sample_filter`, `relax_confidence_gate`, `rebalance_label_builder`, or `tighten_abstention_thresholds`.
+
+### Build the unified training-quality control view
+Use this after the registry audit and label audit when you want one canonical artifact that scores supportability, lane balance, symbol concentration, promotion coverage, ingestion health, and the targeted retrain shortlist in one place.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh training-quality --json
+```
+
+Expected useful signal: `overall_status`, `training_quality_score`, and `top_priorities` should tell you whether the next move is fixing runtime inputs, refreshing stale diagnostics, rebalancing dominant lanes, or isolating probation bots.
+
+### Build the canonical feature-store manifest
+Use this when you want one point-in-time contract for runtime training rows, event joins, feature hashes, and lane partitions instead of treating lineage as a loose collection of artifacts.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh feature-store --json
+```
+
+Expected useful signal: `overall_status`, `dataset_contract.rows_sha256`, `point_in_time_contract.dataset_join_keys`, and `lane_partitions` should tell you whether lineage is clean enough for large retrains and replay.
+
+### Build the multiple-testing guard
+Use this after replay feature ablation or counterfactual searches so experimentation stays attached to an explicit hypothesis family, correction method, and regime segmentation.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh multiple-testing-guard --json
+```
+
+Expected useful signal: `family_size`, `correction_method`, `corrected_alpha`, and `regime_segments` should tell you whether research batches are disciplined enough to compare fairly.
+
+### Build the decay monitor
+Use this to turn paper and replay outcomes into a direct training signal instead of waiting for weak sleeves to silently accumulate.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh decay-monitor --json
+```
+
+Expected useful signal: `overall_status`, `weak_sleeve_count`, `pnl_slope`, and `trailing_periods` should tell you whether a sleeve needs targeted retrain, probation, or retirement work.
+
+### Build the ingestion and storage control plane
+Use this when backlog, retention debt, or stale-stage pressure feels like it is dragging down both ops and training quality. It estimates drain time, throughput, and top remediation actions in one place.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh ingestion-storage-control --json
+```
+
+Expected useful signal: `severity`, `pressure_index`, `estimated_core_drain_minutes`, `estimated_total_drain_minutes`, and `retention_debt_gb` should tell you whether to retrain, throttle, split shards, or stay in maintenance mode.
+
+### Build or apply the memory-efficiency profile
+Use this when you want the system to react more intelligently to Apple Silicon memory pressure, swap growth, and storage pressure instead of relying on static defaults alone.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh memory-efficiency status --json
+./scripts/ops/opsctl.sh memory-efficiency apply --json
+```
+
+Expected useful signal: `recommended_profile`, `memory_snapshot`, and `recommended_env_overrides` should tell you whether to stay at full throughput, drop to an air-safe posture, or force a constrained profile until pressure clears.
+
+### Audit model lifecycle hygiene
+Use this to see whether active bots still have fresh training diagnostics, valid model/log artifact paths, and whether any active entries should be downgraded out of production until they are supportable again.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh model-lifecycle --json
+```
+
+Expected useful signal: `stale_active_training_diagnostics=0` for a healthy active set. If this is nonzero, refresh or downgrade those bots before trusting full-registry training conclusions.
+
+### Morning control-plane sweep
+Runs the lightweight operator pass that refreshes watchdog health, derived state, fast strategy research, registry audits, label audits, and the control-plane summary in one shot.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh ops-coordinator --day "$(date -u +%Y%m%d)" --strategy-max-age-minutes 90 --sandbox-max-age-minutes 720 --json
+```
+
+Expected useful signal: one artifact at `governance/health/ops_coordinator_latest.json` with active sample-starved counts, stale-diagnostic counts, recommended action, and pending-line pressure.
+
+### Audit security hardening
+Use this to verify RBAC, pre-commit secret scanning, paper/live separation, audit journals, and backup evidence before you trust a live expansion or a promotion packet.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh security-audit
+```
+
+Expected useful signal: `overall_status`, failed check names, `secret_scan_age_hours`, and `rbac_role_count` should tell you whether the current operator surface is actually hardened.
+
+### Run the secret scan directly
+Use this for quick repo-wide or staged-file credential hygiene checks.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh secret-scan --staged
+```
+
+Expected healthy result: `findings_count=0`.
+
+### Institutional-readiness control plane
+Use this when you want one explicit snapshot of how close the repo is to institutional-grade across the big domains: point-in-time lineage, immutable experiments, simulator fidelity, portfolio/risk layers, TCA/capacity, research discipline, model governance, security, reliability, observability, and developer process.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh platform-control-plane --max-rows 4000 --json
+```
+
+Expected useful signal: `institutional_readiness.overall_score`, `overall_status`, `weakest_domains`, and `top_priorities` should tell you which structural upgrades matter most next instead of just whether day-to-day ops are green.
+
+### Build the schema and migration manifest
+Use this when you want one explicit inventory of operator-facing contracts, their schema versions, and which artifacts are still legacy or missing versioning.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh schema-migration --json
+```
+
+Expected useful signal: `summary.missing_contracts`, `summary.legacy_unversioned_contracts`, and `contracts[*].compatibility` should tell you where schema discipline still needs tightening.
+
+## Access Mode
+
+### Enable portable access mode
+Use this before exporting or handing the repo to someone else. It keeps storage project-local, advertises the portable SQL path, and leaves your current native defaults untouched until you flip it on.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh access-portable
+```
+
+### Restore native access mode
+Use this on your Mac to go back to the current native behavior with your normal storage and runtime defaults.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh access-native
+```
+
+### Show the current access mode
+This reports whether the runtime is currently in `native` or `portable` mode and which override file is controlling it.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh access-status
+```
+
+Expected healthy result: `runtime_access_mode mode=native` on your Mac by default, or `mode=portable` after you flip the export-friendly switch.
+
+## Brain Switching
+
+These are the friendly wrappers around the backend switch layer. They are best used for portable or shadow workflows, not as a replacement for the live MLX trading brain.
+
+### Show the current brain/backend contract
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh brain-status --json
+```
+
+Expected useful signal: `backend_contract` shows which backend is active, which packages are installed, and whether the selected backend is live-trading capable or observation-only.
+
+### Switch to automatic portable brain selection
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh brain-switch portable_auto --json
+```
+
+### Pin the brain switch to MLX
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh brain-switch mlx --json
+```
+
+### Pin the brain switch to PyTorch
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh brain-switch pytorch --json
+```
+
+### Pin the brain switch to ONNX
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh brain-switch onnx --json
+```
+
+### Pin the brain switch to TensorFlow
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh brain-switch tensorflow --json
+```
+
+### Pin the brain switch to JAX
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh brain-switch jax --json
+```
+
+### Restore the native MLX-default runtime
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh brain-native --json
+```
 
 ### Force full retrain
 ```bash
@@ -377,6 +683,123 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh regime-validate
+```
+
+## Institutional Upgrade Lanes
+
+These are the operator commands for the bigger platform-hardening work: queue-backed ingestion, split-brain reconciliation, content-addressed artifacts, training requalification, portfolio/risk services, execution lab work, and the new daily-verify remediation bot.
+
+### Build the durable prioritized ingestion queue
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh ingestion-priority-queue --json
+```
+
+### Apply the ingestion/storage governor
+Use this when you want the queue and storage lane to clamp deferred and cold pressure, normalize the SQL primary path, and publish the current pressure profile.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh ingestion-storage-governor apply --json
+```
+
+### Drain the external deferred and cold backlog
+Use this during off-hours to raise deferred and cold drain budgets temporarily, sweep stale artifacts, and push down the external BOT_LOGS backlog without relaxing the live-time governor.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh external-backlog-drain --apply --json
+```
+
+If the SQL writer is already busy and you want the drain to keep trying automatically until it can take over, use follow-through mode.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh external-backlog-drain --apply --follow-through --wait-timeout-seconds 900 --json
+```
+
+### Run the background backlog retry bot manually
+Use this if you want the infrastructure bot to decide whether the drain is actionable and then launch a follow-through pass automatically.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh external-backlog-retry-bot --apply --wait-timeout-seconds 900 --json
+```
+
+### Quarantine stale prior-day backlog during market hours
+Use this to stage oversized prior-day `shadow_pnl_attribution` and explanation files into `data/stale_stage` so they stop competing with the live ingestion path before the next off-hours drain window.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh backlog-quarantine --apply --json
+```
+
+### Install the hands-off backlog retry bot
+This is part of the ops automation launchd stack. Reinstalling the ops automations will register the new background retry bot and kick it off immediately.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/install_ops_automation_launchd.sh
+```
+
+### Materialize the content-addressed artifact store
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh content-store --json
+```
+
+### Review BOT_LOGS split-brain conflicts
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh split-brain-reconcile --json
+```
+
+### Check storage resilience and standby readiness
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh storage-resilience --json
+```
+
+### Build the training requalification lane
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh training-requalification --json
+```
+
+### Seed walk-forward coverage continuously
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh coverage-seed --json
+```
+
+### Publish calibration and abstention controls
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh calibration-control --json
+```
+
+### Net sleeve intents through the portfolio allocator
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh portfolio-allocator --json
+```
+
+### Show the separate risk-service boundary
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh risk-service --json
+```
+
+### Run the execution research lab
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh execution-lab --json
+```
+
+### Open the operator cockpit
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh operator-cockpit --json
+```
+
+### Run the daily-verify auto-remediation infrastructure bot
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh daily-verify-remediation --apply --json
 ```
 
 ## Schwab Auth
@@ -453,14 +876,22 @@ open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/one_numbers/l
 
 ## Start / Stop
 
-### Start or refresh the full live stack
-This is the main stack command. It covers the full sleeves loop, live feeds, and paper-mode defaults.
+### Start the full live stack
+This is the canonical start command. It defaults to the live profile, enables the watchdog-backed stack, and brings up the sleeves loop, futures, live feeds, and paper-mode defaults.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh feed-refresh --source all
+./scripts/ops/opsctl.sh start
+```
+
+### Force-restart the live stack in place
+Use this when the stack is already running and you want `opsctl` to restart the live stack cleanly instead of only refreshing feeds.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh start --force-restart
 ```
 
 ### Stop the stack
+This stops the loop processes and disables the stack auto-restart launchd jobs so they do not come right back up.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh stop
@@ -469,6 +900,7 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ## Status And Health
 
 ### Runtime status
+Shows the watchdog, sleeves, dividend/bond sleeves, execution lanes, futures, FX, and SQL writer processes.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh status
@@ -539,139 +971,185 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh storage-switch-external
 ```
 
-## Workspace Merge
+## BOT_LOGS Hygiene
 
-`/Users/dankingsley/Documents/schwab_trading_bot` is already a Finder-visible wrapper for the canonical repo at `/Users/dankingsley/PycharmProjects/schwab_trading_bot`. The commands below are for merging the Schwab-specific workspace pieces from `/Users/dankingsley/Documents/New project` into the repo archive path while leaving unrelated `one_numbers*` work and `organize_lacie_photos.py` alone.
+`/Users/dankingsley/PycharmProjects/schwab_trading_bot/{data,logs,exports,governance,decisions,decision_explanations,models}` are symlinked to `/Volumes/BOT_LOGS/schwab_trading_bot`, while `local_fallback_storage` stays on the Mac's internal drive. Safe purge work here means Finder junk, stale `.local_fallback*` conflict copies, retention-managed stale artifacts, and empty fallback mirror directories. Do not blindly delete `local_fallback_storage/data/*.sqlite3`: `bot_channel_queue.sqlite3` is the active queue DB and the other SQLite files are the fallback cutover copies if the external drive disappears.
+
+### Inspect the active storage route and fallback footprint
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+cat governance/health/storage_failback_sync_latest.json
+du -sh /Volumes/BOT_LOGS/schwab_trading_bot/{data,decisions,decision_explanations,exports,governance,logs,models}
+du -sh /Users/dankingsley/PycharmProjects/schwab_trading_bot/local_fallback_storage/data
+ls -lh /Users/dankingsley/PycharmProjects/schwab_trading_bot/local_fallback_storage/data/*.sqlite3
+```
+
+### Preview safe BOT_LOGS purge candidates
+```bash
+find /Volumes/BOT_LOGS/schwab_trading_bot \
+  \( -type d \( -name '__pycache__' -o -name '.pytest_cache' -o -name '.mypy_cache' -o -name '.ruff_cache' -o -name '.hypothesis' \) \
+  -o -type f \( -name '.DS_Store' -o -name '*.pyc' -o -name '*.pyo' \) \) \
+  | sort
+find /Volumes/BOT_LOGS/schwab_trading_bot -type f -name '*.local_fallback*' -mtime +1 | sort
+```
+
+### Purge safe BOT_LOGS clutter
+```bash
+find /Volumes/BOT_LOGS/schwab_trading_bot -type d \( -name '__pycache__' -o -name '.pytest_cache' -o -name '.mypy_cache' -o -name '.ruff_cache' -o -name '.hypothesis' \) -prune -exec rm -rf {} +
+find /Volumes/BOT_LOGS/schwab_trading_bot -type f \( -name '.DS_Store' -o -name '*.pyc' -o -name '*.pyo' \) -delete
+find /Volumes/BOT_LOGS/schwab_trading_bot -type f -name '*.local_fallback*' -mtime +1 -delete
+```
+
+### Preview overdue raw BOT_LOGS files that already have `.gz` archives
+These raw files are past the normal log-maintenance window and already have archived `.gz` siblings, so the raw copy is just extra space pressure.
+```bash
+find /Volumes/BOT_LOGS/schwab_trading_bot/{decisions,decision_explanations,governance,exports} \
+  -type f \( -name '*.jsonl' -o -name '*.log' \) -mtime +0 ! -name '*.gz' -print0 \
+  | while IFS= read -r -d '' path; do
+      [ -e "${path}.gz" ] && printf '%s\n' "$path"
+    done | sort
+```
+
+### Purge overdue raw BOT_LOGS files that already have `.gz` archives
+Use this only after you preview the list. It keeps the `.gz` archives and removes the redundant raw copies.
+```bash
+find /Volumes/BOT_LOGS/schwab_trading_bot/{decisions,decision_explanations,governance,exports} \
+  -type f \( -name '*.jsonl' -o -name '*.log' \) -mtime +0 ! -name '*.gz' -print0 \
+  | while IFS= read -r -d '' path; do
+      [ -e "${path}.gz" ] && rm -f "$path"
+    done
+```
+
+### Inspect shard corrupt-quarantine storage
+```bash
+du -sh /Volumes/BOT_LOGS/schwab_trading_bot/data/sql_link_shards/corrupt_quarantine
+find /Volumes/BOT_LOGS/schwab_trading_bot/data/sql_link_shards/corrupt_quarantine -maxdepth 3 | sort
+```
+
+### Purge a reviewed corrupt-quarantine shard copy
+```bash
+rm -rf /Volumes/BOT_LOGS/schwab_trading_bot/data/sql_link_shards/corrupt_quarantine/crypto_trading_20260331T145531Z
+```
+
+### Preview empty internal fallback mirror directories
+```bash
+find -P /Users/dankingsley/PycharmProjects/schwab_trading_bot/local_fallback_storage -type d -empty | sort
+```
+
+### Purge empty internal fallback mirror directories
+```bash
+find -P /Users/dankingsley/PycharmProjects/schwab_trading_bot/local_fallback_storage -depth -type d -empty -delete
+```
+
+### Preview retention-managed stale BOT_LOGS artifacts
+This dry-run shows old logs, governance files, debug snapshots, exports, and other retention targets without deleting anything.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+PY="$(zsh ./scripts/ops/runtime_python.sh)"
+"$PY" scripts/data_retention_policy.py --json
+```
+
+### Stage stale BOT_LOGS artifacts into the stale holding area
+This uses the sweeper bot to move stale candidates into `data/stale_stage` first, so the deletion process has a review buffer and manifest trail.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh stale-sweeper --stale-stage-sections all --json
+```
+
+### Purge aged files that are already sitting in stale_stage
+This only deletes artifacts that have already been staged and aged out of the review buffer.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh stale-reaper --stale-purge-days 30 --json
+```
+
+### Apply retention-managed BOT_LOGS cleanup
+This uses the repo's configured retention windows for logs, governance artifacts, debug snapshots, reports, and archive pruning.
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+PY="$(zsh ./scripts/ops/runtime_python.sh)"
+"$PY" scripts/data_retention_policy.py --apply --json
+```
+
+## Workspace Hygiene
+
+`/Users/dankingsley/Documents/schwab_trading_bot` is already a Finder-visible wrapper for the canonical repo at `/Users/dankingsley/PycharmProjects/schwab_trading_bot`. The repo's heavy runtime trees now live under `BOT_LOGS`, and `local_fallback_storage` is the internal safety net, so the commands below stay focused on leftover `Documents/New project` cache, archive, and merge artifacts while leaving the current `one_numbers*` work and `organize_lacie_photos.py` alone.
 
 ### Verify the Documents wrapper folder
 ```bash
 ls -la /Users/dankingsley/Documents/schwab_trading_bot
 ```
 
-### Preview the automated workspace purge plan
+### Preview the current New project top level
+```bash
+find "/Users/dankingsley/Documents/New project" -maxdepth 1 -mindepth 1 | sort
+```
+
+### Preview stale workspace artifacts in Documents/New project
+```bash
+find "/Users/dankingsley/Documents/New project" \
+  \( -type d \( -name '__pycache__' -o -name '.pytest_cache' -o -name '_schwab_prepurge_*' \) -o -type f -name '.DS_Store' \) \
+  | sort
+```
+
+### Purge stale workspace artifacts in Documents/New project
+```bash
+find "/Users/dankingsley/Documents/New project" -type d \( -name '__pycache__' -o -name '.pytest_cache' -o -name '_schwab_prepurge_*' \) -prune -exec rm -rf {} +
+find "/Users/dankingsley/Documents/New project" -type f -name '.DS_Store' -delete
+```
+
+### Preview stale repo artifacts inside the project
+This excludes virtualenv folders so you only see repo-owned cache and test artifacts.
+```bash
+PROJECT_ROOT="/Users/dankingsley/PycharmProjects/schwab_trading_bot"
+find "$PROJECT_ROOT" \
+  \( -path "$PROJECT_ROOT/.venv*" -o -path "$PROJECT_ROOT/.git" -o -path "$PROJECT_ROOT/.git/*" \) -prune \
+  -o \( -type d \( -name '__pycache__' -o -name '.pytest_cache' -o -name '.mypy_cache' -o -name '.ruff_cache' -o -name '.hypothesis' -o -name 'htmlcov' \) -o -type f \( -name '*.pyc' -o -name '*.pyo' -o -name '.coverage' -o -name '.DS_Store' \) \) \
+  -print | sort
+```
+
+### Purge stale repo artifacts inside the project
+This excludes virtualenv folders so you only remove repo-owned cache and test artifacts.
+```bash
+PROJECT_ROOT="/Users/dankingsley/PycharmProjects/schwab_trading_bot"
+find "$PROJECT_ROOT" \
+  \( -path "$PROJECT_ROOT/.venv*" -o -path "$PROJECT_ROOT/.git" -o -path "$PROJECT_ROOT/.git/*" \) -prune \
+  -o -type d \( -name '__pycache__' -o -name '.pytest_cache' -o -name '.mypy_cache' -o -name '.ruff_cache' -o -name '.hypothesis' -o -name 'htmlcov' \) -prune -exec rm -rf {} +
+find "$PROJECT_ROOT" \
+  \( -path "$PROJECT_ROOT/.venv*" -o -path "$PROJECT_ROOT/.git" -o -path "$PROJECT_ROOT/.git/*" \) -prune \
+  -o -type f \( -name '*.pyc' -o -name '*.pyo' -o -name '.coverage' -o -name '.DS_Store' \) -delete
+```
+
+### Preview legacy repo-side merge artifacts
+```bash
+find /Users/dankingsley/PycharmProjects/schwab_trading_bot/docs -maxdepth 3 \( -name 'documents_merge' -o -name 'new_project_schwab_workspace' \) | sort
+```
+
+### Purge the legacy repo-side merge archive
+```bash
+rm -rf /Users/dankingsley/PycharmProjects/schwab_trading_bot/docs/documents_merge/new_project_schwab_workspace
+```
+
+### Preview legacy Schwab workspace-folder purge status
+Expected current result: `eligible_for_archive` is empty because those old staging folders are already gone.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 PY="$(zsh ./scripts/ops/runtime_python.sh)"
 "$PY" scripts/ops/documents_workspace_purge.py plan --json
 ```
 
-### Automatically archive the old Schwab workspace folders out of New project
-Dry-run is the default. Add `--execute` after you review the plan.
+### Purge all legacy prepurge archives created by the helper
+Dry-run is the default. Add `--execute` only after you verify the archive list.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 PY="$(zsh ./scripts/ops/runtime_python.sh)"
-"$PY" scripts/ops/documents_workspace_purge.py archive --json
+"$PY" scripts/ops/documents_workspace_purge.py purge --json
 ```
 
-### Automatically purge the archived Schwab workspace folders
-Dry-run is the default. Add `--execute` only after you verify the archive contents.
+### Purge only the latest legacy prepurge archive
+Dry-run is the default. Add `--execute` only after you verify the archive list.
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 PY="$(zsh ./scripts/ops/runtime_python.sh)"
 "$PY" scripts/ops/documents_workspace_purge.py purge --latest-only --json
-```
-
-### Preview the merged Schwab workspace archive
-```bash
-find /Users/dankingsley/PycharmProjects/schwab_trading_bot/docs/documents_merge/new_project_schwab_workspace -maxdepth 2 | sort | sed -n '1,200p'
-```
-
-### Re-sync the Schwab workspace from Documents/New project
-```bash
-SRC="/Users/dankingsley/Documents/New project"
-DEST="/Users/dankingsley/PycharmProjects/schwab_trading_bot/docs/documents_merge/new_project_schwab_workspace"
-items=(
-  balloon_fix
-  commands_alpha
-  commands_most_used
-  commands_remove_macro
-  commands_reports_pdf
-  commands_reports_timeline
-  fx_patch
-  stage
-  stage_commands_md
-  stage_dividend_paper
-  stage_export_alias
-  stage_external_csv
-  stage_futures_tail
-  stage_fx_context_launchd
-  stage_fx_gate
-  stage_fx_quotes
-  stage_fx_session
-  stage_fx_tail
-  stage_fx_twelve
-  stage_paper_report_all_sleeves
-  stage_reports
-  stage_retrain_note
-  tmp_final3
-  tmp_fix
-  tmp_fix2
-  tmp_fix_scripts
-  tmp_memory_guard_patch
-  tmp_reconcile_patch
-  tmp_repo_patch
-  tmp_resource_guard_patch
-  tmp_storage_patch
-)
-for item in "${items[@]}"; do
-  rsync -a "$SRC/$item" "$DEST/"
-done
-```
-
-### Stage 1: move the old Schwab workspace folders out of New project
-```bash
-SRC="/Users/dankingsley/Documents/New project"
-STAMP="$(date +%Y%m%d_%H%M%S)"
-ARCHIVE="$SRC/_schwab_prepurge_$STAMP"
-items=(
-  balloon_fix
-  commands_alpha
-  commands_most_used
-  commands_remove_macro
-  commands_reports_pdf
-  commands_reports_timeline
-  fx_patch
-  stage
-  stage_commands_md
-  stage_dividend_paper
-  stage_export_alias
-  stage_external_csv
-  stage_futures_tail
-  stage_fx_context_launchd
-  stage_fx_gate
-  stage_fx_quotes
-  stage_fx_session
-  stage_fx_tail
-  stage_fx_twelve
-  stage_paper_report_all_sleeves
-  stage_reports
-  stage_retrain_note
-  tmp_final3
-  tmp_fix
-  tmp_fix2
-  tmp_fix_scripts
-  tmp_memory_guard_patch
-  tmp_reconcile_patch
-  tmp_repo_patch
-  tmp_resource_guard_patch
-  tmp_storage_patch
-)
-mkdir -p "$ARCHIVE"
-for item in "${items[@]}"; do
-  mv "$SRC/$item" "$ARCHIVE/"
-done
-printf '%s\n' "$ARCHIVE"
-```
-
-### Stage 2: review the prepurge archive before deleting it
-```bash
-find "/Users/dankingsley/Documents/New project"/_schwab_prepurge_* -maxdepth 2 | sort | sed -n '1,200p'
-du -sh "/Users/dankingsley/Documents/New project"/_schwab_prepurge_*
-find /Users/dankingsley/PycharmProjects/schwab_trading_bot/docs/documents_merge/new_project_schwab_workspace -maxdepth 2 | sort | sed -n '1,200p'
-```
-
-### Stage 3: purge the archived Schwab workspace folders from New project
-```bash
-ARCHIVE="$(ls -dt "/Users/dankingsley/Documents/New project"/_schwab_prepurge_* | head -n 1)"
-rm -rf "$ARCHIVE"
 ```
