@@ -15,6 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.fx_twelve_data_guard import twelve_data_cooldown_status
 from core.runtime_python import resolve_runtime_python
 
 VENV_PY = resolve_runtime_python(PROJECT_ROOT)
@@ -96,14 +97,111 @@ def _count_csv(raw: str) -> int:
     return len([part for part in str(raw or "").split(",") if part.strip()])
 
 
-def _realtime_interval_seconds(env: dict[str, str], requested_interval: int, realtime_symbols: str) -> int:
+def _count_unique_csv(*values: str) -> int:
+    seen: set[str] = set()
+    for raw in values:
+        for part in str(raw or "").split(","):
+            token = part.strip().upper()
+            if token:
+                seen.add(token)
+    return len(seen)
+
+
+def _realtime_interval_seconds(
+    env: dict[str, str],
+    requested_interval: int,
+    realtime_symbols: str,
+    realtime_context_symbols: str,
+) -> int:
     base_interval = max(int(requested_interval), 15)
-    symbol_count = max(_count_csv(realtime_symbols), 1)
+    symbol_count = max(_count_unique_csv(realtime_symbols, realtime_context_symbols), 1)
     max_credits_per_minute = max(int(str(env.get("FX_TWELVE_DATA_MAX_CREDITS_PER_MINUTE", "8") or "8")), 1)
     reserved_credits = max(int(str(env.get("FX_TWELVE_DATA_CREDIT_RESERVE", "2") or "2")), 0)
     usable_credits = max(max_credits_per_minute - reserved_credits, 1)
     throttled_interval = int(math.ceil((60.0 * float(symbol_count)) / float(usable_credits)))
     return max(base_interval, throttled_interval)
+
+
+def _fx_realtime_provider_status(env: dict[str, str]) -> dict[str, object]:
+    enabled = _env_flag(env, "FX_REALTIME_QUOTES_ENABLED", True) and bool(str(env.get("TWELVE_DATA_API_KEY", "")).strip())
+    if not enabled:
+        return {
+            "enabled": False,
+            "available": False,
+            "reason": "realtime_quotes_disabled",
+            "cooldown": {},
+        }
+    cooldown = twelve_data_cooldown_status(PROJECT_ROOT)
+    if bool(cooldown.get("active")):
+        kind = str(cooldown.get("kind", "") or "rate_limit")
+        return {
+            "enabled": True,
+            "available": False,
+            "reason": f"provider_cooldown:{kind}",
+            "cooldown": cooldown,
+        }
+    return {
+        "enabled": True,
+        "available": True,
+        "reason": "available",
+        "cooldown": cooldown,
+    }
+
+
+def _fx_supervisor_mode(
+    *,
+    proxy_session_open: bool,
+    forex_session_open: bool,
+    off_hours_only: bool,
+    provider_status: dict[str, object],
+    default_symbols: str,
+    default_context_symbols: str,
+    realtime_symbols: str,
+    realtime_context_symbols: str,
+) -> dict[str, object]:
+    if proxy_session_open or (not off_hours_only):
+        return {
+            "live": True,
+            "mode": "live_proxy_market_hours",
+            "reason": "proxy_market_open",
+            "symbols": default_symbols,
+            "context_symbols": default_context_symbols,
+        }
+
+    if forex_session_open and bool(provider_status.get("available")):
+        return {
+            "live": True,
+            "mode": "live_forex_quotes",
+            "reason": "forex_session_open_twelve_data",
+            "symbols": realtime_symbols,
+            "context_symbols": realtime_context_symbols,
+        }
+
+    if forex_session_open:
+        if bool(provider_status.get("enabled")):
+            cooldown = provider_status.get("cooldown") if isinstance(provider_status.get("cooldown"), dict) else {}
+            kind = str(cooldown.get("kind", "") or "rate_limit")
+            remaining_seconds = int(float(cooldown.get("remaining_seconds", 0.0) or 0.0))
+            reason = f"twelve_data_{kind}_cooldown"
+            if remaining_seconds > 0:
+                reason = f"{reason}_{remaining_seconds}s"
+        else:
+            reason = "forex_session_open_realtime_disabled"
+        return {
+            "live": False,
+            "mode": "forex_session_context_only",
+            "reason": reason,
+            "symbols": default_symbols,
+            "context_symbols": default_context_symbols,
+        }
+
+    return {
+        "live": False,
+        "mode": "forex_weekend_closed",
+        "reason": "forex_weekend_closed",
+        "symbols": default_symbols,
+        "context_symbols": default_context_symbols,
+    }
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -352,10 +450,14 @@ def _run_supervised_session(args: argparse.Namespace, env: dict[str, str]) -> in
     child: subprocess.Popen | None = None
     iter_count = 0
     off_hours_only = _env_flag(env, "FX_OFF_HOURS_CONTEXT_ONLY", True)
-    realtime_quotes_enabled = _env_flag(env, "FX_REALTIME_QUOTES_ENABLED", True) and bool(str(env.get("TWELVE_DATA_API_KEY", "")).strip())
     realtime_symbols = str(env.get("FX_REALTIME_SYMBOLS", DEFAULT_FX_REALTIME_SYMBOLS) or DEFAULT_FX_REALTIME_SYMBOLS)
     realtime_context_symbols = str(env.get("FX_REALTIME_CONTEXT_SYMBOLS", DEFAULT_FX_REALTIME_CONTEXT_SYMBOLS) or DEFAULT_FX_REALTIME_CONTEXT_SYMBOLS)
-    realtime_interval_seconds = _realtime_interval_seconds(env, int(args.interval_seconds), realtime_symbols)
+    realtime_interval_seconds = _realtime_interval_seconds(
+        env,
+        int(args.interval_seconds),
+        realtime_symbols,
+        realtime_context_symbols,
+    )
     sync_interval = max(int(str(env.get("FX_OFF_HOURS_CONTEXT_SYNC_SECONDS", "300")) or "300"), 60)
     poll_interval = max(min(int(args.interval_seconds), 60), 15)
     last_sync_ts = 0.0
@@ -367,24 +469,28 @@ def _run_supervised_session(args: argparse.Namespace, env: dict[str, str]) -> in
             iter_count += 1
             proxy_session_open, proxy_session = _session_state(env)
             forex_session_open, forex_session = _forex_session_state(env)
+            provider_status = _fx_realtime_provider_status(env)
             session = {
                 "forex_session": forex_session,
                 "proxy_session": proxy_session,
+                "provider": provider_status,
             }
-            desired_mode = ""
-            desired_reason = ""
-            desired_symbols = args.symbols
-            desired_context_symbols = args.context_symbols
-            if proxy_session_open or (not off_hours_only):
-                desired_mode = "live_proxy_market_hours"
-                desired_reason = "proxy_market_open"
-            elif forex_session_open and realtime_quotes_enabled:
-                desired_mode = "live_forex_quotes"
-                desired_reason = "forex_session_open_twelve_data"
-                desired_symbols = realtime_symbols
-                desired_context_symbols = realtime_context_symbols
+            desired = _fx_supervisor_mode(
+                proxy_session_open=proxy_session_open,
+                forex_session_open=forex_session_open,
+                off_hours_only=off_hours_only,
+                provider_status=provider_status,
+                default_symbols=args.symbols,
+                default_context_symbols=args.context_symbols,
+                realtime_symbols=realtime_symbols,
+                realtime_context_symbols=realtime_context_symbols,
+            )
+            desired_mode = str(desired.get("mode") or "")
+            desired_reason = str(desired.get("reason") or "")
+            desired_symbols = str(desired.get("symbols") or args.symbols)
+            desired_context_symbols = str(desired.get("context_symbols") or args.context_symbols)
 
-            if desired_mode:
+            if bool(desired.get("live")):
                 _write_session_status(
                     broker=args.broker,
                     symbols=desired_symbols,
@@ -435,23 +541,22 @@ def _run_supervised_session(args: argparse.Namespace, env: dict[str, str]) -> in
                         + (f" err={err_summary}" if err_summary else "")
                     )
                     last_sync_ts = now_ts
-                off_hours_mode = "forex_session_context_only" if forex_session_open else "forex_weekend_closed"
-                off_hours_reason = "forex_session_open_proxy_market_closed" if forex_session_open else "forex_weekend_closed"
                 _write_off_hours_health(
                     wrapper_pid=wrapper_pid,
                     broker=args.broker,
-                    symbols=args.symbols,
-                    context_symbols=args.context_symbols,
+                    symbols=desired_symbols,
+                    context_symbols=desired_context_symbols,
                     iter_count=iter_count,
                     session=session,
-                    mode=off_hours_mode,
-                    reason=off_hours_reason,
+                    mode=desired_mode,
+                    reason=desired_reason,
                 )
                 if last_mode != "off_hours":
                     print(
-                        f"[FXSession] state={off_hours_mode} "
+                        f"[FXSession] state={desired_mode} "
                         f"forex_open={int(forex_session_open)} "
                         f"proxy_open={int(proxy_session_open)} "
+                        f"provider={provider_status.get('reason')} "
                         f"local={proxy_session.get('local_timestamp')} tz={proxy_session.get('timezone')}"
                     )
                 last_mode = "off_hours"
@@ -485,7 +590,7 @@ def main() -> int:
     env["ALLOW_ORDER_EXECUTION"] = "0"
     env["SHADOW_PROFILE"] = "fx"
     env["SHADOW_DOMAIN"] = "equities"
-    env.setdefault("SHADOW_THRESHOLD_SHIFT", "+0.01")
+    env.setdefault("SHADOW_THRESHOLD_SHIFT", "+0.015")
 
     print("Starting FX shadow profile...")
     print("Symbols:", args.symbols)

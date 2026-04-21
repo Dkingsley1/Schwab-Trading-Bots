@@ -237,9 +237,6 @@ def main() -> int:
     sql_ok = _sql_writable()
     checks.append({"name": "sql_writable", "ok": sql_ok, "details": f"db_path={DB_PATH}"})
 
-    launcher_count = _proc_count("scripts/run_parallel_shadows.py")
-    checks.append({"name": "process_state", "ok": launcher_count <= 1, "details": f"parallel_launcher_count={launcher_count}"})
-
     activity_details = _profile_activity_details()
     activity = {
         profile: details["latest"]
@@ -258,6 +255,15 @@ def main() -> int:
         activity,
         args.heartbeat_max_age_sec,
         activity_details=activity_details,
+    )
+    launcher_count = _proc_count("scripts/run_parallel_shadows.py")
+    allowed_launchers = max(len(expected_profiles), 1)
+    checks.append(
+        {
+            "name": "process_state",
+            "ok": launcher_count <= allowed_launchers,
+            "details": f"parallel_launcher_count={launcher_count} allowed={allowed_launchers}",
+        }
     )
     for profile in expected_profiles:
         ok_prof, details = _profile_heartbeat_ok(profile, args.heartbeat_max_age_sec, activity=activity)

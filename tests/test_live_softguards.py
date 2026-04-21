@@ -1,11 +1,62 @@
 import os
 from pathlib import Path
 
+import core.base_trader as base_src
+import core.decision_logger as decision_logger_src
 from core.base_trader import BaseTrader
 
 
 def _mk_trader(mode: str = "shadow") -> BaseTrader:
     return BaseTrader("dummy_key", "dummy_secret", "https://127.0.0.1:8182", mode=mode)
+
+
+def _reset_base_storage_override_cache() -> None:
+    base_src._DYNAMIC_STORAGE_OVERRIDE_CACHE.clear()
+    base_src._DYNAMIC_STORAGE_OVERRIDE_CACHE.update(
+        {
+            "checked_at_monotonic": 0.0,
+            "fingerprint": (),
+            "values": {},
+        }
+    )
+
+
+def test_execute_decision_can_skip_explanations_via_storage_override(tmp_path: Path, monkeypatch) -> None:
+    pressure = tmp_path / "config" / ".env.storage_pressure_override"
+    pressure.parent.mkdir(parents=True, exist_ok=True)
+    pressure.write_text("LOG_DECISION_EXPLANATIONS=0\n", encoding="utf-8")
+    _reset_base_storage_override_cache()
+
+    writes: list[str] = []
+
+    def _capture(path: str, payload: dict, **kwargs) -> bool:
+        _ = (payload, kwargs)
+        writes.append(path)
+        return True
+
+    monkeypatch.setattr(base_src, "safe_append_channel_event", _capture)
+    monkeypatch.setattr(decision_logger_src, "safe_append_channel_event", _capture)
+
+    trader = _mk_trader("shadow")
+    trader.project_root = str(tmp_path)
+    trader.set_mode("shadow")
+
+    out = trader.execute_decision(
+        symbol="SPY",
+        action="BUY",
+        quantity=1.0,
+        model_score=0.64,
+        threshold=0.55,
+        features={"last_price": 100.0},
+        gates={"market_data_ok": True, "risk_limit_ok": True},
+        reasons=["score_above_threshold"],
+        strategy="grand_master_bot",
+        metadata={"snapshot_id": "snap-1"},
+    )
+
+    assert out["status"] == "DATA_ONLY_BLOCKED"
+    assert len(writes) == 1
+    assert "trade_decisions_" in writes[0]
 
 
 def test_extract_all_positions_from_payload_reads_nested_accounts():

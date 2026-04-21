@@ -42,6 +42,27 @@ def test_summarize_structured_news_items_emits_source_topics_and_session_flags()
     assert out["news_premarket_norm"] > 0.0
 
 
+def test_summarize_structured_news_items_recognizes_schwab_publishers() -> None:
+    ts_now = datetime(2026, 4, 13, 14, 0, tzinfo=timezone.utc).timestamp()
+    items = [
+        {
+            "headline": "Charles Schwab webcast: Portfolio positioning into earnings season",
+            "publisher": "Charles Schwab",
+            "publishedDate": datetime(2026, 4, 13, 13, 15, tzinfo=timezone.utc).isoformat(),
+        },
+        {
+            "headline": "Schwab Network live: Market outlook and sector rotation",
+            "publisher": "Schwab Network",
+            "publishedDate": datetime(2026, 4, 13, 13, 35, tzinfo=timezone.utc).isoformat(),
+        },
+    ]
+
+    out = summarize_structured_news_items(items, symbol="SPY", now_ts=ts_now, max_items=10)
+
+    assert out["news_source_quality_norm"] >= 0.9
+    assert out["news_entity_relevance_norm"] > 0.0
+
+
 def test_summarize_breadth_context_proxy_emits_norms() -> None:
     out = summarize_breadth_context(
         symbol="SPY",

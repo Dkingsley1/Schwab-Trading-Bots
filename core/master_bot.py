@@ -64,7 +64,7 @@ class MasterBot:
         decay_guard_drop: float = 0.08,
         promotion_margin: float = 0.005,
         no_improvement_retire_streak: int = 3,
-        min_active_bots: int = 20,
+        min_active_bots: int = 50,
         correlation_prune_threshold: float = 0.92,
     ) -> None:
         self.project_root = project_root
@@ -81,9 +81,10 @@ class MasterBot:
         self.max_active_no_improvement_streak = max(int(os.getenv("ACTIVE_STREAK_HARD_CAP", "12")), self.no_improvement_retire_streak)
         self.min_active_bots = max(int(min_active_bots), 0)
         self.correlation_prune_threshold = float(correlation_prune_threshold)
-        self.signal_group_weight_target = float(os.getenv("SIGNAL_GROUP_WEIGHT_TARGET", "0.78"))
-        self.min_active_options_bots = max(int(os.getenv("MASTER_MIN_ACTIVE_OPTIONS_BOTS", "4")), 0)
-        self.min_active_infrastructure_bots = max(int(os.getenv("MASTER_MIN_ACTIVE_INFRASTRUCTURE_BOTS", "4")), 0)
+        self.signal_group_weight_target = float(os.getenv("SIGNAL_GROUP_WEIGHT_TARGET", "0.50"))
+        self.min_active_options_bots = max(int(os.getenv("MASTER_MIN_ACTIVE_OPTIONS_BOTS", "6")), 0)
+        self.min_active_infrastructure_bots = max(int(os.getenv("MASTER_MIN_ACTIVE_INFRASTRUCTURE_BOTS", "6")), 0)
+        self.infrastructure_always_active = os.getenv("MASTER_INFRASTRUCTURE_ALWAYS_ACTIVE", "1").strip() == "1"
         self.infrastructure_floor_min_quality_score = float(os.getenv("MASTER_INFRA_FLOOR_MIN_QUALITY_SCORE", "0.44"))
         self.walk_forward_fail_penalty = float(os.getenv("WALK_FORWARD_FAIL_PENALTY", "0.82"))
         self.walk_forward_min_forward_mean = float(os.getenv("WALK_FORWARD_MIN_FORWARD_MEAN", "0.51"))
@@ -95,6 +96,7 @@ class MasterBot:
         self.trading_quality_weight = min(max(float(os.getenv("MASTER_TRADING_QUALITY_WEIGHT", "0.35")), 0.0), 0.8)
         self.freeze_bot_count_enabled = os.getenv("MASTER_FREEZE_BOT_COUNT", "1").strip() == "1"
         self.strict_live_pass_only = os.getenv("MASTER_STRICT_LIVE_PASS_ONLY", "1").strip() == "1"
+        self.supportable_floor_recovery_enabled = os.getenv("MASTER_SUPPORTABLE_FLOOR_RECOVERY", "1").strip() == "1"
         self.require_confirmed_training_success = os.getenv("REQUIRE_CONFIRMED_TRAINING_SUCCESS", "1").strip() == "1"
         self.confirmed_training_success_max_age_hours = float(os.getenv("CONFIRMED_TRAINING_SUCCESS_MAX_AGE_HOURS", "72"))
         self.training_success_file = os.getenv(
@@ -383,8 +385,12 @@ class MasterBot:
             return False
         if status.deleted_from_rotation:
             return False
-
         reason = str(status.reason or "")
+        if reason in {"no_classification_accuracy", "new_runtime_candidate", "planned_roster_expansion_slot", "unsupported_runtime_inputs"}:
+            return False
+        if reason.startswith("active_streak_cap_"):
+            return False
+
         if reason.startswith("graduation_hold:"):
             return False
         if reason.startswith("walk_forward_"):
@@ -419,6 +425,49 @@ class MasterBot:
         wf_tq = self._as_float(wf.get("trading_quality_score"))
         if wf_tq is not None and wf_tq < self.min_trading_quality_score:
             return False
+
+        return True
+
+    def _supportable_floor_override_eligible(self, status: BotStatus) -> bool:
+        if self._is_manual_quarantine(status):
+            return False
+        if status.deleted_from_rotation:
+            return False
+        if status.candidate_test_accuracy is None:
+            return False
+
+        reason = str(status.reason or "")
+        blocked_reasons = {
+            "no_classification_accuracy",
+            "new_runtime_candidate",
+            "planned_roster_expansion_slot",
+            "unsupported_runtime_inputs",
+        }
+        blocked_prefixes = (
+            "accuracy_below_",
+            "decay_guard_drop_",
+            "active_streak_cap_",
+            "trading_quality_below_",
+        )
+        if reason in blocked_reasons:
+            return False
+        if reason.startswith(blocked_prefixes):
+            return False
+
+        wf = self.walk_forward_map.get(status.bot_id, {})
+        if isinstance(wf, dict) and wf:
+            wf_status = str(wf.get("status") or "").strip().lower()
+            wf_forward = self._as_float(wf.get("forward_mean"))
+            wf_delta = self._as_float(wf.get("delta"))
+            wf_tq = self._as_float(wf.get("trading_quality_score"))
+            if wf_status == "fail":
+                return False
+            if wf_forward is not None and wf_forward < self.walk_forward_min_forward_mean:
+                return False
+            if wf_delta is not None and wf_delta < self.graduation_min_delta:
+                return False
+            if wf_tq is not None and wf_tq < self.min_trading_quality_score:
+                return False
 
         return True
 
@@ -491,6 +540,8 @@ class MasterBot:
             return False
 
         if role == "infrastructure_sub_bot":
+            if self.infrastructure_always_active:
+                return self._supportable_floor_override_eligible(status)
             candidate_quality = max(float(status.candidate_quality_score or 0.0), float(status.quality_score or 0.0))
             return candidate_quality >= self.infrastructure_floor_min_quality_score
 
@@ -507,7 +558,8 @@ class MasterBot:
                 continue
             active = [s for s in statuses if s.active and s.bot_role == role]
             if len(active) >= need:
-                continue
+                if role != "infrastructure_sub_bot" or not self.infrastructure_always_active:
+                    continue
 
             candidates = sorted(
                 [
@@ -521,7 +573,11 @@ class MasterBot:
                 reverse=True,
             )
 
-            for st in candidates[: max(need - len(active), 0)]:
+            role_need = need
+            if role == "infrastructure_sub_bot" and self.infrastructure_always_active:
+                role_need = max(role_need, len(active) + len(candidates))
+
+            for st in candidates[: max(role_need - len(active), 0)]:
                 st.active = True
                 st.reason = f"role_floor_{role}"
                 st.deleted_from_rotation = False
@@ -868,7 +924,7 @@ class MasterBot:
             acc = s.candidate_test_accuracy if s.candidate_test_accuracy is not None else -1.0
             return (s.candidate_quality_score, acc, s.quality_score)
 
-        candidates = sorted(
+        strict_candidates = sorted(
             [
                 s
                 for s in statuses
@@ -880,6 +936,24 @@ class MasterBot:
             key=rank_key,
             reverse=True,
         )
+        strict_ids = {s.bot_id for s in strict_candidates}
+        candidates = list(strict_candidates)
+
+        if self.supportable_floor_recovery_enabled and len(candidates) < needed:
+            recovery_candidates = sorted(
+                [
+                    s
+                    for s in statuses
+                    if (not s.active)
+                    and (not s.deleted_from_rotation)
+                    and (s.candidate_test_accuracy is not None)
+                    and (s.bot_id not in strict_ids)
+                    and self._supportable_floor_override_eligible(s)
+                ],
+                key=rank_key,
+                reverse=True,
+            )
+            candidates.extend(recovery_candidates)
 
         promoted: List[BotStatus] = []
         for st in candidates:
@@ -889,7 +963,10 @@ class MasterBot:
 
         for st in promoted:
             st.active = True
-            st.reason = f"min_active_floor_override_{self.min_active_bots}"
+            recovery_reason = ""
+            if st.bot_id not in strict_ids:
+                recovery_reason = ":supportable_recovery"
+            st.reason = f"min_active_floor_override_{self.min_active_bots}{recovery_reason}"
             st.deleted_from_rotation = False
             st.delete_reason = ""
             if st.test_accuracy is None and st.candidate_test_accuracy is not None:
@@ -1013,10 +1090,13 @@ class MasterBot:
                 "trading_quality_weight": self.trading_quality_weight,
                 "freeze_bot_count_enabled": self.freeze_bot_count_enabled,
                 "strict_live_pass_only": self.strict_live_pass_only,
+                "supportable_floor_recovery_enabled": self.supportable_floor_recovery_enabled,
                 "require_confirmed_training_success": self.require_confirmed_training_success,
                 "confirmed_training_success_max_age_hours": self.confirmed_training_success_max_age_hours,
+                "signal_group_weight_target": self.signal_group_weight_target,
                 "min_active_options_bots": self.min_active_options_bots,
                 "min_active_infrastructure_bots": self.min_active_infrastructure_bots,
+                "infrastructure_always_active": self.infrastructure_always_active,
                 "infrastructure_floor_min_quality_score": self.infrastructure_floor_min_quality_score,
                 "quality_score_formula": {
                     "accuracy_weight": 0.65,

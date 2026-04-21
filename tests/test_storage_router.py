@@ -1,5 +1,6 @@
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -151,6 +152,64 @@ class StorageRouterTests(unittest.TestCase):
             self.assertEqual(pruned, 0)
             self.assertEqual(len(details), 1)
             self.assertIn('logs/state.json', details[0])
+
+    def test_auto_sync_skips_sqlite_sidecars_for_failback_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            local_root = root / 'local'
+            external_root = root / 'external'
+            self._write_text(local_root / 'data' / 'jsonl_link.sqlite3-wal', 'wal-bytes')
+            self._write_text(local_root / 'data' / 'jsonl_link.sqlite3-shm', 'shm-bytes')
+            self._write_text(local_root / 'data' / 'bot_channel_queue.sqlite3-wal', 'queue-wal')
+            self._write_text(local_root / 'data' / 'snapshot_context.sqlite3-shm', 'snapshot-shm')
+            external_root.mkdir(parents=True, exist_ok=True)
+
+            copied, errors, pruned, details = storage_router._auto_sync_local_to_external(
+                local_root=local_root,
+                external_root=external_root,
+                link_dirs=('data',),
+                prune_local=True,
+                max_copy_files=10,
+            )
+
+            self.assertEqual(copied, 0)
+            self.assertEqual(errors, 0)
+            self.assertEqual(pruned, 0)
+            self.assertEqual(details, [])
+            self.assertTrue((local_root / 'data' / 'jsonl_link.sqlite3-wal').exists())
+            self.assertFalse((external_root / 'data' / 'jsonl_link.sqlite3-wal').exists())
+
+    def test_route_runtime_storage_records_route_event(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'repo'
+            root.mkdir()
+            external_root = Path(td) / 'external'
+            ops_db = root / 'governance' / 'ops_data_plane.sqlite3'
+
+            previous = self._set_env(
+                {
+                    'BOT_LOGS_EXTERNAL_PROJECT_ROOT': str(external_root),
+                    'BOT_LOGS_LOCAL_FALLBACK_ROOT': str(root / 'local_fallback_storage'),
+                    'BOT_LOGS_AUTO_SYNC_ON_RECONNECT': '0',
+                    'BOT_OPS_CONTROL_DB': str(ops_db),
+                }
+            )
+            try:
+                result = storage_router.route_runtime_storage(root, link_dirs=('logs',))
+            finally:
+                self._restore_env(previous)
+
+            self.assertEqual(result.mode, 'external')
+            self.assertTrue(result.ops_event_recorded)
+            with sqlite3.connect(str(ops_db)) as conn:
+                row = conn.execute(
+                    "SELECT mode, active_root FROM storage_route_events ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+
+            self.assertIsNotNone(row)
+            assert row is not None
+            self.assertEqual(row[0], 'external')
+            self.assertEqual(row[1], str(external_root))
 
 
 if __name__ == '__main__':

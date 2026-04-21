@@ -5,7 +5,14 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-VENV_PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_python import resolve_runtime_python
+
+os.environ.setdefault("BOT_RUNTIME_LANE", os.getenv("BOT_SHADOW_RUNTIME_LANE", "shadow314"))
+
+VENV_PY = resolve_runtime_python(PROJECT_ROOT)
 RUNNER = PROJECT_ROOT / "scripts" / "run_dividend_shadow.py"
 
 
@@ -18,6 +25,10 @@ def main() -> int:
         return 2
 
     env = os.environ.copy()
+    env.setdefault("MARKET_DATA_ONLY", "1")
+    env.setdefault("ALLOW_ORDER_EXECUTION", "0")
+    env.setdefault("SHADOW_DOMAIN", "equities")
+    env.setdefault("SHADOW_PROFILE", "dividend_capture")
     env.setdefault("DIVIDEND_STRATEGY_MODE", "capture")
 
     cmd = [str(VENV_PY), str(RUNNER), *sys.argv[1:]]

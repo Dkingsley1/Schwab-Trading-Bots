@@ -132,3 +132,64 @@ def test_replay_hash_registry_guard_rebases_recent_expected_hash_when_source_has
     assert payload["ok"] is True
     assert payload["details"]["paper"]["hash_match"] is True
     assert updated_registry["paper_replay"]["all|all"]["expected_hash"] == "fresh-paper-hash"
+
+
+def test_replay_hash_registry_guard_rebases_when_hash_matches_even_if_source_not_ok(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    now = datetime.now(timezone.utc)
+    registry_path = tmp_path / "replay_expected_hashes.json"
+    paper_path = tmp_path / "paper_replay_drill_latest.json"
+    e2e_path = tmp_path / "replay_end_to_end_latest.json"
+    out_path = tmp_path / "replay_hash_registry_guard_latest.json"
+
+    _write_json(
+        registry_path,
+        {
+            "paper_replay": {
+                "all|all": {
+                    "expected_hash": "recent-old-paper-hash",
+                    "updated_utc": (now - timedelta(hours=2)).isoformat(),
+                }
+            },
+            "replay_end_to_end": {},
+        },
+    )
+    _write_json(
+        paper_path,
+        {
+            "profile": "all",
+            "domain": "all",
+            "ok": False,
+            "failed_checks": ["paper_rows_low"],
+            "replay_hash": "fresh-paper-hash",
+            "hash_match": True,
+        },
+    )
+    _write_json(e2e_path, {"ok": True, "replay_hash": "fresh-e2e-hash"})
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "replay_hash_registry_guard.py",
+            "--registry-file",
+            str(registry_path),
+            "--paper-file",
+            str(paper_path),
+            "--e2e-file",
+            str(e2e_path),
+            "--out-file",
+            str(out_path),
+            "--json",
+        ],
+    )
+
+    rc = replay_guard.main()
+    payload = json.loads(capsys.readouterr().out)
+    updated_registry = json.loads(registry_path.read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert payload["ok"] is True
+    assert payload["details"]["paper"]["hash_match"] is True
+    assert updated_registry["paper_replay"]["all|all"]["expected_hash"] == "fresh-paper-hash"

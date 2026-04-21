@@ -95,6 +95,15 @@ def test_summarize_option_chain_emits_bias_roll_vwap_term_and_vol_expectation() 
     assert 0.0 <= out["options_iv_realized_spread_norm"] <= 1.0
     assert 0.0 <= out["options_gamma_front_share_norm"] <= 1.0
     assert 0.0 <= out["options_gamma_expiry_skew_norm"] <= 1.0
+    assert 0.0 <= out["options_surface_change_norm"] <= 1.0
+    assert 0.0 <= out["options_strike_expiry_concentration_change_norm"] <= 1.0
+    assert 0.0 <= out["options_gamma_flip_distance_norm"] <= 1.0
+    assert 0.0 <= out["options_earnings_setup_norm"] <= 1.0
+    assert 0.0 <= out["options_iv_crush_risk_norm"] <= 1.0
+    assert 0.0 <= out["options_assignment_risk_norm"] <= 1.0
+    assert 0.0 <= out["options_zero_dte_regime_norm"] <= 1.0
+    assert 0.0 <= out["options_vol_of_vol_change_norm"] <= 1.0
+    assert 0.0 <= out["options_spread_execution_risk_norm"] <= 1.0
     assert "options_iv_term_structure" in out
 
 
@@ -137,6 +146,14 @@ def test_summarize_futures_quote_emits_funding_basis_term_vwap_negative_bias_and
     assert 0.0 <= out["futures_mark_index_dislocation_norm"] <= 1.0
     assert 0.0 <= out["futures_session_volume_profile_norm"] <= 1.0
     assert 0.0 <= out["futures_calendar_spread_curve_norm"] <= 1.0
+    assert 0.0 <= out["futures_curve_shift_velocity_norm"] <= 1.0
+    assert 0.0 <= out["futures_cross_asset_confirmation_norm"] <= 1.0
+    assert 0.0 <= out["futures_liquidation_squeeze_norm"] <= 1.0
+    assert 0.0 <= out["futures_intraday_structure_norm"] <= 1.0
+    assert 0.0 <= out["futures_roll_pressure_norm"] <= 1.0
+    assert 0.0 <= out["futures_inventory_state_norm"] <= 1.0
+    assert 0.0 <= out["futures_delivery_hazard_norm"] <= 1.0
+    assert 0.0 <= out["futures_cash_basis_confirmation_norm"] <= 1.0
 
 
 def test_summarize_calendar_payload_emits_event_proximity_and_expiry_week() -> None:

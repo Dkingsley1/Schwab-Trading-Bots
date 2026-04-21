@@ -3,7 +3,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Tuple
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -35,6 +35,206 @@ def _artifact_config(project_root: Path) -> Dict[str, Dict[str, Any]]:
             "max_age_minutes": 240.0,
             "required": True,
         },
+        "global_killswitch": {
+            "paths": [project_root / "governance" / "health" / "global_killswitch_latest.json"],
+            "max_age_minutes": 15.0,
+            "required": False,
+        },
+        "runtime_access_mode": {
+            "paths": [project_root / "governance" / "health" / "runtime_access_mode_latest.json"],
+            "max_age_minutes": _hours_to_minutes(24.0),
+            "required": False,
+        },
+        "apple_silicon_profile": {
+            "paths": [project_root / "governance" / "health" / "apple_silicon_profile_latest.json"],
+            "max_age_minutes": _days_to_minutes(7.0),
+            "required": False,
+        },
+        "memory_efficiency_control": {
+            "paths": [project_root / "governance" / "health" / "memory_efficiency_control_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "training_report": {
+            "paths": [project_root / "governance" / "health" / "training_report_latest.json"],
+            "max_age_minutes": _days_to_minutes(3.0),
+            "required": False,
+        },
+        "nightly_resilience": {
+            "paths": [project_root / "governance" / "health" / "nightly_resilience_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "training_quality_control": {
+            "paths": [project_root / "governance" / "health" / "training_quality_control_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "ingestion_storage_control": {
+            "paths": [project_root / "governance" / "health" / "ingestion_storage_control_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "ingestion_storage_governor": {
+            "paths": [project_root / "governance" / "health" / "ingestion_storage_governor_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "storage_tier_policy": {
+            "paths": [project_root / "governance" / "health" / "storage_tier_policy_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "runtime_training_snapshot": {
+            "paths": [project_root / "governance" / "health" / "runtime_training_snapshot_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "training_runtime_control": {
+            "paths": [project_root / "governance" / "health" / "training_runtime_control_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "external_backlog_drain": {
+            "paths": [project_root / "governance" / "health" / "external_backlog_drain_latest.json"],
+            "max_age_minutes": _days_to_minutes(1.0),
+            "required": False,
+        },
+        "external_backlog_retry_bot": {
+            "paths": [project_root / "governance" / "health" / "external_backlog_retry_bot_latest.json"],
+            "max_age_minutes": _days_to_minutes(1.0),
+            "required": False,
+        },
+        "platform_control_plane": {
+            "paths": [project_root / "governance" / "health" / "platform_control_plane_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "ingestion_priority_queue": {
+            "paths": [project_root / "governance" / "health" / "ingestion_priority_queue_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "storage_split_brain_reconciler": {
+            "paths": [project_root / "governance" / "health" / "storage_split_brain_reconciler_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "storage_resilience_control": {
+            "paths": [project_root / "governance" / "health" / "storage_resilience_control_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "daily_verify_auto_remediation_bot": {
+            "paths": [project_root / "governance" / "health" / "daily_verify_auto_remediation_bot_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "operator_cockpit": {
+            "paths": [project_root / "governance" / "health" / "operator_cockpit_latest.json"],
+            "max_age_minutes": _days_to_minutes(1.0),
+            "required": False,
+        },
+        "regime_control_plane": {
+            "paths": [project_root / "governance" / "health" / "regime_control_plane_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "supportability_control": {
+            "paths": [project_root / "governance" / "health" / "supportability_control_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "teacher_quality_guard": {
+            "paths": [project_root / "governance" / "distillation" / "teacher_quality_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "bot_quality_autopilot": {
+            "paths": [project_root / "governance" / "health" / "bot_quality_autopilot_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "infrastructure_autofix_bot": {
+            "paths": [project_root / "governance" / "health" / "infrastructure_autofix_bot_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "live_runtime_separation_control": {
+            "paths": [project_root / "governance" / "health" / "live_runtime_separation_control_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "rolling_restart_controller": {
+            "paths": [project_root / "governance" / "health" / "rolling_restart_controller_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "auth_lease_manager": {
+            "paths": [project_root / "governance" / "health" / "auth_lease_manager_latest.json"],
+            "max_age_minutes": _days_to_minutes(1.0),
+            "required": False,
+        },
+        "blackstart_recovery": {
+            "paths": [project_root / "governance" / "health" / "blackstart_recovery_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "sleeve_isolation_guard": {
+            "paths": [project_root / "governance" / "health" / "sleeve_isolation_guard_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "artifact_freshness_slo": {
+            "paths": [project_root / "governance" / "health" / "artifact_freshness_slo_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "runtime_snapshot_cache_control": {
+            "paths": [project_root / "governance" / "health" / "runtime_snapshot_cache_control_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "remote_alert_control": {
+            "paths": [project_root / "governance" / "health" / "remote_alert_control_latest.json"],
+            "max_age_minutes": _days_to_minutes(1.0),
+            "required": False,
+        },
+        "storage_quota_guard": {
+            "paths": [project_root / "governance" / "health" / "storage_quota_guard_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "release_freeze_guard": {
+            "paths": [project_root / "governance" / "health" / "release_freeze_guard_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "roster_resilience_planner": {
+            "paths": [project_root / "governance" / "health" / "roster_resilience_planner_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "chaos_drill_coordinator": {
+            "paths": [project_root / "governance" / "health" / "chaos_drill_coordinator_latest.json"],
+            "max_age_minutes": _days_to_minutes(7.0),
+            "required": False,
+        },
+        "paper_execution_calibration": {
+            "paths": [project_root / "governance" / "health" / "paper_execution_calibration_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "stale_artifact_sweeper_bot": {
+            "paths": [project_root / "governance" / "health" / "stale_artifact_sweeper_bot_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "stale_artifact_reaper_bot": {
+            "paths": [project_root / "governance" / "health" / "stale_artifact_reaper_bot_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
         "sql_link_service": {
             "paths": [
                 project_root / "governance" / "health" / "sql_link_service_progress_latest.json",
@@ -63,8 +263,58 @@ def _artifact_config(project_root: Path) -> Dict[str, Dict[str, Any]]:
             "max_age_minutes": _days_to_minutes(2.0),
             "required": False,
         },
+        "new_bot_admission_guard": {
+            "paths": [project_root / "governance" / "health" / "new_bot_admission_guard_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "bot_support_owner_guard": {
+            "paths": [project_root / "governance" / "health" / "bot_support_owner_guard_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
         "replay_hash_registry_guard": {
             "paths": [project_root / "governance" / "health" / "replay_hash_registry_guard_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "schema_migration_guard": {
+            "paths": [project_root / "governance" / "migrations" / "latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "retrain_schema_compatibility_guard": {
+            "paths": [project_root / "governance" / "health" / "retrain_schema_compatibility_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "golden_replay_regression_guard": {
+            "paths": [project_root / "governance" / "health" / "golden_replay_regression_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "cohort_drift_baseline_guard": {
+            "paths": [project_root / "governance" / "health" / "cohort_drift_baseline_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "champion_challenger_probation_guard": {
+            "paths": [project_root / "governance" / "health" / "champion_challenger_probation_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "champion_challenger_probation_action": {
+            "paths": [project_root / "governance" / "health" / "champion_challenger_probation_action_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "retrain_lane_scheduler": {
+            "paths": [project_root / "governance" / "health" / "retrain_lane_scheduler_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "promotion_packet": {
+            "paths": [project_root / "governance" / "champion_challenger" / "promotion_packet_latest.json"],
             "max_age_minutes": _days_to_minutes(2.0),
             "required": False,
         },
@@ -154,12 +404,20 @@ def _infer_ok(payload: Dict[str, Any]) -> bool | None:
     raw_ok = payload.get("ok")
     if isinstance(raw_ok, bool):
         return raw_ok
+    if "halt" in payload:
+        return not bool(payload.get("halt"))
     if "hard_gate_triggered" in payload:
         return not bool(payload.get("hard_gate_triggered"))
     if "promote_ok" in payload:
         return bool(payload.get("promote_ok"))
     if "learning_ready" in payload:
         return bool(payload.get("learning_ready"))
+    if "overall_status" in payload:
+        status = str(payload.get("overall_status", "") or "").strip().lower()
+        if status in {"ready", "ok"}:
+            return True
+        if status in {"blocked", "regressed"}:
+            return False
     status = str(payload.get("status", "") or "").strip().lower()
     if status in {"ok", "healthy", "ready", "success", "pass"}:
         return True
@@ -197,6 +455,181 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             "hard_gate_triggered": bool(payload.get("hard_gate_triggered", False)),
             "inputs": payload.get("inputs") if isinstance(payload.get("inputs"), dict) else {},
         }
+    if name == "global_killswitch":
+        reasons = payload.get("reasons") if isinstance(payload.get("reasons"), list) else []
+        return {
+            "halt": bool(payload.get("halt", False)),
+            "action": str(payload.get("action", "") or ""),
+            "reason_count": len(reasons),
+            "reasons": reasons,
+        }
+    if name == "runtime_access_mode":
+        return {
+            "mode": str(payload.get("mode", "") or ""),
+            "ml_backend": str(payload.get("ml_backend", "") or ""),
+            "portable_enabled": bool(payload.get("portable_enabled", False)),
+            "backend_contract": payload.get("backend_contract") if isinstance(payload.get("backend_contract"), dict) else {},
+            "detected_backends": payload.get("detected_backends") if isinstance(payload.get("detected_backends"), dict) else {},
+        }
+    if name == "apple_silicon_profile":
+        hardware = payload.get("hardware") if isinstance(payload.get("hardware"), dict) else {}
+        return {
+            "applied_tier": str(payload.get("applied_tier", "") or ""),
+            "detected_tier": str(payload.get("detected_tier", "") or ""),
+            "chip": str(hardware.get("chip", "") or ""),
+            "memory_gb": float(hardware.get("memory_gb", 0.0) or 0.0),
+            "override_exists": bool(payload.get("override_exists", False)),
+        }
+    if name == "memory_efficiency_control":
+        memory_snapshot = payload.get("memory_snapshot") if isinstance(payload.get("memory_snapshot"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "recommended_profile": str(payload.get("recommended_profile", "") or ""),
+            "memory_pressure_state": str(memory_snapshot.get("memory_pressure_state", "") or ""),
+            "memory_pressure_kind": str(memory_snapshot.get("memory_pressure_kind", "") or ""),
+            "swap_used_gb": float(memory_snapshot.get("swap_used_gb", 0.0) or 0.0),
+        }
+    if name == "training_report":
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "confirmed_training_success": bool(summary.get("confirmed_training_success", False)),
+            "target_count": int(summary.get("target_count", 0) or 0),
+            "trained_count": int(summary.get("trained_count", 0) or 0),
+            "blocking_reasons": payload.get("blocking_reasons") if isinstance(payload.get("blocking_reasons"), list) else [],
+        }
+    if name == "nightly_resilience":
+        metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+        return {
+            "ok": bool(payload.get("ok", False)),
+            "failed_checks": payload.get("failed_checks") if isinstance(payload.get("failed_checks"), list) else [],
+            "watchdog_process_count": int(metrics.get("watchdog_process_count", 0) or 0),
+            "shadow_loop_process_count": int(metrics.get("shadow_loop_process_count", 0) or 0),
+            "watchdog_log_age_minutes": float(metrics.get("watchdog_log_age_minutes", 0.0) or 0.0),
+        }
+    if name == "training_quality_control":
+        supportability = payload.get("supportability") if isinstance(payload.get("supportability"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "training_quality_score": float(payload.get("training_quality_score", 0.0) or 0.0),
+            "top_priorities": payload.get("top_priorities") if isinstance(payload.get("top_priorities"), list) else [],
+            "active_supportability_score": float(supportability.get("active_supportability_score", 0.0) or 0.0),
+            "implemented_improvement_count": int(payload.get("implemented_improvement_count", 0) or 0),
+        }
+    if name == "ingestion_storage_control":
+        backpressure = payload.get("backpressure") if isinstance(payload.get("backpressure"), dict) else {}
+        storage = payload.get("storage") if isinstance(payload.get("storage"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "severity": str(payload.get("severity", "") or ""),
+            "pressure_index": float(payload.get("pressure_index", 0.0) or 0.0),
+            "recommended_operating_mode": str(payload.get("recommended_operating_mode", "") or ""),
+            "estimated_core_drain_minutes": backpressure.get("estimated_core_drain_minutes"),
+            "estimated_total_drain_minutes": backpressure.get("estimated_total_drain_minutes"),
+            "retention_debt_gb": float(storage.get("retention_debt_gb", 0.0) or 0.0),
+            "backlog_quarantine_status": str(storage.get("backlog_quarantine_status", "") or ""),
+            "backlog_quarantine_candidate_files": int(storage.get("backlog_quarantine_candidate_files", 0) or 0),
+            "backlog_quarantine_moved_files": int(storage.get("backlog_quarantine_moved_files", 0) or 0),
+        }
+    if name == "ingestion_storage_governor":
+        sql_primary_db = payload.get("sql_primary_db") if isinstance(payload.get("sql_primary_db"), dict) else {}
+        throttles = payload.get("throttle_controls") if isinstance(payload.get("throttle_controls"), dict) else {}
+        return {
+            "profile": str(payload.get("profile", "") or ""),
+            "route_drift": bool(sql_primary_db.get("route_drift", False)),
+            "deferred_files_budget": int(throttles.get("deferred_files_budget", 0) or 0),
+            "cold_files_budget": int(throttles.get("cold_files_budget", 0) or 0),
+        }
+    if name == "external_backlog_drain":
+        drain_overrides = payload.get("drain_overrides") if isinstance(payload.get("drain_overrides"), dict) else {}
+        off_hours = payload.get("off_hours_window") if isinstance(payload.get("off_hours_window"), dict) else {}
+        follow_through = payload.get("follow_through") if isinstance(payload.get("follow_through"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "recommended_now": bool(payload.get("recommended_now", False)),
+            "apply_executed": bool(payload.get("apply_executed", False)),
+            "writer_busy": bool(payload.get("writer_busy", False)),
+            "off_hours_active": bool(off_hours.get("active", False)),
+            "aged_candidate_files": int(payload.get("aged_candidate_files", 0) or 0),
+            "deferred_files_budget": int(drain_overrides.get("deferred_files_budget", 0) or 0),
+            "cold_files_budget": int(drain_overrides.get("cold_files_budget", 0) or 0),
+            "follow_through_status": str(follow_through.get("status", "") or ""),
+            "follow_through_progress_state": str(follow_through.get("progress_state", "") or ""),
+            "follow_through_progress_observed": bool(follow_through.get("progress_observed", False)),
+        }
+    if name == "external_backlog_retry_bot":
+        drain_result = payload.get("drain_result") if isinstance(payload.get("drain_result"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "actionable": bool(payload.get("actionable", False)),
+            "backlog_needed": bool(payload.get("backlog_needed", False)),
+            "drain_follow_through_status": str(drain_result.get("follow_through_status", "") or ""),
+            "drain_follow_through_progress_state": str(drain_result.get("follow_through_progress_state", "") or ""),
+            "follow_through_attempts": int(drain_result.get("follow_through_attempts", 0) or 0),
+        }
+    if name == "platform_control_plane":
+        readiness = payload.get("institutional_readiness") if isinstance(payload.get("institutional_readiness"), dict) else {}
+        weakest = readiness.get("weakest_domains") if isinstance(readiness.get("weakest_domains"), list) else []
+        return {
+            "overall_status": str(readiness.get("overall_status", "") or ""),
+            "overall_score": float(readiness.get("overall_score", 0.0) or 0.0),
+            "top_priorities": readiness.get("top_priorities") if isinstance(readiness.get("top_priorities"), list) else [],
+            "weakest_domains": [
+                str((row or {}).get("slug") or "")
+                for row in weakest
+                if isinstance(row, dict) and str((row or {}).get("slug") or "").strip()
+            ],
+            "domain_count": int(readiness.get("domain_count", 0) or 0),
+        }
+    if name == "ingestion_priority_queue":
+        lane_counts = payload.get("lane_counts") if isinstance(payload.get("lane_counts"), dict) else {}
+        return {
+            "queue_depth": int(payload.get("queue_depth", 0) or 0),
+            "items_synced": int(payload.get("items_synced", 0) or 0),
+            "core_pending_lines": int(((lane_counts.get("core") or {}).get("pending_lines", 0)) or 0),
+            "event_count": int(payload.get("event_count", 0) or 0),
+        }
+    if name == "storage_split_brain_reconciler":
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        return {
+            "conflict_files": int(summary.get("conflict_files", 0) or 0),
+            "unresolved_conflicts": int(summary.get("unresolved_conflicts", 0) or 0),
+            "force_failback_eligible": bool(summary.get("force_failback_eligible", False)),
+        }
+    if name == "storage_resilience_control":
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "resilience_score": int(payload.get("resilience_score", 0) or 0),
+            "restore_drill_fresh": bool(payload.get("restore_drill_fresh", False)),
+            "unresolved_split_brain_conflicts": int(payload.get("unresolved_split_brain_conflicts", 0) or 0),
+        }
+    if name == "daily_verify_auto_remediation_bot":
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "resolved_checks": payload.get("resolved_checks") if isinstance(payload.get("resolved_checks"), list) else [],
+            "unresolved_checks": payload.get("unresolved_checks") if isinstance(payload.get("unresolved_checks"), list) else [],
+        }
+    if name == "operator_cockpit":
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "recommended_actions": payload.get("recommended_actions") if isinstance(payload.get("recommended_actions"), list) else [],
+        }
+    if name == "stale_artifact_sweeper_bot":
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        return {
+            "candidate_files": int(summary.get("candidate_files", 0) or 0),
+            "staged_files": int(summary.get("staged_files", 0) or 0),
+            "staged_bytes": int(summary.get("staged_bytes", 0) or 0),
+            "delete_errors": int(summary.get("delete_errors", 0) or 0),
+        }
+    if name == "stale_artifact_reaper_bot":
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        return {
+            "candidate_files": int(summary.get("candidate_files", 0) or 0),
+            "deleted_files": int(summary.get("deleted_files", 0) or 0),
+            "deleted_bytes": int(summary.get("deleted_bytes", 0) or 0),
+            "delete_errors": int(summary.get("delete_errors", 0) or 0),
+        }
     if name == "sql_ingestion":
         sqlite = payload.get("sqlite") if isinstance(payload.get("sqlite"), dict) else {}
         return {
@@ -218,10 +651,89 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             "mature_bots": int(((payload.get("maturity") or {}).get("mature_bots", 0)) or 0),
             "immature_active_count": int(payload.get("immature_active_count", 0) or 0),
         }
+    if name == "new_bot_admission_guard":
+        global_prereqs = payload.get("global_prerequisites") if isinstance(payload.get("global_prerequisites"), dict) else {}
+        return {
+            "ok": bool(payload.get("ok", False)),
+            "candidate_bot_count": int(payload.get("candidate_bot_count", 0) or 0),
+            "blocking_candidate_count": int(payload.get("blocking_candidate_count", 0) or 0),
+            "feature_store_manifest_ready": bool(global_prereqs.get("feature_store_manifest_ready", False)),
+            "replay_hash_registry_ready": bool(global_prereqs.get("replay_hash_registry_ready", False)),
+        }
+    if name == "bot_support_owner_guard":
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        return {
+            "ok": bool(payload.get("ok", False)),
+            "in_scope_bot_count": int(summary.get("in_scope_bot_count", 0) or 0),
+            "blocking_bot_count": int(payload.get("blocking_bot_count", 0) or 0),
+            "covered_bot_count": int(summary.get("covered_bot_count", 0) or 0),
+        }
     if name == "replay_hash_registry_guard":
         return {
             "ok": bool(payload.get("ok", False)),
             "failed_checks": payload.get("failed_checks") if isinstance(payload.get("failed_checks"), list) else [],
+        }
+    if name == "schema_migration_guard":
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        return {
+            "ok": bool(payload.get("ok", False)),
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "missing_contracts": int(summary.get("missing_contracts", 0) or 0),
+            "legacy_unversioned_contracts": int(summary.get("legacy_unversioned_contracts", 0) or 0),
+        }
+    if name == "retrain_schema_compatibility_guard":
+        return {
+            "ok": bool(payload.get("ok", False)),
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "baseline_ready": bool(payload.get("baseline_ready", False)),
+            "drifted_fields": payload.get("drifted_fields") if isinstance(payload.get("drifted_fields"), list) else [],
+        }
+    if name == "golden_replay_regression_guard":
+        return {
+            "ok": bool(payload.get("ok", False)),
+            "case_count": int(payload.get("case_count", 0) or 0),
+            "failed_case_count": int(payload.get("failed_case_count", 0) or 0),
+            "failed_cases": payload.get("failed_cases") if isinstance(payload.get("failed_cases"), list) else [],
+        }
+    if name == "cohort_drift_baseline_guard":
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        return {
+            "ok": bool(payload.get("ok", False)),
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "cohort_count": int(summary.get("cohort_count", 0) or 0),
+            "severe_cohort_count": int(summary.get("severe_cohort_count", 0) or 0),
+        }
+    if name == "champion_challenger_probation_guard":
+        return {
+            "ok": bool(payload.get("ok", False)),
+            "rollback_required": bool(payload.get("rollback_required", False)),
+            "probation_cohort_count": int(payload.get("probation_cohort_count", 0) or 0),
+            "failed_checks": payload.get("failed_checks") if isinstance(payload.get("failed_checks"), list) else [],
+        }
+    if name == "champion_challenger_probation_action":
+        return {
+            "ok": bool(payload.get("ok", False)),
+            "action_required": bool(payload.get("action_required", False)),
+            "action": str(payload.get("action", "") or ""),
+            "promotion_frozen": bool(payload.get("promotion_frozen", False)),
+        }
+    if name == "retrain_lane_scheduler":
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        return {
+            "ok": bool(payload.get("ok", False)),
+            "candidate_count": int(summary.get("candidate_count", 0) or 0),
+            "selected_count": int(summary.get("selected_count", 0) or 0),
+            "lane_count": int(summary.get("lane_count", 0) or 0),
+        }
+    if name == "promotion_packet":
+        scope = payload.get("promotion_scope") if isinstance(payload.get("promotion_scope"), dict) else {}
+        signature = payload.get("signature") if isinstance(payload.get("signature"), dict) else {}
+        return {
+            "ok": bool(payload.get("ok", False)),
+            "ready_for_committee": bool(payload.get("ready_for_committee", False)),
+            "trained_target_count": len(scope.get("trained_bot_ids") if isinstance(scope.get("trained_bot_ids"), list) else []),
+            "master_update_status": str(scope.get("master_update_status", "") or ""),
+            "signature_verified": bool(signature.get("verified", False)),
         }
     if name == "promotion_quality_gate":
         return {
@@ -239,6 +751,15 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     if name == "retrain_artifact_freshness":
         return {
             "failed_checks": payload.get("failed_checks") if isinstance(payload.get("failed_checks"), list) else [],
+            "failure_categories": payload.get("failure_categories") if isinstance(payload.get("failure_categories"), dict) else {},
+            "availability_failed_checks": payload.get("availability_failed_checks") if isinstance(payload.get("availability_failed_checks"), list) else [],
+            "freshness_failed_checks": payload.get("freshness_failed_checks") if isinstance(payload.get("freshness_failed_checks"), list) else [],
+            "sample_sufficiency_failed_checks": payload.get("sample_sufficiency_failed_checks")
+            if isinstance(payload.get("sample_sufficiency_failed_checks"), list)
+            else [],
+            "artifact_health_failed_checks": payload.get("artifact_health_failed_checks")
+            if isinstance(payload.get("artifact_health_failed_checks"), list)
+            else [],
             "max_age_minutes": float(payload.get("max_age_minutes", 0.0) or 0.0),
         }
     if name == "retrain_scorecard":
@@ -264,6 +785,105 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             "speaker": str(payload.get("speaker", "") or ""),
             "learning_ready": bool(payload.get("learning_ready", False)),
             "training_feature_count": int(payload.get("training_feature_count", 0) or 0),
+        }
+    if name == "teacher_quality_guard":
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "qualified_teacher_count": int(summary.get("qualified_teacher_count", 0) or 0),
+            "elite_teacher_count": int(summary.get("elite_teacher_count", 0) or 0),
+        }
+    if name == "bot_quality_autopilot":
+        teacher_summary = payload.get("teacher_summary") if isinstance(payload.get("teacher_summary"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "quality_queue": len(payload.get("quality_upgrade_queue") or []),
+            "qualified_teacher_count": int(teacher_summary.get("qualified_teacher_count", 0) or 0),
+        }
+    if name == "infrastructure_autofix_bot":
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "applyable_repair_count": int(payload.get("applyable_repair_count", 0) or 0),
+            "operator_followups": len(payload.get("operator_followups") or []),
+        }
+    if name == "live_runtime_separation_control":
+        pressure = payload.get("shared_host_pressure") if isinstance(payload.get("shared_host_pressure"), dict) else {}
+        live_plane = payload.get("live_plane") if isinstance(payload.get("live_plane"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "contention_score": int(pressure.get("contention_score", 0) or 0),
+            "live_ready": bool(live_plane.get("ready", False)),
+        }
+    if name == "rolling_restart_controller":
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "restart_due": bool(payload.get("restart_due", False)),
+            "recommended_scope": str(payload.get("recommended_scope", "") or ""),
+        }
+    if name == "auth_lease_manager":
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "lease_state": str(payload.get("lease_state", "") or ""),
+            "expires_in_seconds": float(((payload.get("lease_budget") or {}).get("expires_in_seconds", 0.0) or 0.0)),
+        }
+    if name == "blackstart_recovery":
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "stage_count": len(payload.get("stages") or []),
+        }
+    if name == "sleeve_isolation_guard":
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "isolated_lane_count": int(((payload.get("sleeve_matrix") or {}).get("isolated_lane_count", 0) or 0)),
+            "quarantine_events": int(((payload.get("quarantine_pressure") or {}).get("events", 0) or 0)),
+        }
+    if name == "artifact_freshness_slo":
+        summary = payload.get("sla_summary") if isinstance(payload.get("sla_summary"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "stale_required": int(summary.get("stale_required", 0) or 0),
+            "stale_optional": int(summary.get("stale_optional", 0) or 0),
+        }
+    if name == "runtime_snapshot_cache_control":
+        cache = payload.get("cache_health") if isinstance(payload.get("cache_health"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "snapshot_ready": bool(cache.get("snapshot_ready", False)),
+            "snapshot_age_minutes": cache.get("snapshot_age_minutes"),
+        }
+    if name == "remote_alert_control":
+        critical = payload.get("critical_backlog") if isinstance(payload.get("critical_backlog"), dict) else {}
+        channels = payload.get("channels") if isinstance(payload.get("channels"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "any_configured": bool(channels.get("any_configured", False)),
+            "unacked_critical": int(critical.get("unacked_count", 0) or 0),
+            "unsent_critical": int(critical.get("unsent_count", 0) or 0),
+        }
+    if name == "storage_quota_guard":
+        quota = payload.get("quota_summary") if isinstance(payload.get("quota_summary"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "hard_breaches": int(quota.get("hard_breaches", 0) or 0),
+            "soft_breaches": int(quota.get("soft_breaches", 0) or 0),
+        }
+    if name == "release_freeze_guard":
+        window = payload.get("window") if isinstance(payload.get("window"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "active": bool(window.get("active", False)),
+        }
+    if name == "roster_resilience_planner":
+        bench = payload.get("bench") if isinstance(payload.get("bench"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "bench_depth": int(bench.get("bench_depth", 0) or 0),
+            "active_supportable_bots": int(bench.get("active_supportable_bots", 0) or 0),
+        }
+    if name == "chaos_drill_coordinator":
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "overdue_drills": len(payload.get("overdue_drills") or []),
         }
     return {}
 
@@ -361,23 +981,105 @@ def _resolved_daily_auto_verify_failures(
     artifacts: Dict[str, Dict[str, Any]],
 ) -> tuple[list[str], list[str]]:
     failed = daily_verify_payload.get("failed_checks") if isinstance(daily_verify_payload.get("failed_checks"), list) else []
+    checks = daily_verify_payload.get("checks") if isinstance(daily_verify_payload.get("checks"), dict) else {}
     unresolved: list[str] = []
     resolved: list[str] = []
     for name in failed:
         key = str(name or "").strip()
-        if key == "new_bot_graduation_gate" and artifacts.get("new_bot_graduation", {}).get("ok") is True:
+        resolver = _DAILY_AUTO_VERIFY_RESOLVERS.get(key)
+        if resolver is not None and resolver(daily_verify_payload, artifacts, checks):
             resolved.append(key)
             continue
-        if key == "replay_hash_registry_guard" and artifacts.get("replay_hash_registry_guard", {}).get("ok") is True:
-            resolved.append(key)
-            continue
-        if key == "promotion_quality_gate":
-            promo_ok = artifacts.get("promotion_quality_gate", {}).get("ok")
-            if promo_ok is True:
-                resolved.append(key)
-                continue
         unresolved.append(key)
     return unresolved, resolved
+
+
+def _artifact_freshness_recovered(payload: Dict[str, Any]) -> bool:
+    if not isinstance(payload, dict) or not payload:
+        return False
+    max_age_minutes = float(payload.get("max_age_minutes", 0.0) or 0.0)
+    fresh_if_newer_than = _parse_iso_utc(payload.get("fresh_if_newer_than_utc"))
+    rows = payload.get("rows") if isinstance(payload.get("rows"), list) else []
+    paths: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        path_text = str(row.get("path", "") or "").strip()
+        if path_text:
+            paths.append(path_text)
+    if not paths:
+        for item in payload.get("stale_files") if isinstance(payload.get("stale_files"), list) else []:
+            path_text = str(item or "").strip()
+            if path_text:
+                paths.append(path_text)
+        for item in payload.get("missing_files") if isinstance(payload.get("missing_files"), list) else []:
+            path_text = str(item or "").strip()
+            if path_text:
+                paths.append(path_text)
+    if not paths:
+        return False
+
+    now = datetime.now(timezone.utc)
+    for path_text in paths:
+        path = Path(path_text)
+        if not path.exists():
+            return False
+        current_payload = _load_json(path)
+        ts = _payload_timestamp(current_payload, path)
+        if ts is None:
+            return False
+        if fresh_if_newer_than is not None and ts >= fresh_if_newer_than:
+            continue
+        age_minutes = max((now - ts).total_seconds() / 60.0, 0.0)
+        if max_age_minutes <= 0.0 or age_minutes > max_age_minutes:
+            return False
+    return True
+
+
+DailyVerifyResolver = Callable[[Dict[str, Any], Dict[str, Dict[str, Any]], Dict[str, Any]], bool]
+
+
+def _artifact_ok_resolver(artifact_name: str) -> DailyVerifyResolver:
+    def _resolver(_daily_verify_payload: Dict[str, Any], artifacts: Dict[str, Dict[str, Any]], _checks: Dict[str, Any]) -> bool:
+        return artifacts.get(artifact_name, {}).get("ok") is True
+
+    return _resolver
+
+
+def _nightly_resilience_resolver(
+    _daily_verify_payload: Dict[str, Any],
+    artifacts: Dict[str, Dict[str, Any]],
+    _checks: Dict[str, Any],
+) -> bool:
+    nightly = artifacts.get("nightly_resilience", {})
+    return nightly.get("ok") is True and not bool(nightly.get("stale", False))
+
+
+def _artifact_freshness_resolver(
+    _daily_verify_payload: Dict[str, Any],
+    _artifacts: Dict[str, Dict[str, Any]],
+    checks: Dict[str, Any],
+) -> bool:
+    freshness = checks.get("artifact_freshness") if isinstance(checks.get("artifact_freshness"), dict) else {}
+    return _artifact_freshness_recovered(freshness)
+
+
+_DAILY_AUTO_VERIFY_RESOLVERS: Dict[str, DailyVerifyResolver] = {
+    "new_bot_graduation_gate": _artifact_ok_resolver("new_bot_graduation"),
+    "bot_support_owner_guard": _artifact_ok_resolver("bot_support_owner_guard"),
+    "new_bot_admission_guard": _artifact_ok_resolver("new_bot_admission_guard"),
+    "retrain_schema_compatibility_guard": _artifact_ok_resolver("retrain_schema_compatibility_guard"),
+    "golden_replay_regression_guard": _artifact_ok_resolver("golden_replay_regression_guard"),
+    "cohort_drift_baseline_guard": _artifact_ok_resolver("cohort_drift_baseline_guard"),
+    "replay_hash_registry_guard": _artifact_ok_resolver("replay_hash_registry_guard"),
+    "champion_challenger_probation_guard": _artifact_ok_resolver("champion_challenger_probation_guard"),
+    "champion_challenger_probation_action": _artifact_ok_resolver("champion_challenger_probation_action"),
+    "retrain_lane_scheduler": _artifact_ok_resolver("retrain_lane_scheduler"),
+    "promotion_packet_builder": _artifact_ok_resolver("promotion_packet"),
+    "promotion_quality_gate": _artifact_ok_resolver("promotion_quality_gate"),
+    "nightly_resilience_check": _nightly_resilience_resolver,
+    "artifact_freshness": _artifact_freshness_resolver,
+}
 
 
 def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
@@ -467,9 +1169,105 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     if artifacts.get("promotion_readiness", {}).get("summary", {}).get("promote_ok") is False:
         attention.append("promotion_not_ready")
         severity = max(severity, 1)
+    if artifacts.get("training_quality_control", {}).get("summary", {}).get("overall_status") == "blocked":
+        attention.append("training_quality_control_blocked")
+        severity = max(severity, 1)
+    storage_summary = artifacts.get("ingestion_storage_control", {}).get("summary", {})
+    storage_status = str(storage_summary.get("overall_status", "") or "")
+    storage_severity = str(storage_summary.get("severity", "") or "")
+    if storage_status == "blocked":
+        attention.append("ingestion_storage_control_blocked")
+        severity = max(severity, 2)
+    elif storage_severity in {"high", "critical"}:
+        attention.append("ingestion_storage_control_elevated")
+        severity = max(severity, 1)
+    governor_summary = artifacts.get("ingestion_storage_governor", {}).get("summary", {})
+    if bool(governor_summary.get("route_drift", False)):
+        attention.append("sql_primary_route_drift")
+        severity = max(severity, 2)
+    if str(governor_summary.get("profile", "") or "") == "critical_backpressure":
+        attention.append("ingestion_storage_governor_critical")
+        severity = max(severity, 1)
+    drain_summary = artifacts.get("external_backlog_drain", {}).get("summary", {})
+    if bool(drain_summary.get("recommended_now", False)):
+        attention.append("external_backlog_drain_recommended")
+        severity = max(severity, 1)
+    if bool(drain_summary.get("writer_busy", False)):
+        attention.append("external_backlog_drain_writer_busy")
+        severity = max(severity, 1)
+    follow_through_status = str(drain_summary.get("follow_through_status", "") or "")
+    follow_through_progress_state = str(drain_summary.get("follow_through_progress_state", "") or "")
+    if follow_through_status == "timed_out" and follow_through_progress_state != "progressing":
+        attention.append("external_backlog_drain_follow_through_stalled")
+        severity = max(severity, 1)
+    retry_summary = artifacts.get("external_backlog_retry_bot", {}).get("summary", {})
+    retry_status = str(retry_summary.get("overall_status", "") or "")
+    if retry_status in {"blocked", "apply_failed", "applied_with_followups"}:
+        attention.append("external_backlog_retry_bot_followups")
+        severity = max(severity, 1)
+    memory_summary = artifacts.get("memory_efficiency_control", {}).get("summary", {})
+    memory_status = str(memory_summary.get("overall_status", "") or "")
+    if memory_status == "blocked":
+        attention.append("memory_efficiency_control_blocked")
+        severity = max(severity, 2)
+    elif memory_status == "needs_work":
+        attention.append("memory_efficiency_control_needs_work")
+        severity = max(severity, 1)
+    platform_summary = artifacts.get("platform_control_plane", {}).get("summary", {})
+    platform_status = str(platform_summary.get("overall_status", "") or "")
+    if platform_status in {"upgrade_required", "gap_heavy"}:
+        attention.append("platform_control_plane_upgrade_required")
+        severity = max(severity, 1)
+    queue_summary = artifacts.get("ingestion_priority_queue", {}).get("summary", {})
+    if int(queue_summary.get("queue_depth", 0) or 0) > 0 and int(queue_summary.get("core_pending_lines", 0) or 0) > 50000:
+        attention.append("ingestion_priority_queue_core_heavy")
+        severity = max(severity, 1)
+    split_brain_summary = artifacts.get("storage_split_brain_reconciler", {}).get("summary", {})
+    if int(split_brain_summary.get("unresolved_conflicts", 0) or 0) > 0:
+        attention.append("storage_split_brain_needs_review")
+        severity = max(severity, 2)
+    resilience_summary = artifacts.get("storage_resilience_control", {}).get("summary", {})
+    if str(resilience_summary.get("overall_status", "") or "") == "needs_work":
+        attention.append("storage_resilience_control_needs_work")
+        severity = max(severity, 1)
+    remediation_summary = artifacts.get("daily_verify_auto_remediation_bot", {}).get("summary", {})
+    if str(remediation_summary.get("overall_status", "") or "") == "pending":
+        attention.append("daily_verify_auto_remediation_pending")
+        severity = max(severity, 1)
+    if artifacts.get("stale_artifact_sweeper_bot", {}).get("ok") is False:
+        attention.append("stale_artifact_sweeper_bot_not_ok")
+        severity = max(severity, 1)
+    if artifacts.get("stale_artifact_reaper_bot", {}).get("ok") is False:
+        attention.append("stale_artifact_reaper_bot_not_ok")
+        severity = max(severity, 1)
     if float(health_inputs.get("blocked_rate", 0.0) or 0.0) >= 0.50:
         attention.append("blocked_rate_elevated")
         severity = max(severity, 1)
+    for name in (
+        "teacher_quality_guard",
+        "bot_quality_autopilot",
+        "infrastructure_autofix_bot",
+        "live_runtime_separation_control",
+        "rolling_restart_controller",
+        "auth_lease_manager",
+        "blackstart_recovery",
+        "sleeve_isolation_guard",
+        "artifact_freshness_slo",
+        "runtime_snapshot_cache_control",
+        "remote_alert_control",
+        "storage_quota_guard",
+        "release_freeze_guard",
+        "roster_resilience_planner",
+        "chaos_drill_coordinator",
+    ):
+        summary = artifacts.get(name, {}).get("summary", {})
+        status = str((summary or {}).get("overall_status", "") or "")
+        if status == "blocked":
+            attention.append(f"{name}_blocked")
+            severity = max(severity, 2)
+        elif status in {"degraded", "inactive"}:
+            attention.append(f"{name}_needs_work")
+            severity = max(severity, 1)
 
     sql_ingestion_artifact = artifacts.get("sql_ingestion", {})
     sql_service_artifact = artifacts.get("sql_link_service", {})
@@ -513,12 +1311,145 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         2: "degraded",
         3: "critical",
     }
+    health_summary = artifacts.get("health_gates", {}).get("summary", {})
+    runtime_summary = artifacts.get("runtime_access_mode", {}).get("summary", {})
+    apple_summary = artifacts.get("apple_silicon_profile", {}).get("summary", {})
+    memory_summary = artifacts.get("memory_efficiency_control", {}).get("summary", {})
+    killswitch_summary = artifacts.get("global_killswitch", {}).get("summary", {})
+    training_summary = artifacts.get("training_report", {}).get("summary", {})
+    training_quality_summary = artifacts.get("training_quality_control", {}).get("summary", {})
+    storage_summary = artifacts.get("ingestion_storage_control", {}).get("summary", {})
+    governor_summary = artifacts.get("ingestion_storage_governor", {}).get("summary", {})
+    drain_summary = artifacts.get("external_backlog_drain", {}).get("summary", {})
+    retry_summary = artifacts.get("external_backlog_retry_bot", {}).get("summary", {})
+    platform_summary = artifacts.get("platform_control_plane", {}).get("summary", {})
+    queue_summary = artifacts.get("ingestion_priority_queue", {}).get("summary", {})
+    resilience_summary = artifacts.get("storage_resilience_control", {}).get("summary", {})
+    split_brain_summary = artifacts.get("storage_split_brain_reconciler", {}).get("summary", {})
+    remediation_summary = artifacts.get("daily_verify_auto_remediation_bot", {}).get("summary", {})
+    cockpit_summary = artifacts.get("operator_cockpit", {}).get("summary", {})
+    long_runtime_summary = {
+        "live_runtime_separation_control": artifacts.get("live_runtime_separation_control", {}).get("summary", {}),
+        "rolling_restart_controller": artifacts.get("rolling_restart_controller", {}).get("summary", {}),
+        "auth_lease_manager": artifacts.get("auth_lease_manager", {}).get("summary", {}),
+        "blackstart_recovery": artifacts.get("blackstart_recovery", {}).get("summary", {}),
+        "sleeve_isolation_guard": artifacts.get("sleeve_isolation_guard", {}).get("summary", {}),
+        "artifact_freshness_slo": artifacts.get("artifact_freshness_slo", {}).get("summary", {}),
+        "runtime_snapshot_cache_control": artifacts.get("runtime_snapshot_cache_control", {}).get("summary", {}),
+        "remote_alert_control": artifacts.get("remote_alert_control", {}).get("summary", {}),
+        "storage_quota_guard": artifacts.get("storage_quota_guard", {}).get("summary", {}),
+        "release_freeze_guard": artifacts.get("release_freeze_guard", {}).get("summary", {}),
+        "roster_resilience_planner": artifacts.get("roster_resilience_planner", {}).get("summary", {}),
+        "chaos_drill_coordinator": artifacts.get("chaos_drill_coordinator", {}).get("summary", {}),
+    }
     payload = {
         "timestamp_utc": now.isoformat(),
         "overall": {
             "status": status_map.get(severity, "unknown"),
             "ok": severity == 0,
             "attention": attention,
+        },
+        "data_quality_score": float(health_summary.get("data_quality_score", 0.0) or 0.0),
+        "health_gate_triggered": bool(health_summary.get("hard_gate_triggered", False)),
+        "global_kill_triggered": bool(killswitch_summary.get("halt", False)),
+        "gates": {
+            "health_gate_triggered": bool(health_summary.get("hard_gate_triggered", False)),
+            "global_kill_triggered": bool(killswitch_summary.get("halt", False)),
+            "promotion_not_ready": "promotion_not_ready" in attention,
+            "daily_auto_verify_not_ok": "daily_auto_verify_not_ok" in attention,
+        },
+        "runtime": {
+            "mode": str(runtime_summary.get("mode", "") or ""),
+            "ml_backend": str(runtime_summary.get("ml_backend", "") or ""),
+            "portable_enabled": bool(runtime_summary.get("portable_enabled", False)),
+            "backend_contract": runtime_summary.get("backend_contract") if isinstance(runtime_summary.get("backend_contract"), dict) else {},
+        },
+        "apple_silicon": {
+            "applied_tier": str(apple_summary.get("applied_tier", "") or ""),
+            "detected_tier": str(apple_summary.get("detected_tier", "") or ""),
+            "memory_gb": float(apple_summary.get("memory_gb", 0.0) or 0.0),
+            "chip": str(apple_summary.get("chip", "") or ""),
+        },
+        "memory": {
+            "overall_status": str(memory_summary.get("overall_status", "") or ""),
+            "recommended_profile": str(memory_summary.get("recommended_profile", "") or ""),
+            "memory_pressure_state": str(memory_summary.get("memory_pressure_state", "") or ""),
+            "memory_pressure_kind": str(memory_summary.get("memory_pressure_kind", "") or ""),
+            "swap_used_gb": float(memory_summary.get("swap_used_gb", 0.0) or 0.0),
+        },
+        "training": {
+            "overall_status": str(training_summary.get("overall_status", "") or ""),
+            "blocking_reasons": training_summary.get("blocking_reasons") if isinstance(training_summary.get("blocking_reasons"), list) else [],
+            "quality_score": float(training_quality_summary.get("training_quality_score", 0.0) or 0.0),
+            "top_priorities": training_quality_summary.get("top_priorities") if isinstance(training_quality_summary.get("top_priorities"), list) else [],
+            "active_supportability_score": float(training_quality_summary.get("active_supportability_score", 0.0) or 0.0),
+        },
+        "storage": {
+            "overall_status": str(storage_summary.get("overall_status", "") or ""),
+            "severity": str(storage_summary.get("severity", "") or ""),
+            "pressure_index": float(storage_summary.get("pressure_index", 0.0) or 0.0),
+            "recommended_operating_mode": str(storage_summary.get("recommended_operating_mode", "") or ""),
+            "pressure_profile": str(governor_summary.get("profile", "") or ""),
+            "sql_primary_route_drift": bool(governor_summary.get("route_drift", False)),
+            "deferred_files_budget": int(governor_summary.get("deferred_files_budget", 0) or 0),
+            "cold_files_budget": int(governor_summary.get("cold_files_budget", 0) or 0),
+            "backlog_drain_recommended": bool(drain_summary.get("recommended_now", False)),
+            "backlog_drain_writer_busy": bool(drain_summary.get("writer_busy", False)),
+            "backlog_drain_aged_candidate_files": int(drain_summary.get("aged_candidate_files", 0) or 0),
+            "backlog_drain_deferred_budget": int(drain_summary.get("deferred_files_budget", 0) or 0),
+            "backlog_drain_cold_budget": int(drain_summary.get("cold_files_budget", 0) or 0),
+            "backlog_drain_follow_through_status": str(drain_summary.get("follow_through_status", "") or ""),
+            "backlog_drain_follow_through_progress_state": str(drain_summary.get("follow_through_progress_state", "") or ""),
+            "backlog_drain_follow_through_progress_observed": bool(drain_summary.get("follow_through_progress_observed", False)),
+            "backlog_retry_bot_status": retry_status,
+            "backlog_retry_bot_actionable": bool(retry_summary.get("actionable", False)),
+            "backlog_quarantine_status": str(storage_summary.get("backlog_quarantine_status", "") or ""),
+            "backlog_quarantine_candidate_files": int(storage_summary.get("backlog_quarantine_candidate_files", 0) or 0),
+            "backlog_quarantine_moved_files": int(storage_summary.get("backlog_quarantine_moved_files", 0) or 0),
+            "estimated_core_drain_minutes": storage_summary.get("estimated_core_drain_minutes"),
+            "estimated_total_drain_minutes": storage_summary.get("estimated_total_drain_minutes"),
+            "retention_debt_gb": float(storage_summary.get("retention_debt_gb", 0.0) or 0.0),
+        },
+        "ingestion_queue": {
+            "queue_depth": int(queue_summary.get("queue_depth", 0) or 0),
+            "items_synced": int(queue_summary.get("items_synced", 0) or 0),
+            "core_pending_lines": int(queue_summary.get("core_pending_lines", 0) or 0),
+            "event_count": int(queue_summary.get("event_count", 0) or 0),
+        },
+        "storage_resilience": {
+            "overall_status": str(resilience_summary.get("overall_status", "") or ""),
+            "resilience_score": int(resilience_summary.get("resilience_score", 0) or 0),
+            "restore_drill_fresh": bool(resilience_summary.get("restore_drill_fresh", False)),
+            "unresolved_split_brain_conflicts": int(resilience_summary.get("unresolved_split_brain_conflicts", 0) or 0),
+        },
+        "split_brain": {
+            "conflict_files": int(split_brain_summary.get("conflict_files", 0) or 0),
+            "unresolved_conflicts": int(split_brain_summary.get("unresolved_conflicts", 0) or 0),
+            "force_failback_eligible": bool(split_brain_summary.get("force_failback_eligible", False)),
+        },
+        "automation": {
+            "daily_verify_auto_remediation_status": str(remediation_summary.get("overall_status", "") or ""),
+            "resolved_checks": remediation_summary.get("resolved_checks") if isinstance(remediation_summary.get("resolved_checks"), list) else [],
+            "operator_cockpit_status": str(cockpit_summary.get("overall_status", "") or ""),
+        },
+        "long_runtime": {
+            "live_runtime_separation_status": str((long_runtime_summary.get("live_runtime_separation_control") or {}).get("overall_status", "") or ""),
+            "rolling_restart_due": bool((long_runtime_summary.get("rolling_restart_controller") or {}).get("restart_due", False)),
+            "auth_lease_state": str((long_runtime_summary.get("auth_lease_manager") or {}).get("lease_state", "") or ""),
+            "isolated_lanes": int((long_runtime_summary.get("sleeve_isolation_guard") or {}).get("isolated_lane_count", 0) or 0),
+            "artifact_sla_required_breaches": int((long_runtime_summary.get("artifact_freshness_slo") or {}).get("stale_required", 0) or 0),
+            "snapshot_cache_ready": bool((long_runtime_summary.get("runtime_snapshot_cache_control") or {}).get("snapshot_ready", False)),
+            "remote_alert_unacked_critical": int((long_runtime_summary.get("remote_alert_control") or {}).get("unacked_critical", 0) or 0),
+            "storage_quota_hard_breaches": int((long_runtime_summary.get("storage_quota_guard") or {}).get("hard_breaches", 0) or 0),
+            "release_freeze_active": bool((long_runtime_summary.get("release_freeze_guard") or {}).get("active", False)),
+            "bench_depth": int((long_runtime_summary.get("roster_resilience_planner") or {}).get("bench_depth", 0) or 0),
+            "overdue_chaos_drills": int((long_runtime_summary.get("chaos_drill_coordinator") or {}).get("overdue_drills", 0) or 0),
+        },
+        "platform": {
+            "overall_status": str(platform_summary.get("overall_status", "") or ""),
+            "overall_score": float(platform_summary.get("overall_score", 0.0) or 0.0),
+            "top_priorities": platform_summary.get("top_priorities") if isinstance(platform_summary.get("top_priorities"), list) else [],
+            "weakest_domains": platform_summary.get("weakest_domains") if isinstance(platform_summary.get("weakest_domains"), list) else [],
         },
         "artifacts": artifacts,
         "registry": _registry_summary(project_root),

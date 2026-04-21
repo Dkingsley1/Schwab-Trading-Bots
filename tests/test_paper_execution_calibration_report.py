@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
@@ -15,7 +16,7 @@ def test_paper_execution_calibration_report_emits_grouped_recommendations(tmp_pa
     log_dir.mkdir(parents=True, exist_ok=True)
     out_file = project_root / "governance" / "health" / "paper_execution_calibration_latest.json"
     row = {
-        "timestamp_utc": "2026-03-12T15:00:00+00:00",
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "symbol": "BTC-USD",
         "action": "BUY",
         "reference_price": 100.0,
@@ -46,6 +47,9 @@ def test_paper_execution_calibration_report_emits_grouped_recommendations(tmp_pa
 
     assert rc == 0
     assert payload["samples"] == 1
+    assert payload["overall_status"] == "ready"
     assert payload["by_market_kind"]["crypto"]["recommended_slippage_scale"] == 0.25
     assert payload["by_profile"]["default"]["samples"] == 1
     assert payload["top_symbols"][0]["symbol"] == "BTC-USD"
+    assert payload["drift_series"][0]["bucket_start_utc"].endswith("+00:00")
+    assert payload["line_graph"]["series"][0]["key"] == "mean_observed_slippage_bps"

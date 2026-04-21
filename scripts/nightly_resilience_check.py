@@ -2,11 +2,19 @@ import argparse
 import glob
 import json
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.log_tail import count_tail_keyword
+
+TAIL_CHUNK_BYTES = 64 * 1024
+TAIL_MAX_BYTES = 8 * 1024 * 1024
 
 
 def _pgrep_count(pattern: str) -> int:
@@ -30,12 +38,14 @@ def _fresh_minutes(path: Path) -> float:
 
 
 def _count_keyword(path: Path, keyword: str, tail_lines: int = 2000) -> int:
-    if not path.exists():
-        return 0
     try:
-        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()[-tail_lines:]
-        k = keyword.lower()
-        return sum(1 for ln in lines if k in ln.lower())
+        return count_tail_keyword(
+            path,
+            keyword,
+            tail_lines=tail_lines,
+            max_bytes=TAIL_MAX_BYTES,
+            chunk_bytes=TAIL_CHUNK_BYTES,
+        )
     except Exception:
         return 0
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +47,18 @@ def test_data_quality_session_policy_relaxes_after_hours(monkeypatch) -> None:
     assert policy["mode"] == "off_hours_relaxed"
     assert policy["decision_grace_seconds"] == 259200
     assert policy["governance_grace_seconds"] == 259200
+
+
+def test_session_aligned_recent_cutoff_uses_session_open(monkeypatch) -> None:
+    monkeypatch.setenv("ONE_NUMBERS_SESSION_AWARE_DATA_QUALITY", "1")
+    monkeypatch.setenv("ONE_NUMBERS_SESSION_TIMEZONE", "America/New_York")
+    monkeypatch.setenv("ONE_NUMBERS_SESSION_START", "09:30")
+    monkeypatch.setenv("ONE_NUMBERS_SESSION_END", "16:00")
+
+    now_utc = datetime(2026, 4, 6, 14, 0, tzinfo=timezone.utc)
+    cutoff = one_numbers._session_aligned_recent_cutoff(now_utc)
+
+    assert cutoff == datetime(2026, 4, 6, 13, 30, tzinfo=timezone.utc)
 
 
 def test_staleness_penalty_respects_grace_window() -> None:
@@ -157,6 +169,60 @@ def test_freshest_json_payload_prefers_sql_link_progress_file(tmp_path: Path) ->
     assert payload["status"] == "running"
 
 
+def test_lightweight_metrics_ignore_preopen_stale_windows(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ONE_NUMBERS_SESSION_AWARE_DATA_QUALITY", "1")
+    monkeypatch.setenv("ONE_NUMBERS_SESSION_TIMEZONE", "America/New_York")
+    monkeypatch.setenv("ONE_NUMBERS_SESSION_START", "09:30")
+    monkeypatch.setenv("ONE_NUMBERS_SESSION_END", "16:00")
+    monkeypatch.setenv("ONE_NUMBERS_STALE_SECONDS", "180")
+
+    decision_path = tmp_path / "decision.jsonl"
+    governance_path = tmp_path / "governance.jsonl"
+    now_utc = datetime(2026, 4, 6, 14, 0, tzinfo=timezone.utc)
+    preopen = datetime(2026, 4, 6, 12, 0, tzinfo=timezone.utc)
+    session_samples = [
+        datetime(2026, 4, 6, 13, 31, tzinfo=timezone.utc),
+        datetime(2026, 4, 6, 13, 33, tzinfo=timezone.utc),
+        datetime(2026, 4, 6, 13, 35, tzinfo=timezone.utc),
+    ]
+
+    decision_rows = [
+        {"timestamp_utc": preopen.isoformat(), "status": "SHADOW_ONLY"},
+        {"timestamp_utc": (preopen + timedelta(minutes=5)).isoformat(), "status": "SHADOW_ONLY"},
+    ] + [{"timestamp_utc": stamp.isoformat(), "status": "SHADOW_ONLY"} for stamp in session_samples]
+    governance_rows = [
+        {"timestamp_utc": preopen.isoformat()},
+        {"timestamp_utc": (preopen + timedelta(minutes=5)).isoformat()},
+    ] + [{"timestamp_utc": stamp.isoformat()} for stamp in session_samples]
+
+    decision_path.write_text("\n".join(json.dumps(row) for row in decision_rows) + "\n", encoding="utf-8")
+    governance_path.write_text("\n".join(json.dumps(row) for row in governance_rows) + "\n", encoding="utf-8")
+
+    metrics = one_numbers._lightweight_metrics_from_daily_summary(
+        {
+            "decision": {
+                "rows": len(decision_rows),
+                "observe_only_data_blocked": 0,
+                "status_counts": {"SHADOW_ONLY": len(decision_rows)},
+                "stale_windows": 2,
+                "files": [str(decision_path)],
+            },
+            "governance": {
+                "rows": len(governance_rows),
+                "stale_windows": 2,
+                "files": [str(governance_path)],
+            },
+            "watchdog": {"restarts": 0, "throttled": 0, "restart_errors": 0},
+        },
+        {},
+        now_utc=now_utc,
+    )
+
+    assert metrics["decision_stale_windows_4h"] == 0
+    assert metrics["governance_stale_windows_4h"] == 0
+    assert metrics["data_quality_score"] == 100.0
+
+
 def test_lightweight_main_uses_daily_summary_without_sqlite(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(one_numbers, "PROJECT_ROOT", tmp_path)
     out_dir = tmp_path / "exports" / "one_numbers"
@@ -221,6 +287,28 @@ def test_lightweight_main_uses_daily_summary_without_sqlite(tmp_path: Path, monk
         json.dumps({"stocks_top_symbol_1": "SPY:10"}),
         encoding="utf-8",
     )
+    (tmp_path / "governance" / "health" / "ingestion_storage_control_latest.json").write_text(
+        json.dumps(
+            {
+                "pressure_index": 0.042,
+                "backpressure": {
+                    "core_pending_lines": 605,
+                    "estimated_total_drain_minutes": 0.706,
+                    "stale_stage_pending_lines": 0,
+                },
+                "steady_state": {
+                    "quality_score": 97.4,
+                    "quality_label": "excellent",
+                    "target_status": {
+                        "steady_state_ready": True,
+                        "target_breach_count": 0,
+                        "target_breaches": [],
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
     def _fail_connect(*_args, **_kwargs):
         raise AssertionError("sqlite should not be opened in lightweight mode")
@@ -251,3 +339,142 @@ def test_lightweight_main_uses_daily_summary_without_sqlite(tmp_path: Path, monk
     assert payload["paper_executed_total"] == "77"
     assert payload["combined_pnl_proxy"] == "12.340000"
     assert payload["report_mode"] == "lightweight_cached"
+    assert payload["backpressure_quality_score"] == "97.40"
+    assert payload["pressure_index"] == "0.042"
+    assert payload["core_pending_lines"] == "605"
+    latest_csv = out_dir / "latest.csv"
+    latest_metrics_csv = out_dir / "latest_metrics.csv"
+    latest_md = out_dir / "latest.md"
+    latest_xlsx = out_dir / "latest.xlsx"
+    assert latest_csv.is_symlink()
+    assert latest_metrics_csv.is_symlink()
+    assert latest_md.is_symlink()
+    assert latest_xlsx.is_symlink()
+    latest_csv_text = latest_csv.read_text(encoding="utf-8")
+    latest_metrics_csv_text = latest_metrics_csv.read_text(encoding="utf-8")
+    latest_md_text = latest_md.read_text(encoding="utf-8")
+    assert "label,value" in latest_csv_text
+    assert "Report Metadata," in latest_csv_text
+    assert "Report Day (UTC),20260331" in latest_csv_text
+    assert "Month To Date," in latest_csv_text
+    assert "Month To Date Days Covered,2" in latest_csv_text
+    assert "Backpressure Scorecard," in latest_csv_text
+    assert "Backpressure Quality Score,97.40" in latest_csv_text
+    assert "section,label,value,metric" in latest_metrics_csv_text
+    assert "Backpressure Scorecard,Backpressure Quality Score,97.40,backpressure_quality_score" in latest_metrics_csv_text
+    assert "## Current Day" in latest_md_text
+    assert "## Backpressure Scorecard" in latest_md_text
+    assert "- Backpressure quality score: 97.40/100" in latest_md_text
+    assert "- Days covered: 2" in latest_md_text
+    assert "Report mode: lightweight_cached" in latest_md_text
+
+
+def test_resolve_report_day_prefers_latest_day_with_decisions_over_governance_only_today() -> None:
+    sqlite_state = {
+        "decision_explanations/shadow_default/decision_explanations_20260330.jsonl": {},
+        "governance/shadow_default/master_control_20260331.jsonl": {},
+    }
+
+    day, sources = one_numbers._resolve_report_day("20260331", sqlite_state)
+
+    assert day == "20260330"
+    assert sources["decision"] == ["decision_explanations/shadow_default/decision_explanations_20260330.jsonl"]
+
+
+def test_resolve_lightweight_report_day_prefers_latest_day_with_decisions_over_governance_only_today() -> None:
+    history = {
+        "20260330": {"decision": {"rows": 125}, "governance": {"rows": 18}},
+        "20260331": {"decision": {"rows": 0}, "governance": {"rows": 20}},
+    }
+
+    day = one_numbers._resolve_lightweight_report_day("20260331", history)
+
+    assert day == "20260330"
+
+
+def test_latest_report_day_from_db_prefers_decision_day_over_governance_only_today(tmp_path: Path) -> None:
+    db_path = tmp_path / "jsonl_link.sqlite3"
+    conn = one_numbers.sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE jsonl_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_file TEXT NOT NULL,
+            source_rel TEXT NOT NULL,
+            line_no INTEGER NOT NULL,
+            ingested_at TEXT NOT NULL,
+            payload_sha1 TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO jsonl_records (source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "decision_explanations_20260330.jsonl",
+            "decision_explanations/shadow_default/decision_explanations_20260330.jsonl",
+            1,
+            "2026-03-30T15:00:00+00:00",
+            "sha1-a",
+            "{}",
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO jsonl_records (source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "master_control_20260331.jsonl",
+            "governance/shadow_default/master_control_20260331.jsonl",
+            1,
+            "2026-03-31T15:00:00+00:00",
+            "sha1-b",
+            "{}",
+        ),
+    )
+    conn.commit()
+
+    day = one_numbers._latest_report_day_from_db(conn, "20260331")
+
+    conn.close()
+    assert day == "20260330"
+
+
+def test_model_drift_snapshot_requires_minimum_actionable_activity(monkeypatch) -> None:
+    monkeypatch.setenv("ONE_NUMBERS_MODEL_DRIFT_MIN_ROWS_1H", "120")
+    monkeypatch.setenv("ONE_NUMBERS_MODEL_DRIFT_MIN_ROWS_4H", "480")
+    monkeypatch.setenv("ONE_NUMBERS_MODEL_DRIFT_MIN_ACTIONABLE_1H", "12")
+    monkeypatch.setenv("ONE_NUMBERS_MODEL_DRIFT_MIN_ACTIONABLE_4H", "48")
+    monkeypatch.setenv("ONE_NUMBERS_MODEL_DRIFT_THRESHOLD", "0.20")
+
+    snapshot = one_numbers._model_drift_snapshot(
+        (180, 0, 0, 180),
+        (720, 160, 0, 560),
+    )
+
+    assert snapshot["buy_rate_drift_abs"] > 0.20
+    assert snapshot["action_mix_drift_abs"] > 0.20
+    assert snapshot["model_drift_flag"] is False
+    assert snapshot["model_drift_reason"] == "low_actionable_activity"
+
+
+def test_model_drift_snapshot_flags_large_action_mix_shift(monkeypatch) -> None:
+    monkeypatch.setenv("ONE_NUMBERS_MODEL_DRIFT_MIN_ROWS_1H", "120")
+    monkeypatch.setenv("ONE_NUMBERS_MODEL_DRIFT_MIN_ROWS_4H", "480")
+    monkeypatch.setenv("ONE_NUMBERS_MODEL_DRIFT_MIN_ACTIONABLE_1H", "12")
+    monkeypatch.setenv("ONE_NUMBERS_MODEL_DRIFT_MIN_ACTIONABLE_4H", "48")
+    monkeypatch.setenv("ONE_NUMBERS_MODEL_DRIFT_THRESHOLD", "0.20")
+
+    snapshot = one_numbers._model_drift_snapshot(
+        (180, 72, 18, 30),
+        (720, 72, 180, 468),
+    )
+
+    assert snapshot["buy_rate_drift_abs"] > 0.20
+    assert snapshot["action_mix_drift_abs"] > 0.20
+    assert snapshot["model_drift_flag"] is True
+    assert snapshot["model_drift_reason"] == "action_mix_shift"

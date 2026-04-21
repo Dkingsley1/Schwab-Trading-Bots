@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 
 from core.base_trader import BaseTrader
@@ -91,6 +92,37 @@ def test_publish_execution_intent_enqueues_channel_message(tmp_path: Path) -> No
     assert messages[0].payload["strategy"] == "grand_master_bot"
 
 
+def test_publish_execution_intent_retries_locked_queue(monkeypatch, tmp_path: Path) -> None:
+    attempts = {"count": 0}
+    original_enqueue = ChannelQueue.enqueue
+
+    def flaky_enqueue(self, **kwargs):
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise sqlite3.OperationalError("database is locked")
+        return original_enqueue(self, **kwargs)
+
+    monkeypatch.setattr(ChannelQueue, "enqueue", flaky_enqueue)
+    row = publish_execution_intent(
+        project_root=str(tmp_path),
+        payload={
+            "symbol": "SPY",
+            "action": "BUY",
+            "quantity": 1.0,
+            "model_score": 0.66,
+            "threshold": 0.55,
+            "strategy": "grand_master_bot",
+        },
+    )
+
+    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    messages = queue.read_from_cursor(consumer="pytest_retry", channel=EXECUTION_INTENT_CHANNEL, limit=10)
+
+    assert attempts["count"] == 3
+    assert row["message_id"]
+    assert len(messages) == 1
+
+
 def test_evaluate_live_promotion_respects_existing_gate_truth(tmp_path: Path) -> None:
     _seed_gates(tmp_path, promote_ok=False, quality_ok=False)
 
@@ -114,6 +146,14 @@ def test_evaluate_live_promotion_respects_existing_gate_truth(tmp_path: Path) ->
 
 def test_process_execution_intent_paper_emits_result_and_promoted_message(tmp_path: Path) -> None:
     _seed_gates(tmp_path, promote_ok=True, quality_ok=True)
+    _write_json(
+        tmp_path / "governance" / "allocator" / "portfolio_allocator_service_latest.json",
+        {"ok": True, "approved_intents": [{"symbol": "SPY", "side": "BUY", "approved_qty": 1.0}]},
+    )
+    _write_json(
+        tmp_path / "governance" / "risk" / "risk_service_boundary_latest.json",
+        {"ok": True, "pre_trade_decisions": [{"symbol": "SPY", "requested_action": "BUY", "approved_action": "BUY", "risk_limit_ok": True}]},
+    )
     _write_json(
         tmp_path / "master_bot_registry.json",
         {
@@ -242,3 +282,34 @@ def test_update_lane_health_does_not_mark_stale_when_consumer_is_caught_up(tmp_p
     payload = json.loads((tmp_path / "governance" / "health" / "execution_lane_paper_latest.json").read_text(encoding="utf-8"))
     assert payload["pending_rows"] == 0
     assert payload["stale"] is False
+
+
+def test_update_lane_health_allows_active_backlog_grace_before_marking_stale(tmp_path: Path, monkeypatch) -> None:
+    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    queue.enqueue(
+        channel=EXECUTION_INTENT_CHANNEL,
+        payload={"message_id": "intent-1", "timestamp_utc": "2099-03-31T20:00:00+00:00"},
+        message_id="intent-1",
+    )
+    with queue._connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO channel_consumer_state (consumer, channel, last_id, last_message_id, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("execution_lane_paper", EXECUTION_INTENT_CHANNEL, 0, "", "2099-03-31T19:59:00+00:00"),
+        )
+        conn.commit()
+
+    monkeypatch.setenv("EXECUTION_LANE_STALE_AFTER_SECONDS", "60")
+    update_lane_health(
+        project_root=str(tmp_path),
+        mode="paper",
+        processed_count=0,
+        queue_channel=EXECUTION_INTENT_CHANNEL,
+    )
+
+    payload = json.loads((tmp_path / "governance" / "health" / "execution_lane_paper_latest.json").read_text(encoding="utf-8"))
+    assert payload["pending_rows"] == 1
+    assert payload["stale"] is False
+    assert payload["stale_grace_seconds"] >= 60

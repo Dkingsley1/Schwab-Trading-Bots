@@ -15,6 +15,22 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
+def _read_metric_csv(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not path.exists():
+        return out
+    try:
+        with path.open('r', encoding='utf-8') as f:
+            for row in csv.DictReader(f):
+                metric = str(row.get('metric', '') or '').strip()
+                if not metric:
+                    continue
+                out[metric] = str(row.get('value', '') or '')
+    except Exception:
+        return {}
+    return out
+
+
 def _one_numbers_data_quality() -> float:
     summary = _read_json(PROJECT_ROOT / 'exports' / 'one_numbers' / 'one_numbers_summary.json')
     if summary:
@@ -23,13 +39,12 @@ def _one_numbers_data_quality() -> float:
         except Exception:
             pass
 
-    latest_csv = PROJECT_ROOT / 'exports' / 'one_numbers' / 'latest.csv'
-    if latest_csv.exists():
+    metrics = _read_metric_csv(PROJECT_ROOT / 'exports' / 'one_numbers' / 'latest_metrics.csv')
+    if not metrics:
+        metrics = _read_metric_csv(PROJECT_ROOT / 'exports' / 'one_numbers' / 'latest.csv')
+    if metrics:
         try:
-            with latest_csv.open('r', encoding='utf-8') as f:
-                for row in csv.DictReader(f):
-                    if str(row.get('metric', '')) == 'data_quality_score':
-                        return float(row.get('value', 0.0) or 0.0)
+            return float(metrics.get('data_quality_score', 0.0) or 0.0)
         except Exception:
             pass
     return 0.0

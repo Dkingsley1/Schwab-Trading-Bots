@@ -32,6 +32,9 @@ BREADTH_FEATURE_KEYS = [
     "breadth_up_down_volume_norm",
     "breadth_new_high_low_norm",
     "breadth_sector_dispersion_norm",
+    "breadth_sector_rotation_norm",
+    "breadth_sector_balance_norm",
+    "breadth_leader_laggard_spread_norm",
     "breadth_thrust_norm",
     "breadth_risk_off_norm",
 ]
@@ -88,9 +91,13 @@ _NEWS_SOURCE_QUALITY = {
     "bloomberg": 1.0,
     "associated press": 0.98,
     "ap": 0.96,
+    "charles schwab": 0.97,
+    "schwab coaching": 0.97,
+    "schwab network": 0.95,
     "coinbase status": 0.96,
     "coinbase market notices": 0.95,
     "coinbase derivatives": 0.94,
+    "thinkorswim": 0.94,
     "wsj": 0.94,
     "wall street journal": 0.94,
     "financial times": 0.93,
@@ -185,20 +192,34 @@ def load_latest_external_context(project_root: str | Path, category: str) -> Dic
     if not token:
         return {}
 
-    candidates = [
-        root / "data" / "external_context" / f"{token}_latest.json",
-        root / "exports" / "external_context" / f"{token}_latest.json",
-        root / "governance" / "health" / f"{token}_latest.json",
-    ]
-    for path in candidates:
-        if not path.exists():
+    aliases = {
+        "options_flow_context": ["options_flow_context", "tastytrade_context"],
+        "tastytrade_context": ["options_flow_context", "tastytrade_context"],
+    }
+    seen_tokens: set[str] = set()
+    ordered_tokens: list[str] = []
+    for candidate_token in aliases.get(token, [token]):
+        normalized = str(candidate_token or "").strip().lower()
+        if not normalized or normalized in seen_tokens:
             continue
-        try:
-            with path.open("r", encoding="utf-8") as fh:
-                payload = json.load(fh)
-        except Exception:
-            continue
-        return payload if isinstance(payload, dict) else {"items": payload}
+        seen_tokens.add(normalized)
+        ordered_tokens.append(normalized)
+
+    for candidate_token in ordered_tokens:
+        candidates = [
+            root / "data" / "external_context" / f"{candidate_token}_latest.json",
+            root / "exports" / "external_context" / f"{candidate_token}_latest.json",
+            root / "governance" / "health" / f"{candidate_token}_latest.json",
+        ]
+        for path in candidates:
+            if not path.exists():
+                continue
+            try:
+                with path.open("r", encoding="utf-8") as fh:
+                    payload = json.load(fh)
+            except Exception:
+                continue
+            return payload if isinstance(payload, dict) else {"items": payload}
     return {}
 
 
@@ -459,6 +480,10 @@ def summarize_breadth_context(
     if sector_adv > 0.0 or sector_dec > 0.0:
         sector_ad_ratio = (sector_adv - sector_dec) / max(sector_adv + sector_dec, 1.0)
         ad_ratio = (0.75 * ad_ratio) + (0.25 * sector_ad_ratio)
+    sector_balance = 0.5
+    if sector_adv > 0.0 or sector_dec > 0.0:
+        sector_balance = _signed_centered_norm((sector_adv - sector_dec) / max(sector_adv + sector_dec, 1.0), 1.0)
+    leader_laggard_spread = abs(sector_leader) + abs(sector_laggard)
     sector_dispersion = max(
         sector_dispersion,
         sector_rotation,
@@ -479,6 +504,9 @@ def summarize_breadth_context(
             "breadth_up_down_volume_norm": _signed_centered_norm(uv_ratio, 1.0),
             "breadth_new_high_low_norm": _signed_centered_norm(nh_nl_ratio, 1.0),
             "breadth_sector_dispersion_norm": _clamp01(sector_dispersion / 0.03),
+            "breadth_sector_rotation_norm": _clamp01(sector_rotation / 0.03),
+            "breadth_sector_balance_norm": sector_balance,
+            "breadth_leader_laggard_spread_norm": _clamp01(leader_laggard_spread / 0.08),
             "breadth_thrust_norm": _clamp01(thrust),
             "breadth_risk_off_norm": risk_off,
         }

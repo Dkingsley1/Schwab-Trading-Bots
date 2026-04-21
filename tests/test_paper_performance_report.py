@@ -17,6 +17,7 @@ def test_paper_performance_report_builds_day_and_week_changes(tmp_path, monkeypa
     md_file = project_root / "exports" / "reports" / "paper_performance_latest.md"
     html_file = project_root / "exports" / "reports" / "paper_performance_latest.html"
     pdf_file = project_root / "exports" / "reports" / "paper_performance_latest.pdf"
+    daily_chart = project_root / "exports" / "reports" / "paper_performance_daily_latest.png"
     weekly_chart = project_root / "exports" / "reports" / "paper_performance_weekly_latest.png"
     monthly_chart = project_root / "exports" / "reports" / "paper_performance_monthly_latest.png"
     quarterly_chart = project_root / "exports" / "reports" / "paper_performance_quarterly_latest.png"
@@ -75,6 +76,8 @@ def test_paper_performance_report_builds_day_and_week_changes(tmp_path, monkeypa
             str(html_file),
             "--pdf-out-file",
             str(pdf_file),
+            "--daily-chart-file",
+            str(daily_chart),
             "--weekly-chart-file",
             str(weekly_chart),
             "--monthly-chart-file",
@@ -101,6 +104,7 @@ def test_paper_performance_report_builds_day_and_week_changes(tmp_path, monkeypa
     assert payload["weekly_history_series"][0]["change_vs_previous_period"] == 27.0
     assert payload["monthly_history_series"][0]["month_key"] == "202603"
     assert payload["quarterly_history_series"][0]["quarter_key"] == "2026Q1"
+    assert payload["graphs"]["daily_png"] == str(daily_chart)
     assert payload["graphs"]["weekly_png"] == str(weekly_chart)
     assert payload["graphs"]["monthly_png"] == str(monthly_chart)
     assert payload["graphs"]["quarterly_png"] == str(quarterly_chart)
@@ -110,11 +114,13 @@ def test_paper_performance_report_builds_day_and_week_changes(tmp_path, monkeypa
     assert any(row["profile"] == "swing_aggressive" for row in payload["sleeve_latest"])
     assert html_file.exists()
     assert pdf_file.exists()
+    assert daily_chart.exists()
     assert weekly_chart.exists()
     assert monthly_chart.exists()
     assert quarterly_chart.exists()
     assert sleeves_chart.exists()
     assert pdf_file.stat().st_size > 0
+    assert daily_chart.stat().st_size > 0
     assert weekly_chart.stat().st_size > 0
     assert monthly_chart.stat().st_size > 0
     assert quarterly_chart.stat().st_size > 0
@@ -122,7 +128,8 @@ def test_paper_performance_report_builds_day_and_week_changes(tmp_path, monkeypa
     assert "End Of Day" in markdown
     assert "Week" in markdown
     assert "Graphs" in markdown
-    assert "Sleeve Progression" in markdown
+    assert "daily_png" in markdown
+    assert "Sleeve Scoreboard" in markdown
 
 
 def test_paper_performance_report_json_only_skips_render_bundle(tmp_path, monkeypatch) -> None:
@@ -133,6 +140,7 @@ def test_paper_performance_report_json_only_skips_render_bundle(tmp_path, monkey
     md_file = project_root / "exports" / "reports" / "paper_performance_latest.md"
     html_file = project_root / "exports" / "reports" / "paper_performance_latest.html"
     pdf_file = project_root / "exports" / "reports" / "paper_performance_latest.pdf"
+    daily_chart = project_root / "exports" / "reports" / "paper_performance_daily_latest.png"
     weekly_chart = project_root / "exports" / "reports" / "paper_performance_weekly_latest.png"
     monthly_chart = project_root / "exports" / "reports" / "paper_performance_monthly_latest.png"
     quarterly_chart = project_root / "exports" / "reports" / "paper_performance_quarterly_latest.png"
@@ -170,6 +178,8 @@ def test_paper_performance_report_json_only_skips_render_bundle(tmp_path, monkey
             str(html_file),
             "--pdf-out-file",
             str(pdf_file),
+            "--daily-chart-file",
+            str(daily_chart),
             "--weekly-chart-file",
             str(weekly_chart),
             "--monthly-chart-file",
@@ -188,11 +198,13 @@ def test_paper_performance_report_json_only_skips_render_bundle(tmp_path, monkey
     assert rc == 0
     assert payload["day"]["ending_net_pnl_total"] == 4.5
     assert payload["graphs"]["mode"] == "json_only"
+    assert payload["graphs"]["daily_png"] == ""
     assert payload["pdf"]["available"] is False
     assert payload["pdf"]["detail"] == "skipped_json_only"
     assert not md_file.exists()
     assert not html_file.exists()
     assert not pdf_file.exists()
+    assert not daily_chart.exists()
     assert not weekly_chart.exists()
     assert not monthly_chart.exists()
     assert not quarterly_chart.exists()
@@ -207,6 +219,8 @@ def test_sleeve_chart_profiles_keeps_all_unique_profiles() -> None:
         {"profile": "intraday_aggressive"},
         {"profile": "swing_aggressive"},
         {"profile": "dividend"},
+        {"profile": "dividend_capture"},
+        {"profile": "dividend_compound"},
         {"profile": "bond"},
         {"profile": "fx"},
         {"profile": "schwab_futures"},
@@ -223,6 +237,8 @@ def test_sleeve_chart_profiles_keeps_all_unique_profiles() -> None:
         "intraday_aggressive",
         "swing_aggressive",
         "dividend",
+        "dividend_capture",
+        "dividend_compound",
         "bond",
         "fx",
         "schwab_futures",
@@ -322,3 +338,222 @@ def test_paper_performance_report_includes_win_rate_by_non_flat_strategy(tmp_pat
     assert sleeve["win_rate"] == 0.5
     assert sleeve["top_winning_strategies"][0]["strategy"] == "paper_mirror::alpha"
     assert sleeve["top_losing_strategies"][0]["strategy"] == "paper_mirror::beta"
+
+
+def test_paper_performance_report_builds_loss_causes_and_tca_summary(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    log_dir = project_root / "exports" / "paper_broker_bridge" / "paper"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    rows = [
+        {
+            "timestamp_utc": "2026-03-31T14:31:00+00:00",
+            "symbol": "AAPL",
+            "action": "BUY",
+            "strategy": "paper_mirror::alpha",
+            "metadata": {"source_profile": "intraday_aggressive"},
+            "realized_pnl_total": -2.0,
+            "unrealized_pnl_total": -1.0,
+            "spread_regime": "wide",
+            "tradeability_score": 0.22,
+            "source_quality_norm": 0.88,
+            "event_proximity_norm": 0.71,
+            "allocation_conflict_norm": 0.60,
+            "expected_fill_quality_bucket": "poor",
+            "expected_slippage_bps": 14.0,
+            "realized_slippage_bps": 22.0,
+            "slippage_gap_bps": 8.0,
+            "expected_partial_fill_ratio": 0.5,
+        },
+        {
+            "timestamp_utc": "2026-03-31T19:31:00+00:00",
+            "symbol": "MSFT",
+            "action": "BUY",
+            "strategy": "paper_mirror::beta",
+            "metadata": {"source_profile": "intraday_aggressive"},
+            "realized_pnl_total": 1.0,
+            "unrealized_pnl_total": 0.5,
+            "spread_regime": "tight",
+            "tradeability_score": 0.82,
+            "source_quality_norm": 0.90,
+            "event_proximity_norm": 0.05,
+            "allocation_conflict_norm": 0.10,
+            "expected_fill_quality_bucket": "good",
+            "expected_slippage_bps": 6.0,
+            "realized_slippage_bps": 4.0,
+            "slippage_gap_bps": -2.0,
+            "expected_partial_fill_ratio": 1.0,
+        },
+    ]
+    (log_dir / "paper_bridge_orders_20260331.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(report, "PROJECT_ROOT", project_root)
+    payload = report.build_paper_performance_report(project_root, day="20260331", week_days=7)
+
+    sleeve = next(row for row in payload["sleeve_latest"] if row["profile"] == "intraday_aggressive")
+    assert sleeve["top_loss_causes"]
+    assert any(
+        str(row["cause"]).startswith(
+            (
+                "spread_regime:",
+                "tradeability:",
+                "event_proximity:",
+                "time_of_day:",
+                "fill_quality:",
+                "source_quality:",
+                "conflict_control:",
+            )
+        )
+        for row in sleeve["top_loss_causes"]
+    )
+    assert sleeve["tca_summary"]["mean_slippage_gap_bps"] == 3.0
+
+
+def test_paper_performance_report_surfaces_advanced_feature_telemetry(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    log_dir = project_root / "exports" / "paper_broker_bridge" / "paper"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    rows = [
+        {
+            "timestamp_utc": "2026-03-31T14:31:00+00:00",
+            "symbol": "AAPL",
+            "action": "BUY",
+            "strategy": "paper_mirror::alpha",
+            "metadata": {"source_profile": "intraday_aggressive"},
+            "realized_pnl_total": -1.0,
+            "unrealized_pnl_total": 0.0,
+            "core_cross_sectional_rank_norm": 0.90,
+            "day_failed_breakout_risk_norm": 0.80,
+            "dividend_payout_stress_gate_norm": 0.10,
+        },
+        {
+            "timestamp_utc": "2026-03-31T19:31:00+00:00",
+            "symbol": "MSFT",
+            "action": "BUY",
+            "strategy": "paper_mirror::beta",
+            "metadata": {"source_profile": "intraday_aggressive"},
+            "realized_pnl_total": 0.5,
+            "unrealized_pnl_total": 1.5,
+            "core_cross_sectional_rank_norm": 0.50,
+            "day_failed_breakout_risk_norm": 0.20,
+            "long_term_factor_exposure_control_norm": 0.75,
+        },
+    ]
+    (log_dir / "paper_bridge_orders_20260331.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(report, "PROJECT_ROOT", project_root)
+    payload = report.build_paper_performance_report(project_root, day="20260331", week_days=7)
+    sleeve = next(row for row in payload["sleeve_latest"] if row["profile"] == "intraday_aggressive")
+
+    telemetry = sleeve["advanced_feature_telemetry"]
+    assert telemetry["core_cross_sectional_rank_norm"]["mean_norm"] == 0.7
+    assert telemetry["day_failed_breakout_risk_norm"]["high_count"] == 1
+    assert telemetry["long_term_factor_exposure_control_norm"]["bucket"] == "high"
+    assert "cross_sectional_rank" in sleeve["advanced_feature_summary"]
+
+
+def test_paper_performance_report_ingests_mixed_and_gz_sources(tmp_path, monkeypatch) -> None:
+    import gzip
+
+    project_root = tmp_path / "project"
+    bridge_dir = project_root / "exports" / "paper_broker_bridge" / "paper"
+    trade_logs_dir = project_root / "exports" / "trade_logs" / "session_a"
+    bridge_dir.mkdir(parents=True, exist_ok=True)
+    trade_logs_dir.mkdir(parents=True, exist_ok=True)
+
+    bridge_row = {
+        "timestamp_utc": "2026-04-01T15:00:00+00:00",
+        "symbol": "SPY",
+        "action": "BUY",
+        "strategy": "paper_mirror::alpha",
+        "metadata": {"source_profile": "default"},
+        "realized_pnl_total": 1.0,
+        "unrealized_pnl_total": 0.5,
+    }
+    trade_log_row = {
+        "timestamp_utc": "2026-04-01T16:00:00+00:00",
+        "symbol": "QQQ",
+        "action": "SELL",
+        "strategy": "paper_mirror::beta",
+        "metadata": {"source_profile": "aggressive"},
+        "realized_pnl_total": 2.0,
+        "unrealized_pnl_total": 1.0,
+    }
+    root_row = {
+        "timestamp_utc": "2026-04-01T17:00:00+00:00",
+        "symbol": "IWM",
+        "action": "BUY",
+        "strategy": "paper_mirror::gamma",
+        "metadata": {"source_profile": "dividend"},
+        "realized_pnl_total": 0.5,
+        "unrealized_pnl_total": 0.25,
+    }
+
+    (bridge_dir / "paper_bridge_orders_20260401.jsonl").write_text(json.dumps(bridge_row) + "\n", encoding="utf-8")
+    with gzip.open(trade_logs_dir / "paper_trades_20260401.jsonl.gz", "wt", encoding="utf-8") as handle:
+        handle.write(json.dumps(trade_log_row) + "\n")
+    with gzip.open(project_root / "paper_trades_20260401.jsonl.gz", "wt", encoding="utf-8") as handle:
+        handle.write(json.dumps(root_row) + "\n")
+
+    monkeypatch.setattr(report, "PROJECT_ROOT", project_root)
+    payload = report.build_paper_performance_report(project_root, day="20260401", week_days=7)
+
+    assert payload["source_kind"] == "paper_broker_bridge,trade_logs,root_paper_trades"
+    assert payload["source_files_scanned"] == 3
+    profiles = {row["profile"] for row in payload["sleeve_latest"] if row["data_status"] != "no_data"}
+    assert profiles == {"default", "aggressive", "dividend"}
+
+
+def test_paper_performance_report_surfaces_active_heartbeat_only_profiles(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health_dir = project_root / "governance" / "health"
+    health_dir.mkdir(parents=True, exist_ok=True)
+
+    (health_dir / "shadow_loop_fx_equities_schwab_101.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": "2026-04-20T14:00:00+00:00",
+                "pid": 101,
+                "broker": "schwab",
+                "profile": "fx",
+                "domain": "equities",
+                "state": "running",
+                "symbols_total": 10,
+                "context_total": 10,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (health_dir / "shadow_loop_schwab_futures_equities_schwab_102.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": "2026-04-20T14:05:00+00:00",
+                "pid": 102,
+                "broker": "schwab",
+                "profile": "schwab_futures",
+                "domain": "equities",
+                "state": "running",
+                "symbols_total": 7,
+                "context_total": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(report, "PROJECT_ROOT", project_root)
+    payload = report.build_paper_performance_report(project_root, day="20260420", week_days=7)
+
+    assert payload["ok"] is True
+    assert payload["active_paper_profile_count_today"] == 2
+    assert [row["profile"] for row in payload["active_paper_profiles_today"]] == ["fx", "schwab_futures"]
+    latest = {row["profile"]: row for row in payload["sleeve_latest"]}
+    assert latest["fx"]["data_status"] == "current_live_no_fills"
+    assert latest["fx"]["current_day_available"] is True
+    assert latest["fx"]["activity_note"] == "live heartbeat active; no paper fills yet today"

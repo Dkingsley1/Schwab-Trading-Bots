@@ -43,6 +43,11 @@ if [[ -z "$PROFILE" ]]; then
   fi
 fi
 
+"$PY" "$PROJECT_ROOT/scripts/ops/apple_silicon_profile.py" apply >/dev/null 2>&1 || true
+"$PY" "$PROJECT_ROOT/scripts/ops/portable_brain_contract.py" apply >/dev/null 2>&1 || true
+"$PY" "$PROJECT_ROOT/scripts/resource_guard.py" --profile refresh --json >/dev/null 2>&1 || true
+"$PY" "$PROJECT_ROOT/scripts/ops/memory_efficiency_control.py" apply >/dev/null 2>&1 || true
+
 if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
   # shellcheck disable=SC1091
   source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" "$PROFILE" --quiet
@@ -97,6 +102,7 @@ export MARKET_DATA_ONLY="${MARKET_DATA_ONLY:-1}"
 export ALLOW_ORDER_EXECUTION="${ALLOW_ORDER_EXECUTION:-0}"
 export TOP_BOT_PAPER_TRADING_ENABLED="${TOP_BOT_PAPER_TRADING_ENABLED:-1}"
 export TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED="${TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED:-1}"
+export PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1}"
 export PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"
 export PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"
 export LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"
@@ -174,7 +180,7 @@ if [[ "$SCHWAB_PAPER" == "1" ]]; then
   SCHWAB_PAPER_PROFILES="${SCHWAB_TOP_BOT_PAPER_TRADING_PROFILES:-${TOP_BOT_PAPER_TRADING_PROFILES:-}}"
   SCHWAB_OPTIONS_PAPER_TOP_N="${SCHWAB_OPTIONS_TOP_BOT_PAPER_TRADING_TOP_N:-${TOP_BOT_PAPER_TRADING_OPTIONS_TOP_N:-2}}"
   SCHWAB_OPTIONS_PAPER_MIN_ACC="${SCHWAB_OPTIONS_TOP_BOT_PAPER_TRADING_MIN_ACC:-${TOP_BOT_PAPER_TRADING_OPTIONS_MIN_ACC:-$SCHWAB_PAPER_MIN_ACC}}"
-  SCHWAB_OPTIONS_PAPER_PROFILES="${SCHWAB_OPTIONS_TOP_BOT_PAPER_TRADING_PROFILES:-${TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES:-${SCHWAB_PAPER_PROFILES:-}}}"
+  SCHWAB_OPTIONS_PAPER_PROFILES="${SCHWAB_OPTIONS_TOP_BOT_PAPER_TRADING_PROFILES:-${TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES:-default,aggressive,intraday_aggressive,swing_aggressive}}"
   echo "schwab_paper=enabled top_n=$SCHWAB_PAPER_TOP_N min_acc=$SCHWAB_PAPER_MIN_ACC profiles=${SCHWAB_PAPER_PROFILES:-all}"
   echo "schwab_options_paper=enabled top_n=$SCHWAB_OPTIONS_PAPER_TOP_N min_acc=$SCHWAB_OPTIONS_PAPER_MIN_ACC profiles=${SCHWAB_OPTIONS_PAPER_PROFILES:-all}"
   TOP_BOT_PAPER_TRADING_ENABLED=1 \

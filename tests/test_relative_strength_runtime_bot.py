@@ -111,7 +111,9 @@ def test_train_brain_uses_runtime_trainer_without_synthetic_fallback(monkeypatch
     assert captured["min_accuracy_lift_over_majority"] == 0.01
     assert "shadow_equities" in captured["mode_allowlist"]
     assert "SPY" in captured["symbol_allowlist"]
-    assert captured["min_confidence"] == 0.36
-    assert captured["min_samples"] == 320
+    assert "SCHD" not in captured["symbol_allowlist"]
+    assert "NVDA" in captured["symbol_allowlist"]
+    assert captured["min_confidence"] == 0.38
+    assert captured["min_samples"] == 256
     assert "swing_sector_relative_strength_norm" in captured["feature_names"]
     assert captured["runtime_label_builder"] is v26._runtime_relative_strength_label

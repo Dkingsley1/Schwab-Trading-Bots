@@ -53,6 +53,24 @@ def test_stream_profile_heavy_is_more_phone_safe() -> None:
     assert int(heavy["max_line_chars"]) < int(light["max_line_chars"])
     assert int(heavy["batch_char_limit"]) < int(light["batch_char_limit"])
     assert float(heavy["batch_interval_seconds"]) > float(light["batch_interval_seconds"])
+    assert float(heavy["heartbeat_seconds"]) > 0
+    assert float(light["heartbeat_seconds"]) > 0
+    assert int(heavy["retry_millis"]) > 0
+    assert int(light["retry_millis"]) > 0
+
+
+def test_html_page_has_phone_reconnect_watchdog() -> None:
+    assert 'eventSource.addEventListener("ping"' in phone_server.HTML_PAGE
+    assert 'document.addEventListener("visibilitychange"' in phone_server.HTML_PAGE
+    assert 'window.addEventListener("online"' in phone_server.HTML_PAGE
+    assert 'stream stale for ${Math.round(idleMs / 1000)}s, reconnecting...' in phone_server.HTML_PAGE
+    assert 'id="tokenInput"' in phone_server.HTML_PAGE
+    assert 'Paste the phone-feed token from the terminal output, then tap Use Token.' in phone_server.HTML_PAGE
+    assert 'window.localStorage.getItem("live_feed_phone_token")' in phone_server.HTML_PAGE
+    assert 'fetch(`/api/feed?${params.toString()}`' in phone_server.HTML_PAGE
+    assert 'loadSnapshot({ replace: true });' in phone_server.HTML_PAGE
+    assert 'indexOf("\\n"' in phone_server.HTML_PAGE
+    assert 'replace(/\\r\\n/g, "\\n")' in phone_server.HTML_PAGE
 
 
 def test_shape_stream_line_trims_heavy_mode() -> None:
@@ -68,6 +86,26 @@ def test_candidate_urls_include_token_for_lan(monkeypatch) -> None:
     urls = phone_server._candidate_urls("0.0.0.0", 8787, "abc123")
 
     assert urls == ["http://192.168.1.10:8787/?token=abc123"]
+
+
+def test_tailscale_candidate_urls_include_dns_and_ip(monkeypatch) -> None:
+    monkeypatch.setattr(
+        phone_server,
+        "_tailscale_status",
+        lambda: {
+            "Self": {
+                "DNSName": "dans-laptop.example.ts.net.",
+                "TailscaleIPs": ["100.72.102.41", "fd7a:115c:a1e0::9d01:669b"],
+            }
+        },
+    )
+    urls = phone_server._tailscale_candidate_urls(8787, "abc123")
+
+    assert urls == [
+        "http://dans-laptop.example.ts.net:8787/?token=abc123",
+        "http://100.72.102.41:8787/?token=abc123",
+        "http://[fd7a:115c:a1e0::9d01:669b]:8787/?token=abc123",
+    ]
 
 
 def test_helper_basics(tmp_path: Path) -> None:

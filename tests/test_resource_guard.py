@@ -111,3 +111,73 @@ def test_refresh_job_still_blocks_true_memory_pressure(monkeypatch) -> None:
     assert details["memory_pressure_kind"] == "throttled"
     assert details["refresh_relax_applied"] is False
     assert any(reason.startswith("memory_pressure_red") for reason in reasons)
+
+
+def test_optional_job_blocks_on_active_creative_session(monkeypatch) -> None:
+    monkeypatch.setenv("RESOURCE_GUARD_OPTIONAL_BLOCK_ON_MEMORY_STATES", "yellow,red")
+    snapshot = {
+        "memory_available_pct": 72.0,
+        "memory_free_pct": 22.0,
+        "swap_used_gb": 3.0,
+        "pages_throttled": 0,
+        "load1_per_core": 0.5,
+        "disk_free_gb": 120.0,
+        "editing_app_cpu_sum": 34.0,
+        "creative_apps_active": True,
+        "creative_app_count": 1,
+        "creative_apps": ["Final Cut Pro"],
+        "creative_session_level": "active",
+    }
+
+    ok, reasons, details = resource_guard.evaluate_optional_job(snapshot)
+
+    assert ok is False
+    assert "creative_session_active" in reasons
+    assert "active" in details["optional_job_thresholds"]["block_on_creative_session_levels"]
+
+
+def test_refresh_job_allows_active_creative_session_when_system_has_headroom(monkeypatch) -> None:
+    monkeypatch.setenv("RESOURCE_GUARD_OPTIONAL_BLOCK_ON_MEMORY_STATES", "yellow,red")
+    snapshot = {
+        "memory_available_pct": 71.0,
+        "memory_free_pct": 20.0,
+        "swap_used_gb": 3.5,
+        "pages_throttled": 0,
+        "load1_per_core": 0.5,
+        "disk_free_gb": 120.0,
+        "editing_app_cpu_sum": 28.0,
+        "creative_apps_active": True,
+        "creative_app_count": 1,
+        "creative_apps": ["Logic Pro"],
+        "creative_session_level": "active",
+    }
+
+    ok, reasons, details = resource_guard.evaluate_refresh_job(snapshot)
+
+    assert ok is True
+    assert reasons == []
+    assert details["refresh_creative_override_applied"] is True
+    assert details["refresh_creative_override_reason"] == "creative_session_active_allowed"
+
+
+def test_refresh_job_blocks_dual_creative_session(monkeypatch) -> None:
+    monkeypatch.setenv("RESOURCE_GUARD_OPTIONAL_BLOCK_ON_MEMORY_STATES", "yellow,red")
+    snapshot = {
+        "memory_available_pct": 69.0,
+        "memory_free_pct": 19.0,
+        "swap_used_gb": 4.0,
+        "pages_throttled": 0,
+        "load1_per_core": 0.4,
+        "disk_free_gb": 120.0,
+        "editing_app_cpu_sum": 42.0,
+        "creative_apps_active": True,
+        "creative_app_count": 2,
+        "creative_apps": ["Final Cut Pro", "Logic Pro"],
+        "creative_session_level": "dual_pro",
+    }
+
+    ok, reasons, details = resource_guard.evaluate_refresh_job(snapshot)
+
+    assert ok is False
+    assert "creative_session_dual_pro" in reasons
+    assert "dual_pro" in details["refresh_job_thresholds"]["block_on_creative_session_levels"]

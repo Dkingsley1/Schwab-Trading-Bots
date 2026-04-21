@@ -11,11 +11,14 @@ if str(CORE_ROOT) not in sys.path:
 import indicator_bot_common as ibc
 from core import brain_refinery_v15_liquidity_droughts as v15
 from core import brain_refinery_v13_choppy as v13
+from core import brain_refinery_v4_simple as v4
 from core import brain_refinery_v35_dmi_state_machine as v35
 from core import brain_refinery_v36_volume_profile_proxy as v36
 from core import brain_refinery_v43_intraday_ultrafast_proxy as v43
+from core import brain_refinery_v48_position_1m_3m as v48
 from core import brain_refinery_v51_vol_regime_transition as v51
 from core import brain_refinery_v56_meta_ranker as v56
+from core import brain_refinery_v75_model_drift_guard as v75
 from core import brain_refinery_v98_crypto_execution_throttle_reentry as v98
 from core import brain_refinery_v100_stock_crypto_overlap_context as v100
 
@@ -172,6 +175,23 @@ def test_action_threshold_calibration_can_choose_asymmetric_cutoffs() -> None:
     assert meta["validation_metrics"]["short_acted_count"] >= 2
 
 
+def test_action_threshold_calibration_prefers_coverage_bound_when_available() -> None:
+    long_threshold, short_threshold, meta = ibc._select_calibrated_action_thresholds(
+        pred_probs_np=[0.99, 0.97, 0.95, 0.93, 0.88, 0.12, 0.10, 0.08, 0.06, 0.04],
+        y_true_np=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
+        default_threshold=0.60,
+        min_long_acted_count=2,
+        min_short_acted_count=2,
+        max_acted_coverage=0.60,
+        min_long_precision=0.50,
+        min_short_precision=0.50,
+    )
+
+    assert long_threshold >= 0.88
+    assert short_threshold <= 0.12
+    assert meta["validation_metrics"]["acted_coverage"] <= 0.60
+
+
 def test_v15_train_brain_exposes_runtime_path(monkeypatch) -> None:
     captured = {}
 
@@ -212,15 +232,65 @@ def test_v13_train_brain_uses_reduced_runtime_floor(monkeypatch) -> None:
     monkeypatch.setattr(v13, "train_runtime_indicator_bot", _fake_train_runtime_indicator_bot)
 
     assert v13.train_brain() == "ok"
-    assert captured["lookback_days"] == 45
-    assert captured["min_samples"] == 128
-    assert captured["min_positive_samples"] == 24
-    assert captured["min_negative_samples"] == 24
-    assert captured["min_confidence"] == 0.42
-    assert captured["sample_stride"] == 3
-    assert "shadow_dividend_equities" in captured["mode_allowlist"]
+    assert captured["lookback_days"] == 90
+    assert captured["min_samples"] == 56
+    assert captured["min_positive_samples"] == 12
+    assert captured["min_negative_samples"] == 12
+    assert captured["min_confidence"] == 0.36
+    assert captured["sample_stride"] == 1
     assert "SPY" in captured["symbol_allowlist"]
-    assert captured["acted_prob_threshold"] == 0.60
+    assert "META" not in captured["symbol_allowlist"]
+    assert "AAPL" not in captured["symbol_allowlist"]
+    assert "shadow_dividend_equities" in captured["mode_allowlist"]
+    assert "shadow_intraday_aggressive_equities" in captured["mode_allowlist"]
+    assert captured["acted_prob_threshold"] == 0.64
+    assert captured["max_acted_coverage"] == 0.28
+
+
+def test_v4_train_brain_uses_cleaner_runtime_floor(monkeypatch) -> None:
+    captured = {}
+
+    def _fake_train_runtime_indicator_bot(**kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(v4, "train_runtime_indicator_bot", _fake_train_runtime_indicator_bot)
+
+    assert v4.train_brain() == "ok"
+    assert "SCHD" not in captured["symbol_allowlist"]
+    assert "NVDA" in captured["symbol_allowlist"]
+    assert "AMZN" in captured["symbol_allowlist"]
+    assert "shadow_dividend_equities" in captured["mode_allowlist"]
+    assert "shadow_swing_aggressive_equities" in captured["mode_allowlist"]
+    assert captured["lookback_days"] == 60
+    assert captured["min_samples"] == 192
+    assert captured["min_positive_samples"] == 32
+    assert captured["min_negative_samples"] == 32
+    assert captured["min_confidence"] == 0.40
+    assert captured["sample_stride"] == 2
+    assert captured["acted_prob_threshold"] == 0.68
+    assert captured["min_long_acted_count"] == 5
+    assert captured["min_short_acted_count"] == 5
+    assert captured["max_acted_coverage"] == 0.34
+
+
+def test_v100_train_brain_uses_broader_recovery_floor(monkeypatch) -> None:
+    captured = {}
+
+    def _fake_train_runtime_indicator_bot(**kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(v100, "train_runtime_indicator_bot", _fake_train_runtime_indicator_bot)
+
+    assert v100.train_brain() == "ok"
+    assert captured["lookback_days"] == 90
+    assert captured["sample_stride"] == 1
+    assert captured["min_confidence"] == 0.30
+    assert captured["min_samples"] == 96
+    assert captured["min_positive_samples"] == 16
+    assert captured["min_negative_samples"] == 16
+    assert captured["acted_prob_threshold"] == 0.66
 
 
 def test_v43_train_brain_exposes_runtime_path(monkeypatch) -> None:
@@ -233,12 +303,16 @@ def test_v43_train_brain_exposes_runtime_path(monkeypatch) -> None:
     monkeypatch.setattr(v43, "train_runtime_indicator_bot", _fake_train_runtime_indicator_bot)
 
     assert v43.train_brain() == "ok"
-    assert captured["lookback_days"] == 45
-    assert captured["min_confidence"] == 0.56
+    assert captured["lookback_days"] == 60
+    assert captured["min_confidence"] == 0.60
     assert captured["sample_stride"] == 4
-    assert captured["min_long_acted_count"] == 6
-    assert captured["min_short_acted_count"] == 6
-    assert captured["acted_prob_threshold"] == 0.62
+    assert captured["symbol_allowlist"] == ["BTC-USD", "ETH-USD"]
+    assert captured["min_long_acted_count"] == 0
+    assert captured["min_short_acted_count"] == 4
+    assert captured["acted_prob_threshold"] == 0.68
+    assert captured["require_both_sides_precision"] is False
+    assert captured["min_long_precision"] == 0.0
+    assert captured["max_acted_coverage"] == 0.26
     assert captured["allow_fallback_on_insufficient_data"] is False
 
 
@@ -252,15 +326,19 @@ def test_v56_train_brain_exposes_runtime_path(monkeypatch) -> None:
     monkeypatch.setattr(v56, "train_runtime_indicator_bot", _fake_train_runtime_indicator_bot)
 
     assert v56.train_brain() == "ok"
-    assert captured["lookback_days"] == 45
-    assert captured["min_confidence"] == 0.32
-    assert captured["min_samples"] == 1400
-    assert captured["min_positive_samples"] == 120
-    assert captured["min_negative_samples"] == 120
-    assert captured["acted_prob_threshold"] == 0.54
-    assert captured["min_long_acted_count"] == 8
-    assert captured["min_short_acted_count"] == 8
+    assert captured["lookback_days"] == 60
+    assert captured["min_confidence"] == 0.44
+    assert captured["sample_stride"] == 2
+    assert "shadow_crypto" not in captured["mode_allowlist"]
+    assert "SPY" in captured["symbol_allowlist"]
+    assert captured["min_samples"] == 1200
+    assert captured["min_positive_samples"] == 96
+    assert captured["min_negative_samples"] == 96
+    assert captured["acted_prob_threshold"] == 0.62
+    assert captured["min_long_acted_count"] == 6
+    assert captured["min_short_acted_count"] == 6
     assert "role_crypto" in captured["feature_names"]
+    assert captured["max_acted_coverage"] == 0.22
     assert captured["allow_fallback_on_insufficient_data"] is False
 
 
@@ -274,17 +352,250 @@ def test_v35_train_brain_uses_broader_runtime_floor(monkeypatch) -> None:
     monkeypatch.setattr(v35, "train_runtime_indicator_bot", _fake_train_runtime_indicator_bot)
 
     assert v35.train_brain() == "ok"
-    assert "shadow_dividend_equities" in captured["mode_allowlist"]
-    assert "shadow_crypto" in captured["mode_allowlist"]
-    assert "shadow_crypto_futures_crypto" in captured["mode_allowlist"]
+    assert "shadow_dividend_equities" not in captured["mode_allowlist"]
+    assert "shadow_crypto" not in captured["mode_allowlist"]
+    assert "shadow_crypto_futures_crypto" not in captured["mode_allowlist"]
     assert "NVDA" in captured["symbol_allowlist"]
-    assert "BTC-USD" in captured["symbol_allowlist"]
+    assert "BTC-USD" not in captured["symbol_allowlist"]
+    assert "AMZN" in captured["symbol_allowlist"]
     assert "DOGE-USD" not in captured["symbol_allowlist"]
-    assert captured["min_confidence"] == 0.44
-    assert captured["sample_stride"] == 8
+    assert "XLY" not in captured["symbol_allowlist"]
+    assert captured["min_confidence"] == 0.46
+    assert captured["sample_stride"] == 4
+    assert captured["batch_size"] == 16
+    assert captured["min_samples"] == 80
+    assert captured["min_positive_samples"] == 20
+    assert captured["min_negative_samples"] == 20
+    assert captured["acted_prob_threshold"] == 0.70
+    assert captured["max_acted_coverage"] == 0.30
+
+
+def test_v48_train_brain_exposes_balanced_runtime_path(monkeypatch) -> None:
+    captured = {}
+
+    def _fake_train_runtime_indicator_bot(**kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(v48, "train_runtime_indicator_bot", _fake_train_runtime_indicator_bot)
+
+    assert v48.train_brain() == "ok"
+    assert captured["lookback_days"] == 30
+    assert captured["min_confidence"] == 0.34
+    assert captured["min_samples"] == 192
+    assert captured["min_positive_samples"] == 32
+    assert captured["min_negative_samples"] == 32
+    assert captured["acted_prob_threshold"] == 0.64
+    assert captured["allow_fallback_on_insufficient_data"] is False
+    assert captured["require_both_sides_precision"] is True
+
+
+def test_v75_train_brain_exposes_balanced_runtime_guards(monkeypatch) -> None:
+    captured = {}
+
+    def _fake_train_runtime_indicator_bot(**kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(v75, "train_runtime_indicator_bot", _fake_train_runtime_indicator_bot)
+
+    assert v75.train_brain() == "ok"
+    assert captured["sample_stride"] == 4
+    assert captured["lookback_days"] == 60
+    assert captured["min_confidence"] == 0.50
+    assert "shadow_crypto" not in captured["mode_allowlist"]
+    assert "shadow_crypto_futures_crypto" not in captured["mode_allowlist"]
     assert captured["min_samples"] == 224
-    assert captured["min_positive_samples"] == 40
-    assert captured["min_negative_samples"] == 40
+    assert captured["acted_prob_threshold"] == 0.66
+    assert captured["min_long_precision"] == 0.54
+    assert captured["min_short_precision"] == 0.54
+    assert captured["require_both_sides_precision"] is True
+    assert captured["min_long_acted_count"] == 5
+    assert captured["min_short_acted_count"] == 5
+    assert captured["max_acted_coverage"] == 0.22
+
+
+def test_v75_runtime_label_skips_unconfirmed_short_regime() -> None:
+    sequence = [
+        _obs(
+            last_price=100.0,
+            behavior_prior=0.26,
+            master_vote=0.72,
+            grand_master_vote=0.70,
+            options_master_vote=0.66,
+            futures_master_vote=0.64,
+            options_specialist_vote=0.68,
+            futures_specialist_vote=0.70,
+            market_micro_order_flow_imbalance_norm=0.68,
+            news_recent_impact=0.56,
+            breadth_risk_off_norm=0.30,
+        ),
+        _obs(last_price=99.93),
+        _obs(last_price=99.86),
+        _obs(last_price=99.79),
+        _obs(last_price=99.72),
+        _obs(last_price=99.65),
+        _obs(last_price=99.58),
+    ]
+
+    assert v75._runtime_sample_filter(sequence, 0, 6) is True
+    assert v75._runtime_drift_label(sequence, 0, 6) is None
+
+
+def test_v75_runtime_sample_filter_rejects_high_friction_drift_setup() -> None:
+    sequence = [
+        _obs(
+            behavior_prior=-0.28,
+            master_vote=0.18,
+            grand_master_vote=0.20,
+            options_master_vote=0.22,
+            futures_master_vote=0.18,
+            options_specialist_vote=0.24,
+            futures_specialist_vote=0.20,
+            data_quality_quote_agreement_norm=0.82,
+            data_quality_quote_deviation_norm=0.20,
+            market_micro_relative_volume_norm=0.42,
+            lag_expected_fill_delta_bps=9.4,
+            lag_slippage_bps=8.8,
+            news_recent_impact=0.64,
+            breadth_risk_off_norm=0.56,
+        )
+    ]
+
+    assert v75._drift_signal(sequence[0]) >= 0.16
+    assert v75._directional_drift_conviction(sequence[0]) >= 0.24
+    assert v75._drift_tradeability(sequence[0]) < 0.44
+    assert v75._runtime_sample_filter(sequence, 0, 6) is False
+
+
+def test_v75_runtime_label_emits_short_for_confirmed_downside() -> None:
+    sequence = [
+        _obs(
+            last_price=100.0,
+            behavior_prior=-0.32,
+            master_vote=0.18,
+            grand_master_vote=0.20,
+            options_master_vote=0.24,
+            futures_master_vote=0.18,
+            options_specialist_vote=0.26,
+            futures_specialist_vote=0.22,
+            market_micro_order_flow_imbalance_norm=0.18,
+            news_recent_impact=0.62,
+            breadth_risk_off_norm=0.58,
+        ),
+        _obs(last_price=99.89),
+        _obs(last_price=99.78),
+        _obs(last_price=99.66),
+        _obs(last_price=99.54),
+        _obs(last_price=99.43),
+        _obs(last_price=99.31),
+    ]
+
+    assert v75._runtime_sample_filter(sequence, 0, 6) is True
+    assert v75._runtime_drift_label(sequence, 0, 6) == 0.0
+
+
+def test_v35_runtime_sample_filter_rejects_conflicted_trend_setup() -> None:
+    sequence = [
+        _obs(
+            symbol="SPY",
+            spread_bps=12.0,
+            queue_depth=3.0,
+            data_quality_quote_agreement_norm=0.95,
+            data_quality_quote_deviation_norm=0.06,
+            day_regime_trend_norm=0.76,
+            day_regime_alignment_norm=0.74,
+            market_micro_trend_persistence_norm=0.72,
+            market_micro_relative_volume_norm=0.70,
+            behavior_prior=0.70,
+            market_micro_order_flow_imbalance_norm=0.22,
+            futures_specialist_vote=0.22,
+            breadth_advance_decline_norm=-0.25,
+            breadth_sector_dispersion_norm=0.30,
+            breadth_risk_off_norm=0.24,
+            infra_risk_throttle_norm=0.24,
+            mom_15m=0.0050,
+            mom_5m=0.0050,
+            pct_from_close=0.0065,
+        )
+    ]
+
+    assert abs(v35._direction_bias(sequence[0])) >= 0.18
+    assert v35._trend_directional_agreement(sequence[0]) < 0.56
+    assert v35._runtime_sample_filter(sequence, 0, 6) is False
+
+
+def test_v35_runtime_label_abstains_on_unstable_trend_state() -> None:
+    sequence = [
+        _obs(
+            symbol="SPY",
+            last_price=100.0,
+            spread_bps=22.0,
+            queue_depth=3.0,
+            data_quality_quote_agreement_norm=0.95,
+            data_quality_quote_deviation_norm=0.12,
+            day_regime_trend_norm=0.78,
+            day_regime_alignment_norm=0.76,
+            market_micro_trend_persistence_norm=0.74,
+            market_micro_relative_volume_norm=0.70,
+            breadth_sector_dispersion_norm=0.72,
+            breadth_risk_off_norm=0.58,
+            infra_risk_throttle_norm=0.92,
+            day_session_midday_norm=1.0,
+        ),
+        _obs(last_price=100.16),
+        _obs(last_price=100.32),
+        _obs(last_price=100.48),
+        _obs(last_price=100.65),
+        _obs(last_price=100.82),
+        _obs(last_price=100.99),
+    ]
+
+    assert v35._trend_directional_agreement(sequence[0], v35._direction_bias(sequence[0])) >= 0.56
+    assert v35._trend_instability(sequence[0]) > 0.66
+    assert v35._runtime_trend_label(sequence, 0, 6) is None
+
+
+def test_v35_runtime_label_emits_short_for_bearish_headwind_setup() -> None:
+    sequence = [
+        _obs(
+            symbol="SPY",
+            last_price=100.0,
+            spread_bps=14.0,
+            queue_depth=3.0,
+            data_quality_quote_agreement_norm=0.94,
+            data_quality_quote_deviation_norm=0.08,
+            day_regime_trend_norm=0.78,
+            day_regime_alignment_norm=0.38,
+            market_micro_trend_persistence_norm=0.76,
+            market_micro_relative_volume_norm=0.74,
+            behavior_prior=-0.30,
+            market_micro_order_flow_imbalance_norm=0.14,
+            futures_specialist_vote=0.16,
+            breadth_advance_decline_norm=-0.56,
+            breadth_sector_dispersion_norm=0.52,
+            breadth_risk_off_norm=0.72,
+            infra_risk_throttle_norm=0.60,
+            day_session_open_norm=0.62,
+            day_session_power_hour_norm=0.46,
+            market_crypto_current_alignment_norm=0.34,
+            market_crypto_divergence_norm=0.64,
+            crypto_coingecko_momentum_norm=0.32,
+            fx_crypto_alignment_norm=0.36,
+            mom_15m=-0.0032,
+            mom_5m=-0.0026,
+            pct_from_close=-0.0042,
+        ),
+        _obs(last_price=99.86),
+        _obs(last_price=99.72),
+        _obs(last_price=99.56),
+        _obs(last_price=99.40),
+        _obs(last_price=99.22),
+        _obs(last_price=99.04),
+    ]
+
+    assert v35._runtime_sample_filter(sequence, 0, 6) is True
+    assert v35._runtime_trend_label(sequence, 0, 6) == 0.0
 
 
 def test_v35_crypto_sample_filter_accepts_moderate_crypto_setup() -> None:

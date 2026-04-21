@@ -70,6 +70,10 @@ def _scope_exempt_reason(row: dict) -> str:
     return ""
 
 
+def _promotion_scope_active_count(rows: list[dict]) -> int:
+    return sum(1 for row in rows if str(row.get("bot_id", "")).strip())
+
+
 def main() -> int:
     defaults = _threshold_defaults()
     parser = argparse.ArgumentParser(description="New-bot graduation gate for promotion safety.")
@@ -127,7 +131,7 @@ def main() -> int:
             mature_pass += 1
 
     mature_pass_rate = float(mature_pass / max(mature_count, 1))
-    graduation_scope_active_count = len(graduation_scope_active)
+    graduation_scope_active_count = _promotion_scope_active_count(graduation_scope_active)
     effective_min_mature_bots = 0
     if graduation_scope_active_count > 0:
         effective_min_mature_bots = min(
@@ -168,10 +172,20 @@ def main() -> int:
                 }
             )
 
+    scope_active = graduation_scope_active_count > 0
+    mature_floor_ok = mature_count >= int(effective_min_mature_bots)
+    mature_pass_rate_ok = (
+        True
+        if (not scope_active or int(effective_min_mature_bots) == 0)
+        else mature_pass_rate >= float(args.min_mature_pass_rate)
+    )
     ok = (
-        mature_count >= int(effective_min_mature_bots)
-        and mature_pass_rate >= float(args.min_mature_pass_rate)
-        and len(immature_active) <= int(args.max_immature_active)
+        (not scope_active)
+        or (
+            mature_floor_ok
+            and mature_pass_rate_ok
+            and len(immature_active) <= int(args.max_immature_active)
+        )
     )
 
     payload = {
@@ -192,7 +206,10 @@ def main() -> int:
             "mature_bots": int(mature_count),
             "mature_pass_bots": int(mature_pass),
             "mature_pass_rate": round(mature_pass_rate, 6),
+            "mature_floor_ok": bool(mature_floor_ok),
+            "mature_pass_rate_ok": bool(mature_pass_rate_ok),
         },
+        "promotion_scope_active": bool(scope_active),
         "graduation_scope_active_count": int(graduation_scope_active_count),
         "coverage_exempt_active_count": int(len(coverage_exempt_active)),
         "coverage_exempt_examples": coverage_exempt_active[:30],

@@ -91,12 +91,16 @@ def _run_retrain(dry_run: bool, continue_on_error: bool) -> int:
     cmd = [str(VENV_PY), str(WEEKLY_RETRAIN)]
     if continue_on_error:
         cmd.append("--continue-on-error")
+    env = dict(os.environ)
+    env["RETRAIN_TRIGGER_SOURCE"] = "manual_retrain_with_pause"
+    env["RETRAIN_TRIGGER_LABEL"] = "manual_retrain_with_pause"
+    env["RETRAIN_TRIGGER_CONTEXT"] = "pause_then_retrain"
 
     print("$ " + " ".join(cmd))
     if dry_run:
         return 0
 
-    proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT))
+    proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=env)
     return int(proc.returncode)
 
 

@@ -33,9 +33,11 @@ _RS_SYMBOLS = [
     "XLRE",
     "SMH",
     "SOXX",
-    "SCHD",
-    "VIG",
-    "DGRO",
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "AMZN",
+    "META",
 ]
 
 
@@ -148,12 +150,12 @@ def _direction_bias(obs):
 def _runtime_sample_filter(sequence, idx, horizon):
     obs = sequence[idx]
     return (
-        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.80
-        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.24
-        and abs(observation_feature(obs, "spread_bps")) <= 30.0
-        and observation_feature(obs, "queue_depth", 0.0) >= 1.0
-        and _relative_strength_support(obs) >= 0.26
-        and abs(_direction_bias(obs)) >= 0.15
+        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.82
+        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.22
+        and abs(observation_feature(obs, "spread_bps")) <= 26.0
+        and observation_feature(obs, "queue_depth", 0.0) >= 1.5
+        and _relative_strength_support(obs) >= 0.28
+        and abs(_direction_bias(obs)) >= 0.17
     )
 
 
@@ -273,15 +275,15 @@ def train_brain():
         symbol_allowlist=_RS_SYMBOLS,
         sample_filter=_runtime_sample_filter,
         confidence_builder=_runtime_confidence,
-        min_confidence=0.36,
-        lookback_days=45,
+        min_confidence=0.38,
+        lookback_days=60,
         window=24,
         horizon=6,
-        min_samples=320,
+        min_samples=256,
         min_sequences=8,
-        min_positive_samples=48,
-        min_negative_samples=48,
-        acted_prob_threshold=0.68,
+        min_positive_samples=40,
+        min_negative_samples=40,
+        acted_prob_threshold=0.66,
         fallback_trainer=_train_synthetic,
         allow_fallback_on_insufficient_data=False,
         max_best_val_loss=0.6900,
@@ -290,10 +292,10 @@ def train_brain():
         min_short_precision=0.52,
         require_both_sides_precision=True,
         min_acted_accuracy=0.52,
-        min_long_acted_count=6,
-        min_short_acted_count=6,
+        min_long_acted_count=5,
+        min_short_acted_count=5,
         min_accuracy_lift_over_majority=0.01,
-        min_precision_balance_score=0.40,
+        min_precision_balance_score=0.35,
     )
 
 

@@ -1,0 +1,164 @@
+import scripts.run_shadow_training_loop as loop
+
+
+def _master_output(vote: float, *, action: str = "BUY", score: float = 0.66, threshold: float = 0.58) -> dict:
+    return {
+        "action": action,
+        "score": score,
+        "threshold": threshold,
+        "vote": vote,
+    }
+
+
+def test_grand_master_vote_holds_when_infra_stress_and_deployability_are_poor() -> None:
+    action, score, threshold, reasons, meta = loop._grand_master_vote(
+        {
+            "trend": _master_output(0.34),
+            "mean_revert": _master_output(0.18, score=0.60),
+            "shock": _master_output(0.12, score=0.58),
+        },
+        {"trend": 0.45, "mean_revert": 0.30, "shock": 0.25},
+        {
+            "infra_vote": -0.25,
+            "infra_risk_throttle_norm": 0.94,
+            "infra_veto_active": 1.0,
+            "infra_confidence_calibrator_scale_norm": 0.22,
+            "options_specialist_vote": 0.05,
+            "futures_specialist_vote": -0.08,
+            "flow_direction_signed": -0.10,
+            "flow_conviction_norm": 0.18,
+            "flow_stress_norm": 0.86,
+            "lead_lag_signal_signed": -0.18,
+            "lead_lag_confidence_norm": 0.20,
+            "lead_lag_break_norm": 0.88,
+            "market_micro_order_flow_imbalance_norm": 0.34,
+            "execution_fitness_norm": 0.16,
+            "market_micro_tradeability_score_norm": 0.18,
+            "cross_bot_conflict_norm": 0.84,
+        },
+    )
+
+    assert action == "HOLD"
+    assert score >= 0.0
+    assert threshold > 0.0
+    assert meta["deployability"] < 0.35
+    assert meta["master_disagreement"] >= 0.0
+    assert any("deployability=" in reason for reason in reasons)
+
+
+def test_grand_master_vote_uses_specialist_alignment_when_conditions_support_deployment() -> None:
+    action, score, threshold, reasons, meta = loop._grand_master_vote(
+        {
+            "trend": _master_output(0.66, score=0.78),
+            "mean_revert": _master_output(0.18, action="HOLD", score=0.56),
+            "shock": _master_output(0.28, score=0.63),
+        },
+        {"trend": 0.50, "mean_revert": 0.15, "shock": 0.35},
+        {
+            "infra_vote": 0.18,
+            "infra_risk_throttle_norm": 0.18,
+            "infra_veto_active": 0.0,
+            "infra_confidence_calibrator_scale_norm": 0.82,
+            "options_specialist_vote": 0.62,
+            "futures_specialist_vote": 0.58,
+            "flow_direction_signed": 0.52,
+            "flow_conviction_norm": 0.74,
+            "flow_stress_norm": 0.16,
+            "lead_lag_signal_signed": 0.48,
+            "lead_lag_confidence_norm": 0.78,
+            "lead_lag_break_norm": 0.12,
+            "market_micro_order_flow_imbalance_norm": 0.78,
+            "execution_fitness_norm": 0.84,
+            "market_micro_tradeability_score_norm": 0.82,
+            "cross_bot_conflict_norm": 0.10,
+        },
+    )
+
+    assert action == "BUY"
+    assert score > 0.5
+    assert threshold > 0.0
+    assert meta["deployability"] > 0.45
+    assert meta["specialist_consensus"] > 0.40
+    assert meta["directional_alignment"] > 0.30
+    assert any("specialist_consensus=" in reason for reason in reasons)
+
+
+def test_publish_master_plan_intent_emits_options_plan(monkeypatch) -> None:
+    calls = []
+
+    def _capture_publish(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(loop, "_publish_execution_lane_intent", _capture_publish)
+
+    published = loop._publish_master_plan_intent(
+        broker="schwab",
+        symbol="SPY",
+        decision={
+            "action": "BUY",
+            "score": 0.71,
+            "threshold": 0.60,
+            "reasons": ["options_edge"],
+            "plan": {
+                "options_style": "CALL_DEBIT_SPREAD",
+                "contracts": 2,
+                "legs": [
+                    {"side": "BUY", "option_type": "CALL", "strike": 500.0, "expiry_days": 21, "quantity": 2},
+                    {"side": "SELL", "option_type": "CALL", "strike": 510.0, "expiry_days": 21, "quantity": 2},
+                ],
+            },
+        },
+        features={"grand_master_vote": 0.52},
+        gates={"market_data_ok": True},
+        strategy="master_options_bot",
+        layer="master_options",
+        snapshot_id="snap-1",
+        source_profile="live",
+        shadow_domain="equities",
+        plan_key="options_plan",
+        intent_kind="master_options",
+        extra_metadata={"asset_type": "OPTION"},
+    )
+
+    assert published is True
+    assert len(calls) == 1
+    assert calls[0]["intent_kind"] == "master_options"
+    assert calls[0]["metadata"]["options_plan"]["contracts"] == 2
+    assert calls[0]["metadata"]["allow_live_promotion"] is False
+
+
+def test_publish_master_plan_intent_skips_non_trade_plan(monkeypatch) -> None:
+    calls = []
+
+    def _capture_publish(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(loop, "_publish_execution_lane_intent", _capture_publish)
+
+    published = loop._publish_master_plan_intent(
+        broker="schwab",
+        symbol="SPY",
+        decision={
+            "action": "HOLD",
+            "score": 0.50,
+            "threshold": 0.60,
+            "reasons": ["no_edge"],
+            "plan": {
+                "options_style": "NONE",
+                "contracts": 0,
+                "legs": [],
+            },
+        },
+        features={"grand_master_vote": 0.0},
+        gates={"market_data_ok": True},
+        strategy="master_options_bot",
+        layer="master_options",
+        snapshot_id="snap-1",
+        source_profile="live",
+        shadow_domain="equities",
+        plan_key="options_plan",
+        intent_kind="master_options",
+    )
+
+    assert published is False
+    assert calls == []

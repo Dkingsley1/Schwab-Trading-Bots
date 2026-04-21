@@ -160,6 +160,44 @@ def _notification_heading(key: str, message: str) -> Tuple[str, str]:
     return ("Trading Bot Incident", "Trading Bot Alert")
 
 
+def _notification_action_hint(key: str, message: str) -> str:
+    normalized_key = str(key or "").strip().lower()
+    severity = _event_severity(key, message)
+    if normalized_key.startswith("power_clamshell_sleep:"):
+        return ""
+    if normalized_key.startswith("power_lid_open:"):
+        return "Action: verify watchdog/launchd if trading does not resume."
+    if normalized_key.startswith("critical_alert:"):
+        if severity == "warn":
+            return "Action: review the guardrail and keep the lane constrained."
+        return "Action: inspect the guardrail incident and confirm lane posture."
+    if normalized_key == "tripwire" or normalized_key.startswith("tripwire:"):
+        return "Action: keep live halted and inspect the tripwire incidents."
+    if normalized_key.startswith("restart_storm:"):
+        return "Action: inspect process_watchdog and restart scope."
+    if normalized_key == "all_sleeves_down":
+        return "Action: inspect process_watchdog before resuming sleeves."
+    if normalized_key == "global_halt":
+        return "Action: clear the halt only after incident review."
+    if normalized_key == "incident_auto_halt":
+        return "Action: resolve the failed checks before resuming."
+    if normalized_key == "preflight_critical":
+        return "Action: clear the listed checks before market open."
+    if normalized_key == "storage_mount_missing":
+        return "Action: keep writes on fallback storage until the route recovers."
+    return ""
+
+
+def _notification_body(key: str, message: str) -> str:
+    lines = [str(line).strip() for line in str(message or "").splitlines() if str(line).strip()]
+    if not lines:
+        lines = ["Trading bot alert"]
+    hint = _notification_action_hint(key, message)
+    if hint and not any(line.lower().startswith("action:") for line in lines):
+        lines.append(hint)
+    return "\n".join(lines[:4])
+
+
 def _read_json(path: Path) -> Dict[str, Any]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -484,9 +522,10 @@ def _run_watch_loop(
             if sent.get(key) != message:
                 title, subtitle = _notification_heading(key, message)
                 severity = _event_severity(key, message)
+                body = _notification_body(key, message)
                 delivery = _notify(
                     title,
-                    message,
+                    body,
                     subtitle=subtitle,
                     imessage_enabled=bool(imessage_enabled and _imessage_event_allowed(key, parsed_imessage_event_allowlist)),
                     imessage_recipient=imessage_recipient,
@@ -497,11 +536,11 @@ def _run_watch_loop(
                 print(json.dumps({
                     "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                     "event_key": key,
-                    "message": message,
+                    "message": body,
                     "severity": severity,
                     "delivery": delivery,
                 }, ensure_ascii=True), flush=True)
-                sent[key] = message
+                sent[key] = body
         for key in list(sent.keys()):
             if key not in active_keys:
                 sent.pop(key, None)

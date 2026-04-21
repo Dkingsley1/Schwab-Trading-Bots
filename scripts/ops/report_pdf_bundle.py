@@ -8,11 +8,13 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+COMMANDS_PATH = PROJECT_ROOT / "COMMANDS.md"
 RENDER_SUPPORT_DIR = PROJECT_ROOT / "exports" / "reports" / "pdf_render_sources"
 INDEX_HTML_PATH = PROJECT_ROOT / "exports" / "reports" / "report_pdf_bundle_latest.html"
 INDEX_PDF_PATH = PROJECT_ROOT / "exports" / "reports" / "report_pdf_bundle_latest.pdf"
@@ -43,6 +45,13 @@ def _load_json(path: Path) -> dict[str, Any]:
         return obj if isinstance(obj, dict) else {}
     except Exception:
         return {}
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
 
 
 def _pdf_renderer_binary(allow_gui_renderer: bool) -> tuple[str, str]:
@@ -91,11 +100,29 @@ def _render_pdf_from_html(html_path: Path, pdf_path: Path, *, allow_gui_renderer
     html_uri = html_path.resolve().as_uri()
     if renderer_kind == "wkhtmltopdf":
         cmd = [renderer, html_uri, str(pdf_path)]
+        rc, out, err = _run(cmd)
     else:
-        cmd = [renderer, "--headless", "--disable-gpu", f"--print-to-pdf={pdf_path}", html_uri]
-    rc, out, err = _run(cmd)
-    if rc == 0 and pdf_path.exists() and pdf_path.stat().st_size > 0:
-        return True, out or "ok"
+        profile_dir = Path(tempfile.mkdtemp(prefix="report-bundle-pdf-"))
+        try:
+            cmd = [
+                renderer,
+                "--headless=new",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--silent-launch",
+                "--no-startup-window",
+                "--disable-background-networking",
+                "--metrics-recording-only",
+                f"--user-data-dir={profile_dir}",
+                f"--print-to-pdf={pdf_path}",
+                html_uri,
+            ]
+            rc, out, err = _run(cmd)
+        finally:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+    if pdf_path.exists() and pdf_path.stat().st_size > 0:
+        return True, out or err or "ok"
     return False, err or out or f"rc={rc}"
 
 
@@ -253,6 +280,13 @@ def _build_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "pdf_path": sql_reports_dir / "paper_execution_calibration_latest.pdf",
         },
         {
+            "slug": "sentiment_report",
+            "title": "Sentiment Report",
+            "kind": "html",
+            "source_path": reports_dir / "sentiment_report_latest.html",
+            "pdf_path": reports_dir / "sentiment_report_latest.pdf",
+        },
+        {
             "slug": "strategy_attribution",
             "title": "Strategy Attribution",
             "kind": strategy_kind,
@@ -286,6 +320,55 @@ def _build_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "kind": "json",
             "source_path": state_snapshot_dir / "latest.json",
             "pdf_path": state_snapshot_dir / "state_snapshot_drills_latest.pdf",
+        },
+        {
+            "slug": "framework_map_v2",
+            "title": "Framework Map v2",
+            "kind": "html",
+            "source_path": reports_dir / "system_explainers" / "framework_map_v2_latest.html",
+            "pdf_path": reports_dir / "system_explainers" / "framework_map_v2_latest.pdf",
+        },
+        {
+            "slug": "runtime_hierarchy",
+            "title": "Runtime Hierarchy",
+            "kind": "markdown",
+            "source_path": reports_dir / "system_explainers" / "runtime_hierarchy_latest.md",
+            "pdf_path": reports_dir / "system_explainers" / "runtime_hierarchy_latest.pdf",
+        },
+        {
+            "slug": "data_intake_and_shards",
+            "title": "Data Intake And Shards",
+            "kind": "markdown",
+            "source_path": reports_dir / "system_explainers" / "data_intake_and_shards_latest.md",
+            "pdf_path": reports_dir / "system_explainers" / "data_intake_and_shards_latest.pdf",
+        },
+        {
+            "slug": "health_gates_and_halt_logic",
+            "title": "Health Gates And Halt Logic",
+            "kind": "markdown",
+            "source_path": reports_dir / "system_explainers" / "health_gates_and_halt_logic_latest.md",
+            "pdf_path": reports_dir / "system_explainers" / "health_gates_and_halt_logic_latest.pdf",
+        },
+        {
+            "slug": "storage_routing_and_failover",
+            "title": "Storage Routing And Failover",
+            "kind": "markdown",
+            "source_path": reports_dir / "system_explainers" / "storage_routing_and_failover_latest.md",
+            "pdf_path": reports_dir / "system_explainers" / "storage_routing_and_failover_latest.pdf",
+        },
+        {
+            "slug": "broker_truth_and_reconciliation",
+            "title": "Broker Truth And Reconciliation",
+            "kind": "markdown",
+            "source_path": reports_dir / "system_explainers" / "broker_truth_and_reconciliation_latest.md",
+            "pdf_path": reports_dir / "system_explainers" / "broker_truth_and_reconciliation_latest.pdf",
+        },
+        {
+            "slug": "training_and_promotion",
+            "title": "Training And Promotion",
+            "kind": "markdown",
+            "source_path": reports_dir / "system_explainers" / "training_and_promotion_latest.md",
+            "pdf_path": reports_dir / "system_explainers" / "training_and_promotion_latest.pdf",
         },
     ]
 
@@ -350,6 +433,29 @@ def _markdown_to_html(text: str) -> str:
     close_code()
     close_list()
     return "\n".join(out) or "<p>No markdown content available.</p>"
+
+
+def _extract_markdown_section(text: str, heading: str) -> str:
+    target = str(heading or "").strip()
+    if not target:
+        return ""
+    lines = text.splitlines()
+    start_idx: int | None = None
+    for idx, raw in enumerate(lines):
+        if raw.startswith("## ") and raw[3:].strip() == target:
+            start_idx = idx
+            break
+    if start_idx is None:
+        return ""
+    end_idx = len(lines)
+    for idx in range(start_idx + 1, len(lines)):
+        if lines[idx].startswith("## "):
+            end_idx = idx
+            break
+    section_lines = lines[start_idx:end_idx]
+    while section_lines and not section_lines[-1].strip():
+        section_lines.pop()
+    return "\n".join(section_lines).strip()
 
 
 def _json_to_html(path: Path) -> str:
@@ -454,11 +560,20 @@ def _render_index_html(entries: list[dict[str, Any]], *, generated_utc: str) -> 
             f"<td>{html.escape(str(entry.get('source_path', '')))}</td>"
             "</tr>"
         )
+    commands_section_html = ""
+    commands_markdown = _extract_markdown_section(_read_text(COMMANDS_PATH), "Reports And PDFs")
+    if commands_markdown:
+        commands_section_html = (
+            "<h2>Paste-Ready Terminal Commands</h2>"
+            "<p>The commands below are copied from the canonical <code>COMMANDS.md</code> runbook so you can paste them directly into Terminal.</p>"
+            + _markdown_to_html(commands_markdown)
+        )
     body = (
         "<h2>Generated PDF Inventory</h2>"
         "<table><thead><tr><th>Report</th><th>Kind</th><th>Status</th><th>PDF</th><th>Source</th></tr></thead><tbody>"
         + "".join(rows)
         + "</tbody></table>"
+        + commands_section_html
     )
     return _wrap_html(
         title="Trading System PDF Bundle",

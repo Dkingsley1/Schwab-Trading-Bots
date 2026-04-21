@@ -1,4 +1,7 @@
+from datetime import datetime, timezone
+
 from scripts.collect_extended_quant_context import (
+    _derive_trading_calendar_features,
     _derive_cftc_features,
     _derive_sofr_features,
     _discover_first_zip_link,
@@ -166,3 +169,11 @@ def test_parse_sec_ftd_rows_extracts_tracked_symbols() -> None:
     assert len(rows) == 1
     assert rows[0]["symbol"] == "BOXL"
     assert rows[0]["quantity"] == 125000.0
+
+
+def test_derive_trading_calendar_features_flags_opex_and_rebalance_windows() -> None:
+    out = _derive_trading_calendar_features(datetime(2026, 3, 18, 15, 0, tzinfo=timezone.utc))
+
+    assert out["calendar_opex_week_norm"] > 0.0
+    assert out["calendar_futures_roll_window_norm"] > 0.0
+    assert out["calendar_quarter_end_rebalance_norm"] > 0.0

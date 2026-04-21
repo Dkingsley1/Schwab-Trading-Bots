@@ -189,6 +189,72 @@ def _within_budget(events: List[Dict[str, Any]], name: str, max_per_hour: int) -
     return len(recent) < max(max_per_hour, 1)
 
 
+def _resolved_restart_storms(
+    *,
+    events: List[Dict[str, Any]],
+    status_rows: List[Dict[str, Any]],
+    restart_window_seconds: int,
+    restart_storm_threshold: int,
+    settle_seconds: int,
+    now_epoch: float | None = None,
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    now = float(now_epoch or time.time())
+    cutoff = now - max(int(restart_window_seconds), 60)
+    by_name: Dict[str, int] = {}
+    last_restart_epoch: Dict[str, float] = {}
+    for event in events:
+        if event.get('event') != 'restart':
+            continue
+        ts_epoch = float(event.get('ts_epoch', 0) or 0.0)
+        if ts_epoch < cutoff:
+            continue
+        name = str(event.get('name', 'unknown'))
+        by_name[name] = by_name.get(name, 0) + 1
+        last_restart_epoch[name] = max(last_restart_epoch.get(name, 0.0), ts_epoch)
+
+    status_by_name = {
+        str((row or {}).get('name') or ''): row
+        for row in status_rows
+        if isinstance(row, dict) and str((row or {}).get('name') or '').strip()
+    }
+    active: List[Dict[str, Any]] = []
+    recent: List[Dict[str, Any]] = []
+    for name, count in sorted(by_name.items()):
+        if count < max(int(restart_storm_threshold), 1):
+            continue
+        row = status_by_name.get(name, {})
+        row_settle_seconds = max(int(row.get('restart_storm_settle_seconds', settle_seconds) or settle_seconds), 60)
+        row_min_healthy_seconds = max(
+            int(row.get('restart_storm_min_healthy_seconds', min(row_settle_seconds, 120)) or min(row_settle_seconds, 120)),
+            60,
+        )
+        running_count = int(row.get('running', 0) or 0) + int(row.get('alt_running', 0) or 0)
+        heartbeat_ok = bool(row.get('heartbeat_ok', False))
+        heartbeat_age_seconds = float(row.get('heartbeat_age_seconds', 0.0) or 0.0)
+        heartbeat_max_age_seconds = float(row.get('heartbeat_max_age_seconds', 0.0) or 0.0)
+        last_age = max(now - last_restart_epoch.get(name, now), 0.0)
+        unresolved = running_count <= 0 or not heartbeat_ok or last_age < row_settle_seconds
+        healthy_and_fresh = (
+            running_count > 0
+            and heartbeat_ok
+            and (heartbeat_max_age_seconds <= 0.0 or heartbeat_age_seconds <= heartbeat_max_age_seconds)
+        )
+        if healthy_and_fresh and last_age >= row_min_healthy_seconds:
+            unresolved = False
+        storm = {
+            'name': name,
+            'count': int(count),
+            'window_seconds': int(restart_window_seconds),
+            'last_restart_age_seconds': round(float(last_age), 3),
+            'settle_seconds': int(row_settle_seconds),
+            'resolved': not unresolved,
+        }
+        recent.append(storm)
+        if unresolved:
+            active.append(storm)
+    return active, recent
+
+
 def _file_age_seconds(path: Path) -> float:
     try:
         return max(time.time() - path.stat().st_mtime, 0.0)
@@ -333,17 +399,24 @@ def _refresh_runtime_reports(
     out['paper_performance']['age_seconds_after'] = round(_file_age_seconds(paper_performance), 2)
 
     if _file_age_seconds(daily_summary) > float(max_age_seconds):
-        rc, stdout, err = _run([str(PY), str(PROJECT_ROOT / 'scripts' / 'daily_runtime_summary.py'), '--day', day, '--json'])
-        out['daily_runtime_summary']['refreshed'] = rc == 0
-        out['daily_runtime_summary']['rc'] = int(rc)
-        out['daily_runtime_summary']['error'] = err[-500:] if err else ''
-        if rc == 0 and stdout:
-            try:
-                payload = json.loads(stdout)
-                daily_summary.parent.mkdir(parents=True, exist_ok=True)
-                daily_summary.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding='utf-8')
-            except Exception as exc:
-                out['daily_runtime_summary']['error'] = f'parse_or_write_failed:{exc}'
+        guard_profile = str(os.getenv('OPS_WATCHDOG_DAILY_SUMMARY_RESOURCE_GUARD_PROFILE', 'refresh') or 'refresh')
+        guard_ok, guard_detail = _resource_guard_allows_job('daily_runtime_summary_refresh', profile=guard_profile)
+        out['daily_runtime_summary']['resource_guard_ok'] = bool(guard_ok)
+        out['daily_runtime_summary']['resource_guard_detail'] = guard_detail
+        if not guard_ok:
+            out['daily_runtime_summary']['error'] = 'resource_guard_blocked'
+        else:
+            rc, stdout, err = _run([str(PY), str(PROJECT_ROOT / 'scripts' / 'daily_runtime_summary.py'), '--day', day, '--json'])
+            out['daily_runtime_summary']['refreshed'] = rc == 0
+            out['daily_runtime_summary']['rc'] = int(rc)
+            out['daily_runtime_summary']['error'] = err[-500:] if err else ''
+            if rc == 0 and stdout:
+                try:
+                    payload = json.loads(stdout)
+                    daily_summary.parent.mkdir(parents=True, exist_ok=True)
+                    daily_summary.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding='utf-8')
+                except Exception as exc:
+                    out['daily_runtime_summary']['error'] = f'parse_or_write_failed:{exc}'
 
     out['daily_runtime_summary']['synced_health'] = _copy_if_exists(daily_summary, daily_summary_health)
     out['daily_runtime_summary']['age_seconds_after'] = round(_file_age_seconds(daily_summary), 2)
@@ -468,6 +541,16 @@ def _build_all_sleeves_target(heartbeat_max_age_seconds: int) -> Dict[str, Any]:
 
 def _build_execution_lane_target(mode: str, *, heartbeat_max_age_seconds: int) -> Dict[str, Any]:
     safe_mode = str(mode or 'paper').strip().lower() or 'paper'
+    settle_seconds_env = (
+        os.getenv('OPS_WATCHDOG_PAPER_EXECUTOR_RESTART_STORM_SETTLE_SECONDS', '120')
+        if safe_mode == 'paper'
+        else os.getenv('OPS_WATCHDOG_EXECUTION_RESTART_STORM_SETTLE_SECONDS', '300')
+    )
+    min_healthy_seconds_env = (
+        os.getenv('OPS_WATCHDOG_PAPER_EXECUTOR_MIN_HEALTHY_SECONDS', '120')
+        if safe_mode == 'paper'
+        else os.getenv('OPS_WATCHDOG_EXECUTION_MIN_HEALTHY_SECONDS', '180')
+    )
     return {
         'name': f'execution_lane_{safe_mode}',
         'pattern': f'scripts/run_execution_lane.py --mode {safe_mode}',
@@ -481,6 +564,8 @@ def _build_execution_lane_target(mode: str, *, heartbeat_max_age_seconds: int) -
         'log': PROJECT_ROOT / 'logs' / f'watchdog_execution_lane_{safe_mode}.log',
         'heartbeat_glob': str(PROJECT_ROOT / 'governance' / 'health' / f'execution_lane_{safe_mode}_latest.json'),
         'heartbeat_max_age_seconds': max(int(heartbeat_max_age_seconds), 60),
+        'restart_storm_settle_seconds': max(int(settle_seconds_env or '120'), 60),
+        'restart_storm_min_healthy_seconds': max(int(min_healthy_seconds_env or '120'), 60),
     }
 
 
@@ -679,6 +764,7 @@ def main() -> int:
     parser.add_argument('--network-fail-threshold', type=int, default=int(os.getenv('OPS_WATCHDOG_NETWORK_FAIL_THRESHOLD', '3')))
     parser.add_argument('--restart-storm-threshold', type=int, default=int(os.getenv('OPS_WATCHDOG_RESTART_STORM_THRESHOLD', '4')))
     parser.add_argument('--restart-storm-window-seconds', type=int, default=int(os.getenv('OPS_WATCHDOG_RESTART_STORM_WINDOW_SECONDS', '3600')))
+    parser.add_argument('--restart-storm-settle-seconds', type=int, default=int(os.getenv('OPS_WATCHDOG_RESTART_STORM_SETTLE_SECONDS', '900')))
     parser.add_argument('--alert-suppress-seconds', type=int, default=int(os.getenv('OPS_WATCHDOG_ALERT_SUPPRESS_SECONDS', '600')))
     parser.add_argument('--maintenance-timeout-seconds', type=float, default=DEFAULT_MAINTENANCE_TIMEOUT_SECONDS)
     parser.add_argument('--json', action='store_true')
@@ -928,6 +1014,10 @@ def main() -> int:
             'running': int(running),
             'heartbeat_ok': bool(heartbeat_ok),
         }
+        if 'restart_storm_settle_seconds' in t:
+            row['restart_storm_settle_seconds'] = int(t['restart_storm_settle_seconds'])
+        if 'restart_storm_min_healthy_seconds' in t:
+            row['restart_storm_min_healthy_seconds'] = int(t['restart_storm_min_healthy_seconds'])
         if alt_running > 0:
             row['alt_running'] = int(alt_running)
         if heartbeat_required:
@@ -989,21 +1079,13 @@ def main() -> int:
         subprocess.run([str(SNAPSHOT_SCRIPT)], cwd=str(PROJECT_ROOT), check=False)
 
     restart_window_seconds = max(int(args.restart_storm_window_seconds), 60)
-    cutoff = time.time() - restart_window_seconds
-    by_name: Dict[str, int] = {}
-    for e in events:
-        if e.get('event') != 'restart':
-            continue
-        if float(e.get('ts_epoch', 0)) < cutoff:
-            continue
-        name = str(e.get('name', 'unknown'))
-        by_name[name] = by_name.get(name, 0) + 1
-
-    restart_storms = [
-        {'name': name, 'count': count, 'window_seconds': restart_window_seconds}
-        for name, count in sorted(by_name.items())
-        if count >= max(int(args.restart_storm_threshold), 1)
-    ]
+    restart_storms, recent_restart_storms = _resolved_restart_storms(
+        events=events,
+        status_rows=status,
+        restart_window_seconds=restart_window_seconds,
+        restart_storm_threshold=max(int(args.restart_storm_threshold), 1),
+        settle_seconds=max(int(args.restart_storm_settle_seconds), 60),
+    )
     for storm in restart_storms:
         alerts.append(
             {
@@ -1047,6 +1129,7 @@ def main() -> int:
         'status': status,
         'restarts': restarts,
         'restart_storms': restart_storms,
+        'recent_restart_storms': recent_restart_storms,
         'alerts': alerts,
         'max_restarts_per_hour': int(args.max_restarts_per_hour),
         'maintenance': maintenance,

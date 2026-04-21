@@ -2,8 +2,13 @@ import argparse
 import csv
 import json
 import gzip
+import html
 import os
+import plistlib
 import re
+import shutil
+import subprocess
+import tempfile
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +24,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
 WATCHDOG_DIR = PROJECT_ROOT / "governance" / "watchdog"
 OUTPUT_DIR = PROJECT_ROOT / "exports" / "bot_stack_status"
+DEFAULT_HTML_PATH = OUTPUT_DIR / "latest.html"
+DEFAULT_PDF_PATH = OUTPUT_DIR / "latest.pdf"
 DEFAULT_TOP = 10
 _ET_ZONE = ZoneInfo("America/New_York") if ZoneInfo is not None else timezone.utc
 
@@ -27,6 +34,174 @@ DECISION_LOGS = {
     "schwab_aggressive": PROJECT_ROOT / "decision_explanations" / "shadow_aggressive_equities" / "latest_decisions.log",
     "coinbase_crypto": PROJECT_ROOT / "decision_explanations" / "shadow_crypto" / "latest_decisions.log",
 }
+
+
+def _run(cmd: List[str]) -> Tuple[int, str, str]:
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
+    except Exception as exc:
+        return 1, "", str(exc)
+
+
+def _default_allow_gui_pdf_renderer() -> bool:
+    for candidate in (
+        Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+        Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+    ):
+        if candidate.exists():
+            return True
+    return False
+
+
+def _pdf_renderer_binary(allow_gui_renderer: bool) -> Tuple[str, str]:
+    env_override = os.getenv("BOT_STACK_STATUS_PDF_BIN", "").strip()
+    if env_override:
+        env_bin = Path(env_override).expanduser()
+        if env_bin.exists():
+            kind = "wkhtmltopdf" if env_bin.name == "wkhtmltopdf" else "browser"
+            return str(env_bin), kind
+
+    wkhtmltopdf = shutil.which("wkhtmltopdf")
+    if wkhtmltopdf:
+        return wkhtmltopdf, "wkhtmltopdf"
+
+    for candidate in (
+        shutil.which("chromium"),
+        shutil.which("chromium-browser"),
+        shutil.which("google-chrome"),
+        shutil.which("google-chrome-stable"),
+        shutil.which("microsoft-edge"),
+        shutil.which("msedge"),
+    ):
+        if candidate:
+            return candidate, "browser"
+
+    if allow_gui_renderer:
+        for candidate in (
+            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+            Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+        ):
+            if candidate.exists():
+                return str(candidate), "browser"
+
+    return "", ""
+
+
+def _render_pdf_from_html(html_path: Path, pdf_path: Path, *, allow_gui_renderer: bool) -> Tuple[bool, str]:
+    renderer, renderer_kind = _pdf_renderer_binary(allow_gui_renderer=allow_gui_renderer)
+    if not renderer:
+        return False, "pdf_renderer_not_found"
+    html_uri = html_path.resolve().as_uri()
+    if renderer_kind == "wkhtmltopdf":
+        cmd = [renderer, html_uri, str(pdf_path)]
+        rc, out, err = _run(cmd)
+    else:
+        profile_dir = Path(tempfile.mkdtemp(prefix="bot-stack-pdf-"))
+        try:
+            cmd = [
+                renderer,
+                "--headless=new",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--silent-launch",
+                "--no-startup-window",
+                "--disable-background-networking",
+                "--metrics-recording-only",
+                f"--user-data-dir={profile_dir}",
+                f"--print-to-pdf={pdf_path}",
+                html_uri,
+            ]
+            rc, out, err = _run(cmd)
+        finally:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+    if pdf_path.exists() and pdf_path.stat().st_size > 0:
+        return True, out or err or "ok"
+    return False, err or out or f"rc={rc}"
+
+
+def _load_plist(path: Path) -> Dict[str, Any]:
+    try:
+        with path.open("rb") as handle:
+            payload = plistlib.load(handle)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _launchctl_status_map() -> Dict[str, Dict[str, Any]]:
+    rc, stdout, _ = _run(["launchctl", "list"])
+    if rc != 0 or not stdout:
+        return {}
+    rows: Dict[str, Dict[str, Any]] = {}
+    for raw in stdout.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("PID"):
+            continue
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        pid_raw, status_raw, label = parts
+        if not label.startswith("com.dankingsley.ops."):
+            continue
+        rows[label] = {
+            "loaded": True,
+            "running": str(pid_raw).strip() not in {"-", "0"},
+            "pid": None if str(pid_raw).strip() in {"-", "0"} else _safe_int(pid_raw, 0),
+            "last_exit_status": None if str(status_raw).strip() == "-" else _safe_int(status_raw, 0),
+        }
+    return rows
+
+
+def _calendar_interval_text(raw: Any) -> str:
+    if isinstance(raw, dict):
+        hour = raw.get("Hour")
+        minute = raw.get("Minute")
+        if hour is not None and minute is not None:
+            return f"{_safe_int(hour, 0):02d}:{_safe_int(minute, 0):02d}"
+    return ""
+
+
+def _collect_infrastructure_bots(launch_agents_dir: Optional[Path] = None) -> Dict[str, Any]:
+    agents_dir = launch_agents_dir or (Path.home() / "Library" / "LaunchAgents")
+    launchctl_rows = _launchctl_status_map()
+    bots: List[Dict[str, Any]] = []
+    if agents_dir.exists():
+        for path in sorted(agents_dir.glob("com.dankingsley.ops*.plist")):
+            plist_payload = _load_plist(path)
+            label = str(plist_payload.get("Label") or path.stem)
+            program_args = plist_payload.get("ProgramArguments") if isinstance(plist_payload.get("ProgramArguments"), list) else []
+            start_interval = _safe_int(plist_payload.get("StartInterval"), 0)
+            schedule = f"every {start_interval}s" if start_interval > 0 else _calendar_interval_text(plist_payload.get("StartCalendarInterval"))
+            launchctl_row = launchctl_rows.get(label, {})
+            bots.append(
+                {
+                    "label": label,
+                    "plist_path": str(path),
+                    "loaded": bool(launchctl_row.get("loaded", False)),
+                    "running": bool(launchctl_row.get("running", False)),
+                    "pid": launchctl_row.get("pid"),
+                    "last_exit_status": launchctl_row.get("last_exit_status"),
+                    "schedule": schedule,
+                    "program": " ".join(str(item) for item in program_args[:4]),
+                }
+            )
+    return {
+        "launch_agents_dir": str(agents_dir),
+        "count": len(bots),
+        "loaded_count": sum(1 for row in bots if bool(row.get("loaded", False))),
+        "running_count": sum(1 for row in bots if bool(row.get("running", False))),
+        "bots": bots,
+    }
 
 
 def _read_text(path: Path) -> str:
@@ -517,6 +692,10 @@ def _flatten_for_numbers(payload: Dict[str, Any]) -> List[Tuple[str, str]]:
     rows.append(("registry_active", str(counts.get("active", 0))))
     rows.append(("registry_inactive", str(counts.get("inactive", 0))))
     rows.append(("registry_deleted", str(counts.get("deleted", 0))))
+    infra = payload.get("infrastructure_bots") or {}
+    rows.append(("infrastructure_bot_count", str(infra.get("count", 0))))
+    rows.append(("infrastructure_loaded_count", str(infra.get("loaded_count", 0))))
+    rows.append(("infrastructure_running_count", str(infra.get("running_count", 0))))
 
     for chk in ((payload.get("overall_health") or {}).get("checks") or []):
         name = str((chk or {}).get("name", "check"))
@@ -664,13 +843,213 @@ def _render_markdown(payload: Dict[str, Any]) -> str:
         lines.append("- no_targets_found")
     lines.append("")
 
+    lines.append("## Infrastructure Bots")
+    infrastructure = payload.get("infrastructure_bots") or {}
+    lines.append(
+        f"- installed={infrastructure.get('count', 0)} loaded={infrastructure.get('loaded_count', 0)} running={infrastructure.get('running_count', 0)}"
+    )
+    if infrastructure.get("bots"):
+        for row in infrastructure.get("bots", []):
+            lines.append(
+                f"- {row.get('label')}: loaded={row.get('loaded')} running={row.get('running')} "
+                f"pid={row.get('pid')} schedule={row.get('schedule') or 'n/a'} last_exit_status={row.get('last_exit_status')}"
+            )
+    else:
+        lines.append("- no_infrastructure_bots_found")
+    lines.append("")
+
     return "\n".join(lines) + "\n"
+
+
+def _render_html(payload: Dict[str, Any]) -> str:
+    registry = payload.get("registry") or {}
+    counts = registry.get("counts") or {}
+    overall = payload.get("overall_health") or {}
+    infrastructure = payload.get("infrastructure_bots") or {}
+
+    check_rows = "".join(
+        f"<tr><td>{html.escape(str(check.get('name')))}</td><td>{'PASS' if check.get('ok') else 'FAIL'}</td><td>{html.escape(str(check.get('note') or ''))}</td></tr>"
+        for check in overall.get("checks", [])
+    )
+    lane_rows = "".join(
+        "<tr>"
+        f"<td>{html.escape(str(lane))}</td>"
+        f"<td>{html.escape(str(info.get('active_count', 0)))}</td>"
+        f"<td>{html.escape(str(info.get('active_weight', 0.0)))}</td>"
+        f"<td>{html.escape(', '.join(str(bot.get('bot_id')) for bot in info.get('bots', [])[:4]))}</td>"
+        "</tr>"
+        for lane, info in (registry.get("lanes") or {}).items()
+    )
+    top_sub_rows = "".join(
+        "<tr>"
+        f"<td>{html.escape(str(row.get('bot_id') or ''))}</td>"
+        f"<td>{html.escape(str(row.get('bot_role') or ''))}</td>"
+        f"<td>{html.escape(str(row.get('weight') or 0.0))}</td>"
+        f"<td>{html.escape(str(row.get('quality_score') or 0.0))}</td>"
+        "</tr>"
+        for row in registry.get("top_active", [])
+    )
+    flow_rows = "".join(
+        "<tr>"
+        f"<td>{html.escape(str(name))}</td>"
+        f"<td>{html.escape(str((summary.get('grand_master') or {}).get('avg_score')))}</td>"
+        f"<td>{html.escape(str((summary.get('options_master') or {}).get('avg_score')))}</td>"
+        f"<td>{html.escape(str((summary.get('latest_loop') or {}).get('grand_action') or ''))}</td>"
+        f"<td>{html.escape(str((summary.get('latest_loop') or {}).get('options_action') or ''))}</td>"
+        f"<td>{html.escape(str((summary.get('latest_loop') or {}).get('active_bots') or 0))}</td>"
+        "</tr>"
+        for name, summary in (payload.get("decision_logs") or {}).items()
+    )
+    infrastructure_rows = "".join(
+        "<tr>"
+        f"<td>{html.escape(str(row.get('label') or ''))}</td>"
+        f"<td>{html.escape(str(row.get('loaded')))}</td>"
+        f"<td>{html.escape(str(row.get('running')))}</td>"
+        f"<td>{html.escape(str(row.get('pid') or ''))}</td>"
+        f"<td>{html.escape(str(row.get('schedule') or 'n/a'))}</td>"
+        f"<td>{html.escape(str(row.get('last_exit_status') if row.get('last_exit_status') is not None else ''))}</td>"
+        "</tr>"
+        for row in infrastructure.get("bots", [])
+    )
+    watchdog_rows = "".join(
+        "<tr>"
+        f"<td>{html.escape(str(row.get('name') or ''))}</td>"
+        f"<td>{html.escape(str(row.get('live')))}</td>"
+        f"<td>{html.escape(str(row.get('process_live')))}</td>"
+        f"<td>{html.escape(str(row.get('action') or ''))}</td>"
+        f"<td>{html.escape(str(row.get('note') or ''))}</td>"
+        "</tr>"
+        for row in (payload.get("watchdog") or {}).get("targets", [])
+    )
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Bot Stack Status Report</title>
+  <style>
+    :root {{
+      --bg: #f3efe5;
+      --panel: #fffdf8;
+      --ink: #182027;
+      --muted: #5e6a73;
+      --accent: #0b6e4f;
+      --line: #d9d3c6;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      padding: 32px;
+      background: linear-gradient(135deg, #f7f3ea 0%, #e6efe8 100%);
+      color: var(--ink);
+      font: 15px/1.45 "Avenir Next", "Segoe UI", sans-serif;
+    }}
+    h1, h2 {{ margin: 0 0 12px; }}
+    h1 {{ font-size: 34px; letter-spacing: 0.02em; }}
+    h2 {{ font-size: 20px; margin-top: 28px; }}
+    .meta {{ color: var(--muted); margin-bottom: 20px; }}
+    .panel {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px 20px;
+      margin-bottom: 18px;
+      box-shadow: 0 14px 34px rgba(24, 32, 39, 0.08);
+    }}
+    .stats {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }}
+    .stat {{
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: rgba(11, 110, 79, 0.08);
+    }}
+    .stat strong {{ display: block; font-size: 24px; }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-size: 13px;
+    }}
+    th, td {{
+      text-align: left;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }}
+    th {{ color: var(--muted); font-weight: 700; }}
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h1>Bot Stack Status Report</h1>
+    <div class="meta">Generated {html.escape(str(payload.get('generated_utc') or ''))} | Overall {html.escape(str(overall.get('status') or 'unknown'))}</div>
+    <div class="stats">
+      <div class="stat"><span>Active Sub Bots</span><strong>{html.escape(str(counts.get('active', 0)))}</strong></div>
+      <div class="stat"><span>Grand/Master Flows</span><strong>{html.escape(str(len(payload.get('decision_logs') or {})))}</strong></div>
+      <div class="stat"><span>Infra Bots Loaded</span><strong>{html.escape(str(infrastructure.get('loaded_count', 0)))}</strong></div>
+      <div class="stat"><span>Infra Bots Running</span><strong>{html.escape(str(infrastructure.get('running_count', 0)))}</strong></div>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>At a Glance</h2>
+    <table>
+      <thead><tr><th>Check</th><th>Status</th><th>Note</th></tr></thead>
+      <tbody>{check_rows or '<tr><td colspan="3">No checks found.</td></tr>'}</tbody>
+    </table>
+  </div>
+  <div class="panel">
+    <h2>Sub Bots</h2>
+    <div>Total={html.escape(str(counts.get('total', 0)))} Active={html.escape(str(counts.get('active', 0)))} Inactive={html.escape(str(counts.get('inactive', 0)))} Deleted={html.escape(str(counts.get('deleted', 0)))}</div>
+    <table>
+      <thead><tr><th>Lane</th><th>Active Count</th><th>Weight</th><th>Top Bots</th></tr></thead>
+      <tbody>{lane_rows or '<tr><td colspan="4">No active lanes found.</td></tr>'}</tbody>
+    </table>
+    <table>
+      <thead><tr><th>Bot</th><th>Role</th><th>Weight</th><th>Quality</th></tr></thead>
+      <tbody>{top_sub_rows or '<tr><td colspan="4">No active sub bots found.</td></tr>'}</tbody>
+    </table>
+  </div>
+  <div class="panel">
+    <h2>Grandmaster + Master Bots</h2>
+    <table>
+      <thead><tr><th>Flow</th><th>Grandmaster Avg Score</th><th>Options Master Avg Score</th><th>Latest Grand Action</th><th>Latest Options Action</th><th>Latest Active Bots</th></tr></thead>
+      <tbody>{flow_rows or '<tr><td colspan="6">No decision flows found.</td></tr>'}</tbody>
+    </table>
+  </div>
+  <div class="panel">
+    <h2>Watchdog</h2>
+    <table>
+      <thead><tr><th>Target</th><th>Live</th><th>Process Live</th><th>Action</th><th>Note</th></tr></thead>
+      <tbody>{watchdog_rows or '<tr><td colspan="5">No watchdog targets found.</td></tr>'}</tbody>
+    </table>
+  </div>
+  <div class="panel">
+    <h2>Infrastructure Bots</h2>
+    <div>Installed={html.escape(str(infrastructure.get('count', 0)))} Loaded={html.escape(str(infrastructure.get('loaded_count', 0)))} Running={html.escape(str(infrastructure.get('running_count', 0)))}</div>
+    <table>
+      <thead><tr><th>Label</th><th>Loaded</th><th>Running</th><th>PID</th><th>Schedule</th><th>Last Exit</th></tr></thead>
+      <tbody>{infrastructure_rows or '<tr><td colspan="6">No infrastructure bots found.</td></tr>'}</tbody>
+    </table>
+  </div>
+</body>
+</html>
+"""
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Readable bot + masterbot status report")
     parser.add_argument("--top", type=int, default=DEFAULT_TOP, help="Top N bots/contributors to include")
     parser.add_argument("--print", action="store_true", help="Print markdown report to stdout")
+    parser.add_argument("--render-pdf", action=argparse.BooleanOptionalAction, default=False, help="Render the HTML report to PDF.")
+    parser.add_argument(
+        "--allow-gui-pdf-renderer",
+        action=argparse.BooleanOptionalAction,
+        default=_default_allow_gui_pdf_renderer(),
+        help="Allow an installed GUI browser to be used as the PDF renderer when no CLI renderer exists.",
+    )
     args = parser.parse_args()
 
     top_n = max(_safe_int(args.top, DEFAULT_TOP), 1)
@@ -684,6 +1063,7 @@ def main() -> int:
         for name, path in DECISION_LOGS.items()
     }
     watchdog = _parse_watchdog()
+    infrastructure_bots = _collect_infrastructure_bots()
     overall = _overall_health(registry["counts"], decision_summaries, watchdog)
 
     payload = {
@@ -691,21 +1071,28 @@ def main() -> int:
         "registry": registry,
         "decision_logs": decision_summaries,
         "watchdog": watchdog,
+        "infrastructure_bots": infrastructure_bots,
         "overall_health": overall,
         "sources": {
             "registry": str(REGISTRY_PATH),
             "watchdog_events": watchdog.get("path"),
             "decision_logs": {k: str(v) for k, v in DECISION_LOGS.items()},
+            "launch_agents": infrastructure_bots.get("launch_agents_dir"),
         },
     }
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     md_path = OUTPUT_DIR / f"bot_stack_status_{ts}.md"
     json_path = OUTPUT_DIR / f"bot_stack_status_{ts}.json"
+    html_path = OUTPUT_DIR / f"bot_stack_status_{ts}.html"
     latest_md = OUTPUT_DIR / "latest.md"
     latest_json = OUTPUT_DIR / "latest.json"
+    latest_html = DEFAULT_HTML_PATH
+    latest_pdf = DEFAULT_PDF_PATH
+    ts_pdf = OUTPUT_DIR / f"bot_stack_status_{ts}.pdf"
 
     md_text = _render_markdown(payload)
+    html_text = _render_html(payload)
     json_text = json.dumps(payload, ensure_ascii=True, indent=2)
     numbers_rows = _flatten_for_numbers(payload)
 
@@ -714,17 +1101,66 @@ def main() -> int:
 
     md_path.write_text(md_text, encoding="utf-8")
     json_path.write_text(json_text, encoding="utf-8")
+    html_path.write_text(html_text, encoding="utf-8")
     latest_md.write_text(md_text, encoding="utf-8")
     latest_json.write_text(json_text, encoding="utf-8")
+    latest_html.write_text(html_text, encoding="utf-8")
     _write_numbers_csv(numbers_csv_path, numbers_rows)
     _write_numbers_csv(latest_numbers_csv, numbers_rows)
 
+    pdf_ok = False
+    pdf_detail = "pdf_render_disabled"
+    if latest_pdf.exists():
+        latest_pdf.unlink()
+    if ts_pdf.exists():
+        ts_pdf.unlink()
+    if bool(args.render_pdf):
+        pdf_ok, pdf_detail = _render_pdf_from_html(
+            latest_html,
+            latest_pdf,
+            allow_gui_renderer=bool(args.allow_gui_pdf_renderer),
+        )
+        if pdf_ok:
+            try:
+                shutil.copy2(latest_pdf, ts_pdf)
+            except Exception as exc:
+                pdf_ok = False
+                pdf_detail = f"timestamp_pdf_copy_failed:{exc}"
+
+    payload["artifacts"] = {
+        "latest_markdown": str(latest_md),
+        "latest_json": str(latest_json),
+        "latest_html": str(latest_html),
+        "latest_csv": str(latest_numbers_csv),
+        "timestamped_markdown": str(md_path),
+        "timestamped_json": str(json_path),
+        "timestamped_html": str(html_path),
+        "timestamped_csv": str(numbers_csv_path),
+    }
+    payload["pdf"] = {
+        "enabled": bool(args.render_pdf),
+        "available": bool(pdf_ok),
+        "pdf_path": str(latest_pdf) if latest_pdf.exists() else "",
+        "timestamped_pdf": str(ts_pdf) if ts_pdf.exists() else "",
+        "detail": str(pdf_detail),
+        "allow_gui_pdf_renderer": bool(args.allow_gui_pdf_renderer),
+    }
+    json_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    latest_json.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
     print(f"Wrote: {md_path}")
     print(f"Wrote: {json_path}")
+    print(f"Wrote: {html_path}")
     print(f"Wrote: {numbers_csv_path}")
     print(f"Latest MD: {latest_md}")
     print(f"Latest JSON: {latest_json}")
+    print(f"Latest HTML: {latest_html}")
     print(f"Latest CSV: {latest_numbers_csv}")
+    if args.render_pdf:
+        if latest_pdf.exists():
+            print(f"Latest PDF: {latest_pdf}")
+        else:
+            print(f"PDF: {pdf_detail}")
 
     if args.print:
         print("")

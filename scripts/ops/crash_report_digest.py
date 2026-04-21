@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -192,15 +193,27 @@ def _render_pdf_from_html(html_path: Path, pdf_path: Path, *, allow_gui_renderer
     html_uri = html_path.resolve().as_uri()
     if renderer_kind == "wkhtmltopdf":
         cmd = [renderer, html_uri, str(pdf_path)]
+        rc, out, err = _run(cmd)
     else:
-        cmd = [
-            renderer,
-            "--headless",
-            "--disable-gpu",
-            f"--print-to-pdf={pdf_path}",
-            html_uri,
-        ]
-    rc, out, err = _run(cmd)
+        profile_dir = Path(tempfile.mkdtemp(prefix="crash-report-pdf-"))
+        try:
+            cmd = [
+                renderer,
+                "--headless=new",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--silent-launch",
+                "--no-startup-window",
+                "--disable-background-networking",
+                "--metrics-recording-only",
+                f"--user-data-dir={profile_dir}",
+                f"--print-to-pdf={pdf_path}",
+                html_uri,
+            ]
+            rc, out, err = _run(cmd)
+        finally:
+            shutil.rmtree(profile_dir, ignore_errors=True)
     if rc == 0 and pdf_path.exists() and pdf_path.stat().st_size > 0:
         return True, out or "ok"
     return False, err or out or f"rc={rc}"

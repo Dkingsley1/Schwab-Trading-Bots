@@ -387,3 +387,195 @@ def test_lane_gate_scales_coverage_to_observed_lanes_and_excludes_near_passes() 
         assert payload["lanes"]["swing"]["near_pass_bots"] == 1
         assert payload["ranked_lanes"][0]["lane"] == "equities"
         assert payload["ranked_lanes"][0]["fail_share"] == 0.25
+
+
+def test_walk_forward_gate_surfaces_coverage_gap_examples() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        wf_file = td_path / "walk_forward.json"
+        registry_file = td_path / "registry.json"
+        out_file = td_path / "promotion_gate.json"
+
+        _write_json(
+            wf_file,
+            {
+                "bots": {
+                    "brain_refinery_v4_simple": {
+                        "runs": 9,
+                        "forward_mean": 0.61,
+                        "delta": 0.0,
+                        "trading_quality_score": 0.63,
+                        "overfit_gap": 0.01,
+                        "status": "insufficient_runs",
+                    }
+                }
+            },
+        )
+        _write_json(
+            registry_file,
+            {
+                "sub_bots": [
+                    {
+                        "bot_id": "brain_refinery_v4_simple",
+                        "active": True,
+                        "deleted_from_rotation": False,
+                        "bot_role": "signal_sub_bot",
+                    }
+                ]
+            },
+        )
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(PROJECT_ROOT / "scripts" / "walk_forward_promotion_gate.py"),
+                "--in-file",
+                str(wf_file),
+                "--registry-file",
+                str(registry_file),
+                "--out-file",
+                str(out_file),
+                "--min-runs-per-bot",
+                "12",
+                "--min-considered-bots",
+                "4",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert proc.returncode == 2
+        payload = json.loads(out_file.read_text(encoding="utf-8"))
+        assert payload["coverage_shortfall_bots"] == 4
+        assert payload["coverage_gap_examples"][0]["bot_id"] == "brain_refinery_v4_simple"
+        assert payload["coverage_gap_examples"][0]["runs_shortfall"] == 3
+
+
+def test_walk_forward_gate_counts_staged_coverage_candidates_when_active_filter_is_on() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        wf_file = td_path / "walk_forward.json"
+        registry_file = td_path / "registry.json"
+        out_file = td_path / "promotion_gate.json"
+
+        _write_json(
+            wf_file,
+            {
+                "bots": {
+                    "brain_refinery_v10_seasonal": {
+                        "runs": 12,
+                        "forward_mean": 0.61,
+                        "delta": 0.0,
+                        "trading_quality_score": 0.71,
+                        "overfit_gap": 0.01,
+                        "status": "pass",
+                    }
+                }
+            },
+        )
+        _write_json(
+            registry_file,
+            {
+                "sub_bots": [
+                    {
+                        "bot_id": "brain_refinery_v10_seasonal",
+                        "active": False,
+                        "deleted_from_rotation": False,
+                        "bot_role": "signal_sub_bot",
+                        "coverage_candidate_active": True,
+                        "coverage_stage": "promotion_queue",
+                    }
+                ]
+            },
+        )
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(PROJECT_ROOT / "scripts" / "walk_forward_promotion_gate.py"),
+                "--in-file",
+                str(wf_file),
+                "--registry-file",
+                str(registry_file),
+                "--out-file",
+                str(out_file),
+                "--min-considered-bots",
+                "1",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert proc.returncode == 0
+        payload = json.loads(out_file.read_text(encoding="utf-8"))
+        assert payload["considered_bots"] == 1
+        assert payload["excluded_counts"] == {}
+        assert payload["registry_filter"]["coverage_candidate_active_enabled"] is True
+
+
+def test_lane_gate_counts_staged_coverage_candidates_when_active_filter_is_on() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        wf_file = td_path / "walk_forward_lane.json"
+        registry_file = td_path / "registry_lane.json"
+        out_file = td_path / "lane_gate.json"
+
+        _write_json(
+            wf_file,
+            {
+                "bots": {
+                    "brain_refinery_v10_seasonal": {
+                        "runs": 12,
+                        "forward_mean": 0.61,
+                        "delta": 0.0,
+                        "trading_quality_score": 0.71,
+                        "overfit_gap": 0.01,
+                        "status": "pass",
+                    }
+                }
+            },
+        )
+        _write_json(
+            registry_file,
+            {
+                "sub_bots": [
+                    {
+                        "bot_id": "brain_refinery_v10_seasonal",
+                        "active": False,
+                        "deleted_from_rotation": False,
+                        "bot_role": "signal_sub_bot",
+                        "coverage_candidate_active": True,
+                        "coverage_stage": "promotion_queue",
+                    }
+                ]
+            },
+        )
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(PROJECT_ROOT / "scripts" / "lane_promotion_gate.py"),
+                "--in-file",
+                str(wf_file),
+                "--registry-file",
+                str(registry_file),
+                "--out-file",
+                str(out_file),
+                "--min-considered-per-lane",
+                "1",
+                "--min-covered-lanes",
+                "1",
+                "--json",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert proc.returncode == 0
+        payload = json.loads(out_file.read_text(encoding="utf-8"))
+        assert payload["considered_bots"] == 1
+        assert payload["excluded_counts"] == {}
+        assert payload["registry_filter"]["coverage_candidate_active_enabled"] is True

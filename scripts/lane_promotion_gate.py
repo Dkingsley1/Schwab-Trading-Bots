@@ -47,6 +47,13 @@ def _manual_quarantine(row: dict[str, Any]) -> bool:
     return str(row.get("reason") or "").startswith(marker) or str(row.get("delete_reason") or "").startswith(marker)
 
 
+def _coverage_candidate_active(row: dict[str, Any]) -> bool:
+    if not bool(row.get("coverage_candidate_active", False)):
+        return False
+    stage = str(row.get("coverage_stage") or "").strip().lower()
+    return stage in {"promotion_queue", "coverage_queue", "staged", ""}
+
+
 def _load_registry_rows(path: Path) -> dict[str, dict[str, Any]]:
     payload = _load_json(path)
     rows = payload.get("sub_bots") if isinstance(payload.get("sub_bots"), list) else []
@@ -83,7 +90,7 @@ def _registry_gate_allowed(
         return False, "deleted_from_rotation"
     if _manual_quarantine(row):
         return False, "manual_quarantine"
-    if require_active_registry and (not bool(row.get("active", False))):
+    if require_active_registry and (not bool(row.get("active", False))) and (not _coverage_candidate_active(row)):
         return False, "inactive"
     if (not include_infrastructure) and str(row.get("bot_role") or "") == "infrastructure_sub_bot":
         return False, "infrastructure_sub_bot"
@@ -410,6 +417,7 @@ def main() -> int:
             "enabled": bool(registry_rows),
             "require_active_registry": bool(args.require_active_registry),
             "include_infrastructure": bool(args.include_infrastructure),
+            "coverage_candidate_active_enabled": True,
         },
         "excluded_counts": excluded_counts,
         "lanes": lane_payload,

@@ -1,15 +1,19 @@
 import argparse
+from collections import Counter
 import fcntl
 import hashlib
 import gc
 import glob
 import json
 import os
+import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from typing import Any, Mapping
 
 try:
     from zoneinfo import ZoneInfo
@@ -22,6 +26,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from core.runtime_python import resolve_runtime_python
+from scripts import retrain_lane_scheduler as retrain_lane_scheduler_src
 
 CORE_DIR = os.path.join(PROJECT_ROOT, "core")
 REGISTRY_PATH = os.path.join(PROJECT_ROOT, "master_bot_registry.json")
@@ -39,25 +44,78 @@ CANARY_DIAGNOSTICS = os.path.join(PROJECT_ROOT, "governance", "walk_forward", "c
 RETIRE_PERSISTENT_LOSERS = os.path.join(PROJECT_ROOT, "scripts", "retire_persistent_losers.py")
 PROMOTION_READINESS_PATH = os.path.join(PROJECT_ROOT, "governance", "walk_forward", "promotion_readiness_latest.json")
 PROMOTION_BOTTLENECK_PATH = os.path.join(PROJECT_ROOT, "governance", "walk_forward", "promotion_bottleneck_latest.json")
+HEALTH_GATES_PATH = os.path.join(PROJECT_ROOT, "governance", "health", "health_gates_latest.json")
 WALK_FORWARD_VALIDATE_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "walk_forward_validate.py")
 WALK_FORWARD_PROMOTION_GATE_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "walk_forward_promotion_gate.py")
 LANE_PROMOTION_GATE_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "lane_promotion_gate.py")
 PROMOTION_READINESS_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "promotion_readiness_summary.py")
 PROMOTION_BOTTLENECK_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "promotion_bottleneck_focus.py")
+SCHEMA_MIGRATION_GUARD_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "schema_migration_guard.py")
+FEATURE_STORE_MANIFEST_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "feature_store_manifest.py")
+BOT_SUPPORT_OWNER_GUARD_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "bot_support_owner_guard.py")
 NEW_BOT_GRADUATION_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "new_bot_graduation_gate.py")
+NEW_BOT_ADMISSION_GUARD_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "new_bot_admission_guard.py")
+RETRAIN_SCHEMA_COMPATIBILITY_GUARD_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "retrain_schema_compatibility_guard.py")
 LEAK_OVERFIT_GUARD_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "leak_overfit_guard.py")
+GOLDEN_REPLAY_REGRESSION_GUARD_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "golden_replay_regression_guard.py")
+COHORT_DRIFT_BASELINE_GUARD_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "cohort_drift_baseline_guard.py")
+CHAMPION_CHALLENGER_PROBATION_GUARD_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "champion_challenger_probation_guard.py")
+CHAMPION_CHALLENGER_PROBATION_ACTION_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "champion_challenger_probation_action.py")
+RETRAIN_LANE_SCHEDULER_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "retrain_lane_scheduler.py")
+PROMOTION_PACKET_BUILDER_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "promotion_packet_builder.py")
 MODEL_LIFECYCLE_HYGIENE_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "model_lifecycle_hygiene.py")
 WEEKLY_GATE_BLOCKER_REPORT_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "weekly_gate_blocker_report.py")
 RETRAIN_ARTIFACT_FRESHNESS_GUARD = os.path.join(PROJECT_ROOT, "scripts", "retrain_artifact_freshness_guard.py")
 TRAINING_SAMPLE_QUOTA_GUARD = os.path.join(PROJECT_ROOT, "scripts", "training_sample_quota_guard.py")
 REPLAY_FEATURE_ABLATION_REPORT = os.path.join(PROJECT_ROOT, "scripts", "replay_feature_ablation_report.py")
 EXPORT_MODEL_CARD_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "export_model_card.py")
+COUNTERFACTUAL_REPLAY_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "counterfactual_replay_harness.py")
+COUNTERFACTUAL_REPLAY_LATEST = os.path.join(PROJECT_ROOT, "governance", "health", "counterfactual_replay_latest.json")
+PLATFORM_CONTROL_PLANE_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "platform_control_plane_report.py")
+POINT_IN_TIME_EVENT_STORE_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "point_in_time_event_store.py")
+LIVE_READINESS_SMOKE_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "live_readiness_smoke.py")
 DATA_RETENTION_POLICY = os.path.join(PROJECT_ROOT, "scripts", "data_retention_policy.py")
 DATA_DIVERGENCE_GLOBAL_FILE = os.path.join(PROJECT_ROOT, "governance", "health", "data_source_divergence_latest.json")
 DATA_DIVERGENCE_BOND_FILE = os.path.join(PROJECT_ROOT, "governance", "health", "data_source_divergence_bond_latest.json")
 DATA_DIVERGENCE_NON_BOND_FILE = os.path.join(PROJECT_ROOT, "governance", "health", "data_source_divergence_non_bond_latest.json")
 RETRAIN_OPERATOR_NOTES_PATH = os.path.join(PROJECT_ROOT, "governance", "health", "retrain_operator_notes_latest.json")
+PAPER_PERFORMANCE_PATH = os.path.join(PROJECT_ROOT, "governance", "health", "paper_performance_latest.json")
+PAPER_HARD_EXAMPLES_PATH = os.path.join(PROJECT_ROOT, "governance", "training_diagnostics", "paper_hard_examples_latest.json")
+TRAINING_DIAGNOSTICS_DIR = os.path.join(PROJECT_ROOT, "governance", "training_diagnostics")
+RETRAIN_INPUT_FEATURE_DIAGNOSTICS_LATEST = os.path.join(TRAINING_DIAGNOSTICS_DIR, "retrain_input_feature_diagnostics_latest.json")
+RETRAIN_REPLAY_SUMMARY_LATEST = os.path.join(TRAINING_DIAGNOSTICS_DIR, "retrain_replay_summary_latest.json")
+RUNTIME_TRAINING_SNAPSHOT_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "build_runtime_training_snapshot.py")
+RUNTIME_TRAINING_SNAPSHOT_LATEST = os.path.join(PROJECT_ROOT, "governance", "health", "runtime_training_snapshot_latest.json")
+COLLECTOR_CONTRACTS_LATEST = os.path.join(PROJECT_ROOT, "governance", "health", "collector_contracts_latest.json")
+STORAGE_TIER_POLICY_LATEST = os.path.join(PROJECT_ROOT, "governance", "health", "storage_tier_policy_latest.json")
+JSONL_DISCOVERY_MANIFEST_LATEST = os.path.join(PROJECT_ROOT, "governance", "health", "jsonl_discovery_manifest_latest.json")
+RETRAIN_RETRY_PACK_LATEST = os.path.join(PROJECT_ROOT, "governance", "health", "retrain_retry_pack_latest.json")
+WALK_FORWARD_LATEST = os.path.join(PROJECT_ROOT, "governance", "walk_forward", "walk_forward_latest.json")
 
+ADVANCED_RETRAIN_DIAGNOSTIC_FEATURES = (
+    "core_cross_sectional_rank_norm",
+    "core_regime_specialist_blend_norm",
+    "core_event_reaction_norm",
+    "core_cross_asset_confirmation_norm",
+    "day_failed_breakout_risk_norm",
+    "day_closing_squeeze_norm",
+    "swing_weekly_pullback_quality_norm",
+    "dividend_payout_stress_gate_norm",
+    "long_term_factor_exposure_control_norm",
+    "long_term_overlap_rebalance_norm",
+    "options_skew_dislocation_norm",
+    "options_gamma_wall_reaction_norm",
+    "futures_basis_dislocation_norm",
+    "futures_overnight_inventory_norm",
+)
+
+SEGMENT_TO_REPLAY_PROFILES = {
+    "trend": ["aggressive", "swing_aggressive", "default"],
+    "mean_revert": ["conservative", "dividend", "bond"],
+    "shock": ["intraday_aggressive", "aggressive", "schwab_futures", "crypto_futures"],
+    "liquidity": ["intraday_aggressive", "aggressive", "fx"],
+    "other": ["default", "conservative"],
+}
 
 _MLX_LOCK_HANDLE = None
 
@@ -94,6 +152,278 @@ def _normalized_bot_id_from_script(path: str) -> str:
     if name.endswith(".py"):
         name = name[:-3]
     return name.lower()
+
+
+def _safe_json_load(path: str) -> dict[str, Any]:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _retrain_launch_artifact_dir() -> str:
+    return os.path.join(PROJECT_ROOT, "governance", "training_diagnostics", "retrain_launches")
+
+
+def _retrain_launch_latest_path(*, dry_run: bool) -> str:
+    latest_name = "retrain_launch_dry_run_latest.json" if dry_run else "retrain_launch_latest.json"
+    return os.path.join(PROJECT_ROOT, "governance", "health", latest_name)
+
+
+def _retrain_launch_source_latest_path(*, dry_run: bool, source: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", str(source or "").strip().lower()).strip("_")
+    if not slug:
+        slug = "unknown"
+    latest_name = (
+        f"retrain_launch_dry_run_latest_{slug}.json"
+        if dry_run
+        else f"retrain_launch_latest_{slug}.json"
+    )
+    return os.path.join(PROJECT_ROOT, "governance", "health", latest_name)
+
+
+def _safe_parent_command(pid: int) -> str:
+    if int(pid) <= 0:
+        return ""
+    try:
+        proc = subprocess.run(
+            ["/bin/ps", "-p", str(int(pid)), "-o", "command="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return ""
+    return ((proc.stdout or "").strip().splitlines() or [""])[0].strip()
+
+
+def _csv_tokens(raw: Any) -> list[str]:
+    out: list[str] = []
+    for chunk in str(raw or "").split(","):
+        text = chunk.strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _infer_retrain_trigger_source(*, parent_command: str) -> str:
+    explicit = str(os.getenv("RETRAIN_TRIGGER_SOURCE", "") or "").strip()
+    if explicit:
+        return explicit
+
+    launch_label = " ".join(
+        [
+            str(os.getenv("RETRAIN_TRIGGER_LABEL", "") or "").strip(),
+            str(os.getenv("LAUNCH_JOB_LABEL", "") or "").strip(),
+            str(os.getenv("XPC_SERVICE_NAME", "") or "").strip(),
+        ]
+    ).lower()
+    parent_lower = str(parent_command or "").strip().lower()
+
+    if "com.dankingsley.retrain.daily_small" in launch_label:
+        return "launchd_daily_small"
+    if "com.dankingsley.retrain.weekly_full" in launch_label:
+        return "launchd_weekly_full"
+    if "run_shadow_training_loop.py" in parent_lower:
+        return "shadow_training_loop_auto_retrain"
+    if "manual_retrain_with_pause.py" in parent_lower:
+        return "manual_retrain_with_pause"
+    if "retrain_orchestrator.py" in parent_lower:
+        return "retrain_orchestrator"
+    if "opsctl.sh" in parent_lower:
+        return "opsctl"
+    return "direct_weekly_retrain"
+
+
+def _build_retrain_launch_record(args: argparse.Namespace, retrain_profile: str) -> dict[str, Any]:
+    started_utc = datetime.now(timezone.utc).isoformat()
+    launch_slug = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    parent_pid = os.getppid()
+    parent_command = _safe_parent_command(parent_pid)
+    include_bot_ids = _csv_tokens(getattr(args, "include_bot_ids", ""))
+    exclude_bot_ids = _csv_tokens(getattr(args, "exclude_bot_ids", ""))
+    regime_focus = str(getattr(args, "regime_focus", "") or "").strip()
+    source = _infer_retrain_trigger_source(parent_command=parent_command)
+    source_label = (
+        str(os.getenv("RETRAIN_TRIGGER_LABEL", "") or "").strip()
+        or str(os.getenv("LAUNCH_JOB_LABEL", "") or "").strip()
+        or str(os.getenv("XPC_SERVICE_NAME", "") or "").strip()
+    )
+    run_mode = "targeted" if include_bot_ids or regime_focus or bool(getattr(args, "skip_master_update", False)) else "full"
+    if getattr(args, "dry_run", False):
+        run_mode = f"{run_mode}_dry_run"
+
+    return {
+        "timestamp_utc": started_utc,
+        "started_utc": started_utc,
+        "state": "running",
+        "launch_slug": launch_slug,
+        "pid": int(os.getpid()),
+        "parent_pid": int(parent_pid),
+        "hostname": socket.gethostname(),
+        "cwd": os.getcwd(),
+        "python_executable": sys.executable,
+        "argv": [str(part) for part in sys.argv],
+        "source": source,
+        "source_label": source_label,
+        "source_context": str(os.getenv("RETRAIN_TRIGGER_CONTEXT", "") or "").strip(),
+        "source_broker": str(os.getenv("RETRAIN_TRIGGER_BROKER", "") or "").strip(),
+        "source_profile": str(os.getenv("RETRAIN_TRIGGER_PROFILE", "") or "").strip(),
+        "launch_log_path": str(os.getenv("RETRAIN_LAUNCH_LOG_PATH", "") or "").strip(),
+        "xpc_service_name": str(os.getenv("XPC_SERVICE_NAME", "") or "").strip(),
+        "launch_job_label": str(os.getenv("LAUNCH_JOB_LABEL", "") or "").strip(),
+        "correlation_run_id": str(os.getenv("CORRELATION_RUN_ID", "") or "").strip(),
+        "correlation_iter_id": str(os.getenv("CORRELATION_ITER_ID", "") or "").strip(),
+        "parent_command": parent_command,
+        "retrain_profile": str(retrain_profile or "").strip() or "default",
+        "run_mode": run_mode,
+        "selector_summary": {
+            "include_bot_ids": include_bot_ids,
+            "exclude_bot_ids": exclude_bot_ids,
+            "regime_focus": regime_focus,
+            "active_only": bool(getattr(args, "active_only", False)),
+            "max_targets": int(getattr(args, "max_targets", 0) or 0),
+            "min_model_age_hours": float(getattr(args, "min_model_age_hours", 0.0) or 0.0),
+            "skip_master_update": bool(getattr(args, "skip_master_update", False)),
+            "continue_on_error": bool(getattr(args, "continue_on_error", False)),
+        },
+    }
+
+
+def _persist_retrain_launch_record(record: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    payload = dict(record or {})
+    launch_slug = str(payload.get("launch_slug") or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"))
+    payload["launch_slug"] = launch_slug
+    artifact_path = str(payload.get("artifact_path") or "").strip()
+    if not artifact_path:
+        artifact_path = os.path.join(
+            _retrain_launch_artifact_dir(),
+            f"retrain_launch_{launch_slug}_{int(payload.get('pid', os.getpid()) or os.getpid())}.json",
+        )
+        payload["artifact_path"] = artifact_path
+    latest_path = _retrain_launch_latest_path(dry_run=dry_run)
+    payload["latest_path"] = latest_path
+    source_latest_path = ""
+    source = str(payload.get("source") or "").strip()
+    if source:
+        source_latest_path = _retrain_launch_source_latest_path(dry_run=dry_run, source=source)
+    payload["source_latest_path"] = source_latest_path
+    payload["latest_alias_paths"] = [path for path in (latest_path, source_latest_path) if str(path or "").strip()]
+
+    os.makedirs(os.path.dirname(artifact_path), exist_ok=True)
+    with open(artifact_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=True, indent=2)
+
+    os.makedirs(os.path.dirname(latest_path), exist_ok=True)
+    with open(latest_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=True, indent=2)
+    if source_latest_path:
+        os.makedirs(os.path.dirname(source_latest_path), exist_ok=True)
+        with open(source_latest_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=True, indent=2)
+    return payload
+
+
+def _finalize_retrain_launch_record(
+    record: dict[str, Any],
+    *,
+    dry_run: bool,
+    final_status: str,
+    exit_code: int,
+    scorecard_path: str = "",
+    retry_pack_path: str = "",
+    master_update_status: str = "",
+    failure_count: int | None = None,
+) -> dict[str, Any]:
+    payload = dict(record or {})
+    payload["state"] = "completed"
+    payload["ended_utc"] = datetime.now(timezone.utc).isoformat()
+    payload["final_status"] = str(final_status or "").strip() or "completed"
+    payload["exit_code"] = int(exit_code)
+    if scorecard_path:
+        payload["scorecard_path"] = str(scorecard_path)
+    if retry_pack_path:
+        payload["retry_pack_path"] = str(retry_pack_path)
+    if master_update_status:
+        payload["master_update_status"] = str(master_update_status)
+    if failure_count is not None:
+        payload["failure_count"] = int(failure_count)
+    return _persist_retrain_launch_record(payload, dry_run=dry_run)
+
+
+def _paper_feedback_summary(path: str) -> dict[str, Any]:
+    payload = _safe_json_load(path)
+    sleeves = payload.get("sleeve_latest") if isinstance(payload.get("sleeve_latest"), list) else []
+    total_executions = 0
+    active_sleeves = 0
+    non_flat_strategies = 0
+    for row in sleeves:
+        if not isinstance(row, dict):
+            continue
+        executions = int(float(row.get("executions", 0) or 0))
+        total_executions += max(executions, 0)
+        if executions > 0:
+            active_sleeves += 1
+        non_flat_strategies += max(int(float(row.get("non_flat_strategy_count", 0) or 0)), 0)
+    return {
+        "total_executions": total_executions,
+        "active_sleeves": active_sleeves,
+        "non_flat_strategies": non_flat_strategies,
+    }
+
+
+def _promotion_state_precheck_failures(
+    *,
+    promotion_readiness_path: str = PROMOTION_READINESS_PATH,
+    health_gates_path: str = HEALTH_GATES_PATH,
+    paper_performance_path: str = PAPER_PERFORMANCE_PATH,
+) -> list[str]:
+    failures: list[str] = []
+
+    require_health_gate_clear = os.getenv("MASTER_PROMOTION_REQUIRE_HEALTH_GATE_CLEAR", "1").strip() == "1"
+    require_readiness_coverage = os.getenv("MASTER_PROMOTION_REQUIRE_READINESS_COVERAGE", "1").strip() == "1"
+    require_paper_feedback_floor = os.getenv("MASTER_PROMOTION_REQUIRE_PAPER_FEEDBACK_FLOOR", "1").strip() == "1"
+
+    if require_health_gate_clear:
+        health = _safe_json_load(health_gates_path)
+        if not health:
+            failures.append("health_gates:missing")
+        elif bool(health.get("hard_gate_triggered", False)):
+            failures.append("health_gates:hard_gate_triggered")
+
+    if require_readiness_coverage:
+        readiness = _safe_json_load(promotion_readiness_path)
+        if not readiness:
+            failures.append("promotion_readiness:missing")
+        else:
+            thresholds = readiness.get("thresholds") if isinstance(readiness.get("thresholds"), dict) else {}
+            promote_ok = bool(readiness.get("promote_ok", False))
+            coverage_ok = bool(readiness.get("coverage_ok", promote_ok))
+            considered_bots = int(float(readiness.get("considered_bots", 0) or 0))
+            min_considered_bots = max(int(float(thresholds.get("min_considered_bots", 4) or 4)), 1)
+            if not promote_ok:
+                failures.append("promotion_readiness:promote_ok=false")
+            if not coverage_ok:
+                failures.append("promotion_readiness:coverage_ok=false")
+            if considered_bots < min_considered_bots:
+                failures.append(f"promotion_readiness:considered_bots={considered_bots}<{min_considered_bots}")
+
+    if require_paper_feedback_floor:
+        paper_feedback = _paper_feedback_summary(paper_performance_path)
+        min_executions = max(int(float(os.getenv("MASTER_PROMOTION_MIN_PAPER_EXECUTIONS", "24"))), 0)
+        min_sleeves = max(int(float(os.getenv("MASTER_PROMOTION_MIN_PAPER_SLEEVES", "3"))), 0)
+        if paper_feedback["total_executions"] < min_executions:
+            failures.append(
+                f"paper_feedback:executions={paper_feedback['total_executions']}<{min_executions}"
+            )
+        if paper_feedback["active_sleeves"] < min_sleeves:
+            failures.append(
+                f"paper_feedback:active_sleeves={paper_feedback['active_sleeves']}<{min_sleeves}"
+            )
+
+    return failures
 
 
 SEGMENT_KEYWORDS = {
@@ -293,6 +623,290 @@ def _fresh_health_payload(payload: dict, *, max_age_hours: float) -> tuple[dict,
     return payload, age_hours <= max(max_age_hours, 0.0)
 
 
+def _safe_write_json(path: str, payload: dict) -> str:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=True, indent=2)
+    return path
+
+
+def _write_training_diagnostic_artifact(base_name: str, payload: dict, *, dry_run: bool) -> str:
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    os.makedirs(TRAINING_DIAGNOSTICS_DIR, exist_ok=True)
+    out_path = os.path.join(TRAINING_DIAGNOSTICS_DIR, f"{base_name}_{ts}.json")
+    _safe_write_json(out_path, payload)
+    latest_name = f"{base_name}_dry_run_latest.json" if dry_run else f"{base_name}_latest.json"
+    _safe_write_json(os.path.join(TRAINING_DIAGNOSTICS_DIR, latest_name), payload)
+    return out_path
+
+
+def _build_retrain_input_feature_diagnostics(dataset_path: str) -> dict:
+    dataset_obj = _load_json_file(dataset_path)
+    feature_names_raw = dataset_obj.get("feature_names") if isinstance(dataset_obj.get("feature_names"), list) else []
+    feature_names = [str(name) for name in feature_names_raw if str(name)]
+    rows = dataset_obj.get("data") if isinstance(dataset_obj.get("data"), list) else []
+    feature_index = {name: idx for idx, name in enumerate(feature_names)}
+
+    tracked: dict[str, dict[str, Any]] = {}
+    for feature_name in ADVANCED_RETRAIN_DIAGNOSTIC_FEATURES:
+        idx = feature_index.get(feature_name)
+        tracked[feature_name] = {
+            "present_in_schema": idx is not None,
+            "schema_index": int(idx) if idx is not None else -1,
+            "sample_count": 0,
+            "nonzero_count": 0,
+            "high_count": 0,
+            "mean_norm": 0.0,
+            "mean_abs_norm": 0.0,
+            "high_signal_label_counts": {"negative": 0, "neutral": 0, "positive": 0},
+            "nonzero_label_counts": {"negative": 0, "neutral": 0, "positive": 0},
+        }
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        label = str(row.get("label") or "neutral").strip().lower()
+        if label not in {"negative", "neutral", "positive"}:
+            label = "neutral"
+        values = row.get("features") or []
+        if not isinstance(values, list):
+            continue
+        for feature_name, stats in tracked.items():
+            idx = stats.get("schema_index", -1)
+            if not isinstance(idx, int) or idx < 0 or idx >= len(values):
+                continue
+            try:
+                value = float(values[idx] or 0.0)
+            except Exception:
+                continue
+            stats["sample_count"] += 1
+            stats["mean_norm"] += value
+            stats["mean_abs_norm"] += abs(value)
+            if abs(value) > 1e-9:
+                stats["nonzero_count"] += 1
+                stats["nonzero_label_counts"][label] += 1
+            if abs(value) >= 0.67:
+                stats["high_count"] += 1
+                stats["high_signal_label_counts"][label] += 1
+
+    dataset_rows = int(dataset_obj.get("rows", 0) or 0)
+    for stats in tracked.values():
+        sample_count = max(int(stats.get("sample_count", 0) or 0), 1)
+        mean_norm = float(stats.get("mean_norm", 0.0) or 0.0) / sample_count
+        mean_abs_norm = float(stats.get("mean_abs_norm", 0.0) or 0.0) / sample_count
+        nonzero_count = int(stats.get("nonzero_count", 0) or 0)
+        high_count = int(stats.get("high_count", 0) or 0)
+        stats["mean_norm"] = round(mean_norm, 6)
+        stats["mean_abs_norm"] = round(mean_abs_norm, 6)
+        stats["coverage_ratio"] = round(nonzero_count / sample_count, 6)
+        stats["high_signal_ratio"] = round(high_count / sample_count, 6)
+        stats["dataset_row_ratio"] = round(sample_count / max(dataset_rows, 1), 6)
+        stats.pop("schema_index", None)
+
+    return {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "dataset_path": dataset_path if os.path.exists(dataset_path) else "",
+        "dataset_rows": dataset_rows,
+        "feature_dim": int(dataset_obj.get("feature_dim", 0) or 0),
+        "feature_schema_version": str(dataset_obj.get("feature_schema_version") or ""),
+        "tracked_feature_count": len(ADVANCED_RETRAIN_DIAGNOSTIC_FEATURES),
+        "tracked_features": tracked,
+    }
+
+
+def _build_failed_bot_replay_summary(
+    *,
+    failure_details: list[dict],
+    counterfactual_summary: dict | None = None,
+    paper_performance: dict | None = None,
+) -> dict:
+    counterfactual = counterfactual_summary if isinstance(counterfactual_summary, dict) else _load_json_file(COUNTERFACTUAL_REPLAY_LATEST)
+    paper_payload = paper_performance if isinstance(paper_performance, dict) else _load_json_file(PAPER_PERFORMANCE_PATH)
+
+    candidate_rows = counterfactual.get("top_candidates") if isinstance(counterfactual.get("top_candidates"), list) else []
+    candidates_by_profile = {
+        str((row or {}).get("profile") or "").strip().lower(): row
+        for row in candidate_rows
+        if isinstance(row, dict) and str((row or {}).get("profile") or "").strip()
+    }
+    sleeve_rows = {
+        str((row or {}).get("profile") or "").strip().lower(): row
+        for row in (paper_payload.get("sleeve_latest") if isinstance(paper_payload.get("sleeve_latest"), list) else [])
+        if isinstance(row, dict) and str((row or {}).get("profile") or "").strip()
+    }
+
+    profile_pressure: dict[str, dict[str, Any]] = {}
+    bot_summaries: list[dict[str, Any]] = []
+    for row in failure_details:
+        bot_id = str((row or {}).get("bot_id") or "").strip().lower()
+        if not bot_id:
+            continue
+        segment = _segment_bot_id(bot_id)
+        replay_profiles = list(SEGMENT_TO_REPLAY_PROFILES.get(segment, SEGMENT_TO_REPLAY_PROFILES["other"]))
+        profile_rows: list[dict[str, Any]] = []
+        for profile in replay_profiles:
+            sleeve = sleeve_rows.get(profile, {})
+            candidate = candidates_by_profile.get(profile, {})
+            profile_rows.append(
+                {
+                    "profile": profile,
+                    "current_end_net": round(float((sleeve.get("ending_net_pnl_total", 0.0) if isinstance(sleeve, dict) else 0.0) or 0.0), 6),
+                    "current_win_rate": sleeve.get("win_rate") if isinstance(sleeve, dict) else None,
+                    "counterfactual_threshold_delta": float((candidate.get("threshold_delta", 0.0) if isinstance(candidate, dict) else 0.0) or 0.0),
+                    "counterfactual_tradeability_floor": float((candidate.get("tradeability_floor", 0.0) if isinstance(candidate, dict) else 0.0) or 0.0),
+                    "counterfactual_aggregate_net_pnl_total": round(float((candidate.get("aggregate_net_pnl_total", 0.0) if isinstance(candidate, dict) else 0.0) or 0.0), 6),
+                }
+            )
+            bucket = profile_pressure.setdefault(
+                profile,
+                {
+                    "profile": profile,
+                    "failed_bot_count": 0,
+                    "current_end_net": round(float((sleeve.get("ending_net_pnl_total", 0.0) if isinstance(sleeve, dict) else 0.0) or 0.0), 6),
+                    "current_win_rate": sleeve.get("win_rate") if isinstance(sleeve, dict) else None,
+                    "best_counterfactual_threshold_delta": float((candidate.get("threshold_delta", 0.0) if isinstance(candidate, dict) else 0.0) or 0.0),
+                    "best_counterfactual_tradeability_floor": float((candidate.get("tradeability_floor", 0.0) if isinstance(candidate, dict) else 0.0) or 0.0),
+                    "best_counterfactual_aggregate_net_pnl_total": round(float((candidate.get("aggregate_net_pnl_total", 0.0) if isinstance(candidate, dict) else 0.0) or 0.0), 6),
+                },
+            )
+            bucket["failed_bot_count"] += 1
+        bot_summaries.append(
+            {
+                "bot_id": bot_id,
+                "segment": segment,
+                "reason": str((row or {}).get("reason") or "").strip(),
+                "recommended_profiles": replay_profiles,
+                "profile_summaries": profile_rows,
+            }
+        )
+
+    ranked_profiles = sorted(
+        profile_pressure.values(),
+        key=lambda item: (-int(item.get("failed_bot_count", 0) or 0), float(item.get("current_end_net", 0.0) or 0.0)),
+    )
+    return {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "failed_bot_count": len(bot_summaries),
+        "profiles_reviewed": [str(row.get("profile") or "") for row in ranked_profiles],
+        "profile_pressure": ranked_profiles,
+        "bot_summaries": bot_summaries,
+    }
+
+
+def _failure_is_insufficient_data(reason: str) -> bool:
+    text = str(reason or "").strip().lower()
+    return "insufficient_runtime_training_data" in text or "insufficient_runtime_training_side_samples" in text
+
+
+def _failure_is_deferred_sample_starved(reason: str) -> bool:
+    text = str(reason or "").strip().lower()
+    return "defer_runtime_training_until_more_data" in text
+
+
+def _insufficient_data_retry_overrides(target: str, attempt_index: int) -> dict[str, str]:
+    bot_id = _normalized_bot_id_from_script(target)
+    base_lookback = 28 if any(token in bot_id for token in ("intraday", "proxy", "simple", "dmi", "choppy")) else 45
+    lookback_days = base_lookback if attempt_index <= 0 else max(base_lookback, 60)
+    overrides = {
+        "RUNTIME_TRAIN_AUTOFIX_INSUFFICIENT_DATA": "1",
+        "RUNTIME_TRAIN_LOOKBACK_DAYS_OVERRIDE": str(int(lookback_days)),
+        "RUNTIME_TRAIN_SAMPLE_STRIDE_OVERRIDE": "1",
+        "RUNTIME_TRAIN_AUTOFIX_ALLOW_SYMBOL_SCOPE_BROADEN": "1",
+        "RUNTIME_TRAIN_AUTOFIX_MAX_LOOKBACK_DAYS": str(max(int(lookback_days), 60)),
+        "RUNTIME_TRAIN_MIN_CONFIDENCE_OVERRIDE": "0.0",
+    }
+    if attempt_index >= 1:
+        overrides["RUNTIME_TRAIN_AUTOFIX_MIN_CONFIDENCE_FLOOR"] = "0.0"
+    return overrides
+
+
+def _write_paper_hard_example_pack(
+    *,
+    paper_performance_file: str,
+    out_file: str,
+    top_strategies: int = 24,
+) -> tuple[str, dict]:
+    payload = _load_json_file(paper_performance_file)
+    sleeve_rows = payload.get("sleeve_latest") if isinstance(payload.get("sleeve_latest"), list) else []
+    strategies: list[dict] = []
+    weak_profiles: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for sleeve in sleeve_rows:
+        if not isinstance(sleeve, dict):
+            continue
+        profile = str(sleeve.get("profile") or "").strip().lower()
+        if not profile:
+            continue
+        ending_net = float(sleeve.get("ending_net_pnl_total", 0.0) or 0.0)
+        win_rate = sleeve.get("win_rate")
+        losing_count = int(sleeve.get("losing_strategy_count", 0) or 0)
+        winning_count = int(sleeve.get("winning_strategy_count", 0) or 0)
+        is_weak = ending_net < 0.0 or (win_rate is not None and float(win_rate) < 0.45) or losing_count > winning_count
+        if not is_weak:
+            continue
+        weak_profiles.append(
+            {
+                "profile": profile,
+                "ending_net_pnl_total": round(ending_net, 6),
+                "win_rate": (round(float(win_rate), 6) if win_rate is not None else None),
+                "losing_strategy_count": losing_count,
+                "winning_strategy_count": winning_count,
+            }
+        )
+        for row in sleeve.get("top_losing_strategies") or []:
+            if not isinstance(row, dict):
+                continue
+            strategy = str(row.get("strategy") or "").strip()
+            if not strategy:
+                continue
+            key = (profile, strategy)
+            if key in seen:
+                continue
+            seen.add(key)
+            strategies.append(
+                {
+                    "profile": profile,
+                    "strategy": strategy,
+                    "ending_net_pnl_total": round(float(row.get("ending_net_pnl_total", 0.0) or 0.0), 6),
+                    "trade_count": int(abs(float(row.get("ending_net_pnl_total", 0.0) or 0.0)) // 1) + 1,
+                    "source": "paper_performance_latest",
+                }
+            )
+    strategies.sort(key=lambda row: (float(row.get("ending_net_pnl_total", 0.0) or 0.0), row.get("strategy", "")))
+    strategies = strategies[: max(int(top_strategies), 1)]
+    out = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "weak_profile_count": int(len(weak_profiles)),
+        "strategy_count": int(len(strategies)),
+        "weak_profiles": weak_profiles,
+        "strategies": strategies,
+    }
+    return _safe_write_json(out_file, out), out
+
+
+def _run_optional_json_artifact(
+    *,
+    script_path: str,
+    extra_args: list[str] | None,
+    dry_run: bool,
+    env: dict[str, str],
+    extra_nice: int = 0,
+) -> tuple[int, dict]:
+    if not script_path or (not os.path.exists(script_path)):
+        return 0, {}
+    cmd = [VENV_PY, script_path]
+    if extra_args:
+        cmd.extend(extra_args)
+    if "--json" not in cmd:
+        cmd.append("--json")
+    rc, stdout_text, _stderr_text = run_cmd_capture(cmd, dry_run, env, extra_nice=extra_nice)
+    try:
+        payload = json.loads(stdout_text.strip()) if stdout_text.strip() else {}
+    except Exception:
+        payload = {}
+    return rc, payload if isinstance(payload, dict) else {}
+
+
 def _log_schema_version() -> int:
     try:
         return max(int(os.getenv("LOG_SCHEMA_VERSION", "2")), 1)
@@ -397,15 +1011,148 @@ def _latest_file(pattern: str) -> str:
     return rows[-1] if rows else ""
 
 
+def _load_retry_pack_priority_map(path: str) -> dict[str, float]:
+    obj = _load_json_file(path)
+    out: dict[str, float] = {}
+    include_rows = obj.get("include_bot_ids") if isinstance(obj.get("include_bot_ids"), list) else []
+    for idx, bot_id in enumerate(include_rows):
+        key = str(bot_id).strip().lower()
+        if not key:
+            continue
+        out[key] = max(out.get(key, 0.0), 20.0 - float(idx))
+    failed_rows = obj.get("failed_bots") if isinstance(obj.get("failed_bots"), list) else []
+    for row in failed_rows:
+        if isinstance(row, dict):
+            key = str(row.get("bot_id") or "").strip().lower()
+        else:
+            key = str(row).strip().lower()
+        if not key:
+            continue
+        out[key] = max(out.get(key, 0.0), 12.0)
+    return out
+
+
+def _target_priority_score(
+    *,
+    bot_id: str,
+    is_active: bool,
+    age_h: float,
+    retry_priority_map: dict[str, float],
+    walk_forward_runs: dict[str, int],
+) -> float:
+    score = 0.0
+    if is_active:
+        score += 100.0
+    if float(age_h) >= 1e8:
+        score += 80.0
+    score += min(max(float(age_h), 0.0) / 24.0, 60.0)
+    score += float(retry_priority_map.get(bot_id, 0.0) or 0.0)
+    runs = int(walk_forward_runs.get(bot_id, 0) or 0)
+    score += float(max(12 - min(runs, 12), 0)) * 2.0
+    return score
+
+
+def _csv_token_count(raw: str) -> int:
+    return len([part.strip() for part in str(raw or "").split(",") if part.strip()])
+
+
+def _apply_retrain_profile_defaults(args: argparse.Namespace) -> str:
+    profile = str(getattr(args, "retrain_profile", "") or "").strip().lower()
+    if not profile:
+        profile = "default"
+    if profile == "default":
+        explicit_target_count = _csv_token_count(str(getattr(args, "include_bot_ids", "") or ""))
+        if 0 < explicit_target_count <= 5:
+            profile = "canary"
+
+    coverage_canary_external_snapshot = bool(
+        str(
+            os.getenv("RETRAIN_COVERAGE_CANARY_SNAPSHOT_FILE", "")
+            or os.getenv("RUNTIME_TRAIN_SNAPSHOT_FILE", "")
+        ).strip()
+    )
+
+    if profile == "coverage_canary":
+        args.counterfactual_replay = False
+        args.paper_hard_example_pack = False
+        args.require_sample_quotas = False
+        args.new_bot_boost = False
+        args.build_runtime_training_snapshot = False
+        args.runtime_training_snapshot_prefer_sqlite = False
+        args.runtime_train_use_snapshot = bool(coverage_canary_external_snapshot)
+        args.runtime_train_prefer_sqlite = bool(coverage_canary_external_snapshot)
+        args.runtime_train_fast_fail_zero_sample_attempts = max(int(args.runtime_train_fast_fail_zero_sample_attempts), 2)
+        if int(args.target_timeout_seconds) <= 0:
+            args.target_timeout_seconds = 600
+        args.cold_lane_retrain_extras = False
+        args.auto_insufficient_data_retry = False
+
+    if profile in {"canary", "fast_canary"}:
+        args.counterfactual_replay = False
+        args.paper_hard_example_pack = False
+        args.require_sample_quotas = False
+        args.new_bot_boost = False
+        args.build_runtime_training_snapshot = False
+        args.runtime_training_snapshot_prefer_sqlite = False
+        args.runtime_train_use_snapshot = False
+        args.runtime_train_prefer_sqlite = False
+        args.runtime_train_fast_fail_zero_sample_attempts = max(int(args.runtime_train_fast_fail_zero_sample_attempts), 2)
+        args.target_timeout_seconds = max(int(args.target_timeout_seconds), 900)
+        args.cold_lane_retrain_extras = False
+
+    if profile in {"fast", "fast_daytime", "daytime"}:
+        args.counterfactual_replay = False
+        args.paper_hard_example_pack = False
+        args.require_sample_quotas = False
+        args.new_bot_boost = False
+        args.build_runtime_training_snapshot = True
+        args.runtime_training_snapshot_prefer_sqlite = True
+        args.runtime_train_use_snapshot = True
+        args.runtime_train_prefer_sqlite = True
+        args.runtime_train_fast_fail_zero_sample_attempts = max(int(args.runtime_train_fast_fail_zero_sample_attempts), 2)
+        args.cold_lane_retrain_extras = False
+    elif profile in {"full", "full_overnight", "overnight"}:
+        args.counterfactual_replay = True
+        args.paper_hard_example_pack = True
+        args.require_sample_quotas = True
+        args.build_runtime_training_snapshot = True
+        args.runtime_training_snapshot_prefer_sqlite = True
+        args.runtime_train_use_snapshot = True
+        args.runtime_train_prefer_sqlite = True
+        args.cold_lane_retrain_extras = True
+    return profile
+
+
+def _runtime_training_snapshot_preflight_failure(
+    summary: dict[str, Any],
+    *,
+    min_sequences: int,
+    min_rows: int,
+) -> str:
+    if not isinstance(summary, dict) or not summary:
+        return "snapshot_missing"
+    sequence_count = int(summary.get("sequence_count", 0) or 0)
+    row_count = int(summary.get("row_count", 0) or 0)
+    if sequence_count < max(int(min_sequences), 0):
+        return f"snapshot_sequence_count_below_floor:{sequence_count}<{int(min_sequences)}"
+    if row_count < max(int(min_rows), 0):
+        return f"snapshot_row_count_below_floor:{row_count}<{int(min_rows)}"
+    return ""
+
+
 def _build_retrain_lineage(
     *,
     stage: str,
     registry_path: str,
     registry_backup_path: str,
     target_count: int,
+    retrain_profile: str = "",
 ) -> dict:
     dataset_obj = _load_json_file(TRADE_BEHAVIOR_DATASET)
     dataset_lineage = dataset_obj.get("lineage") if isinstance(dataset_obj.get("lineage"), dict) else {}
+    hard_examples = _load_json_file(PAPER_HARD_EXAMPLES_PATH)
+    counterfactual = _load_json_file(COUNTERFACTUAL_REPLAY_LATEST)
+    runtime_snapshot = _load_json_file(RUNTIME_TRAINING_SNAPSHOT_LATEST)
 
     latest_behavior_model = _latest_file(os.path.join(PROJECT_ROOT, "models", "trade_behavior_policy_*.npz"))
     latest_behavior_log = _latest_file(os.path.join(PROJECT_ROOT, "logs", "trade_behavior_policy_*.json"))
@@ -415,6 +1162,7 @@ def _build_retrain_lineage(
     return {
         "lineage_schema_version": 1,
         "stage": str(stage),
+        "retrain_profile": str(retrain_profile or ""),
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "target_count": int(target_count),
         "git_commit": _git_commit(PROJECT_ROOT),
@@ -436,6 +1184,28 @@ def _build_retrain_lineage(
         "trade_behavior_model_latest_sha256": _sha256_file(latest_behavior_model),
         "trade_behavior_log_latest": latest_behavior_log,
         "trade_behavior_log_latest_sha256": _sha256_file(latest_behavior_log),
+        "paper_hard_examples_latest": PAPER_HARD_EXAMPLES_PATH if os.path.exists(PAPER_HARD_EXAMPLES_PATH) else "",
+        "paper_hard_examples_sha256": _sha256_file(PAPER_HARD_EXAMPLES_PATH),
+        "paper_hard_example_strategy_count": int(hard_examples.get("strategy_count", 0) or 0),
+        "counterfactual_replay_latest": COUNTERFACTUAL_REPLAY_LATEST if os.path.exists(COUNTERFACTUAL_REPLAY_LATEST) else "",
+        "counterfactual_replay_sha256": _sha256_file(COUNTERFACTUAL_REPLAY_LATEST),
+        "counterfactual_replay_profiles": list(counterfactual.get("profiles_reviewed") or []),
+        "retrain_input_feature_diagnostics_latest": RETRAIN_INPUT_FEATURE_DIAGNOSTICS_LATEST if os.path.exists(RETRAIN_INPUT_FEATURE_DIAGNOSTICS_LATEST) else "",
+        "retrain_input_feature_diagnostics_sha256": _sha256_file(RETRAIN_INPUT_FEATURE_DIAGNOSTICS_LATEST),
+        "retrain_replay_summary_latest": RETRAIN_REPLAY_SUMMARY_LATEST if os.path.exists(RETRAIN_REPLAY_SUMMARY_LATEST) else "",
+        "retrain_replay_summary_sha256": _sha256_file(RETRAIN_REPLAY_SUMMARY_LATEST),
+        "runtime_training_snapshot_latest": RUNTIME_TRAINING_SNAPSHOT_LATEST if os.path.exists(RUNTIME_TRAINING_SNAPSHOT_LATEST) else "",
+        "runtime_training_snapshot_sha256": _sha256_file(RUNTIME_TRAINING_SNAPSHOT_LATEST),
+        "runtime_training_snapshot_rows_path": str(runtime_snapshot.get("rows_path") or ""),
+        "runtime_training_snapshot_rows_sha256": _sha256_file(str(runtime_snapshot.get("rows_path") or "")),
+        "runtime_training_snapshot_row_count": int(runtime_snapshot.get("row_count", 0) or 0),
+        "runtime_training_snapshot_sequence_count": int(runtime_snapshot.get("sequence_count", 0) or 0),
+        "collector_contracts_latest": COLLECTOR_CONTRACTS_LATEST if os.path.exists(COLLECTOR_CONTRACTS_LATEST) else "",
+        "collector_contracts_sha256": _sha256_file(COLLECTOR_CONTRACTS_LATEST),
+        "storage_tier_policy_latest": STORAGE_TIER_POLICY_LATEST if os.path.exists(STORAGE_TIER_POLICY_LATEST) else "",
+        "storage_tier_policy_sha256": _sha256_file(STORAGE_TIER_POLICY_LATEST),
+        "jsonl_discovery_manifest_latest": JSONL_DISCOVERY_MANIFEST_LATEST if os.path.exists(JSONL_DISCOVERY_MANIFEST_LATEST) else "",
+        "jsonl_discovery_manifest_sha256": _sha256_file(JSONL_DISCOVERY_MANIFEST_LATEST),
     }
 
 
@@ -542,8 +1312,12 @@ def _write_retrain_scorecard(
     data_quality_summary: dict,
     canary_priority_selected: int,
     distill_selected: int,
+    retry_pack: dict | None = None,
     operator_notes: dict | None = None,
+    retrain_input_diagnostics: dict | None = None,
+    replay_summary: dict | None = None,
     lineage: dict | None = None,
+    launch_context: dict | None = None,
     dry_run: bool = False,
 ) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -596,10 +1370,18 @@ def _write_retrain_scorecard(
         "failure_details": failure_details,
         "skipped_by_memory": skipped_by_memory,
     }
+    if retry_pack is not None:
+        payload["retry_pack"] = retry_pack
     if operator_notes:
         payload["operator_notes"] = operator_notes
+    if retrain_input_diagnostics:
+        payload["retrain_input_diagnostics"] = retrain_input_diagnostics
+    if replay_summary:
+        payload["replay_summary"] = replay_summary
     if lineage:
         payload["lineage"] = lineage
+    if launch_context:
+        payload["launch_context"] = launch_context
 
     json_path = os.path.join(out_dir, f"retrain_scorecard_{ts}.json")
     with open(json_path, "w", encoding="utf-8") as f:
@@ -631,6 +1413,15 @@ def _write_retrain_scorecard(
             rc = (row or {}).get("rc", "n/a")
             reason = str((row or {}).get("reason", "") or "").strip() or "command_failed_without_output"
             lines.append(f"- {bot_id}: rc={rc} reason={reason}")
+    if retry_pack:
+        lines.append("")
+        lines.append("## Retry Pack")
+        lines.append(f"- Include bot ids: {', '.join(retry_pack.get('include_bot_ids') or []) or 'none'}")
+        lines.append(f"- Skip master update: {bool(retry_pack.get('skip_master_update', False))}")
+        lines.append(f"- Distillation priority: {bool(retry_pack.get('distillation_priority', False))}")
+        retry_cmd = retry_pack.get("command") or []
+        if retry_cmd:
+            lines.append(f"- Command: {' '.join(str(item) for item in retry_cmd)}")
     if operator_notes:
         title = str(operator_notes.get("title", "") or "").strip() or "Operator Notes"
         lines.append("")
@@ -647,6 +1438,39 @@ def _write_retrain_scorecard(
         training_guidance = [str(item) for item in (operator_notes.get("training_guidance") or []) if str(item).strip()]
         for item in training_guidance[:8]:
             lines.append(f"- Training guidance: {item}")
+    if retrain_input_diagnostics:
+        tracked = retrain_input_diagnostics.get("tracked_features") if isinstance(retrain_input_diagnostics.get("tracked_features"), dict) else {}
+        top_features = []
+        for feature_name, stats in tracked.items():
+            if not isinstance(stats, dict) or not bool(stats.get("present_in_schema", False)):
+                continue
+            top_features.append(
+                (
+                    str(feature_name),
+                    float(stats.get("coverage_ratio", 0.0) or 0.0),
+                    float(stats.get("high_signal_ratio", 0.0) or 0.0),
+                )
+            )
+        top_features.sort(key=lambda item: (-item[1], -item[2], item[0]))
+        lines.append("")
+        lines.append("## Retrain Input Diagnostics")
+        lines.append(f"- Dataset rows: {int(retrain_input_diagnostics.get('dataset_rows', 0) or 0)}")
+        for feature_name, coverage_ratio, high_signal_ratio in top_features[:6]:
+            lines.append(
+                f"- {feature_name}: coverage={coverage_ratio:.4f} high_signal={high_signal_ratio:.4f}"
+            )
+    if replay_summary:
+        lines.append("")
+        lines.append("## Failed-Bot Replay Summary")
+        for row in (replay_summary.get("profile_pressure") if isinstance(replay_summary.get("profile_pressure"), list) else [])[:6]:
+            if not isinstance(row, dict):
+                continue
+            lines.append(
+                f"- {str(row.get('profile') or '')}: "
+                f"failed_bot_count={int(row.get('failed_bot_count', 0) or 0)} "
+                f"current_end_net={float(row.get('current_end_net', 0.0) or 0.0):.6f} "
+                f"counterfactual_threshold_delta={float(row.get('best_counterfactual_threshold_delta', 0.0) or 0.0):.4f}"
+            )
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
@@ -669,13 +1493,14 @@ def _write_training_success_marker(
     precheck_ok = str(master_update_status).startswith("updated")
     data_quality_ok = bool((data_quality_summary or {}).get("ok", False))
     training_completed_ok = (failure_count == 0) and (trained_count > 0)
+    trained_ok_but_not_promotable = bool(training_completed_ok and (not precheck_ok))
 
     if failure_count > 0:
         reason = f"training_failures_present:{failure_count}"
     elif trained_count <= 0:
         reason = "no_trained_targets"
     elif not precheck_ok:
-        reason = f"trained_not_promoted:{master_update_status}"
+        reason = f"trained_ok_but_not_promotable:{master_update_status}"
     elif not data_quality_ok:
         reason = "data_quality_not_ok"
     else:
@@ -691,6 +1516,8 @@ def _write_training_success_marker(
         "confirmed_training_success": bool(confirmed),
         "training_completed_ok": bool(training_completed_ok),
         "promotion_applied": bool(precheck_ok),
+        "trained_ok_but_not_promotable": bool(trained_ok_but_not_promotable),
+        "promotion_status": ("promoted" if precheck_ok else "held_out"),
         "data_quality_ok": bool(data_quality_ok),
         "reason": reason,
         "trained_count": int(trained_count),
@@ -711,6 +1538,99 @@ def _write_training_success_marker(
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=True, indent=2)
     return out_path
+
+
+def _categorize_failure_reason(reason: str) -> list[str]:
+    text = str(reason or "").strip().lower()
+    categories: list[str] = []
+    if _failure_is_insufficient_data(text):
+        categories.append("sample_starved")
+    if "label_balance_score" in text and "label_cleanup" not in categories:
+        categories.append("label_cleanup")
+    if any(token in text for token in ("acted_accuracy", "long_precision", "short_precision", "precision_balance_score", "acted_coverage")):
+        categories.append("threshold_calibration")
+    if any(token in text for token in ("best_val_loss", "final_val_loss")):
+        categories.append("symbol_narrowing")
+    if "accuracy_lift_over_majority" in text:
+        categories.append("family_guard_review")
+    return categories
+
+
+def _load_chronic_failure_bot_ids() -> set[str]:
+    payload = {}
+    try:
+        with open(PROMOTION_BOTTLENECK_PATH, "r", encoding="utf-8") as f:
+            payload = json.load(f) or {}
+    except Exception:
+        payload = {}
+    chronic: set[str] = set()
+    for row in payload.get("top_failing_bots") or []:
+        if not isinstance(row, dict):
+            continue
+        bot_id = str(row.get("bot_id") or "").strip().lower()
+        if not bot_id:
+            continue
+        fail_days = int(row.get("fail_days", 0) or 0)
+        categories = [str(item or "").strip().lower() for item in (row.get("recommended_categories") or []) if str(item or "").strip()]
+        if fail_days >= 3 or ("distillation_candidate" in categories):
+            chronic.add(bot_id)
+    return chronic
+
+
+def _write_retry_pack(
+    *,
+    failures: list[str],
+    failure_details: list[dict],
+    master_update_status: str,
+    dry_run: bool = False,
+) -> dict | None:
+    bot_ids = []
+    for row in failure_details:
+        bot_id = str((row or {}).get("bot_id", "") or "").strip().lower()
+        if bot_id and bot_id not in bot_ids:
+            bot_ids.append(bot_id)
+    if not bot_ids:
+        return None
+    chronic_bot_ids = sorted([bot_id for bot_id in bot_ids if bot_id in _load_chronic_failure_bot_ids()])
+    recommendation_categories: set[str] = set()
+    for row in failure_details:
+        for item in _categorize_failure_reason(str((row or {}).get("reason", "") or "")):
+            recommendation_categories.add(item)
+    if chronic_bot_ids:
+        recommendation_categories.add("distillation_candidate")
+    command = [
+        "./scripts/ops/opsctl.sh",
+        "retrain-force-targeted",
+        "--include-bot-ids",
+        ",".join(bot_ids),
+        "--skip-master-update",
+    ]
+    if chronic_bot_ids:
+        command.append("--distillation-priority")
+    payload = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "failure_count": int(len(failures)),
+        "include_bot_ids": bot_ids,
+        "chronic_bot_ids": chronic_bot_ids,
+        "skip_master_update": True,
+        "distillation_priority": bool(chronic_bot_ids),
+        "master_update_status": str(master_update_status),
+        "recommendation_categories": sorted(recommendation_categories),
+        "command": command,
+    }
+    out_dir = os.path.join(PROJECT_ROOT, "exports", "sql_reports")
+    os.makedirs(out_dir, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    retry_path = os.path.join(out_dir, f"retrain_retry_pack_{ts}.json")
+    with open(retry_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=True, indent=2)
+    latest_name = "retrain_retry_pack_dry_run_latest.json" if dry_run else "retrain_retry_pack_latest.json"
+    latest_path = os.path.join(PROJECT_ROOT, "governance", "health", latest_name)
+    os.makedirs(os.path.dirname(latest_path), exist_ok=True)
+    with open(latest_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=True, indent=2)
+    payload["path"] = retry_path
+    return payload
 
 
 def _market_open_now_et(start_hour: int, end_hour: int) -> bool:
@@ -1002,7 +1922,93 @@ def _build_child_env(thread_cap: int) -> dict[str, str]:
 
     env.setdefault("PYTHONUNBUFFERED", "1")
     env.setdefault("TOKENIZERS_PARALLELISM", "false")
+    existing_pythonpath = str(env.get("PYTHONPATH", "") or "").strip()
+    pythonpath_parts = [str(PROJECT_ROOT)]
+    if existing_pythonpath:
+        pythonpath_parts.extend([part for part in existing_pythonpath.split(os.pathsep) if str(part).strip()])
+    deduped_pythonpath: list[str] = []
+    seen_pythonpath: set[str] = set()
+    for part in pythonpath_parts:
+        normalized = str(part).strip()
+        if not normalized or normalized in seen_pythonpath:
+            continue
+        seen_pythonpath.add(normalized)
+        deduped_pythonpath.append(normalized)
+    env["PYTHONPATH"] = os.pathsep.join(deduped_pythonpath)
     return env
+
+
+def _configured_runtime_snapshot_path(env: Mapping[str, str]) -> str:
+    explicit = str(env.get("RUNTIME_TRAIN_SNAPSHOT_FILE", "") or "").strip()
+    if explicit:
+        return explicit
+    return str(env.get("RETRAIN_COVERAGE_CANARY_SNAPSHOT_FILE", "") or "").strip()
+
+
+def _configured_runtime_snapshot_summary(env: Mapping[str, str]) -> tuple[str, dict[str, Any]]:
+    path = _configured_runtime_snapshot_path(env)
+    if path and os.path.exists(path):
+        return path, _safe_json_load(path)
+    return "", {}
+
+
+def _mapping_int(raw: Any, default: int = 0) -> int:
+    try:
+        return int(float(raw))
+    except Exception:
+        return int(default)
+
+
+def _apply_env_cap(env: dict[str, str], key: str, desired: int, *, minimum: int = 0) -> int:
+    target = max(int(desired), int(minimum))
+    current = _mapping_int(env.get(key, ""), 0)
+    if current <= 0 or current > target:
+        env[key] = str(target)
+        return target
+    return current
+
+
+def _apply_env_floor(env: dict[str, str], key: str, desired: int, *, minimum: int = 1) -> int:
+    target = max(int(desired), int(minimum))
+    current = _mapping_int(env.get(key, ""), 0)
+    if current < target:
+        env[key] = str(target)
+        return target
+    return current
+
+
+def _apply_retrain_profile_env_overrides(env: dict[str, str], retrain_profile: str) -> dict[str, str]:
+    profile = str(retrain_profile or "").strip().lower()
+    if profile != "coverage_canary":
+        return {}
+
+    requested_overrides: dict[str, str] = {}
+    lookback_cap = max(_mapping_int(os.getenv("RETRAIN_COVERAGE_CANARY_LOOKBACK_CAP_DAYS", "45"), 45), 1)
+    stride_floor = max(_mapping_int(os.getenv("RETRAIN_COVERAGE_CANARY_SAMPLE_STRIDE", "1"), 1), 1)
+    max_samples = max(_mapping_int(os.getenv("RETRAIN_COVERAGE_CANARY_MAX_SAMPLES", "6000"), 6000), 0)
+    batch_size_cap = max(_mapping_int(os.getenv("RETRAIN_COVERAGE_CANARY_BATCH_SIZE_CAP", "64"), 64), 32)
+
+    requested_overrides["RUNTIME_TRAIN_LOOKBACK_DAYS_CAP"] = str(
+        _apply_env_cap(env, "RUNTIME_TRAIN_LOOKBACK_DAYS_CAP", lookback_cap, minimum=1)
+    )
+    requested_overrides["RUNTIME_TRAIN_AUTOFIX_MAX_LOOKBACK_DAYS"] = str(
+        _apply_env_cap(env, "RUNTIME_TRAIN_AUTOFIX_MAX_LOOKBACK_DAYS", lookback_cap, minimum=1)
+    )
+    env["RUNTIME_TRAIN_SAMPLE_STRIDE_FLOOR"] = str(int(stride_floor))
+    env["RUNTIME_TRAIN_SAMPLE_STRIDE_OVERRIDE"] = str(int(stride_floor))
+    requested_overrides["RUNTIME_TRAIN_SAMPLE_STRIDE_FLOOR"] = str(int(stride_floor))
+    requested_overrides["RUNTIME_TRAIN_SAMPLE_STRIDE_OVERRIDE"] = str(int(stride_floor))
+    requested_overrides["RUNTIME_TRAIN_MAX_SAMPLES"] = str(
+        _apply_env_cap(env, "RUNTIME_TRAIN_MAX_SAMPLES", max_samples, minimum=0)
+    )
+    requested_overrides["RUNTIME_TRAIN_BATCH_SIZE_CAP"] = str(
+        _apply_env_cap(env, "RUNTIME_TRAIN_BATCH_SIZE_CAP", batch_size_cap, minimum=32)
+    )
+    env["RUNTIME_TRAIN_AUTOFIX_ALLOW_SYMBOL_SCOPE_BROADEN"] = "1"
+    env["RUNTIME_TRAIN_AUTOFIX_INSUFFICIENT_DATA"] = "1"
+    requested_overrides["RUNTIME_TRAIN_AUTOFIX_ALLOW_SYMBOL_SCOPE_BROADEN"] = "1"
+    requested_overrides["RUNTIME_TRAIN_AUTOFIX_INSUFFICIENT_DATA"] = "1"
+    return requested_overrides
 
 
 def _apply_nice(nice_value: int) -> None:
@@ -1031,6 +2037,7 @@ def run_cmd_capture(
     dry_run: bool,
     env: dict[str, str],
     extra_nice: int = 0,
+    timeout_seconds: int = 0,
 ) -> tuple[int, str, str]:
     full_cmd = cmd
     if extra_nice > 0:
@@ -1038,18 +2045,133 @@ def run_cmd_capture(
     print("$ " + " ".join(full_cmd))
     if dry_run:
         return 0, "", ""
-    proc = subprocess.run(
+    try:
+        proc = subprocess.run(
+            full_cmd,
+            cwd=PROJECT_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=max(int(timeout_seconds), 0) or None,
+        )
+        stdout_text = str(proc.stdout or "")
+        stderr_text = str(proc.stderr or "")
+        if stdout_text:
+            print(stdout_text, end="")
+        if stderr_text:
+            print(stderr_text, end="", file=sys.stderr)
+        return proc.returncode, stdout_text, stderr_text
+    except subprocess.TimeoutExpired as exc:
+        stdout_text = str(exc.stdout or "")
+        stderr_text = str(exc.stderr or "")
+        if stdout_text:
+            print(stdout_text, end="")
+        timeout_message = f"[Timeout] command exceeded {max(int(timeout_seconds), 0)}s: {' '.join(full_cmd)}"
+        if stderr_text:
+            print(stderr_text, end="", file=sys.stderr)
+        print(timeout_message, file=sys.stderr)
+        stderr_combined = "\n".join([part for part in [stderr_text.strip(), timeout_message] if part]).strip()
+        return 124, stdout_text, stderr_combined
+
+
+def _launch_optional_json_artifact(
+    *,
+    script_path: str,
+    extra_args: list[str] | None,
+    dry_run: bool,
+    env: dict[str, str],
+    extra_nice: int = 0,
+) -> dict[str, Any] | None:
+    if not script_path or (not os.path.exists(script_path)):
+        return None
+    cmd = [VENV_PY, script_path]
+    if extra_args:
+        cmd.extend(extra_args)
+    if "--json" not in cmd:
+        cmd.append("--json")
+    full_cmd = cmd
+    if extra_nice > 0:
+        full_cmd = ["/usr/bin/nice", "-n", str(extra_nice)] + cmd
+    print("$ " + " ".join(full_cmd))
+    if dry_run:
+        return {"cmd": list(full_cmd), "dry_run": True}
+    proc = subprocess.Popen(
         full_cmd,
         cwd=PROJECT_ROOT,
         env=env,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
     )
-    if proc.stdout:
-        print(proc.stdout, end="")
-    if proc.stderr:
-        print(proc.stderr, end="", file=sys.stderr)
-    return proc.returncode, str(proc.stdout or ""), str(proc.stderr or "")
+    return {"cmd": list(full_cmd), "proc": proc}
+
+
+def _finish_optional_json_artifact(handle: dict[str, Any] | None) -> tuple[int, dict[str, Any]]:
+    if not handle:
+        return 0, {}
+    if handle.get("dry_run"):
+        return 0, {}
+    proc = handle.get("proc")
+    if proc is None:
+        return 0, {}
+    stdout_text, stderr_text = proc.communicate()
+    stdout_text = str(stdout_text or "")
+    stderr_text = str(stderr_text or "")
+    if stdout_text:
+        print(stdout_text, end="")
+    if stderr_text:
+        print(stderr_text, end="", file=sys.stderr)
+    try:
+        payload = json.loads(stdout_text.strip()) if stdout_text.strip() else {}
+    except Exception:
+        payload = {}
+    return int(proc.returncode or 0), payload if isinstance(payload, dict) else {}
+
+
+def _current_rss_gb() -> float:
+    try:
+        proc = subprocess.run(
+            ["ps", "-o", "rss=", "-p", str(os.getpid())],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return 0.0
+        rss_kb = float(str(proc.stdout or "").strip() or 0.0)
+        return rss_kb / (1024.0 * 1024.0)
+    except Exception:
+        return 0.0
+
+
+def _snapshot_is_reusable(
+    summary: dict[str, Any],
+    *,
+    lookback_days: int,
+    min_sequences: int,
+    min_rows: int,
+    prefer_sqlite: bool,
+    reuse_if_fresh_minutes: int,
+) -> bool:
+    if max(int(reuse_if_fresh_minutes), 0) <= 0:
+        return False
+    if not isinstance(summary, dict) or not summary:
+        return False
+    if bool(summary.get("prefer_sqlite", False)) != bool(prefer_sqlite):
+        return False
+    if int(summary.get("lookback_days", 0) or 0) < max(int(lookback_days), 1):
+        return False
+    if _runtime_training_snapshot_preflight_failure(
+        summary,
+        min_sequences=min_sequences,
+        min_rows=min_rows,
+    ):
+        return False
+    rows_path = str(summary.get("rows_path") or "").strip()
+    if rows_path and (not os.path.exists(rows_path)):
+        return False
+    _, fresh = _fresh_health_payload(summary, max_age_hours=float(max(int(reuse_if_fresh_minutes), 0)) / 60.0)
+    return bool(fresh)
 
 
 def _tail_text(text: str, max_lines: int = 40) -> str:
@@ -1105,7 +2227,7 @@ def _should_rollback_registry(prev: dict[str, float], curr: dict[str, float]) ->
     curr_deleted = curr.get("deleted_from_rotation", 0.0)
     curr_top_quality = curr.get("top_quality", 0.0)
 
-    min_active = float(os.getenv("ROLLBACK_MIN_ACTIVE_BOTS", "12"))
+    min_active = float(os.getenv("ROLLBACK_MIN_ACTIVE_BOTS", os.getenv("MIN_ACTIVE_BOTS", "50")))
     max_active_drop_pct = float(os.getenv("ROLLBACK_MAX_ACTIVE_DROP_PCT", "0.55"))
     max_deleted_jump = float(os.getenv("ROLLBACK_MAX_DELETED_JUMP", "20"))
     min_top_quality = float(os.getenv("ROLLBACK_MIN_TOP_QUALITY", "0.28"))
@@ -1210,8 +2332,10 @@ def _filter_targets_for_efficiency(
 ) -> tuple[list[str], dict[str, int]]:
     active_map = _load_active_bot_map(REGISTRY_PATH)
     registry_rows = _load_registry_rows(REGISTRY_PATH) if skip_low_readiness else {}
+    retry_priority_map = _load_retry_pack_priority_map(RETRAIN_RETRY_PACK_LATEST)
+    walk_forward_runs = _load_walk_forward_runs(WALK_FORWARD_LATEST)
 
-    rows: list[tuple[str, str, bool, float]] = []
+    rows: list[tuple[str, str, bool, float, float]] = []
     low_readiness_skipped = 0
     for t in targets:
         bot_id = _normalized_bot_id_from_script(t)
@@ -1223,7 +2347,14 @@ def _filter_targets_for_efficiency(
         age_h = _latest_model_age_hours(bot_id)
         if age_h is None:
             age_h = 1e9  # prioritize bots without prior model artifact
-        rows.append((t, bot_id, is_active, age_h))
+        priority_score = _target_priority_score(
+            bot_id=bot_id,
+            is_active=is_active,
+            age_h=float(age_h),
+            retry_priority_map=retry_priority_map,
+            walk_forward_runs=walk_forward_runs,
+        )
+        rows.append((t, bot_id, is_active, age_h, priority_score))
 
     pre = len(rows)
     if active_only:
@@ -1232,8 +2363,8 @@ def _filter_targets_for_efficiency(
     if min_model_age_hours > 0:
         rows = [r for r in rows if r[3] >= min_model_age_hours]
 
-    # Prioritize active first, then stalest models first.
-    rows.sort(key=lambda r: (0 if r[2] else 1, -float(r[3]), r[1]))
+    # Prioritize active first, then urgency score, then stalest models first.
+    rows.sort(key=lambda r: (0 if r[2] else 1, -float(r[4]), -float(r[3]), r[1]))
 
     if max_targets > 0:
         rows = rows[:max_targets]
@@ -1244,6 +2375,7 @@ def _filter_targets_for_efficiency(
         "post": len(filtered),
         "active_selected": sum(1 for r in rows if r[2]),
         "low_readiness_skipped": int(low_readiness_skipped),
+        "retry_priority_selected": sum(1 for r in rows if retry_priority_map.get(r[1], 0.0) > 0.0),
     }
     return filtered, stats
 
@@ -1802,22 +2934,129 @@ def main() -> int:
         type=float,
         default=float(os.getenv("RETRAIN_SAMPLE_MAX_TOP_SYMBOL_SHARE", "0.25")),
     )
+    parser.add_argument(
+        "--auto-insufficient-data-retry",
+        action="store_true",
+        default=os.getenv("RETRAIN_AUTO_INSUFFICIENT_DATA_RETRY", "1").strip() == "1",
+        help="Automatically retry sample-starved bots with wider runtime-training overrides before marking them failed.",
+    )
+    parser.add_argument(
+        "--counterfactual-replay",
+        action="store_true",
+        default=os.getenv("RETRAIN_COUNTERFACTUAL_REPLAY", "1").strip() == "1",
+        help="Run a fast counterfactual replay summary before retrain.",
+    )
+    parser.add_argument(
+        "--paper-hard-example-pack",
+        action="store_true",
+        default=os.getenv("RETRAIN_PAPER_HARD_EXAMPLE_PACK", "1").strip() == "1",
+        help="Build a hard-example pack from weak paper sleeves before retrain.",
+    )
+    parser.add_argument(
+        "--cold-lane-retrain-extras",
+        action="store_true",
+        default=os.getenv("RETRAIN_COLD_LANE_EXTRAS", "1").strip() == "1",
+        help="Enable slower research/maintenance sidecars such as replay and hard-example packs during retrain.",
+    )
+    parser.add_argument(
+        "--parallel-sidecars",
+        action="store_true",
+        default=os.getenv("RETRAIN_PARALLEL_SIDECARS", "1").strip() == "1",
+        help="Run safe optional sidecar artifacts concurrently where possible.",
+    )
+    parser.add_argument(
+        "--retrain-profile",
+        default=os.getenv("RETRAIN_PROFILE", "default"),
+        help="Named retrain profile for future-run defaults (default, canary, coverage_canary, fast_daytime, full_overnight).",
+    )
+    parser.add_argument(
+        "--build-runtime-training-snapshot",
+        action="store_true",
+        default=os.getenv("RETRAIN_BUILD_RUNTIME_TRAINING_SNAPSHOT", "1").strip() == "1",
+    )
+    parser.add_argument(
+        "--runtime-training-snapshot-lookback-days",
+        type=int,
+        default=int(os.getenv("RUNTIME_TRAIN_SNAPSHOT_LOOKBACK_DAYS", "14")),
+    )
+    parser.add_argument(
+        "--runtime-training-snapshot-reuse-if-fresh-minutes",
+        type=int,
+        default=int(os.getenv("RUNTIME_TRAIN_SNAPSHOT_REUSE_IF_FRESH_MINUTES", "360")),
+    )
+    parser.add_argument(
+        "--runtime-training-snapshot-prefer-sqlite",
+        action="store_true",
+        default=os.getenv("RUNTIME_TRAIN_SNAPSHOT_PREFER_SQLITE", "1").strip() == "1",
+    )
+    parser.add_argument(
+        "--runtime-train-use-snapshot",
+        action="store_true",
+        default=os.getenv("RUNTIME_TRAIN_USE_SNAPSHOT", "1").strip() == "1",
+    )
+    parser.add_argument(
+        "--runtime-train-prefer-sqlite",
+        action="store_true",
+        default=os.getenv("RUNTIME_TRAIN_PREFER_SQLITE", "1").strip() == "1",
+    )
+    parser.add_argument(
+        "--runtime-train-fast-fail-zero-sample-attempts",
+        type=int,
+        default=int(os.getenv("RUNTIME_TRAIN_FAST_FAIL_ZERO_SAMPLE_ATTEMPTS", "0")),
+    )
+    parser.add_argument(
+        "--target-timeout-seconds",
+        type=int,
+        default=int(os.getenv("RETRAIN_TARGET_TIMEOUT_SECONDS", "0")),
+        help="Per-target timeout for individual bot trainers; 0 disables the timeout.",
+    )
+    parser.add_argument(
+        "--runtime-training-snapshot-min-sequences",
+        type=int,
+        default=int(os.getenv("RUNTIME_TRAIN_SNAPSHOT_MIN_SEQUENCES", "1")),
+    )
+    parser.add_argument(
+        "--runtime-training-snapshot-min-rows",
+        type=int,
+        default=int(os.getenv("RUNTIME_TRAIN_SNAPSHOT_MIN_ROWS", "64")),
+    )
     args = parser.parse_args()
+    effective_retrain_profile = _apply_retrain_profile_defaults(args)
+    launch_record = _persist_retrain_launch_record(
+        _build_retrain_launch_record(args, effective_retrain_profile),
+        dry_run=args.dry_run,
+    )
+    retry_pack_path = ""
+    master_update_status = ""
+
+    def finish(code: int, final_status: str, *, scorecard_path: str = "", failure_count: int | None = None) -> int:
+        nonlocal launch_record
+        launch_record = _finalize_retrain_launch_record(
+            launch_record,
+            dry_run=args.dry_run,
+            final_status=final_status,
+            exit_code=code,
+            scorecard_path=scorecard_path,
+            retry_pack_path=retry_pack_path,
+            master_update_status=master_update_status,
+            failure_count=failure_count,
+        )
+        return int(code)
 
     lock_path = os.getenv("MLX_RETRAIN_LOCK_PATH", os.path.join(PROJECT_ROOT, "governance", "mlx_retrain.lock"))
     global _MLX_LOCK_HANDLE
     _MLX_LOCK_HANDLE = _acquire_mlx_lock(lock_path)
     if _MLX_LOCK_HANDLE is None:
         print("Another MLX retrain is already active. Skipping this retrain run.")
-        return 0
+        return finish(0, "skipped_lock_busy")
 
     if args.after_hours_only and _market_open_now_et(args.session_start_hour, args.session_end_hour):
         print("Retrain skipped: market session is open (after-hours-only enabled).")
-        return 0
+        return finish(0, "skipped_market_open")
 
     if not os.path.exists(VENV_PY):
         print(f"ERROR: venv python not found at {VENV_PY}")
-        return 2
+        return finish(2, "failed_missing_venv")
 
     effective_divergence_file, effective_divergence_scope = _resolve_data_divergence_file(
         str(args.data_divergence_scope or ""),
@@ -1848,7 +3087,7 @@ def main() -> int:
         )
         if not dq_ok:
             print(f"Retrain blocked by data quality floor: {dq_reason}")
-            return 1
+            return finish(1, "blocked_data_quality_floor")
 
     if args.require_artifact_freshness and os.path.exists(RETRAIN_ARTIFACT_FRESHNESS_GUARD):
         rc_fresh = run_cmd(
@@ -1865,12 +3104,43 @@ def main() -> int:
         )
         if rc_fresh != 0:
             print("Retrain blocked by artifact freshness guard.")
-            return 1
+            return finish(1, "blocked_artifact_freshness")
+
+    for script_path, label in [
+        (SCHEMA_MIGRATION_GUARD_SCRIPT, "schema migration guard"),
+        (BOT_SUPPORT_OWNER_GUARD_SCRIPT, "bot support owner guard"),
+        (FEATURE_STORE_MANIFEST_SCRIPT, "feature store manifest"),
+        (NEW_BOT_ADMISSION_GUARD_SCRIPT, "new bot admission guard"),
+        (RETRAIN_SCHEMA_COMPATIBILITY_GUARD_SCRIPT, "retrain schema compatibility guard"),
+        (GOLDEN_REPLAY_REGRESSION_GUARD_SCRIPT, "golden replay regression guard"),
+        (COHORT_DRIFT_BASELINE_GUARD_SCRIPT, "cohort drift baseline guard"),
+    ]:
+        if not os.path.exists(script_path):
+            continue
+        rc_guard = run_cmd(
+            [VENV_PY, script_path, "--json"],
+            args.dry_run,
+            os.environ.copy(),
+            extra_nice=max(args.ops_extra_nice, 0),
+        )
+        if rc_guard != 0:
+            print(f"Retrain blocked by {label}.")
+            return finish(1, f"blocked_{label.replace(' ', '_')}")
 
     explicit_include_requested = bool(str(args.include_bot_ids or "").strip())
 
+    promotion_bottleneck_handle: dict[str, Any] | None = None
     if args.promotion_bottleneck_priority and os.path.exists(PROMOTION_BOTTLENECK_SCRIPT):
-        _ = run_cmd([VENV_PY, PROMOTION_BOTTLENECK_SCRIPT, "--json"], args.dry_run, os.environ.copy(), extra_nice=max(args.ops_extra_nice, 0))
+        if args.parallel_sidecars:
+            promotion_bottleneck_handle = _launch_optional_json_artifact(
+                script_path=PROMOTION_BOTTLENECK_SCRIPT,
+                extra_args=None,
+                dry_run=args.dry_run,
+                env=os.environ.copy(),
+                extra_nice=max(args.ops_extra_nice, 0),
+            )
+        else:
+            _ = run_cmd([VENV_PY, PROMOTION_BOTTLENECK_SCRIPT, "--json"], args.dry_run, os.environ.copy(), extra_nice=max(args.ops_extra_nice, 0))
 
     effective_canary_priority_top_n = int(args.canary_priority_top_n)
     effective_distillation_extra_pass = int(args.distillation_student_extra_pass)
@@ -1914,7 +3184,7 @@ def main() -> int:
     targets = build_targets(include_deleted=include_deleted_targets)
     if not targets:
         print("ERROR: no brain_refinery targets found")
-        return 2
+        return finish(2, "failed_no_targets")
 
     if explicit_include_requested:
         if include_deleted_targets and not args.include_deleted:
@@ -1922,9 +3192,40 @@ def main() -> int:
         targets = _apply_included_bot_ids(targets, str(args.include_bot_ids or ""))
         if not targets:
             print(f"ERROR: include_bot_ids selected zero targets: {args.include_bot_ids}")
-            return 2
+            return finish(2, "failed_include_filter_zero_targets")
 
     base_targets = list(targets)
+    lane_schedule_summary: dict[str, Any] = {}
+    if not explicit_include_requested and base_targets:
+        lane_schedule_summary = retrain_lane_scheduler_src.build_payload(
+            registry=_load_json_file(REGISTRY_PATH),
+            walk_forward=_load_json_file(str(args.walk_forward_file)),
+            new_bot_admission_guard=_load_json_file(os.path.join(PROJECT_ROOT, "governance", "health", "new_bot_admission_guard_latest.json")),
+            probation_guard=_load_json_file(os.path.join(PROJECT_ROOT, "governance", "health", "champion_challenger_probation_latest.json")),
+            target_bot_ids=[_normalized_bot_id_from_script(item) for item in base_targets],
+            max_targets=0,
+            new_bot_max_runs=int(args.new_bot_max_runs),
+        )
+        lane_out_path = os.path.join(PROJECT_ROOT, "governance", "health", "retrain_lane_scheduler_latest.json")
+        try:
+            os.makedirs(os.path.dirname(lane_out_path), exist_ok=True)
+            with open(lane_out_path, "w", encoding="utf-8") as handle:
+                json.dump(lane_schedule_summary, handle, ensure_ascii=True, indent=2)
+        except Exception as exc:
+            print(f"WARN: could not write lane scheduler artifact: {exc}")
+        scheduled_ids = lane_schedule_summary.get("selected_bot_ids") if isinstance(lane_schedule_summary.get("selected_bot_ids"), list) else []
+        if scheduled_ids:
+            target_by_id = {_normalized_bot_id_from_script(item): item for item in base_targets}
+            base_targets = [target_by_id[bot_id] for bot_id in scheduled_ids if bot_id in target_by_id]
+        lane_rows = lane_schedule_summary.get("lanes") if isinstance(lane_schedule_summary.get("lanes"), dict) else {}
+        print(
+            "Lane scheduler: "
+            f"mature={int(((lane_rows.get('mature') or {}).get('candidate_count', 0) or 0))} "
+            f"probation={int(((lane_rows.get('probation') or {}).get('candidate_count', 0) or 0))} "
+            f"new={int(((lane_rows.get('new') or {}).get('candidate_count', 0) or 0))} "
+            f"selected={int(((lane_schedule_summary.get('summary') or {}).get('selected_count', 0) or 0))}"
+        )
+        targets = list(base_targets)
     effective_active_only = bool(args.active_only)
     if explicit_include_requested and effective_active_only:
         effective_active_only = False
@@ -1988,11 +3289,133 @@ def main() -> int:
     child_env["DISTILLATION_ENABLED"] = "1" if args.distillation_priority else "0"
     child_env["DISTILLATION_PLAN_PATH"] = str(args.distillation_plan)
     child_env["REQUIRE_CANARY_PROMOTION_GATE"] = "1"
+    child_env["RETRAIN_PROFILE"] = str(effective_retrain_profile)
+    child_env["RETRAIN_COLD_LANE_EXTRAS"] = "1" if args.cold_lane_retrain_extras else "0"
+    child_env["RUNTIME_TRAIN_PREFER_SQLITE"] = "1" if args.runtime_train_prefer_sqlite else "0"
+    child_env["RUNTIME_TRAIN_USE_SNAPSHOT"] = "1" if args.runtime_train_use_snapshot else "0"
+    child_env["RUNTIME_TRAIN_FAST_FAIL_ZERO_SAMPLE_ATTEMPTS"] = str(
+        max(int(args.runtime_train_fast_fail_zero_sample_attempts), 0)
+    )
+    profile_env_overrides = _apply_retrain_profile_env_overrides(child_env, effective_retrain_profile)
+    hard_example_pack_summary: dict = {}
+    retrain_input_diagnostics: dict = {}
+    replay_summary: dict = {}
+    runtime_training_snapshot_summary: dict = {}
+    existing_runtime_snapshot_summary = _load_json_file(RUNTIME_TRAINING_SNAPSHOT_LATEST)
+    configured_snapshot_path, configured_snapshot_summary = _configured_runtime_snapshot_summary(child_env)
+    if args.build_runtime_training_snapshot and os.path.exists(RUNTIME_TRAINING_SNAPSHOT_SCRIPT):
+        if _snapshot_is_reusable(
+            existing_runtime_snapshot_summary,
+            lookback_days=max(int(args.runtime_training_snapshot_lookback_days), 1),
+            min_sequences=max(int(args.runtime_training_snapshot_min_sequences), 0),
+            min_rows=max(int(args.runtime_training_snapshot_min_rows), 0),
+            prefer_sqlite=bool(args.runtime_training_snapshot_prefer_sqlite),
+            reuse_if_fresh_minutes=max(int(args.runtime_training_snapshot_reuse_if_fresh_minutes), 0),
+        ):
+            runtime_training_snapshot_summary = dict(existing_runtime_snapshot_summary)
+            runtime_training_snapshot_summary["reused"] = True
+            runtime_training_snapshot_summary["reuse_reason"] = "fresh_compatible_snapshot"
+            child_env["RUNTIME_TRAIN_SNAPSHOT_FILE"] = str(
+                runtime_training_snapshot_summary.get("health_path") or RUNTIME_TRAINING_SNAPSHOT_LATEST
+            )
+            print(
+                "Runtime training snapshot: "
+                f"reused=1 sequences={int(runtime_training_snapshot_summary.get('sequence_count', 0) or 0)} "
+                f"rows={int(runtime_training_snapshot_summary.get('row_count', 0) or 0)}"
+            )
+        else:
+            snapshot_cmd = [
+                VENV_PY,
+                RUNTIME_TRAINING_SNAPSHOT_SCRIPT,
+                "--lookback-days",
+                str(max(int(args.runtime_training_snapshot_lookback_days), 1)),
+                "--reuse-if-fresh-minutes",
+                str(max(int(args.runtime_training_snapshot_reuse_if_fresh_minutes), 0)),
+                "--json",
+            ]
+            if args.runtime_training_snapshot_prefer_sqlite:
+                snapshot_cmd.append("--prefer-sqlite")
+            else:
+                snapshot_cmd.append("--no-prefer-sqlite")
+            rc_snapshot, out_snapshot, _err_snapshot = run_cmd_capture(
+                snapshot_cmd,
+                args.dry_run,
+                child_env,
+                extra_nice=max(args.ops_extra_nice, 0),
+            )
+            runtime_training_snapshot_summary = _parse_json_output(out_snapshot) if rc_snapshot == 0 else {}
+            if rc_snapshot != 0:
+                print(f"WARN: runtime training snapshot build failed rc={rc_snapshot}")
+            elif runtime_training_snapshot_summary:
+                child_env["RUNTIME_TRAIN_SNAPSHOT_FILE"] = str(
+                    runtime_training_snapshot_summary.get("health_path") or RUNTIME_TRAINING_SNAPSHOT_LATEST
+                )
+                print(
+                    "Runtime training snapshot: "
+                    f"sequences={int(runtime_training_snapshot_summary.get('sequence_count', 0) or 0)} "
+                    f"rows={int(runtime_training_snapshot_summary.get('row_count', 0) or 0)}"
+                )
+    elif (configured_snapshot_path and os.path.exists(configured_snapshot_path)) or os.path.exists(RUNTIME_TRAINING_SNAPSHOT_LATEST):
+        if configured_snapshot_path:
+            child_env["RUNTIME_TRAIN_SNAPSHOT_FILE"] = configured_snapshot_path
+            runtime_training_snapshot_summary = configured_snapshot_summary
+        else:
+            child_env["RUNTIME_TRAIN_SNAPSHOT_FILE"] = RUNTIME_TRAINING_SNAPSHOT_LATEST
+            runtime_training_snapshot_summary = _safe_json_load(RUNTIME_TRAINING_SNAPSHOT_LATEST)
+    if args.runtime_train_use_snapshot:
+        snapshot_failure = _runtime_training_snapshot_preflight_failure(
+            runtime_training_snapshot_summary,
+            min_sequences=max(int(args.runtime_training_snapshot_min_sequences), 0),
+            min_rows=max(int(args.runtime_training_snapshot_min_rows), 0),
+        )
+        if snapshot_failure:
+            print(f"ERROR: runtime training snapshot preflight failed: {snapshot_failure}")
+            return finish(3, "failed_runtime_snapshot_preflight")
+    if args.paper_hard_example_pack and args.cold_lane_retrain_extras:
+        pack_path, hard_example_pack_summary = _write_paper_hard_example_pack(
+            paper_performance_file=PAPER_PERFORMANCE_PATH,
+            out_file=PAPER_HARD_EXAMPLES_PATH,
+        )
+        child_env["RUNTIME_TRAIN_HARD_EXAMPLE_PACK_FILE"] = str(pack_path)
+    elif args.paper_hard_example_pack and not args.cold_lane_retrain_extras:
+        print("Skipping paper hard-example pack because cold-lane retrain extras are disabled.")
+    counterfactual_summary: dict = {}
+    counterfactual_handle: dict[str, Any] | None = None
+    if args.counterfactual_replay and args.cold_lane_retrain_extras:
+        if args.parallel_sidecars and (not args.build_runtime_training_snapshot or runtime_training_snapshot_summary.get("reused")):
+            counterfactual_handle = _launch_optional_json_artifact(
+                script_path=COUNTERFACTUAL_REPLAY_SCRIPT,
+                extra_args=None,
+                dry_run=args.dry_run,
+                env=child_env,
+                extra_nice=1,
+            )
+        else:
+            rc_counterfactual, counterfactual_summary = _run_optional_json_artifact(
+                script_path=COUNTERFACTUAL_REPLAY_SCRIPT,
+                extra_args=None,
+                dry_run=args.dry_run,
+                env=child_env,
+                extra_nice=1,
+            )
+            if rc_counterfactual != 0:
+                print(f"WARN: counterfactual replay failed rc={rc_counterfactual}")
+    elif args.counterfactual_replay and not args.cold_lane_retrain_extras:
+        print("Skipping counterfactual replay because cold-lane retrain extras are disabled.")
     if args.new_bot_boost:
         child_env["TRADE_BEHAVIOR_STRICT_NEUTRAL_GATE"] = "1"
         child_env["TRADE_BEHAVIOR_HOLD_NEUTRAL_MIN"] = f"{float(args.new_bot_neutral_hold_min):.4f}"
         child_env["TRADE_BEHAVIOR_HOLD_MARGIN_MIN"] = f"{float(args.new_bot_neutral_hold_margin_min):.4f}"
     _apply_nice(args.nice)
+
+    if counterfactual_handle is not None:
+        rc_counterfactual, counterfactual_summary = _finish_optional_json_artifact(counterfactual_handle)
+        if rc_counterfactual != 0:
+            print(f"WARN: counterfactual replay failed rc={rc_counterfactual}")
+    if promotion_bottleneck_handle is not None:
+        _rc_bottleneck, refreshed_bottleneck = _finish_optional_json_artifact(promotion_bottleneck_handle)
+        if refreshed_bottleneck:
+            bottleneck_profile = refreshed_bottleneck
 
     print(
         "Resource limits: "
@@ -2001,6 +3424,18 @@ def main() -> int:
         f"OPENBLAS={child_env.get('OPENBLAS_NUM_THREADS')} "
         f"VECLIB={child_env.get('VECLIB_MAXIMUM_THREADS')}"
     )
+    if hard_example_pack_summary:
+        print(
+            "Paper hard-example pack: "
+            f"profiles={int(hard_example_pack_summary.get('weak_profile_count', 0) or 0)} "
+            f"strategies={int(hard_example_pack_summary.get('strategy_count', 0) or 0)}"
+        )
+    if counterfactual_summary:
+        print(
+            "Counterfactual replay: "
+            f"profiles={','.join(counterfactual_summary.get('profiles_reviewed') or []) or 'none'} "
+            f"candidates={int(counterfactual_summary.get('candidate_count', 0) or 0)}"
+        )
     swap_relax_free_pct = float(os.getenv("RETRAIN_SWAP_RELAX_FREE_PCT", "38"))
     swap_relax_available_pct = float(os.getenv("RETRAIN_SWAP_RELAX_AVAILABLE_PCT", "55"))
     print(
@@ -2023,6 +3458,19 @@ def main() -> int:
         f"min_cpu_speed_limit={args.thermal_min_cpu_speed_limit:.0f} "
         f"min_scheduler_limit={args.thermal_min_scheduler_limit:.0f}"
     )
+    print(
+        "Retrain lanes: "
+        f"profile={effective_retrain_profile} "
+        f"cold_lane_extras={args.cold_lane_retrain_extras} "
+        f"parallel_sidecars={args.parallel_sidecars} "
+        f"target_timeout_seconds={int(args.target_timeout_seconds)} "
+        f"snapshot_reuse_minutes={int(args.runtime_training_snapshot_reuse_if_fresh_minutes)}"
+    )
+    if profile_env_overrides:
+        print(
+            "Profile runtime caps: "
+            + " ".join(f"{key}={value}" for key, value in sorted(profile_env_overrides.items()))
+        )
 
     if not args.include_deleted and deleted_ids:
         print(f"Skipping deleted bots from rotation: {len(deleted_ids)}")
@@ -2147,7 +3595,56 @@ def main() -> int:
         else:
             target_env["DISTILLATION_STUDENT"] = "0"
 
-        rc, captured_stdout, captured_stderr = run_cmd_capture([VENV_PY, target], args.dry_run, target_env)
+        rc, captured_stdout, captured_stderr = run_cmd_capture(
+            [VENV_PY, target],
+            args.dry_run,
+            target_env,
+            timeout_seconds=max(int(args.target_timeout_seconds), 0),
+        )
+        retry_attempts: list[dict[str, object]] = []
+        failure_reason = _extract_failure_reason(captured_stdout, captured_stderr)
+        if rc != 0 and args.auto_insufficient_data_retry and _failure_is_insufficient_data(failure_reason):
+            for retry_index in range(2):
+                retry_env = dict(target_env)
+                overrides = _insufficient_data_retry_overrides(target, retry_index)
+                retry_env.update(overrides)
+                retry_attempts.append(
+                    {
+                        "attempt_index": int(retry_index),
+                        "reason": "insufficient_data_retry",
+                        "overrides": dict(overrides),
+                    }
+                )
+                print(
+                    "[InsufficientDataRetry] "
+                    f"bot_id={bot_id} attempt={retry_index} "
+                    f"lookback_override={overrides.get('RUNTIME_TRAIN_LOOKBACK_DAYS_OVERRIDE')} "
+                    f"stride_override={overrides.get('RUNTIME_TRAIN_SAMPLE_STRIDE_OVERRIDE')}"
+                )
+                rc, captured_stdout, captured_stderr = run_cmd_capture(
+                    [VENV_PY, target],
+                    args.dry_run,
+                    retry_env,
+                    timeout_seconds=max(int(args.target_timeout_seconds), 0),
+                )
+                failure_reason = _extract_failure_reason(captured_stdout, captured_stderr)
+                if rc == 0 or (not _failure_is_insufficient_data(failure_reason)):
+                    break
+        if rc != 0 and _failure_is_deferred_sample_starved(failure_reason):
+            target_outcomes.append(
+                {
+                    "bot_id": _normalized_bot_id_from_script(target),
+                    "target": target,
+                    "status": "deferred_sample_starved",
+                    "reason": failure_reason,
+                    "retry_attempts": retry_attempts,
+                }
+            )
+            print(f"DEFERRED: {target} (sample-starved)")
+            if not args.dry_run:
+                gc.collect()
+                time.sleep(max(args.between_target_sleep_seconds, 0))
+            continue
         if rc != 0:
             failures.append(target)
             failure_detail = {
@@ -2155,9 +3652,10 @@ def main() -> int:
                 "target": target,
                 "status": "failed",
                 "rc": rc,
-                "reason": _extract_failure_reason(captured_stdout, captured_stderr),
+                "reason": failure_reason,
                 "stdout_tail": _tail_text(captured_stdout),
                 "stderr_tail": _tail_text(captured_stderr),
+                "retry_attempts": retry_attempts,
             }
             failure_details.append(failure_detail)
             target_outcomes.append(dict(failure_detail))
@@ -2165,7 +3663,14 @@ def main() -> int:
             if not args.continue_on_error:
                 break
         else:
-            target_outcomes.append({"bot_id": _normalized_bot_id_from_script(target), "target": target, "status": "trained"})
+            target_outcomes.append(
+                {
+                    "bot_id": _normalized_bot_id_from_script(target),
+                    "target": target,
+                    "status": "trained",
+                    "retry_attempts": retry_attempts,
+                }
+            )
 
         if not args.dry_run:
             gc.collect()
@@ -2215,8 +3720,17 @@ def main() -> int:
                 (LANE_PROMOTION_GATE_SCRIPT, True),
                 (PROMOTION_READINESS_SCRIPT, False),
                 (PROMOTION_BOTTLENECK_SCRIPT, False),
+                (SCHEMA_MIGRATION_GUARD_SCRIPT, True),
+                (BOT_SUPPORT_OWNER_GUARD_SCRIPT, True),
+                (FEATURE_STORE_MANIFEST_SCRIPT, True),
                 (NEW_BOT_GRADUATION_SCRIPT, True),
+                (NEW_BOT_ADMISSION_GUARD_SCRIPT, True),
+                (RETRAIN_SCHEMA_COMPATIBILITY_GUARD_SCRIPT, True),
                 (LEAK_OVERFIT_GUARD_SCRIPT, True),
+                (GOLDEN_REPLAY_REGRESSION_GUARD_SCRIPT, True),
+                (COHORT_DRIFT_BASELINE_GUARD_SCRIPT, True),
+                (CHAMPION_CHALLENGER_PROBATION_GUARD_SCRIPT, True),
+                (CHAMPION_CHALLENGER_PROBATION_ACTION_SCRIPT, True),
             ]
             for script_path, required_ok in artifact_steps:
                 if not os.path.exists(script_path):
@@ -2224,11 +3738,29 @@ def main() -> int:
                         precheck_failures.append(f"missing:{os.path.basename(script_path)}")
                     continue
                 cmd = [VENV_PY, script_path]
-                if script_path in {PROMOTION_READINESS_SCRIPT, PROMOTION_BOTTLENECK_SCRIPT, NEW_BOT_GRADUATION_SCRIPT, LEAK_OVERFIT_GUARD_SCRIPT, LANE_PROMOTION_GATE_SCRIPT}:
+                if script_path in {
+                    PROMOTION_READINESS_SCRIPT,
+                    PROMOTION_BOTTLENECK_SCRIPT,
+                    SCHEMA_MIGRATION_GUARD_SCRIPT,
+                    BOT_SUPPORT_OWNER_GUARD_SCRIPT,
+                    FEATURE_STORE_MANIFEST_SCRIPT,
+                    NEW_BOT_GRADUATION_SCRIPT,
+                    NEW_BOT_ADMISSION_GUARD_SCRIPT,
+                    RETRAIN_SCHEMA_COMPATIBILITY_GUARD_SCRIPT,
+                    LEAK_OVERFIT_GUARD_SCRIPT,
+                    GOLDEN_REPLAY_REGRESSION_GUARD_SCRIPT,
+                    COHORT_DRIFT_BASELINE_GUARD_SCRIPT,
+                    CHAMPION_CHALLENGER_PROBATION_GUARD_SCRIPT,
+                    CHAMPION_CHALLENGER_PROBATION_ACTION_SCRIPT,
+                    LANE_PROMOTION_GATE_SCRIPT,
+                }:
                     cmd.append("--json")
                 rc_art = run_cmd(cmd, args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
                 if rc_art != 0 and required_ok:
                     precheck_failures.append(f"{os.path.basename(script_path)}:exit_{rc_art}")
+        for item in _promotion_state_precheck_failures():
+            if item not in precheck_failures:
+                precheck_failures.append(item)
 
         if precheck_failures and (not args.allow_precheck_failures):
             master_update_status = "precheck_failed"
@@ -2247,6 +3779,9 @@ def main() -> int:
                     "--no-require-graduation-gate",
                     "--no-require-leak-overfit-gate",
                     "--no-require-promotion-quality-gate",
+                    "--no-require-health-gate-clear",
+                    "--no-require-promotion-readiness",
+                    "--no-require-paper-feedback-floor",
                 ])
             rc = run_cmd(master_cmd, args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
             if rc != 0:
@@ -2279,6 +3814,7 @@ def main() -> int:
         registry_path=REGISTRY_PATH,
         registry_backup_path=registry_backup_path,
         target_count=len(targets),
+        retrain_profile=effective_retrain_profile,
     )
     marker_path = _write_training_success_marker(
         target_outcomes=target_outcomes,
@@ -2326,6 +3862,29 @@ def main() -> int:
         for s in skipped_by_memory:
             print(f" - {s}")
 
+    retry_pack = None
+    if failures:
+        replay_summary = _build_failed_bot_replay_summary(
+            failure_details=failure_details,
+            counterfactual_summary=counterfactual_summary,
+            paper_performance=_load_json_file(PAPER_PERFORMANCE_PATH),
+        )
+        if replay_summary:
+            replay_summary["artifact_path"] = _write_training_diagnostic_artifact(
+                "retrain_replay_summary",
+                replay_summary,
+                dry_run=args.dry_run,
+            )
+        retry_pack = _write_retry_pack(
+            failures=failures,
+            failure_details=failure_details,
+            master_update_status=master_update_status,
+            dry_run=args.dry_run,
+        )
+        if retry_pack:
+            retry_pack_path = str(retry_pack.get("path") or "")
+            print(f"Retry pack written: {retry_pack.get('path')}")
+
     if failures:
         print(f"Completed with {len(failures)} failures.")
         for f in failures:
@@ -2335,6 +3894,7 @@ def main() -> int:
             registry_path=REGISTRY_PATH,
             registry_backup_path=registry_backup_path,
             target_count=len(targets),
+            retrain_profile=effective_retrain_profile,
         )
         scorecard_path = _write_retrain_scorecard(
             started_utc=started,
@@ -2352,12 +3912,20 @@ def main() -> int:
             data_quality_summary=data_quality_summary,
             canary_priority_selected=canary_priority_selected,
             distill_selected=distill_selected,
+            retry_pack=retry_pack,
             operator_notes=operator_notes,
+            retrain_input_diagnostics=retrain_input_diagnostics,
+            replay_summary=replay_summary,
             lineage=scorecard_lineage,
+            launch_context={
+                **launch_record,
+                "master_update_status": master_update_status,
+                "retry_pack_path": retry_pack_path,
+            },
             dry_run=args.dry_run,
         )
         print(f"Retrain scorecard written: {scorecard_path}")
-        return 1
+        return finish(1, "completed_with_failures", scorecard_path=scorecard_path, failure_count=len(failures))
 
     enable_trade_behavior_retrain = os.getenv("ENABLE_TRADE_BEHAVIOR_RETRAIN", "1").strip() == "1"
     trade_behavior_strict = os.getenv("TRADE_BEHAVIOR_STRICT", "0").strip() == "1"
@@ -2373,7 +3941,7 @@ def main() -> int:
             snapshot_sync_rc = run_cmd(snapshot_sync_cmd, args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
             if snapshot_sync_rc != 0:
                 print(f"FAIL: snapshot SQL sync coverage gate (exit={snapshot_sync_rc})")
-                return 1
+                return finish(1, "failed_snapshot_health_sync")
         else:
             print(f"WARN: snapshot health SQL sync script missing: {SNAPSHOT_HEALTH_SYNC_SCRIPT}")
 
@@ -2410,7 +3978,7 @@ def main() -> int:
 
             if dataset_build_rc != 0 and trade_behavior_strict:
                 print("FAIL: trade dataset build")
-                return 1
+                return finish(1, "failed_trade_dataset_build")
         else:
             print(
                 f"WARN: trade dataset builder missing: {TRADE_DATASET_BUILDER} "
@@ -2434,14 +4002,29 @@ def main() -> int:
             rc_quota = run_cmd(quota_cmd, args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
             if rc_quota != 0:
                 print("FAIL: training sample quota guard")
-                return 1
+                return finish(1, "failed_training_sample_quota_guard")
+
+        retrain_input_diagnostics = _build_retrain_input_feature_diagnostics(TRADE_BEHAVIOR_DATASET)
+        if retrain_input_diagnostics:
+            retrain_input_diagnostics["artifact_path"] = _write_training_diagnostic_artifact(
+                "retrain_input_feature_diagnostics",
+                retrain_input_diagnostics,
+                dry_run=args.dry_run,
+            )
+            tracked = retrain_input_diagnostics.get("tracked_features") if isinstance(retrain_input_diagnostics.get("tracked_features"), dict) else {}
+            present_count = sum(1 for row in tracked.values() if isinstance(row, dict) and bool(row.get("present_in_schema", False)))
+            print(
+                "Retrain input diagnostics: "
+                f"dataset_rows={int(retrain_input_diagnostics.get('dataset_rows', 0) or 0)} "
+                f"tracked_present={present_count}/{len(ADVANCED_RETRAIN_DIAGNOSTIC_FEATURES)}"
+            )
 
         if os.path.exists(TRADE_BEHAVIOR_TRAINER):
             rc = run_cmd([VENV_PY, TRADE_BEHAVIOR_TRAINER], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
             trade_behavior_trained_ok = (rc == 0)
             if rc != 0 and trade_behavior_strict:
                 print("FAIL: trade behavior trainer")
-                return 1
+                return finish(1, "failed_trade_behavior_trainer")
         else:
             print(f"WARN: trade behavior trainer missing: {TRADE_BEHAVIOR_TRAINER}")
 
@@ -2455,7 +4038,7 @@ def main() -> int:
             if rc_ablation != 0:
                 if trade_behavior_strict:
                     print("FAIL: replay feature ablation report")
-                    return 1
+                    return finish(1, "failed_replay_feature_ablation")
                 print("WARN: replay feature ablation report failed")
 
         if trade_behavior_trained_ok and args.purge_incorporated_snapshots and (not args.dry_run):
@@ -2531,6 +4114,7 @@ def main() -> int:
         registry_path=REGISTRY_PATH,
         registry_backup_path=registry_backup_path,
         target_count=len(targets),
+        retrain_profile=effective_retrain_profile,
     )
     scorecard_path = _write_retrain_scorecard(
         started_utc=started,
@@ -2548,14 +4132,42 @@ def main() -> int:
         data_quality_summary=data_quality_summary,
         canary_priority_selected=canary_priority_selected,
         distill_selected=distill_selected,
+        retry_pack=retry_pack,
         operator_notes=operator_notes,
+        retrain_input_diagnostics=retrain_input_diagnostics,
+        replay_summary=replay_summary,
         lineage=scorecard_lineage,
+        launch_context={
+            **launch_record,
+            "master_update_status": master_update_status,
+            "retry_pack_path": retry_pack_path,
+        },
         dry_run=args.dry_run,
     )
     print(f"Retrain scorecard written: {scorecard_path}")
 
     if os.path.exists(EXPORT_MODEL_CARD_SCRIPT):
         _ = run_cmd([VENV_PY, EXPORT_MODEL_CARD_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+    if os.path.exists(SCHEMA_MIGRATION_GUARD_SCRIPT):
+        _ = run_cmd([VENV_PY, SCHEMA_MIGRATION_GUARD_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+    if os.path.exists(BOT_SUPPORT_OWNER_GUARD_SCRIPT):
+        _ = run_cmd([VENV_PY, BOT_SUPPORT_OWNER_GUARD_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+    if os.path.exists(FEATURE_STORE_MANIFEST_SCRIPT):
+        _ = run_cmd([VENV_PY, FEATURE_STORE_MANIFEST_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+    if os.path.exists(NEW_BOT_ADMISSION_GUARD_SCRIPT):
+        _ = run_cmd([VENV_PY, NEW_BOT_ADMISSION_GUARD_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+    if os.path.exists(RETRAIN_SCHEMA_COMPATIBILITY_GUARD_SCRIPT):
+        _ = run_cmd([VENV_PY, RETRAIN_SCHEMA_COMPATIBILITY_GUARD_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+    if os.path.exists(GOLDEN_REPLAY_REGRESSION_GUARD_SCRIPT):
+        _ = run_cmd([VENV_PY, GOLDEN_REPLAY_REGRESSION_GUARD_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+    if os.path.exists(COHORT_DRIFT_BASELINE_GUARD_SCRIPT):
+        _ = run_cmd([VENV_PY, COHORT_DRIFT_BASELINE_GUARD_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+    if os.path.exists(CHAMPION_CHALLENGER_PROBATION_GUARD_SCRIPT):
+        _ = run_cmd([VENV_PY, CHAMPION_CHALLENGER_PROBATION_GUARD_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+    if os.path.exists(CHAMPION_CHALLENGER_PROBATION_ACTION_SCRIPT):
+        _ = run_cmd([VENV_PY, CHAMPION_CHALLENGER_PROBATION_ACTION_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+    if os.path.exists(PROMOTION_PACKET_BUILDER_SCRIPT):
+        _ = run_cmd([VENV_PY, PROMOTION_PACKET_BUILDER_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
 
     if args.lifecycle_hygiene and os.path.exists(MODEL_LIFECYCLE_HYGIENE_SCRIPT):
         lifecycle_cmd = [
@@ -2577,12 +4189,19 @@ def main() -> int:
             lifecycle_cmd.append("--update-last-known-good")
         _ = run_cmd(lifecycle_cmd, args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
 
+    if os.path.exists(POINT_IN_TIME_EVENT_STORE_SCRIPT):
+        _ = run_cmd([VENV_PY, POINT_IN_TIME_EVENT_STORE_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+    if os.path.exists(LIVE_READINESS_SMOKE_SCRIPT):
+        _ = run_cmd([VENV_PY, LIVE_READINESS_SMOKE_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+    if os.path.exists(PLATFORM_CONTROL_PLANE_SCRIPT):
+        _ = run_cmd([VENV_PY, PLATFORM_CONTROL_PLANE_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
+
     if skipped_by_memory:
         print("Completed with memory-gate skips.")
-        return 1
+        return finish(1, "completed_with_memory_gate_skips", scorecard_path=scorecard_path, failure_count=len(failures))
 
     print("Completed successfully.")
-    return 0
+    return finish(0, "completed_successfully", scorecard_path=scorecard_path, failure_count=len(failures))
 
 
 if __name__ == "__main__":

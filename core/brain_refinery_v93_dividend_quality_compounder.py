@@ -60,16 +60,23 @@ def _clip01(value):
 
 def _quality_compound_signal(obs):
     return _clip01(
-        0.22 * observation_feature(obs, "dividend_quality_score_norm")
-        + 0.18 * observation_feature(obs, "dividend_safety_composite_norm")
-        + 0.14 * observation_feature(obs, "dividend_compound_bias_norm")
-        + 0.14 * observation_feature(obs, "dividend_compound_growth_norm")
-        + 0.10 * observation_feature(obs, "dividend_growth_momentum_norm")
-        + 0.10 * observation_feature(obs, "long_term_quality_dividend_norm")
-        + 0.08 * observation_feature(obs, "dividend_capture_entry_signal_norm")
-        + 0.08 * observation_feature(obs, "dividend_drip_active_norm")
-        + 0.06 * observation_feature(obs, "dividend_drip_recent_reinvest_norm")
-        + 0.04 * observation_feature(obs, "dividend_drip_confidence_norm")
+        0.16 * observation_feature(obs, "dividend_quality_score_norm")
+        + 0.12 * observation_feature(obs, "dividend_safety_composite_norm")
+        + 0.10 * observation_feature(obs, "dividend_fcf_coverage_norm")
+        + 0.10 * observation_feature(obs, "dividend_structure_aware_quality_norm")
+        + 0.09 * observation_feature(obs, "dividend_income_quality_norm")
+        + 0.08 * observation_feature(obs, "dividend_total_return_income_norm")
+        + 0.08 * observation_feature(obs, "dividend_compound_bias_norm")
+        + 0.08 * observation_feature(obs, "dividend_compound_growth_norm")
+        + 0.07 * observation_feature(obs, "dividend_growth_momentum_norm")
+        + 0.05 * observation_feature(obs, "dividend_streak_quality_norm")
+        + 0.04 * observation_feature(obs, "long_term_quality_dividend_norm")
+        + 0.04 * observation_feature(obs, "dividend_capture_entry_signal_norm")
+        + 0.04 * observation_feature(obs, "dividend_drip_active_norm")
+        + 0.03 * observation_feature(obs, "dividend_drip_recent_reinvest_norm")
+        + 0.02 * observation_feature(obs, "dividend_drip_confidence_norm")
+        - 0.08 * observation_feature(obs, "dividend_cut_freeze_risk_norm")
+        - 0.06 * observation_feature(obs, "dividend_tax_friction_norm")
     )
 
 
@@ -97,7 +104,16 @@ def _runtime_feature_vector(sequence, idx):
             observation_feature(obs, "dividend_drip_confidence_norm"),
             observation_feature(obs, "dividend_safety_composite_norm"),
             observation_feature(obs, "dividend_growth_momentum_norm"),
+            observation_feature(obs, "dividend_streak_quality_norm"),
+            observation_feature(obs, "dividend_fcf_coverage_norm"),
+            observation_feature(obs, "dividend_interest_coverage_quality_norm"),
+            observation_feature(obs, "dividend_structure_aware_quality_norm"),
+            observation_feature(obs, "dividend_income_quality_norm"),
+            observation_feature(obs, "dividend_total_return_income_norm"),
+            observation_feature(obs, "dividend_position_age_norm"),
+            observation_feature(obs, "dividend_tax_friction_norm"),
             observation_feature(obs, "long_term_quality_dividend_norm"),
+            observation_feature(obs, "long_term_total_return_income_norm"),
             observation_feature(obs, "capital_flow_outflow_norm"),
             observation_feature(obs, "options_negative_bias_norm"),
             observation_feature(obs, "data_quality_quote_agreement_norm"),
@@ -105,6 +121,7 @@ def _runtime_feature_vector(sequence, idx):
             price_change(sequence, idx, 12),
             feature_ema(sequence, idx, "dividend_quality_score_norm", 4),
             feature_ema(sequence, idx, "dividend_compound_growth_norm", 4),
+            feature_ema(sequence, idx, "dividend_total_return_income_norm", 4),
         ],
         dtype=np.float32,
     )
@@ -115,6 +132,7 @@ def _runtime_sample_filter(sequence, idx, horizon):
     return (
         observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.74
         and observation_feature(obs, "dividend_payout_ratio_norm", 0.0) <= 0.95
+        and observation_feature(obs, "dividend_fcf_coverage_norm", 0.0) >= 0.18
         and _quality_compound_signal(obs) >= 0.24
     )
 
@@ -123,14 +141,18 @@ def _runtime_confidence(sequence, idx, horizon):
     obs = sequence[idx]
     quote_quality = _clip01(observation_feature(obs, "data_quality_quote_agreement_norm", 1.0))
     growth_signal = _clip01(
-        0.45 * observation_feature(obs, "dividend_compound_growth_norm")
-        + 0.35 * observation_feature(obs, "dividend_growth_momentum_norm")
+        0.30 * observation_feature(obs, "dividend_compound_growth_norm")
+        + 0.24 * observation_feature(obs, "dividend_growth_momentum_norm")
+        + 0.18 * observation_feature(obs, "dividend_total_return_income_norm")
+        + 0.16 * observation_feature(obs, "dividend_fcf_coverage_norm")
         + 0.10 * observation_feature(obs, "dividend_capture_entry_signal_norm")
-        + 0.10 * observation_feature(obs, "dividend_drip_recent_reinvest_norm")
+        + 0.02 * observation_feature(obs, "dividend_drip_recent_reinvest_norm")
     )
     safety_signal = _clip01(
-        0.55 * observation_feature(obs, "dividend_safety_composite_norm")
-        + 0.45 * observation_feature(obs, "dividend_quality_score_norm")
+        0.34 * observation_feature(obs, "dividend_safety_composite_norm")
+        + 0.28 * observation_feature(obs, "dividend_quality_score_norm")
+        + 0.20 * observation_feature(obs, "dividend_income_quality_norm")
+        + 0.18 * observation_feature(obs, "dividend_structure_aware_quality_norm")
     )
     stress_penalty = _clip01(
         0.45 * observation_feature(obs, "capital_flow_outflow_norm")
@@ -150,6 +172,9 @@ def _runtime_quality_compound_label(sequence, idx, horizon):
     dd = abs(future_max_drawdown(sequence, idx, horizon))
     realized = future_realized_vol(sequence, idx, horizon)
     growth_signal = observation_feature(obs, "dividend_growth_momentum_norm")
+    total_return_income = observation_feature(obs, "dividend_total_return_income_norm")
+    coverage = observation_feature(obs, "dividend_fcf_coverage_norm")
+    tax_friction = observation_feature(obs, "dividend_tax_friction_norm")
     stress = max(
         observation_feature(obs, "capital_flow_outflow_norm"),
         observation_feature(obs, "options_negative_bias_norm"),
@@ -162,10 +187,13 @@ def _runtime_quality_compound_label(sequence, idx, horizon):
     support_score = (
         fwd_ret
         + (0.0012 * quality_signal)
+        + (0.0007 * total_return_income)
+        + (0.0005 * coverage)
         + (0.0006 * growth_signal)
         - (0.80 * dd)
         - (0.30 * realized)
         - (0.0008 * stress)
+        - (0.0005 * tax_friction)
     )
     failure_score = (
         (-fwd_ret)
@@ -200,8 +228,8 @@ def _train_synthetic():
     )
 
 
-if __name__ == "__main__":
-    train_runtime_indicator_bot(
+def train_brain():
+    return train_runtime_indicator_bot(
         run_tag="brain_refinery_v93_dividend_quality_compounder",
         feature_names=[
             "pct_from_close",
@@ -224,7 +252,16 @@ if __name__ == "__main__":
             "dividend_drip_confidence_norm",
             "dividend_safety_composite_norm",
             "dividend_growth_momentum_norm",
+            "dividend_streak_quality_norm",
+            "dividend_fcf_coverage_norm",
+            "dividend_interest_coverage_quality_norm",
+            "dividend_structure_aware_quality_norm",
+            "dividend_income_quality_norm",
+            "dividend_total_return_income_norm",
+            "dividend_position_age_norm",
+            "dividend_tax_friction_norm",
             "long_term_quality_dividend_norm",
+            "long_term_total_return_income_norm",
             "capital_flow_outflow_norm",
             "options_negative_bias_norm",
             "data_quality_quote_agreement_norm",
@@ -232,6 +269,7 @@ if __name__ == "__main__":
             "ret_12",
             "dividend_quality_score_ema_4",
             "dividend_compound_growth_ema_4",
+            "dividend_total_return_income_ema_4",
         ],
         runtime_feature_builder=_runtime_feature_vector,
         runtime_label_builder=_runtime_quality_compound_label,
@@ -254,3 +292,7 @@ if __name__ == "__main__":
         min_accuracy_lift_over_majority=0.02,
         min_precision_balance_score=0.35,
     )
+
+
+if __name__ == "__main__":
+    train_brain()

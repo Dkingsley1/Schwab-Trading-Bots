@@ -18,13 +18,20 @@ PY = resolve_runtime_python(PROJECT_ROOT)
 DEFAULT_OUT_PATH = PROJECT_ROOT / 'governance' / 'health' / 'reboot_resilience_latest.json'
 FALLBACK_OUT_PATH = Path('/tmp/reboot_resilience_latest.json')
 
-DEFAULT_REQUIRED_LABELS = [
-    'com.dankingsley.all_sleeves',
+CORE_REQUIRED_LABELS = [
     'com.dankingsley.shadow_watchdog',
     'com.dankingsley.caffeinate_guard',
     'com.dankingsley.ops.watchdog',
     'com.dankingsley.failover_hot_standby',
 ]
+
+
+def _default_required_labels() -> List[str]:
+    mode = str(os.getenv('STACK_ORCHESTRATOR_MODE', 'watchdog') or 'watchdog').strip().lower()
+    labels = list(CORE_REQUIRED_LABELS)
+    if mode == 'all_sleeves':
+        labels.insert(0, 'com.dankingsley.all_sleeves')
+    return labels
 
 
 def _run(cmd: List[str]) -> Tuple[int, str, str]:
@@ -138,7 +145,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description='Reboot resilience guard for launchd runtime stack.')
     parser.add_argument(
         '--required-labels',
-        default=os.getenv('REBOOT_GUARD_REQUIRED_LABELS', ','.join(DEFAULT_REQUIRED_LABELS)),
+        default=os.getenv('REBOOT_GUARD_REQUIRED_LABELS', ','.join(_default_required_labels())),
         help='Comma-separated LaunchAgent labels to keep loaded.',
     )
     parser.add_argument(

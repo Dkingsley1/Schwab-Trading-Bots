@@ -44,6 +44,46 @@ _META_ROLE_MAP = {
     "core_index": ["SPY", "QQQ", "IWM", "DIA"],
     "crypto": ["AVAX-USD", "BTC-USD", "DOGE-USD", "ETH-USD", "LINK-USD", "LTC-USD", "SOL-USD"],
 }
+_META_RUNTIME_MODES = [
+    "shadow_equities",
+    "shadow_conservative_equities",
+    "shadow_aggressive_equities",
+    "shadow_intraday_aggressive_equities",
+    "shadow_swing_aggressive_equities",
+    "shadow_dividend_equities",
+    "shadow_bond_equities",
+    "shadow_crypto",
+    "shadow_crypto_futures_crypto",
+]
+_META_SYMBOLS = [
+    "SPY",
+    "QQQ",
+    "IWM",
+    "DIA",
+    "XLK",
+    "XLF",
+    "XLI",
+    "XLV",
+    "XLP",
+    "XLU",
+    "TLT",
+    "IEF",
+    "LQD",
+    "HYG",
+    "SCHD",
+    "DGRO",
+    "SMH",
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "BTC-USD",
+    "ETH-USD",
+    "SOL-USD",
+    "AVAX-USD",
+    "LINK-USD",
+    "LTC-USD",
+    "DOGE-USD",
+]
 
 
 def _clip01(value):
@@ -210,15 +250,15 @@ def _runtime_sample_filter(sequence, idx, horizon):
         abs(observation_feature(obs, "grand_master_vote")),
     )
     return (
-        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.72
-        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.36
-        and observation_feature(obs, "data_quality_missing_feature_ratio_norm", 0.0) <= 0.32
-        and regime_signal >= 0.10
+        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.74
+        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.32
+        and observation_feature(obs, "data_quality_missing_feature_ratio_norm", 0.0) <= 0.28
+        and regime_signal >= 0.08
         and max(
             abs(observation_feature(obs, "behavior_prior")),
             abs(observation_feature(obs, "master_vote")),
             abs(observation_feature(obs, "grand_master_vote")),
-        ) >= 0.06
+        ) >= 0.05
     )
 
 
@@ -460,17 +500,20 @@ def train_brain():
         ],
         runtime_feature_builder=_runtime_feature_vector,
         runtime_label_builder=_runtime_meta_label,
+        mode_allowlist=_META_RUNTIME_MODES,
+        symbol_allowlist=_META_SYMBOLS,
         sample_filter=_runtime_sample_filter,
         confidence_builder=_runtime_confidence,
-        min_confidence=0.32,
-        lookback_days=45,
+        min_confidence=0.34,
+        sample_stride=1,
+        lookback_days=60,
         window=18,
         horizon=6,
-        min_samples=1400,
-        min_sequences=10,
-        min_positive_samples=120,
-        min_negative_samples=120,
-        acted_prob_threshold=0.54,
+        min_samples=320,
+        min_sequences=6,
+        min_positive_samples=48,
+        min_negative_samples=48,
+        acted_prob_threshold=0.58,
         fallback_trainer=_train_synthetic,
         allow_fallback_on_insufficient_data=False,
         max_best_val_loss=0.6800,
@@ -479,11 +522,12 @@ def train_brain():
         min_short_precision=0.52,
         require_both_sides_precision=True,
         min_acted_accuracy=0.54,
-        min_long_acted_count=8,
-        min_short_acted_count=8,
+        min_long_acted_count=6,
+        min_short_acted_count=6,
         min_accuracy_lift_over_majority=0.02,
         min_label_balance_score=0.18,
-        min_precision_balance_score=0.35,
+        min_precision_balance_score=0.32,
+        max_acted_coverage=0.22,
     )
 
 

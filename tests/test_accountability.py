@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -105,3 +106,45 @@ def test_thin_low_signal_payloads_dedupes_repetitive_paper_guard_blocks(monkeypa
     kept = accountability._thin_low_signal_payloads(path, rows)
 
     assert len(kept) == 1
+
+
+def test_schema_violation_log_dedupes_and_summarizes_payload(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("CHANNEL_SCHEMA_VIOLATION_WINDOW_SECONDS", "60")
+    monkeypatch.setattr(accountability.time, "time", lambda: 1_000.0)
+    accountability._SCHEMA_VIOLATION_RECENT.clear()
+
+    payload = {
+        "timestamp_utc": "2026-04-17T12:00:00+00:00",
+        "symbol": "SPY",
+        "event": "runtime_tick",
+        "status": "bad_schema",
+        "message_id": "msg-1",
+        "details": {"huge": True},
+    }
+
+    accountability._schema_violation_log(
+        project_root=str(tmp_path),
+        source="unit_test",
+        channel="runtime",
+        target_path="governance/channels/runtime/test.jsonl",
+        payload=payload,
+        errors=["missing:event"],
+    )
+    accountability._schema_violation_log(
+        project_root=str(tmp_path),
+        source="unit_test",
+        channel="runtime",
+        target_path="governance/channels/runtime/test.jsonl",
+        payload=payload,
+        errors=["missing:event"],
+    )
+
+    day = accountability.datetime.now(accountability.timezone.utc).strftime("%Y%m%d")
+    out_path = tmp_path / "governance" / "events" / f"channel_schema_violations_{day}.jsonl"
+    rows = [json.loads(line) for line in out_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    assert len(rows) == 1
+    assert rows[0]["signature"]
+    assert rows[0]["payload"]["symbol"] == "SPY"
+    assert rows[0]["payload"]["payload_key_count"] >= 5
+    assert "details" not in rows[0]["payload"]

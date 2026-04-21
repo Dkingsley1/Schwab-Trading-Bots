@@ -193,6 +193,7 @@ _NEWS_ROLE_MAP = {
 _NEWS_RUNTIME_MODES = [
     "shadow_equities",
     "shadow_aggressive_equities",
+    "shadow_conservative_equities",
     "shadow_intraday_aggressive_equities",
     "shadow_swing_aggressive_equities",
 ]
@@ -207,9 +208,12 @@ _NEWS_RUNTIME_SYMBOLS = sorted(
         "XLF",
         "GLD",
         "TLT",
+        "TSLA",
         "AAPL",
         "MSFT",
         "NVDA",
+        "META",
+        "AVGO",
         *(_NEWS_ROLE_MAP["shock"]),
         *(_NEWS_ROLE_MAP["bond"]),
     }
@@ -403,11 +407,11 @@ def _runtime_sample_filter(sequence, idx, horizon):
         and stale_streak <= 0.55
         and latency <= 0.80
         and quote_quality >= 0.78
-        and event_signal >= 0.22
-        and freshness_signal >= 0.08
-        and source_signal >= 0.20
-        and (directional_signal >= 0.10 or event_signal >= 0.55)
-        and (duplicate_cluster <= 0.82 or event_signal >= 0.52 or observation_feature(obs, "news_novelty_norm") >= 0.55)
+        and event_signal >= 0.24
+        and freshness_signal >= 0.10
+        and source_signal >= 0.24
+        and (directional_signal >= 0.12 or event_signal >= 0.60)
+        and (duplicate_cluster <= 0.80 or event_signal >= 0.56 or observation_feature(obs, "news_novelty_norm") >= 0.58)
     )
 
 
@@ -578,15 +582,16 @@ def train_brain():
         symbol_allowlist=_NEWS_RUNTIME_SYMBOLS,
         sample_filter=_runtime_sample_filter,
         confidence_builder=_runtime_confidence,
-        min_confidence=0.38,
-        lookback_days=30,
+        min_confidence=0.36,
+        sample_stride=2,
+        lookback_days=45,
         window=18,
         horizon=6,
-        min_samples=192,
+        min_samples=160,
         min_sequences=6,
-        min_positive_samples=32,
-        min_negative_samples=32,
-        acted_prob_threshold=0.66,
+        min_positive_samples=24,
+        min_negative_samples=24,
+        acted_prob_threshold=0.64,
         fallback_trainer=_train_synthetic,
         allow_fallback_on_insufficient_data=False,
         max_best_val_loss=0.6929,
@@ -595,8 +600,8 @@ def train_brain():
         min_short_precision=0.05,
         require_both_sides_precision=True,
         min_acted_accuracy=0.53,
-        min_long_acted_count=4,
-        min_short_acted_count=4,
+        min_long_acted_count=3,
+        min_short_acted_count=3,
         min_accuracy_lift_over_majority=0.01,
         min_precision_balance_score=0.25,
     )

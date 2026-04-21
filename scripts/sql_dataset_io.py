@@ -116,6 +116,48 @@ def iter_sqlite_jsonl_rows(
         conn.close()
 
 
+def iter_sqlite_jsonl_rows_by_like_patterns(
+    *,
+    sqlite_path: Path,
+    like_patterns: Sequence[str],
+    table: str = "jsonl_records",
+) -> Iterator[Dict[str, Any]]:
+    if (not like_patterns) or (not sqlite_path.exists()):
+        return
+
+    normalized = [str(pattern).strip() for pattern in like_patterns if str(pattern).strip()]
+    if not normalized:
+        return
+
+    conn = sqlite3.connect(str(sqlite_path))
+    try:
+        seen_patterns: Set[str] = set()
+        for chunk in _chunked(normalized, size=24):
+            deduped_chunk: List[str] = []
+            for pattern in chunk:
+                if pattern in seen_patterns:
+                    continue
+                seen_patterns.add(pattern)
+                deduped_chunk.append(pattern)
+            if not deduped_chunk:
+                continue
+            where = " OR ".join("source_rel LIKE ?" for _ in deduped_chunk)
+            query = (
+                f"SELECT payload_json FROM {table} "
+                f"WHERE {where} "
+                f"ORDER BY source_rel, line_no"
+            )
+            for (payload_json,) in conn.execute(query, deduped_chunk):
+                try:
+                    obj = _json_loads(payload_json)
+                except Exception:
+                    continue
+                if isinstance(obj, dict):
+                    yield obj
+    finally:
+        conn.close()
+
+
 def split_paths_by_sqlite_coverage(
     *,
     project_root: Path,

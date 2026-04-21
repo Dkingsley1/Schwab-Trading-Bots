@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -91,15 +93,41 @@ def _enqueue_channel(
     source_path: str = "",
 ) -> str:
     queue = ChannelQueue(queue_db_path(project_root, queue_db_override))
-    return queue.enqueue(
-        channel=channel,
-        payload=payload,
-        source_path=source_path,
-        message_id=str(payload.get("message_id") or ""),
-        parent_message_id=str(payload.get("parent_message_id") or ""),
-        run_id=str(payload.get("run_id") or ""),
-        iter_id=str(payload.get("iter_id") or ""),
+    attempts = max(int(os.getenv("EXECUTION_LANE_QUEUE_ENQUEUE_RETRIES", "8") or 8), 1)
+    base_sleep = max(float(os.getenv("EXECUTION_LANE_QUEUE_ENQUEUE_SLEEP_SECONDS", "0.25") or 0.25), 0.05)
+    last_error = ""
+    for attempt in range(attempts):
+        try:
+            return queue.enqueue(
+                channel=channel,
+                payload=payload,
+                source_path=source_path,
+                message_id=str(payload.get("message_id") or ""),
+                parent_message_id=str(payload.get("parent_message_id") or ""),
+                run_id=str(payload.get("run_id") or ""),
+                iter_id=str(payload.get("iter_id") or ""),
+            )
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower():
+                raise
+            last_error = str(exc)
+            if attempt >= attempts - 1:
+                break
+            time.sleep(min(base_sleep * (attempt + 1), 2.0))
+
+    safe_append_jsonl(
+        execution_lane_daily_path(project_root, "execution_queue_enqueue_failures"),
+        {
+            "timestamp_utc": _now_utc(),
+            "channel": channel,
+            "message_id": str(payload.get("message_id") or ""),
+            "source_path": source_path,
+            "error": last_error or "sqlite_queue_enqueue_locked",
+        },
+        project_root=project_root,
+        source="execution_lane_pipeline.enqueue_failure",
     )
+    return str(payload.get("message_id") or "")
 
 
 def publish_channel_payload(
@@ -211,6 +239,109 @@ def _registry_rows(project_root: str) -> dict[str, Dict[str, Any]]:
     return out
 
 
+def _execution_gateway_paths(project_root: str) -> tuple[Path, Path]:
+    root = Path(project_root)
+    return (
+        root / "governance" / "allocator" / "portfolio_allocator_service_latest.json",
+        root / "governance" / "risk" / "risk_service_boundary_latest.json",
+    )
+
+
+def _intent_side(intent: Dict[str, Any]) -> str:
+    return str(intent.get("action") or intent.get("side") or "").strip().upper()
+
+
+def _pre_trade_match(rows: list[Dict[str, Any]], *, symbol: str, side: str) -> Dict[str, Any]:
+    symbol_upper = str(symbol or "").strip().upper()
+    side_upper = str(side or "").strip().upper()
+    for row in rows:
+        row_symbol = str(row.get("symbol") or "").strip().upper()
+        requested_action = str(row.get("requested_action") or row.get("side") or "").strip().upper()
+        approved_action = str(row.get("approved_action") or "").strip().upper()
+        if row_symbol != symbol_upper:
+            continue
+        if requested_action and side_upper and requested_action != side_upper:
+            continue
+        if approved_action and approved_action not in {"HOLD", "REJECT"}:
+            return row
+        if bool(row.get("risk_limit_ok", False)):
+            return row
+    return {}
+
+
+def _allocator_match(rows: list[Dict[str, Any]], *, symbol: str, side: str) -> Dict[str, Any]:
+    symbol_upper = str(symbol or "").strip().upper()
+    side_upper = str(side or "").strip().upper()
+    for row in rows:
+        row_symbol = str(row.get("symbol") or "").strip().upper()
+        row_side = str(row.get("side") or "").strip().upper()
+        approved_qty = _safe_float(row.get("approved_qty"), 0.0)
+        if row_symbol != symbol_upper or approved_qty <= 0.0:
+            continue
+        if row_side and side_upper and row_side != side_upper:
+            continue
+        return row
+    return {}
+
+
+def evaluate_execution_gateway(
+    *,
+    project_root: str,
+    intent: Dict[str, Any],
+    mode: str,
+) -> Dict[str, Any]:
+    allocator_path, risk_path = _execution_gateway_paths(project_root)
+    allocator = _read_json(allocator_path)
+    risk_boundary = _read_json(risk_path)
+    approved_rows = allocator.get("approved_intents") if isinstance(allocator.get("approved_intents"), list) else []
+    pre_trade_rows = risk_boundary.get("pre_trade_decisions") if isinstance(risk_boundary.get("pre_trade_decisions"), list) else []
+    symbol = str(intent.get("symbol") or "").strip().upper()
+    side = _intent_side(intent)
+    allocator_match = _allocator_match(approved_rows, symbol=symbol, side=side)
+    pre_trade_match = _pre_trade_match(pre_trade_rows, symbol=symbol, side=side)
+
+    reasons: list[str] = []
+    allocator_ok = bool(allocator.get("ok", False))
+    risk_ok = bool(risk_boundary.get("ok", False))
+    if not allocator:
+        reasons.append("allocator_contract_missing")
+    elif not allocator_ok:
+        reasons.append("allocator_contract_not_ok")
+    if not risk_boundary:
+        reasons.append("risk_boundary_missing")
+    elif not risk_ok:
+        reasons.append("risk_boundary_not_ok")
+    if mode.strip().lower() == "live":
+        if not allocator_match:
+            reasons.append("allocator_missing_matching_intent")
+        if not pre_trade_match:
+            reasons.append("risk_boundary_missing_pretrade_match")
+
+    allow_execute = True
+    if mode.strip().lower() == "live":
+        allow_execute = len(reasons) == 0
+
+    approved_action = str(pre_trade_match.get("approved_action") or "").strip().upper()
+    return {
+        "timestamp_utc": _now_utc(),
+        "contract_version": 1,
+        "mode": str(mode),
+        "symbol": symbol,
+        "side": side,
+        "allow_execute": bool(allow_execute),
+        "allocator_ok": allocator_ok,
+        "risk_boundary_ok": risk_ok,
+        "allocator_match_found": bool(allocator_match),
+        "pre_trade_match_found": bool(pre_trade_match),
+        "approved_action": approved_action,
+        "reasons": reasons,
+        "source_files": {
+            "allocator": str(allocator_path),
+            "risk_boundary": str(risk_path),
+        },
+    }
+
+
 def _extract_bot_id(intent: Dict[str, Any]) -> str:
     metadata = intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
     candidates = [
@@ -250,6 +381,14 @@ def evaluate_live_promotion(
         result_status = str(paper_result.get("status") or "").strip().upper()
         if result_status != "PAPER_EXECUTED":
             reasons.append(f"paper_status_not_executed:{result_status or 'unknown'}")
+
+    gateway = evaluate_execution_gateway(
+        project_root=project_root,
+        intent=intent,
+        mode="live",
+    )
+    if not bool(gateway.get("allow_execute", False)):
+        reasons.append("execution_gateway_blocked")
 
     promotion_gate = _read_json(Path(project_root) / "governance" / "walk_forward" / "promotion_gate_latest.json")
     lane_gate = _read_json(Path(project_root) / "governance" / "walk_forward" / "lane_promotion_gate_latest.json")
@@ -314,6 +453,7 @@ def evaluate_live_promotion(
             "promoted": bool(registry_row.get("promoted", False)) if registry_row else None,
             "deleted_from_rotation": bool(registry_row.get("deleted_from_rotation", False)) if registry_row else None,
         },
+        "execution_gateway": gateway,
     }
 
 
@@ -353,7 +493,19 @@ def process_execution_intent(
 ) -> Dict[str, Any]:
     intent = dict(message.payload or {})
     kwargs = intent_to_decision_kwargs(intent)
-    result = trader.execute_decision(**kwargs)
+    gateway = evaluate_execution_gateway(
+        project_root=project_root,
+        intent=intent,
+        mode=mode,
+    )
+    if str(mode).strip().lower() == "live" and not bool(gateway.get("allow_execute", False)):
+        result = {
+            "status": "LIVE_GATEWAY_BLOCKED",
+            "reason": "execution_gateway_blocked",
+            "execution_gateway": gateway,
+        }
+    else:
+        result = trader.execute_decision(**kwargs)
 
     result_payload = {
         "timestamp_utc": _now_utc(),
@@ -365,6 +517,7 @@ def process_execution_intent(
         "intent": intent,
         "result_status": str(result.get("status") or ""),
         "result": result,
+        "execution_gateway": gateway,
     }
     publish_execution_result(
         project_root=project_root,
@@ -386,6 +539,7 @@ def process_execution_intent(
             "intent": intent,
             "paper_result_status": str(result.get("status") or ""),
             "promotion": promotion,
+            "execution_gateway": gateway,
         }
         publish_execution_promotion(
             project_root=project_root,
@@ -448,10 +602,19 @@ def update_lane_health(
         else None
     )
     stale_after_seconds = max(int(os.getenv("EXECUTION_LANE_STALE_AFTER_SECONDS", "180") or 180), 30)
+    stale_grace_seconds = 0
+    if int(pending_rows) > 0:
+        # Large active queues naturally create short idle gaps between acks; don't
+        # label the lane stale while fresh intents are still flowing in.
+        if queue_newest_age_seconds is not None and float(queue_newest_age_seconds) <= max(float(stale_after_seconds), 300.0):
+            stale_grace_seconds += int(stale_after_seconds)
+        backlog_scale = min(max(int(pending_rows) // 25000, 0), 10)
+        stale_grace_seconds += int(backlog_scale * 60)
+    effective_stale_after_seconds = int(stale_after_seconds + stale_grace_seconds)
     stale = bool(
         int(pending_rows) > 0
         and consumer_idle_seconds is not None
-        and float(consumer_idle_seconds) >= float(stale_after_seconds)
+        and float(consumer_idle_seconds) >= float(effective_stale_after_seconds)
     )
     payload = {
         "timestamp_utc": _now_utc(),
@@ -465,8 +628,20 @@ def update_lane_health(
         "queue_oldest_age_seconds": queue_oldest_age_seconds,
         "queue_newest_age_seconds": queue_newest_age_seconds,
         "consumer_idle_seconds": consumer_idle_seconds,
-        "stale_after_seconds": int(stale_after_seconds),
+        "stale_after_seconds": int(effective_stale_after_seconds),
+        "stale_base_seconds": int(stale_after_seconds),
+        "stale_grace_seconds": int(stale_grace_seconds),
         "stale": bool(stale),
+    }
+    allocator_path, risk_path = _execution_gateway_paths(project_root)
+    allocator = _read_json(allocator_path)
+    risk_boundary = _read_json(risk_path)
+    pre_trade_rows = risk_boundary.get("pre_trade_decisions") if isinstance(risk_boundary.get("pre_trade_decisions"), list) else []
+    payload["execution_gateway"] = {
+        "allocator_ok": bool(allocator.get("ok", False)),
+        "risk_boundary_ok": bool(risk_boundary.get("ok", False)),
+        "approved_intents": len(allocator.get("approved_intents") or []) if isinstance(allocator.get("approved_intents"), list) else 0,
+        "pre_trade_orders": len(pre_trade_rows),
     }
     if auth_ok is not None:
         payload["auth_ok"] = bool(auth_ok)

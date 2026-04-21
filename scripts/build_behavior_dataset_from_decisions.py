@@ -38,6 +38,28 @@ DIVIDEND_DRIP_FEATURE_NAMES = [
     "dividend_drip_confidence_norm",
 ]
 
+PLUMBED_CONTEXT_FEATURE_NAMES = [
+    "live_macro_gate_active_norm",
+    "live_macro_gate_confidence_norm",
+    "sec_context_signal_norm",
+    "extended_quant_signal_norm",
+    "official_macro_signal_norm",
+    "schwab_education_signal_norm",
+    "market_breadth_signal_norm",
+    "bond_reference_signal_norm",
+]
+
+SOURCE_QUALITY_FEATURE_NAMES = [
+    "source_quality_average_score_norm",
+    "source_quality_required_failure_ratio_norm",
+    "source_quality_soft_failure_ratio_norm",
+    "source_quality_unverified_ratio_norm",
+    "source_quality_cross_verified_ratio_norm",
+    "source_quality_market_micro_score_norm",
+    "source_quality_official_macro_score_norm",
+    "source_quality_crypto_context_score_norm",
+]
+
 FEATURE_NAMES = [
     "pnl_proxy",
     "qty_log",
@@ -98,6 +120,11 @@ FEATURE_NAMES = [
     "dividend_compound_growth_norm",
     "dividend_compound_drawdown_norm",
     "dividend_compound_steps_norm",
+    "dividend_compounding_quality_norm",
+    "dividend_capture_timing_quality_norm",
+    "dividend_payout_stress_gate_norm",
+    "dividend_growth_persistence_norm",
+    "dividend_capture_ex_date_hazard_norm",
     "dividend_strategy_mode_capture",
     "dividend_strategy_mode_compound",
     "dividend_strategy_mode_hybrid",
@@ -162,6 +189,11 @@ FEATURE_NAMES = [
     "tasty_expected_move_norm",
     "tasty_beta_norm",
     "tasty_watchlist_presence_norm",
+    "options_iv_crush_risk_norm",
+    "options_assignment_risk_norm",
+    "options_zero_dte_regime_norm",
+    "options_vol_of_vol_change_norm",
+    "options_spread_execution_risk_norm",
     "crypto_deribit_futures_oi_norm",
     "crypto_deribit_options_oi_norm",
     "crypto_deribit_mark_iv_norm",
@@ -202,9 +234,42 @@ FEATURE_NAMES = [
     "fx_crypto_alignment_norm",
     "fx_macro_dispersion_norm",
     "fx_corr_confidence_norm",
+    "fx_session_asia_norm",
+    "fx_session_london_norm",
+    "fx_session_ny_norm",
+    "fx_rollover_risk_norm",
+    "fx_dxy_yield_confirmation_norm",
+    "fx_carry_proxy_norm",
 ]
 
+FEATURE_NAMES.extend(PLUMBED_CONTEXT_FEATURE_NAMES)
+FEATURE_NAMES.extend(SOURCE_QUALITY_FEATURE_NAMES)
+
 BEHAVIOR_LANE_FEATURE_NAMES = [
+    "core_default_dependency_norm",
+    "core_bot_concentration_norm",
+    "core_aggressive_identity_norm",
+    "profile_symbol_drag_penalty_norm",
+    "profile_kill_switch_norm",
+    "core_conservative_quality_gate_norm",
+    "core_aggressive_breakout_conviction_norm",
+    "core_options_structure_edge_norm",
+    "core_fx_macro_confirmation_norm",
+    "core_futures_regime_edge_norm",
+    "core_futures_curve_alignment_norm",
+    "core_crypto_unwind_risk_norm",
+    "core_cross_sectional_rank_norm",
+    "core_regime_specialist_blend_norm",
+    "core_exit_persistence_norm",
+    "core_portfolio_overlap_pressure_norm",
+    "core_event_reaction_norm",
+    "core_cross_asset_confirmation_norm",
+    "core_champion_challenger_gap_norm",
+    "aggressive_relative_strength_burst_norm",
+    "options_skew_dislocation_norm",
+    "options_gamma_wall_reaction_norm",
+    "futures_basis_dislocation_norm",
+    "futures_overnight_inventory_norm",
     "day_opening_auction_signal_norm",
     "day_halt_resume_risk_norm",
     "day_liquidity_vacuum_risk_norm",
@@ -215,15 +280,25 @@ BEHAVIOR_LANE_FEATURE_NAMES = [
     "day_regime_trend_norm",
     "day_regime_chop_norm",
     "day_regime_alignment_norm",
+    "day_lunch_chop_norm",
+    "day_open_close_imbalance_regime_norm",
+    "day_symbol_cooldown_pressure_norm",
+    "day_open_drive_conviction_norm",
+    "day_failed_breakout_risk_norm",
+    "day_closing_squeeze_norm",
+    "intraday_allowlist_score_norm",
     "swing_post_earnings_drift_norm",
     "swing_gap_continuation_norm",
     "swing_gap_fade_norm",
     "swing_vol_compression_breakout_norm",
     "swing_sector_relative_strength_norm",
     "swing_weekly_trend_confirm_norm",
+    "swing_weekly_pullback_quality_norm",
     "swing_regime_trend_norm",
     "swing_regime_chop_norm",
     "swing_regime_alignment_norm",
+    "swing_overnight_event_hazard_norm",
+    "swing_event_blackout_norm",
     "bond_duration_regime_norm",
     "bond_curve_steepener_norm",
     "bond_curve_flattener_norm",
@@ -231,6 +306,12 @@ BEHAVIOR_LANE_FEATURE_NAMES = [
     "bond_credit_risk_on_norm",
     "bond_credit_risk_off_norm",
     "bond_inflation_breakeven_norm",
+    "bond_bot_roster_alignment_norm",
+    "bond_equity_contamination_norm",
+    "long_term_factor_exposure_control_norm",
+    "long_term_overlap_rebalance_norm",
+    "long_term_valuation_reserve_norm",
+    "long_term_compounder_conviction_norm",
 ]
 
 FEATURE_NAMES.extend(BEHAVIOR_LANE_FEATURE_NAMES)
@@ -281,6 +362,10 @@ BEHAVIOR_ALLOCATION_FEATURE_NAMES = [
     "allocation_confidence_norm",
     "allocation_confidence_scale",
     "allocation_conflict_norm",
+    "execution_fitness_norm",
+    "stop_target_realism_norm",
+    "symbol_cooldown_memory_norm",
+    "cross_bot_conflict_norm",
     "regime_dislocation_norm",
 ]
 
@@ -725,6 +810,74 @@ def _signed_pct_norm(pct_change: float, gain: float) -> float:
     return _clamp01(0.5 + (0.5 * _signed_scale(float(pct_change), float(gain))))
 
 
+def _safe_mean(values: List[Optional[float]]) -> float:
+    nums = [float(v) for v in values if v is not None and math.isfinite(float(v))]
+    if not nums:
+        return 0.0
+    return sum(nums) / float(len(nums))
+
+
+def _payload_recency_norm(payload: Dict[str, Any], *, now_utc: datetime, max_age_hours: float) -> float:
+    ts = _parse_ts(payload.get("timestamp_utc"))
+    if ts is None:
+        return 0.0
+    age_hours = max((now_utc - ts).total_seconds() / 3600.0, 0.0)
+    return 1.0 - _clamp01(age_hours / max(max_age_hours, 1e-6))
+
+
+def _load_latest_context_file(project_root: Path, category: str) -> Dict[str, Any]:
+    token = str(category or "").strip().lower()
+    if not token:
+        return {}
+    aliases = {
+        "options_flow_context": ["options_flow_context", "tastytrade_context"],
+        "tastytrade_context": ["options_flow_context", "tastytrade_context"],
+    }
+    candidates = aliases.get(token, [token])
+    for candidate in candidates:
+        for path in (
+            project_root / "data" / "external_context" / f"{candidate}_latest.json",
+            project_root / "exports" / "external_context" / f"{candidate}_latest.json",
+            project_root / "governance" / "health" / f"{candidate}_latest.json",
+        ):
+            payload = _safe_load_json(path, default={})
+            if payload:
+                return payload
+    return {}
+
+
+def _global_feature_map(payload: Dict[str, Any]) -> Dict[str, Any]:
+    derived = payload.get("derived") if isinstance(payload.get("derived"), dict) else {}
+    return derived.get("global_features") if isinstance(derived.get("global_features"), dict) else {}
+
+
+def _feature_signal(node: Dict[str, Any], keys: List[str], *, scale: float = 1.0) -> float:
+    values = [_try_float(node.get(key)) for key in keys]
+    return _clamp01(_safe_mean(values) / max(scale, 1e-6))
+
+
+def _collector_quality_score(rows: List[Dict[str, Any]], name: str) -> float:
+    token = str(name or "").strip().lower()
+    if not token:
+        return 0.0
+    for row in rows:
+        if str(row.get("name") or "").strip().lower() != token:
+            continue
+        return _clamp01(_to_float(row.get("quality_score"), 0.0))
+    return 0.0
+
+
+def _verification_status_score(status: str) -> float:
+    token = str(status or "").strip().lower()
+    if token == "cross_verified":
+        return 1.0
+    if token == "single_source_verified":
+        return 0.75
+    if token == "single_source_unverified":
+        return 0.25
+    return 0.0
+
+
 def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict[str, float], Dict[str, Any]]:
     root = project_root / "exports" / "external_feeds"
     status = _safe_load_json(root / "latest_status.json", default={})
@@ -733,12 +886,21 @@ def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict
     fred = _safe_load_json(root / "fred" / "latest.json", default={})
     bea = _safe_load_json(root / "bea" / "latest.json", default={})
     tradingeconomics = _safe_load_json(root / "tradingeconomics" / "latest.json", default={})
-    market_micro = _safe_load_json(project_root / "exports" / "external_context" / "market_micro_latest.json", default={})
-    tastytrade = _safe_load_json(project_root / "exports" / "external_context" / "tastytrade_context_latest.json", default={})
-    crypto_market = _safe_load_json(project_root / "exports" / "external_context" / "crypto_market_context_latest.json", default={})
-    market_crypto_correlation = _safe_load_json(project_root / "exports" / "external_context" / "market_crypto_correlation_latest.json", default={})
-    fx_market = _safe_load_json(project_root / "exports" / "external_context" / "fx_market_context_latest.json", default={})
-    dividend_drip = _safe_load_json(project_root / "exports" / "external_context" / "dividend_drip_state_latest.json", default={})
+    market_micro = _load_latest_context_file(project_root, "market_micro")
+    options_flow = _load_latest_context_file(project_root, "options_flow_context")
+    crypto_market = _load_latest_context_file(project_root, "crypto_market_context")
+    market_crypto_correlation = _load_latest_context_file(project_root, "market_crypto_correlation")
+    fx_market = _load_latest_context_file(project_root, "fx_market_context")
+    dividend_drip = _load_latest_context_file(project_root, "dividend_drip_state")
+    sec_edgar = _load_latest_context_file(project_root, "sec_edgar")
+    extended_quant = _load_latest_context_file(project_root, "extended_quant_context")
+    official_macro = _load_latest_context_file(project_root, "official_macro_context")
+    schwab_education = _load_latest_context_file(project_root, "schwab_education_context")
+    live_macro = _load_latest_context_file(project_root, "live_macro")
+    market_breadth_snapshot = _load_latest_context_file(project_root, "market_breadth")
+    bond_reference_snapshot = _load_latest_context_file(project_root, "bond_reference")
+    collector_contracts = _safe_load_json(project_root / "governance" / "health" / "collector_contracts_latest.json", default={})
+    source_verification = _safe_load_json(project_root / "governance" / "health" / "source_verification_latest.json", default={})
 
     provider_names = ("bls", "census", "fred", "bea")
     provider_ok = {}
@@ -825,7 +987,7 @@ def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict
     bea_dataset_count = float(len(bea_dataset_rows)) if isinstance(bea_dataset_rows, list) else 0.0
     micro_derived = market_micro.get("derived") if isinstance(market_micro.get("derived"), dict) else {}
     micro_global = micro_derived.get("global_features") if isinstance(micro_derived.get("global_features"), dict) else {}
-    tasty_derived = tastytrade.get("derived") if isinstance(tastytrade.get("derived"), dict) else {}
+    tasty_derived = options_flow.get("derived") if isinstance(options_flow.get("derived"), dict) else {}
     tasty_global = tasty_derived.get("global_features") if isinstance(tasty_derived.get("global_features"), dict) else {}
     crypto_derived = crypto_market.get("derived") if isinstance(crypto_market.get("derived"), dict) else {}
     crypto_global = crypto_derived.get("global_features") if isinstance(crypto_derived.get("global_features"), dict) else {}
@@ -836,6 +998,40 @@ def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict
     dividend_drip_derived = dividend_drip.get("derived") if isinstance(dividend_drip.get("derived"), dict) else {}
     dividend_drip_global = dividend_drip_derived.get("global_features") if isinstance(dividend_drip_derived.get("global_features"), dict) else {}
     dividend_drip_symbol = dividend_drip_derived.get("symbol_features") if isinstance(dividend_drip_derived.get("symbol_features"), dict) else {}
+    sec_global = _global_feature_map(sec_edgar)
+    extended_quant_global = _global_feature_map(extended_quant)
+    official_macro_derived = official_macro.get("derived") if isinstance(official_macro.get("derived"), dict) else {}
+    official_macro_news = official_macro_derived.get("news_features") if isinstance(official_macro_derived.get("news_features"), dict) else {}
+    official_macro_calendar = official_macro_derived.get("calendar_features") if isinstance(official_macro_derived.get("calendar_features"), dict) else {}
+    education_global = _global_feature_map(schwab_education)
+    live_macro_derived = live_macro.get("derived") if isinstance(live_macro.get("derived"), dict) else {}
+    live_macro_news = live_macro_derived.get("news_features") if isinstance(live_macro_derived.get("news_features"), dict) else {}
+    live_macro_calendar = live_macro_derived.get("calendar_features") if isinstance(live_macro_derived.get("calendar_features"), dict) else {}
+    te_market_breadth = te_derived.get("market_breadth") if isinstance(te_derived.get("market_breadth"), dict) else {}
+    te_bond_reference = te_derived.get("bond_reference") if isinstance(te_derived.get("bond_reference"), dict) else {}
+    breadth_payload = market_breadth_snapshot if market_breadth_snapshot else {"derived": {"global_features": te_market_breadth}}
+    bond_payload = bond_reference_snapshot if bond_reference_snapshot else {"derived": {"global_features": te_bond_reference}}
+    breadth_global = _global_feature_map(breadth_payload)
+    bond_global = _global_feature_map(bond_payload)
+    collector_rows = collector_contracts.get("rows") if isinstance(collector_contracts.get("rows"), list) else []
+    verification_overall = source_verification.get("overall") if isinstance(source_verification.get("overall"), dict) else {}
+    verification_counts = verification_overall.get("counts") if isinstance(verification_overall.get("counts"), dict) else {}
+    verification_rows = source_verification.get("sources") if isinstance(source_verification.get("sources"), list) else []
+    verification_by_id = {
+        str(row.get("source_id") or "").strip().lower(): row
+        for row in verification_rows
+        if isinstance(row, dict) and str(row.get("source_id") or "").strip()
+    }
+    total_verification_sources = max(int(_to_float(verification_overall.get("total_sources"), 0.0)), len(verification_rows), 1)
+    live_macro_confidence = _safe_mean(
+        [
+            _try_float(live_macro_news.get("news_source_quality_norm")),
+            _try_float(live_macro_news.get("news_entity_relevance_norm")),
+            _try_float(live_macro_calendar.get("calendar_high_impact_24h_norm")),
+            _try_float(live_macro_calendar.get("calendar_macro_event_norm")),
+            _payload_recency_norm(live_macro, now_utc=now_utc, max_age_hours=48.0),
+        ]
+    )
 
     context = {
         "external_feeds_ok": 1.0 if (all(provider_ok.get(name, False) for name in provider_names) or te_ok) else 0.0,
@@ -859,6 +1055,11 @@ def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict
         "tasty_expected_move_norm": _clamp01(_to_float(tasty_global.get("tasty_expected_move_norm"), 0.0)),
         "tasty_beta_norm": _clamp01(_to_float(tasty_global.get("tasty_beta_norm"), 0.0)),
         "tasty_watchlist_presence_norm": _clamp01(_to_float(tasty_global.get("tasty_watchlist_presence_norm"), 0.0)),
+        "options_iv_crush_risk_norm": _clamp01(_to_float(tasty_global.get("options_iv_crush_risk_norm"), 0.0)),
+        "options_assignment_risk_norm": _clamp01(_to_float(tasty_global.get("options_assignment_risk_norm"), 0.0)),
+        "options_zero_dte_regime_norm": _clamp01(_to_float(tasty_global.get("options_zero_dte_regime_norm"), 0.0)),
+        "options_vol_of_vol_change_norm": _clamp01(_to_float(tasty_global.get("options_vol_of_vol_change_norm"), 0.0)),
+        "options_spread_execution_risk_norm": _clamp01(_to_float(tasty_global.get("options_spread_execution_risk_norm"), 0.0)),
         "crypto_deribit_mark_iv_norm": _clamp01(_to_float(crypto_global.get("crypto_deribit_mark_iv_norm"), 0.0)),
         "crypto_hyperliquid_funding_norm": _clamp01(_to_float(crypto_global.get("crypto_hyperliquid_funding_norm"), 0.0)),
         "crypto_coingecko_momentum_norm": _clamp01(_to_float(crypto_global.get("crypto_coingecko_momentum_norm"), 0.0)),
@@ -889,12 +1090,95 @@ def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict
         "fx_crypto_alignment_norm": _clamp01(_to_float(fx_global.get("fx_crypto_alignment_norm"), 0.0)),
         "fx_macro_dispersion_norm": _clamp01(_to_float(fx_global.get("fx_macro_dispersion_norm"), 0.0)),
         "fx_corr_confidence_norm": _clamp01(_to_float(fx_global.get("fx_corr_confidence_norm"), 0.0)),
+        "fx_session_asia_norm": _clamp01(_to_float(fx_global.get("fx_session_asia_norm"), 0.0)),
+        "fx_session_london_norm": _clamp01(_to_float(fx_global.get("fx_session_london_norm"), 0.0)),
+        "fx_session_ny_norm": _clamp01(_to_float(fx_global.get("fx_session_ny_norm"), 0.0)),
+        "fx_rollover_risk_norm": _clamp01(_to_float(fx_global.get("fx_rollover_risk_norm"), 0.0)),
+        "fx_dxy_yield_confirmation_norm": _clamp01(_to_float(fx_global.get("fx_dxy_yield_confirmation_norm"), 0.0)),
+        "fx_carry_proxy_norm": _clamp01(_to_float(fx_global.get("fx_carry_proxy_norm"), 0.0)),
         "dividend_drip_active_norm": _clamp01(_to_float(dividend_drip_global.get("dividend_drip_active_norm"), 0.0)),
         "dividend_drip_recent_reinvest_norm": _clamp01(_to_float(dividend_drip_global.get("dividend_drip_recent_reinvest_norm"), 0.0)),
         "dividend_drip_cash_only_norm": _clamp01(_to_float(dividend_drip_global.get("dividend_drip_cash_only_norm"), 0.0)),
         "dividend_drip_share_credit_norm": _clamp01(_to_float(dividend_drip_global.get("dividend_drip_share_credit_norm"), 0.0)),
         "dividend_drip_event_recency_norm": _clamp01(_to_float(dividend_drip_global.get("dividend_drip_event_recency_norm"), 0.0)),
         "dividend_drip_confidence_norm": _clamp01(_to_float(dividend_drip_global.get("dividend_drip_confidence_norm"), 0.0)),
+        "live_macro_gate_active_norm": 1.0 if live_macro_confidence > 0.0 else 0.0,
+        "live_macro_gate_confidence_norm": _clamp01(live_macro_confidence),
+        "sec_context_signal_norm": _feature_signal(
+            sec_global,
+            [
+                "sec_recent_filings_1d_norm",
+                "sec_recent_high_impact_1d_norm",
+                "sec_offering_7d_norm",
+                "sec_dilution_7d_norm",
+                "sec_mna_7d_norm",
+                "sec_financing_stress_7d_norm",
+            ],
+        ),
+        "extended_quant_signal_norm": _feature_signal(
+            extended_quant_global,
+            [
+                "cot_macro_positioning_stress_norm",
+                "sofr_term_pressure_norm",
+                "sofr_funding_stress_norm",
+                "cboe_put_call_stress_norm",
+                "short_threshold_total_listed_norm",
+                "short_ftd_total_hits_norm",
+            ],
+        ),
+        "official_macro_signal_norm": _clamp01(
+            _safe_mean(
+                [
+                    _try_float(official_macro_calendar.get("calendar_high_impact_24h_norm")),
+                    _try_float(official_macro_calendar.get("calendar_macro_event_norm")),
+                    _try_float(official_macro_calendar.get("calendar_macro_abs_surprise_norm")),
+                    _try_float(official_macro_news.get("news_source_quality_norm")),
+                ]
+            )
+        ),
+        "schwab_education_signal_norm": _feature_signal(
+            education_global,
+            [
+                "schwab_education_item_density_norm",
+                "schwab_education_recent_activity_norm",
+                "schwab_education_symbol_coverage_norm",
+                "schwab_education_video_share_norm",
+                "schwab_education_stream_share_norm",
+                "schwab_education_network_share_norm",
+            ],
+        ),
+        "market_breadth_signal_norm": _clamp01(
+            max(
+                _to_float(breadth_global.get("breadth_thrust_norm"), 0.0),
+                _to_float(breadth_global.get("breadth_sector_rotation_norm"), 0.0),
+                _to_float(breadth_global.get("breadth_risk_off_norm"), 0.0),
+                _clamp01(abs(_to_float(te_market_breadth.get("index_alignment_score"), 0.0))),
+            )
+        ),
+        "bond_reference_signal_norm": _clamp01(
+            max(
+                _to_float(bond_global.get("bond_curve_2s10s_norm"), 0.0),
+                _to_float(bond_global.get("bond_auction_window_norm"), 0.0),
+                _to_float(bond_global.get("bond_auction_tail_norm"), 0.0),
+                _clamp01(abs(_to_float(te_bond_reference.get("curve_regime_score"), 0.0))),
+            )
+        ),
+        "source_quality_average_score_norm": _clamp01(_to_float(collector_contracts.get("average_quality_score"), 0.0)),
+        "source_quality_required_failure_ratio_norm": _clamp01(
+            _to_float(collector_contracts.get("required_failure_count"), 0.0) / max(_to_float(collector_contracts.get("collector_count"), 0.0), 1.0)
+        ),
+        "source_quality_soft_failure_ratio_norm": _clamp01(
+            _to_float(collector_contracts.get("soft_failure_count"), 0.0) / max(_to_float(collector_contracts.get("collector_count"), 0.0), 1.0)
+        ),
+        "source_quality_unverified_ratio_norm": _clamp01(
+            _to_float(len(verification_overall.get("unverified_sources") or []), 0.0) / float(total_verification_sources)
+        ),
+        "source_quality_cross_verified_ratio_norm": _clamp01(
+            _to_float(verification_counts.get("cross_verified"), 0.0) / float(total_verification_sources)
+        ),
+        "source_quality_market_micro_score_norm": _collector_quality_score(collector_rows, "market_micro_context"),
+        "source_quality_official_macro_score_norm": _collector_quality_score(collector_rows, "official_macro_context"),
+        "source_quality_crypto_context_score_norm": _collector_quality_score(collector_rows, "crypto_market_context"),
     }
     meta = {
         "status_ts": status.get("timestamp_utc"),
@@ -904,11 +1188,18 @@ def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict
         "fred_ts": fred.get("timestamp_utc"),
         "bea_ts": bea.get("timestamp_utc"),
         "market_micro_ts": market_micro.get("timestamp_utc"),
-        "tastytrade_ts": tastytrade.get("timestamp_utc"),
+        "tastytrade_ts": options_flow.get("timestamp_utc"),
         "crypto_market_ts": crypto_market.get("timestamp_utc"),
         "market_crypto_correlation_ts": market_crypto_correlation.get("timestamp_utc"),
         "fx_market_context_ts": fx_market.get("timestamp_utc"),
         "dividend_drip_state_ts": dividend_drip.get("timestamp_utc"),
+        "sec_edgar_ts": sec_edgar.get("timestamp_utc"),
+        "extended_quant_context_ts": extended_quant.get("timestamp_utc"),
+        "official_macro_context_ts": official_macro.get("timestamp_utc"),
+        "schwab_education_context_ts": schwab_education.get("timestamp_utc"),
+        "live_macro_ts": live_macro.get("timestamp_utc"),
+        "market_breadth_ts": market_breadth_snapshot.get("timestamp_utc") if isinstance(market_breadth_snapshot, dict) else None,
+        "bond_reference_ts": bond_reference_snapshot.get("timestamp_utc") if isinstance(bond_reference_snapshot, dict) else None,
         "tradingeconomics_ts": tradingeconomics.get("timestamp_utc"),
         "market_micro": micro_global,
         "tastytrade": tasty_global,
@@ -917,14 +1208,46 @@ def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict
         "fx_market": fx_global,
         "dividend_drip": dividend_drip_global,
         "dividend_drip_symbol_features": dividend_drip_symbol,
+        "sec_edgar": sec_global,
+        "extended_quant_context": extended_quant_global,
+        "official_macro_context": {
+            "news_features": official_macro_news,
+            "calendar_features": official_macro_calendar,
+        },
+        "schwab_education_context": education_global,
+        "live_macro": {
+            "news_features": live_macro_news,
+            "calendar_features": live_macro_calendar,
+            "confidence_norm": _clamp01(live_macro_confidence),
+        },
+        "market_breadth": breadth_global if breadth_global else te_market_breadth,
+        "bond_reference": bond_global if bond_global else te_bond_reference,
+        "collector_contracts": {
+            "average_quality_score": _to_float(collector_contracts.get("average_quality_score"), 0.0),
+            "required_failure_count": int(_to_float(collector_contracts.get("required_failure_count"), 0.0)),
+            "soft_failure_count": int(_to_float(collector_contracts.get("soft_failure_count"), 0.0)),
+            "collector_count": int(_to_float(collector_contracts.get("collector_count"), 0.0)),
+        },
+        "source_verification": {
+            "counts": verification_counts,
+            "total_sources": total_verification_sources,
+            "statuses": {
+                key: str((row or {}).get("verification_status") or "")
+                for key, row in verification_by_id.items()
+            },
+            "status_scores": {
+                key: _verification_status_score(str((row or {}).get("verification_status") or ""))
+                for key, row in verification_by_id.items()
+            },
+        },
         "tradingeconomics": {
             "ok": te_ok,
             "datasets_ok_count": int(_to_float(te_status.get("datasets_ok_count"), 0.0)),
             "macro_backfill": te_macro_backfill,
             "calendar_rows": te_derived.get("calendar_rows") if isinstance(te_derived.get("calendar_rows"), list) else [],
             "news_features": te_derived.get("news_features") if isinstance(te_derived.get("news_features"), dict) else {},
-            "market_breadth": te_derived.get("market_breadth") if isinstance(te_derived.get("market_breadth"), dict) else {},
-            "bond_reference": te_derived.get("bond_reference") if isinstance(te_derived.get("bond_reference"), dict) else {},
+            "market_breadth": te_market_breadth,
+            "bond_reference": te_bond_reference,
         },
         "raw": {
             "fred_unrate_latest": fred_unrate_latest,
@@ -1382,6 +1705,11 @@ def _decision_feature_vector(
         _clamp01(_to_float(external_context.get("tasty_expected_move_norm"), 0.0)),
         _clamp01(_to_float(external_context.get("tasty_beta_norm"), 0.0)),
         _clamp01(_to_float(external_context.get("tasty_watchlist_presence_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("options_iv_crush_risk_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("options_assignment_risk_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("options_zero_dte_regime_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("options_vol_of_vol_change_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("options_spread_execution_risk_norm"), 0.0)),
         _clamp01(_to_float(features.get("crypto_deribit_futures_oi_norm"), _to_float(external_context.get("crypto_deribit_futures_oi_norm"), 0.0))),
         _clamp01(_to_float(features.get("crypto_deribit_options_oi_norm"), _to_float(external_context.get("crypto_deribit_options_oi_norm"), 0.0))),
         _clamp01(_to_float(features.get("crypto_deribit_mark_iv_norm"), _to_float(external_context.get("crypto_deribit_mark_iv_norm"), 0.0))),
@@ -1422,6 +1750,28 @@ def _decision_feature_vector(
         _clamp01(_to_float(features.get("fx_crypto_alignment_norm"), _to_float(external_context.get("fx_crypto_alignment_norm"), 0.0))),
         _clamp01(_to_float(features.get("fx_macro_dispersion_norm"), _to_float(external_context.get("fx_macro_dispersion_norm"), 0.0))),
         _clamp01(_to_float(features.get("fx_corr_confidence_norm"), _to_float(external_context.get("fx_corr_confidence_norm"), 0.0))),
+        _clamp01(_to_float(features.get("fx_session_asia_norm"), _to_float(external_context.get("fx_session_asia_norm"), 0.0))),
+        _clamp01(_to_float(features.get("fx_session_london_norm"), _to_float(external_context.get("fx_session_london_norm"), 0.0))),
+        _clamp01(_to_float(features.get("fx_session_ny_norm"), _to_float(external_context.get("fx_session_ny_norm"), 0.0))),
+        _clamp01(_to_float(features.get("fx_rollover_risk_norm"), _to_float(external_context.get("fx_rollover_risk_norm"), 0.0))),
+        _clamp01(_to_float(features.get("fx_dxy_yield_confirmation_norm"), _to_float(external_context.get("fx_dxy_yield_confirmation_norm"), 0.0))),
+        _clamp01(_to_float(features.get("fx_carry_proxy_norm"), _to_float(external_context.get("fx_carry_proxy_norm"), 0.0))),
+        _clamp01(_to_float(external_context.get("live_macro_gate_active_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("live_macro_gate_confidence_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("sec_context_signal_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("extended_quant_signal_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("official_macro_signal_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("schwab_education_signal_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("market_breadth_signal_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("bond_reference_signal_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("source_quality_average_score_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("source_quality_required_failure_ratio_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("source_quality_soft_failure_ratio_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("source_quality_unverified_ratio_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("source_quality_cross_verified_ratio_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("source_quality_market_micro_score_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("source_quality_official_macro_score_norm"), 0.0)),
+        _clamp01(_to_float(external_context.get("source_quality_crypto_context_score_norm"), 0.0)),
     ]
 
     for key in BEHAVIOR_LANE_FEATURE_NAMES:

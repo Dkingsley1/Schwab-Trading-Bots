@@ -15,9 +15,6 @@ _TREND_RUNTIME_MODES = [
     "shadow_equities",
     "shadow_aggressive_equities",
     "shadow_conservative_equities",
-    "shadow_crypto",
-    "shadow_crypto_futures_crypto",
-    "shadow_dividend_equities",
     "shadow_intraday_aggressive_equities",
     "shadow_swing_aggressive_equities",
 ]
@@ -31,20 +28,13 @@ _LIQUID_TREND_SYMBOLS = [
     "XLE",
     "XLI",
     "XLV",
-    "XLY",
-    "XLP",
-    "XLB",
-    "XLU",
-    "XLRE",
-    "XLC",
     "SMH",
     "SOXX",
     "AAPL",
     "MSFT",
     "NVDA",
-    "BTC-USD",
-    "ETH-USD",
-    "SOL-USD",
+    "AMZN",
+    "META",
 ]
 
 
@@ -122,6 +112,35 @@ def _trend_state_support(obs):
     )
 
 
+def _trend_headwind_support(obs):
+    breadth_weakness = _clip01((1.0 - observation_feature(obs, "breadth_advance_decline_norm")) / 2.0)
+    session_pressure = _clip01(
+        max(
+            observation_feature(obs, "day_session_open_norm"),
+            observation_feature(obs, "day_session_power_hour_norm"),
+        )
+    )
+    crypto_headwind = _clip01(
+        (0.28 * observation_feature(obs, "market_micro_trend_persistence_norm"))
+        + (0.24 * observation_feature(obs, "breadth_risk_off_norm"))
+        + (0.16 * observation_feature(obs, "market_crypto_divergence_norm", 0.0))
+        + (0.14 * (1.0 - observation_feature(obs, "market_crypto_current_alignment_norm", 0.5)))
+        + (0.10 * (1.0 - observation_feature(obs, "fx_crypto_alignment_norm", 0.5)))
+        + (0.08 * (1.0 - observation_feature(obs, "crypto_coingecko_momentum_norm", 0.5)))
+    )
+    return _clip01(
+        (0.16 * observation_feature(obs, "day_regime_trend_norm"))
+        + (0.10 * (1.0 - observation_feature(obs, "day_regime_alignment_norm")))
+        + (0.16 * observation_feature(obs, "market_micro_trend_persistence_norm"))
+        + (0.16 * observation_feature(obs, "breadth_risk_off_norm"))
+        + (0.14 * breadth_weakness)
+        + (0.08 * observation_feature(obs, "breadth_sector_dispersion_norm"))
+        + (0.08 * session_pressure)
+        + (0.06 * _quote_quality(obs))
+        + (0.06 * crypto_headwind)
+    )
+
+
 def _direction_bias(obs):
     bias = (
         (0.22 * observation_feature(obs, "behavior_prior"))
@@ -138,6 +157,53 @@ def _direction_bias(obs):
     )
     return float(
         np.clip(bias, -1.0, 1.0)
+    )
+
+
+def _trend_supports(obs):
+    return _trend_state_support(obs), _trend_headwind_support(obs)
+
+
+def _directional_trend_support(obs, bias=None):
+    directional_bias = _direction_bias(obs) if bias is None else float(bias)
+    support, headwind = _trend_supports(obs)
+    directional_support = support if directional_bias >= 0.0 else headwind
+    opposing_support = headwind if directional_bias >= 0.0 else support
+    return directional_support, opposing_support
+
+
+def _trend_directional_agreement(obs, bias=None):
+    directional_bias = _direction_bias(obs) if bias is None else float(bias)
+    target = 1.0 if directional_bias >= 0.0 else -1.0
+    signed_components = [
+        0.24 * observation_feature(obs, "behavior_prior"),
+        0.18 * _centered01(observation_feature(obs, "market_micro_order_flow_imbalance_norm", 0.5)),
+        0.16 * _centered01(observation_feature(obs, "futures_specialist_vote", 0.5)),
+        0.12 * observation_feature(obs, "mom_15m") * 90.0,
+        0.10 * observation_feature(obs, "mom_5m") * 120.0,
+        0.08 * observation_feature(obs, "pct_from_close") * 120.0,
+        0.05 * _centered01(observation_feature(obs, "range_pos", 0.5)),
+        0.04 * observation_feature(obs, "breadth_advance_decline_norm"),
+        0.02 * _centered01(observation_feature(obs, "market_crypto_current_alignment_norm", 0.5)),
+        0.01 * _centered01(observation_feature(obs, "crypto_coingecko_momentum_norm", 0.5)),
+    ]
+    aligned = sum(max(target * component, 0.0) for component in signed_components)
+    conflicting = sum(max(-(target * component), 0.0) for component in signed_components)
+    total = aligned + conflicting
+    if total <= 1e-8:
+        return 0.0
+    return _clip01((aligned - (0.45 * conflicting)) / total)
+
+
+def _trend_instability(obs):
+    spread_drag = _clip01(abs(observation_feature(obs, "spread_bps", 0.0)) / 32.0)
+    return _clip01(
+        (0.24 * observation_feature(obs, "breadth_sector_dispersion_norm"))
+        + (0.20 * observation_feature(obs, "breadth_risk_off_norm"))
+        + (0.18 * observation_feature(obs, "infra_risk_throttle_norm"))
+        + (0.14 * observation_feature(obs, "day_session_midday_norm"))
+        + (0.14 * observation_feature(obs, "data_quality_quote_deviation_norm"))
+        + (0.10 * spread_drag)
     )
 
 
@@ -180,50 +246,74 @@ def _runtime_feature_vector(sequence, idx):
 def _runtime_sample_filter(sequence, idx, horizon):
     obs = sequence[idx]
     is_crypto = _is_crypto_symbol(obs)
-    min_quote_agreement = 0.78 if is_crypto else 0.82
-    max_quote_deviation = 0.30 if is_crypto else 0.22
-    max_spread_bps = 42.0 if is_crypto else 28.0
+    bias = _direction_bias(obs)
+    directional_support, opposing_support = _directional_trend_support(obs, bias)
+    min_quote_agreement = 0.80 if is_crypto else 0.82
+    max_quote_deviation = 0.28 if is_crypto else 0.22
+    max_spread_bps = 40.0 if is_crypto else 28.0
     min_queue_depth = 0.0 if is_crypto else 1.0
-    min_support = 0.22 if is_crypto else 0.26
-    min_bias = 0.11 if is_crypto else 0.15
+    min_directional_support = 0.24 if is_crypto else 0.26
+    min_bias = 0.12 if is_crypto else 0.16
+    min_support_gap = 0.02 if is_crypto else 0.04
+    min_agreement = 0.50 if is_crypto else 0.52
+    max_instability = 0.72 if is_crypto else 0.64
     return (
         observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= min_quote_agreement
         and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= max_quote_deviation
         and abs(observation_feature(obs, "spread_bps", 0.0)) <= max_spread_bps
         and observation_feature(obs, "queue_depth", 0.0) >= min_queue_depth
-        and _trend_state_support(obs) >= min_support
-        and abs(_direction_bias(obs)) >= min_bias
+        and directional_support >= min_directional_support
+        and (directional_support - opposing_support) >= min_support_gap
+        and abs(bias) >= min_bias
+        and _trend_directional_agreement(obs, bias) >= min_agreement
+        and _trend_instability(obs) <= max_instability
     )
 
 
 def _runtime_confidence(sequence, idx, horizon):
     obs = sequence[idx]
-    support = _trend_state_support(obs)
-    bias = _clip01(abs(_direction_bias(obs)) / 0.9)
+    bias_raw = _direction_bias(obs)
+    bias = _clip01(abs(bias_raw) / 0.9)
+    directional_support, opposing_support = _directional_trend_support(obs, bias_raw)
     quote = _quote_quality(obs)
+    agreement = _trend_directional_agreement(obs, bias_raw)
+    instability = _trend_instability(obs)
     session_focus = _clip01(
         max(
             observation_feature(obs, "day_session_open_norm"),
             observation_feature(obs, "day_session_power_hour_norm"),
         )
     )
-    return (
-        (0.34 * support)
-        + (0.24 * bias)
+    return _clip01(
+        (0.30 * directional_support)
+        + (0.20 * bias)
         + (0.18 * quote)
-        + (0.12 * observation_feature(obs, "market_micro_trend_persistence_norm"))
-        + (0.12 * session_focus)
+        + (0.10 * observation_feature(obs, "market_micro_trend_persistence_norm"))
+        + (0.08 * session_focus)
+        + (0.10 * agreement)
+        - (0.08 * instability)
+        - (0.06 * opposing_support)
     )
 
 
 def _runtime_trend_label(sequence, idx, horizon):
     obs = sequence[idx]
-    support = _trend_state_support(obs)
     bias = _direction_bias(obs)
     is_crypto = _is_crypto_symbol(obs)
-    min_support = 0.22 if is_crypto else 0.26
-    min_bias = 0.11 if is_crypto else 0.15
-    if support < min_support or abs(bias) < min_bias:
+    directional_support, opposing_support = _directional_trend_support(obs, bias)
+    min_directional_support = 0.24 if is_crypto else 0.26
+    min_bias = 0.12 if is_crypto else 0.16
+    min_support_gap = 0.02 if is_crypto else 0.04
+    if directional_support < min_directional_support or abs(bias) < min_bias:
+        return None
+    if (directional_support - opposing_support) < min_support_gap:
+        return None
+
+    agreement = _trend_directional_agreement(obs, bias)
+    instability = _trend_instability(obs)
+    min_agreement = 0.50 if is_crypto else 0.52
+    max_instability = 0.74 if is_crypto else 0.66
+    if agreement < min_agreement or instability > max_instability:
         return None
 
     expected_up = bias >= 0.0
@@ -232,9 +322,14 @@ def _runtime_trend_label(sequence, idx, horizon):
     drawdown = abs(future_max_drawdown(sequence, idx, horizon))
     signed_ret = fwd_ret if expected_up else -fwd_ret
     move_threshold = (
-        max(0.00040, 0.00100 - (0.00056 * support))
+        max(0.00038, 0.00095 - (0.00054 * directional_support))
         if is_crypto
-        else max(0.00058, 0.00128 - (0.00060 * support))
+        else max(0.00054, 0.00118 - (0.00056 * directional_support))
+    )
+    move_threshold += (
+        (0.00012 * max(0.0, 0.58 - agreement))
+        + (0.00010 * instability)
+        + (0.00010 * opposing_support)
     )
     realized_floor = 0.024 if is_crypto else 0.018
     drawdown_floor = 0.0145 if is_crypto else 0.0115
@@ -242,11 +337,13 @@ def _runtime_trend_label(sequence, idx, horizon):
         return None
 
     support_bonus = (
-        (0.0010 * support)
+        (0.0010 * directional_support)
         + (0.00025 * _quote_quality(obs))
         + (0.00015 * observation_feature(obs, "market_micro_relative_volume_norm"))
+        + (0.00018 * agreement)
         + (0.00018 * observation_feature(obs, "market_crypto_current_alignment_norm", 0.5))
         + (0.00012 * observation_feature(obs, "crypto_coingecko_momentum_norm", 0.5))
+        - (0.00016 * opposing_support)
     )
     penalty = (
         (0.28 * drawdown)
@@ -254,6 +351,7 @@ def _runtime_trend_label(sequence, idx, horizon):
         + (0.00025 * observation_feature(obs, "breadth_risk_off_norm"))
         + (0.00015 * observation_feature(obs, "breadth_sector_dispersion_norm"))
         + (0.00010 * observation_feature(obs, "infra_risk_throttle_norm"))
+        + (0.00014 * instability)
     )
     success_score = signed_ret + support_bonus - penalty
     failure_score = (
@@ -262,15 +360,17 @@ def _runtime_trend_label(sequence, idx, horizon):
         + (0.26 * drawdown)
         + (0.00020 * observation_feature(obs, "breadth_sector_dispersion_norm"))
         + (0.00012 * observation_feature(obs, "infra_risk_throttle_norm"))
+        + (0.00016 * instability)
+        + (0.00018 * max(opposing_support - directional_support, 0.0))
     )
-    success_gate = 0.00036 if is_crypto else 0.00048
-    failure_gate = 0.00050 if is_crypto else 0.00062
     if is_crypto:
-        success_gate = 0.00042
-        failure_gate = 0.00058
+        success_gate = 0.00044
+        failure_gate = 0.00060
     else:
-        success_gate = 0.00058
+        success_gate = 0.00056
         failure_gate = 0.00074
+    success_gate += (0.00012 * max(0.0, 0.58 - agreement)) + (0.00010 * instability)
+    failure_gate += (0.00010 * max(0.0, 0.56 - agreement)) + (0.00010 * instability)
     if success_score >= success_gate:
         return 1.0 if expected_up else 0.0
     if failure_score >= failure_gate:
@@ -324,16 +424,17 @@ def train_brain():
         symbol_allowlist=_LIQUID_TREND_SYMBOLS,
         sample_filter=_runtime_sample_filter,
         confidence_builder=_runtime_confidence,
-        min_confidence=0.44,
-        sample_stride=8,
-        lookback_days=45,
-        window=24,
+        min_confidence=0.46,
+        sample_stride=4,
+        lookback_days=60,
+        window=18,
         horizon=6,
-        min_samples=224,
-        min_sequences=6,
-        min_positive_samples=40,
-        min_negative_samples=40,
-        acted_prob_threshold=0.65,
+        batch_size=16,
+        min_samples=80,
+        min_sequences=4,
+        min_positive_samples=20,
+        min_negative_samples=20,
+        acted_prob_threshold=0.70,
         fallback_trainer=_train_synthetic,
         allow_fallback_on_insufficient_data=False,
         max_best_val_loss=0.6900,
@@ -342,10 +443,11 @@ def train_brain():
         min_short_precision=0.52,
         require_both_sides_precision=True,
         min_acted_accuracy=0.53,
-        min_long_acted_count=6,
-        min_short_acted_count=6,
+        min_long_acted_count=4,
+        min_short_acted_count=4,
         min_accuracy_lift_over_majority=0.02,
-        min_precision_balance_score=0.35,
+        min_precision_balance_score=0.30,
+        max_acted_coverage=0.30,
     )
 
 

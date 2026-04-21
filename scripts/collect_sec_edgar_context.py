@@ -12,7 +12,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 try:
     from zoneinfo import ZoneInfo
@@ -24,11 +23,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.collector_transport import attach_collection_confidence, fetch_json, fetch_text
+
 
 EDGAR_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 EDGAR_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
+EDGAR_ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data/{cik_num}/{accession_number}/{primary_document}"
 USER_AGENT_DEFAULT = "Daniel Kingsley dan_kingsley@aol.com"
 EASTERN_TZ = ZoneInfo("America/New_York") if ZoneInfo is not None else timezone.utc
+SOURCE_CONTRACTS = {
+    "sec_edgar_tickers": {"source_confidence_norm": 0.99, "schema_confidence_norm": 0.97},
+    "sec_edgar_submissions": {"source_confidence_norm": 0.99, "schema_confidence_norm": 0.95},
+    "sec_edgar_archive": {"source_confidence_norm": 0.97, "schema_confidence_norm": 0.84},
+}
 
 HIGH_IMPACT_FORMS = {
     "8-K",
@@ -52,6 +59,25 @@ INSIDER_FORMS = {"3", "4", "5"}
 GUIDANCE_RE = re.compile(r"(?i)\b(guidance|outlook|forecast|raises|cuts)\b")
 EARNINGS_RE = re.compile(r"(?i)\b(earnings|results|revenue|quarter|annual report|financial statements)\b")
 REGULATORY_RE = re.compile(r"(?i)\b(investigation|lawsuit|compliance|restatement|sec|legal proceeding|material definitive)\b")
+GUIDANCE_RAISE_RE = re.compile(r"(?i)\b(raise(?:s|d)? guidance|raising guidance|guidance increased|outlook improved|forecast increased)\b")
+GUIDANCE_CUT_RE = re.compile(r"(?i)\b(cut(?:s|ting)? guidance|lower(?:s|ed)? outlook|forecast reduced|withdraw(?:s|n)? guidance)\b")
+OFFERING_RE = re.compile(r"(?i)\b(offering|registered direct|at-the-market|ATM program|shelf registration|private placement)\b")
+DILUTION_RE = re.compile(r"(?i)\b(dilution|dilutive|issue(?:d|s)? shares|common stock issuance|convertible note)\b")
+MNA_RE = re.compile(r"(?i)\b(merger|acquisition|acquire|buyout|takeover|definitive agreement|strategic alternative)\b")
+RESTATEMENT_RE = re.compile(r"(?i)\b(restatement|non-reliance|material weakness|revised financial statements)\b")
+FINANCING_STRESS_RE = re.compile(r"(?i)\b(going concern|liquidity constraints?|covenant breach|default|waiver agreement|restructuring support)\b")
+INSIDER_BUY_RE = re.compile(r"(?i)\b(purchase(?:d)?|acquir(?:e|ed)|buy(?:ing|ought)?)\b")
+INSIDER_SELL_RE = re.compile(r"(?i)\b(sale|sold|sell(?:ing)?|dispos(?:e|ed|al))\b")
+ESTIMATE_RAISE_RE = re.compile(r"(?i)\b(estimate(?:s)? (?:raised|increase|up)|target(?:s)? raised|analyst(?:s)? raise|consensus(?:.*)up)\b")
+ESTIMATE_CUT_RE = re.compile(r"(?i)\b(estimate(?:s)? (?:cut|lowered|reduced)|target(?:s)? lowered|analyst(?:s)? cut|consensus(?:.*)down)\b")
+WHISPER_BEAT_RE = re.compile(r"(?i)\b(beat(?:ing)? (?:whisper|consensus|estimate)|above whisper|stronger than expected)\b")
+WHISPER_MISS_RE = re.compile(r"(?i)\b(miss(?:ed|ing)? (?:whisper|consensus|estimate)|below whisper|weaker than expected)\b")
+SPLIT_RE = re.compile(r"(?i)\b(stock split|reverse split|share consolidation|split-adjusted)\b")
+SPECIAL_DIVIDEND_RE = re.compile(r"(?i)\b(special dividend|one-time dividend|extra dividend)\b")
+OFFERING_PRICED_RE = re.compile(r"(?i)\b(priced (?:the |a )?(?:offering|public offering|secondary offering)|offering priced)\b")
+LOCKUP_RE = re.compile(r"(?i)\b(lock-up|lockup|lock up expiration|share unlock)\b")
+SECONDARY_RE = re.compile(r"(?i)\b(secondary offering|follow-on offering|underwritten offering)\b")
+HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -73,16 +99,81 @@ def _clamp01(value: float) -> float:
     return max(0.0, min(float(value), 1.0))
 
 
-def _http_json(url: str, *, user_agent: str, timeout: float = 20.0) -> Any:
-    req = Request(url=url, headers={"User-Agent": user_agent, "Accept": "application/json"})
-    with urlopen(req, timeout=max(float(timeout), 1.0)) as resp:
-        return json.loads(resp.read().decode("utf-8", "replace"))
+def _strongest_centered(values: Iterable[float], *, neutral: float = 0.5) -> float:
+    values = list(values)
+    if not values:
+        return neutral
+    return max(values, key=lambda value: abs(float(value) - neutral))
+
+
+def _source_contract_name(url: str) -> str:
+    text = str(url or "")
+    if "company_tickers" in text:
+        return "sec_edgar_tickers"
+    if "/submissions/" in text:
+        return "sec_edgar_submissions"
+    if "/Archives/edgar/data/" in text:
+        return "sec_edgar_archive"
+    return "sec_edgar_submissions"
+
+
+def _source_contract(source_name: str) -> dict[str, float]:
+    row = SOURCE_CONTRACTS.get(str(source_name or ""), {})
+    return {
+        "source_confidence_norm": float(row.get("source_confidence_norm", 0.95) or 0.95),
+        "schema_confidence_norm": float(row.get("schema_confidence_norm", 0.9) or 0.9),
+    }
+
+
+def _http_json_result(url: str, *, user_agent: str, timeout: float = 20.0) -> dict[str, Any]:
+    source_name = _source_contract_name(url)
+    contract = _source_contract(source_name)
+    return fetch_json(
+        url=url,
+        user_agent=user_agent,
+        timeout=timeout,
+        collector_key="sec_edgar_context",
+        source_name=source_name,
+        entity_key=url,
+        project_root=PROJECT_ROOT,
+        source_confidence_norm=contract["source_confidence_norm"],
+        schema_confidence_norm=contract["schema_confidence_norm"],
+    )
 
 
 def _safe_http_json(url: str, *, user_agent: str, timeout: float = 20.0) -> tuple[Any | None, str | None]:
     try:
-        return _http_json(url, user_agent=user_agent, timeout=timeout), None
-    except (HTTPError, URLError, TimeoutError, ValueError, OSError) as exc:
+        result = _http_json_result(url, user_agent=user_agent, timeout=timeout)
+        if not bool(result.get("ok", False)):
+            raise RuntimeError(str(result.get("error") or "http_json_failed"))
+        return result.get("json"), None
+    except (HTTPError, URLError, RuntimeError, TimeoutError, ValueError, OSError) as exc:
+        return None, str(exc)
+
+
+def _http_text_result(url: str, *, user_agent: str, timeout: float = 20.0) -> dict[str, Any]:
+    source_name = _source_contract_name(url)
+    contract = _source_contract(source_name)
+    return fetch_text(
+        url=url,
+        user_agent=user_agent,
+        timeout=timeout,
+        collector_key="sec_edgar_context",
+        source_name=source_name,
+        entity_key=url,
+        project_root=PROJECT_ROOT,
+        source_confidence_norm=contract["source_confidence_norm"],
+        schema_confidence_norm=contract["schema_confidence_norm"],
+    )
+
+
+def _safe_http_text(url: str, *, user_agent: str, timeout: float = 20.0) -> tuple[str | None, str | None]:
+    try:
+        result = _http_text_result(url, user_agent=user_agent, timeout=timeout)
+        if not bool(result.get("ok", False)):
+            raise RuntimeError(str(result.get("error") or "http_text_failed"))
+        return str(result.get("text") or ""), None
+    except (HTTPError, URLError, RuntimeError, TimeoutError, ValueError, OSError) as exc:
         return None, str(exc)
 
 
@@ -174,6 +265,104 @@ def _market_session(dt: datetime | None) -> str:
     return "after_hours"
 
 
+def _strip_filing_text(raw: str) -> str:
+    text = HTML_TAG_RE.sub(" ", str(raw or ""))
+    text = text.replace("&nbsp;", " ").replace("&amp;", "&")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _filing_text_signals(text: str) -> dict[str, float]:
+    cleaned = _strip_filing_text(text)
+    if not cleaned:
+        return {
+            "guidance_raise": 0.0,
+            "guidance_cut": 0.0,
+            "offering": 0.0,
+            "dilution": 0.0,
+            "mna": 0.0,
+            "restatement": 0.0,
+            "financing_stress": 0.0,
+            "insider_buy": 0.0,
+            "insider_sell": 0.0,
+            "estimate_raise": 0.0,
+            "estimate_cut": 0.0,
+            "whisper_beat": 0.0,
+            "whisper_miss": 0.0,
+            "split_hazard": 0.0,
+            "special_dividend": 0.0,
+            "offering_priced": 0.0,
+            "lockup_secondary": 0.0,
+        }
+    return {
+        "guidance_raise": 1.0 if GUIDANCE_RAISE_RE.search(cleaned) else 0.0,
+        "guidance_cut": 1.0 if GUIDANCE_CUT_RE.search(cleaned) else 0.0,
+        "offering": 1.0 if OFFERING_RE.search(cleaned) else 0.0,
+        "dilution": 1.0 if DILUTION_RE.search(cleaned) else 0.0,
+        "mna": 1.0 if MNA_RE.search(cleaned) else 0.0,
+        "restatement": 1.0 if RESTATEMENT_RE.search(cleaned) else 0.0,
+        "financing_stress": 1.0 if FINANCING_STRESS_RE.search(cleaned) else 0.0,
+        "insider_buy": 1.0 if INSIDER_BUY_RE.search(cleaned) else 0.0,
+        "insider_sell": 1.0 if INSIDER_SELL_RE.search(cleaned) else 0.0,
+        "estimate_raise": 1.0 if ESTIMATE_RAISE_RE.search(cleaned) else 0.0,
+        "estimate_cut": 1.0 if ESTIMATE_CUT_RE.search(cleaned) else 0.0,
+        "whisper_beat": 1.0 if WHISPER_BEAT_RE.search(cleaned) else 0.0,
+        "whisper_miss": 1.0 if WHISPER_MISS_RE.search(cleaned) else 0.0,
+        "split_hazard": 1.0 if SPLIT_RE.search(cleaned) else 0.0,
+        "special_dividend": 1.0 if SPECIAL_DIVIDEND_RE.search(cleaned) else 0.0,
+        "offering_priced": 1.0 if OFFERING_PRICED_RE.search(cleaned) else 0.0,
+        "lockup_secondary": 1.0 if (LOCKUP_RE.search(cleaned) or SECONDARY_RE.search(cleaned)) else 0.0,
+    }
+
+
+def _filing_archive_url(cik: str, accession_number: str, primary_document: str) -> str:
+    cik_num = str(int(str(cik or "0")))
+    accession = str(accession_number or "").replace("-", "").strip()
+    return EDGAR_ARCHIVE_URL.format(
+        cik_num=cik_num,
+        accession_number=accession,
+        primary_document=str(primary_document or "").strip(),
+    )
+
+
+def _attach_recent_filing_text_signals(
+    *,
+    cik: str,
+    rows: list[dict[str, Any]],
+    user_agent: str,
+    timeout: float,
+    max_fetch: int = 4,
+) -> list[str]:
+    errors: list[str] = []
+    fetched = 0
+    for row in rows:
+        if fetched >= max(int(max_fetch), 1):
+            break
+        primary_document = str(row.get("primary_document") or "").strip()
+        accession_number = str(row.get("accession_number") or "").strip()
+        if not primary_document or not accession_number:
+            continue
+        dt = _parse_dt(row.get("accepted_at") or row.get("filing_date"))
+        if dt is None or dt < (datetime.now(timezone.utc) - timedelta(days=7)):
+            continue
+        url = _filing_archive_url(cik, accession_number, primary_document)
+        fetch_result = _http_text_result(url, user_agent=user_agent, timeout=timeout)
+        if not bool(fetch_result.get("ok", False)):
+            err = str(fetch_result.get("error") or "http_text_failed")
+            errors.append(f"{accession_number}:{err}")
+            continue
+        text = str(fetch_result.get("text") or "")
+        row["text_signals"] = _filing_text_signals(text)
+        row["filing_url"] = url
+        row["filing_fetch"] = {
+            "fetched_utc": str(fetch_result.get("fetched_utc") or ""),
+            "source_confidence_norm": float(fetch_result.get("source_confidence_norm") or _source_contract("sec_edgar_archive")["source_confidence_norm"]),
+            "schema_confidence_norm": float(fetch_result.get("schema_confidence_norm") or _source_contract("sec_edgar_archive")["schema_confidence_norm"]),
+            "freshness_norm": float(fetch_result.get("freshness_norm") or 0.0),
+        }
+        fetched += 1
+    return errors
+
+
 def _iter_recent_filings(submissions: dict[str, Any]) -> Iterable[dict[str, Any]]:
     recent = (((submissions.get("filings") or {}).get("recent")) or {}) if isinstance(submissions, dict) else {}
     if not isinstance(recent, dict):
@@ -182,14 +371,16 @@ def _iter_recent_filings(submissions: dict[str, Any]) -> Iterable[dict[str, Any]
     filing_dates = recent.get("filingDate") or []
     acceptance = recent.get("acceptanceDateTime") or []
     primary_docs = recent.get("primaryDocDescription") or []
+    primary_files = recent.get("primaryDocument") or []
     accession = recent.get("accessionNumber") or []
-    n = max(len(forms), len(filing_dates), len(acceptance), len(primary_docs), len(accession))
+    n = max(len(forms), len(filing_dates), len(acceptance), len(primary_docs), len(primary_files), len(accession))
     rows: list[dict[str, Any]] = []
     for idx in range(n):
         form = str(forms[idx] if idx < len(forms) else "").strip().upper()
         filing_date = filing_dates[idx] if idx < len(filing_dates) else ""
         accepted = acceptance[idx] if idx < len(acceptance) else ""
         desc = str(primary_docs[idx] if idx < len(primary_docs) else "").strip()
+        primary_file = str(primary_files[idx] if idx < len(primary_files) else "").strip()
         acc = str(accession[idx] if idx < len(accession) else "").strip()
         dt = _parse_dt(accepted) or _parse_dt(filing_date)
         rows.append(
@@ -198,6 +389,7 @@ def _iter_recent_filings(submissions: dict[str, Any]) -> Iterable[dict[str, Any]
                 "filing_date": str(filing_date or ""),
                 "accepted_at": dt.isoformat() if dt is not None else "",
                 "description": desc,
+                "primary_document": primary_file,
                 "accession_number": acc,
                 "market_session": _market_session(dt),
             }
@@ -217,8 +409,23 @@ def _derive_symbol_summary(symbol: str, cik: str, rows: list[dict[str, Any]], no
     earnings_7d = 0
     guidance_7d = 0
     regulatory_7d = 0
+    offering_7d = 0
+    dilution_7d = 0
+    mna_7d = 0
+    restatement_7d = 0
+    financing_stress_7d = 0
     ownership_30d = 0
     insider_30d = 0
+    insider_buy_30d = 0
+    insider_sell_30d = 0
+    estimate_raise_30d = 0
+    estimate_cut_30d = 0
+    whisper_beat_30d = 0
+    whisper_miss_30d = 0
+    split_hazard_30d = 0
+    special_dividend_30d = 0
+    offering_priced_30d = 0
+    lockup_secondary_30d = 0
     latest_ts: datetime | None = None
     session_counts = {"premarket": 0, "intraday": 0, "after_hours": 0}
     recent_items: list[dict[str, Any]] = []
@@ -228,6 +435,10 @@ def _derive_symbol_summary(symbol: str, cik: str, rows: list[dict[str, Any]], no
         form = str(row.get("form") or "").upper()
         desc = str(row.get("description") or "")
         text = f"{form} {desc}"
+        text_signals = _filing_text_signals(text)
+        if isinstance(row.get("text_signals"), dict):
+            for key, value in row["text_signals"].items():
+                text_signals[key] = max(float(text_signals.get(key, 0.0) or 0.0), _safe_float(value, 0.0))
         if dt is not None and (latest_ts is None or dt > latest_ts):
             latest_ts = dt
         session = str(row.get("market_session") or "")
@@ -238,6 +449,26 @@ def _derive_symbol_summary(symbol: str, cik: str, rows: list[dict[str, Any]], no
                 ownership_30d += 1
             if form in INSIDER_FORMS:
                 insider_30d += 1
+            if float(text_signals.get("insider_buy", 0.0) or 0.0) > 0.0:
+                insider_buy_30d += 1
+            if float(text_signals.get("insider_sell", 0.0) or 0.0) > 0.0:
+                insider_sell_30d += 1
+            if float(text_signals.get("estimate_raise", 0.0) or 0.0) > 0.0:
+                estimate_raise_30d += 1
+            if float(text_signals.get("estimate_cut", 0.0) or 0.0) > 0.0:
+                estimate_cut_30d += 1
+            if float(text_signals.get("whisper_beat", 0.0) or 0.0) > 0.0:
+                whisper_beat_30d += 1
+            if float(text_signals.get("whisper_miss", 0.0) or 0.0) > 0.0:
+                whisper_miss_30d += 1
+            if float(text_signals.get("split_hazard", 0.0) or 0.0) > 0.0:
+                split_hazard_30d += 1
+            if float(text_signals.get("special_dividend", 0.0) or 0.0) > 0.0:
+                special_dividend_30d += 1
+            if float(text_signals.get("offering_priced", 0.0) or 0.0) > 0.0:
+                offering_priced_30d += 1
+            if float(text_signals.get("lockup_secondary", 0.0) or 0.0) > 0.0:
+                lockup_secondary_30d += 1
         if dt is None or dt < cutoff_7d:
             continue
         filings_7d += 1
@@ -249,6 +480,16 @@ def _derive_symbol_summary(symbol: str, cik: str, rows: list[dict[str, Any]], no
             guidance_7d += 1
         if form == "8-K" or REGULATORY_RE.search(text):
             regulatory_7d += 1
+        if float(text_signals.get("offering", 0.0) or 0.0) > 0.0:
+            offering_7d += 1
+        if float(text_signals.get("dilution", 0.0) or 0.0) > 0.0:
+            dilution_7d += 1
+        if float(text_signals.get("mna", 0.0) or 0.0) > 0.0:
+            mna_7d += 1
+        if float(text_signals.get("restatement", 0.0) or 0.0) > 0.0:
+            restatement_7d += 1
+        if float(text_signals.get("financing_stress", 0.0) or 0.0) > 0.0:
+            financing_stress_7d += 1
         if dt >= cutoff_1d:
             filings_1d += 1
             if form in HIGH_IMPACT_FORMS:
@@ -259,6 +500,8 @@ def _derive_symbol_summary(symbol: str, cik: str, rows: list[dict[str, Any]], no
     hours_since_latest = None
     if latest_ts is not None:
         hours_since_latest = max((now - latest_ts).total_seconds() / 3600.0, 0.0)
+    estimate_drift_balance = (estimate_raise_30d - estimate_cut_30d) / max(estimate_raise_30d + estimate_cut_30d, 1)
+    whisper_surprise_balance = (whisper_beat_30d - whisper_miss_30d) / max(whisper_beat_30d + whisper_miss_30d, 1)
 
     return {
         "symbol": symbol,
@@ -270,8 +513,23 @@ def _derive_symbol_summary(symbol: str, cik: str, rows: list[dict[str, Any]], no
         "earnings_7d": earnings_7d,
         "guidance_7d": guidance_7d,
         "regulatory_7d": regulatory_7d,
+        "offering_7d": offering_7d,
+        "dilution_7d": dilution_7d,
+        "mna_7d": mna_7d,
+        "restatement_7d": restatement_7d,
+        "financing_stress_7d": financing_stress_7d,
         "ownership_30d": ownership_30d,
         "insider_30d": insider_30d,
+        "insider_buy_30d": insider_buy_30d,
+        "insider_sell_30d": insider_sell_30d,
+        "estimate_raise_30d": estimate_raise_30d,
+        "estimate_cut_30d": estimate_cut_30d,
+        "whisper_beat_30d": whisper_beat_30d,
+        "whisper_miss_30d": whisper_miss_30d,
+        "split_hazard_30d": split_hazard_30d,
+        "special_dividend_30d": special_dividend_30d,
+        "offering_priced_30d": offering_priced_30d,
+        "lockup_secondary_30d": lockup_secondary_30d,
         "hours_since_latest": round(hours_since_latest, 4) if hours_since_latest is not None else None,
         "latest_accepted_at": latest_ts.isoformat() if latest_ts is not None else None,
         "market_sessions": session_counts,
@@ -282,8 +540,21 @@ def _derive_symbol_summary(symbol: str, cik: str, rows: list[dict[str, Any]], no
             "sec_earnings_7d_norm": _clamp01(earnings_7d / 2.0),
             "sec_guidance_7d_norm": _clamp01(guidance_7d / 2.0),
             "sec_regulatory_7d_norm": _clamp01(regulatory_7d / 3.0),
+            "sec_offering_7d_norm": _clamp01(offering_7d / 2.0),
+            "sec_dilution_7d_norm": _clamp01(dilution_7d / 2.0),
+            "sec_mna_7d_norm": _clamp01(mna_7d / 1.5),
+            "sec_restatement_7d_norm": _clamp01(restatement_7d / 1.5),
+            "sec_financing_stress_7d_norm": _clamp01(financing_stress_7d / 1.5),
             "sec_ownership_30d_norm": _clamp01(ownership_30d / 2.0),
             "sec_insider_30d_norm": _clamp01(insider_30d / 4.0),
+            "sec_insider_buy_30d_norm": _clamp01(insider_buy_30d / 3.0),
+            "sec_insider_sell_30d_norm": _clamp01(insider_sell_30d / 3.0),
+            "sec_estimate_revision_drift_norm": _clamp01(0.5 + (0.5 * estimate_drift_balance)),
+            "sec_earnings_whisper_surprise_norm": _clamp01(0.5 + (0.5 * whisper_surprise_balance)),
+            "sec_split_hazard_30d_norm": _clamp01(split_hazard_30d / 1.5),
+            "sec_special_dividend_30d_norm": _clamp01(special_dividend_30d / 1.5),
+            "sec_offering_priced_30d_norm": _clamp01(offering_priced_30d / 2.0),
+            "sec_lockup_secondary_30d_norm": _clamp01(lockup_secondary_30d / 2.0),
             "sec_recent_proximity_norm": _clamp01(1.0 - ((hours_since_latest or 999.0) / 72.0)),
             "news_premarket_norm": _clamp01(session_counts["premarket"] / 3.0),
             "news_intraday_norm": _clamp01(session_counts["intraday"] / 3.0),
@@ -307,8 +578,25 @@ def _aggregate_features(symbol_rows: list[dict[str, Any]], request_count: int) -
     earnings_7d = max(_safe_float(((row.get("features") or {}).get("sec_earnings_7d_norm")), 0.0) for row in symbol_rows)
     guidance_7d = max(_safe_float(((row.get("features") or {}).get("sec_guidance_7d_norm")), 0.0) for row in symbol_rows)
     regulatory_7d = max(_safe_float(((row.get("features") or {}).get("sec_regulatory_7d_norm")), 0.0) for row in symbol_rows)
+    offering_7d = max(_safe_float(((row.get("features") or {}).get("sec_offering_7d_norm")), 0.0) for row in symbol_rows)
+    dilution_7d = max(_safe_float(((row.get("features") or {}).get("sec_dilution_7d_norm")), 0.0) for row in symbol_rows)
+    mna_7d = max(_safe_float(((row.get("features") or {}).get("sec_mna_7d_norm")), 0.0) for row in symbol_rows)
+    restatement_7d = max(_safe_float(((row.get("features") or {}).get("sec_restatement_7d_norm")), 0.0) for row in symbol_rows)
+    financing_stress_7d = max(_safe_float(((row.get("features") or {}).get("sec_financing_stress_7d_norm")), 0.0) for row in symbol_rows)
     ownership_30d = max(_safe_float(((row.get("features") or {}).get("sec_ownership_30d_norm")), 0.0) for row in symbol_rows)
     insider_30d = max(_safe_float(((row.get("features") or {}).get("sec_insider_30d_norm")), 0.0) for row in symbol_rows)
+    insider_buy_30d = max(_safe_float(((row.get("features") or {}).get("sec_insider_buy_30d_norm")), 0.0) for row in symbol_rows)
+    insider_sell_30d = max(_safe_float(((row.get("features") or {}).get("sec_insider_sell_30d_norm")), 0.0) for row in symbol_rows)
+    estimate_drift = _strongest_centered(
+        _safe_float(((row.get("features") or {}).get("sec_estimate_revision_drift_norm")), 0.5) for row in symbol_rows
+    )
+    whisper_surprise = _strongest_centered(
+        _safe_float(((row.get("features") or {}).get("sec_earnings_whisper_surprise_norm")), 0.5) for row in symbol_rows
+    )
+    split_hazard = max(_safe_float(((row.get("features") or {}).get("sec_split_hazard_30d_norm")), 0.0) for row in symbol_rows)
+    special_dividend = max(_safe_float(((row.get("features") or {}).get("sec_special_dividend_30d_norm")), 0.0) for row in symbol_rows)
+    offering_priced = max(_safe_float(((row.get("features") or {}).get("sec_offering_priced_30d_norm")), 0.0) for row in symbol_rows)
+    lockup_secondary = max(_safe_float(((row.get("features") or {}).get("sec_lockup_secondary_30d_norm")), 0.0) for row in symbol_rows)
     proximity = max(_safe_float(((row.get("features") or {}).get("sec_recent_proximity_norm")), 0.0) for row in symbol_rows)
     premarket = max(_safe_float(((row.get("features") or {}).get("news_premarket_norm")), 0.0) for row in symbol_rows)
     intraday = max(_safe_float(((row.get("features") or {}).get("news_intraday_norm")), 0.0) for row in symbol_rows)
@@ -320,15 +608,16 @@ def _aggregate_features(symbol_rows: list[dict[str, Any]], request_count: int) -
     news_features = {
         "news_source_quality_norm": source_quality,
         "news_entity_relevance_norm": _clamp01(0.25 + (0.70 * coverage)),
-        "news_topic_earnings_norm": earnings_7d,
-        "news_topic_guidance_norm": guidance_7d,
-        "news_topic_regulatory_norm": max(regulatory_7d, ownership_30d, insider_30d),
+        "news_topic_earnings_norm": max(earnings_7d, abs(whisper_surprise - 0.5) * 2.0),
+        "news_topic_guidance_norm": max(guidance_7d, offering_7d, dilution_7d, abs(estimate_drift - 0.5) * 2.0),
+        "news_topic_mna_norm": mna_7d,
+        "news_topic_regulatory_norm": max(regulatory_7d, restatement_7d, financing_stress_7d, ownership_30d, insider_30d, split_hazard, lockup_secondary),
         "news_novelty_norm": _clamp01(coverage + 0.15),
         "news_duplicate_cluster_norm": 0.0,
         "news_premarket_norm": premarket,
         "news_intraday_norm": intraday,
         "news_after_hours_norm": after_hours,
-        "news_recent_impact": _clamp01(max(regulatory_7d, earnings_7d, guidance_7d, proximity)),
+        "news_recent_impact": _clamp01(max(regulatory_7d, earnings_7d, guidance_7d, offering_7d, dilution_7d, mna_7d, financing_stress_7d, proximity, split_hazard, special_dividend, offering_priced, lockup_secondary)),
     }
     calendar_features = {
         "calendar_feed_available": 1.0,
@@ -341,8 +630,21 @@ def _aggregate_features(symbol_rows: list[dict[str, Any]], request_count: int) -
         "sec_recent_symbols_norm": coverage,
         "sec_recent_filings_1d_norm": _clamp01(filings_1d / 8.0),
         "sec_recent_high_impact_1d_norm": _clamp01(high_impact_1d / 5.0),
+        "sec_offering_7d_norm": offering_7d,
+        "sec_dilution_7d_norm": dilution_7d,
+        "sec_mna_7d_norm": mna_7d,
+        "sec_restatement_7d_norm": restatement_7d,
+        "sec_financing_stress_7d_norm": financing_stress_7d,
         "sec_ownership_30d_norm": ownership_30d,
         "sec_insider_30d_norm": insider_30d,
+        "sec_insider_buy_30d_norm": insider_buy_30d,
+        "sec_insider_sell_30d_norm": insider_sell_30d,
+        "sec_estimate_revision_drift_norm": estimate_drift,
+        "sec_earnings_whisper_surprise_norm": whisper_surprise,
+        "sec_split_hazard_30d_norm": split_hazard,
+        "sec_special_dividend_30d_norm": special_dividend,
+        "sec_offering_priced_30d_norm": offering_priced,
+        "sec_lockup_secondary_30d_norm": lockup_secondary,
     }
     symbol_features = {str(row.get("symbol")): dict((row.get("features") or {})) for row in symbol_rows}
     return {
@@ -355,12 +657,17 @@ def _aggregate_features(symbol_rows: list[dict[str, Any]], request_count: int) -
 
 def collect_sec_edgar_context(*, symbols: list[str], user_agent: str, timeout: float = 20.0, pause_seconds: float = 0.18) -> tuple[dict[str, Any], dict[str, Any]]:
     now = datetime.now(timezone.utc)
-    ticker_payload, ticker_error = _safe_http_json(EDGAR_TICKERS_URL, user_agent=user_agent, timeout=timeout)
+    ticker_result = _http_json_result(EDGAR_TICKERS_URL, user_agent=user_agent, timeout=timeout)
+    ticker_payload = ticker_result.get("json") if bool(ticker_result.get("ok", False)) else None
+    ticker_error = None if bool(ticker_result.get("ok", False)) else str(ticker_result.get("error") or "http_json_failed")
     ticker_by_symbol = _ticker_map(ticker_payload)
     symbol_rows: list[dict[str, Any]] = []
     errors: list[str] = []
     requested = 0
     resolved = 0
+    filing_text_fetches = 0
+    submissions_ok = 0
+    archive_fetch_ok = 0
 
     for symbol in symbols:
         requested += 1
@@ -368,26 +675,79 @@ def collect_sec_edgar_context(*, symbols: list[str], user_agent: str, timeout: f
         if not cik:
             continue
         resolved += 1
-        submissions, err = _safe_http_json(EDGAR_SUBMISSIONS_URL.format(cik=cik), user_agent=user_agent, timeout=timeout)
-        if err:
+        submissions_result = _http_json_result(EDGAR_SUBMISSIONS_URL.format(cik=cik), user_agent=user_agent, timeout=timeout)
+        if not bool(submissions_result.get("ok", False)):
+            err = str(submissions_result.get("error") or "http_json_failed")
             errors.append(f"{symbol}:{err}")
             time.sleep(max(float(pause_seconds), 0.0))
             continue
+        submissions = submissions_result.get("json")
+        submissions_ok += 1
         rows = list(_iter_recent_filings(submissions if isinstance(submissions, dict) else {}))
-        symbol_rows.append(_derive_symbol_summary(symbol, cik, rows, now))
+        text_errors = _attach_recent_filing_text_signals(
+            cik=cik,
+            rows=rows,
+            user_agent=user_agent,
+            timeout=timeout,
+        )
+        filing_text_fetches += sum(1 for row in rows if isinstance(row.get("text_signals"), dict))
+        archive_fetch_ok += sum(1 for row in rows if isinstance(row.get("filing_fetch"), dict))
+        errors.extend(f"{symbol}:{item}" for item in text_errors[:4])
+        summary = _derive_symbol_summary(symbol, cik, rows, now)
+        symbol_rows.append(
+            attach_collection_confidence(
+                summary,
+                source_confidence_norm=_source_contract("sec_edgar_submissions")["source_confidence_norm"],
+                schema_confidence_norm=_source_contract("sec_edgar_submissions")["schema_confidence_norm"],
+                freshness_norm=float(((summary.get("features") or {}).get("sec_recent_proximity_norm", 0.0) or 0.0)),
+                fetched_utc=str(submissions_result.get("fetched_utc") or ""),
+            )
+        )
         time.sleep(max(float(pause_seconds), 0.0))
 
     derived = _aggregate_features(symbol_rows, request_count=requested)
+    source_contracts = {
+        "sec_edgar_tickers": {
+            "ok": bool(ticker_by_symbol),
+            "source_confidence_norm": float(ticker_result.get("source_confidence_norm") or _source_contract("sec_edgar_tickers")["source_confidence_norm"]),
+            "schema_confidence_norm": float(ticker_result.get("schema_confidence_norm") or _source_contract("sec_edgar_tickers")["schema_confidence_norm"]),
+            "freshness_norm": float(ticker_result.get("freshness_norm") or 0.0),
+        },
+        "sec_edgar_submissions": {
+            "ok": submissions_ok > 0,
+            "successful_fetches": submissions_ok,
+            "source_confidence_norm": _source_contract("sec_edgar_submissions")["source_confidence_norm"],
+            "schema_confidence_norm": _source_contract("sec_edgar_submissions")["schema_confidence_norm"],
+            "freshness_norm": max((float(row.get("freshness_norm", 0.0) or 0.0) for row in symbol_rows), default=0.0),
+        },
+        "sec_edgar_archive": {
+            "ok": archive_fetch_ok > 0,
+            "successful_fetches": archive_fetch_ok,
+            "source_confidence_norm": _source_contract("sec_edgar_archive")["source_confidence_norm"],
+            "schema_confidence_norm": _source_contract("sec_edgar_archive")["schema_confidence_norm"],
+            "freshness_norm": max(
+                (
+                    float(((filing.get("filing_fetch") or {}).get("freshness_norm", 0.0) or 0.0))
+                    for row in symbol_rows
+                    for filing in (row.get("recent_filings") or [])
+                    if isinstance(filing, dict)
+                ),
+                default=0.0,
+            ),
+        },
+    }
     status = {
         "timestamp_utc": now.isoformat(),
         "ok": bool(ticker_by_symbol) and (resolved > 0),
         "requested_symbols": requested,
         "resolved_symbols": resolved,
         "tracked_symbols": len(symbol_rows),
+        "filing_text_fetches": filing_text_fetches,
         "ticker_map_ok": bool(ticker_by_symbol),
         "ticker_map_error": ticker_error,
         "error_count": len(errors),
         "errors": errors[:20],
+        "source_contracts": source_contracts,
     }
     payload = {
         "timestamp_utc": now.isoformat(),
@@ -395,6 +755,14 @@ def collect_sec_edgar_context(*, symbols: list[str], user_agent: str, timeout: f
         "contact_user_agent": user_agent,
         "tracked_symbols": symbols,
         "status": status,
+        "collection_contract": {
+            "source_contracts": source_contracts,
+            "provider_confidence_norm": round(
+                sum(float((row or {}).get("source_confidence_norm", 0.0) or 0.0) for row in source_contracts.values())
+                / max(len(source_contracts), 1),
+                6,
+            ),
+        },
         "symbol_rows": symbol_rows,
         "derived": derived,
     }

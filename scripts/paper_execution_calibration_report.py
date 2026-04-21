@@ -21,6 +21,13 @@ def _parse_ts(raw: Any) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
+def _safe_float(raw: Any, default: float = 0.0) -> float:
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
 def _bps(fill: float, expected: float, action: str) -> float:
     if fill <= 0 or expected <= 0:
         return 0.0
@@ -70,9 +77,28 @@ def _finalize_group(group: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _bucket_start(ts: datetime, bucket_hours: int) -> datetime:
+    hours = max(int(bucket_hours), 1)
+    bucket_hour = int(ts.hour // hours) * hours
+    return ts.replace(hour=bucket_hour, minute=0, second=0, microsecond=0)
+
+
+def _ordered_unique(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in items:
+        text = str(raw or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Paper execution calibration drift report.")
     ap.add_argument("--hours", type=int, default=24)
+    ap.add_argument("--bucket-hours", type=int, default=1)
     ap.add_argument("--max-mae-bps", type=float, default=35.0)
     ap.add_argument("--out-file", default=str(PROJECT_ROOT / "governance" / "health" / "paper_execution_calibration_latest.json"))
     ap.add_argument("--json", action="store_true")
@@ -86,6 +112,7 @@ def main() -> int:
     by_market_kind: Dict[str, Dict[str, Any]] = {}
     by_profile: Dict[str, Dict[str, Any]] = {}
     by_symbol: Dict[str, Dict[str, Any]] = {}
+    by_bucket: Dict[str, Dict[str, Any]] = {}
     for raw in sorted(glob.glob(str(PROJECT_ROOT / "exports" / "trade_logs" / "**" / "paper_trades_*.jsonl"), recursive=True)):
         files_scanned += 1
         p = Path(raw)
@@ -125,6 +152,8 @@ def main() -> int:
                     _record_group(by_market_kind.setdefault(market_kind, {}), observed_bps, expected_bps, abs_error)
                     _record_group(by_profile.setdefault(profile, {}), observed_bps, expected_bps, abs_error)
                     _record_group(by_symbol.setdefault(symbol, {}), observed_bps, expected_bps, abs_error)
+                    bucket_key = _bucket_start(ts, int(args.bucket_hours)).isoformat()
+                    _record_group(by_bucket.setdefault(bucket_key, {}), observed_bps, expected_bps, abs_error)
         except Exception:
             continue
 
@@ -145,6 +174,10 @@ def main() -> int:
         {"symbol": key, **_finalize_group(group)}
         for key, group in sorted(by_symbol.items(), key=lambda item: (-int(item[1].get("samples", 0)), item[0]))
     ]
+    drift_series = [
+        {"bucket_start_utc": key, **_finalize_group(group)}
+        for key, group in sorted(by_bucket.items())
+    ]
 
     recommendations = {
         "env": {
@@ -152,12 +185,35 @@ def main() -> int:
             "EXEC_SIM_SLIPPAGE_SCALE_EQUITIES": float(finalized_market_kind.get("equities", {}).get("recommended_slippage_scale", 1.0)),
         }
     }
+    worst_profile = max(
+        (
+            {"profile": key, **value}
+            for key, value in finalized_profile.items()
+        ),
+        key=lambda row: (float(row.get("mae_bps", 0.0)), float(abs(row.get("mean_bias_bps", 0.0)))),
+        default={},
+    )
+    worst_symbol = finalized_symbol_rows[0] if finalized_symbol_rows else {}
+    top_actions = []
+    if n > 0 and mae > float(args.max_mae_bps):
+        top_actions.append("tighten execution simulator slippage scales until realized mean absolute error returns below the guardrail")
+    if worst_profile and _safe_float(worst_profile.get("mae_bps"), 0.0) > float(args.max_mae_bps) * 0.75:
+        top_actions.append(f"prioritize profile-level recalibration for {str(worst_profile.get('profile') or 'default')}")
+    if worst_symbol and _safe_float(worst_symbol.get("mae_bps"), 0.0) > float(args.max_mae_bps):
+        top_actions.append(f"review symbol-specific fill assumptions for {str(worst_symbol.get('symbol') or 'UNKNOWN')}")
+    if len(drift_series) >= 2:
+        recent_bias = _safe_float(drift_series[-1].get("mean_bias_bps"), 0.0)
+        prior_bias = _safe_float(drift_series[-2].get("mean_bias_bps"), 0.0)
+        if abs(recent_bias) > abs(prior_bias) + 5.0:
+            top_actions.append("recent slippage drift worsened versus the prior bucket, so treat execution realism as a live risk control rather than a static calibration")
 
     out = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "overall_status": "ready" if len(failed) == 0 else "needs_tuning",
         "ok": len(failed) == 0,
         "failed_checks": failed,
         "lookback_hours": int(args.hours),
+        "bucket_hours": max(int(args.bucket_hours), 1),
         "files_scanned": int(files_scanned),
         "samples": int(n),
         "metrics": {
@@ -171,6 +227,17 @@ def main() -> int:
         "by_market_kind": finalized_market_kind,
         "by_profile": finalized_profile,
         "top_symbols": finalized_symbol_rows[:10],
+        "drift_series": drift_series[-48:],
+        "line_graph": {
+            "x_key": "bucket_start_utc",
+            "series": [
+                {"key": "mean_observed_slippage_bps", "label": "Observed Slippage"},
+                {"key": "mean_expected_slippage_bps", "label": "Expected Slippage"},
+                {"key": "mae_bps", "label": "Absolute Error"},
+            ],
+            "points": drift_series[-48:],
+        },
+        "top_actions": _ordered_unique(top_actions),
         "recommendations": recommendations,
     }
 

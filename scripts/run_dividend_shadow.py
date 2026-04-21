@@ -2,11 +2,19 @@ import argparse
 import os
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-VENV_PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_python import resolve_runtime_python
+
+os.environ.setdefault("BOT_RUNTIME_LANE", os.getenv("BOT_SHADOW_RUNTIME_LANE", "shadow314"))
+
+VENV_PY = resolve_runtime_python(PROJECT_ROOT)
 SHADOW_LOOP = PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py"
 DRIP_SYNC = PROJECT_ROOT / "scripts" / "collect_dividend_drip_state.py"
 LOAD_RUNTIME_ENV = PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh"
@@ -79,6 +87,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run dedicated dividend shadow masterbot profile.")
     parser.add_argument("--broker", default=os.getenv("DATA_BROKER", "schwab"), choices=["schwab", "coinbase"])
     parser.add_argument("--simulate", action="store_true", help="Use simulated market feed.")
+    parser.add_argument(
+        "--profile",
+        default=os.getenv("SHADOW_PROFILE", "dividend"),
+        help="Shadow profile name to stamp onto runtime artifacts.",
+    )
     parser.add_argument("--symbols", default=os.getenv("DIVIDEND_SYMBOLS", DEFAULT_DIVIDEND_SYMBOLS))
     parser.add_argument("--quality-symbols", default=os.getenv("DIVIDEND_QUALITY_SYMBOLS", DEFAULT_QUALITY_DIVIDEND_SYMBOLS))
     parser.add_argument(
@@ -102,11 +115,11 @@ def main() -> int:
     env = _bootstrap_runtime_env(os.environ.copy(), _runtime_profile(args.simulate))
     env["MARKET_DATA_ONLY"] = "1"
     env["ALLOW_ORDER_EXECUTION"] = "0"
-    env["SHADOW_PROFILE"] = "dividend"
+    env["SHADOW_PROFILE"] = str(args.profile or "dividend").strip().lower() or "dividend"
     env["SHADOW_DOMAIN"] = "equities"
     env["DIVIDEND_STRATEGY_MODE"] = args.strategy_mode
     env["DIVIDEND_QUALITY_SYMBOLS"] = args.quality_symbols
-    env.setdefault("SHADOW_THRESHOLD_SHIFT", "+0.03")
+    env.setdefault("SHADOW_THRESHOLD_SHIFT", "+0.04")
 
     if (not args.simulate) and env.get("DIVIDEND_DRIP_SYNC_ON_START", "1").strip() == "1":
         _sync_dividend_drip_state(env)
@@ -116,6 +129,10 @@ def main() -> int:
         str(SHADOW_LOOP),
         "--broker",
         args.broker,
+        "--profile",
+        env["SHADOW_PROFILE"],
+        "--domain",
+        "equities",
         "--symbols",
         args.symbols,
         "--interval-seconds",
@@ -131,6 +148,7 @@ def main() -> int:
     print("Starting dividend shadow profile...")
     print("Symbols:", args.symbols)
     print("Quality symbols:", args.quality_symbols)
+    print("Profile:", env["SHADOW_PROFILE"])
     print("Strategy mode:", args.strategy_mode)
     print("Command:", " ".join(cmd))
     proc = subprocess.Popen(cmd, cwd=str(PROJECT_ROOT), env=env)

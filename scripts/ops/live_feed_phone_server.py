@@ -3,6 +3,8 @@ import argparse
 import json
 import os
 import secrets
+import select
+import shutil
 import socket
 import subprocess
 import sys
@@ -90,13 +92,17 @@ HTML_PAGE = """<!doctype html>
       flex-wrap: wrap;
       padding: 12px 14px 0;
     }
-    button {
+    button, input {
       border: 1px solid var(--border);
       background: #122117;
       color: var(--text);
       border-radius: 8px;
       padding: 8px 10px;
       font: inherit;
+    }
+    input {
+      min-width: 180px;
+      flex: 1 1 180px;
     }
     .ok { color: var(--accent); }
     .warn { color: var(--warn); }
@@ -113,24 +119,39 @@ HTML_PAGE = """<!doctype html>
       </div>
       <div class="toolbar">
         <button id="refreshBtn" type="button">Reconnect</button>
+        <input id="tokenInput" type="password" placeholder="feed token" autocomplete="off" autocapitalize="none" spellcheck="false" />
+        <button id="tokenBtn" type="button">Use Token</button>
       </div>
+      <div class="statusline" id="tokenline"></div>
       <div class="terminal">
         <pre id="terminal">Loading live feed...</pre>
       </div>
     </div>
   </div>
   <script>
-    const token = new URLSearchParams(window.location.search).get("token") || "";
+    const params = new URLSearchParams(window.location.search);
+    let token = params.get("token") || window.localStorage.getItem("live_feed_phone_token") || "";
     const terminalEl = document.getElementById("terminal");
     const metaEl = document.getElementById("meta");
     const statusEl = document.getElementById("statusline");
+    const tokenEl = document.getElementById("tokenline");
     const refreshBtn = document.getElementById("refreshBtn");
+    const tokenInput = document.getElementById("tokenInput");
+    const tokenBtn = document.getElementById("tokenBtn");
+    tokenInput.value = token;
     let statusFlight = false;
+    let snapshotFlight = false;
     let eventSource = null;
     let pendingChunks = [];
     let renderScheduled = false;
     let terminalBuffer = "";
     let maxBufferChars = 42000;
+    let reconnectTimer = null;
+    let reconnectAttempts = 0;
+    let lastStreamEventMs = Date.now();
+    let streamHasData = false;
+    const reconnectBaseDelayMs = 1500;
+    const staleReconnectMs = 25000;
 
     function esc(text) {
       return String(text || "");
@@ -145,7 +166,7 @@ HTML_PAGE = """<!doctype html>
         return;
       }
       const overflow = terminalBuffer.length - limit;
-      const trimAt = terminalBuffer.indexOf("\n", Math.max(overflow, 0));
+      const trimAt = terminalBuffer.indexOf("\\n", Math.max(overflow, 0));
       terminalBuffer = trimAt >= 0 ? terminalBuffer.slice(trimAt + 1) : terminalBuffer.slice(-limit);
     }
 
@@ -172,21 +193,95 @@ HTML_PAGE = """<!doctype html>
       pendingChunks = [];
       terminalBuffer = "";
       terminalEl.textContent = "";
+      streamHasData = false;
     }
 
     function appendLine(line) {
-      pendingChunks.push(`${esc(line)}\n`);
+      pendingChunks.push(`${esc(line)}\\n`);
       scheduleRender();
     }
 
     function appendLines(lines) {
       if (!Array.isArray(lines) || lines.length === 0) return;
-      pendingChunks.push(lines.map((line) => esc(line)).join("\n") + "\n");
+      pendingChunks.push(lines.map((line) => esc(line)).join("\\n") + "\\n");
       scheduleRender();
+    }
+
+    function replaceBuffer(text) {
+      const shouldFollow = atBottom();
+      terminalBuffer = String(text || "").replace(/\\r\\n/g, "\\n");
+      if (terminalBuffer && !terminalBuffer.endsWith("\\n")) {
+        terminalBuffer += "\\n";
+      }
+      trimBuffer(maxBufferChars);
+      terminalEl.textContent = terminalBuffer || "Waiting for live feed...";
+      if (shouldFollow) {
+        window.scrollTo(0, document.body.scrollHeight);
+      }
+    }
+
+    function markStreamActivity() {
+      lastStreamEventMs = Date.now();
+      reconnectAttempts = 0;
+    }
+
+    function pageRequiresToken() {
+      const host = String(window.location.hostname || "").toLowerCase();
+      return !["127.0.0.1", "localhost", "::1", "[::1]"].includes(host);
+    }
+
+    function persistToken(nextToken) {
+      token = String(nextToken || "").trim();
+      tokenInput.value = token;
+      if (token) {
+        window.localStorage.setItem("live_feed_phone_token", token);
+      } else {
+        window.localStorage.removeItem("live_feed_phone_token");
+      }
+      const nextParams = new URLSearchParams(window.location.search);
+      if (token) {
+        nextParams.set("token", token);
+      } else {
+        nextParams.delete("token");
+      }
+      const nextQuery = nextParams.toString();
+      const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`;
+      window.history.replaceState({}, "", nextUrl);
+    }
+
+    function setTokenMessage(message, level = "warn") {
+      tokenEl.className = `statusline ${level}`;
+      tokenEl.textContent = message;
+    }
+
+    function clearReconnectTimer() {
+      if (reconnectTimer) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    }
+
+    function scheduleReconnect(reason, delayMs = reconnectBaseDelayMs) {
+      clearReconnectTimer();
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+      statusEl.textContent = reason;
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        connectStream({ preserveBuffer: true });
+        refreshStatus();
+      }, Math.max(delayMs, 250));
     }
 
     async function refreshStatus() {
       if (statusFlight) return;
+      if (pageRequiresToken() && !token) {
+        setTokenMessage("Paste the phone-feed token from the terminal output, then tap Use Token.", "warn");
+        statusEl.textContent = "token required before status can load";
+        return;
+      }
       statusFlight = true;
       try {
         const params = new URLSearchParams(window.location.search);
@@ -195,9 +290,15 @@ HTML_PAGE = """<!doctype html>
           cache: "no-store",
         });
         const payload = await resp.json();
+        if (resp.status === 401) {
+          setTokenMessage("Token rejected. Paste the latest phone-feed token from the terminal and retry.", "bad");
+          statusEl.textContent = "authorization required";
+          return;
+        }
         if (!resp.ok) {
           throw new Error(payload.error || `HTTP ${resp.status}`);
         }
+        setTokenMessage(token ? "token loaded" : "loopback mode: token not required", "ok");
         maxBufferChars = payload.include_decisions ? 36000 : 70000;
         const statusClass =
           payload.dashboard_status === "ok" ? "ok" :
@@ -216,17 +317,76 @@ HTML_PAGE = """<!doctype html>
       }
     }
 
-    function connectStream() {
+    async function loadSnapshot(options = {}) {
+      if (snapshotFlight) return;
+      const replace = Boolean(options.replace);
+      if (pageRequiresToken() && !token) {
+        if (replace && terminalBuffer.length === 0) {
+          replaceBuffer("Token required before snapshot can load.");
+        }
+        return;
+      }
+      snapshotFlight = true;
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const resp = await fetch(`/api/feed?${params.toString()}`, {
+          headers: token ? { "X-Live-Feed-Token": token } : {},
+          cache: "no-store",
+        });
+        const payload = await resp.json();
+        if (resp.status === 401) {
+          setTokenMessage("Token rejected. Paste the latest phone-feed token from the terminal and retry.", "bad");
+          statusEl.textContent = "authorization required";
+          if (replace && terminalBuffer.length === 0) {
+            replaceBuffer("Snapshot authorization failed.");
+          }
+          return;
+        }
+        if (!resp.ok) {
+          throw new Error(payload.error || `HTTP ${resp.status}`);
+        }
+        const output = String(payload.output || "").trim();
+        if (output) {
+          streamHasData = true;
+          if (replace || terminalBuffer.length === 0) {
+            replaceBuffer(output);
+          }
+        } else if (replace && terminalBuffer.length === 0) {
+          replaceBuffer("Waiting for live feed...");
+        }
+      } catch (err) {
+        if (replace && terminalBuffer.length === 0) {
+          replaceBuffer(`Snapshot load failed: ${err}`);
+        }
+      } finally {
+        snapshotFlight = false;
+      }
+    }
+
+    function connectStream(options = {}) {
+      const preserveBuffer = Boolean(options.preserveBuffer);
+      clearReconnectTimer();
       if (eventSource) {
         eventSource.close();
       }
-      resetBuffer();
+      eventSource = null;
+      if (!preserveBuffer) {
+        resetBuffer();
+      }
+      if (pageRequiresToken() && !token) {
+        setTokenMessage("Paste the phone-feed token from the terminal output, then tap Use Token.", "warn");
+        statusEl.textContent = "token required before stream can connect";
+        return;
+      }
+      markStreamActivity();
       const params = new URLSearchParams(window.location.search);
+      params.set("stream_nonce", String(Date.now()));
       eventSource = new EventSource(`/api/feed/stream?${params.toString()}`);
       eventSource.addEventListener("meta", (event) => {
         try {
           const payload = JSON.parse(event.data);
           maxBufferChars = payload.include_decisions ? 36000 : 70000;
+          markStreamActivity();
           statusEl.textContent =
             `stream=live source=${payload.source} lines=${payload.lines} include_decisions=${payload.include_decisions ? "1" : "0"} pid=${payload.server_pid}`;
         } catch (err) {
@@ -236,6 +396,8 @@ HTML_PAGE = """<!doctype html>
       eventSource.addEventListener("line", (event) => {
         try {
           const payload = JSON.parse(event.data);
+          markStreamActivity();
+          streamHasData = true;
           appendLine(payload.line || "");
         } catch (err) {
           appendLine(`stream parse error: ${err}`);
@@ -244,24 +406,80 @@ HTML_PAGE = """<!doctype html>
       eventSource.addEventListener("lines", (event) => {
         try {
           const payload = JSON.parse(event.data);
+          markStreamActivity();
+          streamHasData = true;
           appendLines(Array.isArray(payload.lines) ? payload.lines : []);
         } catch (err) {
           appendLine(`stream batch parse error: ${err}`);
         }
       });
+      eventSource.addEventListener("ping", () => {
+        markStreamActivity();
+      });
       eventSource.addEventListener("error", () => {
-        statusEl.textContent = "stream disconnected, retrying...";
+        if (pageRequiresToken() && !token) {
+          setTokenMessage("Paste the phone-feed token from the terminal output, then tap Use Token.", "warn");
+          statusEl.textContent = "token required before stream can reconnect";
+          return;
+        }
+        reconnectAttempts += 1;
+        const delayMs = Math.min(10000, reconnectBaseDelayMs * reconnectAttempts);
+        if (!streamHasData || terminalBuffer.length === 0) {
+          loadSnapshot({ replace: true });
+        }
+        scheduleReconnect("stream disconnected, retrying...", delayMs);
       });
       eventSource.onopen = () => {
+        markStreamActivity();
         refreshStatus();
       };
     }
 
+    function applyToken() {
+      persistToken(tokenInput.value);
+      setTokenMessage(token ? "token saved, reconnecting..." : "token cleared", token ? "ok" : "warn");
+      connectStream({ preserveBuffer: false });
+      loadSnapshot({ replace: true });
+      refreshStatus();
+    }
+
     refreshBtn.addEventListener("click", () => {
-      connectStream();
+      connectStream({ preserveBuffer: false });
+      loadSnapshot({ replace: true });
       refreshStatus();
     });
-    connectStream();
+    tokenBtn.addEventListener("click", applyToken);
+    tokenInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        applyToken();
+      }
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) {
+        scheduleReconnect("refreshing stream after wake...", 50);
+      }
+    });
+    window.addEventListener("pageshow", () => {
+      scheduleReconnect("refreshing stream after page restore...", 50);
+    });
+    window.addEventListener("online", () => {
+      scheduleReconnect("network restored, reconnecting...", 50);
+    });
+    window.setInterval(() => {
+      const idleMs = Date.now() - lastStreamEventMs;
+      if (idleMs > staleReconnectMs) {
+        loadSnapshot({ replace: terminalBuffer.length === 0 });
+        scheduleReconnect(`stream stale for ${Math.round(idleMs / 1000)}s, reconnecting...`, 50);
+      }
+    }, 5000);
+    if (pageRequiresToken()) {
+      setTokenMessage(token ? "token loaded" : "Paste the phone-feed token from the terminal output, then tap Use Token.", token ? "ok" : "warn");
+    } else {
+      setTokenMessage("loopback mode: token not required", "ok");
+    }
+    loadSnapshot({ replace: true });
+    connectStream({ preserveBuffer: false });
     refreshStatus();
     setInterval(refreshStatus, 20000);
   </script>
@@ -330,6 +548,55 @@ def _candidate_urls(host: str, port: int, token: str) -> list[str]:
     return [f"http://{host_text}:{port}/{query}"]
 
 
+def _tailscale_status() -> dict[str, Any]:
+    tailscale_bin = shutil.which("tailscale")
+    if not tailscale_bin:
+        return {}
+    try:
+        proc = subprocess.run(
+            [tailscale_bin, "status", "--json"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=4,
+            check=False,
+        )
+    except Exception:
+        return {}
+    if proc.returncode != 0:
+        return {}
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _tailscale_candidate_urls(port: int, token: str) -> list[str]:
+    status = _tailscale_status()
+    query = f"?token={token}" if token else ""
+    self_node = status.get("Self") if isinstance(status.get("Self"), dict) else {}
+    urls: list[str] = []
+    dns_name = str(self_node.get("DNSName", "") or "").strip().rstrip(".")
+    if dns_name:
+        urls.append(f"http://{dns_name}:{int(port)}/{query}")
+    for ip in self_node.get("TailscaleIPs") or []:
+        ip_text = str(ip or "").strip()
+        if not ip_text:
+            continue
+        if ":" in ip_text:
+            urls.append(f"http://[{ip_text}]:{int(port)}/{query}")
+        else:
+            urls.append(f"http://{ip_text}:{int(port)}/{query}")
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for url in urls:
+        if url not in seen:
+            deduped.append(url)
+            seen.add(url)
+    return deduped
+
+
 def _stream_profile(include_decisions: bool) -> dict[str, float | int]:
     if include_decisions:
         return {
@@ -337,12 +604,16 @@ def _stream_profile(include_decisions: bool) -> dict[str, float | int]:
             "batch_line_limit": 12,
             "batch_char_limit": 2200,
             "batch_interval_seconds": 0.65,
+            "heartbeat_seconds": 8.0,
+            "retry_millis": 2500,
         }
     return {
         "max_line_chars": 640,
         "batch_line_limit": 10,
         "batch_char_limit": 4200,
         "batch_interval_seconds": 0.35,
+        "heartbeat_seconds": 10.0,
+        "retry_millis": 2200,
     }
 
 
@@ -433,6 +704,17 @@ def _status_summary() -> dict[str, Any]:
     }
 
 
+class _PhoneMirrorServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def handle_error(self, request: object, client_address: object) -> None:
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class _PhoneMirrorHandler(BaseHTTPRequestHandler):
     server_version = "LiveFeedPhoneServer/1.0"
 
@@ -463,6 +745,11 @@ class _PhoneMirrorHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         self.wfile.flush()
 
+    def _write_sse_retry(self, retry_millis: int) -> None:
+        body = f"retry: {max(int(retry_millis), 250)}\n\n".encode("utf-8")
+        self.wfile.write(body)
+        self.wfile.flush()
+
     def _require_auth(self) -> bool:
         token = str(self.state.get("token", "") or "")
         if _authorized(self, token):
@@ -476,11 +763,11 @@ class _PhoneMirrorHandler(BaseHTTPRequestHandler):
             self._write_json(HTTPStatus.OK, {"ok": True, "timestamp_utc": _now_utc_iso(), "pid": os.getpid()})
             return
 
-        if not self._require_auth():
-            return
-
         if parsed.path == "/":
             self._write_html(HTTPStatus.OK, HTML_PAGE)
+            return
+
+        if not self._require_auth():
             return
 
         if parsed.path == "/api/status":
@@ -506,6 +793,8 @@ class _PhoneMirrorHandler(BaseHTTPRequestHandler):
             symbol = str(self.state.get("symbol", "") or "")
             include_decisions = bool(self.state.get("include_decisions", False))
             stream_profile = _stream_profile(include_decisions)
+            retry_millis = int(stream_profile.get("retry_millis", 2500) or 2500)
+            heartbeat_seconds = float(stream_profile.get("heartbeat_seconds", 10.0) or 10.0)
             cmd = _build_feed_command(
                 source=source,
                 lines=lines,
@@ -525,10 +814,11 @@ class _PhoneMirrorHandler(BaseHTTPRequestHandler):
             try:
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-                self.send_header("Cache-Control", "no-store")
+                self.send_header("Cache-Control", "no-store, no-transform")
                 self.send_header("Connection", "keep-alive")
                 self.send_header("X-Accel-Buffering", "no")
                 self.end_headers()
+                self._write_sse_retry(retry_millis)
                 self._write_sse_event(
                     "meta",
                     {
@@ -543,25 +833,46 @@ class _PhoneMirrorHandler(BaseHTTPRequestHandler):
                     batch: list[str] = []
                     batch_chars = 0
                     last_emit = time.monotonic()
-                    for raw_line in proc.stdout:
-                        line = _shape_stream_line(
-                            str(raw_line or "").rstrip("\n"),
-                            include_decisions=include_decisions,
-                        )
-                        batch.append(line)
-                        batch_chars += len(line)
+                    while True:
+                        ready, _, _ = select.select([proc.stdout], [], [], heartbeat_seconds)
                         now = time.monotonic()
-                        if (
-                            len(batch) >= int(stream_profile.get("batch_line_limit", 12) or 12)
-                            or batch_chars >= int(stream_profile.get("batch_char_limit", 2400) or 2400)
-                            or (
-                            now - last_emit
-                        ) >= float(stream_profile.get("batch_interval_seconds", 0.25) or 0.25)
-                        ):
+                        if ready:
+                            raw_line = proc.stdout.readline()
+                            if raw_line == "":
+                                if batch:
+                                    self._write_sse_event("lines", {"lines": batch})
+                                    batch = []
+                                    batch_chars = 0
+                                if proc.poll() is not None:
+                                    break
+                                continue
+                            line = _shape_stream_line(
+                                str(raw_line or "").rstrip("\n"),
+                                include_decisions=include_decisions,
+                            )
+                            batch.append(line)
+                            batch_chars += len(line)
+                            if (
+                                len(batch) >= int(stream_profile.get("batch_line_limit", 12) or 12)
+                                or batch_chars >= int(stream_profile.get("batch_char_limit", 2400) or 2400)
+                                or (now - last_emit) >= float(stream_profile.get("batch_interval_seconds", 0.25) or 0.25)
+                            ):
+                                self._write_sse_event("lines", {"lines": batch})
+                                batch = []
+                                batch_chars = 0
+                                last_emit = now
+                            continue
+                        if batch:
                             self._write_sse_event("lines", {"lines": batch})
                             batch = []
                             batch_chars = 0
                             last_emit = now
+                        self._write_sse_event(
+                            "ping",
+                            {"timestamp_utc": _now_utc_iso(), "server_pid": os.getpid()},
+                        )
+                        if proc.poll() is not None:
+                            break
                     if batch:
                         self._write_sse_event("lines", {"lines": batch})
                 rc = proc.wait(timeout=1)
@@ -640,7 +951,7 @@ def main() -> int:
         "timeout_seconds": int(max(args.timeout_seconds, 5)),
     }
 
-    server = ThreadingHTTPServer((args.host, int(args.port)), _PhoneMirrorHandler)
+    server = _PhoneMirrorServer((args.host, int(args.port)), _PhoneMirrorHandler)
     server.state = state
 
     print("live_feed_phone_server started")
@@ -649,6 +960,18 @@ def main() -> int:
         print(" token_protected=1")
     for url in _candidate_urls(args.host, int(args.port), token):
         print(f" url={url}")
+    tailscale_status = _tailscale_status()
+    backend_state = str(tailscale_status.get("BackendState", "") or "").strip()
+    tailscale_urls = _tailscale_candidate_urls(int(args.port), token) if not _is_loopback_host(args.host) else []
+    if backend_state:
+        print(f" tailscale_state={backend_state}")
+    if tailscale_urls and backend_state.lower() == "running":
+        for url in tailscale_urls:
+            print(f" remote_url={url}")
+    elif tailscale_urls:
+        print(" remote_url_unavailable_reason=tailscale_stopped")
+        for url in tailscale_urls:
+            print(f" remote_url_candidate={url}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

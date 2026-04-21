@@ -90,7 +90,7 @@ def test_runtime_feature_vector_shapes_batch3() -> None:
     sequence = [_obs()]
     assert v97._runtime_feature_vector(sequence, 0).shape == (30,)
     assert v98._runtime_feature_vector(sequence, 0).shape == (29,)
-    assert v99._runtime_feature_vector(sequence, 0).shape == (30,)
+    assert v99._runtime_feature_vector(sequence, 0).shape == (38,)
     assert v100._runtime_feature_vector(sequence, 0).shape == (25,)
 
 
@@ -172,3 +172,6 @@ def test_train_brain_uses_runtime_path_without_silent_fallback_batch3(monkeypatc
         assert expected_symbol in captured["symbol_allowlist"]
         assert captured["require_both_sides_precision"] is True
         assert captured["min_accuracy_lift_over_majority"] == 0.02
+        if module is v99:
+            assert "dividend_total_return_income_norm" in captured["feature_names"]
+            assert "dividend_trap_internal_risk_norm" in captured["feature_names"]

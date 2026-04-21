@@ -97,6 +97,44 @@ def test_refresh_runtime_reports_flags_stuck_refresh_process(tmp_path, monkeypat
     assert out["one_numbers"]["running_seconds"] == 1200.0
 
 
+def test_refresh_runtime_reports_blocks_daily_summary_when_resource_guard_denies(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    one_numbers = project_root / "exports" / "one_numbers" / "one_numbers_summary.json"
+    one_numbers.parent.mkdir(parents=True, exist_ok=True)
+    paper_performance = project_root / "governance" / "health" / "paper_performance_latest.json"
+    paper_performance.parent.mkdir(parents=True, exist_ok=True)
+    backpressure = project_root / "governance" / "health" / "ingestion_backpressure_latest.json"
+    divergence = project_root / "governance" / "health" / "data_source_divergence_latest.json"
+    backpressure.write_text("{}", encoding="utf-8")
+    divergence.write_text("{}", encoding="utf-8")
+    daily_summary = project_root / "exports" / "sql_reports" / f"daily_runtime_summary_{datetime.now(timezone.utc).strftime('%Y%m%d')}.json"
+    daily_summary.parent.mkdir(parents=True, exist_ok=True)
+    daily_summary.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(pw, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(
+        pw,
+        "_file_age_seconds",
+        lambda path: 999999.0 if path == daily_summary else 0.0,
+    )
+    monkeypatch.setattr(
+        pw,
+        "_resource_guard_allows_job",
+        lambda job_name, profile="optional": (False, f"{job_name}:{profile}:creative_session_dual_pro"),
+    )
+    monkeypatch.setattr(
+        pw,
+        "_run",
+        lambda cmd: (_ for _ in ()).throw(AssertionError("daily summary refresh should be skipped when resource guard blocks")),
+    )
+
+    out = pw._refresh_runtime_reports(max_age_seconds=60)
+
+    assert out["daily_runtime_summary"]["refreshed"] is False
+    assert out["daily_runtime_summary"]["resource_guard_ok"] is False
+    assert out["daily_runtime_summary"]["error"] == "resource_guard_blocked"
+
+
 def test_run_returns_timeout_payload(monkeypatch) -> None:
     def _fake_run(*_args, **_kwargs):
         exc = subprocess.TimeoutExpired(
@@ -127,3 +165,53 @@ def test_build_execution_lane_target_uses_paper_health_file(tmp_path, monkeypatc
     assert target["cmd"][-2:] == ["--mode", "paper"]
     assert str(target["heartbeat_glob"]).endswith("execution_lane_paper_latest.json")
     assert target["heartbeat_max_age_seconds"] == 240
+
+
+def test_resolved_restart_storms_drop_healthy_settled_services() -> None:
+    active, recent = pw._resolved_restart_storms(
+        events=[
+            {"event": "restart", "name": "execution_lane_paper", "ts_epoch": 100.0},
+            {"event": "restart", "name": "execution_lane_paper", "ts_epoch": 200.0},
+            {"event": "restart", "name": "execution_lane_paper", "ts_epoch": 300.0},
+            {"event": "restart", "name": "execution_lane_paper", "ts_epoch": 400.0},
+        ],
+        status_rows=[{"name": "execution_lane_paper", "running": 1, "heartbeat_ok": True}],
+        restart_window_seconds=3600,
+        restart_storm_threshold=4,
+        settle_seconds=120,
+        now_epoch=1000.0,
+    )
+
+    assert active == []
+    assert len(recent) == 1
+    assert recent[0]["resolved"] is True
+
+
+def test_resolved_restart_storms_respect_target_specific_settle_window() -> None:
+    active, recent = pw._resolved_restart_storms(
+        events=[
+            {"event": "restart", "name": "execution_lane_paper", "ts_epoch": 100.0},
+            {"event": "restart", "name": "execution_lane_paper", "ts_epoch": 200.0},
+            {"event": "restart", "name": "execution_lane_paper", "ts_epoch": 300.0},
+            {"event": "restart", "name": "execution_lane_paper", "ts_epoch": 400.0},
+        ],
+        status_rows=[
+            {
+                "name": "execution_lane_paper",
+                "running": 1,
+                "heartbeat_ok": True,
+                "heartbeat_age_seconds": 45.0,
+                "heartbeat_max_age_seconds": 240.0,
+                "restart_storm_settle_seconds": 120,
+                "restart_storm_min_healthy_seconds": 120,
+            }
+        ],
+        restart_window_seconds=3600,
+        restart_storm_threshold=4,
+        settle_seconds=900,
+        now_epoch=531.0,
+    )
+
+    assert active == []
+    assert recent[0]["settle_seconds"] == 120
+    assert recent[0]["resolved"] is True

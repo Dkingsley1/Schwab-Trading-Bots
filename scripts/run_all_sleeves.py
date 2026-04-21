@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -22,6 +23,7 @@ from core.runtime_python import resolve_runtime_python
 VENV_PY = resolve_runtime_python(PROJECT_ROOT)
 PARALLEL_SHADOWS = PROJECT_ROOT / "scripts" / "run_parallel_shadows.py"
 DIVIDEND_SHADOW = PROJECT_ROOT / "scripts" / "run_dividend_shadow.py"
+DIVIDEND_CAPTURE_SHADOW = PROJECT_ROOT / "scripts" / "run_dividend_capture_shadow.py"
 BOND_SHADOW = PROJECT_ROOT / "scripts" / "run_bond_shadow.py"
 FX_SHADOW = PROJECT_ROOT / "scripts" / "run_fx_shadow.py"
 AGGRESSIVE_MODES = PROJECT_ROOT / "scripts" / "run_parallel_aggressive_modes.py"
@@ -128,6 +130,20 @@ def _stop_processes(procs: dict[str, subprocess.Popen]) -> None:
                 proc.wait(timeout=10)
             except Exception:
                 proc.kill()
+
+
+def _handle_shutdown_signal(signum, _frame) -> None:
+    try:
+        signal_name = signal.Signals(signum).name
+    except Exception:
+        signal_name = f"signal_{signum}"
+    print(f"Received {signal_name}; stopping all sleeves...")
+    raise KeyboardInterrupt()
+
+
+def _install_signal_handlers() -> None:
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, _handle_shutdown_signal)
 
 
 def _within_restart_budget(restarts: list[float], max_restarts_per_hour: int) -> bool:
@@ -246,9 +262,17 @@ def _run_preflight(args: argparse.Namespace) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run all Schwab sleeves together: baseline + dividend + bond + optional FX (+ optional aggressive modes).")
+    _install_signal_handlers()
+
+    parser = argparse.ArgumentParser(description="Run all Schwab sleeves together: baseline + dividend + dividend capture + bond + optional FX (+ optional aggressive modes).")
     parser.add_argument("--simulate", action="store_true", help="Run all sleeves in simulation mode.")
     parser.add_argument("--with-aggressive-modes", action="store_true", help="Also run intraday+swing aggressive modes.")
+    parser.add_argument(
+        "--with-dividend-capture",
+        action="store_true",
+        default=_env_flag("RUN_ALL_SLEEVES_WITH_DIVIDEND_CAPTURE", "1"),
+        help="Also run the dedicated ex-dividend capture paper lane.",
+    )
     parser.add_argument(
         "--with-fx",
         action="store_true",
@@ -269,7 +293,8 @@ def main() -> int:
     )
     parser.add_argument("--parallel-interval-seconds", type=int, default=int(os.getenv("SHADOW_LOOP_INTERVAL", "15")))
     parser.add_argument("--dividend-interval-seconds", type=int, default=int(os.getenv("DIVIDEND_SHADOW_INTERVAL", "60")))
-    parser.add_argument("--bond-interval-seconds", type=int, default=int(os.getenv("BOND_SHADOW_INTERVAL", "90")))
+    parser.add_argument("--dividend-capture-interval-seconds", type=int, default=int(os.getenv("DIVIDEND_CAPTURE_SHADOW_INTERVAL", os.getenv("DIVIDEND_SHADOW_INTERVAL", "60"))))
+    parser.add_argument("--bond-interval-seconds", type=int, default=int(os.getenv("BOND_SHADOW_INTERVAL", "120")))
     parser.add_argument("--fx-interval-seconds", type=int, default=int(os.getenv("FX_SHADOW_INTERVAL", "45")))
     parser.add_argument("--broker", default=os.getenv("DATA_BROKER", "schwab"), choices=["schwab", "coinbase"])
     parser.add_argument("--max-iterations", type=int, default=int(os.getenv("SHADOW_LOOP_MAX_ITERS", "0")))
@@ -292,11 +317,13 @@ def main() -> int:
 
     parser.add_argument("--nice-baseline", type=int, default=int(os.getenv("SLEEVE_NICE_BASELINE", "6")))
     parser.add_argument("--nice-dividend", type=int, default=int(os.getenv("SLEEVE_NICE_DIVIDEND", "10")))
+    parser.add_argument("--nice-dividend-capture", type=int, default=int(os.getenv("SLEEVE_NICE_DIVIDEND_CAPTURE", os.getenv("SLEEVE_NICE_DIVIDEND", "10"))))
     parser.add_argument("--nice-bond", type=int, default=int(os.getenv("SLEEVE_NICE_BOND", "10")))
     parser.add_argument("--nice-fx", type=int, default=int(os.getenv("SLEEVE_NICE_FX", "9")))
     parser.add_argument("--nice-aggressive", type=int, default=int(os.getenv("SLEEVE_NICE_AGGRESSIVE", "5")))
     parser.add_argument("--workers-baseline", type=int, default=int(os.getenv("SLEEVE_WORKERS_BASELINE", os.getenv("ASYNC_PIPELINE_WORKERS", "4"))))
     parser.add_argument("--workers-dividend", type=int, default=int(os.getenv("SLEEVE_WORKERS_DIVIDEND", "2")))
+    parser.add_argument("--workers-dividend-capture", type=int, default=int(os.getenv("SLEEVE_WORKERS_DIVIDEND_CAPTURE", os.getenv("SLEEVE_WORKERS_DIVIDEND", "2"))))
     parser.add_argument("--workers-bond", type=int, default=int(os.getenv("SLEEVE_WORKERS_BOND", "2")))
     parser.add_argument("--workers-fx", type=int, default=int(os.getenv("SLEEVE_WORKERS_FX", "2")))
     parser.add_argument("--workers-aggressive", type=int, default=int(os.getenv("SLEEVE_WORKERS_AGGRESSIVE", "3")))
@@ -393,6 +420,22 @@ def main() -> int:
     env = dict(base_env)
     env["ASYNC_PIPELINE_WORKERS"] = str(max(args.workers_dividend, 1))
     specs["dividend"] = JobSpec("dividend", dividend_cmd, env, breaker_group="core")
+
+    if args.with_dividend_capture:
+        dividend_capture_cmd = [
+            "nice", "-n", str(args.nice_dividend_capture),
+            str(VENV_PY), str(DIVIDEND_CAPTURE_SHADOW),
+            "--broker", args.broker,
+            "--interval-seconds", str(max(args.dividend_capture_interval_seconds, 15)),
+            "--max-iterations", str(args.max_iterations),
+        ]
+        if args.simulate:
+            dividend_capture_cmd.append("--simulate")
+        if args.dividend_symbols:
+            dividend_capture_cmd.extend(["--symbols", args.dividend_symbols])
+        env = dict(base_env)
+        env["ASYNC_PIPELINE_WORKERS"] = str(max(args.workers_dividend_capture, 1))
+        specs["dividend_capture"] = JobSpec("dividend_capture", dividend_capture_cmd, env, breaker_group="core")
 
     bond_cmd = [
         "nice", "-n", str(args.nice_bond),

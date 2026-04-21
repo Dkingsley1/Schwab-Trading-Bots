@@ -120,27 +120,38 @@ def main() -> int:
     recommended_bot_ids = [str(row.get("bot_id", "")).strip() for row in prioritized_fail_examples[:3] if str(row.get("bot_id", "")).strip()]
     recommended_regime_focus = _recommended_regime_focus(seg_counts)
     canary_watchlist = [str((row or {}).get("bot_id", "")).strip() for row in near_pass_examples[:5] if str((row or {}).get("bot_id", "")).strip()]
+    coverage_gap_examples = gate.get("coverage_gap_examples") if isinstance(gate.get("coverage_gap_examples"), list) else []
 
     now = datetime.now(timezone.utc).isoformat()
     raw_fail_share = gate.get("fail_share", 1.0)
     fail_share = float(1.0 if raw_fail_share is None else raw_fail_share)
     max_fail_share = float(thresholds.get("max_fail_share", 0.25) or 0.25)
+    min_considered_bots = int(thresholds.get("min_considered_bots", 0) or 0)
+    considered_bots = int(gate.get("considered_bots", 0) or 0)
+    coverage_shortfall = max(min_considered_bots - considered_bots, 0)
     readiness_margin = round(max_fail_share - fail_share, 6)
+    blocking_reasons: list[str] = []
+    if not bool(gate.get("coverage_ok", False)):
+        blocking_reasons.append("insufficient_walk_forward_coverage")
+    if fail_share > max_fail_share:
+        blocking_reasons.append("fail_share_above_limit")
 
     latest_row = {
         "timestamp_utc": now,
         "promote_ok": bool(gate.get("promote_ok", False)),
         "coverage_ok": bool(gate.get("coverage_ok", False)),
-        "considered_bots": int(gate.get("considered_bots", 0) or 0),
+        "considered_bots": considered_bots,
         "failed_bots": int(gate.get("failed_bots", 0) or 0),
         "fail_share": round(fail_share, 6),
         "max_fail_share": round(max_fail_share, 6),
         "readiness_margin": readiness_margin,
+        "coverage_shortfall_bots": coverage_shortfall,
+        "blocking_reasons": blocking_reasons,
         "thresholds": {
             "min_forward_mean": thresholds.get("min_forward_mean"),
             "min_delta": thresholds.get("min_delta"),
             "min_runs_per_bot": thresholds.get("min_runs_per_bot"),
-            "min_considered_bots": thresholds.get("min_considered_bots"),
+            "min_considered_bots": min_considered_bots,
         },
         "top_fail_examples": fail_examples[:10],
         "near_pass_examples": near_pass_examples[:10],
@@ -152,6 +163,15 @@ def main() -> int:
             "regime_focus": recommended_regime_focus,
             "top_fail_segments": sorted(seg_counts.items(), key=lambda kv: (-int(kv[1] or 0), kv[0]))[:3],
             "watchlist_bot_ids": canary_watchlist,
+            "actions": [
+                action
+                for action in (
+                    "seed_walk_forward_coverage" if coverage_shortfall > 0 else "",
+                    "repair_failed_candidates" if failed_bots else "",
+                )
+                if action
+            ],
+            "coverage_gap_examples": coverage_gap_examples[:5],
         },
     }
 

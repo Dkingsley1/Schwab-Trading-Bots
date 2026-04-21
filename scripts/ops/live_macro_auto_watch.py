@@ -28,7 +28,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.ops.live_macro_bulletin import DEFAULT_OUT_PATH, append_live_macro_event, build_live_macro_payload
+from core.transcript_cleanup import (
+    clean_transcript_text as _shared_clean_transcript_text,
+    collapse_repeated_phrases as _shared_collapse_repeated_phrases,
+)
+from scripts.ops.live_macro_bulletin import DEFAULT_OUT_PATH, LIVE_MACRO_TEMPLATES, append_live_macro_event, build_live_macro_payload
 
 
 STATUS_PATH = PROJECT_ROOT / "governance" / "health" / "macro_auto_watch_status.json"
@@ -42,6 +46,10 @@ LOG_DIR = PROJECT_ROOT / "logs"
 _STREAMTEXT_URL_RE = re.compile(r"https://www\.streamtext\.net/player\?[^\s\"']+")
 _TIME_LINE_RE = re.compile(r"^(?:\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.)|to be announced)$", re.IGNORECASE)
 _DAY_LINE_RE = re.compile(r"^\d{1,2}$")
+_VTT_INLINE_TAG_RE = re.compile(r"</?c(?:\.[^>]*)?>", re.IGNORECASE)
+_VTT_TIMESTAMP_TAG_RE = re.compile(r"<\d{1,2}:\d{2}:\d{2}\.\d{3}>")
+_HTMLISH_TAG_RE = re.compile(r"<[^>]+>")
+_MULTISPACE_RE = re.compile(r"\s+")
 _FED_SECTION_HEADERS = {
     "Speeches",
     "FOMC Meetings",
@@ -52,6 +60,78 @@ _FED_SECTION_HEADERS = {
     "Other",
 }
 _FED_LOCAL_TZ = ZoneInfo("America/New_York") if ZoneInfo is not None else timezone(timedelta(hours=-5))
+LIVE_MACRO_CHANNEL_PRESETS: Dict[str, Dict[str, str]] = {
+    "apple_ir": {
+        "youtube_channel_url": "https://www.youtube.com/@Apple",
+        "template": "earnings_call",
+        "speaker": "Apple management",
+        "source": "Apple IR",
+        "symbols": "AAPL",
+    },
+    "nvidia_ir": {
+        "youtube_channel_url": "https://www.youtube.com/@NVIDIA",
+        "template": "earnings_call",
+        "speaker": "NVIDIA management",
+        "source": "NVIDIA IR",
+        "symbols": "NVDA",
+    },
+    "tesla_ir": {
+        "youtube_channel_url": "https://www.youtube.com/@Tesla",
+        "template": "analyst_day",
+        "speaker": "Tesla management",
+        "source": "Tesla IR",
+        "symbols": "TSLA",
+    },
+    "cnbc_ceo": {
+        "youtube_channel_url": "https://www.youtube.com/@CNBCtelevision",
+        "template": "ceo_interview",
+        "speaker": "CEO interview",
+        "source": "CNBC",
+        "symbols": "",
+    },
+    "bloomberg_ceo": {
+        "youtube_channel_url": "https://www.youtube.com/@markets",
+        "template": "ceo_interview",
+        "speaker": "CEO interview",
+        "source": "Bloomberg TV",
+        "symbols": "",
+    },
+    "cspan_legal": {
+        "youtube_channel_url": "https://www.youtube.com/@CSPAN",
+        "template": "legal_policy",
+        "speaker": "Supreme Court / C-SPAN legal coverage",
+        "source": "C-SPAN",
+        "symbols": "SPY,QQQ,IWM,XLF,KRE,XLV,XLE,XLI,TLT",
+    },
+    "fed_policy": {
+        "youtube_channel_url": "https://www.youtube.com/@federalreserve",
+        "template": "policy_testimony",
+        "speaker": "Federal Reserve",
+        "source": "Federal Reserve",
+        "symbols": "SPY,QQQ,TLT,IEF,UUP,GLD,XLF",
+    },
+    "treasury_policy": {
+        "youtube_channel_url": "https://www.youtube.com/@USTreasury",
+        "template": "policy_testimony",
+        "speaker": "U.S. Treasury",
+        "source": "U.S. Treasury",
+        "symbols": "SPY,QQQ,TLT,IEF,UUP,GLD,XLF",
+    },
+    "schwab_education": {
+        "youtube_channel_url": "https://www.youtube.com/@CharlesSchwab",
+        "template": "generic",
+        "speaker": "Charles Schwab educators",
+        "source": "Charles Schwab",
+        "symbols": "SPY,QQQ,IWM,TLT,IEF,XLF,XLK,GLD",
+    },
+    "schwab_network": {
+        "youtube_channel_url": "https://www.youtube.com/@SchwabNetwork",
+        "template": "generic",
+        "speaker": "Schwab Network",
+        "source": "Schwab Network",
+        "symbols": "SPY,QQQ,IWM,TLT,IEF,XLF,XLK,GLD",
+    },
+}
 
 
 def _now_iso() -> str:
@@ -71,6 +151,26 @@ def _read_json(path: Path) -> Dict[str, Any]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _apply_channel_preset(args: argparse.Namespace) -> argparse.Namespace:
+    preset_key = str(getattr(args, "channel_preset", "") or "").strip().lower()
+    if not preset_key:
+        return args
+    preset = LIVE_MACRO_CHANNEL_PRESETS.get(preset_key)
+    if not isinstance(preset, dict):
+        raise SystemExit(f"unknown --channel-preset: {preset_key}")
+    if not str(getattr(args, "youtube_url", "") or "").strip():
+        args.youtube_channel_url = str(getattr(args, "youtube_channel_url", "") or preset.get("youtube_channel_url", ""))
+    if str(getattr(args, "template", "powell") or "").strip().lower() == "powell":
+        args.template = str(preset.get("template") or args.template)
+    if str(getattr(args, "speaker", "Jerome Powell") or "").strip() == "Jerome Powell":
+        args.speaker = str(preset.get("speaker") or args.speaker)
+    if str(getattr(args, "source", "Federal Reserve") or "").strip() == "Federal Reserve":
+        args.source = str(preset.get("source") or args.source)
+    if not str(getattr(args, "symbols", "") or "").strip():
+        args.symbols = str(preset.get("symbols") or "")
+    return args
 
 
 def _append_jsonl(path: Path, row: Dict[str, Any]) -> str:
@@ -98,6 +198,21 @@ def _parse_vtt_timestamp(raw: str) -> float:
     return (hours * 3600.0) + (minutes * 60.0) + seconds
 
 
+def _norm_compare_token(token: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(token or "").lower())
+
+
+def _collapse_repeated_phrases(text: str, *, max_window: int = 12) -> str:
+    return _shared_collapse_repeated_phrases(text)
+
+
+def _clean_caption_text(text: str) -> str:
+    cleaned = _shared_clean_transcript_text(str(text or ""))
+    cleaned = cleaned.replace(">>", " ")
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    return _MULTISPACE_RE.sub(" ", cleaned).strip(" -")
+
+
 def _parse_vtt(path: Path) -> List[Dict[str, Any]]:
     cues: List[Dict[str, Any]] = []
     current_start: Optional[float] = None
@@ -106,7 +221,7 @@ def _parse_vtt(path: Path) -> List[Dict[str, Any]]:
 
     def _flush() -> None:
         nonlocal current_start, current_end, current_lines
-        text = " ".join(line.strip() for line in current_lines if line.strip())
+        text = _clean_caption_text(" ".join(line.strip() for line in current_lines if line.strip()))
         if current_start is not None and current_end is not None and text:
             if not cues or cues[-1]["text"] != text:
                 cues.append({"start": current_start, "end": current_end, "text": text})
@@ -138,7 +253,7 @@ def _latest_caption_text(cues: List[Dict[str, Any]], lookback_seconds: float) ->
     for cue in reversed(cues):
         if (last_end - float(cue["end"])) > max(float(lookback_seconds), 30.0):
             break
-        text = str(cue["text"] or "").strip()
+        text = _clean_caption_text(cue.get("text") or "")
         if not text or text in seen:
             continue
         seen.add(text)
@@ -322,7 +437,7 @@ def _all_caption_text(cues: List[Dict[str, Any]]) -> str:
     chunks: List[str] = []
     seen: set[str] = set()
     for cue in cues:
-        text = str(cue.get("text") or "").strip()
+        text = _clean_caption_text(cue.get("text") or "")
         if not text or text in seen:
             continue
         seen.add(text)
@@ -353,6 +468,7 @@ def _windowed_caption_texts(cues: List[Dict[str, Any]], window_seconds: float) -
             _flush()
             window_start = cue_start
         text = str(cue.get("text") or "").strip()
+        text = _clean_caption_text(text)
         if not text or text in seen:
             continue
         seen.add(text)
@@ -487,7 +603,9 @@ def _probe_channel_streams(channel_url: str) -> Dict[str, Any]:
     latest: Optional[Dict[str, Any]] = None
     upcoming: Optional[Dict[str, Any]] = None
 
-    for entry in entries[:8]:
+    candidates: List[Dict[str, Any]] = []
+
+    for entry in entries[:24]:
         if not isinstance(entry, dict):
             continue
         video_url = _youtube_watch_url(str(entry.get("webpage_url") or entry.get("url") or entry.get("id") or ""))
@@ -501,12 +619,45 @@ def _probe_channel_streams(channel_url: str) -> Dict[str, Any]:
             "release_timestamp": entry.get("release_timestamp"),
             "timestamp": entry.get("timestamp"),
         }
+        candidates.append(item)
         if latest is None:
             latest = item
         if item["live_status"] in live_states:
             return {"probe_url": streams_url, "live": item, "upcoming": None, "latest": latest}
         if upcoming is None and item["live_status"] in upcoming_states:
             upcoming = item
+
+    # Flat playlist metadata can miss live_status on active or just-posted streams.
+    # Hydrate the most recent candidates before falling back to "awaiting live".
+    for idx, item in enumerate(candidates[:4]):
+        if idx > 0 and item.get("live_status"):
+            continue
+        hydrated_probe = _run_yt_dlp_json(
+            ["--dump-single-json", "--no-playlist", "--no-warnings", str(item.get("video_url") or "")],
+            timeout=120,
+        )
+        hydrated_payload = hydrated_probe.get("payload") or {}
+        if not isinstance(hydrated_payload, dict):
+            continue
+        hydrated = dict(item)
+        hydrated_status = str(hydrated_payload.get("live_status") or "").lower()
+        if hydrated_status:
+            hydrated["live_status"] = hydrated_status
+        hydrated_url = _youtube_watch_url(
+            str(hydrated_payload.get("webpage_url") or hydrated_payload.get("original_url") or hydrated_payload.get("url") or item.get("video_url") or "")
+        )
+        if hydrated_url:
+            hydrated["video_url"] = hydrated_url
+        hydrated_title = str(hydrated_payload.get("title") or hydrated_payload.get("fulltitle") or item.get("title") or "")
+        if hydrated_title:
+            hydrated["title"] = hydrated_title
+        candidates[idx] = hydrated
+        if idx == 0:
+            latest = hydrated
+        if hydrated["live_status"] in live_states or bool(hydrated_payload.get("is_live")):
+            return {"probe_url": streams_url, "live": hydrated, "upcoming": None, "latest": latest}
+        if upcoming is None and hydrated["live_status"] in upcoming_states:
+            upcoming = hydrated
 
     return {"probe_url": streams_url, "upcoming": upcoming, "latest": latest}
 
@@ -598,12 +749,20 @@ def _launch_media_ingest_for_stream(args: argparse.Namespace, *, youtube_url: st
         str(args.speaker),
         "--source",
         str(args.source),
+        "--symbols",
+        str(args.symbols or ""),
         "--language",
         str(args.media_ingest_language),
         "--audio-format",
         str(args.media_ingest_audio_format),
         "--asr-backend",
         str(args.media_ingest_asr_backend),
+        "--retain-policy",
+        str(args.media_ingest_retain_policy),
+        "--out-file",
+        str(args.out_file),
+        "--expires-hours",
+        str(args.expires_hours),
     ]
     if str(args.media_ingest_asr_model or "").strip():
         cmd.extend(["--asr-model", str(args.media_ingest_asr_model)])
@@ -613,6 +772,8 @@ def _launch_media_ingest_for_stream(args: argparse.Namespace, *, youtube_url: st
         cmd.extend(["--wait-for-live-seconds", str(round(float(wait_for_live_seconds), 3))])
     if bool(args.media_ingest_force_redownload):
         cmd.append("--force-redownload")
+    if bool(args.media_ingest_publish_bulletin):
+        cmd.append("--publish-bulletin")
 
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(f"[{_now_iso()}] starting macro media ingest for {youtube_url}\n")
@@ -715,24 +876,32 @@ def _maybe_trigger_media_ingest(
     trigger_reason = "live_stream_detected"
     result["media_ingest_prelive_window_minutes"] = trigger_prelive_minutes
     if stream_state in {"upcoming_detected", "awaiting_live_stream"}:
-        if trigger_prelive_minutes <= 0.0:
-            result["media_ingest_reason"] = "prelive_disabled"
-            return result
-        if not bool(calendar_correlation.get("calendar_correlation_ok")):
+        if bool(calendar_correlation.get("calendar_correlation_ok")):
+            if trigger_prelive_minutes <= 0.0:
+                result["media_ingest_reason"] = "prelive_disabled"
+                return result
+            event_time_ts = _parse_iso_to_epoch(calendar_correlation.get("calendar_event_time_utc"))
+            if event_time_ts is None:
+                result["media_ingest_reason"] = "missing_calendar_time"
+                return result
+            seconds_until_event = event_time_ts - time.time()
+            result["media_ingest_seconds_until_event"] = round(float(seconds_until_event), 3)
+            if seconds_until_event > (trigger_prelive_minutes * 60.0):
+                result["media_ingest_reason"] = "outside_prelive_window"
+                return result
+            wait_for_live_seconds = max(seconds_until_event, 0.0) + max(float(args.media_ingest_wait_buffer_seconds or 0.0), 0.0)
+            trigger_reason = "calendar_prelive_arm"
+            result["media_ingest_trigger_mode"] = "prelive"
+        elif stream_state == "upcoming_detected":
+            wait_for_live_seconds = max(float(args.media_ingest_wait_buffer_seconds or 0.0), 0.0)
+            if wait_for_live_seconds <= 0.0:
+                result["media_ingest_reason"] = "missing_wait_buffer"
+                return result
+            trigger_reason = "upcoming_stream_prelive_arm"
+            result["media_ingest_trigger_mode"] = "prelive"
+        else:
             result["media_ingest_reason"] = "calendar_not_matched"
             return result
-        event_time_ts = _parse_iso_to_epoch(calendar_correlation.get("calendar_event_time_utc"))
-        if event_time_ts is None:
-            result["media_ingest_reason"] = "missing_calendar_time"
-            return result
-        seconds_until_event = event_time_ts - time.time()
-        result["media_ingest_seconds_until_event"] = round(float(seconds_until_event), 3)
-        if seconds_until_event > (trigger_prelive_minutes * 60.0):
-            result["media_ingest_reason"] = "outside_prelive_window"
-            return result
-        wait_for_live_seconds = max(seconds_until_event, 0.0) + max(float(args.media_ingest_wait_buffer_seconds or 0.0), 0.0)
-        trigger_reason = "calendar_prelive_arm"
-        result["media_ingest_trigger_mode"] = "prelive"
     elif stream_state == "live":
         result["media_ingest_trigger_mode"] = "live"
     else:
@@ -799,9 +968,13 @@ def _maybe_trigger_media_ingest(
     result.update(launch)
     result["media_ingest_triggered_at_utc"] = attempted_at_utc
     result["media_ingest_command"] = " ".join(launch["media_ingest_command"])
-    result["media_ingest_reason"] = "armed_from_calendar_prelive_window" if trigger_reason == "calendar_prelive_arm" else "triggered_on_live_stream_detected"
+    result["media_ingest_reason"] = (
+        "armed_from_calendar_prelive_window"
+        if trigger_reason == "calendar_prelive_arm"
+        else ("armed_from_upcoming_stream_detected" if trigger_reason == "upcoming_stream_prelive_arm" else "triggered_on_live_stream_detected")
+    )
     append_live_macro_event(
-        event_type="media_ingest_prelive_arm" if trigger_reason == "calendar_prelive_arm" else "media_ingest_trigger",
+        event_type="media_ingest_prelive_arm" if trigger_reason in {"calendar_prelive_arm", "upcoming_stream_prelive_arm"} else "media_ingest_trigger",
         payload={
             "timestamp_utc": attempted_at_utc,
             "youtube_url": youtube_url,
@@ -818,6 +991,149 @@ def _maybe_trigger_media_ingest(
             "stream_title": str(target.get("stream_title") or ""),
             "trigger_reason": trigger_reason,
         },
+    )
+    return result
+
+
+def _run_full_video_replay(args: argparse.Namespace, *, youtube_url: str, out_path: Path) -> Dict[str, Any]:
+    replay_args = argparse.Namespace(**vars(args).copy())
+    replay_args.youtube_url = str(youtube_url or "").strip()
+    replay_args.youtube_channel_url = ""
+    replay_args.channel_preset = ""
+    replay_args.replay_full_video = True
+    replay_args.once = True
+    replay_args.correlate_with_schwab_calendar = False
+    replay_args.trigger_media_ingest_on_live = False
+    replay_args.trigger_media_ingest_before_minutes = 0.0
+    replay_args.replay_full_video_on_stream_end = False
+    return _run_once(replay_args, {}, out_path)
+
+
+def _maybe_run_post_live_replay(
+    args: argparse.Namespace,
+    state: Dict[str, Any],
+    target: Dict[str, Any],
+    out_path: Path,
+) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "post_live_replay_enabled": bool(getattr(args, "replay_full_video_on_stream_end", False)),
+        "post_live_replay_triggered": False,
+    }
+    if not bool(getattr(args, "replay_full_video_on_stream_end", False)):
+        result["post_live_replay_reason"] = "disabled"
+        return result
+
+    last_stream_state = str(state.get("last_stream_state") or "")
+    last_live_video_url = str(state.get("last_live_video_url") or "").strip()
+    latest_video_url = str(target.get("latest_video_url") or "").strip()
+    latest_live_status = str(target.get("latest_live_status") or "").strip().lower()
+    completed_statuses = {"was_live", "post_live"}
+    candidate_url = last_live_video_url or latest_video_url
+
+    if not candidate_url:
+        result["post_live_replay_reason"] = "missing_video_url"
+        return result
+    if last_stream_state != "live" and latest_live_status not in completed_statuses:
+        result["post_live_replay_reason"] = "awaiting_stream_end"
+        return result
+
+    replayed_url = str(state.get("last_post_live_replay_video_url") or "").strip()
+    if replayed_url and replayed_url == candidate_url:
+        result.update(
+            {
+                "post_live_replay_reason": "already_replayed_for_stream",
+                "post_live_replay_video_url": replayed_url,
+                "post_live_replay_at_utc": str(state.get("last_post_live_replay_at_utc") or ""),
+                "post_live_replay_ok": bool(state.get("last_post_live_replay_ok")),
+                "post_live_replay_analysis_mode": str(state.get("last_post_live_replay_analysis_mode") or ""),
+                "post_live_replay_excerpt": str(state.get("last_post_live_replay_excerpt") or ""),
+                "post_live_replay_error": str(state.get("last_post_live_replay_error") or ""),
+            }
+        )
+        return result
+
+    triggered_at_utc = _now_iso()
+    try:
+        replay_status = _run_full_video_replay(args, youtube_url=candidate_url, out_path=out_path)
+    except Exception as exc:
+        error = f"{type(exc).__name__}:{exc}"
+        state.update(
+            {
+                "last_post_live_replay_video_url": candidate_url,
+                "last_post_live_replay_at_utc": triggered_at_utc,
+                "last_post_live_replay_ok": False,
+                "last_post_live_replay_analysis_mode": "",
+                "last_post_live_replay_excerpt": "",
+                "last_post_live_replay_error": error,
+            }
+        )
+        append_live_macro_event(
+            event_type="post_live_replay_error",
+            payload={
+                "timestamp_utc": triggered_at_utc,
+                "youtube_url": candidate_url,
+                "youtube_channel_url": str(target.get("channel_url") or ""),
+                "speaker": args.speaker,
+                "source": args.source,
+                "error": error,
+            },
+            out_file=out_path,
+            extra={
+                "youtube_url": candidate_url,
+                "youtube_channel_url": str(target.get("channel_url") or ""),
+                "latest_video_url": latest_video_url,
+                "latest_live_status": latest_live_status,
+            },
+        )
+        result.update(
+            {
+                "post_live_replay_reason": "replay_error",
+                "post_live_replay_video_url": candidate_url,
+                "post_live_replay_at_utc": triggered_at_utc,
+                "post_live_replay_ok": False,
+                "post_live_replay_error": error,
+            }
+        )
+        return result
+
+    state.update(
+        {
+            "last_post_live_replay_video_url": candidate_url,
+            "last_post_live_replay_at_utc": triggered_at_utc,
+            "last_post_live_replay_ok": bool(replay_status.get("ok")),
+            "last_post_live_replay_analysis_mode": str(replay_status.get("analysis_mode") or ""),
+            "last_post_live_replay_excerpt": str(replay_status.get("caption_excerpt") or ""),
+            "last_post_live_replay_error": "",
+        }
+    )
+    append_live_macro_event(
+        event_type="post_live_replay",
+        payload={
+            "timestamp_utc": triggered_at_utc,
+            "youtube_url": candidate_url,
+            "youtube_channel_url": str(target.get("channel_url") or ""),
+            "speaker": args.speaker,
+            "source": args.source,
+            "replay_status": replay_status,
+        },
+        out_file=out_path,
+        extra={
+            "youtube_url": candidate_url,
+            "youtube_channel_url": str(target.get("channel_url") or ""),
+            "latest_video_url": latest_video_url,
+            "latest_live_status": latest_live_status,
+        },
+    )
+    result.update(
+        {
+            "post_live_replay_triggered": True,
+            "post_live_replay_reason": "replayed_after_stream_end",
+            "post_live_replay_video_url": candidate_url,
+            "post_live_replay_at_utc": triggered_at_utc,
+            "post_live_replay_ok": bool(replay_status.get("ok")),
+            "post_live_replay_analysis_mode": str(replay_status.get("analysis_mode") or ""),
+            "post_live_replay_excerpt": str(replay_status.get("caption_excerpt") or ""),
+        }
     )
     return result
 
@@ -1440,6 +1756,7 @@ def _run_once(args: argparse.Namespace, state: Dict[str, Any], out_path: Path) -
 
     if stream_state != "live":
         timestamp_utc = _now_iso()
+        replay_status = _maybe_run_post_live_replay(args, state, target, out_path)
         status = {
             "timestamp_utc": timestamp_utc,
             "ok": True,
@@ -1469,6 +1786,7 @@ def _run_once(args: argparse.Namespace, state: Dict[str, Any], out_path: Path) -
             if value:
                 status[key] = value
         status.update(trigger_status)
+        status.update(replay_status)
         if calendar_correlation:
             status.update(calendar_correlation)
         transition_key = "|".join(
@@ -1641,6 +1959,8 @@ def _run_once(args: argparse.Namespace, state: Dict[str, Any], out_path: Path) -
             "last_stream_state": "live",
             "last_stream_transition_key": str(target.get("resolved_video_url") or ""),
             "last_channel_url": str(target.get("channel_url") or ""),
+            "last_live_video_url": str(target.get("resolved_video_url") or ""),
+            "last_live_stream_title": str(target.get("stream_title") or ""),
         }
     )
     return status
@@ -1650,7 +1970,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Poll YouTube auto-captions and keep the live macro bulletin updated.")
     parser.add_argument("--youtube-url")
     parser.add_argument("--youtube-channel-url")
-    parser.add_argument("--template", choices=("powell", "fed", "generic"), default="powell")
+    parser.add_argument("--channel-preset", choices=sorted(LIVE_MACRO_CHANNEL_PRESETS))
+    parser.add_argument("--template", choices=LIVE_MACRO_TEMPLATES, default="powell")
     parser.add_argument("--speaker", default="Jerome Powell")
     parser.add_argument("--source", default="Federal Reserve")
     parser.add_argument("--symbols", default="")
@@ -1672,12 +1993,16 @@ def main() -> int:
     parser.add_argument("--media-ingest-asr-model", default="")
     parser.add_argument("--media-ingest-cookies-from-browser", default=os.getenv("LIVE_MACRO_COOKIES_FROM_BROWSER", ""))
     parser.add_argument("--media-ingest-wait-buffer-seconds", type=float, default=1800.0)
+    parser.add_argument("--media-ingest-retain-policy", choices=("all", "actionable_only"), default="all")
+    parser.add_argument("--media-ingest-publish-bulletin", action="store_true")
     parser.add_argument("--media-ingest-force-redownload", action="store_true")
+    parser.add_argument("--replay-full-video-on-stream-end", action="store_true")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    args = _apply_channel_preset(args)
     if not args.youtube_url and not args.youtube_channel_url:
-        raise SystemExit("youtube input required: pass --youtube-url or --youtube-channel-url")
+        raise SystemExit("youtube input required: pass --youtube-url or --youtube-channel-url or --channel-preset")
     if args.youtube_url and args.youtube_channel_url:
         raise SystemExit("pass either --youtube-url or --youtube-channel-url, not both")
     if args.replay_full_video and not args.once:

@@ -211,6 +211,44 @@ class SqlHotRetentionTests(unittest.TestCase):
             deleted_path = Path(pruning["deleted_archive_files"][0])
             self.assertFalse(deleted_path.exists())
 
+    def test_hot_hours_archives_older_same_day_rows(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db = root / "jsonl_link.sqlite3"
+            archive_db = root / "jsonl_link_archive.sqlite3"
+            _init_db(db)
+
+            now = datetime.now(timezone.utc)
+            _insert_rows(
+                db,
+                [
+                    (1, (now - timedelta(hours=3)).isoformat(), "old.jsonl", 1),
+                    (2, (now - timedelta(minutes=20)).isoformat(), "fresh.jsonl", 2),
+                ],
+            )
+
+            rc, payload = _run_main(
+                module,
+                [
+                    "sql_hot_retention.py",
+                    "--db",
+                    str(db),
+                    "--archive-db",
+                    str(archive_db),
+                    "--hot-hours",
+                    "1",
+                    "--json",
+                ],
+            )
+
+            self.assertEqual(rc, 0)
+            self.assertEqual(payload["hot_window"]["unit"], "hours")
+            self.assertEqual(payload["hot_window"]["value"], 1)
+            self.assertEqual(payload["moved_rows"], 1)
+            self.assertEqual(_count_rows(archive_db), 1)
+            self.assertEqual(_count_rows(db), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

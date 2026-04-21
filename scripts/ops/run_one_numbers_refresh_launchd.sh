@@ -43,6 +43,10 @@ else:
 PY
 }
 
+refresh_guard_output() {
+  "$PYTHON_BIN" "$PROJECT_ROOT/scripts/resource_guard.py" --profile refresh
+}
+
 session_start_hour="${SESSION_START%%:*}"
 session_start_minute="${SESSION_START##*:}"
 session_end_hour="${SESSION_END%%:*}"
@@ -65,7 +69,7 @@ fi
 summary_age_seconds="$(age_seconds_for "$SUMMARY_PATH")"
 
 guard_output=""
-if ! guard_output="$("$PYTHON_BIN" "$PROJECT_ROOT/scripts/resource_guard.py" --profile refresh)"; then
+if ! guard_output="$(refresh_guard_output)"; then
   echo "one_numbers_refresh skip resource_guard_blocked session_open=$session_open detail=${guard_output:-resource_guard_blocked}"
   exit 0
 fi
@@ -74,7 +78,11 @@ if (( summary_age_seconds >= ${target_interval:-300} )); then
   if ps -axo command | grep -q "[b]uild_one_numbers_report.py"; then
     echo "one_numbers_refresh skip refresh_already_running session_open=$session_open"
   else
-    "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_one_numbers_report.py" --lightweight --no-sql-write
+    if (( session_open == 1 )); then
+      "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_one_numbers_report.py" --lightweight --no-sql-write
+    else
+      "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_one_numbers_report.py"
+    fi
   fi
 else
   echo "one_numbers_refresh skip age_seconds=$summary_age_seconds target_interval=$target_interval session_open=$session_open"
@@ -82,7 +90,9 @@ fi
 
 backpressure_age_seconds="$(age_seconds_for "$BACKPRESSURE_PATH")"
 if (( backpressure_age_seconds >= ${INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS:-300} )); then
-  if ! ps -axo command | grep -q "[i]ngestion_backpressure_guard.py"; then
+  if ! guard_output="$(refresh_guard_output)"; then
+    echo "ingestion_backpressure_refresh skip resource_guard_blocked age_seconds=$backpressure_age_seconds detail=${guard_output:-resource_guard_blocked}"
+  elif ! ps -axo command | grep -q "[i]ngestion_backpressure_guard.py"; then
     "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ingestion_backpressure_guard.py" --json || true
   else
     echo "ingestion_backpressure_refresh skip refresh_already_running age_seconds=$backpressure_age_seconds"
@@ -91,7 +101,9 @@ fi
 
 divergence_age_seconds="$(age_seconds_for "$DIVERGENCE_PATH")"
 if (( divergence_age_seconds >= ${DATA_SOURCE_DIVERGENCE_REFRESH_INTERVAL_SECONDS:-600} )); then
-  if ! ps -axo command | grep -q "[d]ata_source_divergence_bot.py"; then
+  if ! guard_output="$(refresh_guard_output)"; then
+    echo "data_source_divergence_refresh skip resource_guard_blocked age_seconds=$divergence_age_seconds detail=${guard_output:-resource_guard_blocked}"
+  elif ! ps -axo command | grep -q "[d]ata_source_divergence_bot.py"; then
     "$PYTHON_BIN" "$PROJECT_ROOT/scripts/data_source_divergence_bot.py" --json || true
   else
     echo "data_source_divergence_refresh skip refresh_already_running age_seconds=$divergence_age_seconds"

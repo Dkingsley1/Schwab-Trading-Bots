@@ -51,13 +51,13 @@ def _should_auto_rebaseline(
     source_ok: bool,
     source_hash_match: bool = False,
 ) -> bool:
-    if not source_ok:
-        return False
     # If the source replay artifact already declares its current hash healthy,
     # prefer syncing the registry immediately instead of waiting for age-based
     # staleness to expire.
     if bool(source_hash_match):
         return True
+    if not source_ok:
+        return False
     updated = _parse_iso_utc(node.get("updated_utc"))
     if updated is None:
         return True

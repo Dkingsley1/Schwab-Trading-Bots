@@ -1,5 +1,9 @@
+import json
+from datetime import datetime, timezone
+
 from scripts.collect_bls_census_data import _derive_fred_macro_context
 from scripts.collect_official_macro_context import (
+    _cached_federal_reserve_calendar_rows,
     _calendar_rows_from_news,
     _parse_bls_ics,
     _parse_federal_reserve_calendar_text,
@@ -124,3 +128,30 @@ def test_parse_news_links_from_html_extracts_treasury_press_release_rows():
     assert "auction" in rows[0]["headline"].lower()
     assert rows[0]["macro_event_type"] == "treasury_auction"
     assert rows[0]["importance"] == "High"
+
+
+def test_cached_federal_reserve_calendar_rows_reuses_recent_rows(tmp_path):
+    payload_path = tmp_path / "official_macro_context_latest.json"
+    payload_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": "2026-04-17T12:00:00+00:00",
+                "derived": {
+                    "calendar_rows": [
+                        {"source": "Federal Reserve", "title": "Speech - Chair Powell"},
+                        {"source": "U.S. Treasury", "title": "Auction"},
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rows = _cached_federal_reserve_calendar_rows(
+        payload_path,
+        now=datetime(2026, 4, 17, 15, 0, tzinfo=timezone.utc),
+        max_age_hours=72.0,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["source"] == "Federal Reserve"

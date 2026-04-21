@@ -10,6 +10,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT_PATH = PROJECT_ROOT / "data" / "external_context" / "live_macro_latest.json"
 DEFAULT_EVENT_DIR = PROJECT_ROOT / "governance" / "events"
 FALLBACK_EVENT_PATH = Path("/tmp/live_macro_events.jsonl")
+LIVE_MACRO_TEMPLATES = (
+    "powell",
+    "fed",
+    "policy_testimony",
+    "legal_policy",
+    "earnings_call",
+    "ceo_interview",
+    "analyst_day",
+    "generic",
+)
 
 _POWELL_DEFAULT_SYMBOLS = [
     "SPY",
@@ -26,6 +36,29 @@ _POWELL_DEFAULT_SYMBOLS = [
     "MSTR",
     "TSLA",
     "NVDA",
+]
+
+_POLICY_TESTIMONY_DEFAULT_SYMBOLS = [
+    "SPY",
+    "QQQ",
+    "IWM",
+    "TLT",
+    "IEF",
+    "UUP",
+    "GLD",
+    "XLF",
+]
+
+_LEGAL_POLICY_DEFAULT_SYMBOLS = [
+    "SPY",
+    "QQQ",
+    "IWM",
+    "XLF",
+    "KRE",
+    "XLV",
+    "XLE",
+    "XLI",
+    "TLT",
 ]
 
 _STANCE_HINTS = {
@@ -197,6 +230,58 @@ def build_live_macro_payload(
                 "shock_hint": max(_IMPACT_HINTS[str(impact or "high")], 0.85),
             }
         )
+    elif template == "policy_testimony":
+        defaults.update(
+            {
+                "headline": "Policy testimony and prepared remarks",
+                "speaker": "Federal Reserve / Treasury",
+                "source": "U.S. Policy Testimony",
+                "symbols": list(_POLICY_TESTIMONY_DEFAULT_SYMBOLS),
+                "broad_market": True,
+                "shock_hint": max(_IMPACT_HINTS[str(impact or "high")], 0.82),
+            }
+        )
+    elif template == "legal_policy":
+        defaults.update(
+            {
+                "headline": "Supreme Court / legal policy event",
+                "speaker": "Supreme Court / legal policy source",
+                "source": "Legal Policy Event",
+                "symbols": list(_LEGAL_POLICY_DEFAULT_SYMBOLS),
+                "broad_market": True,
+                "shock_hint": max(_IMPACT_HINTS[str(impact or "high")], 0.70),
+            }
+        )
+    elif template == "earnings_call":
+        defaults.update(
+            {
+                "headline": "Company earnings call",
+                "source": "Company Earnings Call",
+                "symbols": [],
+                "broad_market": False,
+                "shock_hint": max(_IMPACT_HINTS[str(impact or "high")], 0.76),
+            }
+        )
+    elif template == "ceo_interview":
+        defaults.update(
+            {
+                "headline": "CEO interview",
+                "source": "Management Interview",
+                "symbols": [],
+                "broad_market": False,
+                "shock_hint": max(_IMPACT_HINTS[str(impact or "high")], 0.72),
+            }
+        )
+    elif template == "analyst_day":
+        defaults.update(
+            {
+                "headline": "Company analyst day",
+                "source": "Analyst Day",
+                "symbols": [],
+                "broad_market": False,
+                "shock_hint": max(_IMPACT_HINTS[str(impact or "high")], 0.74),
+            }
+        )
 
     published_iso = _parse_timestamp(published)
     expires_at = datetime.fromisoformat(published_iso.replace("Z", "+00:00")) + timedelta(hours=max(float(expires_hours), 0.25))
@@ -273,7 +358,7 @@ def build_live_macro_payload(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Publish or clear a live macro bulletin for the shadow loops.")
-    parser.add_argument("--template", choices=("powell", "fed", "generic"), default="generic")
+    parser.add_argument("--template", choices=LIVE_MACRO_TEMPLATES, default="generic")
     parser.add_argument("--headline", default="")
     parser.add_argument("--summary", default="")
     parser.add_argument("--content", default="")

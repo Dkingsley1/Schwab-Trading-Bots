@@ -10,7 +10,7 @@ import os
 import re
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -241,6 +241,70 @@ def _parse_mmddyy_token(raw: str) -> datetime | None:
         return datetime.strptime(str(raw or "").strip(), "%m%d%y").replace(tzinfo=timezone.utc)
     except Exception:
         return None
+
+
+def _third_friday(year: int, month: int) -> datetime:
+    dt = datetime(year, month, 1, tzinfo=timezone.utc)
+    while dt.weekday() != 4:
+        dt += timedelta(days=1)
+    return dt + timedelta(days=14)
+
+
+def _last_business_day(year: int, month: int) -> datetime:
+    if month == 12:
+        dt = datetime(year + 1, 1, 1, tzinfo=timezone.utc) - timedelta(days=1)
+    else:
+        dt = datetime(year, month + 1, 1, tzinfo=timezone.utc) - timedelta(days=1)
+    while dt.weekday() >= 5:
+        dt -= timedelta(days=1)
+    return dt
+
+
+def _last_friday(year: int, month: int) -> datetime:
+    dt = _last_business_day(year, month)
+    while dt.weekday() != 4:
+        dt -= timedelta(days=1)
+    return dt
+
+
+def _window_norm(now_utc: datetime, target_dt: datetime, *, before_days: float, after_days: float) -> float:
+    delta_days = (target_dt - now_utc).total_seconds() / 86400.0
+    if delta_days >= 0.0:
+        return _clamp01(1.0 - (delta_days / max(float(before_days), 1e-6)))
+    return _clamp01(1.0 - (abs(delta_days) / max(float(after_days), 1e-6)))
+
+
+def _derive_trading_calendar_features(now_utc: datetime) -> dict[str, float]:
+    months = []
+    for month_delta in (-1, 0, 1, 2):
+        year = now_utc.year + ((now_utc.month - 1 + month_delta) // 12)
+        month = ((now_utc.month - 1 + month_delta) % 12) + 1
+        months.append((year, month))
+
+    monthly_opex = [_third_friday(year, month) for year, month in months]
+    month_ends = [_last_business_day(year, month) for year, month in months]
+    quarter_months = [(year, month) for year, month in months if month in {3, 6, 9, 12}]
+    quarter_ends = [_last_business_day(year, month) for year, month in quarter_months]
+    quarterly_opex = [_third_friday(year, month) for year, month in quarter_months]
+    june_rebalances = [_last_friday(year, month) for year, month in months if month == 6]
+
+    opex_week = max((_window_norm(now_utc, dt, before_days=7.0, after_days=2.0) for dt in monthly_opex), default=0.0)
+    month_end = max((_window_norm(now_utc, dt, before_days=4.0, after_days=1.5) for dt in month_ends), default=0.0)
+    quarter_end = max((_window_norm(now_utc, dt, before_days=14.0, after_days=2.0) for dt in quarter_ends), default=0.0)
+    futures_roll = max((_window_norm(now_utc, dt, before_days=8.0, after_days=1.0) for dt in quarterly_opex), default=0.0)
+    index_rebalance = max(
+        max((_window_norm(now_utc, dt, before_days=6.0, after_days=1.0) for dt in quarter_ends), default=0.0),
+        max((_window_norm(now_utc, dt, before_days=7.0, after_days=1.0) for dt in june_rebalances), default=0.0),
+    )
+
+    return {
+        "calendar_options_expiry_week_norm": max(opex_week, 0.0),
+        "calendar_opex_week_norm": max(opex_week, 0.0),
+        "calendar_month_end_rebalance_norm": max(month_end, 0.0),
+        "calendar_quarter_end_rebalance_norm": max(quarter_end, 0.0),
+        "calendar_futures_roll_window_norm": max(futures_roll, 0.0),
+        "calendar_index_rebalance_window_norm": max(index_rebalance, 0.0),
+    }
 
 
 def _discover_cftc_financial_report_url(user_agent: str, timeout: float) -> tuple[str | None, dict[str, Any]]:
@@ -624,6 +688,7 @@ def collect_extended_quant_context(
     tracked_set = {symbol.upper() for symbol in symbols}
     errors: list[str] = []
 
+    derived_calendar = _derive_trading_calendar_features(now)
     derived_global: dict[str, float] = {}
     derived_symbol: dict[str, dict[str, float]] = {}
     bond_overlay: dict[str, Any] = {}
@@ -798,7 +863,7 @@ def collect_extended_quant_context(
             "sec_ftd_rows": sec_ftd_rows[:160],
         },
         "derived": {
-            "calendar_features": {},
+            "calendar_features": derived_calendar,
             "news_features": {},
             "global_features": derived_global,
             "symbol_features": derived_symbol,

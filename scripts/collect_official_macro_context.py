@@ -11,9 +11,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
-from urllib.request import Request, urlopen
 
 try:
     from zoneinfo import ZoneInfo
@@ -24,6 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.collector_transport import attach_collection_confidence, fetch_text
 from core.derivatives_features import summarize_calendar_payload
 from core.market_context_features import load_latest_external_context, summarize_structured_news_items
 
@@ -63,15 +62,26 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _http_text(url: str, *, timeout: float = 25.0) -> str:
-    req = Request(url=url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
-    with urlopen(req, timeout=max(float(timeout), 1.0)) as resp:
-        return resp.read().decode("utf-8", "replace")
+    result = fetch_text(
+        url,
+        user_agent=USER_AGENT,
+        timeout=timeout,
+        collector_key="official_macro_context",
+        source_name="official_macro_context",
+        entity_key=url,
+        project_root=PROJECT_ROOT,
+        source_confidence_norm=0.98,
+        schema_confidence_norm=0.94,
+    )
+    if not bool(result.get("ok", False)):
+        raise RuntimeError(str(result.get("error") or "http_fetch_failed"))
+    return str(result.get("text") or "")
 
 
 def _safe_http_text(url: str, *, timeout: float = 25.0) -> tuple[str | None, str | None]:
     try:
         return _http_text(url, timeout=timeout), None
-    except (HTTPError, URLError, TimeoutError, ValueError, OSError) as exc:
+    except (RuntimeError, TimeoutError, ValueError, OSError) as exc:
         return None, str(exc)
 
 
@@ -200,6 +210,18 @@ def _enrich_macro_row(row: dict[str, Any], *, source_name: str) -> dict[str, Any
     out["importance_score"] = float(out.get("importance_score") or importance_score)
     out["market_session"] = str(out.get("market_session") or _market_session_label(published))
     out["source_quality_norm"] = float(out.get("source_quality_norm") or SOURCE_QUALITY.get(_source_publisher(source_name), 0.9))
+    out["source_confidence_norm"] = float(out.get("source_confidence_norm") or out["source_quality_norm"])
+    out["schema_confidence_norm"] = float(out.get("schema_confidence_norm") or 0.94)
+    published_ts = _parse_ts(str(published or ""))
+    if published_ts:
+        try:
+            published_dt = datetime.fromisoformat(published_ts.replace("Z", "+00:00"))
+            age_seconds = max((datetime.now(timezone.utc) - published_dt.astimezone(timezone.utc)).total_seconds(), 0.0)
+            out["freshness_norm"] = max(0.0, min(1.0, 1.0 - (age_seconds / (7.0 * 24.0 * 3600.0))))
+        except Exception:
+            out["freshness_norm"] = float(out.get("freshness_norm") or 1.0)
+    else:
+        out["freshness_norm"] = float(out.get("freshness_norm") or 1.0)
     out["broad_market"] = bool(out.get("broad_market", True))
     out["macro_event"] = bool(out.get("macro_event", True))
     if speaker:
@@ -207,7 +229,13 @@ def _enrich_macro_row(row: dict[str, Any], *, source_name: str) -> dict[str, Any
     for key in ("actual", "forecast", "previous", "revised"):
         if key in numeric_fields and key not in out:
             out[key] = numeric_fields[key]
-    return out
+    return attach_collection_confidence(
+        out,
+        source_confidence_norm=float(out.get("source_confidence_norm") or out["source_quality_norm"]),
+        schema_confidence_norm=float(out.get("schema_confidence_norm") or 0.94),
+        freshness_norm=float(out.get("freshness_norm") or 1.0),
+        fetched_utc=str(out.get("fetched_utc") or ""),
+    )
 
 
 def _extract_feed_urls(page_url: str, page_html: str) -> list[str]:
@@ -539,6 +567,32 @@ def _load_existing_json(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _cached_federal_reserve_calendar_rows(path: Path, *, now: datetime, max_age_hours: float = 72.0) -> list[dict[str, Any]]:
+    payload = _load_existing_json(path)
+    raw_ts = _parse_ts(str(payload.get("timestamp_utc") or ""))
+    if not raw_ts:
+        return []
+    try:
+        ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+    except Exception:
+        return []
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    if (now - ts.astimezone(timezone.utc)).total_seconds() > max(float(max_age_hours), 1.0) * 3600.0:
+        return []
+
+    derived = payload.get("derived") if isinstance(payload.get("derived"), dict) else {}
+    calendar_rows = derived.get("calendar_rows") if isinstance(derived.get("calendar_rows"), list) else []
+    out: list[dict[str, Any]] = []
+    for row in calendar_rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("source") or "").strip().lower() != "federal reserve":
+            continue
+        out.append(dict(row))
+    return out
+
+
 def collect(args: argparse.Namespace) -> int:
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
@@ -555,7 +609,13 @@ def collect(args: argparse.Namespace) -> int:
     news_rows: list[dict[str, Any]] = []
 
     bls_ics, bls_error = _safe_http_text(BLS_ICS_URL, timeout=args.timeout_seconds)
-    status["sources"]["bls_calendar"] = {"url": BLS_ICS_URL, "ok": bls_ics is not None, "error": bls_error}
+    status["sources"]["bls_calendar"] = {
+        "url": BLS_ICS_URL,
+        "ok": bls_ics is not None,
+        "error": bls_error,
+        "required": True,
+        "contract_participates": True,
+    }
     if bls_ics:
         calendar_rows.extend(_parse_bls_ics(bls_ics))
 
@@ -579,10 +639,22 @@ def collect(args: argparse.Namespace) -> int:
                     fed_calendar_errors.append(f"{year}-{month:02d}:{page_error}")
             continue
         fed_calendar_rows.extend(_parse_federal_reserve_calendar_text(page_text, year=year, month=month))
+    fed_calendar_fallback = ""
+    if not fed_calendar_rows:
+        cached_fed_rows = _cached_federal_reserve_calendar_rows(
+            external_context_root / "official_macro_context_latest.json",
+            now=now,
+        )
+        if cached_fed_rows:
+            fed_calendar_rows = cached_fed_rows
+            fed_calendar_fallback = "cached_rows"
     status["sources"]["federal_reserve_calendar"] = {
         "ok": bool(fed_calendar_rows),
         "rows": len(fed_calendar_rows),
         "error": "; ".join(fed_calendar_errors[-3:]) if fed_calendar_errors else None,
+        "fallback": fed_calendar_fallback or None,
+        "required": False,
+        "contract_participates": False,
     }
     calendar_rows.extend(fed_calendar_rows)
 
@@ -617,6 +689,8 @@ def collect(args: argparse.Namespace) -> int:
             source_status["error"] = "; ".join(feed_errors[-3:])
         if source_news:
             news_rows.extend(source_news)
+        source_status["required"] = True
+        source_status["contract_participates"] = True
         status["sources"][source_name] = source_status
 
     calendar_rows.extend(_calendar_rows_from_news(news_rows))

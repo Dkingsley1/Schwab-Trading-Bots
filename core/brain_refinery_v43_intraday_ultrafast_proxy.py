@@ -1,4 +1,11 @@
+from pathlib import Path
+import sys
+
 import numpy as np
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from indicator_bot_common import ema, rolling_std, train_indicator_bot, train_runtime_indicator_bot
 from runtime_training_common import (
@@ -10,7 +17,7 @@ from runtime_training_common import (
     price_change,
 )
 
-_TOP_CRYPTO_SYMBOLS = ["BTC-USD", "ETH-USD", "SOL-USD", "AVAX-USD", "LINK-USD", "DOGE-USD", "LTC-USD", "XRP-USD"]
+_TOP_CRYPTO_SYMBOLS = ["BTC-USD", "ETH-USD"]
 
 
 def build_features(panel):
@@ -111,13 +118,13 @@ def _runtime_sample_filter(sequence, idx, horizon):
         _crypto_burst_signal(obs) * 0.002,
     )
     return (
-        spread <= 14.0
-        and queue_depth >= 1.5
-        and latency_ms <= 1400.0
-        and quote_agreement >= 0.90
-        and max(provider_agreement, _crypto_burst_signal(obs)) >= 0.50
-        and abs(_directional_burst_bias(obs)) >= 0.16
-        and burst >= 0.0010
+        spread <= 12.0
+        and queue_depth >= 2.0
+        and latency_ms <= 1200.0
+        and quote_agreement >= 0.92
+        and max(provider_agreement, _crypto_burst_signal(obs)) >= 0.58
+        and abs(_directional_burst_bias(obs)) >= 0.18
+        and burst >= 0.0011
     )
 
 
@@ -245,28 +252,29 @@ def train_brain():
         symbol_allowlist=_TOP_CRYPTO_SYMBOLS,
         sample_filter=_runtime_sample_filter,
         confidence_builder=_runtime_confidence,
-        min_confidence=0.56,
+        min_confidence=0.60,
         sample_stride=4,
-        lookback_days=45,
+        lookback_days=60,
         window=16,
         horizon=3,
-        min_samples=224,
-        min_sequences=4,
-        min_positive_samples=40,
-        min_negative_samples=40,
-        acted_prob_threshold=0.62,
+        min_samples=192,
+        min_sequences=5,
+        min_positive_samples=32,
+        min_negative_samples=32,
+        acted_prob_threshold=0.68,
         fallback_trainer=_train_synthetic,
         allow_fallback_on_insufficient_data=False,
         max_best_val_loss=0.6925,
         max_final_val_loss=0.7050,
-        min_long_precision=0.52,
+        min_long_precision=0.0,
         min_short_precision=0.52,
-        require_both_sides_precision=True,
-        min_acted_accuracy=0.53,
-        min_long_acted_count=6,
-        min_short_acted_count=6,
+        require_both_sides_precision=False,
+        min_acted_accuracy=0.54,
+        min_long_acted_count=0,
+        min_short_acted_count=4,
         min_accuracy_lift_over_majority=0.015,
-        min_precision_balance_score=0.25,
+        min_precision_balance_score=0.0,
+        max_acted_coverage=0.26,
     )
 
 

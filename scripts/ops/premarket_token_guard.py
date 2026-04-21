@@ -16,8 +16,10 @@ from core.runtime_python import resolve_runtime_python
 
 DEFAULT_TOKEN_PATH = PROJECT_ROOT / 'token.json'
 DEFAULT_OUT_PATH = PROJECT_ROOT / 'governance' / 'health' / 'premarket_token_guard_latest.json'
+DEFAULT_BROKER_READINESS_PATH = PROJECT_ROOT / 'governance' / 'health' / 'broker_readiness_latest.json'
 DEFAULT_EVENT_DIR = PROJECT_ROOT / 'governance' / 'events'
 FALLBACK_OUT_PATH = Path('/tmp/premarket_token_guard_latest.json')
+FALLBACK_BROKER_READINESS_PATH = Path('/tmp/broker_readiness_latest.json')
 FALLBACK_EVENT_PATH = Path('/tmp/premarket_token_guard_events.jsonl')
 ALERT_ROUTER = PROJECT_ROOT / 'scripts' / 'pager_alert_router.py'
 PY = resolve_runtime_python(PROJECT_ROOT)
@@ -198,6 +200,20 @@ def _token_needs_refresh(
         return True, f'token_expiring_soon:{float(expires_in):.1f}'
 
     return False, 'token_fresh'
+
+
+def _token_warning_level(age_seconds: float | None, *, max_age_seconds: float) -> str:
+    if age_seconds is None:
+        return 'unknown'
+    age = max(float(age_seconds), 0.0)
+    max_age = max(float(max_age_seconds), 1.0)
+    if age >= max_age:
+        return 'critical'
+    if age >= max_age * 0.75:
+        return 'warn'
+    if age >= max_age * 0.5:
+        return 'watch'
+    return 'fresh'
 
 
 
@@ -411,6 +427,39 @@ def main() -> int:
             }
         )
 
+    account_probe_status = None
+    if isinstance(auth.get('details'), dict):
+        probe_code = auth['details'].get('account_probe_status_code')
+        account_probe_status = int(probe_code) if probe_code not in (None, '') else None
+    broker_readiness = {
+        'timestamp_utc': now_iso,
+        'ready_for_open': bool(ok),
+        'token_warning_level': _token_warning_level(after.get('age_seconds'), max_age_seconds=max(args.max_token_age_seconds, 60.0)),
+        'token_age_seconds': after.get('age_seconds'),
+        'token_expires_in_seconds': after.get('expires_in_seconds'),
+        'network_ok': bool(network['ok']),
+        'auth_ok': bool(auth.get('ok', False)) if auth.get('attempted') else True,
+        'auth_attempted': bool(auth.get('attempted', False)),
+        'account_probe_status_code': account_probe_status,
+        'preflight_checks': {
+            'token_exists': bool(after.get('exists')),
+            'token_size_ok': int(after.get('size_bytes') or 0) >= 64,
+            'network_ok': bool(network['ok']),
+            'auth_ok': bool(auth.get('ok', False)) if auth.get('attempted') else True,
+            'refresh_needed_after': bool(still_stale),
+        },
+        'warnings': [
+            item
+            for item in [
+                ('network_unavailable' if not network['ok'] else ''),
+                (refresh_reason if needs_refresh else ''),
+                (stale_reason_after if still_stale else ''),
+                (str(auth.get('reason') or '') if auth.get('attempted') and not auth.get('ok') else ''),
+            ]
+            if item
+        ],
+    }
+
     payload: Dict[str, Any] = {
         'timestamp_utc': now_iso,
         'ok': bool(ok),
@@ -424,12 +473,15 @@ def main() -> int:
         'auth': auth,
         'validate_account_probe': bool(args.validate_account_probe),
         'alerts': alerts,
+        'broker_readiness': broker_readiness,
     }
 
     out_file = _write_json(DEFAULT_OUT_PATH, FALLBACK_OUT_PATH, payload)
+    broker_readiness_file = _write_json(DEFAULT_BROKER_READINESS_PATH, FALLBACK_BROKER_READINESS_PATH, broker_readiness)
     event_path = DEFAULT_EVENT_DIR / f"premarket_token_guard_{datetime.now(timezone.utc).strftime('%Y%m%d')}.jsonl"
     events_file = _append_jsonl(event_path, FALLBACK_EVENT_PATH, payload)
     payload['out_file'] = out_file
+    payload['broker_readiness_file'] = broker_readiness_file
     payload['events_file'] = events_file
 
     if args.json:

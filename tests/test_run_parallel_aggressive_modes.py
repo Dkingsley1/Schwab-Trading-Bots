@@ -4,12 +4,12 @@ from scripts import run_parallel_aggressive_modes as agg
 class _Args:
     broker = "schwab"
     split_ingress_loops = True
-    intraday_threshold_shift = -0.08
-    swing_threshold_shift = -0.04
-    intraday_interval_seconds = 8
-    swing_interval_seconds = 75
-    intraday_defensive_interval_seconds = 20
-    swing_defensive_interval_seconds = 150
+    intraday_threshold_shift = -0.03
+    swing_threshold_shift = -0.01
+    intraday_interval_seconds = 12
+    swing_interval_seconds = 90
+    intraday_defensive_interval_seconds = 24
+    swing_defensive_interval_seconds = 180
     intraday_symbols_core = "SPY,QQQ"
     intraday_symbols_volatile = "TSLA,COIN"
     intraday_symbols_defensive = "TLT,GLD"
@@ -33,7 +33,7 @@ def test_build_worker_specs_splits_schwab_aggressive_profiles() -> None:
     assert workers[0].ingress_instance == "core_volatile"
     assert workers[1].symbols_defensive == "TLT,GLD"
     assert workers[1].symbols_core == ""
-    assert workers[3].interval_seconds == 150
+    assert workers[3].interval_seconds == 180
 
 
 def test_aggregate_ingress_payload_sums_split_workers() -> None:

@@ -60,6 +60,48 @@ def _failure_reason_summary(raw: str) -> str:
     return text[:240]
 
 
+def _load_structured_training_diagnostics(root: Path, bot_id: str) -> dict:
+    if not bot_id:
+        return {}
+    path = root / f"{bot_id}_latest.json"
+    if not path.exists():
+        return {}
+    payload = _load(path)
+    if payload:
+        payload["diagnostics_path"] = str(path)
+    return payload
+
+
+def _categorize_failure(
+    *,
+    summary: str,
+    structured: dict,
+    fail_days: int,
+    observed_live_sleeves: list[str],
+) -> list[str]:
+    categories: list[str] = []
+    for item in structured.get("failure_categories") or []:
+        text = str(item or "").strip().lower()
+        if text and text not in categories:
+            categories.append(text)
+    summary_lower = str(summary or "").lower()
+    if ("label_balance_score" in summary_lower) and ("label_cleanup" not in categories):
+        categories.append("label_cleanup")
+    if any(token in summary_lower for token in ("acted_accuracy", "long_precision", "short_precision", "precision_balance_score", "acted_coverage")):
+        if "threshold_calibration" not in categories:
+            categories.append("threshold_calibration")
+    if any(token in summary_lower for token in ("best_val_loss", "final_val_loss")):
+        if "symbol_narrowing" not in categories:
+            categories.append("symbol_narrowing")
+    if fail_days >= 3 and "distillation_candidate" not in categories:
+        categories.append("distillation_candidate")
+    if "insufficient_runtime_training_data" in summary_lower and "sample_starved" not in categories:
+        categories.append("sample_starved")
+    if observed_live_sleeves and "paper_loss_review" not in categories:
+        categories.append("paper_loss_review")
+    return categories
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build promotion bottleneck focus plan for targeted retrain.")
     parser.add_argument("--readiness-file", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "promotion_readiness_latest.json"))
@@ -68,6 +110,7 @@ def main() -> int:
     parser.add_argument("--regime-file", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "regime_segmented_latest.json"))
     parser.add_argument("--training-success-file", default=str(PROJECT_ROOT / "governance" / "health" / "training_success_latest.json"))
     parser.add_argument("--paper-performance-file", default=str(PROJECT_ROOT / "governance" / "health" / "paper_performance_latest.json"))
+    parser.add_argument("--training-diagnostics-root", default=str(PROJECT_ROOT / "governance" / "training_diagnostics"))
     parser.add_argument("--lookback-days", type=int, default=14)
     parser.add_argument("--top-bots", type=int, default=20)
     parser.add_argument("--top-segments", type=int, default=2)
@@ -80,6 +123,7 @@ def main() -> int:
     regime = _load(Path(args.regime_file))
     training_success = _load(Path(args.training_success_file))
     paper_performance = _load(Path(args.paper_performance_file))
+    diagnostics_root = Path(args.training_diagnostics_root)
 
     fail_by_segment = readiness.get("failed_by_segment") if isinstance(readiness.get("failed_by_segment"), dict) else {}
     seg_rows = regime.get("segments") if isinstance(regime.get("segments"), dict) else {}
@@ -141,8 +185,11 @@ def main() -> int:
 
     top_bots = []
     seen_bots: set[str] = set()
+    category_counts: dict[str, int] = {}
     training_failures = training_success.get("failure_details") if isinstance(training_success.get("failure_details"), list) else []
+    trained_ok_but_not_promotable = bool(training_success.get("trained_ok_but_not_promotable", False))
     latest_training_failures = []
+    quarantine_candidates: list[dict] = []
     for row in training_failures[: max(int(args.top_bots), 1)]:
         if not isinstance(row, dict):
             continue
@@ -150,19 +197,51 @@ def main() -> int:
         if not bot_id:
             continue
         seen_bots.add(bot_id)
+        fail_days = int(row.get("fail_days", 0) or 0)
+        reason_summary = _failure_reason_summary(str(row.get("reason") or ""))
+        structured = _load_structured_training_diagnostics(diagnostics_root, bot_id)
+        categories = _categorize_failure(
+            summary=reason_summary,
+            structured=structured,
+            fail_days=fail_days,
+            observed_live_sleeves=bot_to_sleeves.get(bot_id, []),
+        )
+        for category in categories:
+            category_counts[category] = category_counts.get(category, 0) + 1
         latest_training_failures.append(
             {
                 "bot_id": bot_id,
-                "latest_reason": _failure_reason_summary(str(row.get("reason") or "")),
+                "latest_reason": reason_summary,
                 "observed_live_sleeves": bot_to_sleeves.get(bot_id, []),
+                "recommended_categories": categories,
+                "structured_diagnostics": {
+                    "family": structured.get("family"),
+                    "status": structured.get("status"),
+                    "diagnostics_path": structured.get("diagnostics_path"),
+                },
             }
         )
+        if fail_days >= 3 or ("paper_loss_review" in categories and "threshold_calibration" in categories):
+            quarantine_candidates.append(
+                {
+                    "bot_id": bot_id,
+                    "recommended_lane": "observe_only",
+                    "reason": "chronic_retrain_or_paper_drag",
+                    "observed_live_sleeves": bot_to_sleeves.get(bot_id, []),
+                }
+            )
         top_bots.append(
             {
                 "bot_id": bot_id,
-                "fail_days": int(row.get("fail_days", 0) or 0),
-                "latest_reason": _failure_reason_summary(str(row.get("reason") or "")),
+                "fail_days": fail_days,
+                "latest_reason": reason_summary,
                 "observed_live_sleeves": bot_to_sleeves.get(bot_id, []),
+                "recommended_categories": categories,
+                "structured_diagnostics": {
+                    "family": structured.get("family"),
+                    "failure_categories": structured.get("failure_categories") or [],
+                    "diagnostics_path": structured.get("diagnostics_path"),
+                },
             }
         )
 
@@ -173,11 +252,27 @@ def main() -> int:
         if not bot_id or bot_id in seen_bots:
             continue
         seen_bots.add(bot_id)
+        fail_days = int(row.get("fail_days", 0) or 0)
+        structured = _load_structured_training_diagnostics(diagnostics_root, bot_id)
+        categories = _categorize_failure(
+            summary="",
+            structured=structured,
+            fail_days=fail_days,
+            observed_live_sleeves=bot_to_sleeves.get(bot_id, []),
+        )
+        for category in categories:
+            category_counts[category] = category_counts.get(category, 0) + 1
         top_bots.append(
             {
                 "bot_id": bot_id,
-                "fail_days": int(row.get("fail_days", 0) or 0),
+                "fail_days": fail_days,
                 "observed_live_sleeves": bot_to_sleeves.get(bot_id, []),
+                "recommended_categories": categories,
+                "structured_diagnostics": {
+                    "family": structured.get("family"),
+                    "failure_categories": structured.get("failure_categories") or [],
+                    "diagnostics_path": structured.get("diagnostics_path"),
+                },
             }
         )
 
@@ -198,6 +293,31 @@ def main() -> int:
     canary_top_n = max(len(top_bots), 10)
     max_targets = min(max(12, len(top_bots) * 2), 30)
     targeted_bot_ids = [str(row.get("bot_id") or "").strip() for row in top_bots if str(row.get("bot_id") or "").strip()]
+    chronic_bot_ids = [str(row.get("bot_id") or "").strip() for row in top_bots if "distillation_candidate" in (row.get("recommended_categories") or [])]
+    retry_command = [
+        "./scripts/ops/opsctl.sh",
+        "retrain-force-targeted",
+        "--include-bot-ids",
+        ",".join(targeted_bot_ids),
+        "--skip-master-update",
+    ]
+    if chronic_bot_ids:
+        retry_command.append("--distillation-priority")
+    promotion_middle_lane = {
+        "active": bool(trained_ok_but_not_promotable),
+        "status": ("trained_ok_but_not_promotable" if trained_ok_but_not_promotable else "not_needed"),
+        "follow_up_actions": (
+            [
+                "keep_new_models_in_shadow_or_paper_only",
+                "run_counterfactual_replay_before_next_promotion_attempt",
+                "expand coverage_or_symbol_scope_for_sample_starved_candidates",
+                "tighten_or_recalibrate_guard_thresholds_for_quality_failures",
+            ]
+            if trained_ok_but_not_promotable
+            else []
+        ),
+        "target_bot_ids": targeted_bot_ids[:10],
+    }
 
     payload = {
         "timestamp_utc": now.isoformat(),
@@ -212,11 +332,23 @@ def main() -> int:
             "fail_share": float(readiness.get("fail_share", 1.0) or 1.0),
             "max_fail_share": float(readiness.get("max_fail_share", 0.25) or 0.25),
             "readiness_margin": float(readiness.get("readiness_margin", -1.0) or -1.0),
+            "trained_ok_but_not_promotable": bool(trained_ok_but_not_promotable),
+            "training_reason": str(training_success.get("reason") or ""),
         },
         "top_segments": top_segments,
         "top_failing_bots": top_bots,
         "latest_training_failures": latest_training_failures,
         "weak_sleeves": weak_sleeves[:5],
+        "recommended_category_counts": category_counts,
+        "quarantine_candidates": quarantine_candidates[:10],
+        "promotion_middle_lane": promotion_middle_lane,
+        "retry_pack": {
+            "include_bot_ids": targeted_bot_ids,
+            "chronic_bot_ids": chronic_bot_ids,
+            "distillation_priority": bool(chronic_bot_ids),
+            "skip_master_update": bool(targeted_bot_ids),
+            "command": retry_command if targeted_bot_ids else [],
+        },
         "recommended_retrain_profile": {
             "RETRAIN_REGIME_FOCUS": regime_focus,
             "RETRAIN_CANARY_PRIORITY_TOP_N": int(canary_top_n),
@@ -224,6 +356,8 @@ def main() -> int:
             "RETRAIN_MIN_MODEL_AGE_HOURS": 12 if trend_direction != "improving" else 18,
             "RETRAIN_INCLUDE_BOT_IDS": ",".join(targeted_bot_ids),
             "RETRAIN_SKIP_MASTER_UPDATE": bool(targeted_bot_ids),
+            "RETRAIN_DISTILLATION_PRIORITY": bool(chronic_bot_ids),
+            "RETRAIN_RECOMMENDATION_CATEGORIES": ",".join(sorted(category_counts)),
         },
     }
 

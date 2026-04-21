@@ -2,15 +2,40 @@ import argparse
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _parse_iso_utc(raw: Any) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    text = text.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Security/production hygiene audit.")
     parser.add_argument("--out", default=str(PROJECT_ROOT / "governance" / "health" / "security_audit_latest.json"))
+    parser.add_argument("--secret-scan-max-age-hours", type=float, default=36.0)
     args = parser.parse_args()
 
+    now = datetime.now(timezone.utc)
     checks = []
 
     pre_commit = PROJECT_ROOT / ".githooks" / "pre-commit"
@@ -35,10 +60,69 @@ def main() -> int:
     backup_dir = PROJECT_ROOT / "exports" / "env_snapshots"
     checks.append({"name": "backup_snapshot_exists", "ok": backup_dir.exists() and any(backup_dir.iterdir())})
 
+    rbac_path = PROJECT_ROOT / "governance" / "security" / "rbac_roles.json"
+    rbac = _load_json(rbac_path)
+    role_rows = rbac.get("roles") if isinstance(rbac.get("roles"), list) else []
+    separation = rbac.get("separation_of_duties") if isinstance(rbac.get("separation_of_duties"), dict) else {}
+    role_names = {str((row or {}).get("role") or "").strip() for row in role_rows if isinstance(row, dict)}
+    required_roles = {
+        "research_reviewer",
+        "risk_reviewer",
+        "live_operator",
+        "risk_operator",
+        "storage_maintainer",
+        "audit_reviewer",
+    }
+    separation_ok = bool(
+        separation.get("promotion_approval_requires_distinct_roles")
+        and separation.get("live_execution_enable_requires_roles")
+        and separation.get("artifact_delete_requires_roles")
+    )
+    checks.append({"name": "rbac_manifest_exists", "ok": bool(rbac)})
+    checks.append({"name": "rbac_required_roles_present", "ok": required_roles.issubset(role_names)})
+    checks.append({"name": "separation_of_duties_defined", "ok": separation_ok})
+
+    secret_scan_path = PROJECT_ROOT / "governance" / "health" / "secret_scan_latest.json"
+    secret_scan = _load_json(secret_scan_path)
+    secret_scan_ts = _parse_iso_utc(secret_scan.get("timestamp_utc"))
+    secret_scan_age_hours = (
+        max((now - secret_scan_ts).total_seconds() / 3600.0, 0.0)
+        if secret_scan_ts is not None
+        else None
+    )
+    checks.append({"name": "secret_scan_artifact_present", "ok": bool(secret_scan)})
+    checks.append(
+        {
+            "name": "secret_scan_artifact_fresh",
+            "ok": secret_scan_age_hours is not None and secret_scan_age_hours <= float(args.secret_scan_max_age_hours),
+        }
+    )
+    checks.append({"name": "secret_scan_clear", "ok": int(secret_scan.get("findings_count", 0) or 0) == 0})
+
+    mutation_journal_matches = sorted(PROJECT_ROOT.glob("governance/audits/registry_mutation_journal_*.jsonl*"))
+    checks.append({"name": "mutation_journal_present", "ok": bool(mutation_journal_matches)})
+
+    shadow_preflight = PROJECT_ROOT / "scripts" / "shadow_preflight.py"
+    checks.append({"name": "paper_live_separation_guard_exists", "ok": shadow_preflight.exists()})
+
     out = {
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "timestamp_utc": now.isoformat(),
+        "schema_version": 1,
+        "overall_status": "ready" if all(c["ok"] for c in checks) else "needs_work",
         "ok": all(c["ok"] for c in checks),
         "checks": checks,
+        "summary": {
+            "passed_checks": sum(1 for row in checks if row["ok"]),
+            "failed_checks": sum(1 for row in checks if not row["ok"]),
+            "secret_scan_age_hours": round(secret_scan_age_hours, 3) if secret_scan_age_hours is not None else None,
+            "secret_scan_findings_count": int(secret_scan.get("findings_count", 0) or 0),
+            "rbac_role_count": len(role_names),
+            "mutation_journal_files": len(mutation_journal_matches),
+        },
+        "recommendations": [
+            "Keep secret-scan artifacts fresh and zero-finding before promotion or live enablement.",
+            "Require RBAC, separation-of-duties policy, and paper/live preflight checks before expanding live permissions.",
+        ],
     }
 
     out_path = Path(args.out)

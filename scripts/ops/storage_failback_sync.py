@@ -167,6 +167,156 @@ def _maybe_autoprune_external_low_space(project_root: Path, external_root: Path)
     return payload
 
 
+def _path_metadata(path: Path) -> dict[str, object]:
+    exists = bool(path.exists())
+    out: dict[str, object] = {
+        "path": str(path),
+        "exists": exists,
+        "size_bytes": 0,
+        "mtime_utc": "",
+    }
+    if not exists:
+        return out
+
+    try:
+        stat = path.stat()
+        out["size_bytes"] = int(stat.st_size)
+        out["mtime_utc"] = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+    except Exception:
+        pass
+    return out
+
+
+def _sqlite_sidecars(path: Path) -> list[str]:
+    out: list[str] = []
+    for suffix in ("-wal", "-shm"):
+        candidate = Path(f"{path}{suffix}")
+        if candidate.exists():
+            out.append(candidate.name)
+    return out
+
+
+def _default_local_queue_db(project_root: Path, local_root: Path) -> Path:
+    override = str(os.getenv("BOT_CHANNEL_QUEUE_DB", "") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    local_override = str(os.getenv("BOT_CHANNEL_QUEUE_LOCAL_ROOT", "") or "").strip()
+    if local_override:
+        return Path(local_override).expanduser() / "data" / "bot_channel_queue.sqlite3"
+    return local_root / "data" / "bot_channel_queue.sqlite3"
+
+
+def _build_sqlite_skip_report(
+    project_root: Path,
+    external_root: Path,
+    *,
+    mode: str,
+    active_root: Path,
+) -> dict[str, object]:
+    local_root = Path(
+        os.getenv(
+            "BOT_LOGS_LOCAL_FALLBACK_ROOT",
+            str(project_root / "local_fallback_storage"),
+        )
+    ).expanduser()
+    queue_db_path = _default_local_queue_db(project_root, local_root)
+    try:
+        queue_db_realpath = queue_db_path.resolve(strict=False)
+    except Exception:
+        queue_db_realpath = queue_db_path
+
+    entries: list[dict[str, object]] = []
+    tracked = (
+        "data/jsonl_link.sqlite3",
+        "data/bot_channel_queue.sqlite3",
+        "data/snapshot_context.sqlite3",
+    )
+    local_bytes_total = 0
+    active_local_count = 0
+    warm_standby_count = 0
+    local_present_count = 0
+
+    for rel in tracked:
+        local_path = local_root / rel
+        external_path = external_root / rel
+        local_meta = _path_metadata(local_path)
+        external_meta = _path_metadata(external_path)
+        local_exists = bool(local_meta.get("exists", False))
+        external_exists = bool(external_meta.get("exists", False))
+        local_bytes = int(local_meta.get("size_bytes", 0) or 0)
+        external_bytes = int(external_meta.get("size_bytes", 0) or 0)
+        if local_exists:
+            local_present_count += 1
+            local_bytes_total += local_bytes
+
+        local_sidecars = _sqlite_sidecars(local_path)
+        external_sidecars = _sqlite_sidecars(external_path)
+        try:
+            local_realpath = local_path.resolve(strict=False)
+        except Exception:
+            local_realpath = local_path
+
+        active_path = ""
+        classification = "not_present"
+        reason = "No retained local fallback SQLite file is present for this skip path."
+
+        if local_exists and rel == "data/bot_channel_queue.sqlite3" and queue_db_realpath == local_realpath:
+            classification = "active_local_queue"
+            reason = (
+                "The channel queue DB is currently pinned to the internal fallback root, "
+                "so this file is intentionally retained and should not be pruned during external failback."
+            )
+            active_path = str(local_path)
+            active_local_count += 1
+        elif local_exists and mode == "external":
+            classification = "warm_standby_retained"
+            reason = (
+                "This SQLite file is intentionally skipped during failback so the internal fallback root "
+                "keeps a warm standby copy instead of forcing a live SQLite copy-back."
+            )
+            active_path = str(external_path if external_exists else active_root / rel)
+            warm_standby_count += 1
+        elif local_exists:
+            classification = "active_local_route"
+            reason = "Storage is not currently routed to the external root, so the local fallback copy remains active."
+            active_path = str(local_path)
+            active_local_count += 1
+
+        entries.append(
+            {
+                "relative_path": rel,
+                "classification": classification,
+                "reason": reason,
+                "prune_eligible": False,
+                "active_path": active_path,
+                "local": {
+                    **local_meta,
+                    "sidecars": local_sidecars,
+                },
+                "external": {
+                    **external_meta,
+                    "sidecars": external_sidecars,
+                },
+                "external_at_least_as_large": bool(external_exists and local_exists and external_bytes >= local_bytes),
+            }
+        )
+
+    return {
+        "mode": str(mode or ""),
+        "active_root": str(active_root),
+        "queue_db_path": str(queue_db_path),
+        "summary": {
+            "tracked_entries": len(entries),
+            "local_present_count": int(local_present_count),
+            "active_local_count": int(active_local_count),
+            "warm_standby_count": int(warm_standby_count),
+            "prune_eligible_count": 0,
+            "local_bytes_total": int(local_bytes_total),
+        },
+        "entries": entries,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description='Re-evaluate storage route and auto-sync local backlog when drive is back.')
     parser.add_argument('--json', action='store_true')
@@ -226,6 +376,12 @@ def main() -> int:
             },
             'split_brain_conflicts': int(routing.split_brain_conflicts),
             'low_space_autoprune': low_space_autoprune,
+            'sqlite_skip_report': _build_sqlite_skip_report(
+                PROJECT_ROOT,
+                external_root,
+                mode=routing.mode,
+                active_root=routing.active_root,
+            ),
             'lock_path': str(lock_path),
         }
 

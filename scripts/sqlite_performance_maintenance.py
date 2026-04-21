@@ -5,6 +5,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = PROJECT_ROOT / "data" / "jsonl_link.sqlite3"
@@ -24,6 +25,105 @@ def _read_json(path: Path) -> dict:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _safe_int(raw: Any, default: int = 0) -> int:
+    try:
+        return int(float(raw))
+    except Exception:
+        return int(default)
+
+
+def _safe_float(raw: Any, default: float = 0.0) -> float:
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
+def _truthy(raw: Any, default: bool = False) -> bool:
+    text = str(raw or "").strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
+def _normalize_temp_store_mode(raw: Any, default: str = "MEMORY") -> str:
+    mode = str(raw or default).strip().upper()
+    if mode in {"DEFAULT", "FILE", "MEMORY"}:
+        return mode
+    return str(default or "MEMORY").strip().upper()
+
+
+def _resource_guard_snapshot(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
+    payload = _read_json(project_root / "governance" / "health" / "resource_guard_latest.json")
+    return payload if isinstance(payload, dict) else {}
+
+
+def resolve_runtime_settings(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
+    resource_guard = _resource_guard_snapshot(project_root)
+    memory_state = str(resource_guard.get("memory_pressure_state") or "").strip().lower()
+    memory_kind = str(resource_guard.get("memory_pressure_kind") or "").strip().lower()
+    swap_used_gb = _safe_float(resource_guard.get("swap_used_gb"), 0.0)
+    memory_free_pct = _safe_float(resource_guard.get("memory_free_pct"), 0.0)
+
+    pressure_level = "green"
+    if memory_state == "red" or memory_kind in {"red", "throttled"} or swap_used_gb >= 20.0 or memory_free_pct <= 10.0:
+        pressure_level = "red"
+    elif (
+        memory_state == "yellow"
+        or memory_kind.startswith("swap_only")
+        or swap_used_gb >= 10.0
+        or (0.0 < memory_free_pct <= 18.0)
+    ):
+        pressure_level = "yellow"
+
+    defaults = {
+        "green": {"temp_store_mode": "MEMORY", "cache_size_kb": 20000, "mmap_size_mb": 256, "analyze_enabled": True},
+        "yellow": {"temp_store_mode": "FILE", "cache_size_kb": 12000, "mmap_size_mb": 128, "analyze_enabled": True},
+        "red": {"temp_store_mode": "FILE", "cache_size_kb": 4096, "mmap_size_mb": 32, "analyze_enabled": False},
+    }[pressure_level]
+    temp_store_mode = _normalize_temp_store_mode(
+        os.getenv("SQLITE_TEMP_STORE_MODE", defaults["temp_store_mode"]),
+        default=defaults["temp_store_mode"],
+    )
+    cache_size_kb = max(_safe_int(os.getenv("SQLITE_CACHE_SIZE_KB", str(defaults["cache_size_kb"])), defaults["cache_size_kb"]), 1024)
+    mmap_size_mb = max(_safe_int(os.getenv("SQLITE_MMAP_SIZE_MB", str(defaults["mmap_size_mb"])), defaults["mmap_size_mb"]), 0)
+    cache_spill = _truthy(os.getenv("SQLITE_CACHE_SPILL", "1"), True)
+    analyze_enabled = _truthy(
+        os.getenv("SQLITE_ANALYZE_ENABLED", "1" if defaults["analyze_enabled"] else "0"),
+        defaults["analyze_enabled"],
+    )
+    optimize_enabled = _truthy(os.getenv("SQLITE_OPTIMIZE_ENABLED", "1"), True)
+    auto_vacuum_allowed = pressure_level != "red" or not _truthy(os.getenv("SQLITE_SKIP_AUTO_VACUUM_ON_MEMORY_PRESSURE", "1"), True)
+    return {
+        "pressure_level": pressure_level,
+        "memory_pressure_state": memory_state,
+        "memory_pressure_kind": memory_kind,
+        "memory_free_pct": round(memory_free_pct, 3),
+        "swap_used_gb": round(swap_used_gb, 3),
+        "temp_store_mode": temp_store_mode,
+        "cache_size_kb": cache_size_kb,
+        "cache_size_pragma": -cache_size_kb,
+        "mmap_size_mb": mmap_size_mb,
+        "mmap_size_bytes": int(mmap_size_mb * 1024 * 1024),
+        "cache_spill": cache_spill,
+        "analyze_enabled": analyze_enabled,
+        "optimize_enabled": optimize_enabled,
+        "auto_vacuum_allowed": auto_vacuum_allowed,
+    }
+
+
+def _apply_runtime_pragmas(conn: sqlite3.Connection, runtime_settings: dict[str, Any], *, timeout_seconds: float) -> None:
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute(f"PRAGMA temp_store={_normalize_temp_store_mode(runtime_settings.get('temp_store_mode'), 'MEMORY')}")
+    conn.execute(f"PRAGMA cache_size={int(runtime_settings.get('cache_size_pragma') or -20000)}")
+    conn.execute(f"PRAGMA mmap_size={int(runtime_settings.get('mmap_size_bytes') or 0)}")
+    conn.execute(f"PRAGMA cache_spill={1 if bool(runtime_settings.get('cache_spill', True)) else 0}")
+    conn.execute(f"PRAGMA busy_timeout={int(max(float(timeout_seconds), 1.0) * 1000)}")
 
 
 def _default_db_path() -> Path:
@@ -183,6 +283,23 @@ def main() -> int:
         "no_auto_vacuum": bool(args.no_auto_vacuum),
         "vacuum_min_interval_hours": float(args.vacuum_min_interval_hours),
     }
+    runtime_settings = resolve_runtime_settings(PROJECT_ROOT)
+    payload["sqlite_runtime_settings"] = {
+        "pressure_level": str(runtime_settings.get("pressure_level") or ""),
+        "temp_store_mode": str(runtime_settings.get("temp_store_mode") or ""),
+        "cache_size_kb": int(runtime_settings.get("cache_size_kb") or 0),
+        "mmap_size_mb": int(runtime_settings.get("mmap_size_mb") or 0),
+        "cache_spill": bool(runtime_settings.get("cache_spill", True)),
+        "analyze_enabled": bool(runtime_settings.get("analyze_enabled", True)),
+        "optimize_enabled": bool(runtime_settings.get("optimize_enabled", True)),
+        "auto_vacuum_allowed": bool(runtime_settings.get("auto_vacuum_allowed", True)),
+    }
+    payload["memory_snapshot"] = {
+        "memory_pressure_state": str(runtime_settings.get("memory_pressure_state") or ""),
+        "memory_pressure_kind": str(runtime_settings.get("memory_pressure_kind") or ""),
+        "memory_free_pct": float(runtime_settings.get("memory_free_pct") or 0.0),
+        "swap_used_gb": float(runtime_settings.get("swap_used_gb") or 0.0),
+    }
 
     try:
         _emit_progress(
@@ -192,12 +309,7 @@ def main() -> int:
             as_json=args.json,
         )
         conn = sqlite3.connect(str(db_path), timeout=max(float(args.sqlite_timeout_seconds), 1.0))
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA temp_store=MEMORY")
-        conn.execute("PRAGMA cache_size=-20000")
-        conn.execute("PRAGMA mmap_size=268435456")
-        conn.execute(f"PRAGMA busy_timeout={int(max(float(args.sqlite_timeout_seconds), 1.0) * 1000)}")
+        _apply_runtime_pragmas(conn, runtime_settings, timeout_seconds=float(args.sqlite_timeout_seconds))
 
         if (not args.checkpoint_only) and _table_exists(conn, "jsonl_records"):
             _emit_progress("sqlite_maintenance step=index_jsonl_records", as_json=args.json)
@@ -248,20 +360,28 @@ def main() -> int:
             lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
         )
 
-        if not args.checkpoint_only:
+        analyze_ran = False
+        optimize_ran = False
+        if not args.checkpoint_only and (bool(runtime_settings.get("analyze_enabled", True)) or bool(runtime_settings.get("optimize_enabled", True))):
             _emit_progress("sqlite_maintenance step=analyze_optimize", as_json=args.json)
-            _sqlite_exec_with_retry(
-                conn,
-                "ANALYZE",
-                lock_retries=max(args.sqlite_lock_retries, 0),
-                lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
-            )
-            _sqlite_exec_with_retry(
-                conn,
-                "PRAGMA optimize",
-                lock_retries=max(args.sqlite_lock_retries, 0),
-                lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
-            )
+            if bool(runtime_settings.get("analyze_enabled", True)):
+                _sqlite_exec_with_retry(
+                    conn,
+                    "ANALYZE",
+                    lock_retries=max(args.sqlite_lock_retries, 0),
+                    lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+                )
+                analyze_ran = True
+            if bool(runtime_settings.get("optimize_enabled", True)):
+                _sqlite_exec_with_retry(
+                    conn,
+                    "PRAGMA optimize",
+                    lock_retries=max(args.sqlite_lock_retries, 0),
+                    lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+                )
+                optimize_ran = True
+        payload["analyze_ran"] = analyze_ran
+        payload["optimize_ran"] = optimize_ran
 
         checkpoint_threshold_gb = max(float(args.wal_checkpoint_threshold_gb), 0.0)
         checkpoint_mode_applied = ""
@@ -312,6 +432,7 @@ def main() -> int:
             (not args.checkpoint_only)
             and (not args.no_auto_vacuum)
             and (not do_vacuum)
+            and bool(runtime_settings.get("auto_vacuum_allowed", True))
             and size_gb_before >= float(args.auto_vacuum_over_gb)
         ):
             if last_vacuum_ts is None:
@@ -319,6 +440,13 @@ def main() -> int:
             else:
                 elapsed_h = (datetime.now(timezone.utc) - last_vacuum_ts).total_seconds() / 3600.0
                 do_vacuum = elapsed_h >= float(args.vacuum_min_interval_hours)
+        if (
+            (not args.checkpoint_only)
+            and (not args.no_auto_vacuum)
+            and (not bool(args.vacuum))
+            and not bool(runtime_settings.get("auto_vacuum_allowed", True))
+        ):
+            payload["auto_vacuum_skipped_reason"] = "memory_pressure_red"
 
         if do_vacuum:
             _emit_progress("sqlite_maintenance step=vacuum", as_json=args.json)
@@ -360,6 +488,8 @@ def main() -> int:
             {
                 "ok": True,
                 "vacuum_ran": bool(do_vacuum),
+                "analyze_ran": bool(analyze_ran),
+                "optimize_ran": bool(optimize_ran),
                 "indexes_touched": int(created_indexes),
                 "jsonl_records_rows": int(total_rows),
                 "size_gb_before": round(size_gb_before, 3),
@@ -380,6 +510,8 @@ def main() -> int:
                 "ok": False,
                 "error": str(exc),
                 "vacuum_ran": bool(do_vacuum),
+                "analyze_ran": bool(payload.get("analyze_ran", False)),
+                "optimize_ran": bool(payload.get("optimize_ran", False)),
                 "indexes_touched": int(created_indexes),
                 "jsonl_records_rows": int(total_rows),
                 "size_gb_after": round(size_gb_after, 3),

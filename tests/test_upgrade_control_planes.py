@@ -1,0 +1,192 @@
+import json
+import sys
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+import scripts.storage_tier_policy as storage_tier_src
+from scripts.ops import regime_control_plane as regime_src
+from scripts.ops import supportability_control as supportability_src
+from scripts.ops import training_runtime_control as training_runtime_src
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+def test_storage_tier_policy_surfaces_hot_path_and_cold_candidates(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    decisions = project_root / "decisions" / "live_decisions_20260409.jsonl"
+    explanations = project_root / "decision_explanations" / "decision_explanations_20260409.jsonl"
+    sql_shard = project_root / "data" / "sql_link_shards" / "jsonl_link_explanations.sqlite3-wal"
+    content_blob = project_root / "governance" / "content_store" / "sha256" / "aa" / "blob"
+    for path, content in (
+        (decisions, "decision\n" * 8),
+        (explanations, "explanation\n" * 64),
+        (sql_shard, "wal\n" * 64),
+        (content_blob, "blob\n" * 128),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    built = storage_tier_src.discover_storage_files(project_root)
+    assert sql_shard in built
+    assert content_blob in built
+
+    out_path = project_root / "governance" / "health" / "storage_tier_policy_latest.json"
+    args = [
+        "storage_tier_policy.py",
+        "--project-root",
+        str(project_root),
+        "--top-n",
+        "5",
+        "--hot-budget-gb",
+        "0.0000001",
+        "--cold-candidate-min-mb",
+        "0.000001",
+    ]
+    old_argv = sys.argv
+    try:
+        sys.argv = args
+        rc = storage_tier_src.main()
+    finally:
+        sys.argv = old_argv
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert payload["overall_status"] in {"degraded", "blocked"}
+    assert any(row["service_role"] == "artifact_store" for row in payload["cold_path_candidates"])
+    assert payload["pressure"]["hot_path_over_budget_bytes"] > 0
+
+
+def test_training_runtime_control_prioritizes_sequence_timeout_retries(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write_json(
+        project_root / "governance" / "health" / "runtime_training_snapshot_latest.json",
+        {
+            "timestamp_utc": "2026-04-09T15:55:00+00:00",
+            "sequence_count": 20,
+            "row_count": 500,
+            "rows_path": str(project_root / "exports" / "training" / "runtime_training_snapshot_latest.jsonl"),
+            "coverage": {"top_modes": [], "top_sequences": []},
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "training_quality_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "training_quality_score": 22.8,
+            "top_priorities": ["active_supportability"],
+            "targeted_actions": {
+                "targeted_retrain_bot_ids": ["brain_refinery_v43_intraday_ultrafast_proxy"],
+                "quality_probation_bot_ids": ["brain_refinery_v43_intraday_ultrafast_proxy"],
+            },
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "retrain_scorecard_latest.json",
+        {
+            "failure_details": [
+                {
+                    "bot_id": "brain_refinery_v43_intraday_ultrafast_proxy",
+                    "reason": "timeout",
+                    "stdout_tail": "[RuntimeTraining] loading_sequences run_tag=brain_refinery_v43_intraday_ultrafast_proxy",
+                }
+            ],
+            "retry_pack": {"command": ["./scripts/ops/opsctl.sh", "retrain-force-targeted"]},
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "resource_guard_latest.json",
+        {"resource_guard_ok": False, "memory_pressure_state": "yellow", "swap_used_gb": 6.2},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "health_gates_latest.json",
+        {"recommended_operating_mode": "shadow_only", "inputs": {"backpressure_overload_severe": True}},
+    )
+    _write_json(
+        project_root / "governance" / "walk_forward" / "coverage_seed_latest.json",
+        {"coverage_shortfall_bots": 4, "seed_queue": [{"bot_id": "brain_refinery_v43_intraday_ultrafast_proxy", "priority": 10.0}]},
+    )
+
+    payload = training_runtime_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "blocked"
+    assert payload["snapshot_ready"] is True
+    assert payload["precompute_targets"][0]["bot_id"] == "brain_refinery_v43_intraday_ultrafast_proxy"
+    assert "loading_sequences_timeout" in payload["precompute_targets"][0]["reasons"]
+
+
+def test_regime_control_plane_combines_sentiment_and_risk(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health_root = project_root / "governance" / "health"
+    _write_json(
+        health_root / "sentiment_report_latest.json",
+        {
+            "ok": True,
+            "selected_day_utc": "20260409",
+            "event_count": 8,
+            "day": {"available": True, "avg_sentiment_hint": -0.6, "mean_shock_hint": 0.8, "day_end_day_utc": "20260409"},
+            "week": {"available": True, "avg_sentiment_hint": -0.4, "mean_shock_hint": 0.7},
+            "month": {"available": True, "avg_sentiment_hint": -0.2, "mean_shock_hint": 0.6},
+            "year": {"available": True, "avg_sentiment_hint": 0.1, "mean_shock_hint": 0.4},
+            "daily_sentiment_series": [1, 2, 3],
+            "weekly_sentiment_series": [1],
+            "monthly_sentiment_series": [1],
+            "yearly_sentiment_series": [1],
+            "latest_live_macro_snapshot": {"source": "Fed", "speaker": "Powell"},
+        },
+    )
+    _write_json(health_root / "official_macro_context_sync_latest.json", {"sources": {"fed": {"ok": True}, "bls": {"ok": True}}})
+    _write_json(health_root / "market_micro_sync_latest.json", {"sources": {"local_micro": {"ok": True}}})
+    _write_json(health_root / "fx_market_context_sync_latest.json", {"sources": {"fed_h10": {"ok": True}}})
+    _write_json(health_root / "crypto_market_context_sync_latest.json", {"sources": {"coingecko": {"ok": True}}})
+    _write_json(health_root / "market_crypto_correlation_sync_latest.json", {"ok": True})
+    _write_json(health_root / "derived_state_latest.json", {"risk_score": 72.0, "risk_level": "high", "execution_multiplier": 0.7})
+    _write_json(
+        health_root / "paper_execution_calibration_latest.json",
+        {"metrics": {"mae_bps": 20.0}, "thresholds": {"max_mae_bps": 35.0}},
+    )
+
+    payload = regime_src.build_payload(project_root)
+
+    assert payload["stance_label"] in {"bearish", "neutral"}
+    assert payload["regime_state"] in {"risk_off_shock", "fragile_transition", "mixed_transition", "risk_off_trend"}
+    assert payload["scores"]["risk_norm"] > 0.7
+
+
+def test_supportability_control_flags_uncovered_students(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write_json(
+        project_root / "governance" / "health" / "training_quality_control_latest.json",
+        {"supportability": {"active_bots": 1, "active_supportable_bots": 0, "active_supportability_score": 0.0, "tier_counts": {"active_probation": 1}}},
+    )
+    _write_json(
+        project_root / "governance" / "lifecycle" / "model_lifecycle_latest.json",
+        {"missing_active_artifacts_total": 0, "missing_log_only_artifacts": 0, "stale_active_training_diagnostics": 0, "repair": {"enabled": True, "registry_updated": False}},
+    )
+    _write_json(
+        project_root / "governance" / "distillation" / "teacher_student_plan_latest.json",
+        {
+            "summary": {"teacher_count": 0, "student_count": 2, "assignment_count": 2},
+            "teachers": [],
+            "assignments": [
+                {"student_bot_id": "brain_refinery_v10_seasonal", "student_role": "signal_sub_bot", "student_runs": 4, "teachers": []},
+                {"student_bot_id": "brain_refinery_v68_risk_budget_layer", "student_role": "infrastructure_sub_bot", "student_runs": 6, "teachers": []},
+            ],
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "training_requalification_latest.json",
+        {"candidate_count": 5, "reactivation_ready_count": 0, "top_candidates": []},
+    )
+
+    payload = supportability_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "blocked"
+    assert payload["teacher_student"]["students_without_teachers"] == 2
+    assert payload["teacher_student"]["teacher_gap_by_role"][0]["missing_assignments"] >= 1

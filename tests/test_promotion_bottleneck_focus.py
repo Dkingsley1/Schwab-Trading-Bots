@@ -19,6 +19,7 @@ def test_promotion_bottleneck_focus_includes_training_failures_and_weak_sleeves(
     regime = tmp_path / "regime_segmented_latest.json"
     training = tmp_path / "training_success_latest.json"
     paper = tmp_path / "paper_performance_latest.json"
+    training_diag_root = tmp_path / "training_diagnostics"
     out = tmp_path / "promotion_bottleneck_latest.json"
 
     readiness.write_text(
@@ -54,6 +55,8 @@ def test_promotion_bottleneck_focus_includes_training_failures_and_weak_sleeves(
     training.write_text(
         json.dumps(
             {
+                "trained_ok_but_not_promotable": True,
+                "reason": "trained_ok_but_not_promotable:failed_exit_2",
                 "failure_details": [
                     {
                         "bot_id": "brain_refinery_v43_intraday_ultrafast_proxy",
@@ -88,6 +91,17 @@ def test_promotion_bottleneck_focus_includes_training_failures_and_weak_sleeves(
         ),
         encoding="utf-8",
     )
+    training_diag_root.mkdir(parents=True, exist_ok=True)
+    (training_diag_root / "brain_refinery_v43_intraday_ultrafast_proxy_latest.json").write_text(
+        json.dumps(
+            {
+                "family": "intraday",
+                "status": "failed",
+                "failure_categories": ["threshold_calibration", "distillation_candidate"],
+            }
+        ),
+        encoding="utf-8",
+    )
 
     monkeypatch.setattr(
         sys,
@@ -106,6 +120,8 @@ def test_promotion_bottleneck_focus_includes_training_failures_and_weak_sleeves(
             str(training),
             "--paper-performance-file",
             str(paper),
+            "--training-diagnostics-root",
+            str(training_diag_root),
             "--out-file",
             str(out),
         ],
@@ -117,6 +133,11 @@ def test_promotion_bottleneck_focus_includes_training_failures_and_weak_sleeves(
     assert rc == 0
     assert payload["latest_training_failures"][0]["bot_id"] == "brain_refinery_v43_intraday_ultrafast_proxy"
     assert payload["latest_training_failures"][0]["observed_live_sleeves"] == ["intraday_aggressive"]
+    assert "threshold_calibration" in payload["latest_training_failures"][0]["recommended_categories"]
     assert payload["weak_sleeves"][0]["profile"] == "intraday_aggressive"
+    assert payload["current"]["trained_ok_but_not_promotable"] is True
+    assert payload["promotion_middle_lane"]["active"] is True
     assert payload["recommended_retrain_profile"]["RETRAIN_INCLUDE_BOT_IDS"] == "brain_refinery_v43_intraday_ultrafast_proxy"
     assert payload["recommended_retrain_profile"]["RETRAIN_SKIP_MASTER_UPDATE"] is True
+    assert payload["recommended_retrain_profile"]["RETRAIN_DISTILLATION_PRIORITY"] is True
+    assert payload["retry_pack"]["distillation_priority"] is True

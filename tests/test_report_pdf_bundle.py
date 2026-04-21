@@ -23,6 +23,7 @@ def test_latest_artifact_ignores_latest_aliases_and_local_fallback(tmp_path):
 
 def test_build_specs_uses_latest_timestamped_sources(tmp_path):
     reports_dir = tmp_path / 'exports' / 'reports'
+    system_explainers = reports_dir / 'system_explainers'
     sql_reports = tmp_path / 'exports' / 'sql_reports'
     one_numbers = tmp_path / 'exports' / 'one_numbers'
     state_snapshot = tmp_path / 'exports' / 'state_snapshot_drills'
@@ -39,7 +40,15 @@ def test_build_specs_uses_latest_timestamped_sources(tmp_path):
     (reports_dir / 'crash_reports' / 'crash_report_digest_print_latest.html').write_text('<html></html>', encoding='utf-8')
     (reports_dir / 'project_timeline' / 'project_timeline_print_latest.html').write_text('<html></html>', encoding='utf-8')
     (reports_dir / 'training_reports' / 'training_report_print_latest.html').write_text('<html></html>', encoding='utf-8')
+    system_explainers.mkdir(parents=True)
     (reports_dir / 'daily_ops_report_latest.md').write_text('# Daily Ops', encoding='utf-8')
+    (system_explainers / 'framework_map_v2_latest.html').write_text('<html><body>Framework</body></html>', encoding='utf-8')
+    (system_explainers / 'runtime_hierarchy_latest.md').write_text('# Runtime Hierarchy', encoding='utf-8')
+    (system_explainers / 'data_intake_and_shards_latest.md').write_text('# Data Intake', encoding='utf-8')
+    (system_explainers / 'health_gates_and_halt_logic_latest.md').write_text('# Health Gates', encoding='utf-8')
+    (system_explainers / 'storage_routing_and_failover_latest.md').write_text('# Storage Routing', encoding='utf-8')
+    (system_explainers / 'broker_truth_and_reconciliation_latest.md').write_text('# Broker Truth', encoding='utf-8')
+    (system_explainers / 'training_and_promotion_latest.md').write_text('# Training', encoding='utf-8')
     retrain = sql_reports / 'retrain_scorecard_20260312_155123.md'
     retrain.write_text('# Retrain', encoding='utf-8')
     (sql_reports / 'unified_lane_scorecard_latest.md').write_text('# Lane', encoding='utf-8')
@@ -54,6 +63,7 @@ def test_build_specs_uses_latest_timestamped_sources(tmp_path):
     (governance_health / 'model_card_latest.json').write_text('{}', encoding='utf-8')
     (governance_health / 'bot_explainability_latest.json').write_text('{}', encoding='utf-8')
     (governance_health / 'paper_execution_calibration_latest.json').write_text('{}', encoding='utf-8')
+    (reports_dir / 'sentiment_report_latest.html').write_text('<html></html>', encoding='utf-8')
     strategy_md = reports_dir / 'strategy_attribution_latest.md'
     strategy_md.write_text('# Strategy Attribution', encoding='utf-8')
     post_trade_md = reports_dir / 'post_trade_analysis_latest.md'
@@ -69,8 +79,12 @@ def test_build_specs_uses_latest_timestamped_sources(tmp_path):
     assert by_slug['model_card']['source_path'] == governance_health / 'model_card_latest.json'
     assert by_slug['bot_explainability']['source_path'] == governance_health / 'bot_explainability_latest.json'
     assert by_slug['paper_execution_calibration']['source_path'] == governance_health / 'paper_execution_calibration_latest.json'
+    assert by_slug['sentiment_report']['source_path'] == reports_dir / 'sentiment_report_latest.html'
     assert by_slug['strategy_attribution']['source_path'] == strategy_md
     assert by_slug['post_trade_analysis']['source_path'] == post_trade_md
+    assert by_slug['framework_map_v2']['source_path'] == system_explainers / 'framework_map_v2_latest.html'
+    assert by_slug['runtime_hierarchy']['source_path'] == system_explainers / 'runtime_hierarchy_latest.md'
+    assert by_slug['training_and_promotion']['source_path'] == system_explainers / 'training_and_promotion_latest.md'
 
 
 def test_render_entry_html_formats_markdown_and_json(tmp_path):
@@ -92,3 +106,63 @@ def test_render_entry_html_formats_markdown_and_json(tmp_path):
     assert '<li>promote_ok: false</li>' in md_html
     assert 'candidate_score' in json_html
     assert '<pre class="content">' in json_html
+
+
+def test_extract_markdown_section_returns_requested_section_only():
+    text = (
+        "# Commands\n\n"
+        "## Alpha\n\n"
+        "alpha text\n\n"
+        "## Reports And PDFs\n\n"
+        "### Report catalog bundle\n\n"
+        "```bash\n"
+        "cd /repo\n"
+        "./scripts/ops/opsctl.sh report-pdfs --json\n"
+        "```\n\n"
+        "## Omega\n\n"
+        "omega text\n"
+    )
+
+    result = report_pdf_bundle._extract_markdown_section(text, "Reports And PDFs")
+
+    assert result.startswith("## Reports And PDFs")
+    assert "report-pdfs --json" in result
+    assert "## Alpha" not in result
+    assert "## Omega" not in result
+
+
+def test_render_index_html_embeds_reports_and_pdfs_commands(tmp_path, monkeypatch):
+    commands_path = tmp_path / "COMMANDS.md"
+    commands_path.write_text(
+        "# Commands\n\n"
+        "## Reports And PDFs\n\n"
+        "### Report catalog bundle\n\n"
+        "```bash\n"
+        "cd /Users/dankingsley/PycharmProjects/schwab_trading_bot\n"
+        "./scripts/ops/opsctl.sh report-pdfs --json\n"
+        "```\n\n"
+        "### Open the report catalog PDF\n\n"
+        "```bash\n"
+        "cd /Users/dankingsley/PycharmProjects/schwab_trading_bot\n"
+        "open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/report_pdf_bundle_latest.pdf\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(report_pdf_bundle, "COMMANDS_PATH", commands_path)
+
+    html = report_pdf_bundle._render_index_html(
+        [
+            {
+                "title": "Report Bundle",
+                "kind": "html",
+                "status": "ok",
+                "pdf_path": "/tmp/report.pdf",
+                "source_path": "/tmp/report.html",
+            }
+        ],
+        generated_utc="2026-04-20T16:30:00+00:00",
+    )
+
+    assert "Paste-Ready Terminal Commands" in html
+    assert "./scripts/ops/opsctl.sh report-pdfs --json" in html
+    assert "open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/report_pdf_bundle_latest.pdf" in html

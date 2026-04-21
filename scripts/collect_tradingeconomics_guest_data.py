@@ -91,7 +91,7 @@ _DEFENSIVE_PROXY_SYMBOLS = {
 }
 
 
-def _load_env_file(path: Path) -> None:
+def _load_env_file(path: Path, *, override: bool = False) -> None:
     if not path.exists():
         return
     for raw in path.read_text(encoding="utf-8").splitlines():
@@ -101,14 +101,22 @@ def _load_env_file(path: Path) -> None:
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
+        if key and (override or key not in os.environ):
             os.environ[key] = value
 
 
 def _bootstrap_env() -> None:
-    _load_env_file(PROJECT_ROOT / ".env")
-    _load_env_file(PROJECT_ROOT / "config" / ".env")
-    _load_env_file(PROJECT_ROOT / "config" / ".env.live")
+    for path, override in [
+        (PROJECT_ROOT / ".env", False),
+        (PROJECT_ROOT / ".env.live", True),
+        (PROJECT_ROOT / "config" / ".env", True),
+        (PROJECT_ROOT / "config" / ".env.live", True),
+        (PROJECT_ROOT / ".env.secrets.local", True),
+        (PROJECT_ROOT / ".env.live.secrets.local", True),
+        (PROJECT_ROOT / "config" / ".env.secrets.local", True),
+        (PROJECT_ROOT / "config" / ".env.live.secrets.local", True),
+    ]:
+        _load_env_file(path, override=override)
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -445,6 +453,12 @@ def _derive_market_breadth(market_rows: Sequence[Dict[str, Any]]) -> Dict[str, A
     sector_rotation_score = float(statistics.pstdev(list(sector_avg_moves.values()))) if len(sector_avg_moves) > 1 else 0.0
     sector_leader_strength = max((float(move) for move in sector_avg_moves.values()), default=0.0)
     sector_laggard_strength = min((float(move) for move in sector_avg_moves.values()), default=0.0)
+    sector_leader_name = ""
+    sector_laggard_name = ""
+    if sector_avg_moves:
+        sector_leader_name = max(sector_avg_moves.items(), key=lambda item: item[1])[0]
+        sector_laggard_name = min(sector_avg_moves.items(), key=lambda item: item[1])[0]
+    leader_laggard_spread = sector_leader_strength - sector_laggard_strength
     index_values = list(index_moves.values())
     index_alignment_score = 0.0
     if index_values:
@@ -471,6 +485,9 @@ def _derive_market_breadth(market_rows: Sequence[Dict[str, Any]]) -> Dict[str, A
         "sector_rotation_score": sector_rotation_score,
         "sector_leader_strength": sector_leader_strength,
         "sector_laggard_strength": sector_laggard_strength,
+        "sector_leader_name": sector_leader_name,
+        "sector_laggard_name": sector_laggard_name,
+        "leader_laggard_spread": leader_laggard_spread,
         "index_alignment_score": index_alignment_score,
         "risk_on_score": risk_on_score,
         "sector_average_moves": sector_avg_moves,

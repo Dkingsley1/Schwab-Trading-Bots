@@ -1,15 +1,29 @@
 from __future__ import annotations
 
 import glob
+import gzip
 import json
 import math
 import os
+import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS_DIR = PROJECT_ROOT / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from sql_dataset_io import (
+    iter_sqlite_jsonl_rows,
+    iter_sqlite_jsonl_rows_by_like_patterns,
+    resolve_sqlite_path,
+    split_paths_by_sqlite_coverage,
+)
 
 from market_context_features import (
     BOND_REFERENCE_FEATURE_KEYS,
@@ -38,6 +52,8 @@ RuntimeConfidenceBuilder = Callable[[Sequence[RuntimeObservation], int, int], fl
 _DEFAULT_RUNTIME_LABEL_BALANCE_MAX_RATIO = 4.0
 _DEFAULT_RUNTIME_LABEL_BALANCE_MIN_MINORITY_SAMPLES = 6
 _DEFAULT_RUNTIME_LABEL_BALANCE_MIN_TOTAL_SAMPLES = 64
+_DEFAULT_RUNTIME_SNAPSHOT_HEALTH = "governance/health/runtime_training_snapshot_latest.json"
+_DEFAULT_SQL_PROGRESS_HEALTH = "governance/health/sql_link_service_progress_latest.json"
 
 _ROOT_STRATEGY_PRIORITY = {
     "grand_master_bot": 0,
@@ -71,13 +87,23 @@ _RUNTIME_CALENDAR_EVENT_KEYS = {
     "calendar_cpi_event_norm",
     "calendar_labor_event_norm",
     "calendar_treasury_auction_norm",
+    "calendar_opex_week_norm",
+    "calendar_month_end_rebalance_norm",
+    "calendar_quarter_end_rebalance_norm",
+    "calendar_futures_roll_window_norm",
+    "calendar_index_rebalance_window_norm",
 }
 
 _RUNTIME_MARKET_MICRO_KEYS = {
     "market_micro_premarket_pressure_norm",
     "market_micro_opening_auction_norm",
+    "market_micro_opening_auction_imbalance_norm",
+    "market_micro_opening_drive_pressure_norm",
     "market_micro_power_hour_pressure_norm",
     "market_micro_closing_auction_norm",
+    "market_micro_closing_auction_imbalance_norm",
+    "market_micro_closing_cross_pressure_norm",
+    "market_micro_auction_print_pressure_norm",
     "market_micro_relative_volume_norm",
     "market_micro_order_flow_imbalance_norm",
     "market_micro_options_flow_norm",
@@ -88,6 +114,34 @@ _RUNTIME_MARKET_MICRO_KEYS = {
     "market_micro_trend_persistence_norm",
     "market_micro_range_expansion_norm",
     "market_micro_block_trade_norm",
+    "market_micro_trade_halt_norm",
+    "market_micro_luld_pause_norm",
+    "market_micro_ssr_active_norm",
+    "market_micro_resume_window_norm",
+    "market_micro_dark_pool_pressure_norm",
+    "market_micro_off_exchange_share_norm",
+    "market_micro_spread_regime_norm",
+    "market_micro_spread_widening_norm",
+    "market_micro_queue_depth_decay_norm",
+    "market_micro_depth_collapse_norm",
+    "market_micro_quote_fade_rate_norm",
+    "market_micro_tradeability_score_norm",
+    "market_micro_session_open_norm",
+    "market_micro_session_midday_norm",
+    "market_micro_session_power_hour_norm",
+    "market_micro_overnight_gap_norm",
+    "market_micro_post_event_drift_norm",
+    "market_micro_lunch_chop_norm",
+    "market_micro_open_close_imbalance_regime_norm",
+    "market_micro_symbol_cooldown_pressure_norm",
+    "market_micro_gap_fade_risk_norm",
+    "market_micro_overnight_event_hazard_norm",
+    "etf_nav_premium_discount_norm",
+    "etf_creation_redemption_stress_norm",
+    "etf_primary_secondary_liquidity_norm",
+    "etf_underlying_basket_stress_norm",
+    "etf_fund_family_flow_norm",
+    "etf_fund_family_creation_pressure_norm",
 }
 
 _RUNTIME_SEC_EDGAR_KEYS = {
@@ -96,8 +150,21 @@ _RUNTIME_SEC_EDGAR_KEYS = {
     "sec_earnings_7d_norm",
     "sec_guidance_7d_norm",
     "sec_regulatory_7d_norm",
+    "sec_offering_7d_norm",
+    "sec_dilution_7d_norm",
+    "sec_mna_7d_norm",
+    "sec_restatement_7d_norm",
+    "sec_financing_stress_7d_norm",
     "sec_ownership_30d_norm",
     "sec_insider_30d_norm",
+    "sec_insider_buy_30d_norm",
+    "sec_insider_sell_30d_norm",
+    "sec_estimate_revision_drift_norm",
+    "sec_earnings_whisper_surprise_norm",
+    "sec_split_hazard_30d_norm",
+    "sec_special_dividend_30d_norm",
+    "sec_offering_priced_30d_norm",
+    "sec_lockup_secondary_30d_norm",
     "sec_recent_proximity_norm",
     "sec_recent_symbols_norm",
     "sec_recent_filings_1d_norm",
@@ -132,6 +199,42 @@ _RUNTIME_EXTENDED_QUANT_KEYS = {
     "short_ftd_quantity_norm",
     "short_ftd_symbol_share_norm",
     "short_ftd_total_hits_norm",
+    "calendar_opex_week_norm",
+    "calendar_month_end_rebalance_norm",
+    "calendar_quarter_end_rebalance_norm",
+    "calendar_futures_roll_window_norm",
+    "calendar_index_rebalance_window_norm",
+}
+
+_RUNTIME_TASTYTRADE_KEYS = {
+    "tasty_iv_rank_norm",
+    "tasty_implied_volatility_index_norm",
+    "tasty_liquidity_rating_norm",
+    "tasty_expected_move_norm",
+    "tasty_beta_norm",
+    "tasty_watchlist_presence_norm",
+    "short_borrow_availability_norm",
+    "short_borrow_fee_norm",
+    "short_utilization_norm",
+    "short_days_to_cover_norm",
+    "tasty_dealer_gamma_pressure_norm",
+    "tasty_call_wall_proximity_norm",
+    "tasty_put_wall_proximity_norm",
+    "tasty_max_pain_proximity_norm",
+    "tasty_pin_risk_norm",
+    "options_iv_skew_norm",
+    "options_iv_term_structure_norm",
+    "options_gamma_expiry_skew_norm",
+    "options_vol_regime_norm",
+    "options_surface_change_norm",
+    "options_strike_expiry_concentration_change_norm",
+    "options_gamma_flip_distance_norm",
+    "options_earnings_setup_norm",
+    "options_iv_crush_risk_norm",
+    "options_assignment_risk_norm",
+    "options_zero_dte_regime_norm",
+    "options_vol_of_vol_change_norm",
+    "options_spread_execution_risk_norm",
 }
 
 _RUNTIME_CRYPTO_MARKET_KEYS = {
@@ -181,6 +284,12 @@ _RUNTIME_FX_MARKET_KEYS = {
     "fx_crypto_alignment_norm",
     "fx_macro_dispersion_norm",
     "fx_corr_confidence_norm",
+    "fx_session_asia_norm",
+    "fx_session_london_norm",
+    "fx_session_ny_norm",
+    "fx_rollover_risk_norm",
+    "fx_dxy_yield_confirmation_norm",
+    "fx_carry_proxy_norm",
 }
 
 _RUNTIME_DIVIDEND_DRIP_KEYS = {
@@ -192,7 +301,19 @@ _RUNTIME_DIVIDEND_DRIP_KEYS = {
     "dividend_drip_confidence_norm",
 }
 
-_RUNTIME_GAP_FILL_KEYS = set(BREADTH_FEATURE_KEYS) | set(BOND_REFERENCE_FEATURE_KEYS) | set(CREDIT_CONTEXT_FEATURE_KEYS) | set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS | _RUNTIME_CALENDAR_EVENT_KEYS | _RUNTIME_MARKET_MICRO_KEYS | _RUNTIME_SEC_EDGAR_KEYS | _RUNTIME_EXTENDED_QUANT_KEYS | _RUNTIME_CRYPTO_MARKET_KEYS | _RUNTIME_MARKET_CRYPTO_CORRELATION_KEYS | _RUNTIME_FX_MARKET_KEYS | _RUNTIME_DIVIDEND_DRIP_KEYS
+_RUNTIME_SCHWAB_EDUCATION_KEYS = {
+    "schwab_education_item_density_norm",
+    "schwab_education_recent_activity_norm",
+    "schwab_education_symbol_coverage_norm",
+    "schwab_education_video_share_norm",
+    "schwab_education_stream_share_norm",
+    "schwab_education_network_share_norm",
+    "schwab_education_symbol_frequency_norm",
+    "schwab_education_symbol_recency_norm",
+    "schwab_education_symbol_stream_share_norm",
+}
+
+_RUNTIME_GAP_FILL_KEYS = set(BREADTH_FEATURE_KEYS) | set(BOND_REFERENCE_FEATURE_KEYS) | set(CREDIT_CONTEXT_FEATURE_KEYS) | set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS | _RUNTIME_CALENDAR_EVENT_KEYS | _RUNTIME_MARKET_MICRO_KEYS | _RUNTIME_SEC_EDGAR_KEYS | _RUNTIME_EXTENDED_QUANT_KEYS | _RUNTIME_TASTYTRADE_KEYS | _RUNTIME_CRYPTO_MARKET_KEYS | _RUNTIME_MARKET_CRYPTO_CORRELATION_KEYS | _RUNTIME_FX_MARKET_KEYS | _RUNTIME_DIVIDEND_DRIP_KEYS | _RUNTIME_SCHWAB_EDUCATION_KEYS
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -221,7 +342,12 @@ def _parse_ts(raw: Any) -> Optional[datetime]:
 
 
 def _path_day_utc(path: Path) -> Optional[datetime]:
-    parts = path.stem.rsplit("_", 1)
+    name = path.name
+    for suffix in (".jsonl.gz", ".jsonl", ".log.gz", ".log"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    parts = name.rsplit("_", 1)
     if len(parts) != 2:
         return None
     stamp = parts[-1]
@@ -329,9 +455,11 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     bond_reference = load_latest_external_context(project_root, "bond_reference")
     live_macro = load_latest_external_context(project_root, "live_macro")
     official_macro = load_latest_external_context(project_root, "official_macro_context")
+    schwab_education = load_latest_external_context(project_root, "schwab_education_context")
     market_micro = load_latest_external_context(project_root, "market_micro")
     sec_edgar = load_latest_external_context(project_root, "sec_edgar")
     extended_quant = load_latest_external_context(project_root, "extended_quant_context")
+    options_flow = load_latest_external_context(project_root, "options_flow_context")
     crypto_market = load_latest_external_context(project_root, "crypto_market_context")
     market_crypto_correlation = load_latest_external_context(project_root, "market_crypto_correlation")
     fx_market_context = load_latest_external_context(project_root, "fx_market_context")
@@ -339,8 +467,10 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
 
     te_derived = tradingeconomics.get("derived") if isinstance(tradingeconomics.get("derived"), Mapping) else {}
     official_derived = official_macro.get("derived") if isinstance(official_macro.get("derived"), Mapping) else {}
+    schwab_derived = schwab_education.get("derived") if isinstance(schwab_education.get("derived"), Mapping) else {}
     sec_derived = sec_edgar.get("derived") if isinstance(sec_edgar.get("derived"), Mapping) else {}
     extended_derived = extended_quant.get("derived") if isinstance(extended_quant.get("derived"), Mapping) else {}
+    options_flow_derived = options_flow.get("derived") if isinstance(options_flow.get("derived"), Mapping) else {}
     crypto_derived = crypto_market.get("derived") if isinstance(crypto_market.get("derived"), Mapping) else {}
     market_crypto_corr_derived = market_crypto_correlation.get("derived") if isinstance(market_crypto_correlation.get("derived"), Mapping) else {}
     fx_market_derived = fx_market_context.get("derived") if isinstance(fx_market_context.get("derived"), Mapping) else {}
@@ -350,6 +480,9 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     te_calendar_rows = te_derived.get("calendar_rows") if isinstance(te_derived.get("calendar_rows"), list) else []
     official_calendar = official_derived.get("calendar_features") if isinstance(official_derived.get("calendar_features"), Mapping) else {}
     official_news = official_derived.get("news_features") if isinstance(official_derived.get("news_features"), Mapping) else {}
+    schwab_news = schwab_derived.get("news_features") if isinstance(schwab_derived.get("news_features"), Mapping) else {}
+    schwab_global = schwab_derived.get("global_features") if isinstance(schwab_derived.get("global_features"), Mapping) else {}
+    schwab_symbol = schwab_derived.get("symbol_features") if isinstance(schwab_derived.get("symbol_features"), Mapping) else {}
     official_calendar_rows = official_derived.get("calendar_rows") if isinstance(official_derived.get("calendar_rows"), list) else []
     official_bond_overlay = official_derived.get("bond_reference_overlay") if isinstance(official_derived.get("bond_reference_overlay"), Mapping) else {}
     sec_calendar = sec_derived.get("calendar_features") if isinstance(sec_derived.get("calendar_features"), Mapping) else {}
@@ -361,6 +494,8 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     extended_global = extended_derived.get("global_features") if isinstance(extended_derived.get("global_features"), Mapping) else {}
     extended_symbol = extended_derived.get("symbol_features") if isinstance(extended_derived.get("symbol_features"), Mapping) else {}
     extended_bond_overlay = extended_derived.get("bond_reference_overlay") if isinstance(extended_derived.get("bond_reference_overlay"), Mapping) else {}
+    options_flow_global = options_flow_derived.get("global_features") if isinstance(options_flow_derived.get("global_features"), Mapping) else {}
+    options_flow_symbol = options_flow_derived.get("symbol_features") if isinstance(options_flow_derived.get("symbol_features"), Mapping) else {}
     crypto_news = crypto_derived.get("news_features") if isinstance(crypto_derived.get("news_features"), Mapping) else {}
     crypto_global = crypto_derived.get("global_features") if isinstance(crypto_derived.get("global_features"), Mapping) else {}
     crypto_symbol = crypto_derived.get("symbol_features") if isinstance(crypto_derived.get("symbol_features"), Mapping) else {}
@@ -404,7 +539,7 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
                 news_features[key] = value
         else:
             news_features[key] = max(news_features.get(key, 0.0), value)
-    for extra_news in (sec_news, extended_news):
+    for extra_news in (schwab_news, sec_news, extended_news):
         for key, value in _feature_subset(extra_news, set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS).items():
             if key == "news_sentiment":
                 if abs(value) > abs(news_features.get(key, 0.0)):
@@ -439,17 +574,32 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     market_micro_features = {}
     market_micro_derived = market_micro.get("derived") if isinstance(market_micro.get("derived"), Mapping) else {}
     market_micro_global = market_micro_derived.get("global_features") if isinstance(market_micro_derived.get("global_features"), Mapping) else {}
+    market_micro_symbol = market_micro_derived.get("symbol_features") if isinstance(market_micro_derived.get("symbol_features"), Mapping) else {}
     for key, value in _feature_subset(market_micro_global, _RUNTIME_MARKET_MICRO_KEYS).items():
         market_micro_features[key] = value
     external_global_features = {}
+    external_global_features.update(_feature_subset(schwab_global, _RUNTIME_SCHWAB_EDUCATION_KEYS))
     external_global_features.update(_feature_subset(sec_global, _RUNTIME_SEC_EDGAR_KEYS))
     external_global_features.update(_feature_subset(extended_global, _RUNTIME_EXTENDED_QUANT_KEYS))
+    external_global_features.update(_feature_subset(options_flow_global, _RUNTIME_TASTYTRADE_KEYS))
     external_global_features.update(_feature_subset(crypto_global, _RUNTIME_CRYPTO_MARKET_KEYS))
     external_global_features.update(_feature_subset(market_crypto_corr_global, _RUNTIME_MARKET_CRYPTO_CORRELATION_KEYS))
     external_global_features.update(_feature_subset(fx_market_global, _RUNTIME_FX_MARKET_KEYS))
     external_global_features.update(_feature_subset(dividend_drip_global, _RUNTIME_DIVIDEND_DRIP_KEYS))
     external_symbol_features = _symbol_feature_subset(sec_symbol, _RUNTIME_SEC_EDGAR_KEYS)
+    for symbol, subset in _symbol_feature_subset(
+        schwab_symbol,
+        set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS | _RUNTIME_SCHWAB_EDUCATION_KEYS,
+    ).items():
+        current = external_symbol_features.setdefault(symbol, {})
+        current.update(subset)
+    for symbol, subset in _symbol_feature_subset(market_micro_symbol, _RUNTIME_MARKET_MICRO_KEYS).items():
+        current = external_symbol_features.setdefault(symbol, {})
+        current.update(subset)
     for symbol, subset in _symbol_feature_subset(extended_symbol, _RUNTIME_EXTENDED_QUANT_KEYS).items():
+        current = external_symbol_features.setdefault(symbol, {})
+        current.update(subset)
+    for symbol, subset in _symbol_feature_subset(options_flow_symbol, _RUNTIME_TASTYTRADE_KEYS).items():
         current = external_symbol_features.setdefault(symbol, {})
         current.update(subset)
     for symbol, subset in _symbol_feature_subset(crypto_symbol, _RUNTIME_CRYPTO_MARKET_KEYS).items():
@@ -502,6 +652,10 @@ def _enrich_runtime_observation(
 
     for key, value in calendar_features.items():
         _set_missing_feature(features, str(key), value)
+    symbol = str(obs.get("symbol") or "").strip().upper()
+    symbol_feature_map = external_symbol_features.get(symbol) if isinstance(external_symbol_features.get(symbol), Mapping) else {}
+    for key, value in symbol_feature_map.items():
+        _set_missing_feature(features, str(key), value)
     for key, value in news_features.items():
         _set_missing_feature(features, str(key), value)
     for key, value in live_macro_calendar.items():
@@ -511,10 +665,6 @@ def _enrich_runtime_observation(
     for key, value in breadth_features.items():
         _set_missing_feature(features, str(key), value)
     for key, value in market_micro_features.items():
-        _set_missing_feature(features, str(key), value)
-    symbol = str(obs.get("symbol") or "").strip().upper()
-    symbol_feature_map = external_symbol_features.get(symbol) if isinstance(external_symbol_features.get(symbol), Mapping) else {}
-    for key, value in symbol_feature_map.items():
         _set_missing_feature(features, str(key), value)
     for key, value in external_global_features.items():
         _set_missing_feature(features, str(key), value)
@@ -546,19 +696,193 @@ def _recent_decision_paths(project_root: Path, *, lookback_days: int) -> List[Pa
     since_utc = datetime.now(timezone.utc) - timedelta(days=max(int(lookback_days), 1))
     cutoff_day = (since_utc - timedelta(days=1)).date()
     out: List[Path] = []
-    for raw in glob.glob(str(root / "decision_explanations" / "shadow*" / "decision_explanations_*.jsonl")):
-        path = Path(raw)
-        day_utc = _path_day_utc(path)
-        if day_utc is not None and day_utc.date() >= cutoff_day:
-            out.append(path)
-            continue
+    patterns = [
+        root / "decision_explanations" / "shadow*" / "decision_explanations_*.jsonl",
+        root / "decision_explanations" / "shadow*" / "decision_explanations_*.jsonl.gz",
+        root / "decision_explanations" / "shadow*" / "latest_decisions.log",
+        root / "decision_explanations" / "shadow*" / "latest_decisions.log.gz",
+    ]
+    for pattern in patterns:
+        for raw in glob.glob(str(pattern)):
+            path = Path(raw)
+            day_utc = _path_day_utc(path)
+            if day_utc is not None and day_utc.date() >= cutoff_day:
+                out.append(path)
+                continue
+            try:
+                mtime_utc = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            except Exception:
+                continue
+            if mtime_utc >= since_utc - timedelta(days=1):
+                out.append(path)
+    return sorted({p.resolve() for p in out})
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _runtime_sqlite_read_allowed(project_root: Path) -> bool:
+    if _env_flag("RUNTIME_TRAIN_FORCE_SQLITE", False):
+        return True
+
+    progress_path = Path(project_root).expanduser().resolve() / _DEFAULT_SQL_PROGRESS_HEALTH
+    try:
+        progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    except Exception:
+        return True
+    if not isinstance(progress, dict):
+        return True
+
+    status = str(progress.get("status") or "").strip().lower()
+    current_step = str(progress.get("current_step") or "").strip().lower()
+    running = bool(progress.get("running", False)) or status == "running"
+    timestamp_raw = str(progress.get("timestamp_utc") or "").strip().replace("Z", "+00:00")
+    age_seconds = None
+    if timestamp_raw:
         try:
-            mtime_utc = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            ts = datetime.fromisoformat(timestamp_raw)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age_seconds = max((datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds(), 0.0)
+        except Exception:
+            age_seconds = None
+
+    if not running:
+        return True
+    if age_seconds is not None and age_seconds > 6 * 3600:
+        return True
+    if current_step in {"merge_primary", "merge_shards", "merge_shard", "hot_retention", "checkpoint_primary"}:
+        return False
+    return True
+
+
+def _load_runtime_snapshot_rows(
+    project_root: Path,
+    *,
+    lookback_days: int,
+    mode_allowlist: Optional[Sequence[str]],
+    symbol_allowlist: Optional[Sequence[str]],
+    snapshot_file: Optional[Path] = None,
+) -> RuntimeSequenceMap:
+    root = Path(project_root).expanduser().resolve()
+    summary_path = Path(snapshot_file or (root / _DEFAULT_RUNTIME_SNAPSHOT_HEALTH)).expanduser()
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(summary, dict):
+        return {}
+    if int(summary.get("lookback_days", 0) or 0) < max(int(lookback_days), 1):
+        return {}
+    rows_path = Path(str(summary.get("rows_path") or "")).expanduser()
+    if not rows_path.exists():
+        return {}
+
+    since_utc = datetime.now(timezone.utc) - timedelta(days=max(int(lookback_days), 1))
+    mode_allow = {str(x).strip().lower() for x in (mode_allowlist or []) if str(x).strip()}
+    symbol_allow = {str(x).strip().upper() for x in (symbol_allowlist or []) if str(x).strip()}
+    grouped: RuntimeSequenceMap = defaultdict(list)
+    try:
+        with rows_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                ts = _parse_ts(row.get("timestamp_utc"))
+                if ts is None or ts < since_utc:
+                    continue
+                mode = str(row.get("mode") or "").strip().lower()
+                symbol = str(row.get("symbol") or "").strip().upper()
+                if not mode or not symbol:
+                    continue
+                if mode_allow and mode not in mode_allow:
+                    continue
+                if symbol_allow and symbol not in symbol_allow:
+                    continue
+                grouped[(mode, symbol)].append(dict(row))
+    except Exception:
+        return {}
+    return grouped
+
+
+def _runtime_sqlite_like_patterns(*, lookback_days: int) -> List[str]:
+    day_count = max(int(lookback_days), 1) + 2
+    now_utc = datetime.now(timezone.utc)
+    patterns = [
+        f"decision_explanations/%/decision_explanations_{(now_utc - timedelta(days=offset)).strftime('%Y%m%d')}.jsonl%"
+        for offset in range(day_count)
+    ]
+    patterns.append("decision_explanations/%/latest_decisions.log%")
+    return patterns
+
+
+def _iter_runtime_observation_rows(
+    project_root: Path,
+    *,
+    lookback_days: int,
+    prefer_sqlite: bool,
+) -> Iterable[dict[str, Any]]:
+    root = Path(project_root).expanduser().resolve()
+    paths = _recent_decision_paths(root, lookback_days=max(int(lookback_days), 1))
+    effective_prefer_sqlite = bool(prefer_sqlite and _runtime_sqlite_read_allowed(root))
+    sqlite_path = resolve_sqlite_path(os.getenv("RUNTIME_TRAIN_SQLITE_PATH", "").strip() or None)
+    sql_source_rels: List[str] = []
+    file_fallbacks = paths
+    sqlite_had_runtime_history = False
+    if effective_prefer_sqlite and sqlite_path.exists():
+        try:
+            for row in iter_sqlite_jsonl_rows_by_like_patterns(
+                sqlite_path=sqlite_path,
+                like_patterns=_runtime_sqlite_like_patterns(lookback_days=max(int(lookback_days), 1)),
+            ):
+                if isinstance(row, dict):
+                    sqlite_had_runtime_history = True
+                    yield row
+        except Exception:
+            sqlite_had_runtime_history = False
+
+        sql_source_rels, file_fallbacks = split_paths_by_sqlite_coverage(
+            project_root=root,
+            paths=paths,
+            sqlite_path=sqlite_path,
+        )
+        if sqlite_had_runtime_history:
+            sql_source_rels = []
+    elif not effective_prefer_sqlite:
+        file_fallbacks = paths
+
+    if effective_prefer_sqlite and sql_source_rels:
+        for row in iter_sqlite_jsonl_rows(sqlite_path=sqlite_path, source_rels=sql_source_rels):
+            if isinstance(row, dict):
+                yield row
+
+    for path in file_fallbacks:
+        try:
+            if path.suffix == ".gz":
+                handle_cm = gzip.open(path, "rt", encoding="utf-8")
+            else:
+                handle_cm = path.open("r", encoding="utf-8")
+            with handle_cm as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    if isinstance(row, dict):
+                        yield row
         except Exception:
             continue
-        if mtime_utc >= since_utc - timedelta(days=1):
-            out.append(path)
-    return sorted({p.resolve() for p in out})
 
 
 def observation_feature(obs: Mapping[str, Any], name: str, default: float = 0.0) -> float:
@@ -714,6 +1038,50 @@ def selective_direction_label_builder(*, min_abs_return: float = 0.0) -> Runtime
     return _label
 
 
+def cost_adjusted_direction_label_builder(
+    *,
+    min_edge: float = 0.0,
+    transaction_cost_bps: float = 6.0,
+    spread_cost_weight: float = 0.35,
+    tradeability_weight: float = 0.002,
+    vwap_bias_weight: float = 0.002,
+) -> RuntimeLabelBuilder:
+    threshold = abs(float(min_edge))
+    cost_floor = max(float(transaction_cost_bps), 0.0) / 10000.0
+    spread_weight = max(float(spread_cost_weight), 0.0)
+    tradeability_weight = max(float(tradeability_weight), 0.0)
+    vwap_bias_weight = max(float(vwap_bias_weight), 0.0)
+
+    def _label(sequence: Sequence[RuntimeObservation], idx: int, horizon: int) -> Optional[float]:
+        gross_ret = future_return(sequence, idx, horizon)
+        spread_cost = max(observation_feature(sequence[idx], "spread_bps", 0.0), 0.0) / 10000.0
+        tradeability = _safe_float(observation_feature(sequence[idx], "market_micro_tradeability_score_norm", 1.0), 1.0)
+        tradeability_penalty = max(1.0 - tradeability, 0.0) * tradeability_weight
+        vwap_bias = abs(
+            observation_feature(
+                sequence[idx],
+                "futures_vwap_bias_norm",
+                observation_feature(sequence[idx], "options_vwap_bias_norm", 0.0),
+            )
+        )
+        total_cost = cost_floor + (spread_weight * spread_cost) + tradeability_penalty + (vwap_bias_weight * vwap_bias)
+        if gross_ret > 0.0:
+            net_edge = gross_ret - total_cost
+            if net_edge <= threshold:
+                return None
+            return 1.0
+        if gross_ret < 0.0:
+            net_edge = gross_ret + total_cost
+            if abs(net_edge) <= threshold:
+                return None
+            return 0.0
+        if abs(gross_ret) <= threshold:
+            return None
+        return None
+
+    return _label
+
+
 def multi_horizon_direction_label_builder(
     *,
     horizons: Sequence[int],
@@ -762,86 +1130,444 @@ def risk_support_label_builder(
     return _label
 
 
+def fill_adjusted_outcome_label_builder(
+    *,
+    min_net_return: float = 0.0,
+    transaction_cost_bps: float = 6.0,
+    spread_cost_weight: float = 0.25,
+    slippage_cost_weight: float = 0.45,
+    impact_cost_weight: float = 0.25,
+    fee_cost_weight: float = 1.0,
+    tradeability_weight: float = 0.002,
+    stop_target_realism_weight: float = 0.0015,
+) -> RuntimeLabelBuilder:
+    threshold = abs(float(min_net_return))
+    cost_floor = max(float(transaction_cost_bps), 0.0) / 10000.0
+    spread_cost_weight = max(float(spread_cost_weight), 0.0)
+    slippage_cost_weight = max(float(slippage_cost_weight), 0.0)
+    impact_cost_weight = max(float(impact_cost_weight), 0.0)
+    fee_cost_weight = max(float(fee_cost_weight), 0.0)
+    tradeability_weight = max(float(tradeability_weight), 0.0)
+    stop_target_realism_weight = max(float(stop_target_realism_weight), 0.0)
+
+    def _label(sequence: Sequence[RuntimeObservation], idx: int, horizon: int) -> Optional[float]:
+        gross_ret = future_return(sequence, idx, horizon)
+        spread_cost = max(observation_feature(sequence[idx], "spread_bps", 0.0), 0.0) / 10000.0
+        slippage_cost = max(
+            observation_feature(
+                sequence[idx],
+                "lag_slippage_bps",
+                observation_feature(sequence[idx], "paper_recent_slippage_bps_norm", 0.0) * 10.0,
+            ),
+            0.0,
+        ) / 10000.0
+        impact_cost = max(observation_feature(sequence[idx], "lag_impact_bps", 0.0), 0.0) / 10000.0
+        fee_cost = max(observation_feature(sequence[idx], "lag_fee_bps", 0.0), 0.0) / 10000.0
+        tradeability = _safe_float(
+            observation_feature(
+                sequence[idx],
+                "execution_fitness_norm",
+                observation_feature(sequence[idx], "market_micro_tradeability_score_norm", 1.0),
+            ),
+            1.0,
+        )
+        tradeability_penalty = max(1.0 - tradeability, 0.0) * tradeability_weight
+        stop_target_realism = _safe_float(observation_feature(sequence[idx], "stop_target_realism_norm", 1.0), 1.0)
+        realism_penalty = max(1.0 - stop_target_realism, 0.0) * stop_target_realism_weight
+        total_cost = (
+            cost_floor
+            + (spread_cost_weight * spread_cost)
+            + (slippage_cost_weight * slippage_cost)
+            + (impact_cost_weight * impact_cost)
+            + (fee_cost_weight * fee_cost)
+            + tradeability_penalty
+            + realism_penalty
+        )
+        if gross_ret > 0.0:
+            net_ret = gross_ret - total_cost
+            if net_ret <= threshold:
+                return None
+            return 1.0
+        if gross_ret < 0.0:
+            net_ret = gross_ret + total_cost
+            if abs(net_ret) <= threshold:
+                return None
+            return 0.0
+        return None
+
+    return _label
+
+
+def event_followthrough_label_builder(
+    *,
+    checkpoints: Sequence[float] = (0.25, 0.5, 1.0),
+    min_return: float = 0.0,
+    min_followthrough_share: float = 0.66,
+    max_reversal_share: float = 0.50,
+) -> RuntimeLabelBuilder:
+    threshold = abs(float(min_return))
+    min_followthrough_share = max(0.0, min(float(min_followthrough_share), 1.0))
+    max_reversal_share = max(0.0, float(max_reversal_share))
+    checkpoint_fracs = sorted(
+        {
+            max(0.1, min(float(raw), 1.0))
+            for raw in checkpoints
+            if float(raw) > 0.0
+        }
+    ) or [1.0]
+
+    def _label(sequence: Sequence[RuntimeObservation], idx: int, horizon: int) -> Optional[float]:
+        eval_horizon = max(int(horizon), 1)
+        returns: List[float] = []
+        for frac in checkpoint_fracs:
+            step = max(1, int(round(eval_horizon * frac)))
+            if (idx + step) >= len(sequence):
+                return None
+            returns.append(future_return(sequence, idx, step))
+        final_ret = returns[-1]
+        if abs(final_ret) <= threshold:
+            return None
+        direction = 1.0 if final_ret > 0.0 else -1.0
+        aligned = sum(1 for ret in returns if (ret * direction) > threshold)
+        if (aligned / max(len(returns), 1)) < min_followthrough_share:
+            return None
+        reversal = max((max(-ret, 0.0) if direction > 0.0 else max(ret, 0.0)) for ret in returns)
+        if reversal > (abs(final_ret) * max_reversal_share):
+            return None
+        return 1.0 if direction > 0.0 else 0.0
+
+    return _label
+
+
+def abstain_quality_label_builder(
+    *,
+    max_abs_return: float = 0.0015,
+    min_stress_score: float = 0.45,
+    max_spread_bps: float = 18.0,
+    min_tradeability: float = 0.45,
+    max_execution_fitness: float = 0.45,
+) -> RuntimeLabelBuilder:
+    flat_threshold = abs(float(max_abs_return))
+    min_stress_score = _safe_float(min_stress_score, 0.45)
+    max_spread_bps = max(float(max_spread_bps), 1.0)
+    min_tradeability = _safe_float(min_tradeability, 0.45)
+    max_execution_fitness = _safe_float(max_execution_fitness, 0.45)
+
+    def _label(sequence: Sequence[RuntimeObservation], idx: int, horizon: int) -> Optional[float]:
+        realized_move = abs(future_return(sequence, idx, horizon))
+        spread_norm = min(max(observation_feature(sequence[idx], "spread_bps", 0.0), 0.0) / max_spread_bps, 1.0)
+        tradeability = _safe_float(observation_feature(sequence[idx], "market_micro_tradeability_score_norm", 1.0), 1.0)
+        execution_fitness = _safe_float(observation_feature(sequence[idx], "execution_fitness_norm", tradeability), tradeability)
+        halt_risk = max(
+            observation_feature(sequence[idx], "market_micro_trade_halt_norm", 0.0),
+            observation_feature(sequence[idx], "market_micro_luld_pause_norm", 0.0),
+        )
+        stress_score = _safe_float(
+            0.34 * max(1.0 - tradeability, 0.0)
+            + 0.28 * max(1.0 - execution_fitness, 0.0)
+            + 0.22 * spread_norm
+            + 0.16 * halt_risk,
+            0.0,
+        )
+        structural_drag = (
+            tradeability <= min_tradeability
+            or execution_fitness <= max_execution_fitness
+            or spread_norm >= 0.75
+            or halt_risk >= 0.50
+        )
+        if stress_score >= min_stress_score and structural_drag and realized_move <= flat_threshold:
+            return 1.0
+        if realized_move > flat_threshold and stress_score < min_stress_score:
+            return 0.0
+        return None
+
+    return _label
+
+
+def regime_specific_label_builder(
+    *,
+    regime: str,
+    min_return: float = 0.0,
+    regime_threshold: float = 0.55,
+) -> RuntimeLabelBuilder:
+    regime_key = str(regime or "trend").strip().lower() or "trend"
+    threshold = abs(float(min_return))
+    regime_threshold = _safe_float(regime_threshold, 0.55)
+
+    def _regime_score(obs: RuntimeObservation) -> float:
+        if regime_key == "trend":
+            return max(
+                observation_feature(obs, "day_regime_trend_norm", 0.0),
+                observation_feature(obs, "market_micro_trend_persistence_norm", 0.0),
+                observation_feature(obs, "swing_weekly_trend_confirm_norm", 0.0),
+            )
+        if regime_key in {"chop", "mean_revert"}:
+            return max(
+                observation_feature(obs, "day_regime_chop_norm", 0.0),
+                observation_feature(obs, "market_micro_reversal_risk_norm", 0.0),
+                observation_feature(obs, "market_micro_range_expansion_norm", 0.0) * 0.5,
+            )
+        if regime_key == "shock":
+            return max(
+                observation_feature(obs, "calendar_event_proximity_norm", 0.0),
+                observation_feature(obs, "market_micro_post_event_drift_norm", 0.0),
+                observation_feature(obs, "market_micro_range_expansion_norm", 0.0),
+                observation_feature(obs, "regime_dislocation_norm", 0.0),
+            )
+        return observation_feature(obs, "day_regime_trend_norm", 0.0)
+
+    def _label(sequence: Sequence[RuntimeObservation], idx: int, horizon: int) -> Optional[float]:
+        obs = sequence[idx]
+        if _regime_score(obs) < regime_threshold:
+            return None
+        ret = future_return(sequence, idx, horizon)
+        if abs(ret) <= threshold:
+            return None
+        recent_bias = _safe_float(
+            observation_feature(
+                obs,
+                "pct_from_close",
+                observation_feature(obs, "mom_5m", 0.0),
+            ),
+            0.0,
+        )
+        if regime_key == "trend":
+            if recent_bias != 0.0 and (ret * recent_bias) <= 0.0:
+                return None
+        elif regime_key in {"chop", "mean_revert"}:
+            if abs(recent_bias) <= threshold or (ret * recent_bias) >= 0.0:
+                return None
+        return 1.0 if ret > 0.0 else 0.0
+
+    return _label
+
+
+def income_total_return_label_builder(
+    *,
+    min_total_return: float = 0.0,
+    min_income_quality: float = 0.52,
+    max_payout_stress: float = 0.74,
+    income_yield_weight: float = 0.0025,
+    compounding_weight: float = 0.0015,
+) -> RuntimeLabelBuilder:
+    threshold = abs(float(min_total_return))
+    min_income_quality = _safe_float(min_income_quality, 0.52)
+    max_payout_stress = _safe_float(max_payout_stress, 0.74)
+    income_yield_weight = max(float(income_yield_weight), 0.0)
+    compounding_weight = max(float(compounding_weight), 0.0)
+
+    def _label(sequence: Sequence[RuntimeObservation], idx: int, horizon: int) -> Optional[float]:
+        obs = sequence[idx]
+        price_return = future_return(sequence, idx, horizon)
+        income_quality = max(
+            observation_feature(obs, "dividend_income_quality_norm", 0.0),
+            observation_feature(obs, "long_term_total_return_income_norm", 0.0),
+        )
+        compounding_quality = max(
+            observation_feature(obs, "dividend_compounding_quality_norm", 0.0),
+            observation_feature(obs, "long_term_compounder_conviction_norm", 0.0),
+        )
+        payout_stress = max(
+            observation_feature(obs, "dividend_payout_stress_forward_norm", 0.0),
+            observation_feature(obs, "dividend_forward_hazard_norm", 0.0),
+            observation_feature(obs, "long_term_corporate_action_hazard_norm", 0.0),
+        )
+        total_return = price_return + (
+            observation_feature(obs, "dividend_yield_norm", 0.0) * income_yield_weight
+        ) + (compounding_quality * compounding_weight)
+        if income_quality < min_income_quality or payout_stress > max_payout_stress:
+            if total_return < -threshold:
+                return 0.0
+            return None
+        if total_return > threshold:
+            return 1.0
+        if total_return < -threshold:
+            return 0.0
+        return None
+
+    return _label
+
+
+def derivatives_structure_label_builder(
+    *,
+    min_return: float = 0.0,
+    min_structure_score: float = 0.54,
+    min_directional_edge: float = 0.08,
+) -> RuntimeLabelBuilder:
+    threshold = abs(float(min_return))
+    min_structure_score = _safe_float(min_structure_score, 0.54)
+    min_directional_edge = abs(float(min_directional_edge))
+
+    def _label(sequence: Sequence[RuntimeObservation], idx: int, horizon: int) -> Optional[float]:
+        obs = sequence[idx]
+        options_edge = (
+            (observation_feature(obs, "options_net_call_premium_bias_norm", 0.5) - 0.5)
+            + (observation_feature(obs, "options_gamma_expiry_skew_norm", 0.5) - 0.5)
+            + (observation_feature(obs, "options_surface_change_norm", 0.5) - 0.5)
+        ) / 3.0
+        futures_edge = (
+            (observation_feature(obs, "futures_order_book_imbalance_norm", 0.5) - 0.5)
+            + (observation_feature(obs, "futures_basis_bps_norm", 0.5) - 0.5)
+            + (observation_feature(obs, "futures_term_structure_norm", 0.5) - 0.5)
+        ) / 3.0
+        flow_edge = _safe_float(observation_feature(obs, "flow_direction_signed", 0.0), 0.0)
+        structure_signal = _safe_float((0.40 * options_edge) + (0.40 * futures_edge) + (0.20 * flow_edge), 0.0)
+        structure_score = max(
+            observation_feature(obs, "core_options_structure_edge_norm", 0.0),
+            observation_feature(obs, "core_futures_curve_alignment_norm", 0.0),
+            observation_feature(obs, "core_futures_regime_edge_norm", 0.0),
+        )
+        future_ret = future_return(sequence, idx, horizon)
+        if structure_score < min_structure_score or abs(structure_signal) < min_directional_edge or abs(future_ret) <= threshold:
+            return None
+        if (future_ret * structure_signal) > 0.0:
+            return 1.0 if future_ret > 0.0 else 0.0
+        return None
+
+    return _label
+
+
+def _mode_family_label(mode: Any) -> str:
+    text = str(mode or "").strip().lower()
+    if "dividend" in text:
+        return "dividend"
+    if "long_term" in text:
+        return "long_term"
+    if "intraday" in text or "day" in text:
+        return "intraday"
+    if "swing" in text:
+        return "swing"
+    if "bond" in text:
+        return "bond"
+    if "options" in text:
+        return "options"
+    if "futures" in text:
+        return "futures"
+    if "fx" in text:
+        return "fx"
+    if "crypto" in text:
+        return "crypto"
+    if "aggressive" in text or "default" in text or "conservative" in text:
+        return "trading"
+    return "other"
+
+
 def load_runtime_observation_sequences(
     project_root: Path,
     *,
     lookback_days: int = 14,
     mode_allowlist: Optional[Sequence[str]] = None,
     symbol_allowlist: Optional[Sequence[str]] = None,
+    prefer_sqlite: Optional[bool] = None,
+    allow_snapshot: bool = True,
+    snapshot_file: Optional[Path] = None,
 ) -> RuntimeSequenceMap:
     root = Path(project_root).expanduser().resolve()
     since_utc = datetime.now(timezone.utc) - timedelta(days=max(int(lookback_days), 1))
     mode_allow = {str(x).strip().lower() for x in (mode_allowlist or []) if str(x).strip()}
     symbol_allow = {str(x).strip().upper() for x in (symbol_allowlist or []) if str(x).strip()}
     gap_fill_context = _load_runtime_gap_fill_context(root)
+    effective_prefer_sqlite = _env_flag("RUNTIME_TRAIN_PREFER_SQLITE", False) if prefer_sqlite is None else bool(prefer_sqlite)
+
+    if allow_snapshot and _env_flag("RUNTIME_TRAIN_USE_SNAPSHOT", False):
+        env_snapshot_file = Path(str(os.getenv("RUNTIME_TRAIN_SNAPSHOT_FILE", "")).strip()).expanduser() if str(os.getenv("RUNTIME_TRAIN_SNAPSHOT_FILE", "")).strip() else None
+        snapshot_rows = _load_runtime_snapshot_rows(
+            root,
+            lookback_days=max(int(lookback_days), 1),
+            mode_allowlist=mode_allowlist,
+            symbol_allowlist=symbol_allowlist,
+            snapshot_file=snapshot_file or env_snapshot_file,
+        )
+        if snapshot_rows:
+            out: RuntimeSequenceMap = {}
+            for key, rows in snapshot_rows.items():
+                rows_sorted = sorted(
+                    rows,
+                    key=lambda x: (
+                        float(x.get("ts_epoch", 0.0)),
+                        int(x.get("strategy_priority", 99)),
+                        str(x.get("snapshot_id") or ""),
+                    ),
+                )
+                carry_forward_features: Dict[str, float] = {}
+                deduped: List[RuntimeObservation] = []
+                seen_snapshot_ids: set[str] = set()
+                for row in rows_sorted:
+                    sid = str(row.get("snapshot_id") or "")
+                    if sid in seen_snapshot_ids:
+                        continue
+                    seen_snapshot_ids.add(sid)
+                    enriched = _enrich_runtime_observation(
+                        row,
+                        carry_forward_features=carry_forward_features,
+                        gap_fill_context=gap_fill_context,
+                    )
+                    deduped.append(enriched)
+                    next_carry: Dict[str, float] = {}
+                    feature_map = enriched.get("features") if isinstance(enriched.get("features"), Mapping) else {}
+                    for feature_key, feature_value in feature_map.items():
+                        try:
+                            numeric_value = float(feature_value)
+                        except Exception:
+                            continue
+                        if math.isfinite(numeric_value):
+                            next_carry[str(feature_key)] = numeric_value
+                    carry_forward_features = next_carry
+                if deduped:
+                    out[key] = deduped
+            if out:
+                return out
 
     best_by_snapshot: Dict[Tuple[str, str, str], RuntimeObservation] = {}
-    for path in _recent_decision_paths(root, lookback_days=max(int(lookback_days), 1)):
-        try:
-            with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except Exception:
-                        continue
-                    if not isinstance(row, dict):
-                        continue
-                    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-                    if str(metadata.get("layer") or "").strip().lower() != "grand_master":
-                        continue
-                    strategy = str(row.get("strategy") or "").strip().lower()
-                    if strategy not in _ROOT_STRATEGY_PRIORITY:
-                        continue
-
-                    ts = _parse_ts(row.get("timestamp_utc"))
-                    if ts is None or ts < since_utc:
-                        continue
-                    mode = str(row.get("mode") or "").strip().lower()
-                    symbol = str(row.get("symbol") or "").strip().upper()
-                    if not mode or not symbol:
-                        continue
-                    if mode_allow and mode not in mode_allow:
-                        continue
-                    if symbol_allow and symbol not in symbol_allow:
-                        continue
-
-                    gates = row.get("gates") if isinstance(row.get("gates"), dict) else {}
-                    if ("market_data_ok" in gates) and (not bool(gates.get("market_data_ok"))):
-                        continue
-
-                    features = row.get("features") if isinstance(row.get("features"), dict) else {}
-                    price = _safe_float(features.get("last_price"), 0.0)
-                    if price <= 0.0:
-                        continue
-
-                    snapshot_id = str(metadata.get("snapshot_id") or row.get("snapshot_id") or row.get("parent_decision_id") or "").strip()
-                    if not snapshot_id:
-                        snapshot_id = f"{symbol}:{ts.isoformat()}"
-
-                    obs = {
-                        "mode": mode,
-                        "symbol": symbol,
-                        "strategy": strategy,
-                        "strategy_priority": _ROOT_STRATEGY_PRIORITY[strategy],
-                        "snapshot_id": snapshot_id,
-                        "ts_epoch": float(ts.timestamp()),
-                        "timestamp_utc": ts.isoformat(),
-                        "price": price,
-                        "features": dict(features),
-                    }
-                    key = (mode, symbol, snapshot_id)
-                    prev = best_by_snapshot.get(key)
-                    if prev is None or int(obs["strategy_priority"]) < int(prev.get("strategy_priority", 99)):
-                        best_by_snapshot[key] = obs
-        except Exception:
+    for row in _iter_runtime_observation_rows(root, lookback_days=max(int(lookback_days), 1), prefer_sqlite=effective_prefer_sqlite):
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        if str(metadata.get("layer") or "").strip().lower() != "grand_master":
+            continue
+        strategy = str(row.get("strategy") or "").strip().lower()
+        if strategy not in _ROOT_STRATEGY_PRIORITY:
             continue
 
+        ts = _parse_ts(row.get("timestamp_utc"))
+        if ts is None or ts < since_utc:
+            continue
+        mode = str(row.get("mode") or "").strip().lower()
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not mode or not symbol:
+            continue
+        if mode_allow and mode not in mode_allow:
+            continue
+        if symbol_allow and symbol not in symbol_allow:
+            continue
+
+        gates = row.get("gates") if isinstance(row.get("gates"), dict) else {}
+        if ("market_data_ok" in gates) and (not bool(gates.get("market_data_ok"))):
+            continue
+
+        features = row.get("features") if isinstance(row.get("features"), dict) else {}
+        price = _safe_float(features.get("last_price"), 0.0)
+        if price <= 0.0:
+            continue
+
+        snapshot_id = str(metadata.get("snapshot_id") or row.get("snapshot_id") or row.get("parent_decision_id") or "").strip()
+        if not snapshot_id:
+            snapshot_id = f"{symbol}:{ts.isoformat()}"
+
+        obs = {
+            "strategy": strategy,
+            "strategy_priority": _ROOT_STRATEGY_PRIORITY[strategy],
+            "snapshot_id": snapshot_id,
+            "ts_epoch": float(ts.timestamp()),
+            "price": price,
+            "features": features,
+        }
+        key = (mode, symbol, snapshot_id)
+        prev = best_by_snapshot.get(key)
+        if prev is None or int(obs["strategy_priority"]) < int(prev.get("strategy_priority", 99)):
+            best_by_snapshot[key] = obs
+
     grouped: RuntimeSequenceMap = defaultdict(list)
-    for obs in best_by_snapshot.values():
-        grouped[(str(obs["mode"]), str(obs["symbol"]))].append(obs)
+    for (mode, symbol, _snapshot_id), obs in best_by_snapshot.items():
+        grouped[(str(mode), str(symbol))].append(obs)
 
     out: RuntimeSequenceMap = {}
     for key, rows in grouped.items():
@@ -854,8 +1580,19 @@ def load_runtime_observation_sequences(
             if sid in seen_snapshot_ids:
                 continue
             seen_snapshot_ids.add(sid)
+            row_for_enrich = dict(row)
+            row_for_enrich.setdefault("mode", key[0])
+            row_for_enrich.setdefault("symbol", key[1])
+            if "timestamp_utc" not in row_for_enrich:
+                try:
+                    row_for_enrich["timestamp_utc"] = datetime.fromtimestamp(
+                        float(row_for_enrich.get("ts_epoch", 0.0)),
+                        tz=timezone.utc,
+                    ).isoformat()
+                except Exception:
+                    row_for_enrich["timestamp_utc"] = ""
             enriched = _enrich_runtime_observation(
-                row,
+                row_for_enrich,
                 carry_forward_features=carry_forward_features,
                 gap_fill_context=gap_fill_context,
             )
@@ -877,6 +1614,195 @@ def load_runtime_observation_sequences(
     return out
 
 
+def _sample_regime_label(row: RuntimeObservation) -> str:
+    features = row.get("features") if isinstance(row.get("features"), Mapping) else {}
+    shock_score = max(
+        _safe_float(features.get("news_shock_rate"), 0.0),
+        _safe_float(features.get("calendar_macro_surprise_norm"), 0.0),
+        _safe_float(features.get("market_micro_trade_halt_norm"), 0.0),
+        _safe_float(features.get("market_micro_range_expansion_norm"), 0.0),
+    )
+    trend_score = max(
+        _safe_float(features.get("day_regime_trend_norm"), 0.0),
+        _safe_float(features.get("market_micro_trend_persistence_norm"), 0.0),
+        _safe_float(features.get("futures_curve_shift_velocity_norm"), 0.0),
+    )
+    mean_revert_score = max(
+        _safe_float(features.get("day_regime_mean_revert_norm"), 0.0),
+        _safe_float(features.get("market_micro_reversal_risk_norm"), 0.0),
+    )
+    if shock_score >= 0.60:
+        return "shock"
+    if trend_score >= max(0.58, mean_revert_score + 0.08):
+        return "trend"
+    if mean_revert_score >= 0.55:
+        return "mean_revert"
+    return "chop"
+
+
+def _sample_session_label(row: RuntimeObservation) -> str:
+    features = row.get("features") if isinstance(row.get("features"), Mapping) else {}
+    if _safe_float(features.get("market_micro_overnight_gap_norm"), 0.0) >= 0.55:
+        return "overnight_gap"
+    if _safe_float(features.get("market_micro_session_open_norm"), 0.0) >= 0.55:
+        return "open"
+    if _safe_float(features.get("market_micro_session_power_hour_norm"), 0.0) >= 0.55:
+        return "power_hour"
+    if _safe_float(features.get("market_micro_post_event_drift_norm"), 0.0) >= 0.55:
+        return "post_event_drift"
+    if _safe_float(features.get("market_micro_session_midday_norm"), 0.0) >= 0.55:
+        return "midday"
+    return "regular"
+
+
+def _select_evenly_spaced_indices(indices: np.ndarray, keep_count: int, conf: np.ndarray, anchor_ts: np.ndarray) -> np.ndarray:
+    if indices.size <= keep_count:
+        return np.asarray(indices, dtype=np.int64)
+    indices_sorted = np.asarray(indices[np.argsort(anchor_ts[indices], kind="stable")], dtype=np.int64)
+    anchor_positions = np.unique(np.linspace(0, max(indices_sorted.size - 1, 0), num=keep_count, dtype=np.int64))
+    selected = indices_sorted[anchor_positions]
+    if selected.size < keep_count:
+        selected_set = {int(i) for i in selected.tolist()}
+        extras_ranked = sorted(
+            [int(i) for i in indices_sorted.tolist() if int(i) not in selected_set],
+            key=lambda idx: (-float(conf[idx]), -float(anchor_ts[idx])),
+        )
+        need = int(keep_count - selected.size)
+        if need > 0 and extras_ranked:
+            selected = np.concatenate([selected, np.asarray(extras_ranked[:need], dtype=np.int64)])
+    return np.sort(np.asarray(selected, dtype=np.int64))
+
+
+def _apply_symbol_and_regime_balance(
+    X: np.ndarray,
+    y: np.ndarray,
+    conf: np.ndarray,
+    anchor_ts: np.ndarray,
+    symbols: np.ndarray,
+    modes: np.ndarray,
+    regimes: np.ndarray,
+    sessions: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
+    total_samples = int(y.shape[0]) if y.ndim == 2 else 0
+    meta: Dict[str, Any] = {
+        "symbol_cap_applied": False,
+        "symbol_cap_reason": "not_needed",
+        "symbol_cap_max_share": float(_safe_float(os.getenv("RUNTIME_TRAIN_SYMBOL_MAX_SHARE", "0.35"), 0.35)),
+        "regime_balance_applied": False,
+        "regime_balance_reason": "not_needed",
+        "regime_balance_max_ratio": float(_safe_float(os.getenv("RUNTIME_TRAIN_REGIME_MAX_RATIO", "2.5"), 2.5)),
+    }
+    if total_samples <= 0:
+        return X, y, conf, symbols, modes, regimes, sessions, meta
+
+    selected_idx = np.arange(total_samples, dtype=np.int64)
+    symbol_max_share = min(max(float(meta["symbol_cap_max_share"]), 0.10), 0.95)
+    symbol_cap_floor = max(int(_safe_float(os.getenv("RUNTIME_TRAIN_SYMBOL_CAP_MIN_SAMPLES", "96"), 96)), 16)
+    if total_samples >= symbol_cap_floor:
+        max_per_symbol = max(int(math.ceil(total_samples * symbol_max_share)), 8)
+        keep_chunks: List[np.ndarray] = []
+        symbol_counts: Dict[str, int] = {}
+        symbol_capped = False
+        for symbol in sorted({str(item) for item in symbols.tolist()}):
+            sym_idx = np.flatnonzero(symbols == symbol)
+            symbol_counts[symbol] = int(sym_idx.size)
+            keep_count = min(int(sym_idx.size), max_per_symbol)
+            if keep_count < int(sym_idx.size):
+                symbol_capped = True
+            keep_chunks.append(_select_evenly_spaced_indices(sym_idx, keep_count, conf, anchor_ts))
+        if keep_chunks:
+            selected_idx = np.sort(np.concatenate(keep_chunks))
+            if symbol_capped:
+                meta["symbol_cap_applied"] = True
+                meta["symbol_cap_reason"] = "capped_dominant_symbols"
+        meta["symbol_counts_before"] = symbol_counts
+
+    X_sel = np.asarray(X[selected_idx], dtype=np.float32)
+    y_sel = np.asarray(y[selected_idx], dtype=np.float32)
+    conf_sel = np.asarray(conf[selected_idx], dtype=np.float32)
+    symbols_sel = np.asarray(symbols[selected_idx])
+    modes_sel = np.asarray(modes[selected_idx])
+    regimes_sel = np.asarray(regimes[selected_idx])
+    sessions_sel = np.asarray(sessions[selected_idx])
+    anchor_sel = np.asarray(anchor_ts[selected_idx], dtype=np.float64)
+
+    regime_cap_floor = max(int(_safe_float(os.getenv("RUNTIME_TRAIN_REGIME_BALANCE_MIN_SAMPLES", "72"), 72)), 12)
+    if y_sel.shape[0] >= regime_cap_floor:
+        regime_counts_before = {str(key): int(np.sum(regimes_sel == key)) for key in sorted({str(item) for item in regimes_sel.tolist()})}
+        non_zero_counts = [count for count in regime_counts_before.values() if count > 0]
+        if len(non_zero_counts) >= 2:
+            max_ratio = min(max(float(meta["regime_balance_max_ratio"]), 1.0), 6.0)
+            minority_count = min(non_zero_counts)
+            dominant_cap = max(int(math.ceil(minority_count * max_ratio)), minority_count)
+            keep_chunks = []
+            regime_capped = False
+            for regime in sorted(regime_counts_before):
+                reg_idx = np.flatnonzero(regimes_sel == regime)
+                keep_count = min(int(reg_idx.size), dominant_cap)
+                if keep_count < int(reg_idx.size):
+                    regime_capped = True
+                keep_chunks.append(_select_evenly_spaced_indices(reg_idx, keep_count, conf_sel, anchor_sel))
+            if keep_chunks:
+                reg_selected = np.sort(np.concatenate(keep_chunks))
+                X_sel = np.asarray(X_sel[reg_selected], dtype=np.float32)
+                y_sel = np.asarray(y_sel[reg_selected], dtype=np.float32)
+                conf_sel = np.asarray(conf_sel[reg_selected], dtype=np.float32)
+                symbols_sel = np.asarray(symbols_sel[reg_selected])
+                modes_sel = np.asarray(modes_sel[reg_selected])
+                regimes_sel = np.asarray(regimes_sel[reg_selected])
+                sessions_sel = np.asarray(sessions_sel[reg_selected])
+                if regime_capped:
+                    meta["regime_balance_applied"] = True
+                    meta["regime_balance_reason"] = "capped_dominant_regimes"
+        meta["regime_counts_before"] = regime_counts_before
+
+    meta["symbol_counts_after"] = {
+        str(key): int(np.sum(symbols_sel == key)) for key in sorted({str(item) for item in symbols_sel.tolist()})
+    }
+    meta["regime_counts_after"] = {
+        str(key): int(np.sum(regimes_sel == key)) for key in sorted({str(item) for item in regimes_sel.tolist()})
+    }
+    return X_sel, y_sel, conf_sel, symbols_sel, modes_sel, regimes_sel, sessions_sel, meta
+
+
+def _build_label_audit(
+    labels: np.ndarray,
+    symbols: np.ndarray,
+    modes: np.ndarray,
+    regimes: np.ndarray,
+    sessions: np.ndarray,
+) -> Dict[str, Any]:
+    labels_flat = np.asarray(labels[:, 0], dtype=np.float32).reshape(-1) if labels.ndim == 2 else np.asarray([], dtype=np.float32)
+
+    def _group(values: np.ndarray) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for key in sorted({str(item) for item in values.tolist()}):
+            mask = values == key
+            count = int(np.sum(mask))
+            if count <= 0:
+                continue
+            selected = labels_flat[mask]
+            rows.append(
+                {
+                    "name": key,
+                    "sample_count": count,
+                    "positive_rate": round(float(np.mean(selected)) if selected.size else 0.0, 6),
+                    "positive_count": int(np.sum(selected >= 0.5)),
+                    "negative_count": int(np.sum(selected < 0.5)),
+                }
+            )
+        rows.sort(key=lambda row: (-int(row["sample_count"]), row["name"]))
+        return rows[:20]
+
+    return {
+        "by_symbol": _group(symbols),
+        "by_sleeve": _group(modes),
+        "by_family": _group(np.asarray([_mode_family_label(item) for item in modes.tolist()], dtype=object)),
+        "by_regime": _group(regimes),
+        "by_session": _group(sessions),
+    }
+
+
 def make_runtime_windowed_dataset(
     *,
     sequences: RuntimeSequenceMap,
@@ -886,6 +1812,7 @@ def make_runtime_windowed_dataset(
     confidence_builder: Optional[RuntimeConfidenceBuilder] = None,
     min_confidence: float = 0.0,
     sample_stride: int = 1,
+    max_samples: int = 0,
     window: int,
     horizon: int,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
@@ -898,13 +1825,17 @@ def make_runtime_windowed_dataset(
     labels: List[float] = []
     anchor_ts: List[float] = []
     sample_confidence: List[float] = []
+    sample_symbols: List[str] = []
+    sample_modes: List[str] = []
+    sample_regimes: List[str] = []
+    sample_sessions: List[str] = []
     eligible_sequences = 0
     skipped_labels = 0
     skipped_filtered = 0
     skipped_low_confidence = 0
     feature_dim = 0
 
-    for rows in sequences.values():
+    for (mode_key, symbol_key), rows in sequences.items():
         if len(rows) < (w + h):
             continue
         eligible_sequences += 1
@@ -952,6 +1883,10 @@ def make_runtime_windowed_dataset(
             labels.append(float(label))
             anchor_ts.append(float(rows[idx].get("ts_epoch", 0.0)))
             sample_confidence.append(float(confidence))
+            sample_symbols.append(str(rows[idx].get("symbol") or symbol_key or "").strip().upper())
+            sample_modes.append(str(rows[idx].get("mode") or mode_key or "").strip().lower())
+            sample_regimes.append(_sample_regime_label(rows[idx]))
+            sample_sessions.append(_sample_session_label(rows[idx]))
 
     if not samples:
         return np.zeros((0, 0), dtype=np.float32), np.zeros((0, 1), dtype=np.float32), {
@@ -978,13 +1913,48 @@ def make_runtime_windowed_dataset(
     y = np.asarray([[labels[i]] for i in order], dtype=np.float32)
     conf = np.asarray([sample_confidence[i] for i in order], dtype=np.float32)
     anchor_ordered = np.asarray([anchor_ts[i] for i in order], dtype=np.float64)
+    symbols = np.asarray([sample_symbols[i] for i in order], dtype=object)
+    modes = np.asarray([sample_modes[i] for i in order], dtype=object)
+    regimes = np.asarray([sample_regimes[i] for i in order], dtype=object)
+    sessions = np.asarray([sample_sessions[i] for i in order], dtype=object)
     X, y, conf, balance_meta = _rebalance_binary_runtime_dataset(
         X,
         y,
         conf,
         anchor_ordered,
     )
+    selected_idx = np.asarray(balance_meta.pop("_selected_idx", np.arange(int(y.shape[0]), dtype=np.int64)), dtype=np.int64)
+    symbols = np.asarray(symbols[selected_idx])
+    modes = np.asarray(modes[selected_idx])
+    regimes = np.asarray(regimes[selected_idx])
+    sessions = np.asarray(sessions[selected_idx])
+    anchor_ordered = np.asarray(anchor_ordered[selected_idx], dtype=np.float64)
+    X, y, conf, symbols, modes, regimes, sessions, context_balance_meta = _apply_symbol_and_regime_balance(
+        X,
+        y,
+        conf,
+        anchor_ordered,
+        symbols,
+        modes,
+        regimes,
+        sessions,
+    )
+    memory_sample_cap_limit = max(int(max_samples), 0)
+    memory_sample_cap_applied = False
+    memory_sample_cap_original_count = int(X.shape[0])
+    if memory_sample_cap_limit > 0 and int(X.shape[0]) > memory_sample_cap_limit:
+        selected_idx = np.linspace(0, int(X.shape[0]) - 1, num=memory_sample_cap_limit, dtype=np.int64)
+        selected_idx = np.unique(selected_idx)
+        X = np.asarray(X[selected_idx], dtype=np.float32)
+        y = np.asarray(y[selected_idx], dtype=np.float32)
+        conf = np.asarray(conf[selected_idx], dtype=np.float32)
+        symbols = np.asarray(symbols[selected_idx])
+        modes = np.asarray(modes[selected_idx])
+        regimes = np.asarray(regimes[selected_idx])
+        sessions = np.asarray(sessions[selected_idx])
+        memory_sample_cap_applied = True
     positive_rate = float(np.mean(y[:, 0])) if y.size else 0.0
+    label_audit = _build_label_audit(y, symbols, modes, regimes, sessions)
     return X, y, {
         "sequence_count": len(sequences),
         "eligible_sequences": eligible_sequences,
@@ -1001,8 +1971,13 @@ def make_runtime_windowed_dataset(
         "confidence_min": float(np.min(conf)) if conf.size else 0.0,
         "confidence_max": float(np.max(conf)) if conf.size else 0.0,
         "min_confidence": float(min_conf),
+        "memory_sample_cap_limit": int(memory_sample_cap_limit),
+        "memory_sample_cap_applied": bool(memory_sample_cap_applied),
+        "memory_sample_cap_original_count": int(memory_sample_cap_original_count),
         "_sample_confidence": conf,
+        "label_audit": label_audit,
         **balance_meta,
+        **context_balance_meta,
     }
 
 
@@ -1026,6 +2001,7 @@ def _rebalance_binary_runtime_dataset(
         "label_balance_max_ratio": float(
             max(_safe_float(os.getenv("RUNTIME_TRAIN_LABEL_BALANCE_MAX_RATIO", _DEFAULT_RUNTIME_LABEL_BALANCE_MAX_RATIO), _DEFAULT_RUNTIME_LABEL_BALANCE_MAX_RATIO), 1.0)
         ),
+        "_selected_idx": np.arange(total_samples, dtype=np.int64),
     }
     if total_samples == 0 or positive_count == 0 or negative_count == 0:
         base_meta["label_balance_reason"] = "single_class"
@@ -1088,6 +2064,7 @@ def _rebalance_binary_runtime_dataset(
             "label_balance_kept_negative": int(np.sum(labels_out < 0.5)),
             "label_balance_rebalanced_sample_count": int(labels_out.size),
             "label_balance_rebalanced_positive_rate": float(np.mean(labels_out)) if labels_out.size else 0.0,
+            "_selected_idx": selected_idx,
         }
     )
     return X_out, y_out, conf_out, base_meta

@@ -10,24 +10,44 @@ IGNORED_BACKPRESSURE_PREFIXES = (
     "governance/health/jsonl_ingest_batch_journal",
     "governance/events/jsonl_ingest_batches_",
 )
+SUPPORT_BACKPRESSURE_PREFIXES = (
+    "governance/watchdog/",
+)
 DEFERRED_BACKPRESSURE_PREFIXES = (
     "decision_explanations/",
+    "data/stale_stage/",
+    "exports/reports/",
+    "governance/audits/",
+    "governance/champion_challenger/",
     "governance/events/api_calls_",
     "governance/events/data_ingress_",
     "governance/events/gate_logs_",
     "governance/events/loop_state_",
+    "governance/events/live_macro_",
     "governance/channels/api/",
     "governance/channels/gate/",
     "governance/channels/ingress/",
     "governance/channels/loop_state/",
     "governance/channels/risk/",
     "governance/channels/runtime/",
+    "governance/health/",
 )
 IGNORED_BACKPRESSURE_SUFFIXES = (
     "/runtime_telemetry.jsonl",
 )
 DEFERRED_BACKPRESSURE_CONTAINS = (
     "/shadow_pnl_attribution_",
+    "/counterfactual_replay_",
+    "/event_store_",
+    "/platform_control_plane_",
+)
+COLD_BACKPRESSURE_CONTAINS = (
+    "/shadow_pnl_attribution_",
+    "/platform_control_plane_",
+    "/counterfactual_replay_",
+)
+COLD_BACKPRESSURE_PREFIXES = (
+    "data/stale_stage/",
 )
 
 
@@ -95,9 +115,9 @@ def _last_line_for_state(rel: str, stat, progress: dict) -> int:
 
 def _progress_sort_key(progress: dict) -> tuple[int, int, float, int]:
     return (
+        int(float(progress.get("mtime", 0.0) or 0.0)),
         int(float(progress.get("last_line", 0) or 0)),
         int(float(progress.get("file_size_bytes", 0) or 0)),
-        float(progress.get("mtime", 0.0) or 0.0),
         int(float(progress.get("last_offset_bytes", 0) or 0)),
     )
 
@@ -177,9 +197,32 @@ def _is_deferred_backpressure_file(rel: str) -> bool:
     normalized = str(rel or "")
     if _should_ignore_backpressure_file(normalized):
         return False
+    if _is_support_backpressure_file(normalized):
+        return True
     return any(normalized.startswith(prefix) for prefix in DEFERRED_BACKPRESSURE_PREFIXES) or any(
         token in normalized for token in DEFERRED_BACKPRESSURE_CONTAINS
     )
+
+
+def _is_cold_backpressure_file(rel: str) -> bool:
+    normalized = str(rel or "")
+    if _should_ignore_backpressure_file(normalized):
+        return False
+    return any(normalized.startswith(prefix) for prefix in COLD_BACKPRESSURE_PREFIXES) or any(
+        token in normalized for token in COLD_BACKPRESSURE_CONTAINS
+    )
+
+
+def _is_stale_stage_backpressure_file(rel: str) -> bool:
+    normalized = str(rel or "")
+    return normalized.startswith("data/stale_stage/")
+
+
+def _is_support_backpressure_file(rel: str) -> bool:
+    normalized = str(rel or "")
+    if _should_ignore_backpressure_file(normalized):
+        return False
+    return any(normalized.startswith(prefix) for prefix in SUPPORT_BACKPRESSURE_PREFIXES)
 
 
 def _age_pressure_triggered(
@@ -231,6 +274,18 @@ def main() -> int:
     file_count_deferred = 0
     oldest_pending_age_seconds_deferred = 0.0
     top_pending_files_deferred: list[dict] = []
+    pending_cold = 0
+    file_count_cold = 0
+    oldest_pending_age_seconds_cold = 0.0
+    top_pending_files_cold: list[dict] = []
+    pending_support = 0
+    file_count_support = 0
+    oldest_pending_age_seconds_support = 0.0
+    top_pending_files_support: list[dict] = []
+    pending_stale_stage = 0
+    file_count_stale_stage = 0
+    oldest_pending_age_seconds_stale_stage = 0.0
+    top_pending_files_stale_stage: list[dict] = []
 
     now_ts = datetime.now(timezone.utc).timestamp()
     for p in files:
@@ -271,6 +326,48 @@ def main() -> int:
                 last_line=last_line,
                 top_n=max(int(args.top_pending_files), 1),
             )
+            if _is_support_backpressure_file(rel):
+                file_count_support += 1
+                pending_support += pending_lines
+                if pending_lines >= max(int(args.oldest_age_min_file_pending_lines), 1):
+                    oldest_pending_age_seconds_support = max(oldest_pending_age_seconds_support, age_seconds)
+                _record_top_pending(
+                    top_pending_files_support,
+                    rel=rel,
+                    pending=pending_lines,
+                    age_seconds=age_seconds,
+                    total=total,
+                    last_line=last_line,
+                    top_n=max(int(args.top_pending_files), 1),
+                )
+            if _is_cold_backpressure_file(rel):
+                file_count_cold += 1
+                pending_cold += pending_lines
+                if pending_lines >= max(int(args.oldest_age_min_file_pending_lines), 1):
+                    oldest_pending_age_seconds_cold = max(oldest_pending_age_seconds_cold, age_seconds)
+                _record_top_pending(
+                    top_pending_files_cold,
+                    rel=rel,
+                    pending=pending_lines,
+                    age_seconds=age_seconds,
+                    total=total,
+                    last_line=last_line,
+                    top_n=max(int(args.top_pending_files), 1),
+                )
+            if _is_stale_stage_backpressure_file(rel):
+                file_count_stale_stage += 1
+                pending_stale_stage += pending_lines
+                if pending_lines >= max(int(args.oldest_age_min_file_pending_lines), 1):
+                    oldest_pending_age_seconds_stale_stage = max(oldest_pending_age_seconds_stale_stage, age_seconds)
+                _record_top_pending(
+                    top_pending_files_stale_stage,
+                    rel=rel,
+                    pending=pending_lines,
+                    age_seconds=age_seconds,
+                    total=total,
+                    last_line=last_line,
+                    top_n=max(int(args.top_pending_files), 1),
+                )
         else:
             file_count_core += 1
             pending_core += pending_lines
@@ -340,6 +437,12 @@ def main() -> int:
         "pending_files_total": int(file_count_core + file_count_deferred),
         "pending_lines_deferred": int(pending_deferred),
         "pending_files_deferred": int(file_count_deferred),
+        "pending_lines_cold": int(pending_cold),
+        "pending_files_cold": int(file_count_cold),
+        "pending_lines_support_telemetry": int(pending_support),
+        "pending_files_support_telemetry": int(file_count_support),
+        "pending_lines_stale_stage": int(pending_stale_stage),
+        "pending_files_stale_stage": int(file_count_stale_stage),
         "pending_lines_threshold": int(args.pending_lines_threshold),
         "pending_files_threshold": int(args.pending_files_threshold),
         "meaningful_pending_for_file_pressure": int(meaningful_pending_for_pressure),
@@ -348,6 +451,9 @@ def main() -> int:
             float(max(oldest_pending_age_seconds_core, oldest_pending_age_seconds_deferred)), 3
         ),
         "oldest_pending_age_seconds_deferred": round(float(oldest_pending_age_seconds_deferred), 3),
+        "oldest_pending_age_seconds_cold": round(float(oldest_pending_age_seconds_cold), 3),
+        "oldest_pending_age_seconds_support_telemetry": round(float(oldest_pending_age_seconds_support), 3),
+        "oldest_pending_age_seconds_stale_stage": round(float(oldest_pending_age_seconds_stale_stage), 3),
         "oldest_age_threshold_seconds": int(args.oldest_age_threshold_seconds),
         "oldest_age_min_pending_lines": int(args.oldest_age_min_pending_lines),
         "oldest_age_min_file_pending_lines": int(args.oldest_age_min_file_pending_lines),
@@ -362,17 +468,39 @@ def main() -> int:
         "overload": bool(overload),
         "recommended_extra_interval_seconds": int(extra),
         "deferred_backpressure_classes": [
+            "governance/watchdog/*",
             "governance/events/api_calls_*",
             "governance/events/data_ingress_*",
             "governance/events/loop_state_*",
             "governance/channels/{api,ingress,loop_state,runtime}/*",
             "governance/shadow_*/shadow_pnl_attribution_*",
         ],
+        "support_telemetry_backpressure_classes": [
+            "governance/watchdog/*",
+        ],
+        "cold_lane_backpressure_classes": [
+            "data/stale_stage/*",
+            "governance/shadow_*/shadow_pnl_attribution_*",
+        ],
         "top_pending_files": top_pending_files_core,
         "top_deferred_pending_files": top_pending_files_deferred,
+        "top_cold_pending_files": top_pending_files_cold,
+        "top_support_telemetry_pending_files": top_pending_files_support,
+        "top_stale_stage_pending_files": top_pending_files_stale_stage,
+        "cold_lane_recommendation": (
+            "offload_shadow_pnl_attribution"
+            if int(pending_cold) >= max(int(args.pending_lines_threshold), 1000)
+            else "cold_lane_stable"
+        ),
+        "support_telemetry_recommendation": (
+            "offload_watchdog_support_telemetry"
+            if int(pending_support) >= max(int(args.pending_lines_threshold), 1000)
+            else "support_telemetry_stable"
+        ),
     }
 
-    out.parent.mkdir(parents=True, exist_ok=True)
+    out_parent = out.parent.resolve() if out.parent.exists() else out.parent
+    out_parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
     if args.json:

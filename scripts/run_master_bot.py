@@ -120,6 +120,87 @@ def _lane_gate_ok(path: Path) -> tuple[bool, str, dict]:
     return False, "lane_promotion_gate_blocked", detail
 
 
+def _health_gate_ok(path: Path) -> tuple[bool, str, dict]:
+    if not path.exists():
+        return False, f"missing_health_gates:{path}", {}
+
+    gate = _read_json(path)
+    if not gate:
+        return False, f"invalid_health_gates:{path}", {}
+    if not bool(gate.get("hard_gate_triggered", False)):
+        return True, "ok", {}
+
+    detail = {
+        "path": str(path),
+        "hard_gate_triggered": True,
+        "recommended_operating_mode": str(gate.get("recommended_operating_mode") or ""),
+        "top_blockers": (gate.get("top_blockers", []) if isinstance(gate.get("top_blockers"), list) else [])[:6],
+    }
+    return False, "health_gate_triggered", detail
+
+
+def _promotion_readiness_ok(path: Path) -> tuple[bool, str, dict]:
+    if not path.exists():
+        return False, f"missing_promotion_readiness:{path}", {}
+
+    gate = _read_json(path)
+    if not gate:
+        return False, f"invalid_promotion_readiness:{path}", {}
+
+    thresholds = gate.get("thresholds") if isinstance(gate.get("thresholds"), dict) else {}
+    promote_ok = bool(gate.get("promote_ok", False))
+    coverage_ok = bool(gate.get("coverage_ok", promote_ok))
+    considered_bots = int(gate.get("considered_bots", 0) or 0)
+    min_considered_bots = max(int(thresholds.get("min_considered_bots", 4) or 4), 1)
+    if promote_ok and coverage_ok and considered_bots >= min_considered_bots:
+        return True, "ok", {}
+
+    detail = {
+        "path": str(path),
+        "promote_ok": promote_ok,
+        "coverage_ok": coverage_ok,
+        "considered_bots": considered_bots,
+        "min_considered_bots": min_considered_bots,
+        "thresholds": thresholds,
+        "fail_examples": (gate.get("fail_examples", []) if isinstance(gate.get("fail_examples"), list) else [])[:5],
+    }
+    return False, "promotion_readiness_blocked", detail
+
+
+def _paper_feedback_ok(path: Path) -> tuple[bool, str, dict]:
+    if not path.exists():
+        return False, f"missing_paper_performance:{path}", {}
+
+    payload = _read_json(path)
+    sleeves = payload.get("sleeve_latest") if isinstance(payload.get("sleeve_latest"), list) else []
+    total_executions = 0
+    active_sleeves = 0
+    non_flat_strategies = 0
+    for row in sleeves:
+        if not isinstance(row, dict):
+            continue
+        executions = int(row.get("executions", 0) or 0)
+        total_executions += max(executions, 0)
+        if executions > 0:
+            active_sleeves += 1
+        non_flat_strategies += max(int(row.get("non_flat_strategy_count", 0) or 0), 0)
+
+    min_executions = max(int(float(os.getenv("MASTER_PROMOTION_MIN_PAPER_EXECUTIONS", "24"))), 0)
+    min_sleeves = max(int(float(os.getenv("MASTER_PROMOTION_MIN_PAPER_SLEEVES", "3"))), 0)
+    if total_executions >= min_executions and active_sleeves >= min_sleeves:
+        return True, "ok", {}
+
+    detail = {
+        "path": str(path),
+        "total_executions": total_executions,
+        "active_sleeves": active_sleeves,
+        "non_flat_strategies": non_flat_strategies,
+        "min_executions": min_executions,
+        "min_sleeves": min_sleeves,
+    }
+    return False, "paper_feedback_floor_blocked", detail
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train/update master bot policy from sub-bot outcomes")
     parser.add_argument("--preferred-low", type=float, default=0.55)
@@ -128,7 +209,7 @@ def main() -> None:
     parser.add_argument("--quality-floor", type=float, default=0.52)
     parser.add_argument("--promotion-margin", type=float, default=0.005)
     parser.add_argument("--no-improvement-retire-streak", type=int, default=3)
-    parser.add_argument("--min-active-bots", type=int, default=int(os.getenv("MIN_ACTIVE_BOTS", "20")))
+    parser.add_argument("--min-active-bots", type=int, default=int(os.getenv("MIN_ACTIVE_BOTS", "50")))
     parser.add_argument("--correlation-prune-threshold", type=float, default=float(os.getenv("CORRELATION_PRUNE_THRESHOLD", "0.92")))
 
     parser.add_argument("--require-canary-gate", action="store_true", default=os.getenv("REQUIRE_CANARY_PROMOTION_GATE", "1") == "1")
@@ -146,15 +227,54 @@ def main() -> None:
     parser.add_argument("--require-promotion-quality-gate", action="store_true", default=os.getenv("REQUIRE_PROMOTION_QUALITY_GATE", "1") == "1")
     parser.add_argument("--no-require-promotion-quality-gate", dest="require_promotion_quality_gate", action="store_false")
 
+    parser.add_argument("--require-health-gate-clear", action="store_true", default=os.getenv("MASTER_PROMOTION_REQUIRE_HEALTH_GATE_CLEAR", "1") == "1")
+    parser.add_argument("--no-require-health-gate-clear", dest="require_health_gate_clear", action="store_false")
+
+    parser.add_argument("--require-promotion-readiness", action="store_true", default=os.getenv("MASTER_PROMOTION_REQUIRE_READINESS_COVERAGE", "1") == "1")
+    parser.add_argument("--no-require-promotion-readiness", dest="require_promotion_readiness", action="store_false")
+
+    parser.add_argument("--require-paper-feedback-floor", action="store_true", default=os.getenv("MASTER_PROMOTION_REQUIRE_PAPER_FEEDBACK_FLOOR", "1") == "1")
+    parser.add_argument("--no-require-paper-feedback-floor", dest="require_paper_feedback_floor", action="store_false")
+
     parser.add_argument("--promotion-gate-file", default=str(Path(PROJECT_ROOT) / "governance" / "walk_forward" / "promotion_gate_latest.json"))
     parser.add_argument("--lane-promotion-gate-file", default=str(Path(PROJECT_ROOT) / "governance" / "walk_forward" / "lane_promotion_gate_latest.json"))
+    parser.add_argument("--promotion-readiness-file", default=str(Path(PROJECT_ROOT) / "governance" / "walk_forward" / "promotion_readiness_latest.json"))
     parser.add_argument("--stability-file", default=str(Path(PROJECT_ROOT) / "governance" / "health" / "daily_auto_verify_latest.json"))
     parser.add_argument("--graduation-file", default=str(Path(PROJECT_ROOT) / "governance" / "walk_forward" / "new_bot_graduation_latest.json"))
     parser.add_argument("--leak-overfit-file", default=str(Path(PROJECT_ROOT) / "governance" / "health" / "leak_overfit_guard_latest.json"))
     parser.add_argument("--promotion-quality-file", default=str(Path(PROJECT_ROOT) / "governance" / "health" / "promotion_quality_gate_latest.json"))
+    parser.add_argument("--health-gates-file", default=str(Path(PROJECT_ROOT) / "governance" / "health" / "health_gates_latest.json"))
+    parser.add_argument("--paper-performance-file", default=str(Path(PROJECT_ROOT) / "governance" / "health" / "paper_performance_latest.json"))
 
     parser.add_argument("--print-full", action="store_true")
     args = parser.parse_args()
+
+    if args.require_health_gate_clear:
+        ok, reason, detail = _health_gate_ok(Path(args.health_gates_file))
+        if not ok:
+            print(f"Master bot update blocked by health gate: {reason}")
+            if detail:
+                print("Health gate detail:")
+                print(json.dumps(detail, ensure_ascii=True, indent=2))
+            raise SystemExit(2)
+
+    if args.require_promotion_readiness:
+        ok, reason, detail = _promotion_readiness_ok(Path(args.promotion_readiness_file))
+        if not ok:
+            print(f"Master bot update blocked by promotion readiness: {reason}")
+            if detail:
+                print("Promotion readiness detail:")
+                print(json.dumps(detail, ensure_ascii=True, indent=2))
+            raise SystemExit(2)
+
+    if args.require_paper_feedback_floor:
+        ok, reason, detail = _paper_feedback_ok(Path(args.paper_performance_file))
+        if not ok:
+            print(f"Master bot update blocked by paper feedback floor: {reason}")
+            if detail:
+                print("Paper feedback detail:")
+                print(json.dumps(detail, ensure_ascii=True, indent=2))
+            raise SystemExit(2)
 
     if args.require_canary_gate:
         ok, reason, detail = _canary_gate_ok(

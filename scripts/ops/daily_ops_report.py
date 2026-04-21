@@ -28,21 +28,31 @@ def _proc_count(pattern: str, *, exclude: tuple[str, ...] = ()) -> int:
     )
 
 
+def _read_metric_csv(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not path.exists():
+        return out
+    try:
+        with path.open('r', encoding='utf-8') as f:
+            for row in csv.DictReader(f):
+                metric = str(row.get('metric', '') or '').strip()
+                if not metric:
+                    continue
+                out[metric] = str(row.get('value', '') or '')
+    except Exception:
+        return {}
+    return out
+
+
 def _one_numbers() -> dict:
     summary = _read_json(PROJECT_ROOT / 'exports' / 'one_numbers' / 'one_numbers_summary.json')
     if summary:
         return summary
 
-    latest_csv = PROJECT_ROOT / 'exports' / 'one_numbers' / 'latest.csv'
-    out: dict = {}
-    if latest_csv.exists():
-        try:
-            with latest_csv.open('r', encoding='utf-8') as f:
-                for row in csv.DictReader(f):
-                    out[str(row.get('metric', ''))] = row.get('value')
-        except Exception:
-            pass
-    return out
+    metrics = _read_metric_csv(PROJECT_ROOT / 'exports' / 'one_numbers' / 'latest_metrics.csv')
+    if metrics:
+        return metrics
+    return _read_metric_csv(PROJECT_ROOT / 'exports' / 'one_numbers' / 'latest.csv')
 
 
 def _ingress_health(profile: str, *, domain: str = 'equities', broker: str = 'schwab') -> dict:
@@ -117,6 +127,13 @@ def main() -> int:
             'data_quality_score': round(_to_float(one.get('data_quality_score', one.get('data_quality_score', 0.0)), 0.0), 3),
             'blocked_rate': round(_to_float(one.get('combined_blocked_rate', 0.0), 0.0), 6),
             'decision_stale_windows_4h': int(_to_float(one.get('decision_stale_windows_4h', 0.0), 0.0)),
+            'backpressure_quality_score': round(_to_float(one.get('backpressure_quality_score', 0.0), 0.0), 3),
+            'backpressure_quality_label': str(one.get('backpressure_quality_label', 'unknown') or 'unknown'),
+            'backpressure_steady_state_ready': str(one.get('backpressure_steady_state_ready', 'false')).strip().lower() in {'1', 'true', 'yes', 'on'},
+            'pressure_index': round(_to_float(one.get('pressure_index', 0.0), 0.0), 3),
+            'core_pending_lines': int(_to_float(one.get('core_pending_lines', 0.0), 0.0)),
+            'estimated_total_drain_minutes': round(_to_float(one.get('estimated_total_drain_minutes', 0.0), 0.0), 3),
+            'estimated_total_drain_minutes_display': str(one.get('estimated_total_drain_minutes', 'n/a') or 'n/a'),
         },
         'promotion': {
             'promote_ok': bool(readiness.get('promote_ok', False)),
@@ -166,6 +183,12 @@ def main() -> int:
         f"- sql_link_writer_up: {payload['ops']['sql_link_writer_up']}",
         f"- disk_free_gb: {payload['system']['disk_free_gb']}",
         f"- data_quality_score: {payload['quality']['data_quality_score']}",
+        f"- backpressure_quality_score: {payload['quality']['backpressure_quality_score']}",
+        f"- backpressure_quality_label: {payload['quality']['backpressure_quality_label']}",
+        f"- backpressure_steady_state_ready: {payload['quality']['backpressure_steady_state_ready']}",
+        f"- pressure_index: {payload['quality']['pressure_index']}",
+        f"- core_pending_lines: {payload['quality']['core_pending_lines']}",
+        f"- estimated_total_drain_minutes: {payload['quality']['estimated_total_drain_minutes_display']}",
         f"- blocked_rate: {payload['quality']['blocked_rate']}",
         f"- decision_stale_windows_4h: {payload['quality']['decision_stale_windows_4h']}",
         f"- promote_ok: {payload['promotion']['promote_ok']}",

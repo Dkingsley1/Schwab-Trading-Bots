@@ -53,8 +53,33 @@ class IngestionBackpressureGuardTests(unittest.TestCase):
         module = _load_module()
 
         self.assertTrue(
+            module._is_support_backpressure_file(
+                "governance/watchdog/failover_events.jsonl"
+            )
+        )
+        self.assertTrue(
+            module._is_deferred_backpressure_file(
+                "governance/watchdog/pager_alerts.jsonl"
+            )
+        )
+        self.assertFalse(
+            module._is_support_backpressure_file(
+                "governance/events/gate_logs_default_20260329.jsonl"
+            )
+        )
+        self.assertTrue(
             module._is_deferred_backpressure_file(
                 "governance/shadow_crypto/shadow_pnl_attribution_20260329.jsonl"
+            )
+        )
+        self.assertTrue(
+            module._is_cold_backpressure_file(
+                "governance/shadow_crypto/shadow_pnl_attribution_20260329.jsonl"
+            )
+        )
+        self.assertTrue(
+            module._is_cold_backpressure_file(
+                "governance/health/platform_control_plane_20260406.jsonl"
             )
         )
         self.assertTrue(
@@ -75,6 +100,21 @@ class IngestionBackpressureGuardTests(unittest.TestCase):
         self.assertTrue(
             module._is_deferred_backpressure_file(
                 "decision_explanations/shadow_intraday_aggressive_equities/decision_explanations_20260329.jsonl"
+            )
+        )
+        self.assertTrue(
+            module._is_deferred_backpressure_file(
+                "data/stale_stage/decision_explanations/project/decision_explanations/shadow_crypto_futures_crypto/decision_explanations_20260413.jsonl"
+            )
+        )
+        self.assertTrue(
+            module._is_cold_backpressure_file(
+                "data/stale_stage/decision_explanations/project/decision_explanations/shadow_crypto_futures_crypto/decision_explanations_20260413.jsonl"
+            )
+        )
+        self.assertTrue(
+            module._is_stale_stage_backpressure_file(
+                "data/stale_stage/decision_explanations/project/decision_explanations/shadow_crypto_futures_crypto/decision_explanations_20260413.jsonl"
             )
         )
         self.assertTrue(
@@ -190,6 +230,50 @@ class IngestionBackpressureGuardTests(unittest.TestCase):
             )
 
             self.assertGreater(total, 0)
+
+    def test_resolve_sqlite_state_prefers_newer_inode_progress_over_stale_higher_line_count(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            project_root = Path(td)
+            shard_root = project_root / "governance" / "sql_link_shards"
+            shard_root.mkdir(parents=True)
+
+            rel = "governance/channels/decision/default_crypto_schwab/decision_20260412.jsonl"
+            (shard_root / "jsonl_sql_link_state_shadow.json").write_text(
+                json.dumps(
+                    {
+                        "sqlite": {
+                            rel: {
+                                "last_line": 3453,
+                                "file_size_bytes": 329446759,
+                                "mtime": 1776007673.0,
+                                "file_inode": 263998551,
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (shard_root / "jsonl_sql_link_state_governance.json").write_text(
+                json.dumps(
+                    {
+                        "sqlite": {
+                            rel: {
+                                "last_line": 1590,
+                                "file_size_bytes": 151914337,
+                                "mtime": 1776038014.0,
+                                "file_inode": 265434204,
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            sqlite_state, _, _ = module._resolve_sqlite_state(project_root, None)
+
+            self.assertEqual(sqlite_state[rel]["last_line"], 1590)
+            self.assertEqual(sqlite_state[rel]["file_inode"], 265434204)
 
 
 if __name__ == "__main__":

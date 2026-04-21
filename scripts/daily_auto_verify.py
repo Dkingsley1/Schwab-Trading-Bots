@@ -425,6 +425,7 @@ def _timeout_for_check(name: str, slow_timeout_sec: int) -> int:
         "state_snapshot_drill",
         "health_gates",
         "data_source_divergence_bot",
+        "nightly_resilience_check",
     }
     return slow_timeout_sec if name in slow_names else DEFAULT_CMD_TIMEOUT_SEC
 
@@ -525,6 +526,9 @@ def main() -> int:
             ("daily_runtime_summary", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "daily_runtime_summary.py"), "--day", day, "--json"], 5000),
             ("replay_preopen_sanity", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "replay_preopen_sanity_check.py"), "--hours", "24", "--json"], 5000),
             ("snapshot_coverage_sentinel", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "snapshot_coverage_sentinel.py"), "--json"], 5000),
+            ("schema_migration_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "schema_migration_guard.py"), "--json"], 5000),
+            ("bot_support_owner_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "bot_support_owner_guard.py"), "--json"], 5000),
+            ("feature_store_manifest", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "feature_store_manifest.py"), "--json"], 5000),
             ("guardrail_triprate_sentinel", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "guardrail_triprate_sentinel.py"), "--json"], 5000),
             ("quarantine_pressure_bot", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "quarantine_pressure_bot.py"), "--json"], 5000),
             ("data_source_divergence_bot", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "data_source_divergence_bot.py"), "--json"], 5000),
@@ -535,18 +539,20 @@ def main() -> int:
             ("retire_persistent_losers", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "retire_persistent_losers.py"), "--json"], 5000),
             ("promotion_bottleneck_focus", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "promotion_bottleneck_focus.py"), "--json"], 5000),
             ("new_bot_graduation_gate", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "new_bot_graduation_gate.py"), "--json"], 5000),
+            ("new_bot_admission_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "new_bot_admission_guard.py"), "--json"], 5000),
+            ("retrain_schema_compatibility_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "retrain_schema_compatibility_guard.py"), "--json"], 5000),
             ("leak_overfit_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "leak_overfit_guard.py"), "--json"], 5000),
+            ("golden_replay_regression_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "golden_replay_regression_guard.py"), "--json"], 5000),
             ("weekly_gate_blocker_report", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "weekly_gate_blocker_report.py"), "--json"], 5000),
             ("replay_end_to_end_deterministic", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "replay_end_to_end_deterministic.py"), "--json"], 5000),
             ("paper_replay_drill", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "paper_replay_drill.py"), "--hours", "24", "--json"], 5000),
             ("replay_hash_registry_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "replay_hash_registry_guard.py"), "--json"], 5000),
+            ("cohort_drift_baseline_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "cohort_drift_baseline_guard.py"), "--json"], 5000),
             ("live_reconciliation_slo_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "live_reconciliation_slo_guard.py"), "--json"], 5000),
             ("paper_reconciliation_slo_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "paper_reconciliation_slo_guard.py"), "--json"], 5000),
             ("paper_execution_calibration_report", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "paper_execution_calibration_report.py"), "--hours", "24", "--json"], 5000),
             ("nightly_resilience_check", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "nightly_resilience_check.py"), "--json"], 5000),
             ("export_model_card", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "export_model_card.py"), "--json"], 5000),
-            ("promotion_quality_gate", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "promotion_quality_gate.py"), "--json"], 5000),
-            ("incident_auto_halt", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "incident_auto_halt.py"), "--json"], 5000),
             ("sleeve_slo_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "sleeve_slo_guard.py"), "--day", day, "--once", "--json"], 5000),
             ("sleeve_allocator", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "sleeve_allocator.py"), "--json"], 5000),
             ("portfolio_risk_ledger", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "portfolio_risk_ledger.py"), "--json"], 5000),
@@ -586,6 +592,62 @@ def main() -> int:
             day=day,
             timeout_sec=_timeout_for_check("health_gates", slow_timeout_sec),
         )
+
+        for name, cmd, stdout_limit in [
+            (
+                "champion_challenger_probation_guard",
+                [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "champion_challenger_probation_guard.py"), "--json"],
+                5000,
+            ),
+            (
+                "champion_challenger_probation_action",
+                [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "champion_challenger_probation_action.py"), "--json"],
+                5000,
+            ),
+            (
+                "retrain_lane_scheduler",
+                [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "retrain_lane_scheduler.py"), "--json"],
+                5000,
+            ),
+            (
+                "promotion_packet_builder",
+                [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "promotion_packet_builder.py"), "--allow-idle-success", "--json"],
+                5000,
+            ),
+            (
+                "promotion_quality_gate",
+                [
+                    str(VENV_PY),
+                    str(PROJECT_ROOT / "scripts" / "promotion_quality_gate.py"),
+                    "--ignore-daily-verify-check",
+                    "promotion_packet_builder",
+                    "--ignore-daily-verify-check",
+                    "nightly_resilience_check",
+                    "--ignore-daily-verify-check",
+                    "promotion_quality_gate",
+                    "--ignore-daily-verify-check",
+                    "unhandled_exception",
+                    "--json",
+                ],
+                5000,
+            ),
+            (
+                "incident_auto_halt",
+                [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "incident_auto_halt.py"), "--json"],
+                5000,
+            ),
+        ]:
+            _run_check(
+                checks,
+                name,
+                cmd,
+                ok_predicate=lambda rc: rc == 0,
+                cwd=PROJECT_ROOT,
+                started_at_utc=started_at_utc,
+                day=day,
+                stdout_limit=stdout_limit,
+                timeout_sec=_timeout_for_check(name, slow_timeout_sec),
+            )
 
         _write_progress(day, checks, started_at_utc=started_at_utc, current_check="db_integrity")
         checks["db_integrity"] = _db_check(db_path, mode=args.db_check_mode)

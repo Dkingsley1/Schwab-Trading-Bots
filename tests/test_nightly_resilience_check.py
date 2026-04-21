@@ -68,6 +68,29 @@ class NightlyResilienceCheckTests(unittest.TestCase):
 
             self.assertEqual(rc, 0)
 
+    def test_count_keyword_reads_only_tail_lines_without_full_read(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            log_path = Path(td) / "shadow_watchdog.out.log"
+            log_path.write_text(
+                "\n".join(
+                    [
+                        "restart old",
+                        "steady old",
+                        "steady recent",
+                        "restart recent one",
+                        "restart recent two",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(module.Path, "read_text", side_effect=AssertionError("full read should not be used")):
+                count = module._count_keyword(log_path, "restart", tail_lines=3)
+
+            self.assertEqual(count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

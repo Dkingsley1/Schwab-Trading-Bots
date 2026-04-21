@@ -90,6 +90,8 @@ HOT_QUEUE_CHANNELS = {
 
 _LOW_SIGNAL_RECENT: Dict[str, float] = {}
 _LOW_SIGNAL_RECENT_LOCK = threading.Lock()
+_SCHEMA_VIOLATION_RECENT: Dict[str, float] = {}
+_SCHEMA_VIOLATION_RECENT_LOCK = threading.Lock()
 
 
 def _as_bool(value: Any) -> bool:
@@ -110,6 +112,77 @@ def _low_signal_decision_window_seconds() -> float:
 
 def _low_signal_execution_guard_window_seconds() -> float:
     return max(float(os.getenv("LOW_SIGNAL_EXECUTION_GUARD_WINDOW_SECONDS", "60") or 60.0), 1.0)
+
+
+def _schema_violation_window_seconds() -> float:
+    return max(float(os.getenv("CHANNEL_SCHEMA_VIOLATION_WINDOW_SECONDS", "300") or 300.0), 1.0)
+
+
+def _schema_violation_signature(
+    *,
+    source: str,
+    channel: str,
+    target_path: str,
+    payload: Dict[str, Any],
+    errors: Sequence[str],
+) -> str:
+    seed = {
+        "source": str(source or ""),
+        "channel": str(channel or ""),
+        "target_path": str(target_path or ""),
+        "errors": [str(item or "").strip() for item in errors if str(item or "").strip()],
+        "symbol": str(payload.get("symbol") or ""),
+        "event": str(payload.get("event") or ""),
+        "status": str(payload.get("status") or ""),
+        "gate": str(payload.get("gate") or ""),
+        "action": str(payload.get("action") or ""),
+    }
+    return hashlib.sha1(json.dumps(seed, ensure_ascii=True, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _schema_violation_summary(payload: Dict[str, Any]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {}
+    for key in (
+        "timestamp_utc",
+        "symbol",
+        "event",
+        "status",
+        "gate",
+        "action",
+        "strategy",
+        "broker",
+        "profile",
+        "domain",
+        "run_id",
+        "iter_id",
+        "message_id",
+        "parent_message_id",
+        "decision_id",
+        "parent_decision_id",
+        "log_schema_version",
+    ):
+        value = payload.get(key)
+        if value in (None, "", [], {}):
+            continue
+        summary[key] = value
+    summary["payload_key_count"] = len(payload)
+    summary["payload_keys"] = sorted(str(key) for key in payload.keys())[:20]
+    return summary
+
+
+def _should_log_schema_violation(signature: str) -> bool:
+    now_ts = time.time()
+    window = _schema_violation_window_seconds()
+    with _SCHEMA_VIOLATION_RECENT_LOCK:
+        last_ts = _SCHEMA_VIOLATION_RECENT.get(signature)
+        if last_ts is not None and (now_ts - float(last_ts)) < window:
+            return False
+        _SCHEMA_VIOLATION_RECENT[signature] = now_ts
+        stale_cutoff = now_ts - max(window * 2.0, 60.0)
+        stale_keys = [key for key, ts in _SCHEMA_VIOLATION_RECENT.items() if float(ts) < stale_cutoff]
+        for key in stale_keys[:512]:
+            _SCHEMA_VIOLATION_RECENT.pop(key, None)
+    return True
 
 
 def _low_signal_signature(path: str, payload: Dict[str, Any]) -> tuple[str, float] | None:
@@ -294,6 +367,15 @@ def _schema_violation_log(
 ) -> None:
     if not project_root:
         return
+    signature = _schema_violation_signature(
+        source=source,
+        channel=channel,
+        target_path=target_path,
+        payload=payload,
+        errors=errors,
+    )
+    if not _should_log_schema_violation(signature):
+        return
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
     out_path = os.path.join(project_root, "governance", "events", f"channel_schema_violations_{day}.jsonl")
     row = {
@@ -302,8 +384,9 @@ def _schema_violation_log(
         "source": str(source or "unknown"),
         "channel": str(channel or ""),
         "target_path": str(target_path or ""),
+        "signature": signature,
         "errors": list(errors),
-        "payload": dict(payload),
+        "payload": _schema_violation_summary(payload),
         "log_schema_version": log_schema_version(),
     }
     corr = current_correlation()

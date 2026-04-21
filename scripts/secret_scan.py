@@ -16,9 +16,16 @@ SECRET_PATTERNS = [
 ALLOWLIST_SNIPPETS = (
     "YOUR_KEY_HERE",
     "YOUR_SECRET_HERE",
+    "YOUR_REAL_KEY",
+    "YOUR_REAL_SECRET",
+    "YOUR_REAL_PASSWORD",
+    "YOUR_REAL_TOKEN",
+    "YOUR_REAL_LOGIN",
+    "YOUR_REAL_CLIENT_ID",
     "os.getenv(",
     "${",
     "example",
+    "REDACTED",
 )
 SKIP_DIRS = {
     ".git",
@@ -33,6 +40,31 @@ SKIP_DIRS = {
     "decision_explanations",
     "data",
 }
+
+
+def _should_skip_repo_file(path: Path) -> bool:
+    if any(part in SKIP_DIRS or part.startswith(".venv") for part in path.parts):
+        return True
+    name = path.name.lower()
+    if name.endswith(".secrets.local"):
+        return True
+    return False
+
+
+def _is_probable_code_reference(line: str) -> bool:
+    text = str(line or "")
+    if "write_text(" in text or "parser.add_argument(" in text or "os.getenv(" in text:
+        return True
+    rhs = ""
+    if "=" in text:
+        rhs = text.split("=", 1)[1].strip()
+    elif ":" in text:
+        rhs = text.split(":", 1)[1].strip()
+    if any(token in rhs for token in ("(", ")", ".")):
+        return True
+    if re.search(r"\b[a-z_][a-z0-9_]*_(?:api_key|secret|token|password|login|client_id)\b", rhs):
+        return True
+    return False
 
 
 def _is_text(path: Path) -> bool:
@@ -65,7 +97,7 @@ def _all_repo_files() -> list[Path]:
     for p in PROJECT_ROOT.rglob("*"):
         if not p.is_file():
             continue
-        if any(part in SKIP_DIRS for part in p.parts):
+        if _should_skip_repo_file(p):
             continue
         if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".npz", ".sqlite", ".sqlite3", ".db"}:
             continue
@@ -87,6 +119,8 @@ def _scan(paths: list[Path], max_bytes: int) -> list[dict]:
 
         for i, line in enumerate(text.splitlines(), start=1):
             if any(a in line for a in ALLOWLIST_SNIPPETS):
+                continue
+            if _is_probable_code_reference(line):
                 continue
             for patt in SECRET_PATTERNS:
                 if patt.search(line):

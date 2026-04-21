@@ -1,0 +1,294 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import platform
+import shlex
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_OVERRIDE = PROJECT_ROOT / "config" / ".env.apple_silicon_override"
+DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "apple_silicon_profile_latest.json"
+
+PROFILE_PRESETS: Dict[str, Dict[str, str]] = {
+    "air_safe": {
+        "SQL_LINK_SERVICE_INTERVAL_SECONDS": "90",
+        "SQL_LINK_SERVICE_JSON_FILE_SYNC_MIN_INTERVAL_SECONDS": "900",
+        "SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_GROWTH_GB": "0.75",
+        "SQL_LINK_SERVICE_HOT_TRIGGER_GROWTH_GB": "6",
+        "SQL_LINK_SERVICE_HOT_MAX_ROWS": "1800000",
+        "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "80000",
+        "SQL_LINK_SERVICE_QUEUE_BATCH_SIZE": "50000",
+        "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS": "300",
+        "SQL_LINK_SERVICE_QUEUE_MIN_INTERVAL_SECONDS": "1200",
+        "BOT_LOGS_LOW_SPACE_AUTOPRUNE_MIN_FREE_GB": "40",
+        "AUTO_RETRAIN_SWAP_SOFT_MAX_GB": "8",
+        "AUTO_RETRAIN_SWAP_IGNORE_IF_FREE_PCT_AT_LEAST": "88",
+        "MEMORY_THROTTLE_SWAP_SOFT_MAX_GB": "8",
+        "MEMORY_THROTTLE_SWAP_IGNORE_IF_FREE_PCT_AT_LEAST": "88",
+        "RESOURCE_GUARD_MEMORY_YELLOW_SWAP_GB": "8",
+        "RESOURCE_GUARD_MEMORY_RED_SWAP_GB": "12",
+        "COINBASE_SNAPSHOT_MAX_WORKERS": "2",
+        "COINBASE_CACHE_MAX_ENTRIES": "128",
+        "COINBASE_WEBSOCKET_BOOK_DEPTH": "6",
+        "TRADE_BEHAVIOR_BATCH_SIZE": "768",
+        "ASYNC_PIPELINE_WORKERS": "3",
+        "RUNTIME_FEATURE_CACHE_MAX_ENTRIES": "96",
+        "RUNTIME_SLOW_BOT_CACHE_MAX_SYMBOLS": "24",
+        "SCHWAB_NEWS_CACHE_MAX_SYMBOLS": "32",
+        "SCHWAB_OPTIONS_CHAIN_CACHE_MAX_SYMBOLS": "32",
+        "RUNTIME_TRAIN_SAMPLE_STRIDE_FLOOR": "2",
+        "RUNTIME_TRAIN_BATCH_SIZE_CAP": "64",
+        "RUNTIME_TRAIN_MAX_SAMPLES": "12000",
+        "ONE_NUMBERS_REFRESH_INTERVAL_SECONDS": "600",
+        "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "120",
+        "OPS_WATCHDOG_LAUNCHD_INTERVAL_SECONDS": "240",
+        "RESOURCE_GUARD_CREATIVE_APP_NAMES": "Final Cut Pro,Logic Pro",
+        "RESOURCE_GUARD_CREATIVE_HOT_CPU_THRESHOLD": "90",
+        "RESOURCE_GUARD_BLOCK_ON_CREATIVE_SESSION_LEVELS": "active,dual_pro,hot",
+        "RESOURCE_GUARD_OPTIONAL_BLOCK_ON_CREATIVE_SESSION_LEVELS": "active,dual_pro,hot",
+        "RESOURCE_GUARD_REFRESH_BLOCK_ON_CREATIVE_SESSION_LEVELS": "active,dual_pro,hot",
+        "MEMORY_EFFICIENCY_CREATIVE_ACTIVE_MAX_PROFILE": "air_safe",
+        "MEMORY_EFFICIENCY_CREATIVE_HOT_PROFILE": "constrained",
+        "MEMORY_EFFICIENCY_CREATIVE_DUAL_PROFILE": "constrained",
+    },
+    "pro_balanced": {
+        "SQL_LINK_SERVICE_INTERVAL_SECONDS": "60",
+        "SQL_LINK_SERVICE_JSON_FILE_SYNC_MIN_INTERVAL_SECONDS": "720",
+        "SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_GROWTH_GB": "1.25",
+        "SQL_LINK_SERVICE_HOT_TRIGGER_GROWTH_GB": "10",
+        "SQL_LINK_SERVICE_HOT_MAX_ROWS": "2500000",
+        "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "100000",
+        "SQL_LINK_SERVICE_QUEUE_BATCH_SIZE": "70000",
+        "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS": "240",
+        "SQL_LINK_SERVICE_QUEUE_MIN_INTERVAL_SECONDS": "900",
+        "BOT_LOGS_LOW_SPACE_AUTOPRUNE_MIN_FREE_GB": "70",
+        "AUTO_RETRAIN_SWAP_SOFT_MAX_GB": "16",
+        "AUTO_RETRAIN_SWAP_IGNORE_IF_FREE_PCT_AT_LEAST": "82",
+        "MEMORY_THROTTLE_SWAP_SOFT_MAX_GB": "16",
+        "MEMORY_THROTTLE_SWAP_IGNORE_IF_FREE_PCT_AT_LEAST": "82",
+        "RESOURCE_GUARD_MEMORY_YELLOW_SWAP_GB": "12",
+        "RESOURCE_GUARD_MEMORY_RED_SWAP_GB": "18",
+        "COINBASE_SNAPSHOT_MAX_WORKERS": "3",
+        "COINBASE_CACHE_MAX_ENTRIES": "256",
+        "COINBASE_WEBSOCKET_BOOK_DEPTH": "8",
+        "TRADE_BEHAVIOR_BATCH_SIZE": "1024",
+        "ASYNC_PIPELINE_WORKERS": "4",
+        "RUNTIME_FEATURE_CACHE_MAX_ENTRIES": "160",
+        "RUNTIME_SLOW_BOT_CACHE_MAX_SYMBOLS": "40",
+        "SCHWAB_NEWS_CACHE_MAX_SYMBOLS": "48",
+        "SCHWAB_OPTIONS_CHAIN_CACHE_MAX_SYMBOLS": "48",
+        "RUNTIME_TRAIN_SAMPLE_STRIDE_FLOOR": "1",
+        "RUNTIME_TRAIN_BATCH_SIZE_CAP": "96",
+        "RUNTIME_TRAIN_MAX_SAMPLES": "20000",
+        "ONE_NUMBERS_REFRESH_INTERVAL_SECONDS": "300",
+        "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "180",
+        "OPS_WATCHDOG_LAUNCHD_INTERVAL_SECONDS": "180",
+        "RESOURCE_GUARD_CREATIVE_APP_NAMES": "Final Cut Pro,Logic Pro",
+        "RESOURCE_GUARD_CREATIVE_HOT_CPU_THRESHOLD": "140",
+        "RESOURCE_GUARD_BLOCK_ON_CREATIVE_SESSION_LEVELS": "dual_pro,hot",
+        "RESOURCE_GUARD_OPTIONAL_BLOCK_ON_CREATIVE_SESSION_LEVELS": "active,dual_pro,hot",
+        "RESOURCE_GUARD_REFRESH_BLOCK_ON_CREATIVE_SESSION_LEVELS": "dual_pro,hot",
+        "MEMORY_EFFICIENCY_CREATIVE_ACTIVE_MAX_PROFILE": "air_safe",
+        "MEMORY_EFFICIENCY_CREATIVE_HOT_PROFILE": "constrained",
+        "MEMORY_EFFICIENCY_CREATIVE_DUAL_PROFILE": "constrained",
+    },
+    "max_throughput": {
+        "SQL_LINK_SERVICE_INTERVAL_SECONDS": "45",
+        "SQL_LINK_SERVICE_JSON_FILE_SYNC_MIN_INTERVAL_SECONDS": "600",
+        "SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_GROWTH_GB": "1.75",
+        "SQL_LINK_SERVICE_HOT_TRIGGER_GROWTH_GB": "16",
+        "SQL_LINK_SERVICE_HOT_MAX_ROWS": "4000000",
+        "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "140000",
+        "SQL_LINK_SERVICE_QUEUE_BATCH_SIZE": "90000",
+        "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS": "180",
+        "SQL_LINK_SERVICE_QUEUE_MIN_INTERVAL_SECONDS": "900",
+        "BOT_LOGS_LOW_SPACE_AUTOPRUNE_MIN_FREE_GB": "100",
+        "AUTO_RETRAIN_SWAP_SOFT_MAX_GB": "24",
+        "AUTO_RETRAIN_SWAP_IGNORE_IF_FREE_PCT_AT_LEAST": "75",
+        "MEMORY_THROTTLE_SWAP_SOFT_MAX_GB": "24",
+        "MEMORY_THROTTLE_SWAP_IGNORE_IF_FREE_PCT_AT_LEAST": "75",
+        "RESOURCE_GUARD_MEMORY_YELLOW_SWAP_GB": "16",
+        "RESOURCE_GUARD_MEMORY_RED_SWAP_GB": "24",
+        "COINBASE_SNAPSHOT_MAX_WORKERS": "4",
+        "COINBASE_CACHE_MAX_ENTRIES": "512",
+        "COINBASE_WEBSOCKET_BOOK_DEPTH": "10",
+        "TRADE_BEHAVIOR_BATCH_SIZE": "1536",
+        "ASYNC_PIPELINE_WORKERS": "6",
+        "RUNTIME_FEATURE_CACHE_MAX_ENTRIES": "256",
+        "RUNTIME_SLOW_BOT_CACHE_MAX_SYMBOLS": "64",
+        "SCHWAB_NEWS_CACHE_MAX_SYMBOLS": "72",
+        "SCHWAB_OPTIONS_CHAIN_CACHE_MAX_SYMBOLS": "72",
+        "RUNTIME_TRAIN_SAMPLE_STRIDE_FLOOR": "1",
+        "RUNTIME_TRAIN_BATCH_SIZE_CAP": "96",
+        "RUNTIME_TRAIN_MAX_SAMPLES": "32000",
+        "ONE_NUMBERS_REFRESH_INTERVAL_SECONDS": "180",
+        "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "120",
+        "OPS_WATCHDOG_LAUNCHD_INTERVAL_SECONDS": "120",
+        "RESOURCE_GUARD_CREATIVE_APP_NAMES": "Final Cut Pro,Logic Pro",
+        "RESOURCE_GUARD_CREATIVE_HOT_CPU_THRESHOLD": "135",
+        "RESOURCE_GUARD_BLOCK_ON_CREATIVE_SESSION_LEVELS": "dual_pro,hot",
+        "RESOURCE_GUARD_OPTIONAL_BLOCK_ON_CREATIVE_SESSION_LEVELS": "dual_pro,hot",
+        "RESOURCE_GUARD_REFRESH_BLOCK_ON_CREATIVE_SESSION_LEVELS": "dual_pro,hot",
+        "MEMORY_EFFICIENCY_CREATIVE_ACTIVE_MAX_PROFILE": "pro_balanced",
+        "MEMORY_EFFICIENCY_CREATIVE_HOT_PROFILE": "air_safe",
+        "MEMORY_EFFICIENCY_CREATIVE_DUAL_PROFILE": "constrained",
+    },
+}
+
+
+def _now_utc() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _sysctl_text(name: str) -> str:
+    try:
+        proc = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", str(name)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return str(proc.stdout or "").strip()
+
+
+def _detect_hardware() -> Dict[str, Any]:
+    system_name = platform.system()
+    machine = platform.machine()
+    chip = _sysctl_text("machdep.cpu.brand_string") or _sysctl_text("hw.model")
+    mem_text = _sysctl_text("hw.memsize")
+    try:
+        memory_gb = round(int(mem_text) / (1024.0 ** 3), 2) if mem_text else 0.0
+    except Exception:
+        memory_gb = 0.0
+    is_apple_silicon = system_name == "Darwin" and machine == "arm64"
+    return {
+        "system": system_name,
+        "machine": machine,
+        "chip": chip,
+        "memory_gb": memory_gb,
+        "is_apple_silicon": is_apple_silicon,
+    }
+
+
+def detect_profile_tier(hardware: Dict[str, Any]) -> str:
+    if not bool(hardware.get("is_apple_silicon")):
+        return "generic"
+    chip = str(hardware.get("chip") or "").strip().lower()
+    memory_gb = float(hardware.get("memory_gb", 0.0) or 0.0)
+    if "ultra" in chip or "max" in chip or memory_gb >= 64.0:
+        return "max_throughput"
+    if "pro" in chip or memory_gb >= 24.0:
+        return "pro_balanced"
+    return "air_safe"
+
+
+def override_lines_for_tier(tier: str, hardware: Dict[str, Any]) -> list[str]:
+    profile = PROFILE_PRESETS.get(str(tier), {})
+    lines = [
+        "# Auto-managed by scripts/ops/apple_silicon_profile.py",
+        f"BOT_APPLE_SILICON_TIER={shlex.quote(str(tier))}",
+        f"BOT_APPLE_SILICON_MEMORY_GB={shlex.quote(str(hardware.get('memory_gb', 0.0)))}",
+        f"BOT_APPLE_SILICON_CHIP={shlex.quote(str(hardware.get('chip') or '').replace(' ', '_'))}",
+    ]
+    for key, value in profile.items():
+        lines.append(f"{key}={shlex.quote(str(value))}")
+    return lines
+
+
+def _write_override(path: Path, tier: str, hardware: Dict[str, Any]) -> bool:
+    if tier == "generic":
+        if path.exists():
+            path.unlink()
+            return True
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = "\n".join(override_lines_for_tier(tier, hardware)) + "\n"
+    current = path.read_text(encoding="utf-8") if path.exists() else ""
+    if current == payload:
+        return False
+    path.write_text(payload, encoding="utf-8")
+    return True
+
+
+def build_payload(*, action: str, tier: str, hardware: Dict[str, Any], override_path: Path, changed: bool) -> Dict[str, Any]:
+    notes = []
+    if tier == "air_safe":
+        notes.append("favor slower refresh cadence and tighter swap ceilings for MacBook Air and low-memory Apple Silicon")
+    elif tier == "pro_balanced":
+        notes.append("use balanced refresh cadence and moderate retention thresholds for Apple Silicon Pro-class machines")
+    elif tier == "max_throughput":
+        notes.append("allow denser ingestion and retention budgets for Max or Ultra class Apple Silicon machines")
+    else:
+        notes.append("no Apple Silicon-specific override was applied on this hardware")
+    notes.append("MLX remains the preferred live backend; profile overrides focus on storage, ingestion, and memory behavior")
+    return {
+        "timestamp_utc": _now_utc(),
+        "ok": True,
+        "action": action,
+        "hardware": hardware,
+        "detected_tier": detect_profile_tier(hardware),
+        "applied_tier": tier,
+        "changed": bool(changed),
+        "override_path": str(override_path),
+        "override_exists": bool(override_path.exists()),
+        "env_overrides": PROFILE_PRESETS.get(tier, {}),
+        "notes": notes,
+    }
+
+
+def _write_payload(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Detect and optionally apply an Apple Silicon runtime/storage profile.")
+    parser.add_argument("action", choices=("status", "apply"))
+    parser.add_argument("--tier", default="", help="Optionally pin air_safe|pro_balanced|max_throughput")
+    parser.add_argument("--override-file", default=str(DEFAULT_OVERRIDE))
+    parser.add_argument("--out-file", default=str(DEFAULT_OUT))
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+
+    hardware = _detect_hardware()
+    detected_tier = detect_profile_tier(hardware)
+    requested_tier = str(args.tier or "").strip().lower()
+    tier = requested_tier if requested_tier in PROFILE_PRESETS else detected_tier
+    override_path = Path(args.override_file).expanduser()
+
+    changed = False
+    if args.action == "apply":
+        changed = _write_override(override_path, tier, hardware)
+
+    payload = build_payload(
+        action=args.action,
+        tier=tier,
+        hardware=hardware,
+        override_path=override_path,
+        changed=changed,
+    )
+    _write_payload(Path(args.out_file).expanduser(), payload)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=True))
+    else:
+        print(
+            "apple_silicon_profile "
+            f"tier={payload['applied_tier']} "
+            f"memory_gb={hardware.get('memory_gb', 0.0)} "
+            f"changed={int(bool(payload['changed']))}"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

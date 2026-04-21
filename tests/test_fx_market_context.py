@@ -1,8 +1,13 @@
 import json
 import math
+from datetime import datetime, timezone
 
 from scripts.collect_fx_market_context import (
+    _fx_carry_proxy,
+    _fx_dxy_yield_confirmation,
+    _fx_session_state_norms,
     _alpha_vantage_intraday,
+    _canonical_pair_reconciliation,
     _parse_fed_h10_current,
     _latest_pair_history,
     _normalize_pair_symbol,
@@ -59,6 +64,38 @@ def test_pair_history_and_proxy_agreement():
     assert checks["USD_UUP"] is True
 
 
+def test_fx_session_state_norms_and_confirmation_helpers() -> None:
+    london = _fx_session_state_norms(datetime(2026, 4, 1, 14, 0, tzinfo=timezone.utc))
+    assert london["fx_session_london_norm"] == 1.0
+    assert london["fx_session_ny_norm"] == 1.0
+    assert london["fx_rollover_risk_norm"] == 0.0
+
+    rollover = _fx_session_state_norms(datetime(2026, 4, 1, 21, 0, tzinfo=timezone.utc))
+    assert rollover["fx_rollover_risk_norm"] == 1.0
+
+    confirmation = _fx_dxy_yield_confirmation(
+        {
+            "UUP": {"pct_from_close": 0.007},
+            "TLT": {"pct_from_close": -0.006},
+        },
+        usd_strength_raw=0.01,
+        proxy_agreement_raw=0.8,
+    )
+    assert confirmation > 0.7
+
+    carry = _fx_carry_proxy(
+        {
+            "USDJPY": 0.01,
+            "USDCHF": 0.008,
+            "USDCAD": 0.006,
+            "EURUSD": -0.005,
+            "GBPUSD": -0.004,
+            "AUDUSD": -0.003,
+        }
+    )
+    assert carry > 0.5
+
+
 def test_alpha_vantage_intraday_parsing(monkeypatch):
     payload = {
         "Meta Data": {"1. Information": "FX Intraday"},
@@ -110,6 +147,10 @@ def test_twelve_data_time_series_parsing(monkeypatch):
         "scripts.collect_fx_market_context._http_text",
         lambda url, timeout=20.0: json.dumps(payload),
     )
+    monkeypatch.setattr(
+        "scripts.collect_fx_market_context.twelve_data_cooldown_status",
+        lambda project_root: {"active": False},
+    )
 
     result = _twelve_data_time_series(
         api_key="demo",
@@ -125,10 +166,80 @@ def test_twelve_data_time_series_parsing(monkeypatch):
     assert math.isclose(result["session_close"], 1.0812, rel_tol=1e-9)
 
 
+def test_twelve_data_time_series_skips_fetch_during_provider_cooldown(monkeypatch):
+    monkeypatch.setattr(
+        "scripts.collect_fx_market_context.twelve_data_cooldown_status",
+        lambda project_root: {"active": True, "kind": "daily_quota", "remaining_seconds": 321.0},
+    )
+    monkeypatch.setattr(
+        "scripts.collect_fx_market_context._http_text",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not fetch during cooldown")),
+    )
+
+    result = _twelve_data_time_series(
+        api_key="demo",
+        pair_symbol="EURUSD",
+        interval="5min",
+        outputsize=12,
+        timeout=5.0,
+    )
+
+    assert result["ok"] is False
+    assert result["error"].startswith("provider_cooldown_active:")
+
+
+def test_twelve_data_time_series_marks_daily_quota_cooldown(monkeypatch):
+    payload = {
+        "status": "error",
+        "code": "429",
+        "message": "You have run out of API credits for the day.",
+    }
+
+    monkeypatch.setattr(
+        "scripts.collect_fx_market_context.twelve_data_cooldown_status",
+        lambda project_root: {"active": False},
+    )
+    monkeypatch.setattr(
+        "scripts.collect_fx_market_context._http_text",
+        lambda url, timeout=20.0: json.dumps(payload),
+    )
+    monkeypatch.setattr(
+        "scripts.collect_fx_market_context.mark_twelve_data_cooldown",
+        lambda **kwargs: {"active": True, "kind": "daily_quota", "remaining_seconds": 123.0},
+    )
+
+    result = _twelve_data_time_series(
+        api_key="demo",
+        pair_symbol="EURUSD",
+        interval="5min",
+        outputsize=12,
+        timeout=5.0,
+    )
+
+    assert result["ok"] is False
+    assert result["cooldown"]["active"] is True
+    assert result["cooldown"]["kind"] == "daily_quota"
+
+
 def test_normalize_pair_symbol():
     assert _normalize_pair_symbol("EUR/USD") == "EURUSD"
     assert _normalize_pair_symbol("usd-jpy") == "USDJPY"
     assert _normalize_pair_symbol("SPY") == ""
+
+
+def test_canonical_pair_reconciliation_prefers_closest_current_provider():
+    payload = _canonical_pair_reconciliation(
+        ecb_pairs={"EURUSD": 1.0819},
+        fed_pairs={"EURUSD": 1.0821},
+        twelve_data_intraday={"EURUSD": {"ok": True, "latest_close": 1.0820, "latest_ts": "2026-03-23 22:00:00"}},
+        alpha_vantage_intraday={"ok": True, "latest_close": 1.0823, "latest_ts": "2026-03-23 21:55:00"},
+    )
+
+    row = payload["EURUSD"]
+    assert row["canonical_source"] == "twelve_data"
+    assert row["provider_count"] == 4
+    assert row["confidence_norm"] > 0.5
+    assert row["divergence_ratio"] < 0.001
 
 
 def test_fed_h10_current_parsing():

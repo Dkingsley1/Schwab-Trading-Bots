@@ -2,11 +2,17 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+RUNTIME_PY_HELPER="$PROJECT_ROOT/scripts/ops/runtime_python.sh"
 PY="$PROJECT_ROOT/.venv312/bin/python"
 DAY_UTC="$(date -u +%Y%m%d)"
 
 cd "$PROJECT_ROOT"
 [[ -f "$PROJECT_ROOT/scripts/load_ops_thresholds_env.sh" ]] && source "$PROJECT_ROOT/scripts/load_ops_thresholds_env.sh"
+if [[ -x "$RUNTIME_PY_HELPER" ]]; then
+  PY="$(
+    BOT_RUNTIME_LANE="${BOT_OPS_RUNTIME_LANE:-production}" /bin/zsh "$RUNTIME_PY_HELPER"
+  )"
+fi
 
 pkill -f "run_parallel_shadows.py" 2>/dev/null || true
 pkill -f "run_parallel_aggressive_modes.py" 2>/dev/null || true

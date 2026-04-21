@@ -14,11 +14,12 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -30,7 +31,16 @@ except Exception:
 
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-HALT_FLAG_PATH = Path(PROJECT_ROOT) / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
+PROJECT_ROOT_PATH = Path(PROJECT_ROOT)
+STORAGE_PRESSURE_OVERRIDE_PATH = PROJECT_ROOT_PATH / "config" / ".env.storage_pressure_override"
+STORAGE_OVERRIDE_PATH = PROJECT_ROOT_PATH / "config" / ".env.storage_override"
+_DYNAMIC_STORAGE_OVERRIDE_CACHE: Dict[str, Any] = {
+    "checked_at_monotonic": 0.0,
+    "fingerprint": (),
+    "values": {},
+}
+_DYNAMIC_STORAGE_OVERRIDE_POLL_SECONDS = 5.0
+HALT_FLAG_PATH = PROJECT_ROOT_PATH / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
@@ -86,6 +96,11 @@ from core.runtime_layers import (
     config_hash,
 )
 from core.accountability import enrich_log_row, safe_append_channel_batch, safe_append_jsonl_batch, safe_write_json_atomic
+from core.fx_twelve_data_guard import (
+    classify_twelve_data_failure,
+    mark_twelve_data_cooldown,
+    twelve_data_cooldown_status,
+)
 from core.path_registry import (
     build_shadow_context,
     channel_snapshot_path,
@@ -106,12 +121,35 @@ FX_TWELVE_DATA_SYMBOL_MAP = {
     "AUDUSD": "AUD/USD",
 }
 _FX_REALTIME_SNAPSHOT_CACHE: Dict[str, Dict[str, Any]] = {}
+_PAPER_RUNTIME_CONTROLS_CACHE: Dict[str, Any] = {
+    "loaded_at": 0.0,
+    "cache_key": "",
+    "snapshot": {
+        "profile_symbol_penalties": {},
+        "profile_drag": {},
+    },
+}
+
+
+def _bounded_cache_put(cache: Dict[str, Any], key: str, value: Any, *, max_entries: int) -> None:
+    cache_key = str(key)
+    if cache_key in cache:
+        cache.pop(cache_key, None)
+    cache[cache_key] = value
+    limit = max(int(max_entries), 0)
+    while limit > 0 and len(cache) > limit:
+        cache.pop(next(iter(cache)), None)
 
 _MARKET_MICRO_FEATURE_KEYS = [
     "market_micro_premarket_pressure_norm",
     "market_micro_opening_auction_norm",
+    "market_micro_opening_auction_imbalance_norm",
+    "market_micro_opening_drive_pressure_norm",
     "market_micro_power_hour_pressure_norm",
     "market_micro_closing_auction_norm",
+    "market_micro_closing_auction_imbalance_norm",
+    "market_micro_closing_cross_pressure_norm",
+    "market_micro_auction_print_pressure_norm",
     "market_micro_relative_volume_norm",
     "market_micro_order_flow_imbalance_norm",
     "market_micro_options_flow_norm",
@@ -122,6 +160,34 @@ _MARKET_MICRO_FEATURE_KEYS = [
     "market_micro_trend_persistence_norm",
     "market_micro_range_expansion_norm",
     "market_micro_block_trade_norm",
+    "market_micro_trade_halt_norm",
+    "market_micro_luld_pause_norm",
+    "market_micro_ssr_active_norm",
+    "market_micro_resume_window_norm",
+    "market_micro_dark_pool_pressure_norm",
+    "market_micro_off_exchange_share_norm",
+    "market_micro_spread_regime_norm",
+    "market_micro_spread_widening_norm",
+    "market_micro_queue_depth_decay_norm",
+    "market_micro_depth_collapse_norm",
+    "market_micro_quote_fade_rate_norm",
+    "market_micro_tradeability_score_norm",
+    "market_micro_session_open_norm",
+    "market_micro_session_midday_norm",
+    "market_micro_session_power_hour_norm",
+    "market_micro_overnight_gap_norm",
+    "market_micro_post_event_drift_norm",
+    "market_micro_lunch_chop_norm",
+    "market_micro_open_close_imbalance_regime_norm",
+    "market_micro_symbol_cooldown_pressure_norm",
+    "market_micro_gap_fade_risk_norm",
+    "market_micro_overnight_event_hazard_norm",
+    "etf_nav_premium_discount_norm",
+    "etf_creation_redemption_stress_norm",
+    "etf_primary_secondary_liquidity_norm",
+    "etf_underlying_basket_stress_norm",
+    "etf_fund_family_flow_norm",
+    "etf_fund_family_creation_pressure_norm",
 ]
 
 _EXTERNAL_CONTEXT_FEATURE_KEYS = [
@@ -130,8 +196,21 @@ _EXTERNAL_CONTEXT_FEATURE_KEYS = [
     "sec_earnings_7d_norm",
     "sec_guidance_7d_norm",
     "sec_regulatory_7d_norm",
+    "sec_offering_7d_norm",
+    "sec_dilution_7d_norm",
+    "sec_mna_7d_norm",
+    "sec_restatement_7d_norm",
+    "sec_financing_stress_7d_norm",
     "sec_ownership_30d_norm",
     "sec_insider_30d_norm",
+    "sec_insider_buy_30d_norm",
+    "sec_insider_sell_30d_norm",
+    "sec_estimate_revision_drift_norm",
+    "sec_earnings_whisper_surprise_norm",
+    "sec_split_hazard_30d_norm",
+    "sec_special_dividend_30d_norm",
+    "sec_offering_priced_30d_norm",
+    "sec_lockup_secondary_30d_norm",
     "sec_recent_proximity_norm",
     "sec_recent_symbols_norm",
     "sec_recent_filings_1d_norm",
@@ -163,12 +242,39 @@ _EXTERNAL_CONTEXT_FEATURE_KEYS = [
     "short_ftd_quantity_norm",
     "short_ftd_symbol_share_norm",
     "short_ftd_total_hits_norm",
+    "calendar_opex_week_norm",
+    "calendar_month_end_rebalance_norm",
+    "calendar_quarter_end_rebalance_norm",
+    "calendar_futures_roll_window_norm",
+    "calendar_index_rebalance_window_norm",
     "tasty_iv_rank_norm",
     "tasty_implied_volatility_index_norm",
     "tasty_liquidity_rating_norm",
     "tasty_expected_move_norm",
     "tasty_beta_norm",
     "tasty_watchlist_presence_norm",
+    "short_borrow_availability_norm",
+    "short_borrow_fee_norm",
+    "short_utilization_norm",
+    "short_days_to_cover_norm",
+    "tasty_dealer_gamma_pressure_norm",
+    "tasty_call_wall_proximity_norm",
+    "tasty_put_wall_proximity_norm",
+    "tasty_max_pain_proximity_norm",
+    "tasty_pin_risk_norm",
+    "options_iv_skew_norm",
+    "options_iv_term_structure_norm",
+    "options_gamma_expiry_skew_norm",
+    "options_vol_regime_norm",
+    "options_surface_change_norm",
+    "options_strike_expiry_concentration_change_norm",
+    "options_gamma_flip_distance_norm",
+    "options_earnings_setup_norm",
+    "options_iv_crush_risk_norm",
+    "options_assignment_risk_norm",
+    "options_zero_dte_regime_norm",
+    "options_vol_of_vol_change_norm",
+    "options_spread_execution_risk_norm",
     "crypto_deribit_futures_oi_norm",
     "crypto_deribit_options_oi_norm",
     "crypto_deribit_mark_iv_norm",
@@ -209,6 +315,19 @@ _EXTERNAL_CONTEXT_FEATURE_KEYS = [
     "fx_crypto_alignment_norm",
     "fx_macro_dispersion_norm",
     "fx_corr_confidence_norm",
+    "fx_session_asia_norm",
+    "fx_session_london_norm",
+    "fx_session_ny_norm",
+    "fx_rollover_risk_norm",
+    "fx_dxy_yield_confirmation_norm",
+    "fx_carry_proxy_norm",
+    "live_macro_gate_active_norm",
+    "live_macro_gate_confidence_norm",
+    "live_macro_risk_off_pressure_norm",
+    "live_macro_headwind_norm",
+    "live_macro_tailwind_norm",
+    "live_macro_oil_shock_norm",
+    "live_macro_event_alignment_norm",
 ]
 
 
@@ -288,6 +407,59 @@ def _publish_execution_lane_intent(
     )
 
 
+def _publish_master_plan_intent(
+    *,
+    broker: str,
+    symbol: str,
+    decision: Dict[str, Any],
+    features: Dict[str, Any],
+    gates: Dict[str, Any],
+    strategy: str,
+    layer: str,
+    snapshot_id: str,
+    source_profile: str,
+    shadow_domain: str,
+    plan_key: str,
+    intent_kind: str,
+    extra_metadata: Optional[Dict[str, Any]] = None,
+) -> bool:
+    action = str(decision.get("action") or "").strip().upper()
+    plan = decision.get("plan") if isinstance(decision.get("plan"), dict) else {}
+    qty = max(float(plan.get("contracts", 0.0) or 0.0), 0.0)
+    legs = plan.get("legs") if isinstance(plan.get("legs"), list) else []
+    if action not in {"BUY", "SELL"} or qty <= 0.0 or not legs:
+        return False
+
+    metadata = {
+        "layer": layer,
+        "snapshot_id": snapshot_id,
+        "source_profile": str(source_profile or "default"),
+        "shadow_domain": str(shadow_domain or ""),
+        "allow_live_promotion": False,
+        plan_key: plan,
+    }
+    if isinstance(extra_metadata, dict) and extra_metadata:
+        metadata.update(extra_metadata)
+
+    plan_gate_key = "options_plan_ready" if plan_key == "options_plan" else "futures_plan_ready"
+    _publish_execution_lane_intent(
+        broker=broker,
+        symbol=symbol,
+        action=action,
+        quantity=qty,
+        model_score=float(decision.get("score", 0.5) or 0.5),
+        threshold=float(decision.get("threshold", 0.55) or 0.55),
+        features=features,
+        gates={**dict(gates or {}), plan_gate_key: True},
+        reasons=list(decision.get("reasons", []) or []) + ["derivatives_master_dispatch"],
+        strategy=strategy,
+        metadata=metadata,
+        intent_kind=intent_kind,
+        target_mode="paper",
+    )
+    return True
+
+
 def _parse_bot_weight_boosts(raw: str) -> Dict[str, float]:
     out: Dict[str, float] = {}
     for part in (raw or "").split(","):
@@ -328,6 +500,24 @@ def _apply_bot_weight_boost(bot_id: str, weight: float) -> float:
 
 def _env_flag(name: str, default: str = "0") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _advanced_sleeve_logic_enabled(profile: str) -> bool:
+    token = str(profile or "").strip().lower()
+    alias_map = {
+        "aggressive": ["ENABLE_AGGRESSIVE_ADVANCED_OVERLAYS"],
+        "intraday_aggressive": ["ENABLE_INTRADAY_AGGRESSIVE_ADVANCED_OVERLAYS", "ENABLE_INTRADAY_ADVANCED_OVERLAYS"],
+        "bond": ["ENABLE_BOND_ADVANCED_OVERLAYS"],
+        "dividend": ["ENABLE_DIVIDEND_ADVANCED_OVERLAYS"],
+        "long_term_core_etf": ["ENABLE_LONG_TERM_CORE_ETF_ADVANCED_OVERLAYS", "ENABLE_LONG_TERM_ADVANCED_OVERLAYS"],
+    }
+    env_names = alias_map.get(token)
+    if not env_names:
+        return True
+    for env_name in env_names:
+        if env_name in os.environ:
+            return _env_flag(env_name, "1")
+    return True
 
 
 def _global_trading_halt_enabled() -> bool:
@@ -466,6 +656,88 @@ def _parse_sub_bots(registry: Dict[str, Any]) -> List[SubBot]:
 def _fresh_registry(registry_path: str) -> tuple[Dict[str, Any], List[SubBot]]:
     registry = _load_registry(registry_path)
     return registry, _parse_sub_bots(registry)
+
+
+_BOND_SPECIALIST_ALLOWED_PROFILES = frozenset({"bond", "conservative", "default", "dividend"})
+_BOND_SPECIALIST_ALLOWED_SYMBOLS = frozenset(
+    {
+        "AGG",
+        "BND",
+        "EDV",
+        "FLOT",
+        "HYG",
+        "IEF",
+        "IGIB",
+        "JNK",
+        "LQD",
+        "MUB",
+        "SCHP",
+        "SCHO",
+        "SHY",
+        "TIP",
+        "TLH",
+        "TLT",
+        "USHY",
+        "VGIT",
+        "VGLT",
+        "VGSH",
+        "VTIP",
+        "ZROZ",
+    }
+)
+_CREDIT_SPECIALIST_ALLOWED_SYMBOLS = frozenset(
+    {
+        "HYG",
+        "IEF",
+        "IGIB",
+        "JNK",
+        "LQD",
+        "SHY",
+        "TIP",
+        "TLT",
+        "USHY",
+    }
+)
+_SPECIALIST_RUNTIME_SCOPE_RULES: Dict[str, Dict[str, Any]] = {
+    "brain_refinery_v95_rates_regime_bond_bot": {
+        "scope_name": "bond_specialist",
+        "profiles": _BOND_SPECIALIST_ALLOWED_PROFILES,
+        "symbols": _BOND_SPECIALIST_ALLOWED_SYMBOLS,
+    },
+    "brain_refinery_v96_credit_spread_rotation_bot": {
+        "scope_name": "credit_specialist",
+        "profiles": _BOND_SPECIALIST_ALLOWED_PROFILES,
+        "symbols": _CREDIT_SPECIALIST_ALLOWED_SYMBOLS,
+    },
+}
+
+
+def _sub_bot_runtime_scope_ok(bot: SubBot, *, symbol: str, profile: str) -> tuple[bool, List[str]]:
+    rule = _SPECIALIST_RUNTIME_SCOPE_RULES.get(str(bot.bot_id or "").strip().lower())
+    if not rule:
+        return True, []
+
+    normalized_symbol = str(symbol or "").strip().upper()
+    normalized_profile = str(profile or "").strip().lower() or "default"
+    allowed_profiles = rule.get("profiles", frozenset())
+    allowed_symbols = rule.get("symbols", frozenset())
+    scope_name = str(rule.get("scope_name") or "specialist")
+
+    reasons = [f"scope_name={scope_name}"]
+    if normalized_profile not in allowed_profiles:
+        return False, reasons + [
+            f"scope_blocked_profile={normalized_profile}",
+            "allowed_profiles=" + ",".join(sorted(allowed_profiles)),
+        ]
+    if normalized_symbol not in allowed_symbols:
+        return False, reasons + [
+            f"scope_blocked_symbol={normalized_symbol}",
+            f"allowed_symbol_count={len(allowed_symbols)}",
+        ]
+    return True, reasons + [
+        f"scope_profile={normalized_profile}",
+        f"scope_symbol={normalized_symbol}",
+    ]
 
 
 def _bot_lane_key(bot: SubBot) -> str:
@@ -747,6 +1019,28 @@ _DIVIDEND_FEATURE_KEYS = [
     "dividend_tax_qualified_hold_norm",
     "dividend_growth_momentum_norm",
     "dividend_rebalance_due_norm",
+    "dividend_streak_quality_norm",
+    "dividend_cut_freeze_risk_norm",
+    "dividend_fcf_coverage_norm",
+    "dividend_debt_funded_risk_norm",
+    "dividend_interest_coverage_quality_norm",
+    "dividend_structure_aware_quality_norm",
+    "dividend_forward_hazard_norm",
+    "dividend_income_quality_norm",
+    "dividend_trap_internal_risk_norm",
+    "dividend_total_return_income_norm",
+    "dividend_position_age_norm",
+    "dividend_cost_basis_gap_norm",
+    "dividend_tax_friction_norm",
+    "dividend_corporate_action_hazard_norm",
+    "dividend_capture_vs_hold_edge_norm",
+    "dividend_reinvest_cadence_norm",
+    "dividend_payout_stress_forward_norm",
+    "dividend_compounding_quality_norm",
+    "dividend_capture_timing_quality_norm",
+    "dividend_payout_stress_gate_norm",
+    "dividend_growth_persistence_norm",
+    "dividend_capture_ex_date_hazard_norm",
 ]
 
 _LONG_TERM_FEATURE_KEYS = [
@@ -769,7 +1063,34 @@ _LONG_TERM_FEATURE_KEYS = [
     "long_term_dca_interval_iters",
     "long_term_dca_iters_since_buy",
     "long_term_rebalance_band_norm",
+    "long_term_valuation_anchor_norm",
+    "long_term_valuation_history_norm",
+    "long_term_capital_allocation_quality_norm",
+    "long_term_quality_persistence_norm",
+    "long_term_accumulation_discipline_norm",
+    "long_term_overlap_crowding_norm",
+    "long_term_duration_sensitivity_norm",
+    "long_term_total_return_income_norm",
+    "long_term_position_age_norm",
+    "long_term_cost_basis_gap_norm",
+    "long_term_tax_friction_norm",
+    "long_term_corporate_action_hazard_norm",
+    "long_term_downside_preservation_norm",
+    "long_term_factor_quality_mix_norm",
+    "long_term_rebalance_overlap_penalty_norm",
+    "long_term_valuation_reserve_norm",
+    "long_term_compounder_conviction_norm",
+    "long_term_factor_exposure_control_norm",
+    "long_term_overlap_rebalance_norm",
 ]
+
+_DIVIDEND_STRUCTURE_ROLE_MAP = {
+    "reit": ["O", "VNQ", "XLRE", "WPC", "SPG", "AMT", "PLD", "PSA", "EQIX"],
+    "bdc": ["ARCC", "MAIN", "OBDC", "BXSL", "FSK", "HTGC"],
+    "mlp": ["AMLP", "ET", "EPD", "MPLX", "PAA", "WMB"],
+    "utility": ["XLU", "NEE", "DUK", "SO", "D", "AEP", "ED"],
+    "bank": ["XLF", "KRE", "JPM", "BAC", "WFC", "USB", "PNC", "TFC"],
+}
 
 _LANE_STRATEGY_FEATURE_KEYS = [
     "day_opening_auction_signal_norm",
@@ -782,15 +1103,51 @@ _LANE_STRATEGY_FEATURE_KEYS = [
     "day_regime_trend_norm",
     "day_regime_chop_norm",
     "day_regime_alignment_norm",
+    "day_lunch_chop_norm",
+    "day_open_close_imbalance_regime_norm",
+    "day_symbol_cooldown_pressure_norm",
+    "day_open_drive_conviction_norm",
+    "day_failed_breakout_risk_norm",
+    "day_closing_squeeze_norm",
+    "live_macro_gate_active_norm",
+    "live_macro_gate_confidence_norm",
+    "live_macro_risk_off_pressure_norm",
+    "live_macro_headwind_norm",
+    "live_macro_tailwind_norm",
+    "live_macro_oil_shock_norm",
+    "live_macro_event_alignment_norm",
+    "core_default_dependency_norm",
+    "core_conservative_quality_gate_norm",
+    "core_aggressive_breakout_conviction_norm",
+    "core_options_structure_edge_norm",
+    "core_fx_macro_confirmation_norm",
+    "core_futures_regime_edge_norm",
+    "core_futures_curve_alignment_norm",
+    "core_crypto_unwind_risk_norm",
+    "core_cross_sectional_rank_norm",
+    "core_regime_specialist_blend_norm",
+    "core_exit_persistence_norm",
+    "core_portfolio_overlap_pressure_norm",
+    "core_event_reaction_norm",
+    "core_cross_asset_confirmation_norm",
+    "core_champion_challenger_gap_norm",
+    "aggressive_relative_strength_burst_norm",
+    "options_skew_dislocation_norm",
+    "options_gamma_wall_reaction_norm",
+    "futures_basis_dislocation_norm",
+    "futures_overnight_inventory_norm",
     "swing_post_earnings_drift_norm",
     "swing_gap_continuation_norm",
     "swing_gap_fade_norm",
     "swing_vol_compression_breakout_norm",
     "swing_sector_relative_strength_norm",
     "swing_weekly_trend_confirm_norm",
+    "swing_weekly_pullback_quality_norm",
     "swing_regime_trend_norm",
     "swing_regime_chop_norm",
     "swing_regime_alignment_norm",
+    "swing_overnight_event_hazard_norm",
+    "swing_event_blackout_norm",
     "bond_duration_regime_norm",
     "bond_curve_steepener_norm",
     "bond_curve_flattener_norm",
@@ -798,6 +1155,7 @@ _LANE_STRATEGY_FEATURE_KEYS = [
     "bond_credit_risk_on_norm",
     "bond_credit_risk_off_norm",
     "bond_inflation_breakeven_norm",
+    "bond_equity_contamination_norm",
     "dividend_safety_composite_norm",
     "dividend_ex_slippage_risk_norm",
     "dividend_tax_qualified_hold_norm",
@@ -862,6 +1220,10 @@ _ALLOCATION_FEATURE_KEYS = [
     "allocation_confidence_norm",
     "allocation_confidence_scale",
     "allocation_conflict_norm",
+    "execution_fitness_norm",
+    "stop_target_realism_norm",
+    "symbol_cooldown_memory_norm",
+    "cross_bot_conflict_norm",
     "regime_dislocation_norm",
 ]
 
@@ -1084,12 +1446,25 @@ def _allocation_confidence_overlay(
     flow_stress = _clamp01(float(features.get("flow_stress_norm", 0.0) or 0.0))
     lead_signal = _clamp11(float(features.get("lead_lag_signal_signed", 0.0) or 0.0))
     flow_direction = _clamp11(float(features.get("flow_direction_signed", 0.0) or 0.0))
+    execution_fitness = _clamp01(
+        float(
+            features.get(
+                "execution_fitness_norm",
+                features.get("market_micro_tradeability_score_norm", 0.5),
+            )
+            or 0.5
+        )
+    )
+    stop_target_realism = _clamp01(float(features.get("stop_target_realism_norm", 0.5) or 0.5))
+    cooldown_memory = _clamp01(float(features.get("symbol_cooldown_memory_norm", 0.0) or 0.0))
+    cross_bot_conflict = _clamp01(float(features.get("cross_bot_conflict_norm", 0.0) or 0.0))
 
     conflict = 0.0
     if action_key == "BUY":
         conflict = max(max(-lead_signal, 0.0), max(-flow_direction, 0.0))
     elif action_key == "SELL":
         conflict = max(max(lead_signal, 0.0), max(flow_direction, 0.0))
+    conflict = max(conflict, cross_bot_conflict)
 
     confidence = 0.0
     scale = 0.0 if action_key not in {"BUY", "SELL"} else min_scale
@@ -1099,15 +1474,18 @@ def _allocation_confidence_overlay(
             + 0.18 * flow_conf
             + 0.18 * lead_conf
             + 0.12 * infra_conf
+            + 0.10 * execution_fitness
+            + 0.08 * stop_target_realism
             + 0.10 * abs(lead_signal)
             + 0.08 * abs(flow_direction)
             - 0.16 * lead_break
             - 0.14 * flow_stress
             - 0.12 * infra_risk
+            - 0.14 * cooldown_memory
             - 0.16 * conflict
         )
         scale = min_scale + ((max_scale - min_scale) * confidence)
-        if conflict >= 0.75 or lead_break >= 0.85:
+        if conflict >= 0.75 or lead_break >= 0.85 or cooldown_memory >= 0.80 or execution_fitness <= 0.25:
             scale = min(scale, min_scale + (0.35 * (max_scale - min_scale)))
 
     out.update(
@@ -1116,9 +1494,361 @@ def _allocation_confidence_overlay(
             "allocation_confidence_norm": confidence,
             "allocation_confidence_scale": scale,
             "allocation_conflict_norm": _clamp01(conflict),
+            "execution_fitness_norm": execution_fitness,
+            "stop_target_realism_norm": stop_target_realism,
+            "symbol_cooldown_memory_norm": cooldown_memory,
+            "cross_bot_conflict_norm": cross_bot_conflict,
         }
     )
     return out
+
+
+def _derive_execution_realism_features(features: Dict[str, float]) -> Dict[str, float]:
+    tradeability = _clamp01(float(features.get("market_micro_tradeability_score_norm", 0.5) or 0.5))
+    quote_agreement = _clamp01(float(features.get("data_quality_quote_agreement_norm", 1.0) or 1.0))
+    spread_norm = _clamp01(abs(float(features.get("spread_bps", 0.0) or 0.0)) / 30.0)
+    slippage_norm = _clamp01(abs(float(features.get("lag_slippage_bps", 0.0) or 0.0)) / 12.0)
+    impact_norm = _clamp01(abs(float(features.get("lag_impact_bps", 0.0) or 0.0)) / 12.0)
+    latency_norm = _clamp01(
+        max(
+            float(features.get("data_quality_market_data_latency_norm", 0.0) or 0.0),
+            abs(float(features.get("lag_latency_ms", 0.0) or 0.0)) / 350.0,
+        )
+    )
+    quote_fade = _clamp01(float(features.get("market_micro_quote_fade_rate_norm", 0.0) or 0.0))
+    depth_decay = _clamp01(float(features.get("market_micro_queue_depth_decay_norm", 0.0) or 0.0))
+    trend_room = _clamp01(
+        max(
+            float(features.get("market_micro_range_expansion_norm", 0.0) or 0.0),
+            float(features.get("market_micro_post_event_drift_norm", 0.0) or 0.0),
+            float(features.get("market_micro_trend_persistence_norm", 0.0) or 0.0),
+        )
+    )
+    reversal_risk = _clamp01(float(features.get("market_micro_reversal_risk_norm", 0.0) or 0.0))
+    execution_fitness = _clamp01(
+        0.26 * tradeability
+        + 0.18 * quote_agreement
+        + 0.14 * (1.0 - spread_norm)
+        + 0.10 * (1.0 - quote_fade)
+        + 0.08 * (1.0 - depth_decay)
+        + 0.08 * (1.0 - latency_norm)
+        + 0.08 * (1.0 - slippage_norm)
+        + 0.08 * (1.0 - impact_norm)
+    )
+    stop_target_realism = _clamp01(
+        0.24 * tradeability
+        + 0.18 * trend_room
+        + 0.16 * (1.0 - spread_norm)
+        + 0.14 * (1.0 - slippage_norm)
+        + 0.10 * (1.0 - impact_norm)
+        + 0.10 * (1.0 - quote_fade)
+        + 0.08 * (1.0 - reversal_risk)
+    )
+    return {
+        "execution_fitness_norm": execution_fitness,
+        "stop_target_realism_norm": stop_target_realism,
+    }
+
+
+def _cross_bot_conflict_norm(rows: List[Dict[str, Any]]) -> float:
+    if not rows:
+        return 0.0
+    buy_weight = 0.0
+    sell_weight = 0.0
+    hold_weight = 0.0
+    role_balance: Dict[str, float] = {}
+    for row in rows:
+        action = str(row.get("action") or "HOLD").upper()
+        weight = abs(float(row.get("weight", 0.0) or 0.0)) or 1.0
+        role = str(row.get("bot_role") or "signal_sub_bot").strip().lower() or "signal_sub_bot"
+        if action == "BUY":
+            buy_weight += weight
+            role_balance[role] = role_balance.get(role, 0.0) + weight
+        elif action == "SELL":
+            sell_weight += weight
+            role_balance[role] = role_balance.get(role, 0.0) - weight
+        else:
+            hold_weight += weight
+    directional_total = buy_weight + sell_weight
+    total = directional_total + hold_weight
+    if total <= 0.0:
+        return 0.0
+    disagreement = min(buy_weight, sell_weight) / max(directional_total, 1e-6)
+    indecision = hold_weight / max(total, 1e-6)
+    role_directions = list(role_balance.values())
+    role_conflict = 0.0
+    if role_directions:
+        has_buy_role = any(val > 0.0 for val in role_directions)
+        has_sell_role = any(val < 0.0 for val in role_directions)
+        role_conflict = 1.0 if (has_buy_role and has_sell_role) else 0.0
+    return _clamp01(0.58 * disagreement + 0.22 * indecision + 0.20 * role_conflict)
+
+
+def _bot_concentration_norm(rows: Optional[List[Dict[str, Any]]]) -> float:
+    if not rows:
+        return 0.0
+    totals: Dict[str, float] = {}
+    directional_total = 0.0
+    for row in rows:
+        action = str(row.get("action") or "HOLD").upper()
+        if action not in {"BUY", "SELL"}:
+            continue
+        bot_id = str(row.get("bot_id") or row.get("strategy") or "").strip().lower()
+        if not bot_id:
+            continue
+        weight = abs(float(row.get("weight", 0.0) or 0.0)) or 1.0
+        totals[bot_id] = totals.get(bot_id, 0.0) + weight
+        directional_total += weight
+    if directional_total <= 0.0 or not totals:
+        return 0.0
+    return _clamp01(max(totals.values()) / max(directional_total, 1e-6))
+
+
+def _bot_theme_alignment_norm(
+    rows: Optional[List[Dict[str, Any]]],
+    *,
+    allow_tokens: Tuple[str, ...],
+) -> float:
+    if not rows:
+        return 0.0
+    total = 0.0
+    aligned = 0.0
+    for row in rows:
+        action = str(row.get("action") or "HOLD").upper()
+        if action not in {"BUY", "SELL"}:
+            continue
+        bot_id = str(row.get("bot_id") or row.get("strategy") or "").strip().lower()
+        if not bot_id:
+            continue
+        weight = abs(float(row.get("weight", 0.0) or 0.0)) or 1.0
+        total += weight
+        if any(token in bot_id for token in allow_tokens):
+            aligned += weight
+    if total <= 0.0:
+        return 0.0
+    return _clamp01(aligned / max(total, 1e-6))
+
+
+def _paper_runtime_controls_snapshot() -> Dict[str, Any]:
+    cache = _PAPER_RUNTIME_CONTROLS_CACHE
+    now_ts = time.time()
+    refresh_seconds = max(float(os.getenv("PAPER_RUNTIME_CONTROL_REFRESH_SECONDS", "180") or 180.0), 30.0)
+    project_root = Path(PROJECT_ROOT)
+    perf_path = project_root / "governance" / "health" / "paper_performance_latest.json"
+    bridge_files = sorted(
+        (project_root / "exports" / "paper_broker_bridge" / "paper").glob("paper_bridge_orders_*.jsonl")
+    )[-3:]
+    cache_parts: list[str] = []
+    for path in [perf_path, *bridge_files]:
+        try:
+            cache_parts.append(f"{path}:{int(path.stat().st_mtime)}:{int(path.stat().st_size)}")
+        except Exception:
+            cache_parts.append(f"{path}:missing")
+    cache_key = "|".join(cache_parts)
+    if (
+        cache.get("cache_key") == cache_key
+        and (now_ts - float(cache.get("loaded_at", 0.0) or 0.0)) <= refresh_seconds
+    ):
+        snap = cache.get("snapshot")
+        if isinstance(snap, dict):
+            return snap
+
+    profile_symbol_penalties: Dict[str, Dict[str, float]] = {}
+    recent_lines: deque[str] = deque(maxlen=max(int(os.getenv("PAPER_RUNTIME_CONTROL_MAX_ROWS", "6000") or 6000), 200))
+    for path in bridge_files:
+        try:
+            with path.open("r", encoding="utf-8", errors="ignore") as handle:
+                for raw in handle:
+                    line = raw.strip()
+                    if line:
+                        recent_lines.append(line)
+        except Exception:
+            continue
+
+    aggregates: Dict[Tuple[str, str], Dict[str, float]] = {}
+    for raw in recent_lines:
+        try:
+            row = json.loads(raw)
+        except Exception:
+            continue
+        if not isinstance(row, dict):
+            continue
+        meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        profile = str(meta.get("source_profile") or row.get("profile") or "default").strip().lower()
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not profile or not symbol:
+            continue
+        net = float(
+            row.get(
+                "ending_net_pnl_total",
+                float(row.get("realized_pnl_total", 0.0) or 0.0) + float(row.get("unrealized_pnl_total", 0.0) or 0.0),
+            )
+            or 0.0
+        )
+        fill_bucket = str(row.get("expected_fill_quality_bucket") or "").strip().lower()
+        slippage_gap = abs(float(row.get("slippage_gap_bps", 0.0) or 0.0))
+        stats = aggregates.setdefault((profile, symbol), {"count": 0.0, "losses": 0.0, "net_total": 0.0, "fill_drag": 0.0})
+        stats["count"] += 1.0
+        stats["net_total"] += net
+        if net < 0.0:
+            stats["losses"] += 1.0
+        if fill_bucket in {"poor", "fair"} or slippage_gap >= 6.0:
+            stats["fill_drag"] += 1.0
+
+    for (profile, symbol), stats in aggregates.items():
+        count = max(float(stats.get("count", 0.0) or 0.0), 1.0)
+        net_total = float(stats.get("net_total", 0.0) or 0.0)
+        loss_rate = float(stats.get("losses", 0.0) or 0.0) / count
+        fill_drag = float(stats.get("fill_drag", 0.0) or 0.0) / count
+        penalty = _clamp01(
+            0.48 * _clamp01(abs(min(net_total, 0.0)) / 8.0)
+            + 0.34 * _clamp01(loss_rate)
+            + 0.18 * _clamp01(fill_drag)
+        )
+        if penalty <= 0.0:
+            continue
+        profile_symbol_penalties.setdefault(profile, {})[symbol] = round(float(penalty), 6)
+
+    profile_drag: Dict[str, Dict[str, Any]] = {}
+    if perf_path.exists():
+        try:
+            perf_payload = json.loads(perf_path.read_text(encoding="utf-8"))
+        except Exception:
+            perf_payload = {}
+        for sleeve in perf_payload.get("sleeve_latest") or []:
+            if not isinstance(sleeve, dict):
+                continue
+            profile = str(sleeve.get("profile") or "").strip().lower()
+            if not profile:
+                continue
+            ending_net = float(sleeve.get("ending_net_pnl_total", 0.0) or 0.0)
+            win_rate_raw = sleeve.get("win_rate")
+            win_rate = None if win_rate_raw is None else float(win_rate_raw)
+            losing_count = int(sleeve.get("losing_strategy_count", 0) or 0)
+            winning_count = int(sleeve.get("winning_strategy_count", 0) or 0)
+            drag_norm = _clamp01(
+                0.52 * _clamp01(abs(min(ending_net, 0.0)) / 35.0)
+                + 0.30 * (max(0.0, 0.48 - win_rate) if win_rate is not None else 0.0)
+                + 0.18 * _clamp01(max(losing_count - winning_count, 0) / 6.0)
+            )
+            active = bool(
+                drag_norm >= _clamp01(float(os.getenv("SLEEVE_KILL_SWITCH_DRAG_THRESHOLD", "0.82") or 0.82))
+                and ending_net < 0.0
+                and (win_rate is None or win_rate < 0.42)
+            )
+            profile_drag[profile] = {
+                "active": active,
+                "drag_norm": round(float(drag_norm), 6),
+                "ending_net_pnl_total": round(float(ending_net), 6),
+                "win_rate": (round(float(win_rate), 6) if win_rate is not None else None),
+            }
+
+    snapshot = {
+        "profile_symbol_penalties": profile_symbol_penalties,
+        "profile_drag": profile_drag,
+    }
+    cache["loaded_at"] = now_ts
+    cache["cache_key"] = cache_key
+    cache["snapshot"] = snapshot
+    return snapshot
+
+
+def _profile_symbol_drag_penalty_norm(profile: str, symbol: str) -> float:
+    snapshot = _paper_runtime_controls_snapshot()
+    penalties = snapshot.get("profile_symbol_penalties") if isinstance(snapshot.get("profile_symbol_penalties"), dict) else {}
+    profile_map = penalties.get(str(profile or "").strip().lower(), {}) if isinstance(penalties, dict) else {}
+    if not isinstance(profile_map, dict):
+        return 0.0
+    return _clamp01(float(profile_map.get(str(symbol or "").strip().upper(), 0.0) or 0.0))
+
+
+def _profile_drag_snapshot(profile: str) -> Dict[str, Any]:
+    snapshot = _paper_runtime_controls_snapshot()
+    drag_map = snapshot.get("profile_drag") if isinstance(snapshot.get("profile_drag"), dict) else {}
+    row = drag_map.get(str(profile or "").strip().lower(), {}) if isinstance(drag_map, dict) else {}
+    return row if isinstance(row, dict) else {}
+
+
+def _symbol_cooldown_memory_norm(
+    *,
+    symbol: str,
+    now_ts: float,
+    iter_count: int,
+    runtime_lane: str,
+    symbol_fail_counts: Dict[str, int],
+    symbol_stale_counts: Dict[str, int],
+    symbol_circuit_hits: Dict[str, int],
+    symbol_quarantine_until: Dict[str, float],
+    symbol_regime_cooldown_until_iter: Dict[str, int],
+    lane_loss_streak: Dict[str, int],
+) -> float:
+    quarantine_norm = _clamp01(
+        max(float(symbol_quarantine_until.get(symbol, 0.0) or 0.0) - now_ts, 0.0) / 300.0
+    )
+    regime_norm = _clamp01(
+        max(int(symbol_regime_cooldown_until_iter.get(symbol, 0) or 0) - int(iter_count), 0) / 4.0
+    )
+    circuit_norm = _clamp01(float(symbol_circuit_hits.get(symbol, 0) or 0) / 4.0)
+    fail_norm = _clamp01(float(symbol_fail_counts.get(symbol, 0) or 0) / 5.0)
+    stale_norm = _clamp01(float(symbol_stale_counts.get(symbol, 0) or 0) / 5.0)
+    lane_norm = _clamp01(float(lane_loss_streak.get(runtime_lane, 0) or 0) / 5.0)
+    return _clamp01(
+        0.24 * quarantine_norm
+        + 0.22 * regime_norm
+        + 0.20 * circuit_norm
+        + 0.14 * fail_norm
+        + 0.10 * stale_norm
+        + 0.10 * lane_norm
+    )
+
+
+def _apply_tradeability_realism_control(
+    *,
+    action: str,
+    score: float,
+    threshold: float,
+    reasons: List[str],
+    features: Dict[str, float],
+) -> tuple[str, float, List[str]]:
+    action_key = str(action or "HOLD").upper()
+    if action_key not in {"BUY", "SELL"}:
+        return action_key, float(score), list(reasons)
+
+    execution_fitness = _clamp01(float(features.get("execution_fitness_norm", 0.0) or 0.0))
+    stop_target_realism = _clamp01(float(features.get("stop_target_realism_norm", 0.0) or 0.0))
+    cooldown_memory = _clamp01(float(features.get("symbol_cooldown_memory_norm", 0.0) or 0.0))
+    cross_bot_conflict = _clamp01(float(features.get("cross_bot_conflict_norm", 0.0) or 0.0))
+    hard_execution_floor = _clamp01(float(os.getenv("EXECUTION_FITNESS_HARD_FLOOR", "0.22") or 0.22))
+    hard_realism_floor = _clamp01(float(os.getenv("STOP_TARGET_REALISM_HARD_FLOOR", "0.18") or 0.18))
+    hard_cooldown = _clamp01(float(os.getenv("SYMBOL_COOLDOWN_MEMORY_HARD_BLOCK", "0.86") or 0.86))
+    hard_conflict = _clamp01(float(os.getenv("CROSS_BOT_CONFLICT_HARD_BLOCK", "0.84") or 0.84))
+
+    if (
+        execution_fitness <= hard_execution_floor
+        or cooldown_memory >= hard_cooldown
+        or cross_bot_conflict >= hard_conflict
+        or (stop_target_realism <= hard_realism_floor and cross_bot_conflict >= 0.55)
+    ):
+        adjusted = 0.5 + ((float(score) - 0.5) * 0.40)
+        return "HOLD", adjusted, list(reasons) + [
+            f"execution_realism_block exec_fit={execution_fitness:.3f}",
+            f"cross_conflict={cross_bot_conflict:.3f}",
+            f"cooldown_memory={cooldown_memory:.3f}",
+        ]
+
+    penalty = _clamp01(
+        0.30 * (1.0 - execution_fitness)
+        + 0.22 * (1.0 - stop_target_realism)
+        + 0.24 * cooldown_memory
+        + 0.24 * cross_bot_conflict
+    )
+    adjusted_score = 0.5 + ((float(score) - 0.5) * max(0.20, 1.0 - penalty))
+    directional_ok = adjusted_score > float(threshold) if action_key == "BUY" else adjusted_score < (1.0 - float(threshold))
+    if not directional_ok:
+        return "HOLD", adjusted_score, list(reasons) + [f"execution_realism_damped penalty={penalty:.3f}"]
+    if penalty >= 0.20:
+        return action_key, adjusted_score, list(reasons) + [f"execution_realism_penalty={penalty:.3f}"]
+    return action_key, adjusted_score, list(reasons)
 
 
 def _regime_dislocation_norm(features: Dict[str, float]) -> float:
@@ -1567,6 +2297,123 @@ def _merge_live_macro_calendar_features(
     if abs(signed_signal) >= abs(current_signed):
         out["calendar_macro_surprise_norm"] = _clamp01(0.5 + (signed_signal * 0.5))
 
+    return out
+
+
+def _derive_live_macro_sleeve_gate_features(
+    *,
+    snapshot: Dict[str, Any],
+    symbol: str,
+    now_ts: float,
+) -> Dict[str, float]:
+    out = {
+        "live_macro_gate_active_norm": 0.0,
+        "live_macro_gate_confidence_norm": 0.0,
+        "live_macro_risk_off_pressure_norm": 0.0,
+        "live_macro_headwind_norm": 0.0,
+        "live_macro_tailwind_norm": 0.0,
+        "live_macro_oil_shock_norm": 0.0,
+        "live_macro_event_alignment_norm": 0.5,
+    }
+    rows = _live_macro_active_rows(snapshot, symbol=symbol, now_ts=now_ts)
+    if not rows:
+        return out
+
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return out
+
+    broad_risk_symbols = {
+        "SPY", "QQQ", "DIA", "IWM", "VOO", "IVV", "VTI", "RSP", "SMH", "SOXX",
+        "XLF", "KRE", "XLI", "XLY", "IYT", "XRT", "AAL", "DAL", "UAL", "LUV",
+    }
+    defensive_tailwind_symbols = {"GLD", "IAU", "TLT", "IEF", "EDV", "ZROZ", "UUP", "SHY"}
+    energy_tailwind_symbols = {"USO", "XLE", "XOP", "OIH"}
+    credit_headwind_symbols = {"HYG", "JNK", "USHY", "LQD", "VCIT", "IGIB"}
+
+    snapshot_score = _clamp01(_hint_float(snapshot.get("market_actionable_score"), 0.0) / 4.0)
+    snapshot_source = _clamp01(_hint_float(snapshot.get("source_priority_norm"), 0.0))
+    snapshot_official = _clamp01(_hint_float(snapshot.get("official_source_norm"), 0.0))
+    snapshot_quality = _clamp01(_hint_float(snapshot.get("transcript_quality_norm"), 0.0))
+    confirmation = snapshot.get("market_confirmation") if isinstance(snapshot.get("market_confirmation"), dict) else {}
+    distinct_segments = _clamp01(_hint_float(confirmation.get("distinct_segments"), 0.0) / 5.0)
+    high_conviction = 1.0 if bool(snapshot.get("market_high_conviction")) else 0.0
+
+    confidence = _clamp01(
+        (0.22 * snapshot_score)
+        + (0.18 * snapshot_source)
+        + (0.14 * snapshot_official)
+        + (0.14 * snapshot_quality)
+        + (0.16 * distinct_segments)
+        + (0.16 * high_conviction)
+    )
+
+    negative_pressure = 0.0
+    positive_pressure = 0.0
+    oil_shock = 0.0
+    symbol_relevance = 0.0
+    broad_event = False
+
+    for row in rows:
+        sentiment = _clamp11(_hint_float(row.get("sentiment_hint"), _hint_float(snapshot.get("sentiment_hint"), 0.0)))
+        shock = _clamp01(_hint_float(row.get("shock_hint"), _hint_float(snapshot.get("shock_hint"), 0.0)))
+        signal_types_raw = row.get("signal_types", snapshot.get("signal_types"))
+        signal_types: List[str] = []
+        if isinstance(signal_types_raw, list):
+            signal_types = [str(item or "").strip().lower() for item in signal_types_raw if str(item or "").strip()]
+        elif isinstance(signal_types_raw, str) and signal_types_raw.strip():
+            signal_types = [token.strip().lower() for token in signal_types_raw.split(",") if token.strip()]
+
+        escalation_norm = 1.0 if any(("escalation" in token) or ("military" in token) for token in signal_types) else 0.0
+        oil_norm = 1.0 if any(("oil" in token) or ("shipping" in token) or ("supply" in token) for token in signal_types) else 0.0
+        broad_market = bool(row.get("broad_market") or row.get("macro_event") or snapshot.get("broad_market") or snapshot.get("macro_event"))
+        broad_event = broad_event or broad_market
+
+        related = _live_macro_symbols(row)
+        explicit_match = 1.0 if sym in related else 0.0
+        row_relevance = explicit_match if explicit_match > 0.0 else (0.72 if broad_market else 0.0)
+        symbol_relevance = max(symbol_relevance, row_relevance)
+
+        row_neg = _clamp01(max(-sentiment, 0.0))
+        row_pos = _clamp01(max(sentiment, 0.0))
+        negative_pressure = max(
+            negative_pressure,
+            _clamp01((0.44 * row_neg) + (0.26 * shock) + (0.20 * escalation_norm) + (0.10 * oil_norm)),
+        )
+        positive_pressure = max(
+            positive_pressure,
+            _clamp01((0.56 * row_pos) + (0.18 * (1.0 - shock)) + (0.16 * snapshot_source) + (0.10 * snapshot_quality)),
+        )
+        oil_shock = max(oil_shock, _clamp01((0.65 * oil_norm) + (0.35 * shock)))
+
+    confidence = _clamp01(confidence * max(symbol_relevance, 0.60 if broad_event else 0.0))
+    risk_off_pressure = _clamp01((0.78 * negative_pressure) + (0.22 * confidence))
+    risk_on_pressure = _clamp01((0.78 * positive_pressure) + (0.22 * confidence))
+
+    if sym in energy_tailwind_symbols:
+        tailwind = _clamp01((0.68 * risk_off_pressure) + (0.42 * oil_shock))
+        headwind = _clamp01(0.14 * risk_on_pressure)
+    elif sym in defensive_tailwind_symbols:
+        tailwind = _clamp01((0.78 * risk_off_pressure) + (0.12 * oil_shock))
+        headwind = _clamp01(0.22 * risk_on_pressure)
+    elif sym in broad_risk_symbols or sym in credit_headwind_symbols:
+        headwind = _clamp01((0.92 * risk_off_pressure) + (0.12 * oil_shock if sym in {"AAL", "DAL", "UAL", "LUV"} else 0.0))
+        tailwind = _clamp01(0.86 * risk_on_pressure)
+    else:
+        headwind = _clamp01((0.64 * risk_off_pressure) if broad_event else 0.0)
+        tailwind = _clamp01((0.60 * risk_on_pressure) if broad_event else 0.0)
+
+    out.update(
+        {
+            "live_macro_gate_active_norm": 1.0,
+            "live_macro_gate_confidence_norm": confidence,
+            "live_macro_risk_off_pressure_norm": risk_off_pressure,
+            "live_macro_headwind_norm": _clamp01(headwind),
+            "live_macro_tailwind_norm": _clamp01(tailwind),
+            "live_macro_oil_shock_norm": oil_shock,
+            "live_macro_event_alignment_norm": _clamp01(0.5 + ((tailwind - headwind) * 0.5)),
+        }
+    )
     return out
 
 
@@ -2146,6 +2993,14 @@ def _fx_twelve_data_stale_grace_seconds() -> float:
     return max(float(str(os.getenv("FX_TWELVE_DATA_STALE_GRACE_SECONDS", str(default_grace)) or str(default_grace))), _fx_twelve_data_cache_ttl_seconds())
 
 
+def _fx_twelve_data_cooldown_stale_max_seconds(stale_grace_seconds: float) -> float:
+    default_value = max(float(stale_grace_seconds), 21600.0)
+    return max(
+        float(str(os.getenv("FX_TWELVE_DATA_COOLDOWN_STALE_MAX_SECONDS", str(default_value)) or str(default_value))),
+        float(stale_grace_seconds),
+    )
+
+
 def _in_forex_session_window(now_et: datetime) -> tuple[bool, str]:
     week_start_raw = str(os.getenv("FX_FOREX_SESSION_WEEK_START", "17:00") or "17:00").strip()
     week_end_raw = str(os.getenv("FX_FOREX_SESSION_WEEK_END", "17:00") or "17:00").strip()
@@ -2182,12 +3037,29 @@ def _market_snapshot_from_twelve_data(symbol: str) -> Dict[str, float]:
 
     cache_ttl_seconds = _fx_twelve_data_cache_ttl_seconds()
     stale_grace_seconds = _fx_twelve_data_stale_grace_seconds()
+    cooldown_stale_max_seconds = _fx_twelve_data_cooldown_stale_max_seconds(stale_grace_seconds)
     now_ts = time.time()
     cached_row = _FX_REALTIME_SNAPSHOT_CACHE.get(pair_symbol)
+    cached_snapshot = cached_row.get("snapshot") if isinstance(cached_row, dict) else None
+    cached_ts = float(cached_row.get("ts", 0.0) or 0.0) if isinstance(cached_row, dict) else 0.0
+    cached_age = max(now_ts - cached_ts, 0.0) if isinstance(cached_snapshot, dict) else float("inf")
+    cooldown = twelve_data_cooldown_status(PROJECT_ROOT, now_ts=now_ts)
+    if bool(cooldown.get("active")):
+        if isinstance(cached_snapshot, dict) and cached_age <= cooldown_stale_max_seconds:
+            snap = dict(cached_snapshot)
+            snap["fx_quote_cache_fallback"] = 1.0
+            snap["fx_quote_stale_seconds"] = float(cached_age)
+            snap["fx_quote_provider_cooldown"] = 1.0
+            snap["fx_quote_provider_cooldown_remaining_seconds"] = float(cooldown.get("remaining_seconds", 0.0) or 0.0)
+            snap["fx_quote_provider_cooldown_kind"] = str(cooldown.get("kind", "") or "")
+            snap["fx_quote_source"] = "twelve_data_cooldown_cache"
+            return snap
+        raise RuntimeError(
+            "twelve_data_provider_cooldown_active "
+            f"symbol={symbol} kind={cooldown.get('kind', '') or 'rate_limit'} "
+            f"remaining_seconds={int(float(cooldown.get('remaining_seconds', 0.0) or 0.0))}"
+        )
     if isinstance(cached_row, dict):
-        cached_ts = float(cached_row.get("ts", 0.0) or 0.0)
-        cached_snapshot = cached_row.get("snapshot")
-        cached_age = max(now_ts - cached_ts, 0.0)
         if isinstance(cached_snapshot, dict) and cached_age <= cache_ttl_seconds:
             snap = dict(cached_snapshot)
             snap["fx_quote_cache_hit"] = 1.0
@@ -2205,16 +3077,31 @@ def _market_snapshot_from_twelve_data(symbol: str) -> Dict[str, float]:
         with urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
     except (HTTPError, URLError, TimeoutError, OSError) as exc:
-        if isinstance(cached_row, dict):
-            cached_ts = float(cached_row.get("ts", 0.0) or 0.0)
-            cached_snapshot = cached_row.get("snapshot")
-            cached_age = max(now_ts - cached_ts, 0.0)
-            if isinstance(cached_snapshot, dict) and cached_age <= stale_grace_seconds:
-                snap = dict(cached_snapshot)
-                snap["fx_quote_cache_fallback"] = 1.0
-                snap["fx_quote_stale_seconds"] = float(cached_age)
+        code = str(getattr(exc, "code", "") or "").strip()
+        failure_kind = classify_twelve_data_failure(code=code, message=str(exc))
+        if failure_kind:
+            cooldown = mark_twelve_data_cooldown(
+                project_root=PROJECT_ROOT,
+                kind=failure_kind,
+                code=code,
+                message=str(exc),
+                symbol=pair_symbol,
+                source="run_shadow_training_loop.market_snapshot",
+                now_ts=now_ts,
+            )
+        max_fallback_age = cooldown_stale_max_seconds if failure_kind else stale_grace_seconds
+        if isinstance(cached_snapshot, dict) and cached_age <= max_fallback_age:
+            snap = dict(cached_snapshot)
+            snap["fx_quote_cache_fallback"] = 1.0
+            snap["fx_quote_stale_seconds"] = float(cached_age)
+            if failure_kind:
+                snap["fx_quote_provider_cooldown"] = 1.0
+                snap["fx_quote_provider_cooldown_remaining_seconds"] = float(cooldown.get("remaining_seconds", 0.0) or 0.0)
+                snap["fx_quote_provider_cooldown_kind"] = str(cooldown.get("kind", "") or failure_kind)
+                snap["fx_quote_source"] = "twelve_data_cooldown_cache"
+            else:
                 snap["fx_quote_source"] = "twelve_data_cache_fallback"
-                return snap
+            return snap
         raise RuntimeError(f"twelve_data_request_failed symbol={symbol} err={type(exc).__name__}:{exc}") from exc
 
     try:
@@ -2226,16 +3113,30 @@ def _market_snapshot_from_twelve_data(symbol: str) -> Dict[str, float]:
     if str(payload.get("status", "")).strip().lower() == "error":
         message = str(payload.get("message", "")).strip() or "twelve_data_error"
         code = str(payload.get("code", "")).strip()
-        if isinstance(cached_row, dict):
-            cached_ts = float(cached_row.get("ts", 0.0) or 0.0)
-            cached_snapshot = cached_row.get("snapshot")
-            cached_age = max(now_ts - cached_ts, 0.0)
-            if isinstance(cached_snapshot, dict) and cached_age <= stale_grace_seconds:
-                snap = dict(cached_snapshot)
-                snap["fx_quote_cache_fallback"] = 1.0
-                snap["fx_quote_stale_seconds"] = float(cached_age)
+        failure_kind = classify_twelve_data_failure(code=code, message=message)
+        if failure_kind:
+            cooldown = mark_twelve_data_cooldown(
+                project_root=PROJECT_ROOT,
+                kind=failure_kind,
+                code=code,
+                message=message,
+                symbol=pair_symbol,
+                source="run_shadow_training_loop.market_snapshot",
+                now_ts=now_ts,
+            )
+        max_fallback_age = cooldown_stale_max_seconds if failure_kind else stale_grace_seconds
+        if isinstance(cached_snapshot, dict) and cached_age <= max_fallback_age:
+            snap = dict(cached_snapshot)
+            snap["fx_quote_cache_fallback"] = 1.0
+            snap["fx_quote_stale_seconds"] = float(cached_age)
+            if failure_kind:
+                snap["fx_quote_provider_cooldown"] = 1.0
+                snap["fx_quote_provider_cooldown_remaining_seconds"] = float(cooldown.get("remaining_seconds", 0.0) or 0.0)
+                snap["fx_quote_provider_cooldown_kind"] = str(cooldown.get("kind", "") or failure_kind)
+                snap["fx_quote_source"] = "twelve_data_cooldown_cache"
+            else:
                 snap["fx_quote_source"] = "twelve_data_cache_fallback"
-                return snap
+            return snap
         raise RuntimeError(f"twelve_data_error symbol={symbol} code={code or 'none'} msg={message}")
 
     values = payload.get("values")
@@ -2850,6 +3751,7 @@ def _infrastructure_observer_signal(
     decisions: List[Dict[str, Any]],
 ) -> tuple[str, float, float, List[str], Dict[str, float]]:
     bot_id = str(bot.bot_id or "").strip().lower()
+    observer_kind = _infrastructure_observer_kind(bot_id)
     core_vote = _weighted_direction_vote(decisions)
     options_vote = _clamp11(float(features.get("options_specialist_vote", 0.0) or 0.0))
     futures_vote = _clamp11(float(features.get("futures_specialist_vote", 0.0) or 0.0))
@@ -2929,7 +3831,7 @@ def _infrastructure_observer_signal(
     reasons: List[str] = []
     risk = 0.0
 
-    if "meta_ranker" in bot_id:
+    if observer_kind == "meta_ranker":
         vote = _calibrate_vote(0.66 * core_vote + 0.16 * derivatives_vote + 0.12 * live_macro_bias + 0.08 * micro_order_flow + 0.06 * micro_block - 0.18 * feed_risk - 0.16 * divergence_risk, scale=0.82)
         reasons = [
             "infra_meta_ranker",
@@ -2937,7 +3839,7 @@ def _infrastructure_observer_signal(
             f"derivatives_vote={derivatives_vote:.3f}",
         ]
         threshold = _shift_threshold(0.56)
-    elif "confidence_calibrator" in bot_id:
+    elif observer_kind == "confidence_calibrator":
         signed_conf = _clamp11(core_vote) * (0.35 + 0.65 * confidence_scale)
         vote = _calibrate_vote(signed_conf, scale=0.75)
         reasons = [
@@ -2946,7 +3848,7 @@ def _infrastructure_observer_signal(
             f"core_vote={core_vote:.3f}",
         ]
         threshold = _shift_threshold(0.58)
-    elif "feed_health" in bot_id:
+    elif observer_kind == "feed_health":
         risk = feed_risk
         vote = _calibrate_vote(-0.90 * feed_risk + 0.10 * core_vote, scale=0.90)
         reasons = [
@@ -2955,7 +3857,7 @@ def _infrastructure_observer_signal(
             f"freshness_ok={_clamp01(float(features.get('feature_freshness_ok', 1.0) or 1.0)):.0f}",
         ]
         threshold = _shift_threshold(0.60)
-    elif "macro_event" in bot_id:
+    elif observer_kind == "macro_event":
         vote = _calibrate_vote(
             (0.25 + 0.75 * macro_impact) * live_macro_bias
             + 0.12 * derivatives_vote
@@ -2972,7 +3874,7 @@ def _infrastructure_observer_signal(
             f"macro_impact={macro_impact:.3f}",
         ]
         threshold = _shift_threshold(0.56)
-    elif "execution_feasibility" in bot_id:
+    elif observer_kind == "execution_feasibility":
         risk = exec_risk
         vote = _calibrate_vote(-0.88 * exec_risk + 0.12 * core_vote, scale=0.90)
         reasons = [
@@ -2981,7 +3883,7 @@ def _infrastructure_observer_signal(
             f"queue_depth_norm={_clamp01(float(features.get('queue_depth_norm', 0.0) or 0.0)):.3f}",
         ]
         threshold = _shift_threshold(0.60)
-    elif "cross_venue_divergence" in bot_id:
+    elif observer_kind == "cross_venue_divergence":
         risk = divergence_risk
         vote = _calibrate_vote(-0.92 * divergence_risk + 0.08 * core_vote, scale=0.92)
         reasons = [
@@ -2990,6 +3892,38 @@ def _infrastructure_observer_signal(
             f"triprate={_clamp01(float(features.get('snapshot_triprate_ratio', 0.0) or 0.0)):.3f}",
         ]
         threshold = _shift_threshold(0.60)
+    elif observer_kind == "risk_sentinel":
+        risk = _clamp01(max(feed_risk, exec_risk, divergence_risk, 0.65 * macro_impact))
+        vote = _calibrate_vote(
+            -0.84 * risk
+            + 0.10 * core_vote
+            + 0.06 * flow_risk_off
+            - 0.06 * flow_risk_on,
+            scale=0.90,
+        )
+        reasons = [
+            "infra_risk_sentinel",
+            f"aggregate_risk={risk:.3f}",
+            f"flow_risk_off={flow_risk_off:.3f}",
+        ]
+        threshold = _shift_threshold(0.60)
+    elif observer_kind == "risk_budget":
+        risk = _clamp01(0.45 * feed_risk + 0.35 * exec_risk + 0.20 * divergence_risk)
+        budget_confidence = _clamp01(1.0 - risk)
+        vote = _calibrate_vote(
+            (0.30 + 0.70 * budget_confidence) * core_vote
+            + 0.10 * flow_direction
+            + 0.08 * lead_lag_signal
+            - 0.32 * risk,
+            scale=0.82,
+        )
+        reasons = [
+            "infra_risk_budget_allocator",
+            f"budget_confidence={budget_confidence:.3f}",
+            f"aggregate_risk={risk:.3f}",
+        ]
+        confidence_scale = _clamp01(0.60 * confidence_scale + 0.40 * budget_confidence)
+        threshold = _shift_threshold(0.58)
     else:
         reasons = ["infra_generic_observer", f"core_vote={core_vote:.3f}"]
 
@@ -3062,22 +3996,26 @@ def _derive_infrastructure_aux_features(rows: List[Dict[str, Any]]) -> Dict[str,
     feed_risks: List[float] = []
     exec_risks: List[float] = []
     divergence_risks: List[float] = []
+    sentinel_risks: List[float] = []
     for row in meta_rows:
         bot_id = str(row.get("bot_id", "")).strip().lower()
         meta = dict(row.get("observer_meta") or {})
         vote = float(meta.get("vote", 0.0) or 0.0)
-        if "meta_ranker" in bot_id:
+        observer_kind = _infrastructure_observer_kind(bot_id)
+        if observer_kind == "meta_ranker":
             meta_ranker_votes.append(vote)
-        elif "macro_event" in bot_id:
+        elif observer_kind == "macro_event":
             macro_votes.append(vote)
-        elif "confidence_calibrator" in bot_id:
+        elif observer_kind in {"confidence_calibrator", "risk_budget"}:
             conf_scales.append(float(meta.get("confidence_scale", 0.5) or 0.5))
-        elif "feed_health" in bot_id:
+        elif observer_kind == "feed_health":
             feed_risks.append(float(meta.get("feed_risk", meta.get("risk", 0.0)) or 0.0))
-        elif "execution_feasibility" in bot_id:
+        elif observer_kind == "execution_feasibility":
             exec_risks.append(float(meta.get("execution_risk", meta.get("risk", 0.0)) or 0.0))
-        elif "cross_venue_divergence" in bot_id:
+        elif observer_kind == "cross_venue_divergence":
             divergence_risks.append(float(meta.get("divergence_risk", meta.get("risk", 0.0)) or 0.0))
+        elif observer_kind == "risk_sentinel":
+            sentinel_risks.append(float(meta.get("risk", 0.0) or 0.0))
 
     if meta_ranker_votes:
         out["infra_meta_ranker_vote"] = _clamp11(sum(meta_ranker_votes) / max(len(meta_ranker_votes), 1))
@@ -3097,10 +4035,14 @@ def _derive_infrastructure_aux_features(rows: List[Dict[str, Any]]) -> Dict[str,
         + 0.35 * out["infra_execution_feasibility_risk_norm"]
         + 0.25 * out["infra_cross_venue_divergence_risk_norm"]
     )
+    if sentinel_risks:
+        sentinel_risk = _clamp01(sum(sentinel_risks) / max(len(sentinel_risks), 1))
+        out["infra_risk_throttle_norm"] = max(out["infra_risk_throttle_norm"], sentinel_risk)
     out["infra_veto_active"] = 1.0 if (
         out["infra_feed_health_risk_norm"] >= 0.85
         or out["infra_execution_feasibility_risk_norm"] >= 0.88
         or out["infra_cross_venue_divergence_risk_norm"] >= 0.88
+        or (bool(sentinel_risks) and out["infra_risk_throttle_norm"] >= 0.88)
     ) else 0.0
     return out
 
@@ -3332,7 +4274,8 @@ def _apply_manual_trade_reconciler(
     if covered_override is None and position_qty > 0:
         covered_override = int(max(position_qty, 0.0))
 
-    new_action = str(action).upper()
+    requested_action = str(action).upper()
+    new_action = requested_action
     new_score = float(score)
     new_reasons = list(reasons)
     blocked = False
@@ -3973,12 +4916,27 @@ def _grand_master_weights(features: Dict[str, float]) -> Dict[str, float]:
     lead_lag_signal = abs(float(features.get("lead_lag_signal_signed", 0.0) or 0.0))
     lead_lag_conf = float(features.get("lead_lag_confidence_norm", 0.0) or 0.0)
     lead_lag_break = float(features.get("lead_lag_break_norm", 0.0) or 0.0)
+    infra_risk = _clamp01(float(features.get("infra_risk_throttle_norm", 0.0) or 0.0))
+    infra_conf = _clamp01(float(features.get("infra_confidence_calibrator_scale_norm", 0.5) or 0.5))
+    execution_fitness = _clamp01(
+        float(
+            features.get(
+                "execution_fitness_norm",
+                features.get("market_micro_tradeability_score_norm", 0.5),
+            )
+            or 0.5
+        )
+    )
+    cross_bot_conflict = _clamp01(float(features.get("cross_bot_conflict_norm", 0.0) or 0.0))
     trend_strength += 0.18 * flow_direction + 0.14 * flow_risk_on
     chop_strength += 0.10 * max(flow_stress - flow_direction, 0.0)
     shock_strength += 0.18 * flow_stress + 0.12 * flow_risk_off
     trend_strength += 0.16 * lead_lag_signal + 0.12 * lead_lag_conf
     chop_strength += 0.12 * lead_lag_break
     shock_strength += 0.16 * lead_lag_break + 0.08 * max(flow_stress - lead_lag_conf, 0.0)
+    trend_strength += 0.10 * infra_conf + 0.10 * execution_fitness
+    chop_strength += 0.10 * cross_bot_conflict + 0.10 * max(0.55 - execution_fitness, 0.0)
+    shock_strength += 0.18 * infra_risk + 0.12 * cross_bot_conflict + 0.10 * max(0.55 - execution_fitness, 0.0)
 
     prof = _shadow_profile_name()
     if prof in {"dividend", "long_term_dividend"}:
@@ -4026,27 +4984,127 @@ def _grand_master_vote(
 
     vote = 0.0
     details: List[str] = []
+    master_votes: List[float] = []
+    edge_norms: List[float] = []
     for name, out in master_outputs.items():
         w = float(weights.get(name, 0.0))
         v = float(out.get("vote", 0.0))
         vote += w * v
         details.append(f"{name}:{w:.2f}")
+        master_votes.append(v)
+        edge_norms.append(
+            _trade_action_edge_norm(
+                str(out.get("action", "HOLD")),
+                float(out.get("score", 0.5) or 0.5),
+                float(out.get("threshold", 0.55) or 0.55),
+            )
+        )
 
     features = dict(features or {})
+    options_vote = _clamp11(float(features.get("options_specialist_vote", 0.0) or 0.0))
+    futures_vote = _clamp11(float(features.get("futures_specialist_vote", 0.0) or 0.0))
     infra_vote = _clamp11(float(features.get("infra_vote", 0.0) or 0.0))
     infra_risk = _clamp01(float(features.get("infra_risk_throttle_norm", 0.0) or 0.0))
     infra_veto = _clamp01(float(features.get("infra_veto_active", 0.0) or 0.0))
+    infra_conf_scale = _clamp01(float(features.get("infra_confidence_calibrator_scale_norm", 0.5) or 0.5))
+    flow_direction = _clamp11(float(features.get("flow_direction_signed", 0.0) or 0.0))
+    flow_conviction = _clamp01(float(features.get("flow_conviction_norm", 0.0) or 0.0))
+    flow_stress = _clamp01(float(features.get("flow_stress_norm", 0.0) or 0.0))
+    lead_lag_signal = _clamp11(float(features.get("lead_lag_signal_signed", 0.0) or 0.0))
+    lead_lag_conf = _clamp01(float(features.get("lead_lag_confidence_norm", 0.0) or 0.0))
+    lead_lag_break = _clamp01(float(features.get("lead_lag_break_norm", 0.0) or 0.0))
+    micro_order_flow = _clamp11(
+        (float(features.get("market_micro_order_flow_imbalance_norm", 0.5) or 0.5) - 0.5) * 2.0
+    )
+    execution_fitness = _clamp01(
+        float(
+            features.get(
+                "execution_fitness_norm",
+                features.get("market_micro_tradeability_score_norm", 0.5),
+            )
+            or 0.5
+        )
+    )
+    tradeability = _clamp01(float(features.get("market_micro_tradeability_score_norm", 0.5) or 0.5))
+    cross_bot_conflict = _clamp01(float(features.get("cross_bot_conflict_norm", 0.0) or 0.0))
+    specialist_consensus = _clamp11(0.55 * options_vote + 0.45 * futures_vote)
+    directional_alignment = _clamp11(
+        0.50 * flow_direction + 0.30 * lead_lag_signal + 0.20 * micro_order_flow
+    )
+    sum_abs_master_votes = sum(abs(v) for v in master_votes)
+    master_disagreement = _clamp01(
+        1.0 - (abs(sum(master_votes)) / max(sum_abs_master_votes, 1e-6))
+    ) if sum_abs_master_votes > 0.0 else 0.0
+    deployability = _clamp01(
+        0.28 * (sum(edge_norms) / max(len(edge_norms), 1))
+        + 0.18 * execution_fitness
+        + 0.14 * tradeability
+        + 0.12 * infra_conf_scale
+        + 0.12 * lead_lag_conf
+        + 0.08 * flow_conviction
+        - 0.16 * infra_risk
+        - 0.12 * flow_stress
+        - 0.12 * lead_lag_break
+        - 0.12 * cross_bot_conflict
+        - 0.10 * master_disagreement
+    )
+    vote_sign = 1.0 if vote > 0.0 else (-1.0 if vote < 0.0 else 0.0)
+    specialist_conflict = 0.0
+    directional_conflict = 0.0
+    if vote_sign != 0.0:
+        specialist_conflict = _clamp01(max((-vote_sign * specialist_consensus), 0.0))
+        directional_conflict = _clamp01(max((-vote_sign * directional_alignment), 0.0))
     vote += 0.12 * infra_vote
-    vote *= min(max(1.0 - 0.55 * infra_risk, 0.25), 1.0)
-    vote = _calibrate_vote(vote, scale=0.80)
+    vote += 0.10 * specialist_consensus
+    vote += 0.08 * directional_alignment
+    vote -= 0.16 * specialist_conflict + 0.14 * directional_conflict + 0.10 * master_disagreement
+    deploy_scale = min(max(0.40 + 0.85 * deployability, 0.25), 1.05)
+    risk_damp = min(
+        max(
+            1.0
+            - 0.42 * infra_risk
+            - 0.18 * flow_stress
+            - 0.16 * lead_lag_break
+            - 0.14 * cross_bot_conflict,
+            0.20,
+        ),
+        1.0,
+    )
+    vote *= deploy_scale * risk_damp
+    vote = _calibrate_vote(vote, scale=0.82)
     score = _vote_to_score(vote)
-    threshold = _shift_threshold(0.60)
+    directional_trigger = min(
+        max(
+            0.22
+            + 0.10 * (1.0 - deployability)
+            + 0.06 * infra_risk
+            + 0.05 * master_disagreement,
+            0.18,
+        ),
+        0.42,
+    )
+    threshold = _shift_threshold(
+        min(
+            max(
+                0.60
+                + 0.05 * (1.0 - deployability)
+                + 0.04 * infra_risk
+                + 0.03 * master_disagreement,
+                0.56,
+            ),
+            0.74,
+        )
+    )
 
-    if infra_veto > 0.0 and abs(vote) < 0.45:
+    if infra_veto > 0.0 and (deployability < 0.52 or abs(vote) < (directional_trigger + 0.12)):
         action = "HOLD"
-    elif vote > 0.24:
+    elif infra_risk >= 0.92 and deployability < 0.60:
+        action = "HOLD"
+    elif master_disagreement >= 0.72 and abs(vote) < (directional_trigger + 0.08):
+        action = "HOLD"
+    elif vote > directional_trigger:
         action = "BUY"
-    elif vote < -0.20:
+    elif vote < -directional_trigger:
         action = "SELL"
     else:
         action = "HOLD"
@@ -4056,8 +5114,24 @@ def _grand_master_vote(
         "master_weights=" + ",".join(details),
         f"infra_vote={infra_vote:.3f}",
         f"infra_risk={infra_risk:.3f}",
+        f"specialist_consensus={specialist_consensus:.3f}",
+        f"directional_alignment={directional_alignment:.3f}",
+        f"master_disagreement={master_disagreement:.3f}",
+        f"deployability={deployability:.3f}",
+        f"directional_trigger={directional_trigger:.3f}",
     ]
-    return action, score, threshold, reasons, {"vote": vote}
+    return action, score, threshold, reasons, {
+        "vote": vote,
+        "deployability": float(deployability),
+        "directional_trigger": float(directional_trigger),
+        "specialist_consensus": float(specialist_consensus),
+        "directional_alignment": float(directional_alignment),
+        "master_disagreement": float(master_disagreement),
+        "specialist_conflict": float(specialist_conflict),
+        "directional_conflict": float(directional_conflict),
+        "deploy_scale": float(deploy_scale),
+        "risk_damp": float(risk_damp),
+    }
 
 
 def _options_master_signal(
@@ -4802,6 +5876,7 @@ def _futures_master_signal(
     grand_vote: float,
     features: Dict[str, float],
 ) -> tuple[str, float, float, List[str], Dict[str, float]]:
+    profile = str(_shadow_profile_name() or "").strip().lower()
     vol = max(float(features.get("vol_30m", 0.0) or 0.0), 0.0)
     event_prox = float(features.get("calendar_event_proximity_norm", 0.0) or 0.0)
     high_impact = float(features.get("calendar_high_impact_24h_norm", 0.0) or 0.0)
@@ -4836,6 +5911,17 @@ def _futures_master_signal(
     crypto_stablecoin_growth = float(features.get("crypto_defillama_stablecoin_growth_norm", 0.5) or 0.5) - 0.5
     crypto_dex_growth = float(features.get("crypto_defillama_dex_volume_growth_norm", 0.5) or 0.5) - 0.5
     crypto_gas = float(features.get("crypto_etherscan_gas_norm", 0.0) or 0.0)
+    futures_curve_shift_velocity = float(features.get("futures_curve_shift_velocity_norm", 0.0) or 0.0)
+    futures_roll_pressure = float(features.get("futures_roll_pressure_norm", 0.0) or 0.0)
+    futures_inventory_state = float(features.get("futures_inventory_state_norm", 0.0) or 0.0)
+    futures_cash_basis_confirmation = float(features.get("futures_cash_basis_confirmation_norm", 0.0) or 0.0)
+    crypto_unwind_risk = _clamp01(
+        (0.28 * liq_risk)
+        + (0.22 * abs(crypto_hl_funding))
+        + (0.18 * basis_div)
+        + (0.18 * mark_dislocation)
+        + (0.14 * abs(crypto_deribit_basis))
+    )
 
     super_mode = _derivatives_super_trader_mode()
 
@@ -4853,6 +5939,12 @@ def _futures_master_signal(
     net += 0.08 * crypto_stablecoin_growth + 0.06 * crypto_dex_growth + 0.04 * crypto_hl_oi
     net += 0.06 * crypto_price_agreement
     net -= 0.08 * crypto_deribit_iv + 0.08 * abs(crypto_hl_funding) + 0.06 * crypto_gas
+    if profile == "schwab_futures":
+        net += 0.14 * futures_cash_basis_confirmation + 0.10 * futures_roll_pressure + 0.08 * futures_inventory_state + 0.08 * futures_curve_shift_velocity
+        net -= 0.10 * basis_div + 0.08 * mark_dislocation
+    elif profile == "crypto_futures":
+        net += 0.10 * futures_cash_basis_confirmation + 0.08 * futures_roll_pressure
+        net -= 0.22 * crypto_unwind_risk
 
     if super_mode:
         net_scale = _super_trader_env_float("FUTURES_SUPER_TRADER_MASTER_NET_SCALE", 1.30)
@@ -4890,6 +5982,13 @@ def _futures_master_signal(
         f"crypto_agreement={crypto_price_agreement:.3f}",
         f"crypto_momentum={crypto_cg_momentum + 0.5:.3f}",
     ]
+    if profile == "schwab_futures":
+        reasons = reasons + [
+            f"cash_basis_confirm={futures_cash_basis_confirmation:.3f}",
+            f"roll_pressure={futures_roll_pressure:.3f}",
+        ]
+    elif profile == "crypto_futures":
+        reasons = reasons + [f"crypto_unwind_risk={crypto_unwind_risk:.3f}"]
     if super_mode:
         reasons = reasons + [
             "futures_super_trader_master",
@@ -4910,6 +6009,7 @@ def _build_futures_plan(
     symbol_is_futures: bool,
 ) -> Dict[str, Any]:
     threshold = _shift_threshold(0.58)
+    profile = str(_shadow_profile_name() or "").strip().lower()
 
     plan = {
         "symbol": symbol,
@@ -4957,6 +6057,12 @@ def _build_futures_plan(
     mark_dislocation = float(mkt.get("futures_mark_index_dislocation_norm", 0.0) or 0.0)
     session_profile = float(mkt.get("futures_session_volume_profile_norm", 0.5) or 0.5) - 0.5
     curve = float(mkt.get("futures_calendar_spread_curve_norm", 0.5) or 0.5) - 0.5
+    curve_shift_velocity = _clamp01(float(mkt.get("futures_curve_shift_velocity_norm", 0.5) or 0.5))
+    roll_pressure = _clamp01(float(mkt.get("futures_roll_pressure_norm", 0.5) or 0.5))
+    inventory_state = _clamp01(float(mkt.get("futures_inventory_state_norm", 0.5) or 0.5))
+    cash_basis_confirmation = _clamp01(float(mkt.get("futures_cash_basis_confirmation_norm", 0.5) or 0.5))
+    crypto_unwind_risk = _clamp01(float(mkt.get("core_crypto_unwind_risk_norm", mkt.get("crypto_unwind_risk_norm", 0.0)) or 0.0))
+    regime_edge = _clamp01(float(mkt.get("core_futures_regime_edge_norm", 0.5) or 0.5))
 
     event_prox = float(mkt.get("calendar_event_proximity_norm", 0.0) or 0.0)
     high_impact = float(mkt.get("calendar_high_impact_24h_norm", 0.0) or 0.0)
@@ -4982,6 +6088,53 @@ def _build_futures_plan(
             "month_offset": int(offset),
         }
 
+    if profile == "schwab_futures" and regime_edge < 0.40 and abs(master_vote) < 0.26:
+        action = "HOLD"
+        score = 0.5 + 0.25 * (master_score - 0.5)
+        reasons = [
+            "futures_profile_regime_wait",
+            f"regime_edge={regime_edge:.3f}",
+            f"cash_basis_confirm={cash_basis_confirmation:.3f}",
+        ]
+        plan["master_vote"] = float(master_vote)
+        plan["context"] = {
+            "futures_curve_shift_velocity_norm": curve_shift_velocity,
+            "futures_roll_pressure_norm": roll_pressure,
+            "futures_inventory_state_norm": inventory_state,
+            "futures_cash_basis_confirmation_norm": cash_basis_confirmation,
+            "core_futures_regime_edge_norm": regime_edge,
+        }
+        return {
+            "action": action,
+            "score": min(max(float(score), 0.01), 0.99),
+            "threshold": threshold,
+            "reasons": reasons,
+            "plan": plan,
+        }
+
+    if profile == "crypto_futures" and crypto_unwind_risk >= 0.72 and not (basis_div >= 0.20 and mark_dislocation >= 0.18 and abs(taker) <= 0.12):
+        action = "HOLD"
+        score = 0.5 + 0.25 * (master_score - 0.5)
+        reasons = [
+            "crypto_futures_unwind_wait",
+            f"crypto_unwind_risk={crypto_unwind_risk:.3f}",
+            f"basis_divergence={basis_div:.3f}",
+        ]
+        plan["master_vote"] = float(master_vote)
+        plan["context"] = {
+            "crypto_unwind_risk_norm": crypto_unwind_risk,
+            "futures_basis_divergence_norm": basis_div,
+            "futures_mark_index_dislocation_norm": mark_dislocation,
+            "core_futures_regime_edge_norm": regime_edge,
+        }
+        return {
+            "action": action,
+            "score": min(max(float(score), 0.01), 0.99),
+            "threshold": threshold,
+            "reasons": reasons,
+            "plan": plan,
+        }
+
     # 1) Event-risk flatten and conditional re-entry.
     if (event_prox >= 0.70) or (high_impact >= 0.70):
         action = "HOLD"
@@ -5002,7 +6155,7 @@ def _build_futures_plan(
         }
 
     # 2) Calendar/basis carry spread.
-    elif low_event_risk and liquid and (abs(basis) >= 0.18 or abs(term) >= 0.18 or abs(curve) >= 0.10) and abs(roll) >= 0.08 and basis_div <= 0.75:
+    elif low_event_risk and liquid and (abs(basis) >= 0.18 or abs(term) >= 0.18 or abs(curve) >= 0.10) and abs(roll) >= 0.08 and basis_div <= 0.75 and (profile != "schwab_futures" or regime_edge >= 0.52):
         carry_long = ((basis >= 0.0) and (term >= -0.05)) or (roll > 0.12)
         action = "BUY" if carry_long else "SELL"
         score = max(master_score, 0.58)
@@ -5047,7 +6200,7 @@ def _build_futures_plan(
         }
 
     # 4) Order-book imbalance breakout.
-    elif low_event_risk and liquid and (master_action in {"BUY", "SELL"}) and high_conviction and abs(imbalance) >= 0.22 and ((master_action == "BUY" and bullish_flow and mom_5m >= 0.0 and range_pos >= 0.52 and vwap >= -0.08) or (master_action == "SELL" and bearish_flow and mom_5m <= 0.0 and range_pos <= 0.48 and vwap <= 0.08)):
+    elif low_event_risk and liquid and (master_action in {"BUY", "SELL"}) and high_conviction and abs(imbalance) >= 0.22 and (profile != "crypto_futures" or crypto_unwind_risk < 0.60) and ((master_action == "BUY" and bullish_flow and mom_5m >= 0.0 and range_pos >= 0.52 and vwap >= -0.08) or (master_action == "SELL" and bearish_flow and mom_5m <= 0.0 and range_pos <= 0.48 and vwap <= 0.08)):
         action = master_action
         score = max(master_score, 0.58)
         reasons = [
@@ -5067,7 +6220,7 @@ def _build_futures_plan(
         }
 
     # 5) Trend breakout / pullback continuation.
-    elif low_event_risk and liquid and abs(session_profile) >= 0.10 and (master_action in {"BUY", "SELL"}) and high_conviction and ((master_action == "BUY" and bullish_flow and mom_5m >= 0.0 and range_pos >= 0.54) or (master_action == "SELL" and bearish_flow and mom_5m <= 0.0 and range_pos <= 0.46)):
+    elif low_event_risk and liquid and abs(session_profile) >= 0.10 and (master_action in {"BUY", "SELL"}) and high_conviction and (profile != "schwab_futures" or regime_edge >= 0.54) and ((master_action == "BUY" and bullish_flow and mom_5m >= 0.0 and range_pos >= 0.54) or (master_action == "SELL" and bearish_flow and mom_5m <= 0.0 and range_pos <= 0.46)):
         action = master_action
         score = max(master_score, 0.59)
         reasons = [
@@ -5086,7 +6239,7 @@ def _build_futures_plan(
         }
 
     # 5) Trend breakout / pullback continuation.
-    elif low_event_risk and liquid and (master_action in {"BUY", "SELL"}) and high_conviction and ((master_action == "BUY" and bullish_flow and mom_5m >= 0.0 and range_pos >= 0.56) or (master_action == "SELL" and bearish_flow and mom_5m <= 0.0 and range_pos <= 0.44)):
+    elif low_event_risk and liquid and (master_action in {"BUY", "SELL"}) and high_conviction and (profile != "crypto_futures" or crypto_unwind_risk < 0.56) and ((master_action == "BUY" and bullish_flow and mom_5m >= 0.0 and range_pos >= 0.56) or (master_action == "SELL" and bearish_flow and mom_5m <= 0.0 and range_pos <= 0.44)):
         action = master_action
         score = max(master_score, 0.57)
         reasons = [
@@ -5185,9 +6338,15 @@ def _build_futures_plan(
         "futures_mark_index_dislocation_norm": mark_dislocation,
         "futures_session_volume_profile_norm": session_profile + 0.5,
         "futures_calendar_spread_curve_norm": curve + 0.5,
+        "futures_curve_shift_velocity_norm": curve_shift_velocity,
+        "futures_roll_pressure_norm": roll_pressure,
+        "futures_inventory_state_norm": inventory_state,
+        "futures_cash_basis_confirmation_norm": cash_basis_confirmation,
         "calendar_event_proximity_norm": event_prox,
         "calendar_high_impact_24h_norm": high_impact,
         "vol_30m": vol,
+        "core_futures_regime_edge_norm": regime_edge,
+        "core_crypto_unwind_risk_norm": crypto_unwind_risk,
     }
 
     return {
@@ -5566,6 +6725,11 @@ _BEHAVIOR_FEATURE_NAMES_V2 = [
     "tasty_expected_move_norm",
     "tasty_beta_norm",
     "tasty_watchlist_presence_norm",
+    "options_iv_crush_risk_norm",
+    "options_assignment_risk_norm",
+    "options_zero_dte_regime_norm",
+    "options_vol_of_vol_change_norm",
+    "options_spread_execution_risk_norm",
     "crypto_deribit_futures_oi_norm",
     "crypto_deribit_options_oi_norm",
     "crypto_deribit_mark_iv_norm",
@@ -5606,9 +6770,39 @@ _BEHAVIOR_FEATURE_NAMES_V2 = [
     "fx_crypto_alignment_norm",
     "fx_macro_dispersion_norm",
     "fx_corr_confidence_norm",
+    "fx_session_asia_norm",
+    "fx_session_london_norm",
+    "fx_session_ny_norm",
+    "fx_rollover_risk_norm",
+    "fx_dxy_yield_confirmation_norm",
+    "fx_carry_proxy_norm",
 ]
 
 _BEHAVIOR_LANE_FEATURE_NAMES = [
+    "core_default_dependency_norm",
+    "core_bot_concentration_norm",
+    "core_aggressive_identity_norm",
+    "profile_symbol_drag_penalty_norm",
+    "profile_kill_switch_norm",
+    "core_conservative_quality_gate_norm",
+    "core_aggressive_breakout_conviction_norm",
+    "core_options_structure_edge_norm",
+    "core_fx_macro_confirmation_norm",
+    "core_futures_regime_edge_norm",
+    "core_futures_curve_alignment_norm",
+    "core_crypto_unwind_risk_norm",
+    "core_cross_sectional_rank_norm",
+    "core_regime_specialist_blend_norm",
+    "core_exit_persistence_norm",
+    "core_portfolio_overlap_pressure_norm",
+    "core_event_reaction_norm",
+    "core_cross_asset_confirmation_norm",
+    "core_champion_challenger_gap_norm",
+    "aggressive_relative_strength_burst_norm",
+    "options_skew_dislocation_norm",
+    "options_gamma_wall_reaction_norm",
+    "futures_basis_dislocation_norm",
+    "futures_overnight_inventory_norm",
     "day_opening_auction_signal_norm",
     "day_halt_resume_risk_norm",
     "day_liquidity_vacuum_risk_norm",
@@ -5619,15 +6813,25 @@ _BEHAVIOR_LANE_FEATURE_NAMES = [
     "day_regime_trend_norm",
     "day_regime_chop_norm",
     "day_regime_alignment_norm",
+    "day_lunch_chop_norm",
+    "day_open_close_imbalance_regime_norm",
+    "day_symbol_cooldown_pressure_norm",
+    "day_open_drive_conviction_norm",
+    "day_failed_breakout_risk_norm",
+    "day_closing_squeeze_norm",
+    "intraday_allowlist_score_norm",
     "swing_post_earnings_drift_norm",
     "swing_gap_continuation_norm",
     "swing_gap_fade_norm",
     "swing_vol_compression_breakout_norm",
     "swing_sector_relative_strength_norm",
     "swing_weekly_trend_confirm_norm",
+    "swing_weekly_pullback_quality_norm",
     "swing_regime_trend_norm",
     "swing_regime_chop_norm",
     "swing_regime_alignment_norm",
+    "swing_overnight_event_hazard_norm",
+    "swing_event_blackout_norm",
     "bond_duration_regime_norm",
     "bond_curve_steepener_norm",
     "bond_curve_flattener_norm",
@@ -5635,6 +6839,12 @@ _BEHAVIOR_LANE_FEATURE_NAMES = [
     "bond_credit_risk_on_norm",
     "bond_credit_risk_off_norm",
     "bond_inflation_breakeven_norm",
+    "bond_bot_roster_alignment_norm",
+    "bond_equity_contamination_norm",
+    "long_term_factor_exposure_control_norm",
+    "long_term_overlap_rebalance_norm",
+    "long_term_valuation_reserve_norm",
+    "long_term_compounder_conviction_norm",
 ]
 
 _BEHAVIOR_CAPITAL_FLOW_FEATURE_NAMES = list(_CAPITAL_FLOW_FEATURE_KEYS)
@@ -6115,6 +7325,11 @@ def _behavior_feature_vector_v2(symbol: str, action_hint: str, features: Dict[st
         'tasty_expected_move_norm': _behavior_clamp01(float(snapshot_ctx.get('tasty_expected_move_norm', features.get('tasty_expected_move_norm', 0.0)) or 0.0)),
         'tasty_beta_norm': _behavior_clamp01(float(snapshot_ctx.get('tasty_beta_norm', features.get('tasty_beta_norm', 0.0)) or 0.0)),
         'tasty_watchlist_presence_norm': _behavior_clamp01(float(snapshot_ctx.get('tasty_watchlist_presence_norm', features.get('tasty_watchlist_presence_norm', 0.0)) or 0.0)),
+        'options_iv_crush_risk_norm': _behavior_clamp01(float(snapshot_ctx.get('options_iv_crush_risk_norm', features.get('options_iv_crush_risk_norm', 0.0)) or 0.0)),
+        'options_assignment_risk_norm': _behavior_clamp01(float(snapshot_ctx.get('options_assignment_risk_norm', features.get('options_assignment_risk_norm', 0.0)) or 0.0)),
+        'options_zero_dte_regime_norm': _behavior_clamp01(float(snapshot_ctx.get('options_zero_dte_regime_norm', features.get('options_zero_dte_regime_norm', 0.0)) or 0.0)),
+        'options_vol_of_vol_change_norm': _behavior_clamp01(float(snapshot_ctx.get('options_vol_of_vol_change_norm', features.get('options_vol_of_vol_change_norm', 0.0)) or 0.0)),
+        'options_spread_execution_risk_norm': _behavior_clamp01(float(snapshot_ctx.get('options_spread_execution_risk_norm', features.get('options_spread_execution_risk_norm', 0.0)) or 0.0)),
         'crypto_deribit_futures_oi_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_deribit_futures_oi_norm', features.get('crypto_deribit_futures_oi_norm', 0.0)) or 0.0)),
         'crypto_deribit_options_oi_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_deribit_options_oi_norm', features.get('crypto_deribit_options_oi_norm', 0.0)) or 0.0)),
         'crypto_deribit_mark_iv_norm': _behavior_clamp01(float(snapshot_ctx.get('crypto_deribit_mark_iv_norm', features.get('crypto_deribit_mark_iv_norm', 0.0)) or 0.0)),
@@ -6155,6 +7370,12 @@ def _behavior_feature_vector_v2(symbol: str, action_hint: str, features: Dict[st
         'fx_crypto_alignment_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_crypto_alignment_norm', features.get('fx_crypto_alignment_norm', 0.0)) or 0.0)),
         'fx_macro_dispersion_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_macro_dispersion_norm', features.get('fx_macro_dispersion_norm', 0.0)) or 0.0)),
         'fx_corr_confidence_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_corr_confidence_norm', features.get('fx_corr_confidence_norm', 0.0)) or 0.0)),
+        'fx_session_asia_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_session_asia_norm', features.get('fx_session_asia_norm', 0.0)) or 0.0)),
+        'fx_session_london_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_session_london_norm', features.get('fx_session_london_norm', 0.0)) or 0.0)),
+        'fx_session_ny_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_session_ny_norm', features.get('fx_session_ny_norm', 0.0)) or 0.0)),
+        'fx_rollover_risk_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_rollover_risk_norm', features.get('fx_rollover_risk_norm', 0.0)) or 0.0)),
+        'fx_dxy_yield_confirmation_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_dxy_yield_confirmation_norm', features.get('fx_dxy_yield_confirmation_norm', 0.0)) or 0.0)),
+        'fx_carry_proxy_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_carry_proxy_norm', features.get('fx_carry_proxy_norm', 0.0)) or 0.0)),
     }
 
     for key in _BEHAVIOR_LANE_FEATURE_NAMES:
@@ -6417,13 +7638,15 @@ class JsonlWriteBuffer:
             return
 
         channel = classify_channel_from_path(path)
-        ctx = _path_context()
-        mirror_paths = default_channel_mirror_paths(path, project_root=PROJECT_ROOT, ctx=ctx)
+        actual_path = path
+        mirror_paths: list[str] = []
+        if channel:
+            actual_path, mirror_paths = _resolve_hot_channel_write_targets(path, channel=channel)
 
         def _write_once() -> int:
             if channel:
                 return safe_append_channel_batch(
-                    path,
+                    actual_path,
                     rows,
                     project_root=PROJECT_ROOT,
                     source="run_shadow_training_loop.JsonlWriteBuffer",
@@ -6432,7 +7655,7 @@ class JsonlWriteBuffer:
                     mirror_paths=mirror_paths,
                 )
             return safe_append_jsonl_batch(
-                path,
+                actual_path,
                 rows,
                 project_root=PROJECT_ROOT,
                 source="run_shadow_training_loop.JsonlWriteBuffer",
@@ -6444,8 +7667,8 @@ class JsonlWriteBuffer:
             return
 
         if not _route_storage_or_fail():
-            print(f"[StorageRoute] write_failed path={path} wrote={wrote} expected={len(rows)}")
-            JsonlWriteBuffer._emit_write_failure_event(path=path, error=RuntimeError("batch_write_failed"))
+            print(f"[StorageRoute] write_failed path={actual_path} wrote={wrote} expected={len(rows)}")
+            JsonlWriteBuffer._emit_write_failure_event(path=actual_path, error=RuntimeError("batch_write_failed"))
             return
 
         retry_wrote = _write_once()
@@ -6454,8 +7677,8 @@ class JsonlWriteBuffer:
             return
 
         if retry_wrote < len(rows):
-            print(f"[StorageRoute] write_retry_failed path={path} wrote={retry_wrote} expected={len(rows)}")
-            JsonlWriteBuffer._emit_write_failure_event(path=path, error=RuntimeError("batch_write_retry_failed"))
+            print(f"[StorageRoute] write_retry_failed path={actual_path} wrote={retry_wrote} expected={len(rows)}")
+            JsonlWriteBuffer._emit_write_failure_event(path=actual_path, error=RuntimeError("batch_write_retry_failed"))
 
     @staticmethod
     def _emit_write_failure_event(path: str, error: Exception) -> None:
@@ -6506,14 +7729,36 @@ def _split_bot_tiers(active_bots: List[SubBot]) -> Tuple[List[SubBot], List[SubB
     return fast, slow
 
 
+def _infrastructure_observer_kind(bot_id: str) -> str:
+    raw = str(bot_id or "").strip().lower()
+    if "meta_ranker" in raw:
+        return "meta_ranker"
+    if "confidence_calibrator" in raw:
+        return "confidence_calibrator"
+    if "feed_health" in raw:
+        return "feed_health"
+    if "macro_event" in raw:
+        return "macro_event"
+    if "execution_feasibility" in raw or "cost_aware_execution" in raw:
+        return "execution_feasibility"
+    if "cross_venue_divergence" in raw or "correlation_penalty" in raw:
+        return "cross_venue_divergence"
+    if "risk_sentinel" in raw:
+        return "risk_sentinel"
+    if "risk_budget_allocator" in raw or "risk_budget_layer" in raw:
+        return "risk_budget"
+    return "generic"
+
+
 def _top_paper_mirror_bots(
     active_bots: List[SubBot],
     *,
     top_n: int,
     min_accuracy: float,
     segment: str = "core",
+    mirror_all_active: bool = False,
 ) -> List[SubBot]:
-    if top_n <= 0:
+    if top_n <= 0 and (not mirror_all_active):
         return []
     segment_name = str(segment or "core").strip().lower()
     if segment_name == "options":
@@ -6525,6 +7770,11 @@ def _top_paper_mirror_bots(
         eligible = [
             b for b in active_bots
             if b.active and _is_futures_sub_bot(b)
+        ]
+    elif segment_name == "all_active":
+        eligible = [
+            b for b in active_bots
+            if b.active and b.bot_role != "infrastructure_sub_bot"
         ]
     else:
         eligible = [
@@ -6538,10 +7788,10 @@ def _top_paper_mirror_bots(
     )
     out: List[SubBot] = []
     for b in ranked:
-        if float(b.test_accuracy or 0.0) < min_accuracy:
+        if (not mirror_all_active) and float(b.test_accuracy or 0.0) < min_accuracy:
             continue
         out.append(b)
-        if len(out) >= top_n:
+        if (not mirror_all_active) and len(out) >= top_n:
             break
     return out
 
@@ -6593,11 +7843,11 @@ def _gzip_file(path: str) -> bool:
 def _run_log_maintenance(project_root: str, *, max_ops: int = 200) -> Dict[str, int]:
     now_ts = time.time()
 
-    retention_decisions = int(os.getenv('LOG_RETENTION_DECISIONS_DAYS', '30'))
-    retention_explanations = int(os.getenv('LOG_RETENTION_DECISION_EXPLANATIONS_DAYS', '30'))
+    retention_decisions = int(os.getenv('LOG_RETENTION_DECISIONS_DAYS', '5'))
+    retention_explanations = int(os.getenv('LOG_RETENTION_DECISION_EXPLANATIONS_DAYS', '5'))
     retention_governance = int(os.getenv('LOG_RETENTION_GOVERNANCE_DAYS', '45'))
     retention_exports = int(os.getenv('LOG_RETENTION_EXPORTS_DAYS', '30'))
-    compress_after_days = float(os.getenv('LOG_COMPRESS_AFTER_DAYS', '1'))
+    compress_after_days = float(os.getenv('LOG_COMPRESS_AFTER_DAYS', '0.25'))
 
     targets = [
         (os.path.join(project_root, 'decisions'), retention_decisions),
@@ -6642,6 +7892,27 @@ def _run_log_maintenance(project_root: str, *, max_ops: int = 200) -> Dict[str, 
 
 def _shadow_profile_name() -> str:
     return os.getenv("SHADOW_PROFILE", "").strip().lower()
+
+
+DEFAULT_PAPER_OPTIONS_PROFILE_ALLOWLIST = "default,aggressive,intraday_aggressive,swing_aggressive"
+
+
+def _parse_profile_csv(raw: str) -> set[str]:
+    return {piece.strip().lower() for piece in (raw or "").split(",") if piece.strip()}
+
+
+def _paper_options_profile_allowlist() -> set[str]:
+    raw = os.getenv(
+        "TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES",
+        DEFAULT_PAPER_OPTIONS_PROFILE_ALLOWLIST,
+    ).strip()
+    return _parse_profile_csv(raw)
+
+
+def _paper_options_profile_allowed(profile: Optional[str] = None) -> bool:
+    current = str(profile or _shadow_profile_name() or "default").strip().lower() or "default"
+    allowlist = _paper_options_profile_allowlist()
+    return (not allowlist) or (current in allowlist)
 
 
 def _shadow_ingress_instance() -> str:
@@ -6691,16 +7962,24 @@ def _threshold_shift() -> float:
             return 0.0
 
     prof = _shadow_profile_name()
+    if prof == "conservative":
+        return +0.015
     if prof == "aggressive":
-        return -0.03
+        return -0.015
+    if prof == "intraday_aggressive":
+        return -0.015
+    if prof == "swing_aggressive":
+        return -0.005
+    if prof == "fx":
+        return +0.015
     if prof in {"dividend", "long_term_dividend"}:
         # Dividend sleeve should be more selective and avoid noisy overnight churn.
-        return +0.03
+        return +0.04
     if prof == "bond":
         # Bond sleeve: slightly stricter entry to reduce false positives in low-vol regimes.
-        return +0.02
+        return +0.06
     if prof == "long_term_core_etf":
-        return +0.035
+        return +0.040
     if prof == "long_term_sector_rotation":
         return +0.02
     return 0.0
@@ -6712,7 +7991,7 @@ def _shift_threshold(base: float) -> float:
 
 
 def _is_dividend_profile() -> bool:
-    return _shadow_profile_name() in {"dividend", "long_term_dividend"}
+    return _shadow_profile_name() in {"dividend", "dividend_capture", "dividend_compound", "long_term_dividend"}
 
 
 def _is_bond_profile() -> bool:
@@ -6761,6 +8040,11 @@ def _dividend_quality_score(symbol: str, features: Dict[str, float]) -> float:
     tasty_expected_move = _clamp01(float(features.get("tasty_expected_move_norm", 0.0) or 0.0))
     tasty_watch = _clamp01(float(features.get("tasty_watchlist_presence_norm", 0.0) or 0.0))
     tasty_beta_penalty = _clamp01(abs((float(features.get("tasty_beta_norm", 0.5) or 0.5) - 0.5) * 2.0))
+    coverage_quality = _clamp01(float(features.get("dividend_fcf_coverage_norm", 0.0) or 0.0))
+    structure_quality = _clamp01(float(features.get("dividend_structure_aware_quality_norm", 0.0) or 0.0))
+    trap_risk = _clamp01(float(features.get("dividend_trap_internal_risk_norm", 0.0) or 0.0))
+    cut_risk = _clamp01(float(features.get("dividend_cut_freeze_risk_norm", 0.0) or 0.0))
+    income_quality = _clamp01(float(features.get("dividend_income_quality_norm", 0.0) or 0.0))
 
     sustainable_yield = _clamp01(1.0 - (abs(yield_norm - 0.35) / 0.35))
     payout_safety = _clamp01(1.0 - (max(payout_norm - 0.78, 0.0) / 0.22))
@@ -6768,14 +8052,19 @@ def _dividend_quality_score(symbol: str, features: Dict[str, float]) -> float:
     universe_bonus = 0.18 if symbol.upper() in _dividend_quality_symbols() else 0.0
 
     score = (
-        (0.30 * sustainable_yield)
-        + (0.29 * payout_safety)
-        + (0.17 * low_vol)
-        + (0.12 * calendar_quality)
-        + (0.08 * tasty_liquidity)
-        + (0.04 * tasty_watch)
-        - (0.08 * tasty_expected_move)
-        - (0.04 * tasty_beta_penalty)
+        (0.21 * sustainable_yield)
+        + (0.18 * payout_safety)
+        + (0.13 * low_vol)
+        + (0.12 * coverage_quality)
+        + (0.10 * structure_quality)
+        + (0.09 * income_quality)
+        + (0.07 * calendar_quality)
+        + (0.05 * tasty_liquidity)
+        + (0.03 * tasty_watch)
+        - (0.08 * trap_risk)
+        - (0.06 * cut_risk)
+        - (0.04 * tasty_expected_move)
+        - (0.03 * tasty_beta_penalty)
         + universe_bonus
     )
     return _clamp01(score)
@@ -6788,6 +8077,530 @@ def _force_action_score(action: str, score: float, threshold: float) -> tuple[st
         return "SELL", min(float(score), max((1.0 - float(threshold)) - 0.03, 0.08))
     hold_score = 0.5 + 0.35 * (float(score) - 0.5)
     return "HOLD", min(max(hold_score, 0.01), 0.99)
+
+
+def _positive_centered_norm(value: float) -> float:
+    return _clamp01((float(value) - 0.5) * 2.0)
+
+
+def _negative_centered_norm(value: float) -> float:
+    return _clamp01((0.5 - float(value)) * 2.0)
+
+
+def _centered_gap_norm(value: float, scale: float) -> float:
+    denom = max(float(scale), 1e-6)
+    return _clamp01(0.5 + (float(value) / denom) * 0.5)
+
+
+def _structure_role_norms(symbol: str) -> Dict[str, float]:
+    sym = str(symbol or "").strip().upper()
+    out: Dict[str, float] = {}
+    for role, symbols in _DIVIDEND_STRUCTURE_ROLE_MAP.items():
+        out[f"role_{role}"] = 1.0 if sym in {str(item).strip().upper() for item in symbols} else 0.0
+    return out
+
+
+def _slow_position_metrics(
+    *,
+    symbol: str,
+    features: Dict[str, float],
+    iter_count: int,
+    row: Dict[str, float],
+    min_hold_iters: int,
+) -> Dict[str, float]:
+    last_price = max(float(features.get("last_price", 0.0) or 0.0), 0.0)
+    position_open = float(row.get("position_open", 0.0) or 0.0)
+    first_buy_iter = int(row.get("first_buy_iter", 0.0) or 0)
+    avg_cost = max(float(row.get("avg_cost", 0.0) or 0.0), 0.0)
+    hold_iters = float(row.get("hold_iters", 0.0) or 0.0)
+    if position_open <= 0.0:
+        hold_iters = 0.0
+    elif hold_iters <= 0.0 and first_buy_iter > 0:
+        hold_iters = max(float(iter_count - first_buy_iter), 0.0)
+
+    position_age_norm = _clamp01(hold_iters / max(float(min_hold_iters), 1.0))
+    if last_price > 0.0 and avg_cost > 0.0:
+        gap = (last_price - avg_cost) / max(avg_cost, 1e-8)
+        cost_basis_gap_norm = _centered_gap_norm(gap, 0.30)
+        unrealized_gain_norm = _clamp01(max(gap, 0.0) / 0.25)
+    else:
+        cost_basis_gap_norm = 0.5
+        unrealized_gain_norm = 0.0
+    tax_friction_norm = _clamp01(
+        (0.45 * max(1.0 - position_age_norm, 0.0))
+        + (0.35 * unrealized_gain_norm)
+        + (0.20 * max(0.5 - float(features.get("dividend_tax_qualified_hold_norm", 0.5) or 0.5), 0.0) * 2.0)
+    )
+    return {
+        "slow_position_age_norm": position_age_norm,
+        "slow_cost_basis_gap_norm": cost_basis_gap_norm,
+        "slow_tax_friction_norm": tax_friction_norm,
+    }
+
+
+def _dividend_underwriting_features(
+    *,
+    symbol: str,
+    features: Dict[str, float],
+    iter_count: int,
+    state: Dict[str, Dict[str, float]],
+) -> Dict[str, float]:
+    quality = _clamp01(float(features.get("dividend_quality_score_norm", 0.0) or 0.0))
+    safety = _clamp01(float(features.get("dividend_safety_composite_norm", 0.0) or 0.0))
+    payout = _clamp01(float(features.get("dividend_payout_ratio_norm", 0.0) or 0.0))
+    growth = _clamp01(float(features.get("dividend_growth_momentum_norm", 0.0) or 0.0))
+    compound_growth = _clamp01(float(features.get("dividend_compound_growth_norm", 0.0) or 0.0))
+    drawdown = _clamp01(float(features.get("dividend_compound_drawdown_norm", 0.0) or 0.0))
+    drip_active = _clamp01(float(features.get("dividend_drip_active_norm", 0.0) or 0.0))
+    drip_recent = _clamp01(float(features.get("dividend_drip_recent_reinvest_norm", 0.0) or 0.0))
+    drip_conf = _clamp01(float(features.get("dividend_drip_confidence_norm", 0.0) or 0.0))
+    tax_hold = _clamp01(float(features.get("dividend_tax_qualified_hold_norm", 0.0) or 0.0))
+    yield_norm = _clamp01(float(features.get("dividend_yield_norm", 0.0) or 0.0))
+    ex_signal = max(
+        _clamp01(float(features.get("dividend_ex_date_proximity_norm", 0.0) or 0.0)),
+        _clamp01(float(features.get("calendar_dividend_exdate_proximity_norm", 0.0) or 0.0)),
+    )
+    pay_signal = max(
+        _clamp01(float(features.get("dividend_pay_date_proximity_norm", 0.0) or 0.0)),
+        _clamp01(float(features.get("calendar_dividend_payout_proximity_norm", 0.0) or 0.0)),
+    )
+    calendar_quality = _clamp01(float(features.get("calendar_dividend_quality_signal_norm", 0.0) or 0.0))
+    sec_estimate = _clamp01(float(features.get("sec_estimate_revision_drift_norm", 0.5) or 0.5))
+    estimate_up = _positive_centered_norm(sec_estimate)
+    estimate_down = _negative_centered_norm(sec_estimate)
+    whisper = _clamp01(float(features.get("sec_earnings_whisper_surprise_norm", 0.5) or 0.5))
+    whisper_up = _positive_centered_norm(whisper)
+    insider_buy = _clamp01(float(features.get("sec_insider_buy_30d_norm", 0.0) or 0.0))
+    insider_sell = _clamp01(float(features.get("sec_insider_sell_30d_norm", 0.0) or 0.0))
+    financing_stress = _clamp01(float(features.get("sec_financing_stress_7d_norm", 0.0) or 0.0))
+    guidance_risk = _clamp01(float(features.get("sec_guidance_7d_norm", 0.0) or 0.0))
+    offering_risk = _clamp01(
+        max(
+            float(features.get("sec_offering_7d_norm", 0.0) or 0.0),
+            float(features.get("sec_offering_priced_30d_norm", 0.0) or 0.0),
+        )
+    )
+    dilution_risk = _clamp01(float(features.get("sec_dilution_7d_norm", 0.0) or 0.0))
+    lockup_risk = _clamp01(float(features.get("sec_lockup_secondary_30d_norm", 0.0) or 0.0))
+    special_dividend = _clamp01(float(features.get("sec_special_dividend_30d_norm", 0.0) or 0.0))
+    split_hazard = _clamp01(float(features.get("sec_split_hazard_30d_norm", 0.0) or 0.0))
+    recent_sec = _clamp01(float(features.get("sec_recent_proximity_norm", 0.0) or 0.0))
+    borrow_fee = _clamp01(float(features.get("short_borrow_fee_norm", 0.0) or 0.0))
+    borrow_avail = _clamp01(float(features.get("short_borrow_availability_norm", 1.0) or 1.0))
+    borrow_util = _clamp01(float(features.get("short_utilization_norm", 0.0) or 0.0))
+    sector_strength = _clamp01(float(features.get("swing_sector_relative_strength_norm", 0.5) or 0.5))
+    bond_risk = _clamp01(float(features.get("bond_credit_risk_off_norm", 0.0) or 0.0))
+    structure = _structure_role_norms(symbol)
+
+    borrow_stress = _clamp01((0.42 * borrow_fee) + (0.34 * (1.0 - borrow_avail)) + (0.24 * borrow_util))
+    corporate_action_hazard = _clamp01(max(split_hazard, offering_risk, lockup_risk, special_dividend * 0.70))
+    streak_quality = _clamp01(
+        (0.28 * growth)
+        + (0.20 * quality)
+        + (0.15 * calendar_quality)
+        + (0.12 * compound_growth)
+        + (0.10 * drip_recent)
+        + (0.08 * estimate_up)
+        + (0.07 * insider_buy)
+    )
+    cut_freeze_risk = _clamp01(
+        (0.22 * payout)
+        + (0.17 * max(1.0 - growth, 0.0))
+        + (0.14 * estimate_down)
+        + (0.12 * financing_stress)
+        + (0.11 * dilution_risk)
+        + (0.09 * insider_sell)
+        + (0.08 * borrow_stress)
+        + (0.07 * max(0.5 - sector_strength, 0.0) * 2.0)
+    )
+    fcf_coverage = _clamp01(
+        (0.36 * max(1.0 - payout, 0.0))
+        + (0.20 * quality)
+        + (0.15 * safety)
+        + (0.11 * estimate_up)
+        + (0.10 * insider_buy)
+        + (0.08 * max(1.0 - financing_stress, 0.0))
+    )
+    debt_funded_risk = _clamp01(
+        (0.28 * financing_stress)
+        + (0.22 * offering_risk)
+        + (0.16 * dilution_risk)
+        + (0.12 * lockup_risk)
+        + (0.12 * max(1.0 - fcf_coverage, 0.0))
+        + (0.10 * bond_risk)
+    )
+    payout_safety = _clamp01(1.0 - (max(payout - 0.78, 0.0) / 0.22))
+    interest_coverage = _clamp01(
+        (0.34 * payout_safety)
+        + (0.22 * quality)
+        + (0.16 * max(1.0 - financing_stress, 0.0))
+        + (0.16 * max(1.0 - debt_funded_risk, 0.0))
+        + (0.12 * estimate_up)
+    )
+    structure_relief = (
+        (0.08 * structure["role_reit"])
+        + (0.05 * structure["role_utility"])
+        + (0.04 * structure["role_bank"] * max(1.0 - bond_risk, 0.0))
+        - (0.06 * structure["role_mlp"])
+        - (0.04 * structure["role_bdc"])
+    )
+    structure_aware_quality = _clamp01((0.58 * quality) + (0.24 * fcf_coverage) + (0.18 * interest_coverage) + structure_relief)
+    forward_hazard = _clamp01(
+        max(
+            (0.65 * ex_signal) + (0.35 * float(features.get("dividend_ex_slippage_risk_norm", 0.0) or 0.0)),
+            (0.55 * recent_sec) + (0.20 * guidance_risk) + (0.15 * offering_risk) + (0.10 * financing_stress),
+            (0.55 * pay_signal) + (0.25 * special_dividend) + (0.20 * corporate_action_hazard),
+        )
+    )
+    withholding_tax_drag = _clamp01(
+        (0.40 * structure["role_reit"])
+        + (0.35 * structure["role_mlp"])
+        + (0.15 * structure["role_bdc"])
+        + (0.10 * special_dividend)
+    )
+    income_quality = _clamp01(
+        (0.30 * tax_hold)
+        + (0.23 * fcf_coverage)
+        + (0.18 * structure_aware_quality)
+        + (0.12 * max(1.0 - cut_freeze_risk, 0.0))
+        + (0.10 * max(1.0 - withholding_tax_drag, 0.0))
+        + (0.07 * max(1.0 - corporate_action_hazard, 0.0))
+    )
+    trap_internal_risk = _clamp01(
+        (0.22 * yield_norm)
+        + (0.16 * estimate_down)
+        + (0.14 * insider_sell)
+        + (0.14 * borrow_stress)
+        + (0.12 * debt_funded_risk)
+        + (0.12 * max(0.5 - sector_strength, 0.0) * 2.0)
+        + (0.10 * corporate_action_hazard)
+    )
+    total_return_income = _clamp01(
+        (0.28 * structure_aware_quality)
+        + (0.18 * growth)
+        + (0.17 * fcf_coverage)
+        + (0.15 * income_quality)
+        + (0.12 * compound_growth)
+        + (0.10 * max(1.0 - trap_internal_risk, 0.0))
+    )
+    capture_vs_hold_edge = _clamp01(
+        (0.32 * ex_signal)
+        + (0.20 * pay_signal)
+        + (0.18 * yield_norm)
+        + (0.14 * max(1.0 - forward_hazard, 0.0))
+        + (0.10 * max(1.0 - tax_hold, 0.0))
+        + (0.06 * special_dividend)
+    )
+    reinvest_cadence = _clamp01(
+        (0.45 * drip_recent)
+        + (0.25 * drip_active * drip_conf)
+        + (0.20 * compound_growth)
+        + (0.10 * income_quality)
+    )
+    payout_stress_forward = _clamp01(
+        (0.35 * cut_freeze_risk)
+        + (0.25 * debt_funded_risk)
+        + (0.20 * forward_hazard)
+        + (0.20 * max(1.0 - fcf_coverage, 0.0))
+    )
+    compounding_quality = _clamp01(
+        (0.28 * income_quality)
+        + (0.24 * reinvest_cadence)
+        + (0.18 * compound_growth)
+        + (0.16 * max(1.0 - payout_stress_forward, 0.0))
+        + (0.14 * max(1.0 - corporate_action_hazard, 0.0))
+    )
+    capture_timing_quality = _clamp01(
+        (0.34 * capture_vs_hold_edge)
+        + (0.22 * ex_signal)
+        + (0.16 * pay_signal)
+        + (0.14 * calendar_quality)
+        + (0.14 * max(1.0 - forward_hazard, 0.0))
+    )
+    payout_stress_gate = _clamp01(
+        (0.42 * max(1.0 - payout_stress_forward, 0.0))
+        + (0.24 * fcf_coverage)
+        + (0.18 * income_quality)
+        + (0.16 * max(1.0 - corporate_action_hazard, 0.0))
+    )
+    growth_persistence = _clamp01(
+        (0.34 * streak_quality)
+        + (0.22 * growth)
+        + (0.16 * compound_growth)
+        + (0.12 * estimate_up)
+        + (0.08 * insider_buy)
+        + (0.08 * max(1.0 - cut_freeze_risk, 0.0))
+    )
+    capture_ex_date_hazard = _clamp01(
+        max(
+            ex_signal,
+            0.82 * forward_hazard,
+            0.70 * corporate_action_hazard,
+            0.62 * special_dividend,
+        )
+    )
+
+    row = state.setdefault(
+        str(symbol or "").strip().upper(),
+        {
+            "position_open": 0.0,
+            "first_buy_iter": 0.0,
+            "last_buy_iter": 0.0,
+            "last_rebalance_iter": 0.0,
+            "hold_iters": 0.0,
+            "avg_cost": 0.0,
+        },
+    )
+    position_metrics = _slow_position_metrics(
+        symbol=symbol,
+        features=features,
+        iter_count=iter_count,
+        row=row,
+        min_hold_iters=max(int(os.getenv("DIVIDEND_TAX_MIN_HOLD_ITERS", "45") or 45), 1),
+    )
+    return {
+        "dividend_streak_quality_norm": streak_quality,
+        "dividend_cut_freeze_risk_norm": cut_freeze_risk,
+        "dividend_fcf_coverage_norm": fcf_coverage,
+        "dividend_debt_funded_risk_norm": debt_funded_risk,
+        "dividend_interest_coverage_quality_norm": interest_coverage,
+        "dividend_structure_aware_quality_norm": structure_aware_quality,
+        "dividend_forward_hazard_norm": forward_hazard,
+        "dividend_income_quality_norm": income_quality,
+        "dividend_trap_internal_risk_norm": trap_internal_risk,
+        "dividend_total_return_income_norm": total_return_income,
+        "dividend_position_age_norm": float(position_metrics["slow_position_age_norm"]),
+        "dividend_cost_basis_gap_norm": float(position_metrics["slow_cost_basis_gap_norm"]),
+        "dividend_tax_friction_norm": _clamp01(
+            (0.70 * float(position_metrics["slow_tax_friction_norm"]))
+            + (0.30 * withholding_tax_drag)
+        ),
+        "dividend_corporate_action_hazard_norm": corporate_action_hazard,
+        "dividend_capture_vs_hold_edge_norm": capture_vs_hold_edge,
+        "dividend_reinvest_cadence_norm": reinvest_cadence,
+        "dividend_payout_stress_forward_norm": payout_stress_forward,
+        "dividend_compounding_quality_norm": compounding_quality,
+        "dividend_capture_timing_quality_norm": capture_timing_quality,
+        "dividend_payout_stress_gate_norm": payout_stress_gate,
+        "dividend_growth_persistence_norm": growth_persistence,
+        "dividend_capture_ex_date_hazard_norm": capture_ex_date_hazard,
+    }
+
+
+def _long_term_underwriting_features(
+    *,
+    symbol: str,
+    features: Dict[str, float],
+    profile: str,
+    iter_count: int,
+    state: Dict[str, Any],
+) -> Dict[str, float]:
+    vol_norm = _clamp01(abs(float(features.get("vol_30m", 0.0) or 0.0)) / 0.03)
+    stability = _clamp01(1.0 - vol_norm)
+    mom = float(features.get("mom_5m", 0.0) or 0.0)
+    trend = _clamp01(0.5 + (mom * 12.0))
+    pullback = abs(float(features.get("pct_from_close", 0.0) or 0.0))
+    pullback_resilience = _clamp01(1.0 - (pullback / 0.12))
+    range_balance = _clamp01(1.0 - abs(_clamp01(float(features.get("range_pos", 0.5) or 0.5)) - 0.5) * 1.8)
+    dividend_quality = _clamp01(float(features.get("dividend_quality_score_norm", 0.0) or 0.0))
+    payout_safety = _clamp01(1.0 - (max(_clamp01(float(features.get("dividend_payout_ratio_norm", 0.0) or 0.0)) - 0.78, 0.0) / 0.22))
+    compound_growth = _clamp01(float(features.get("dividend_compound_growth_norm", 0.0) or 0.0))
+    compound_safety = _clamp01(1.0 - _clamp01(float(features.get("dividend_compound_drawdown_norm", 0.0) or 0.0)))
+    yield_norm = _clamp01(float(features.get("dividend_yield_norm", 0.0) or 0.0))
+    sec_estimate = _clamp01(float(features.get("sec_estimate_revision_drift_norm", 0.5) or 0.5))
+    estimate_up = _positive_centered_norm(sec_estimate)
+    whisper = _clamp01(float(features.get("sec_earnings_whisper_surprise_norm", 0.5) or 0.5))
+    whisper_up = _positive_centered_norm(whisper)
+    insider_buy = _clamp01(float(features.get("sec_insider_buy_30d_norm", 0.0) or 0.0))
+    dilution = _clamp01(float(features.get("sec_dilution_7d_norm", 0.0) or 0.0))
+    offering = _clamp01(float(features.get("sec_offering_priced_30d_norm", 0.0) or 0.0))
+    lockup = _clamp01(float(features.get("sec_lockup_secondary_30d_norm", 0.0) or 0.0))
+    financing_stress = _clamp01(float(features.get("sec_financing_stress_7d_norm", 0.0) or 0.0))
+    restatement = _clamp01(float(features.get("sec_restatement_7d_norm", 0.0) or 0.0))
+    split_hazard = _clamp01(float(features.get("sec_split_hazard_30d_norm", 0.0) or 0.0))
+    special_dividend = _clamp01(float(features.get("sec_special_dividend_30d_norm", 0.0) or 0.0))
+    etf_flow = _clamp01(float(features.get("etf_fund_family_flow_norm", 0.0) or 0.0))
+    sector_strength = _clamp01(float(features.get("swing_sector_relative_strength_norm", 0.5) or 0.5))
+    sector_rotation = _clamp01(float(features.get("breadth_sector_rotation_norm", 0.0) or 0.0))
+    rebalance = _clamp01(
+        max(
+            float(features.get("calendar_index_rebalance_window_norm", 0.0) or 0.0),
+            float(features.get("calendar_month_end_rebalance_norm", 0.0) or 0.0),
+            float(features.get("calendar_quarter_end_rebalance_norm", 0.0) or 0.0),
+        )
+    )
+    duration_years = _clamp01(float(features.get("bond_duration_years_norm", 0.0) or 0.0))
+    duration_regime = _clamp01(float(features.get("bond_duration_regime_norm", 0.0) or 0.0))
+    sofr_term = _clamp01(float(features.get("sofr_term_pressure_norm", 0.0) or 0.0))
+    options_vol = _clamp01(float(features.get("options_vol_expectation_norm", 0.0) or 0.0))
+    macro_stress = _clamp01(abs(float(features.get("ctx_VIX_X_pct_from_close", 0.0) or 0.0)) / 0.03)
+
+    overlap_sets = [
+        _long_term_quality_universe("long_term_core_etf"),
+        _long_term_quality_universe("long_term_sector_rotation"),
+        _long_term_quality_universe("long_term_dividend"),
+    ]
+    sym = str(symbol or "").strip().upper()
+    overlap_hits = sum(1 for universe in overlap_sets if sym in universe)
+    overlap_norm = _clamp01((max(overlap_hits - 1, 0)) / 2.0)
+    corporate_action_hazard = _clamp01(max(split_hazard, offering, lockup, special_dividend * 0.55, rebalance * 0.65))
+    valuation_anchor = _clamp01(
+        (0.24 * yield_norm)
+        + (0.18 * pullback_resilience)
+        + (0.16 * range_balance)
+        + (0.16 * estimate_up)
+        + (0.14 * whisper_up)
+        + (0.12 * max(1.0 - options_vol, 0.0))
+    )
+    valuation_history = _clamp01(
+        (0.34 * pullback_resilience)
+        + (0.22 * range_balance)
+        + (0.18 * stability)
+        + (0.14 * estimate_up)
+        + (0.12 * max(1.0 - macro_stress, 0.0))
+    )
+    capital_allocation = _clamp01(
+        (0.30 * max(1.0 - dilution, 0.0))
+        + (0.20 * insider_buy)
+        + (0.18 * max(1.0 - offering, 0.0))
+        + (0.12 * max(1.0 - lockup, 0.0))
+        + (0.10 * estimate_up)
+        + (0.10 * max(1.0 - financing_stress, 0.0))
+    )
+    quality_persistence = _clamp01(
+        (0.24 * stability)
+        + (0.18 * trend)
+        + (0.16 * compound_safety)
+        + (0.14 * compound_growth)
+        + (0.12 * dividend_quality)
+        + (0.08 * estimate_up)
+        + (0.08 * max(1.0 - restatement, 0.0))
+    )
+    overlap_crowding = _clamp01(
+        (0.28 * overlap_norm)
+        + (0.22 * etf_flow)
+        + (0.18 * rebalance)
+        + (0.16 * sector_rotation)
+        + (0.16 * max(sector_strength - 0.55, 0.0) * (1.0 / 0.45))
+    )
+    duration_sensitivity = _clamp01(
+        (0.38 * duration_years)
+        + (0.28 * duration_regime)
+        + (0.18 * sofr_term)
+        + (0.16 * max(options_vol - 0.45, 0.0) * (1.0 / 0.55))
+    )
+    downside_preservation = _clamp01(
+        (0.30 * stability)
+        + (0.22 * compound_safety)
+        + (0.18 * payout_safety)
+        + (0.14 * max(1.0 - corporate_action_hazard, 0.0))
+        + (0.10 * max(1.0 - overlap_crowding, 0.0))
+        + (0.06 * max(1.0 - macro_stress, 0.0))
+    )
+
+    position_state = state.setdefault("position_state_by_symbol", {}).setdefault(
+        sym,
+        {
+            "position_open": 0.0,
+            "first_buy_iter": 0.0,
+            "last_buy_iter": 0.0,
+            "hold_iters": 0.0,
+            "avg_cost": 0.0,
+        },
+    )
+    position_metrics = _slow_position_metrics(
+        symbol=symbol,
+        features=features,
+        iter_count=iter_count,
+        row=position_state,
+        min_hold_iters=max(int(os.getenv("LONG_TERM_TAX_MIN_HOLD_ITERS", "48") or 48), 1),
+    )
+    tax_friction = _clamp01(
+        (0.58 * float(position_metrics["slow_tax_friction_norm"]))
+        + (0.22 * max(duration_sensitivity - 0.55, 0.0) * (1.0 / 0.45))
+        + (0.20 * corporate_action_hazard)
+    )
+    total_return_income = _clamp01(
+        (0.24 * valuation_anchor)
+        + (0.20 * quality_persistence)
+        + (0.16 * capital_allocation)
+        + (0.14 * downside_preservation)
+        + (0.14 * dividend_quality)
+        + (0.12 * compound_growth)
+    )
+    ten_year_hint = _clamp01(float(features.get("long_term_10y_score_norm", 0.0) or 0.0))
+    accumulation_discipline = _clamp01(
+        (0.28 * max(ten_year_hint, valuation_history))
+        + (0.18 * quality_persistence)
+        + (0.14 * max(1.0 - overlap_crowding, 0.0))
+        + (0.14 * downside_preservation)
+        + (0.13 * max(1.0 - tax_friction, 0.0))
+        + (0.13 * max(1.0 - corporate_action_hazard, 0.0))
+    )
+    factor_quality_mix = _clamp01(
+        (0.24 * dividend_quality)
+        + (0.20 * quality_persistence)
+        + (0.18 * capital_allocation)
+        + (0.16 * estimate_up)
+        + (0.12 * sector_strength)
+        + (0.10 * max(1.0 - duration_sensitivity, 0.0))
+    )
+    rebalance_overlap_penalty = _clamp01(
+        (0.42 * overlap_crowding)
+        + (0.32 * rebalance)
+        + (0.16 * etf_flow)
+        + (0.10 * corporate_action_hazard)
+    )
+    valuation_reserve = _clamp01(
+        (0.34 * valuation_anchor)
+        + (0.24 * valuation_history)
+        + (0.18 * max(1.0 - overlap_crowding, 0.0))
+        + (0.14 * downside_preservation)
+        + (0.10 * max(1.0 - tax_friction, 0.0))
+    )
+    compounder_conviction = _clamp01(
+        (0.28 * quality_persistence)
+        + (0.22 * capital_allocation)
+        + (0.18 * factor_quality_mix)
+        + (0.14 * total_return_income)
+        + (0.10 * max(1.0 - rebalance_overlap_penalty, 0.0))
+        + (0.08 * max(1.0 - corporate_action_hazard, 0.0))
+    )
+    factor_exposure_control = _clamp01(
+        (0.28 * max(1.0 - duration_sensitivity, 0.0))
+        + (0.22 * factor_quality_mix)
+        + (0.18 * capital_allocation)
+        + (0.16 * max(1.0 - overlap_crowding, 0.0))
+        + (0.16 * downside_preservation)
+    )
+    overlap_rebalance = _clamp01(
+        (0.40 * rebalance_overlap_penalty)
+        + (0.28 * overlap_crowding)
+        + (0.20 * rebalance)
+        + (0.12 * etf_flow)
+    )
+
+    return {
+        "long_term_valuation_anchor_norm": valuation_anchor,
+        "long_term_valuation_history_norm": valuation_history,
+        "long_term_capital_allocation_quality_norm": capital_allocation,
+        "long_term_quality_persistence_norm": quality_persistence,
+        "long_term_accumulation_discipline_norm": accumulation_discipline,
+        "long_term_overlap_crowding_norm": overlap_crowding,
+        "long_term_duration_sensitivity_norm": duration_sensitivity,
+        "long_term_total_return_income_norm": total_return_income,
+        "long_term_position_age_norm": float(position_metrics["slow_position_age_norm"]),
+        "long_term_cost_basis_gap_norm": float(position_metrics["slow_cost_basis_gap_norm"]),
+        "long_term_tax_friction_norm": tax_friction,
+        "long_term_corporate_action_hazard_norm": corporate_action_hazard,
+        "long_term_downside_preservation_norm": downside_preservation,
+        "long_term_factor_quality_mix_norm": factor_quality_mix,
+        "long_term_rebalance_overlap_penalty_norm": rebalance_overlap_penalty,
+        "long_term_valuation_reserve_norm": valuation_reserve,
+        "long_term_compounder_conviction_norm": compounder_conviction,
+        "long_term_factor_exposure_control_norm": factor_exposure_control,
+        "long_term_overlap_rebalance_norm": overlap_rebalance,
+    }
 
 
 def _apply_dividend_strategy_overlay(
@@ -6905,14 +8718,39 @@ def _apply_dividend_safety_tax_overlay(
     drip_recent = _clamp01(float(features.get("dividend_drip_recent_reinvest_norm", 0.0) or 0.0))
     drip_cash_only = _clamp01(float(features.get("dividend_drip_cash_only_norm", 0.0) or 0.0))
     drip_conf = _clamp01(float(features.get("dividend_drip_confidence_norm", 0.0) or 0.0))
+    coverage_quality = _clamp01(float(features.get("dividend_fcf_coverage_norm", 0.0) or 0.0))
+    debt_funded_risk = _clamp01(float(features.get("dividend_debt_funded_risk_norm", 0.0) or 0.0))
+    structure_quality = _clamp01(float(features.get("dividend_structure_aware_quality_norm", 0.0) or 0.0))
+    forward_hazard = _clamp01(float(features.get("dividend_forward_hazard_norm", 0.0) or 0.0))
+    income_quality = _clamp01(float(features.get("dividend_income_quality_norm", 0.0) or 0.0))
+    trap_risk = _clamp01(float(features.get("dividend_trap_internal_risk_norm", 0.0) or 0.0))
+    cut_freeze_risk = _clamp01(float(features.get("dividend_cut_freeze_risk_norm", 0.0) or 0.0))
+    corporate_action_hazard = _clamp01(float(features.get("dividend_corporate_action_hazard_norm", 0.0) or 0.0))
+    tax_friction = _clamp01(float(features.get("dividend_tax_friction_norm", 0.0) or 0.0))
+    capture_vs_hold_edge = _clamp01(float(features.get("dividend_capture_vs_hold_edge_norm", 0.0) or 0.0))
+    reinvest_cadence = _clamp01(float(features.get("dividend_reinvest_cadence_norm", 0.0) or 0.0))
+    payout_stress_forward = _clamp01(float(features.get("dividend_payout_stress_forward_norm", 0.0) or 0.0))
+    compounding_quality = _clamp01(float(features.get("dividend_compounding_quality_norm", 0.0) or 0.0))
+    capture_timing_quality = _clamp01(float(features.get("dividend_capture_timing_quality_norm", 0.0) or 0.0))
+    payout_stress_gate = _clamp01(float(features.get("dividend_payout_stress_gate_norm", 0.0) or 0.0))
+    growth_persistence = _clamp01(float(features.get("dividend_growth_persistence_norm", 0.0) or 0.0))
+    capture_ex_date_hazard = _clamp01(float(features.get("dividend_capture_ex_date_hazard_norm", 0.0) or 0.0))
+    live_macro_active = _clamp01(float(features.get("live_macro_gate_active_norm", 0.0) or 0.0))
+    live_macro_headwind = _clamp01(float(features.get("live_macro_headwind_norm", 0.0) or 0.0))
+    live_macro_tailwind = _clamp01(float(features.get("live_macro_tailwind_norm", 0.0) or 0.0))
 
     yield_trap_risk = _clamp01(max(yield_norm - 0.70, 0.0) * 2.4 + max(payout_ratio - 0.85, 0.0) * 2.2)
     safety_composite = _clamp01(
-        (0.36 * quality)
-        + (0.24 * payout_safety)
+        (0.24 * quality)
+        + (0.18 * payout_safety)
         + (0.18 * (1.0 - vol_norm))
-        + (0.14 * cal_quality)
-        + (0.08 * (1.0 - yield_trap_risk))
+        + (0.10 * cal_quality)
+        + (0.08 * coverage_quality)
+        + (0.08 * structure_quality)
+        + (0.06 * income_quality)
+        + (0.04 * (1.0 - debt_funded_risk))
+        + (0.04 * (1.0 - corporate_action_hazard))
+        + (0.04 * (1.0 - yield_trap_risk))
         + (0.08 * drip_active * drip_conf)
         - (0.04 * drip_cash_only * (1.0 - drip_active))
     )
@@ -6922,26 +8760,50 @@ def _apply_dividend_safety_tax_overlay(
         _clamp01(float(features.get("dividend_ex_date_proximity_norm", 0.0) or 0.0)),
     )
     spread_bps = max(float(features.get("spread_bps", 0.0) or 0.0), 0.0)
-    ex_slippage_risk = _clamp01((0.45 * _clamp01(spread_bps / 30.0)) + (0.30 * vol_norm) + (0.25 * ex_signal))
+    ex_slippage_risk = _clamp01((0.38 * _clamp01(spread_bps / 30.0)) + (0.24 * vol_norm) + (0.20 * ex_signal) + (0.18 * forward_hazard))
 
     news_sent = float(features.get("news_sentiment", 0.0) or 0.0)
     mom = float(features.get("mom_5m", 0.0) or 0.0)
     compound_growth = _clamp01(float(features.get("dividend_compound_growth_norm", 0.0) or 0.0))
-    growth_momentum = _clamp01((0.40 * _clamp01(max(news_sent, 0.0))) + (0.30 * _clamp01(max(mom, 0.0) / 0.01)) + (0.30 * compound_growth))
+    growth_momentum = _clamp01(
+        (0.32 * _clamp01(max(news_sent, 0.0)))
+        + (0.24 * _clamp01(max(mom, 0.0) / 0.01))
+        + (0.22 * compound_growth)
+        + (0.12 * income_quality)
+        + (0.10 * coverage_quality)
+    )
     if drip_recent > 0.0:
         growth_momentum = _clamp01(growth_momentum + (0.18 * drip_recent * drip_conf))
 
-    row = state.setdefault(symbol.upper(), {"position_open": 0.0, "last_buy_iter": 0.0, "last_rebalance_iter": 0.0, "hold_iters": 0.0})
+    row = state.setdefault(
+        symbol.upper(),
+        {
+            "position_open": 0.0,
+            "first_buy_iter": 0.0,
+            "last_buy_iter": 0.0,
+            "last_rebalance_iter": 0.0,
+            "hold_iters": 0.0,
+            "avg_cost": 0.0,
+        },
+    )
     position_open = float(row.get("position_open", 0.0) or 0.0)
+    last_price = max(float(features.get("last_price", 0.0) or 0.0), 0.0)
     if str(action).upper() == "BUY":
         if position_open <= 0.0:
+            row["first_buy_iter"] = float(iter_count)
             row["last_buy_iter"] = float(iter_count)
             row["hold_iters"] = 0.0
+            if last_price > 0.0:
+                row["avg_cost"] = last_price
+        elif last_price > 0.0:
+            prior_cost = max(float(row.get("avg_cost", 0.0) or 0.0), 0.0)
+            row["avg_cost"] = (0.65 * prior_cost) + (0.35 * last_price) if prior_cost > 0.0 else last_price
         row["position_open"] = 1.0
     elif str(action).upper() == "SELL":
         row["position_open"] = 0.0
         row["hold_iters"] = 0.0
         row["last_rebalance_iter"] = float(iter_count)
+        row["avg_cost"] = 0.0
     elif position_open > 0.0:
         row["hold_iters"] = float(row.get("hold_iters", 0.0) or 0.0) + 1.0
 
@@ -6954,23 +8816,62 @@ def _apply_dividend_safety_tax_overlay(
     iters_since_rebalance = (int(iter_count) - last_rebalance_iter) if last_rebalance_iter > 0 else 10**9
     rebalance_due_norm = _clamp01(iters_since_rebalance / float(rebalance_interval))
 
-    new_action = str(action).upper()
+    requested_action = str(action).upper()
+    new_action = requested_action
     new_score = float(score)
     new_reasons = list(reasons)
+    underwriting_edge = _clamp01(
+        (0.26 * safety_composite)
+        + (0.22 * income_quality)
+        + (0.18 * structure_quality)
+        + (0.18 * max(1.0 - cut_freeze_risk, 0.0))
+        + (0.16 * max(1.0 - forward_hazard, 0.0))
+    )
 
-    if new_action == "BUY" and safety_composite < 0.30:
-        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
-        new_reasons = new_reasons + [f"dividend_safety_filter score={safety_composite:.3f}"]
-
-    if new_action == "BUY" and ex_slippage_risk >= 0.72 and mode in {"capture", "hybrid"}:
-        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
-        new_reasons = new_reasons + [f"dividend_ex_slippage_risk={ex_slippage_risk:.3f}"]
-
-    if new_action == "SELL" and mode in {"compound", "hybrid"} and (tax_qualified_hold_norm < 0.95 or (drip_active * drip_conf) >= 0.30) and safety_composite >= 0.32:
+    if new_action == "BUY" and (safety_composite < 0.30 or cut_freeze_risk >= 0.68 or trap_risk >= 0.72):
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [
-            f"dividend_tax_hold_block qualified={tax_qualified_hold_norm:.3f} drip={drip_active:.3f} min_hold_iters={min_hold_iters}",
+            f"dividend_safety_filter score={safety_composite:.3f}",
+            f"dividend_cut_freeze_risk={cut_freeze_risk:.3f}",
+            f"dividend_trap_internal_risk={trap_risk:.3f}",
         ]
+
+    if new_action == "BUY" and max(ex_slippage_risk, forward_hazard) >= 0.72 and mode in {"capture", "hybrid"}:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [
+            f"dividend_ex_slippage_risk={ex_slippage_risk:.3f}",
+            f"dividend_forward_hazard={forward_hazard:.3f}",
+        ]
+    if new_action == "BUY" and mode == "capture" and capture_vs_hold_edge < 0.18:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"dividend_capture_vs_hold_edge_low={capture_vs_hold_edge:.3f}"]
+    if new_action == "BUY" and mode == "capture" and capture_timing_quality < 0.24:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"dividend_capture_timing_quality_low={capture_timing_quality:.3f}"]
+    if new_action == "BUY" and mode in {"compound", "hybrid"} and ex_signal >= 0.60 and max(forward_hazard, payout_stress_forward) >= 0.58:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"dividend_payout_window_underwriting_guard edge={underwriting_edge:.3f}"]
+    if new_action == "BUY" and underwriting_edge < 0.48 and capture_vs_hold_edge < 0.22:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"dividend_underwriting_edge_low={underwriting_edge:.3f}"]
+    if new_action == "BUY" and payout_stress_gate < 0.34:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"dividend_payout_stress_gate_low={payout_stress_gate:.3f}"]
+    if new_action == "BUY" and payout_stress_forward >= 0.70:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"dividend_payout_stress_forward={payout_stress_forward:.3f}"]
+    if new_action == "BUY" and mode in {"capture", "hybrid"} and capture_ex_date_hazard >= 0.78 and capture_timing_quality < 0.72:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"dividend_capture_ex_date_hazard={capture_ex_date_hazard:.3f}"]
+
+    if new_action == "SELL" and mode in {"compound", "hybrid"} and (tax_qualified_hold_norm < 0.95 or (drip_active * drip_conf) >= 0.30) and safety_composite >= 0.32 and income_quality >= 0.28:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [
+            f"dividend_tax_hold_block qualified={tax_qualified_hold_norm:.3f} tax_friction={tax_friction:.3f} drip={drip_active:.3f} min_hold_iters={min_hold_iters}",
+        ]
+    if new_action == "SELL" and mode in {"compound", "hybrid"} and reinvest_cadence >= 0.58 and income_quality >= 0.55 and forward_hazard < 0.45:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"dividend_reinvest_cadence_hold cadence={reinvest_cadence:.3f}"]
 
     cadence_ok = iters_since_rebalance >= rebalance_interval
     if (new_action in {"BUY", "SELL"}) and (not cadence_ok) and growth_momentum < 0.70:
@@ -6979,13 +8880,50 @@ def _apply_dividend_safety_tax_overlay(
             f"dividend_rebalance_cadence_wait iters_since_rebalance={iters_since_rebalance} min={rebalance_interval}",
         ]
 
-    if new_action == "HOLD" and mode in {"compound", "hybrid"} and growth_momentum >= (0.56 if (drip_active * drip_conf) >= 0.30 else 0.62) and safety_composite >= 0.45:
+    if new_action == "HOLD" and mode in {"compound", "hybrid"} and growth_momentum >= (0.56 if (drip_active * drip_conf) >= 0.30 else 0.62) and safety_composite >= 0.45 and max(1.0 - trap_risk, 0.0) >= 0.30:
         new_action, new_score = _force_action_score("BUY", new_score, threshold)
         new_reasons = new_reasons + [
             f"dividend_growth_accumulate growth_momentum={growth_momentum:.3f}",
             f"dividend_safety={safety_composite:.3f}",
             f"dividend_drip_active={drip_active:.3f}",
         ]
+    if (
+        new_action == "HOLD"
+        and mode in {"compound", "hybrid"}
+        and growth_persistence >= 0.66
+        and payout_stress_gate >= 0.52
+        and compounding_quality >= 0.58
+        and forward_hazard < 0.52
+    ):
+        new_action, new_score = _force_action_score("BUY", new_score, threshold)
+        new_reasons = new_reasons + [
+            f"dividend_growth_persistence_accumulate={growth_persistence:.3f}",
+            f"dividend_payout_stress_gate={payout_stress_gate:.3f}",
+        ]
+    if new_action == "HOLD" and mode in {"compound", "hybrid"} and underwriting_edge >= 0.62 and reinvest_cadence >= 0.58 and capture_vs_hold_edge < 0.28 and payout_stress_forward < 0.42:
+        new_action, new_score = _force_action_score("BUY", new_score, threshold)
+        new_reasons = new_reasons + [f"dividend_reinvest_underwriting_bias={underwriting_edge:.3f}"]
+    if new_action == "HOLD" and mode in {"compound", "hybrid"} and compounding_quality >= 0.64 and payout_stress_forward < 0.48:
+        new_action, new_score = _force_action_score("BUY", new_score, threshold)
+        new_reasons = new_reasons + [f"dividend_compounding_quality_bias={compounding_quality:.3f}"]
+    if (
+        new_action == "HOLD"
+        and mode == "capture"
+        and capture_vs_hold_edge >= 0.66
+        and capture_timing_quality >= 0.62
+        and capture_ex_date_hazard < 0.68
+    ):
+        new_action, new_score = _force_action_score("BUY", new_score, threshold)
+        new_reasons = new_reasons + [
+            f"dividend_capture_vs_hold_edge={capture_vs_hold_edge:.3f}",
+            f"dividend_capture_timing_quality={capture_timing_quality:.3f}",
+        ]
+    if new_action == "BUY" and live_macro_active > 0.0 and live_macro_headwind >= 0.78 and live_macro_tailwind < 0.54 and (underwriting_edge < 0.70 or payout_stress_gate < 0.60):
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"dividend_live_macro_headwind={live_macro_headwind:.3f}"]
+    if new_action == "SELL" and live_macro_active > 0.0 and live_macro_tailwind >= 0.74 and underwriting_edge >= 0.62 and income_quality >= 0.55:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"dividend_live_macro_tailwind={live_macro_tailwind:.3f}"]
 
     out_features = {
         "dividend_safety_composite_norm": safety_composite,
@@ -6993,6 +8931,23 @@ def _apply_dividend_safety_tax_overlay(
         "dividend_tax_qualified_hold_norm": tax_qualified_hold_norm,
         "dividend_growth_momentum_norm": growth_momentum,
         "dividend_rebalance_due_norm": rebalance_due_norm,
+        "dividend_fcf_coverage_norm": coverage_quality,
+        "dividend_debt_funded_risk_norm": debt_funded_risk,
+        "dividend_structure_aware_quality_norm": structure_quality,
+        "dividend_forward_hazard_norm": forward_hazard,
+        "dividend_income_quality_norm": income_quality,
+        "dividend_trap_internal_risk_norm": trap_risk,
+        "dividend_cut_freeze_risk_norm": cut_freeze_risk,
+        "dividend_tax_friction_norm": tax_friction,
+        "dividend_corporate_action_hazard_norm": corporate_action_hazard,
+        "dividend_capture_vs_hold_edge_norm": capture_vs_hold_edge,
+        "dividend_reinvest_cadence_norm": reinvest_cadence,
+        "dividend_payout_stress_forward_norm": payout_stress_forward,
+        "dividend_compounding_quality_norm": compounding_quality,
+        "dividend_capture_timing_quality_norm": capture_timing_quality,
+        "dividend_payout_stress_gate_norm": payout_stress_gate,
+        "dividend_growth_persistence_norm": growth_persistence,
+        "dividend_capture_ex_date_hazard_norm": capture_ex_date_hazard,
     }
     return new_action, new_score, new_reasons, out_features
 
@@ -7198,40 +9153,76 @@ def _long_term_10y_score(symbol: str, features: Dict[str, float], profile: str) 
     compound_safety = _clamp01(1.0 - compound_drawdown)
 
     macro_stress = _clamp01(abs(float(features.get("ctx_VIX_X_pct_from_close", 0.0) or 0.0)) / 0.03)
+    valuation_anchor = _clamp01(float(features.get("long_term_valuation_anchor_norm", 0.0) or 0.0))
+    valuation_history = _clamp01(float(features.get("long_term_valuation_history_norm", 0.0) or 0.0))
+    capital_allocation = _clamp01(float(features.get("long_term_capital_allocation_quality_norm", 0.0) or 0.0))
+    persistence = _clamp01(float(features.get("long_term_quality_persistence_norm", 0.0) or 0.0))
+    overlap_crowding = _clamp01(float(features.get("long_term_overlap_crowding_norm", 0.0) or 0.0))
+    duration_sensitivity = _clamp01(float(features.get("long_term_duration_sensitivity_norm", 0.0) or 0.0))
+    total_return_income = _clamp01(float(features.get("long_term_total_return_income_norm", 0.0) or 0.0))
+    downside_preservation = _clamp01(float(features.get("long_term_downside_preservation_norm", 0.0) or 0.0))
+    valuation_reserve = _clamp01(float(features.get("long_term_valuation_reserve_norm", 0.0) or 0.0))
+    compounder_conviction = _clamp01(float(features.get("long_term_compounder_conviction_norm", 0.0) or 0.0))
 
     prof = (profile or "").strip().lower()
     if prof == "long_term_core_etf":
         score = (
-            0.33 * stability
-            + 0.23 * trend
-            + 0.17 * pullback_resilience
-            + 0.15 * range_balance
-            + 0.12 * universe_hit
+            0.19 * stability
+            + 0.15 * trend
+            + 0.13 * pullback_resilience
+            + 0.10 * range_balance
+            + 0.11 * valuation_anchor
+            + 0.07 * valuation_history
+            + 0.06 * valuation_reserve
+            + 0.09 * capital_allocation
+            + 0.07 * persistence
+            + 0.07 * downside_preservation
+            + 0.05 * max(1.0 - overlap_crowding, 0.0)
+            + 0.05 * universe_hit
         )
     elif prof == "long_term_sector_rotation":
         score = (
-            0.30 * trend
-            + 0.22 * stability
-            + 0.16 * pullback_resilience
-            + 0.12 * range_balance
-            + 0.12 * universe_hit
-            + 0.08 * (1.0 - macro_stress)
+            0.22 * trend
+            + 0.15 * stability
+            + 0.11 * pullback_resilience
+            + 0.10 * valuation_history
+            + 0.10 * capital_allocation
+            + 0.09 * persistence
+            + 0.06 * valuation_reserve
+            + 0.08 * downside_preservation
+            + 0.07 * total_return_income
+            + 0.05 * universe_hit
+            + 0.03 * (1.0 - macro_stress)
         )
     elif prof == "long_term_dividend":
         score = (
-            0.26 * dividend_quality
-            + 0.20 * payout_safety
-            + 0.16 * stability
-            + 0.14 * compound_growth
-            + 0.14 * compound_safety
-            + 0.10 * universe_hit
+            0.18 * dividend_quality
+            + 0.14 * payout_safety
+            + 0.10 * stability
+            + 0.09 * compound_growth
+            + 0.09 * compound_safety
+            + 0.10 * total_return_income
+            + 0.10 * capital_allocation
+            + 0.08 * persistence
+            + 0.07 * valuation_anchor
+            + 0.04 * valuation_reserve
+            + 0.04 * compounder_conviction
+            + 0.05 * downside_preservation
+            + 0.05 * universe_hit
+            + 0.05 * max(1.0 - duration_sensitivity, 0.0)
         )
     else:
         score = (
-            0.35 * stability
-            + 0.25 * trend
-            + 0.20 * pullback_resilience
-            + 0.20 * universe_hit
+            0.24 * stability
+            + 0.16 * trend
+            + 0.14 * pullback_resilience
+            + 0.10 * valuation_anchor
+            + 0.08 * valuation_reserve
+            + 0.12 * capital_allocation
+            + 0.08 * persistence
+            + 0.08 * compounder_conviction
+            + 0.06 * downside_preservation
+            + 0.06 * universe_hit
         )
 
     components = {
@@ -7244,6 +9235,16 @@ def _long_term_10y_score(symbol: str, features: Dict[str, float], profile: str) 
         "long_term_quality_payout_safety_norm": payout_safety,
         "long_term_quality_compound_growth_norm": compound_growth,
         "long_term_quality_compound_safety_norm": compound_safety,
+        "long_term_valuation_anchor_norm": valuation_anchor,
+        "long_term_valuation_history_norm": valuation_history,
+        "long_term_capital_allocation_quality_norm": capital_allocation,
+        "long_term_quality_persistence_norm": persistence,
+        "long_term_overlap_crowding_norm": overlap_crowding,
+        "long_term_duration_sensitivity_norm": duration_sensitivity,
+        "long_term_total_return_income_norm": total_return_income,
+        "long_term_downside_preservation_norm": downside_preservation,
+        "long_term_valuation_reserve_norm": valuation_reserve,
+        "long_term_compounder_conviction_norm": compounder_conviction,
     }
     return _clamp01(score), components
 
@@ -7331,20 +9332,53 @@ def _apply_long_term_allocation_policy(
     if not _is_long_term_profile():
         return action, score, reasons, {}
 
-    dca_interval = max(int(os.getenv("LONG_TERM_DCA_INTERVAL_ITERS", "6") or 6), 1)
+    dca_interval = max(int(os.getenv("LONG_TERM_DCA_INTERVAL_ITERS", "8") or 8), 1)
     strong_buffer = max(float(os.getenv("LONG_TERM_DCA_STRONG_SCORE_BUFFER", "0.08") or 0.08), 0.0)
-    rebalance_band = max(float(os.getenv("LONG_TERM_REBALANCE_BAND_PCT", "0.035") or 0.035), 0.005)
+    rebalance_band = max(float(os.getenv("LONG_TERM_REBALANCE_BAND_PCT", "0.045") or 0.045), 0.005)
 
-    new_action = str(action).upper()
+    requested_action = str(action).upper()
+    new_action = requested_action
     new_score = float(score)
     new_reasons = list(reasons)
 
     last_buy_iter_by_symbol = state.setdefault("last_buy_iter_by_symbol", {})
+    position_state = state.setdefault("position_state_by_symbol", {})
+    row = position_state.setdefault(
+        symbol.upper(),
+        {
+            "position_open": 0.0,
+            "first_buy_iter": 0.0,
+            "last_buy_iter": 0.0,
+            "hold_iters": 0.0,
+            "avg_cost": 0.0,
+        },
+    )
     last_buy_iter = int(last_buy_iter_by_symbol.get(symbol.upper(), 0) or 0)
     iters_since_buy = int(iter_count - last_buy_iter) if last_buy_iter > 0 else 10**9
 
     pct_from_close = abs(float(features.get("pct_from_close", 0.0) or 0.0))
     strong_score = float(threshold) + strong_buffer
+    accumulation_discipline = _clamp01(float(features.get("long_term_accumulation_discipline_norm", 0.0) or 0.0))
+    downside_preservation = _clamp01(float(features.get("long_term_downside_preservation_norm", 0.0) or 0.0))
+    corporate_action_hazard = _clamp01(float(features.get("long_term_corporate_action_hazard_norm", 0.0) or 0.0))
+    tax_friction = _clamp01(float(features.get("long_term_tax_friction_norm", 0.0) or 0.0))
+    factor_quality_mix = _clamp01(float(features.get("long_term_factor_quality_mix_norm", 0.0) or 0.0))
+    rebalance_overlap_penalty = _clamp01(float(features.get("long_term_rebalance_overlap_penalty_norm", 0.0) or 0.0))
+    valuation_reserve = _clamp01(float(features.get("long_term_valuation_reserve_norm", 0.0) or 0.0))
+    compounder_conviction = _clamp01(float(features.get("long_term_compounder_conviction_norm", 0.0) or 0.0))
+    factor_exposure_control = _clamp01(float(features.get("long_term_factor_exposure_control_norm", 0.0) or 0.0))
+    overlap_rebalance = _clamp01(float(features.get("long_term_overlap_rebalance_norm", 0.0) or 0.0))
+    last_price = max(float(features.get("last_price", 0.0) or 0.0), 0.0)
+    live_macro_active = _clamp01(float(features.get("live_macro_gate_active_norm", 0.0) or 0.0))
+    live_macro_headwind = _clamp01(float(features.get("live_macro_headwind_norm", 0.0) or 0.0))
+    live_macro_tailwind = _clamp01(float(features.get("live_macro_tailwind_norm", 0.0) or 0.0))
+    position_metrics = _slow_position_metrics(
+        symbol=symbol,
+        features=features,
+        iter_count=iter_count,
+        row=row,
+        min_hold_iters=max(int(os.getenv("LONG_TERM_TAX_MIN_HOLD_ITERS", "48") or 48), 1),
+    )
 
     if new_action == "BUY":
         if (dca_interval > 1) and (iters_since_buy < dca_interval) and (new_score < strong_score):
@@ -7362,14 +9396,125 @@ def _apply_long_term_allocation_policy(
             new_reasons = new_reasons + [
                 f"long_term_rebalance_inside_band pct_from_close={pct_from_close:.4f} band={rebalance_band:.4f}",
             ]
+        elif accumulation_discipline < 0.34 or downside_preservation < 0.30:
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [
+                f"long_term_underwriting_wait accumulation={accumulation_discipline:.3f}",
+                f"long_term_downside_preservation={downside_preservation:.3f}",
+            ]
+        elif valuation_reserve < 0.34 or compounder_conviction < 0.36:
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [
+                f"long_term_valuation_reserve_low={valuation_reserve:.3f}",
+                f"long_term_compounder_conviction_low={compounder_conviction:.3f}",
+            ]
+        elif factor_quality_mix < 0.36:
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [
+                f"long_term_factor_quality_mix_low={factor_quality_mix:.3f}",
+            ]
+        elif factor_exposure_control < 0.38:
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [
+                f"long_term_factor_exposure_control_low={factor_exposure_control:.3f}",
+            ]
+        elif rebalance_overlap_penalty >= 0.72 and new_score < strong_score:
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [
+                f"long_term_rebalance_overlap_penalty={rebalance_overlap_penalty:.3f}",
+            ]
+        elif overlap_rebalance >= 0.72 and new_score < strong_score:
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [
+                f"long_term_overlap_rebalance={overlap_rebalance:.3f}",
+            ]
+        elif float(features.get("long_term_overlap_crowding_norm", 0.0) or 0.0) >= 0.60 and new_score < strong_score:
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [
+                f"long_term_overlap_crowding={float(features.get('long_term_overlap_crowding_norm', 0.0) or 0.0):.3f}",
+            ]
+        elif corporate_action_hazard >= 0.72:
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [
+                f"long_term_corporate_action_hazard={corporate_action_hazard:.3f}",
+            ]
+        elif live_macro_active > 0.0 and live_macro_headwind >= 0.78 and live_macro_tailwind < 0.56 and downside_preservation < 0.72:
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [
+                f"long_term_live_macro_headwind={live_macro_headwind:.3f}",
+            ]
 
     if new_action == "BUY":
         last_buy_iter_by_symbol[symbol.upper()] = int(iter_count)
+        if float(row.get("position_open", 0.0) or 0.0) <= 0.0:
+            row["first_buy_iter"] = float(iter_count)
+            row["hold_iters"] = 0.0
+            row["position_open"] = 1.0
+            if last_price > 0.0:
+                row["avg_cost"] = last_price
+        else:
+            row["position_open"] = 1.0
+            if last_price > 0.0:
+                prior_cost = max(float(row.get("avg_cost", 0.0) or 0.0), 0.0)
+                row["avg_cost"] = (0.72 * prior_cost) + (0.28 * last_price) if prior_cost > 0.0 else last_price
+        row["last_buy_iter"] = float(iter_count)
+    elif new_action == "SELL":
+        if tax_friction >= 0.72 and downside_preservation >= 0.36:
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [
+                f"long_term_tax_friction_hold tax={tax_friction:.3f}",
+                f"long_term_position_age={position_metrics['slow_position_age_norm']:.3f}",
+            ]
+        else:
+            row["position_open"] = 0.0
+            row["hold_iters"] = 0.0
+            row["avg_cost"] = 0.0
+    elif (
+        new_action == "HOLD"
+        and accumulation_discipline >= 0.68
+        and factor_quality_mix >= 0.58
+        and factor_exposure_control >= 0.58
+        and valuation_reserve >= 0.58
+        and compounder_conviction >= 0.60
+        and rebalance_overlap_penalty < 0.50
+        and overlap_rebalance < 0.56
+        and iters_since_buy >= dca_interval
+        and pct_from_close >= (rebalance_band * 0.60)
+        and not (live_macro_active > 0.0 and live_macro_headwind >= 0.78 and live_macro_tailwind < 0.56)
+    ):
+        new_action, new_score = _force_action_score("BUY", new_score, threshold)
+        new_reasons = new_reasons + [
+            f"long_term_staggered_accumulation accumulation={accumulation_discipline:.3f}",
+            f"long_term_overlap_penalty={rebalance_overlap_penalty:.3f}",
+            f"long_term_factor_exposure_control={factor_exposure_control:.3f}",
+        ]
+    elif float(row.get("position_open", 0.0) or 0.0) > 0.0:
+        row["hold_iters"] = float(row.get("hold_iters", 0.0) or 0.0) + 1.0
+
+    if (new_action == "BUY" or requested_action == "BUY") and live_macro_active > 0.0 and live_macro_headwind >= 0.78 and live_macro_tailwind < 0.56:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        if not any("long_term_live_macro_headwind" in reason for reason in new_reasons):
+            new_reasons = new_reasons + [f"long_term_live_macro_headwind={live_macro_headwind:.3f}"]
+    if new_action == "SELL" and live_macro_active > 0.0 and live_macro_tailwind >= 0.80 and downside_preservation >= 0.60:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"long_term_live_macro_tailwind={live_macro_tailwind:.3f}"]
 
     out_features = {
         "long_term_dca_interval_iters": float(dca_interval),
         "long_term_dca_iters_since_buy": float(max(min(iters_since_buy, 1_000_000), 0)),
         "long_term_rebalance_band_norm": _clamp01(rebalance_band / 0.10),
+        "long_term_accumulation_discipline_norm": accumulation_discipline,
+        "long_term_position_age_norm": float(position_metrics["slow_position_age_norm"]),
+        "long_term_cost_basis_gap_norm": float(position_metrics["slow_cost_basis_gap_norm"]),
+        "long_term_tax_friction_norm": tax_friction,
+        "long_term_corporate_action_hazard_norm": corporate_action_hazard,
+        "long_term_downside_preservation_norm": downside_preservation,
+        "long_term_factor_quality_mix_norm": factor_quality_mix,
+        "long_term_rebalance_overlap_penalty_norm": rebalance_overlap_penalty,
+        "long_term_valuation_reserve_norm": valuation_reserve,
+        "long_term_compounder_conviction_norm": compounder_conviction,
+        "long_term_factor_exposure_control_norm": factor_exposure_control,
+        "long_term_overlap_rebalance_norm": overlap_rebalance,
     }
     return new_action, new_score, new_reasons, out_features
 
@@ -7473,6 +9618,548 @@ def _trend_chop_regime_metrics(features: Dict[str, float]) -> tuple[float, float
     return trend_norm, chop_norm, alignment_norm
 
 
+def _directional_row_strength(row: Mapping[str, Any]) -> float:
+    action = str(row.get("action", "") or "").strip().upper()
+    if action not in {"BUY", "SELL"}:
+        return 0.0
+    weight = abs(float(row.get("weight", 0.0) or 0.0))
+    if weight <= 0.0:
+        weight = 1.0
+    score = float(row.get("score", 0.5) or 0.5)
+    confidence = max(abs(score - 0.5) * 2.0, 0.20)
+    return max(weight * confidence, 0.0)
+
+
+def _bot_dependency_norm(rows: Optional[List[Dict[str, Any]]], bot_ids: Iterable[str]) -> float:
+    if not rows:
+        return 0.0
+    target_ids = {str(item or "").strip().lower() for item in bot_ids if str(item or "").strip()}
+    total_strength = 0.0
+    target_strength = 0.0
+    top_strength = 0.0
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        strength = _directional_row_strength(row)
+        if strength <= 0.0:
+            continue
+        total_strength += strength
+        top_strength = max(top_strength, strength)
+        bot_id = str(row.get("bot_id", "") or "").strip().lower()
+        if (not target_ids) or bot_id in target_ids:
+            target_strength += strength
+    if total_strength <= 0.0:
+        return 0.0
+    share = target_strength / total_strength
+    top_share = top_strength / total_strength
+    return _clamp01((0.72 * share) + (0.28 * top_share))
+
+
+def _champion_challenger_gap_norm(rows: Optional[List[Dict[str, Any]]]) -> float:
+    if not rows:
+        return 0.0
+    strengths = sorted(
+        [_directional_row_strength(row) for row in rows if isinstance(row, Mapping)],
+        reverse=True,
+    )
+    strengths = [value for value in strengths if value > 0.0]
+    if not strengths:
+        return 0.0
+    champion = strengths[0]
+    challenger = strengths[1] if len(strengths) > 1 else 0.0
+    if champion <= 0.0:
+        return 0.0
+    return _clamp01((champion - challenger) / max(champion, 1e-6))
+
+
+def _derive_core_sleeve_strategy_features(
+    *,
+    profile: str,
+    rows: Optional[List[Dict[str, Any]]],
+    features: Dict[str, float],
+) -> Dict[str, float]:
+    pct = float(features.get("pct_from_close", 0.0) or 0.0)
+    tradeability = _clamp01(float(features.get("market_micro_tradeability_score_norm", 0.5) or 0.5))
+    execution_fitness = _clamp01(float(features.get("execution_fitness_norm", tradeability) or tradeability))
+    lead_conf = _clamp01(float(features.get("lead_lag_confirmation_norm", 0.0) or 0.0))
+    lead_signal = _clamp11(float(features.get("lead_lag_signal_signed", 0.0) or 0.0))
+    flow_direction = _clamp11(float(features.get("flow_direction_signed", 0.0) or 0.0))
+    flow_conf = _clamp01(float(features.get("flow_conviction_norm", 0.0) or 0.0))
+    flow_risk_off = _clamp01(float(features.get("flow_risk_off_norm", 0.0) or 0.0))
+    flow_stress = _clamp01(float(features.get("flow_stress_norm", 0.0) or 0.0))
+    cross_conflict = _clamp01(float(features.get("cross_bot_conflict_norm", 0.0) or 0.0))
+    quote_fade = _clamp01(float(features.get("market_micro_quote_fade_rate_norm", 0.0) or 0.0))
+    depth_decay = _clamp01(float(features.get("market_micro_queue_depth_decay_norm", 0.0) or 0.0))
+    micro_range_expansion = _clamp01(float(features.get("market_micro_range_expansion_norm", 0.0) or 0.0))
+    micro_trend_persistence = _clamp01(float(features.get("market_micro_trend_persistence_norm", 0.0) or 0.0))
+    micro_relative_volume = _clamp01(float(features.get("market_micro_relative_volume_norm", 0.0) or 0.0))
+    micro_order_flow_signed = _centered_norm_to_signed(float(features.get("market_micro_order_flow_imbalance_norm", 0.5) or 0.5))
+    reversal_risk = _clamp01(float(features.get("market_micro_reversal_risk_norm", 0.0) or 0.0))
+    post_event_drift = _clamp01(float(features.get("market_micro_post_event_drift_norm", 0.0) or 0.0))
+    _, chop_norm, regime_alignment = _trend_chop_regime_metrics(features)
+
+    benchmark_moves = [_ctx_pct_feature(features, sym) for sym in ("SPY", "QQQ", "IWM")]
+    benchmark_used = [value for value in benchmark_moves if abs(value) > 1e-8]
+    benchmark_move = _safe_mean(benchmark_used)
+    relative_move = pct - benchmark_move
+    sector_rotation = _clamp01(float(features.get("breadth_sector_rotation_norm", 0.0) or 0.0))
+    sector_relative_strength = _clamp01(float(features.get("swing_sector_relative_strength_norm", 0.5) or 0.5))
+    news_sentiment = abs(float(features.get("news_sentiment", 0.0) or 0.0))
+    news_shock = _clamp01(float(features.get("news_shock_rate", 0.0) or 0.0))
+    event_prox = _clamp01(float(features.get("calendar_event_proximity_norm", 0.0) or 0.0))
+    high_impact = _clamp01(float(features.get("calendar_high_impact_24h_norm", 0.0) or 0.0))
+    sec_recent = _clamp01(float(features.get("sec_recent_proximity_norm", 0.0) or 0.0))
+    options_earnings_setup = _clamp01(float(features.get("options_earnings_setup_norm", 0.0) or 0.0))
+
+    default_dependency = _clamp01(
+        (0.65 * _bot_dependency_norm(rows, ("brain_refinery_v13_choppy", "brain_refinery_v35_dmi_state_machine")))
+        + (0.35 * _bot_dependency_norm(rows, ()))
+    )
+    champion_gap = _champion_challenger_gap_norm(rows)
+    cross_sectional_rank = _clamp01(
+        (0.32 * _clamp01(0.5 + (relative_move * 25.0)))
+        + (0.22 * sector_relative_strength)
+        + (0.16 * micro_relative_volume)
+        + (0.12 * lead_conf)
+        + (0.10 * max(1.0 - cross_conflict, 0.0))
+        + (0.08 * sector_rotation)
+    )
+    event_reaction = _clamp01(
+        (0.24 * max(news_shock, event_prox))
+        + (0.18 * high_impact)
+        + (0.16 * post_event_drift)
+        + (0.14 * options_earnings_setup)
+        + (0.12 * sec_recent)
+        + (0.08 * _clamp01(news_sentiment / 0.20))
+        + (0.08 * _clamp01(float(features.get("calendar_macro_event_norm", 0.0) or 0.0)))
+    )
+    tlt_move = _ctx_pct_feature(features, "TLT")
+    uup_move = _ctx_pct_feature(features, "UUP")
+    gld_move = _ctx_pct_feature(features, "GLD")
+    uso_move = _ctx_pct_feature(features, "USO")
+    risk_signal = _clamp11(
+        (0.45 * _scaled_signed(benchmark_move, 0.010))
+        + (0.30 * flow_direction)
+        + (0.25 * lead_signal)
+    )
+    defensive_signal = _clamp11(
+        (0.45 * _scaled_signed(tlt_move, 0.010))
+        + (0.30 * _scaled_signed(uup_move, 0.008))
+        + (0.25 * _scaled_signed(gld_move, 0.010))
+    )
+    commodity_signal = _clamp11(_scaled_signed(uso_move, 0.012))
+    cross_asset_confirmation = _clamp01(
+        (0.40 * _clamp01(0.5 + (0.5 * max(risk_signal * (-defensive_signal), -1.0))))
+        + (0.20 * abs(risk_signal))
+        + (0.14 * abs(defensive_signal))
+        + (0.12 * lead_conf)
+        + (0.08 * flow_conf)
+        + (0.06 * _clamp01(1.0 - abs(commodity_signal - risk_signal)))
+    )
+    regime_specialist_blend = _clamp01(
+        (0.24 * max(1.0 - chop_norm, 0.0))
+        + (0.20 * lead_conf)
+        + (0.18 * flow_conf)
+        + (0.14 * event_reaction)
+        + (0.12 * _clamp01(float(features.get("options_vol_regime_norm", 0.0) or 0.0)))
+        + (0.12 * cross_asset_confirmation)
+    )
+    exit_persistence = _clamp01(
+        (0.24 * micro_trend_persistence)
+        + (0.18 * lead_conf)
+        + (0.14 * execution_fitness)
+        + (0.12 * tradeability)
+        + (0.12 * max(1.0 - reversal_risk, 0.0))
+        + (0.10 * max(1.0 - quote_fade, 0.0))
+        + (0.10 * max(1.0 - event_reaction, 0.0))
+    )
+    portfolio_overlap_pressure = _clamp01(
+        (0.36 * _bot_concentration_norm(rows))
+        + (0.20 * default_dependency)
+        + (0.14 * _clamp01(float(features.get("long_term_overlap_crowding_norm", 0.0) or 0.0)))
+        + (0.12 * _clamp01(float(features.get("long_term_rebalance_overlap_penalty_norm", 0.0) or 0.0)))
+        + (0.10 * _clamp01(float(features.get("etf_fund_family_creation_pressure_norm", 0.0) or 0.0)))
+        + (0.08 * cross_conflict)
+    )
+    conservative_quality = _clamp01(
+        (0.24 * tradeability)
+        + (0.22 * execution_fitness)
+        + (0.16 * lead_conf)
+        + (0.12 * max(1.0 - flow_stress, 0.0))
+        + (0.10 * max(1.0 - quote_fade, 0.0))
+        + (0.08 * max(1.0 - depth_decay, 0.0))
+        + (0.08 * max(1.0 - cross_conflict, 0.0))
+    )
+    aggressive_breakout = _clamp01(
+        (0.22 * micro_range_expansion)
+        + (0.18 * micro_trend_persistence)
+        + (0.16 * micro_relative_volume)
+        + (0.12 * abs(micro_order_flow_signed))
+        + (0.12 * tradeability)
+        + (0.10 * lead_conf)
+        + (0.10 * max(1.0 - chop_norm, 0.0))
+    )
+    aggressive_relative_strength_burst = _clamp01(
+        (0.30 * cross_sectional_rank)
+        + (0.24 * micro_range_expansion)
+        + (0.18 * micro_relative_volume)
+        + (0.12 * event_reaction)
+        + (0.10 * abs(micro_order_flow_signed))
+        + (0.06 * max(1.0 - chop_norm, 0.0))
+    )
+    fx_session_norm = _clamp01(
+        max(
+            float(features.get("fx_session_london_norm", 0.0) or 0.0),
+            float(features.get("fx_session_ny_norm", 0.0) or 0.0),
+            0.45 * float(features.get("fx_session_asia_norm", 0.0) or 0.0),
+        )
+    )
+    fx_macro_confirmation = _clamp01(
+        (0.34 * _clamp01(float(features.get("fx_dxy_yield_confirmation_norm", 0.0) or 0.0)))
+        + (0.26 * _clamp01(float(features.get("fx_carry_proxy_norm", 0.0) or 0.0)))
+        + (0.18 * fx_session_norm)
+        + (0.12 * tradeability)
+        + (0.10 * max(1.0 - _clamp01(float(features.get("fx_rollover_risk_norm", 0.0) or 0.0)), 0.0))
+    )
+    futures_regime_edge = _clamp01(
+        (0.24 * _clamp01(float(features.get("futures_cash_basis_confirmation_norm", 0.0) or 0.0)))
+        + (0.18 * _clamp01(float(features.get("futures_roll_pressure_norm", 0.0) or 0.0)))
+        + (0.16 * _clamp01(float(features.get("futures_inventory_state_norm", 0.0) or 0.0)))
+        + (0.12 * _clamp01(float(features.get("futures_curve_shift_velocity_norm", 0.0) or 0.0)))
+        + (0.10 * tradeability)
+        + (0.10 * lead_conf)
+        + (0.10 * abs(_centered_norm_to_signed(float(features.get("futures_order_book_imbalance_norm", 0.5) or 0.5))))
+    )
+    crypto_unwind_risk = _clamp01(
+        (0.26 * _clamp01(float(features.get("futures_liquidation_risk_norm", 0.0) or 0.0)))
+        + (0.20 * abs(_centered_norm_to_signed(float(features.get("futures_basis_bps_norm", 0.5) or 0.5))))
+        + (0.18 * abs(_centered_norm_to_signed(float(features.get("crypto_hyperliquid_funding_norm", 0.5) or 0.5))))
+        + (0.16 * _clamp01(float(features.get("futures_basis_divergence_norm", 0.0) or 0.0)))
+        + (0.10 * _clamp01(float(features.get("futures_mark_index_dislocation_norm", 0.0) or 0.0)))
+        + (0.10 * max(_clamp01(float(features.get("cot_equity_crowding_norm", 0.0) or 0.0)), flow_risk_off))
+    )
+    options_skew_dislocation = _clamp01(
+        (0.34 * abs(_centered_norm_to_signed(float(features.get("options_iv_skew_norm", 0.5) or 0.5))))
+        + (0.24 * _clamp01(float(features.get("options_surface_change_norm", 0.0) or 0.0)))
+        + (0.18 * _clamp01(float(features.get("options_vol_of_vol_change_norm", 0.0) or 0.0)))
+        + (0.14 * _clamp01(float(features.get("options_strike_expiry_concentration_change_norm", 0.0) or 0.0)))
+        + (0.10 * max(1.0 - _clamp01(float(features.get("options_spread_execution_risk_norm", 0.0) or 0.0)), 0.0))
+    )
+    options_gamma_wall_reaction = _clamp01(
+        (0.32 * _clamp01(float(features.get("options_gamma_flip_distance_norm", 0.0) or 0.0)))
+        + (0.22 * abs(_centered_norm_to_signed(float(features.get("options_gamma_expiry_skew_norm", 0.5) or 0.5))))
+        + (0.18 * _clamp01(float(features.get("options_surface_change_norm", 0.0) or 0.0)))
+        + (0.16 * options_earnings_setup)
+        + (0.12 * tradeability)
+    )
+    options_structure_edge = _clamp01(
+        (0.22 * _clamp01(float(features.get("options_surface_change_norm", 0.0) or 0.0)))
+        + (0.18 * _clamp01(float(features.get("options_gamma_flip_distance_norm", 0.0) or 0.0)))
+        + (0.16 * options_skew_dislocation)
+        + (0.12 * options_gamma_wall_reaction)
+        + (0.10 * max(1.0 - _clamp01(float(features.get("options_spread_execution_risk_norm", 0.0) or 0.0)), 0.0))
+        + (0.10 * max(1.0 - _clamp01(float(features.get("options_assignment_risk_norm", 0.0) or 0.0)), 0.0))
+        + (0.06 * max(1.0 - _clamp01(float(features.get("options_iv_crush_risk_norm", 0.0) or 0.0)), 0.0))
+        + (0.06 * tradeability)
+    )
+    futures_basis_dislocation = _clamp01(
+        (0.36 * _clamp01(float(features.get("futures_basis_divergence_norm", 0.0) or 0.0)))
+        + (0.24 * _clamp01(float(features.get("futures_mark_index_dislocation_norm", 0.0) or 0.0)))
+        + (0.16 * abs(_centered_norm_to_signed(float(features.get("futures_basis_bps_norm", 0.5) or 0.5))))
+        + (0.12 * _clamp01(float(features.get("futures_cash_basis_confirmation_norm", 0.0) or 0.0)))
+        + (0.12 * tradeability)
+    )
+    futures_overnight_inventory = _clamp01(
+        (0.34 * _clamp01(float(features.get("futures_inventory_state_norm", 0.0) or 0.0)))
+        + (0.24 * abs(_centered_norm_to_signed(float(features.get("futures_session_volume_profile_norm", 0.5) or 0.5))))
+        + (0.18 * _clamp01(float(features.get("market_micro_overnight_event_hazard_norm", 0.0) or 0.0)))
+        + (0.14 * _clamp01(float(features.get("futures_curve_shift_velocity_norm", 0.0) or 0.0)))
+        + (0.10 * _clamp01(float(features.get("futures_roll_pressure_norm", 0.0) or 0.0)))
+    )
+    futures_curve_alignment = _clamp01(
+        (0.24 * _clamp01(float(features.get("futures_curve_shift_velocity_norm", 0.0) or 0.0)))
+        + (0.20 * _clamp01(float(features.get("futures_roll_pressure_norm", 0.0) or 0.0)))
+        + (0.16 * _clamp01(float(features.get("futures_inventory_state_norm", 0.0) or 0.0)))
+        + (0.12 * _clamp01(float(features.get("futures_cash_basis_confirmation_norm", 0.0) or 0.0)))
+        + (0.10 * futures_basis_dislocation)
+        + (0.10 * lead_conf)
+        + (0.08 * tradeability)
+    )
+    return {
+        "core_default_dependency_norm": default_dependency,
+        "core_conservative_quality_gate_norm": conservative_quality,
+        "core_aggressive_breakout_conviction_norm": aggressive_breakout,
+        "core_options_structure_edge_norm": options_structure_edge,
+        "core_fx_macro_confirmation_norm": fx_macro_confirmation,
+        "core_futures_regime_edge_norm": futures_regime_edge,
+        "core_futures_curve_alignment_norm": futures_curve_alignment,
+        "core_crypto_unwind_risk_norm": crypto_unwind_risk,
+        "core_cross_sectional_rank_norm": cross_sectional_rank,
+        "core_regime_specialist_blend_norm": regime_specialist_blend,
+        "core_exit_persistence_norm": exit_persistence,
+        "core_portfolio_overlap_pressure_norm": portfolio_overlap_pressure,
+        "core_event_reaction_norm": event_reaction,
+        "core_cross_asset_confirmation_norm": cross_asset_confirmation,
+        "core_champion_challenger_gap_norm": champion_gap,
+        "aggressive_relative_strength_burst_norm": aggressive_relative_strength_burst,
+        "options_skew_dislocation_norm": options_skew_dislocation,
+        "options_gamma_wall_reaction_norm": options_gamma_wall_reaction,
+        "futures_basis_dislocation_norm": futures_basis_dislocation,
+        "futures_overnight_inventory_norm": futures_overnight_inventory,
+    }
+
+
+def _apply_core_sleeve_strategy_overlay(
+    *,
+    symbol: str,
+    action: str,
+    score: float,
+    threshold: float,
+    reasons: List[str],
+    features: Dict[str, float],
+    rows: Optional[List[Dict[str, Any]]] = None,
+    profile: Optional[str] = None,
+) -> tuple[str, float, List[str], Dict[str, float]]:
+    prof = str(profile or _shadow_profile_name() or "default").strip().lower()
+    out_features = _derive_core_sleeve_strategy_features(profile=prof, rows=rows, features=features)
+
+    tradeability = _clamp01(float(features.get("market_micro_tradeability_score_norm", 0.5) or 0.5))
+    execution_fitness = _clamp01(float(features.get("execution_fitness_norm", tradeability) or tradeability))
+    cross_conflict = _clamp01(float(features.get("cross_bot_conflict_norm", 0.0) or 0.0))
+    bot_concentration = _bot_concentration_norm(rows)
+    profile_symbol_drag = _profile_symbol_drag_penalty_norm(prof, symbol)
+    profile_drag = _profile_drag_snapshot(prof)
+    profile_kill_switch_norm = _clamp01(float(profile_drag.get("drag_norm", 0.0) or 0.0))
+    lead_signal = _clamp11(float(features.get("lead_lag_signal_signed", 0.0) or 0.0))
+    flow_direction = _clamp11(float(features.get("flow_direction_signed", 0.0) or 0.0))
+    fx_rollover_risk = _clamp01(float(features.get("fx_rollover_risk_norm", 0.0) or 0.0))
+    fx_session_london = _clamp01(float(features.get("fx_session_london_norm", 0.0) or 0.0))
+    fx_session_ny = _clamp01(float(features.get("fx_session_ny_norm", 0.0) or 0.0))
+    order_flow_signed = _centered_norm_to_signed(float(features.get("market_micro_order_flow_imbalance_norm", 0.5) or 0.5))
+    futures_order_signed = _centered_norm_to_signed(float(features.get("futures_order_book_imbalance_norm", 0.5) or 0.5))
+    futures_basis_signed = _centered_norm_to_signed(float(features.get("futures_basis_bps_norm", 0.5) or 0.5))
+    crypto_basis_signed = _centered_norm_to_signed(float(features.get("crypto_hyperliquid_basis_norm", 0.5) or 0.5))
+    _, chop_norm, _ = _trend_chop_regime_metrics(features)
+    default_dependency = float(out_features["core_default_dependency_norm"])
+    cross_sectional_rank = float(out_features.get("core_cross_sectional_rank_norm", 0.0) or 0.0)
+    regime_specialist_blend = float(out_features.get("core_regime_specialist_blend_norm", 0.0) or 0.0)
+    exit_persistence = float(out_features.get("core_exit_persistence_norm", 0.0) or 0.0)
+    overlap_pressure = float(out_features.get("core_portfolio_overlap_pressure_norm", 0.0) or 0.0)
+    event_reaction = float(out_features.get("core_event_reaction_norm", 0.0) or 0.0)
+    cross_asset_confirmation = float(out_features.get("core_cross_asset_confirmation_norm", 0.0) or 0.0)
+    champion_gap = float(out_features.get("core_champion_challenger_gap_norm", 0.0) or 0.0)
+    options_structure_edge = float(out_features.get("core_options_structure_edge_norm", 0.0) or 0.0)
+    aggressive_burst = float(out_features.get("aggressive_relative_strength_burst_norm", 0.0) or 0.0)
+    options_skew_dislocation = float(out_features.get("options_skew_dislocation_norm", 0.0) or 0.0)
+    options_gamma_wall = float(out_features.get("options_gamma_wall_reaction_norm", 0.0) or 0.0)
+    futures_curve_alignment = float(out_features.get("core_futures_curve_alignment_norm", 0.0) or 0.0)
+    futures_basis_dislocation = float(out_features.get("futures_basis_dislocation_norm", 0.0) or 0.0)
+    futures_overnight_inventory = float(out_features.get("futures_overnight_inventory_norm", 0.0) or 0.0)
+    live_macro_active = _clamp01(float(features.get("live_macro_gate_active_norm", 0.0) or 0.0))
+    live_macro_headwind = _clamp01(float(features.get("live_macro_headwind_norm", 0.0) or 0.0))
+    live_macro_tailwind = _clamp01(float(features.get("live_macro_tailwind_norm", 0.0) or 0.0))
+    live_macro_alignment = _clamp01(float(features.get("live_macro_event_alignment_norm", 0.5) or 0.5))
+    live_macro_confidence = _clamp01(float(features.get("live_macro_gate_confidence_norm", 0.0) or 0.0))
+
+    requested_action = str(action).upper()
+    new_action = requested_action
+    new_score = float(score)
+    new_reasons = list(reasons)
+
+    concentration_cap = {
+        "default": 0.72,
+        "conservative": 0.70,
+        "aggressive": 0.66,
+        "fx": 0.74,
+        "schwab_futures": 0.72,
+        "crypto_futures": 0.70,
+    }.get(prof, 0.72)
+    if new_action in {"BUY", "SELL"} and bot_concentration >= concentration_cap and execution_fitness < 0.78:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"bot_concentration_cap={bot_concentration:.3f}"]
+    if new_action in {"BUY", "SELL"} and overlap_pressure >= 0.74 and cross_asset_confirmation < 0.58:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"portfolio_overlap_pressure={overlap_pressure:.3f}"]
+    if new_action in {"BUY", "SELL"} and profile_symbol_drag >= 0.74:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"profile_symbol_drag_guard={profile_symbol_drag:.3f}"]
+    if new_action in {"BUY", "SELL"} and bool(profile_drag.get("active", False)):
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"profile_kill_switch_drag={profile_kill_switch_norm:.3f}"]
+
+    if prof in {"", "default"}:
+        dependency = default_dependency
+        if new_action in {"BUY", "SELL"} and dependency >= 0.68 and execution_fitness < 0.62:
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [f"default_dependency_guard dependency={dependency:.3f}"]
+        elif new_action in {"BUY", "SELL"} and (cross_asset_confirmation < 0.42 or champion_gap < 0.10) and execution_fitness < 0.72:
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [
+                f"default_cross_asset_guard={cross_asset_confirmation:.3f}",
+                f"default_champion_gap={champion_gap:.3f}",
+            ]
+        elif (
+            new_action == "HOLD"
+            and dependency < 0.58
+            and tradeability >= 0.66
+            and execution_fitness >= 0.62
+            and cross_conflict < 0.52
+            and chop_norm <= 0.60
+            and cross_sectional_rank >= 0.56
+            and cross_asset_confirmation >= 0.44
+        ):
+            direct = _directional_action_from_value((0.55 * lead_signal) + (0.45 * flow_direction))
+            if direct in {"BUY", "SELL"}:
+                new_action, new_score = _force_action_score(direct, new_score, threshold)
+                new_reasons = new_reasons + [
+                    f"default_diversified_confirmation dependency={dependency:.3f}",
+                    f"default_cross_sectional_rank={cross_sectional_rank:.3f}",
+                ]
+    elif prof == "conservative":
+        quality_gate = float(out_features["core_conservative_quality_gate_norm"])
+        if new_action in {"BUY", "SELL"} and (quality_gate < 0.64 or tradeability < 0.56 or cross_conflict >= 0.54 or cross_asset_confirmation < 0.40):
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [f"conservative_quality_gate={quality_gate:.3f}"]
+        elif (
+            new_action == "HOLD"
+            and quality_gate >= 0.80
+            and execution_fitness >= 0.70
+            and tradeability >= 0.68
+            and exit_persistence >= 0.60
+        ):
+            direct = _directional_action_from_value((0.60 * lead_signal) + (0.40 * flow_direction))
+            if direct in {"BUY", "SELL"}:
+                new_action, new_score = _force_action_score(direct, new_score, threshold)
+                new_reasons = new_reasons + [f"conservative_high_quality_entry={quality_gate:.3f}"]
+    elif prof == "aggressive":
+        breakout = float(out_features["core_aggressive_breakout_conviction_norm"])
+        aggressive_identity = _clamp01(
+            0.38 * breakout
+            + 0.14 * aggressive_burst
+            + 0.10 * options_structure_edge
+            + 0.16 * execution_fitness
+            + 0.12 * _clamp01(abs(order_flow_signed))
+            + 0.12 * (1.0 - default_dependency)
+            + 0.08 * cross_sectional_rank
+            + 0.06 * champion_gap
+            + 0.06 * cross_asset_confirmation
+            + 0.04 * (1.0 - cross_conflict)
+        )
+        out_features["core_aggressive_identity_norm"] = aggressive_identity
+        if new_action in {"BUY", "SELL"} and (
+            breakout < 0.62
+            or aggressive_identity < 0.58
+            or options_structure_edge < 0.34
+            or default_dependency >= 0.62
+            or tradeability < 0.48
+            or cross_conflict >= 0.64
+            or cross_sectional_rank < 0.48
+            or champion_gap < 0.10
+        ):
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [f"aggressive_identity_filter breakout={breakout:.3f} identity={aggressive_identity:.3f}"]
+        elif (
+            new_action == "HOLD"
+            and breakout >= 0.74
+            and aggressive_identity >= 0.70
+            and default_dependency < 0.60
+            and execution_fitness >= 0.55
+            and tradeability >= 0.55
+            and chop_norm <= 0.66
+            and aggressive_burst >= 0.64
+        ):
+            direct = _directional_action_from_value((0.45 * lead_signal) + (0.30 * flow_direction) + (0.25 * order_flow_signed))
+            if direct in {"BUY", "SELL"}:
+                new_action, new_score = _force_action_score(direct, new_score, threshold)
+                new_reasons = new_reasons + [
+                    f"aggressive_breakout_conviction={breakout:.3f}",
+                    f"aggressive_relative_strength_burst={aggressive_burst:.3f}",
+                ]
+    elif prof == "fx":
+        macro_confirmation = float(out_features["core_fx_macro_confirmation_norm"])
+        london_ny_session = max(fx_session_london, fx_session_ny)
+        if new_action in {"BUY", "SELL"} and (macro_confirmation < 0.58 or fx_rollover_risk >= 0.74 or london_ny_session < 0.40 or cross_asset_confirmation < 0.42):
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [f"fx_macro_confirmation_guard={macro_confirmation:.3f}"]
+        elif (
+            new_action == "HOLD"
+            and macro_confirmation >= 0.72
+            and london_ny_session >= 0.40
+            and tradeability >= 0.52
+            and regime_specialist_blend >= 0.56
+        ):
+            carry_signed = _centered_norm_to_signed(float(features.get("fx_carry_proxy_norm", 0.5) or 0.5))
+            direct = _directional_action_from_value((0.45 * lead_signal) + (0.35 * flow_direction) + (0.20 * carry_signed))
+            if direct in {"BUY", "SELL"}:
+                new_action, new_score = _force_action_score(direct, new_score, threshold)
+                new_reasons = new_reasons + [f"fx_macro_confirmation_signal={macro_confirmation:.3f}"]
+    elif prof == "schwab_futures":
+        regime_edge = float(out_features["core_futures_regime_edge_norm"])
+        if new_action in {"BUY", "SELL"} and (regime_edge < 0.60 or futures_curve_alignment < 0.52 or tradeability < 0.50 or futures_basis_dislocation < 0.36):
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [f"futures_regime_edge_guard={regime_edge:.3f}", f"futures_curve_alignment={futures_curve_alignment:.3f}"]
+        elif (
+            new_action == "HOLD"
+            and regime_edge >= 0.74
+            and futures_curve_alignment >= 0.58
+            and execution_fitness >= 0.58
+            and tradeability >= 0.55
+            and futures_overnight_inventory < 0.74
+        ):
+            direct = _directional_action_from_value((0.55 * futures_order_signed) + (0.45 * futures_basis_signed))
+            if direct in {"BUY", "SELL"}:
+                new_action, new_score = _force_action_score(direct, new_score, threshold)
+                new_reasons = new_reasons + [
+                    f"futures_regime_edge_signal={regime_edge:.3f}",
+                    f"futures_basis_dislocation={futures_basis_dislocation:.3f}",
+                ]
+    elif prof == "crypto_futures":
+        regime_edge = float(out_features["core_futures_regime_edge_norm"])
+        unwind_risk = float(out_features["core_crypto_unwind_risk_norm"])
+        if new_action in {"BUY", "SELL"} and (unwind_risk >= 0.66 or regime_edge < 0.58 or futures_curve_alignment < 0.48 or futures_overnight_inventory >= 0.82):
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [f"crypto_futures_unwind_guard risk={unwind_risk:.3f} edge={regime_edge:.3f}", f"futures_curve_alignment={futures_curve_alignment:.3f}"]
+        elif (
+            new_action == "HOLD"
+            and regime_edge >= 0.72
+            and futures_curve_alignment >= 0.52
+            and unwind_risk < 0.52
+            and execution_fitness >= 0.58
+            and tradeability >= 0.55
+            and futures_basis_dislocation >= 0.40
+        ):
+            direct = _directional_action_from_value((0.50 * futures_order_signed) + (0.30 * futures_basis_signed) + (0.20 * crypto_basis_signed))
+            if direct in {"BUY", "SELL"}:
+                new_action, new_score = _force_action_score(direct, new_score, threshold)
+                new_reasons = new_reasons + [
+                    f"crypto_futures_regime_signal edge={regime_edge:.3f} risk={unwind_risk:.3f}",
+                    f"futures_basis_dislocation={futures_basis_dislocation:.3f}",
+                ]
+
+    if prof in {"", "default", "conservative", "aggressive"} and (new_action == "BUY" or requested_action == "BUY") and live_macro_active > 0.0 and live_macro_headwind >= 0.74 and live_macro_tailwind < 0.58:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        if not any("core_live_macro_headwind" in reason for reason in new_reasons):
+            new_reasons = new_reasons + [
+                f"core_live_macro_headwind={live_macro_headwind:.3f}",
+                f"core_live_macro_confidence={live_macro_confidence:.3f}",
+            ]
+    elif prof in {"", "default", "conservative", "aggressive"} and (new_action == "SELL" or requested_action == "SELL") and live_macro_active > 0.0 and live_macro_tailwind >= 0.78 and live_macro_alignment >= 0.58 and live_macro_headwind < 0.62:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        if not any("core_live_macro_tailwind" in reason for reason in new_reasons):
+            new_reasons = new_reasons + [
+                f"core_live_macro_tailwind={live_macro_tailwind:.3f}",
+                f"core_live_macro_alignment={live_macro_alignment:.3f}",
+            ]
+
+    out_features.setdefault("core_aggressive_identity_norm", 0.0)
+    out_features.setdefault("core_options_structure_edge_norm", 0.0)
+    out_features.setdefault("core_futures_curve_alignment_norm", 0.0)
+    out_features["core_bot_concentration_norm"] = bot_concentration
+    out_features["profile_symbol_drag_penalty_norm"] = profile_symbol_drag
+    out_features["profile_kill_switch_norm"] = profile_kill_switch_norm
+    return new_action, new_score, new_reasons, out_features
+
+
 def _apply_day_strategy_overlay(
     *,
     symbol: str,
@@ -7486,6 +10173,7 @@ def _apply_day_strategy_overlay(
     if not _is_day_profile():
         return action, score, reasons, {}
 
+    profile = str(_shadow_profile_name() or "").strip().lower()
     open_norm, midday_norm, power_norm = _session_phase_norms()
     mom = float(features.get("mom_5m", 0.0) or 0.0)
     pct = float(features.get("pct_from_close", 0.0) or 0.0)
@@ -7494,8 +10182,21 @@ def _apply_day_strategy_overlay(
     bid = max(float(features.get("bid_size", 0.0) or 0.0), 0.0)
     ask = max(float(features.get("ask_size", 0.0) or 0.0), 0.0)
     micro_premarket = _clamp01(float(features.get("market_micro_premarket_pressure_norm", 0.0) or 0.0))
+    micro_opening_drive = _clamp01(float(features.get("market_micro_opening_drive_pressure_norm", 0.0) or 0.0))
     micro_power_hour = _clamp01(float(features.get("market_micro_power_hour_pressure_norm", 0.0) or 0.0))
     micro_range_expansion = _clamp01(float(features.get("market_micro_range_expansion_norm", 0.0) or 0.0))
+    micro_lunch_chop = _clamp01(float(features.get("market_micro_lunch_chop_norm", 0.0) or 0.0))
+    micro_imbalance_regime = _clamp01(float(features.get("market_micro_open_close_imbalance_regime_norm", 0.0) or 0.0))
+    micro_cooldown_pressure = _clamp01(float(features.get("market_micro_symbol_cooldown_pressure_norm", 0.0) or 0.0))
+    micro_relative_volume = _clamp01(float(features.get("market_micro_relative_volume_norm", 0.0) or 0.0))
+    micro_trend_persistence = _clamp01(float(features.get("market_micro_trend_persistence_norm", 0.0) or 0.0))
+    micro_quote_fade = _clamp01(float(features.get("market_micro_quote_fade_rate_norm", 0.0) or 0.0))
+    micro_queue_decay = _clamp01(float(features.get("market_micro_queue_depth_decay_norm", 0.0) or 0.0))
+    micro_reversal = _clamp01(float(features.get("market_micro_reversal_risk_norm", 0.0) or 0.0))
+    micro_closing_cross = _clamp01(float(features.get("market_micro_closing_cross_pressure_norm", 0.0) or 0.0))
+    micro_closing_auction = _clamp01(float(features.get("market_micro_closing_auction_imbalance_norm", 0.0) or 0.0))
+    tradeability = _clamp01(float(features.get("market_micro_tradeability_score_norm", 0.5) or 0.5))
+    execution_fitness = _clamp01(float(features.get("execution_fitness_norm", tradeability) or tradeability))
     options_stress = _clamp01(max(float(features.get("cboe_put_call_stress_norm", 0.0) or 0.0), float(features.get("cboe_vix_spot_norm", 0.0) or 0.0)))
     funding_stress = _clamp01(float(features.get("sofr_funding_stress_norm", 0.0) or 0.0))
     threshold_short = _clamp01(float(features.get("short_threshold_listed_norm", 0.0) or 0.0))
@@ -7507,49 +10208,123 @@ def _apply_day_strategy_overlay(
     depth_ref = max(float(os.getenv("DAY_LIQUIDITY_DEPTH_REF", "1800") or 1800.0), 100.0)
     depth_norm = _clamp01((bid + ask) / depth_ref)
 
-    auction_signal = _clamp01(open_norm * ((0.34 * _clamp01(abs(mom) / 0.01)) + (0.28 * _clamp01(abs(imbalance))) + (0.20 * _clamp01(abs(pct) / 0.01)) + (0.18 * max(micro_premarket, micro_range_expansion))))
+    auction_signal = _clamp01(open_norm * ((0.30 * _clamp01(abs(mom) / 0.01)) + (0.24 * _clamp01(abs(imbalance))) + (0.18 * _clamp01(abs(pct) / 0.01)) + (0.16 * max(micro_premarket, micro_range_expansion)) + (0.12 * micro_opening_drive)))
+    open_drive_conviction = _clamp01(
+        (0.26 * auction_signal)
+        + (0.16 * micro_opening_drive)
+        + (0.20 * micro_relative_volume)
+        + (0.16 * micro_trend_persistence)
+        + (0.10 * tradeability)
+        + (0.12 * regime_alignment)
+    )
     execution_cost_risk = _clamp01((0.48 * _clamp01(spread_bps / max_spread)) + (0.17 * _clamp01(vol / 0.05)) + (0.20 * micro_range_expansion) + (0.10 * options_stress) + (0.05 * funding_stress))
     liquidity_vacuum_risk = _clamp01(max(_clamp01((spread_bps - 18.0) / 24.0), 1.0 - depth_norm, 0.85 * micro_range_expansion, 0.75 * options_stress, 0.70 * threshold_short, 0.70 * ftd_pressure))
     halt_resume_risk = _clamp01(max(execution_cost_risk, _clamp01(abs(pct) / 0.03), _clamp01(vol / 0.05), 0.90 * micro_range_expansion, 0.85 * options_stress, 0.80 * threshold_short, 0.75 * ftd_pressure, 0.65 * funding_stress))
+    failed_breakout_risk = _clamp01(
+        (0.28 * micro_reversal)
+        + (0.22 * micro_quote_fade)
+        + (0.18 * micro_queue_decay)
+        + (0.12 * max(open_drive_conviction - 0.48, 0.0) * _clamp01(open_norm / 0.60))
+        + (0.10 * max(0.55 - regime_alignment, 0.0) * 2.0)
+        + (0.10 * max(0.55 - tradeability, 0.0) * 2.0)
+    )
+    closing_squeeze = _clamp01(
+        (0.34 * micro_power_hour)
+        + (0.28 * max(micro_closing_cross, micro_closing_auction))
+        + (0.18 * micro_relative_volume)
+        + (0.10 * regime_trend)
+        + (0.10 * max(abs(mom) / 0.006, 0.0))
+    )
 
     halt_cooldown_s = max(int(os.getenv("DAY_HALT_RESUME_COOLDOWN_SECONDS", "180") or 180), 30)
     halt_trigger = _clamp01(float(os.getenv("DAY_HALT_TRIGGER_NORM", "0.90") or 0.90))
     halt_until_by_symbol = state.setdefault("halt_until_ts_by_symbol", {}) if isinstance(state, dict) else {}
+    paper_drag_until_by_symbol = state.setdefault("paper_drag_until_ts_by_symbol", {}) if isinstance(state, dict) else {}
 
     now_ts = time.time()
     current_halt_until = float(halt_until_by_symbol.get(symbol.upper(), 0.0) or 0.0)
+    paper_drag_penalty = _profile_symbol_drag_penalty_norm(profile, symbol)
+    paper_drag_quarantine_s = max(int(os.getenv("DAY_PAPER_DRAG_QUARANTINE_SECONDS", "900") or 900), 60)
+    paper_drag_trigger = _clamp01(float(os.getenv("DAY_PAPER_DRAG_TRIGGER_NORM", "0.82") or 0.82))
+    current_paper_drag_until = float(paper_drag_until_by_symbol.get(symbol.upper(), 0.0) or 0.0)
+    if paper_drag_penalty >= paper_drag_trigger:
+        current_paper_drag_until = max(current_paper_drag_until, now_ts + paper_drag_quarantine_s)
+        paper_drag_until_by_symbol[symbol.upper()] = current_paper_drag_until
+    profile_drag = _profile_drag_snapshot(profile)
+    profile_kill_switch_norm = _clamp01(float(profile_drag.get("drag_norm", 0.0) or 0.0))
+    live_macro_active = _clamp01(float(features.get("live_macro_gate_active_norm", 0.0) or 0.0))
+    live_macro_headwind = _clamp01(float(features.get("live_macro_headwind_norm", 0.0) or 0.0))
+    live_macro_tailwind = _clamp01(float(features.get("live_macro_tailwind_norm", 0.0) or 0.0))
+    live_macro_confidence = _clamp01(float(features.get("live_macro_gate_confidence_norm", 0.0) or 0.0))
     if halt_resume_risk >= halt_trigger:
         current_halt_until = max(current_halt_until, now_ts + halt_cooldown_s)
         halt_until_by_symbol[symbol.upper()] = current_halt_until
 
-    new_action = str(action).upper()
+    requested_action = str(action).upper()
+    new_action = requested_action
     new_score = float(score)
     new_reasons = list(reasons)
+    intraday_allowlist_score = _clamp01(
+        0.22 * execution_fitness
+        + 0.18 * tradeability
+        + 0.14 * open_drive_conviction
+        + 0.14 * micro_relative_volume
+        + 0.10 * micro_trend_persistence
+        + 0.08 * (1.0 - micro_lunch_chop)
+        + 0.08 * (1.0 - micro_cooldown_pressure)
+        + 0.06 * regime_alignment
+        - 0.12 * paper_drag_penalty
+    )
 
     if new_action in {"BUY", "SELL"} and now_ts < current_halt_until:
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"day_halt_resume_cooldown active_s={int(current_halt_until - now_ts)}"]
+    elif new_action in {"BUY", "SELL"} and bool(profile_drag.get("active", False)):
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"profile_kill_switch_drag={profile_kill_switch_norm:.3f}"]
+    elif new_action in {"BUY", "SELL"} and now_ts < current_paper_drag_until:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"day_paper_drag_quarantine active_s={int(current_paper_drag_until - now_ts)}"]
+    elif profile == "intraday_aggressive" and new_action in {"BUY", "SELL"} and intraday_allowlist_score < 0.60:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"intraday_allowlist_score={intraday_allowlist_score:.3f}"]
+    elif profile == "intraday_aggressive" and new_action in {"BUY", "SELL"} and execution_fitness < 0.56:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"day_execution_fitness_guard={execution_fitness:.3f}"]
+    elif profile == "intraday_aggressive" and new_action in {"BUY", "SELL"} and open_norm >= 0.18 and open_drive_conviction < 0.54:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"day_open_drive_conviction_guard={open_drive_conviction:.3f}"]
+    elif new_action in {"BUY", "SELL"} and open_norm >= 0.22 and failed_breakout_risk >= 0.70:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"day_failed_breakout_risk={failed_breakout_risk:.3f}"]
     elif new_action in {"BUY", "SELL"} and execution_cost_risk >= 0.82:
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"day_execution_cost_guard risk={execution_cost_risk:.3f}"]
     elif new_action in {"BUY", "SELL"} and liquidity_vacuum_risk >= 0.78:
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"day_liquidity_vacuum_guard risk={liquidity_vacuum_risk:.3f}"]
+    elif new_action in {"BUY", "SELL"} and micro_cooldown_pressure >= 0.74:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"day_symbol_cooldown_pressure={micro_cooldown_pressure:.3f}"]
     elif new_action in {"BUY", "SELL"} and regime_chop >= 0.68 and regime_trend <= 0.58:
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"day_regime_chop_guard chop={regime_chop:.3f} trend={regime_trend:.3f}"]
-    elif new_action == "HOLD" and open_norm >= 0.25 and auction_signal >= 0.62:
+    elif profile == "intraday_aggressive" and new_action in {"BUY", "SELL"} and midday_norm >= 0.55 and max(micro_lunch_chop >= 0.58, regime_chop >= 0.60):
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"day_intraday_lunch_suppression chop={regime_chop:.3f} lunch={micro_lunch_chop:.3f}"]
+    elif new_action == "HOLD" and open_norm >= 0.25 and auction_signal >= (0.68 if profile == "intraday_aggressive" else 0.62) and micro_imbalance_regime >= 0.48 and open_drive_conviction >= (0.68 if profile == "intraday_aggressive" else 0.58) and execution_cost_risk < 0.60 and (profile != "intraday_aggressive" or intraday_allowlist_score >= 0.66):
         direct = _directional_action_from_value((0.65 * mom) + (0.35 * imbalance))
         if direct in {"BUY", "SELL"}:
             new_action, new_score = _force_action_score(direct, new_score, threshold)
             new_reasons = new_reasons + [
                 f"day_opening_auction_imbalance signal={auction_signal:.3f}",
+                f"day_open_drive_conviction={open_drive_conviction:.3f}",
                 f"day_auction_imbalance={imbalance:+.3f}",
             ]
-    elif new_action in {"BUY", "SELL"} and midday_norm >= 0.72 and max(abs(mom) < 0.003, regime_chop >= 0.64):
+    elif new_action in {"BUY", "SELL"} and midday_norm >= 0.72 and max(abs(mom) < 0.003, regime_chop >= 0.64, micro_lunch_chop >= 0.66):
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
-        new_reasons = new_reasons + [f"day_midday_chop_guard mom={mom:+.4f} chop={regime_chop:.3f}"]
-    elif new_action == "HOLD" and regime_trend >= 0.72 and regime_alignment >= 0.50 and execution_cost_risk < 0.62 and liquidity_vacuum_risk < 0.65:
+        new_reasons = new_reasons + [f"day_midday_chop_guard mom={mom:+.4f} chop={regime_chop:.3f} lunch={micro_lunch_chop:.3f}"]
+    elif new_action == "HOLD" and regime_trend >= (0.76 if profile == "intraday_aggressive" else 0.72) and regime_alignment >= 0.50 and execution_cost_risk < 0.62 and liquidity_vacuum_risk < 0.65 and execution_fitness >= (0.58 if profile == "intraday_aggressive" else 0.50) and (profile != "intraday_aggressive" or intraday_allowlist_score >= 0.64):
         direct = _directional_action_from_value((0.55 * mom) + (0.30 * pct) + (0.15 * imbalance))
         if direct in {"BUY", "SELL"}:
             new_action, new_score = _force_action_score(direct, new_score, threshold)
@@ -7559,6 +10334,29 @@ def _apply_day_strategy_overlay(
         if direct in {"BUY", "SELL"}:
             new_action, new_score = _force_action_score(direct, new_score, threshold)
             new_reasons = new_reasons + [f"day_power_hour_trend mom={mom:+.4f} trend={regime_trend:.3f} micro_power={micro_power_hour:.3f}"]
+    elif (
+        new_action == "HOLD"
+        and power_norm >= 0.58
+        and closing_squeeze >= 0.72
+        and execution_cost_risk < 0.64
+        and liquidity_vacuum_risk < 0.70
+    ):
+        direct = _directional_action_from_value((0.60 * mom) + (0.40 * imbalance))
+        if direct in {"BUY", "SELL"}:
+            new_action, new_score = _force_action_score(direct, new_score, threshold)
+            new_reasons = new_reasons + [f"day_closing_squeeze={closing_squeeze:.3f}"]
+
+    if (new_action == "BUY" or requested_action == "BUY") and live_macro_active > 0.0 and live_macro_headwind >= (0.72 if profile == "intraday_aggressive" else 0.78) and live_macro_tailwind < 0.56:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        if not any("day_live_macro_headwind" in reason for reason in new_reasons):
+            new_reasons = new_reasons + [
+                f"day_live_macro_headwind={live_macro_headwind:.3f}",
+                f"day_live_macro_confidence={live_macro_confidence:.3f}",
+            ]
+    elif (new_action == "SELL" or requested_action == "SELL") and live_macro_active > 0.0 and live_macro_tailwind >= 0.80 and live_macro_headwind < 0.60:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        if not any("day_live_macro_tailwind" in reason for reason in new_reasons):
+            new_reasons = new_reasons + [f"day_live_macro_tailwind={live_macro_tailwind:.3f}"]
 
     out_features = {
         "day_opening_auction_signal_norm": auction_signal,
@@ -7571,6 +10369,15 @@ def _apply_day_strategy_overlay(
         "day_regime_trend_norm": regime_trend,
         "day_regime_chop_norm": regime_chop,
         "day_regime_alignment_norm": regime_alignment,
+        "day_lunch_chop_norm": micro_lunch_chop,
+        "day_open_close_imbalance_regime_norm": micro_imbalance_regime,
+        "day_symbol_cooldown_pressure_norm": micro_cooldown_pressure,
+        "day_open_drive_conviction_norm": open_drive_conviction,
+        "day_failed_breakout_risk_norm": failed_breakout_risk,
+        "day_closing_squeeze_norm": closing_squeeze,
+        "intraday_allowlist_score_norm": intraday_allowlist_score,
+        "profile_symbol_drag_penalty_norm": paper_drag_penalty,
+        "profile_kill_switch_norm": profile_kill_switch_norm,
     }
     return new_action, new_score, new_reasons, out_features
 
@@ -7588,6 +10395,7 @@ def _apply_swing_strategy_overlay(
     if not _is_swing_profile():
         return action, score, reasons, {}
 
+    profile = str(_shadow_profile_name() or "").strip().lower()
     pct = float(features.get("pct_from_close", 0.0) or 0.0)
     mom = float(features.get("mom_5m", 0.0) or 0.0)
     vol = max(float(features.get("vol_30m", 0.0) or 0.0), 0.0)
@@ -7607,6 +10415,8 @@ def _apply_swing_strategy_overlay(
     micro_gap_cont = _clamp01(float(features.get("market_micro_gap_continuation_norm", 0.0) or 0.0))
     micro_reversal = _clamp01(float(features.get("market_micro_reversal_risk_norm", 0.0) or 0.0))
     micro_trend_persistence = _clamp01(float(features.get("market_micro_trend_persistence_norm", 0.0) or 0.0))
+    micro_gap_fade = _clamp01(float(features.get("market_micro_gap_fade_risk_norm", 0.0) or 0.0))
+    micro_overnight_event_hazard = _clamp01(float(features.get("market_micro_overnight_event_hazard_norm", 0.0) or 0.0))
     regime_trend, regime_chop, regime_alignment = _trend_chop_regime_metrics(features)
 
     drift_strength = max(abs(news_sent), abs(mom), abs(pct))
@@ -7614,7 +10424,7 @@ def _apply_swing_strategy_overlay(
 
     gap_strength = _clamp01(abs(pct) / 0.02)
     continuation_norm = _clamp01(max(gap_strength if (pct * mom) > 0 else 0.0, micro_gap_cont, 0.45 * max(cot_risk_on, 0.0), 0.25 * sec_recent))
-    gap_fade_norm = _clamp01(max(gap_strength if (pct * mom) < 0 else 0.0, micro_reversal, 0.55 * sec_regulatory, 0.35 * options_stress, 0.30 * ftd_pressure, 0.25 * funding_stress))
+    gap_fade_norm = _clamp01(max(gap_strength if (pct * mom) < 0 else 0.0, micro_reversal, micro_gap_fade, 0.55 * sec_regulatory, 0.35 * options_stress, 0.30 * ftd_pressure, 0.25 * funding_stress))
 
     squeeze_max_vol = max(float(os.getenv("SWING_SQUEEZE_VOL_MAX", "0.012") or 0.012), 0.003)
     squeeze_tightness = _clamp01((squeeze_max_vol - vol) / squeeze_max_vol)
@@ -7633,12 +10443,48 @@ def _apply_swing_strategy_overlay(
     ema = ((1.0 - alpha) * prev_ema) + (alpha * trend_input)
     ema_map[symbol.upper()] = ema
     weekly_confirm = _clamp01(0.5 + (ema * 22.0))
+    event_blackout = _clamp01(
+        max(
+            high_impact,
+            0.90 * sec_earnings,
+            0.82 * sec_guidance,
+            0.74 * sec_recent,
+            0.68 * micro_overnight_event_hazard,
+        )
+    )
+    overnight_confirmation = _clamp01(
+        (0.42 * weekly_confirm)
+        + (0.28 * continuation_norm)
+        + (0.18 * sector_rs)
+        + (0.12 * regime_alignment)
+    )
+    weekly_pullback_quality = _clamp01(
+        (0.32 * max(-pct, 0.0) / 0.02)
+        + (0.24 * weekly_confirm)
+        + (0.18 * sector_rs)
+        + (0.14 * max(1.0 - gap_fade_norm, 0.0))
+        + (0.12 * regime_alignment)
+    )
+    paper_drag_penalty = _profile_symbol_drag_penalty_norm(profile, symbol)
+    profile_drag = _profile_drag_snapshot(profile)
+    profile_kill_switch_norm = _clamp01(float(profile_drag.get("drag_norm", 0.0) or 0.0))
+    live_macro_active = _clamp01(float(features.get("live_macro_gate_active_norm", 0.0) or 0.0))
+    live_macro_headwind = _clamp01(float(features.get("live_macro_headwind_norm", 0.0) or 0.0))
+    live_macro_tailwind = _clamp01(float(features.get("live_macro_tailwind_norm", 0.0) or 0.0))
+    live_macro_confidence = _clamp01(float(features.get("live_macro_gate_confidence_norm", 0.0) or 0.0))
 
-    new_action = str(action).upper()
+    requested_action = str(action).upper()
+    new_action = requested_action
     new_score = float(score)
     new_reasons = list(reasons)
 
-    if new_action == "HOLD" and regime_trend >= 0.72 and regime_alignment >= 0.52 and weekly_confirm >= 0.48 and sector_rs >= 0.48:
+    if new_action in {"BUY", "SELL"} and bool(profile_drag.get("active", False)):
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"profile_kill_switch_drag={profile_kill_switch_norm:.3f}"]
+    elif new_action in {"BUY", "SELL"} and paper_drag_penalty >= 0.78:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"swing_symbol_drag_guard={paper_drag_penalty:.3f}"]
+    elif new_action == "HOLD" and regime_trend >= 0.72 and regime_alignment >= 0.52 and weekly_confirm >= 0.48 and sector_rs >= 0.48:
         direct = _directional_action_from_value((0.45 * pct) + (0.35 * mom) + (0.20 * rel))
         if direct in {"BUY", "SELL"}:
             new_action, new_score = _force_action_score(direct, new_score, threshold)
@@ -7653,11 +10499,34 @@ def _apply_swing_strategy_overlay(
         if direct in {"BUY", "SELL"}:
             new_action, new_score = _force_action_score(direct, new_score, threshold)
             new_reasons = new_reasons + [f"swing_gap_continuation={continuation_norm:.3f}"]
+    elif (
+        profile == "swing_aggressive"
+        and new_action == "HOLD"
+        and continuation_norm >= 0.72
+        and overnight_confirmation >= 0.64
+        and gap_fade_norm < 0.56
+        and event_blackout < 0.64
+    ):
+        direct = _directional_action_from_value((0.55 * pct) + (0.45 * mom))
+        if direct in {"BUY", "SELL"}:
+            new_action, new_score = _force_action_score(direct, new_score, threshold)
+            new_reasons = new_reasons + [f"swing_overnight_confirmation={overnight_confirmation:.3f}"]
     elif new_action == "HOLD" and squeeze_breakout >= 0.66 and weekly_confirm >= 0.52 and regime_chop <= 0.62:
         direct = _directional_action_from_value(mom if abs(mom) >= 0.001 else pct)
         if direct in {"BUY", "SELL"}:
             new_action, new_score = _force_action_score(direct, new_score, threshold)
             new_reasons = new_reasons + [f"swing_squeeze_breakout={squeeze_breakout:.3f}"]
+    elif (
+        new_action == "HOLD"
+        and weekly_pullback_quality >= 0.68
+        and weekly_confirm >= 0.54
+        and event_blackout < 0.60
+        and regime_alignment >= 0.48
+    ):
+        direct = _directional_action_from_value((0.60 * rel) + (0.25 * news_sent) + (0.15 * mom))
+        if direct in {"BUY", "SELL"}:
+            new_action, new_score = _force_action_score(direct, new_score, threshold)
+            new_reasons = new_reasons + [f"swing_weekly_pullback_quality={weekly_pullback_quality:.3f}"]
 
     if new_action in {"BUY", "SELL"} and regime_chop >= 0.70 and continuation_norm < 0.65 and squeeze_breakout < 0.60:
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
@@ -7665,9 +10534,15 @@ def _apply_swing_strategy_overlay(
     if new_action == "BUY" and max(sec_regulatory, funding_stress, options_stress) >= 0.76 and continuation_norm < 0.72:
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"swing_risk_context_guard reg={sec_regulatory:.3f} funding={funding_stress:.3f} options={options_stress:.3f}"]
+    if profile == "swing_aggressive" and new_action == "BUY" and event_blackout >= 0.72 and post_earnings_drift < 0.68:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"swing_event_blackout_window={event_blackout:.3f}"]
     if new_action == "BUY" and (gap_fade_norm >= 0.74) and (weekly_confirm <= 0.45):
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"swing_gap_fade_risk={gap_fade_norm:.3f}"]
+    if new_action == "BUY" and micro_overnight_event_hazard >= 0.72 and continuation_norm < 0.72:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"swing_overnight_event_hazard={micro_overnight_event_hazard:.3f}"]
     if new_action == "BUY" and micro_reversal >= 0.72 and continuation_norm < 0.68:
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"swing_micro_reversal_risk={micro_reversal:.3f}"]
@@ -7680,6 +10555,17 @@ def _apply_swing_strategy_overlay(
     if new_action == "SELL" and sector_rs > 0.62:
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"swing_sector_rs_headwind={sector_rs:.3f}"]
+    if (new_action == "BUY" or requested_action == "BUY") and live_macro_active > 0.0 and live_macro_headwind >= 0.74 and live_macro_tailwind < 0.56:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        if not any("swing_live_macro_headwind" in reason for reason in new_reasons):
+            new_reasons = new_reasons + [
+                f"swing_live_macro_headwind={live_macro_headwind:.3f}",
+                f"swing_live_macro_confidence={live_macro_confidence:.3f}",
+            ]
+    if (new_action == "SELL" or requested_action == "SELL") and live_macro_active > 0.0 and live_macro_tailwind >= 0.78 and live_macro_headwind < 0.60:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        if not any("swing_live_macro_tailwind" in reason for reason in new_reasons):
+            new_reasons = new_reasons + [f"swing_live_macro_tailwind={live_macro_tailwind:.3f}"]
 
     out_features = {
         "swing_post_earnings_drift_norm": post_earnings_drift,
@@ -7688,9 +10574,14 @@ def _apply_swing_strategy_overlay(
         "swing_vol_compression_breakout_norm": squeeze_breakout,
         "swing_sector_relative_strength_norm": sector_rs,
         "swing_weekly_trend_confirm_norm": weekly_confirm,
+        "swing_weekly_pullback_quality_norm": weekly_pullback_quality,
         "swing_regime_trend_norm": regime_trend,
         "swing_regime_chop_norm": regime_chop,
         "swing_regime_alignment_norm": regime_alignment,
+        "swing_overnight_event_hazard_norm": micro_overnight_event_hazard,
+        "swing_event_blackout_norm": event_blackout,
+        "profile_symbol_drag_penalty_norm": paper_drag_penalty,
+        "profile_kill_switch_norm": profile_kill_switch_norm,
     }
     return new_action, new_score, new_reasons, out_features
 
@@ -7713,6 +10604,7 @@ def _apply_bond_strategy_overlay(
     threshold: float,
     reasons: List[str],
     features: Dict[str, float],
+    rows: Optional[List[Dict[str, Any]]] = None,
 ) -> tuple[str, float, List[str], Dict[str, float]]:
     if not _is_bond_profile():
         return action, score, reasons, {}
@@ -7735,6 +10627,21 @@ def _apply_bond_strategy_overlay(
     vol_norm = _clamp01(float(features.get("vol_30m", 0.0) or 0.0) / 0.03)
     range_balance = _clamp01(1.0 - abs(float(features.get("range_pos", 0.5) or 0.5) - 0.5) * 1.8)
     carry_roll = _clamp01((0.50 * yield_norm) + (0.30 * (1.0 - vol_norm)) + (0.20 * range_balance))
+    tradeability = _clamp01(float(features.get("market_micro_tradeability_score_norm", 0.5) or 0.5))
+    equity_contamination = _bot_dependency_norm(
+        rows,
+        ("brain_refinery_v13_choppy", "brain_refinery_v21_flash_crash", "brain_refinery_v4_simple"),
+    )
+    bond_roster_alignment = _bot_theme_alignment_norm(
+        rows,
+        allow_tokens=("bond", "rates", "treasury", "duration", "yield", "credit", "risk_off", "defensive", "inflation"),
+    )
+    profile_drag = _profile_drag_snapshot("bond")
+    profile_kill_switch_norm = _clamp01(float(profile_drag.get("drag_norm", 0.0) or 0.0))
+    live_macro_active = _clamp01(float(features.get("live_macro_gate_active_norm", 0.0) or 0.0))
+    live_macro_headwind = _clamp01(float(features.get("live_macro_headwind_norm", 0.0) or 0.0))
+    live_macro_tailwind = _clamp01(float(features.get("live_macro_tailwind_norm", 0.0) or 0.0))
+    live_macro_oil_shock = _clamp01(float(features.get("live_macro_oil_shock_norm", 0.0) or 0.0))
 
     if sym in sets["long_duration"]:
         duration_regime = flattener
@@ -7747,9 +10654,21 @@ def _apply_bond_strategy_overlay(
     new_score = float(score)
     new_reasons = list(reasons)
 
-    if new_action == "BUY" and carry_roll < 0.20:
+    if new_action in {"BUY", "SELL"} and bool(profile_drag.get("active", False)):
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"profile_kill_switch_drag={profile_kill_switch_norm:.3f}"]
+    elif new_action in {"BUY", "SELL"} and bond_roster_alignment < 0.52:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"bond_hard_roster_guard={bond_roster_alignment:.3f}"]
+    elif new_action == "BUY" and carry_roll < 0.20:
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"bond_carry_roll_filter={carry_roll:.3f}"]
+    elif new_action in {"BUY", "SELL"} and equity_contamination >= 0.60 and duration_regime < 0.70 and carry_roll < 0.65:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"bond_equity_style_contamination={equity_contamination:.3f}"]
+    elif new_action in {"BUY", "SELL"} and tradeability < 0.46:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"bond_tradeability_guard={tradeability:.3f}"]
 
     if sym in sets["long_duration"] and steepener >= 0.66:
         if new_action == "BUY":
@@ -7781,6 +10700,15 @@ def _apply_bond_strategy_overlay(
         elif inflation_breakeven <= 0.35 and new_action == "BUY":
             new_action, new_score = _force_action_score("HOLD", new_score, threshold)
             new_reasons = new_reasons + [f"bond_inflation_breakeven_guard={inflation_breakeven:.3f}"]
+    if live_macro_active > 0.0 and sym in sets["hy_credit"] and new_action == "BUY" and live_macro_headwind >= 0.70:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"bond_live_macro_credit_headwind={live_macro_headwind:.3f}"]
+    if live_macro_active > 0.0 and sym in sets["long_duration"] and new_action == "SELL" and live_macro_tailwind >= 0.76:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"bond_live_macro_safe_haven_tailwind={live_macro_tailwind:.3f}"]
+    if live_macro_active > 0.0 and sym in sets["inflation"] and new_action == "SELL" and live_macro_oil_shock >= 0.72:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"bond_live_macro_inflation_tailwind={live_macro_oil_shock:.3f}"]
 
     out_features = {
         "bond_duration_regime_norm": duration_regime,
@@ -7790,6 +10718,9 @@ def _apply_bond_strategy_overlay(
         "bond_credit_risk_on_norm": credit_risk_on,
         "bond_credit_risk_off_norm": credit_risk_off,
         "bond_inflation_breakeven_norm": inflation_breakeven,
+        "bond_bot_roster_alignment_norm": bond_roster_alignment,
+        "bond_equity_contamination_norm": equity_contamination,
+        "profile_kill_switch_norm": profile_kill_switch_norm,
     }
     return new_action, new_score, new_reasons, out_features
 
@@ -7801,8 +10732,19 @@ def _behavior_lane_feature_preview(
     day_state: Optional[Dict[str, Any]] = None,
     swing_state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, float]:
+    _, _, _, out = _apply_core_sleeve_strategy_overlay(
+        symbol=symbol,
+        action="HOLD",
+        score=0.5,
+        threshold=0.55,
+        reasons=[],
+        features=features,
+        rows=None,
+        profile=_shadow_profile_name() or "default",
+    )
+
     if _is_day_profile():
-        _, _, _, out = _apply_day_strategy_overlay(
+        _, _, _, day_out = _apply_day_strategy_overlay(
             symbol=symbol,
             action="HOLD",
             score=0.5,
@@ -7811,11 +10753,12 @@ def _behavior_lane_feature_preview(
             features=features,
             state={},
         )
+        out.update(day_out)
         return {key: float(out.get(key, 0.0) or 0.0) for key in _BEHAVIOR_LANE_FEATURE_NAMES}
 
     if _is_swing_profile():
         preview_state = copy.deepcopy(swing_state) if isinstance(swing_state, dict) else {}
-        _, _, _, out = _apply_swing_strategy_overlay(
+        _, _, _, swing_out = _apply_swing_strategy_overlay(
             symbol=symbol,
             action="HOLD",
             score=0.5,
@@ -7824,18 +10767,23 @@ def _behavior_lane_feature_preview(
             features=features,
             state=preview_state,
         )
+        out.update(swing_out)
         return {key: float(out.get(key, 0.0) or 0.0) for key in _BEHAVIOR_LANE_FEATURE_NAMES}
 
     if _is_bond_profile():
-        _, _, _, out = _apply_bond_strategy_overlay(
+        _, _, _, bond_out = _apply_bond_strategy_overlay(
             symbol=symbol,
             action="HOLD",
             score=0.5,
             threshold=0.55,
             reasons=[],
             features=features,
+            rows=None,
         )
+        out.update(bond_out)
         return {key: float(out.get(key, 0.0) or 0.0) for key in _BEHAVIOR_LANE_FEATURE_NAMES}
+
+    return {key: float(out.get(key, 0.0) or 0.0) for key in _BEHAVIOR_LANE_FEATURE_NAMES}
 
     return {}
 
@@ -8500,9 +11448,10 @@ def _write_broker_truth_shared_snapshot(
     project_root: str,
     broker: str,
     fetched: Dict[str, Any],
-) -> None:
+) -> bool:
     cache_path = _broker_truth_shared_snapshot_cache_path(project_root, broker)
-    safe_write_json_atomic(
+    return bool(
+        safe_write_json_atomic(
         str(cache_path),
         {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -8512,7 +11461,7 @@ def _write_broker_truth_shared_snapshot(
         },
         project_root=project_root,
         source="run_shadow_training_loop.broker_truth_shared_snapshot",
-    )
+    ))
 
 
 def _shared_broker_truth_accounts_payload(
@@ -8531,6 +11480,37 @@ def _shared_broker_truth_accounts_payload(
         float(os.getenv("BROKER_TRUTH_SHARED_SNAPSHOT_LOCK_WAIT_SECONDS", "1.25") or 1.25),
         0.0,
     )
+    fetch_retries = max(int(float(os.getenv("BROKER_TRUTH_SHARED_SNAPSHOT_FETCH_RETRIES", "2") or 2)), 1)
+    retry_delay_seconds = max(float(os.getenv("BROKER_TRUTH_SHARED_SNAPSHOT_FETCH_RETRY_DELAY_SECONDS", "0.6") or 0.6), 0.0)
+    stale_fallback_max_age_seconds = max(
+        float(os.getenv("BROKER_TRUTH_SHARED_SNAPSHOT_STALE_FALLBACK_MAX_AGE_SECONDS", "240") or 240.0),
+        cache_max_age_seconds,
+    )
+
+    def _fetch_with_retries() -> Dict[str, Any]:
+        last: Dict[str, Any] = {}
+        for attempt in range(fetch_retries):
+            fetched = trader._live_fetch_accounts_payload()
+            fetched = dict(fetched or {})
+            fetched["_shared_snapshot_fetch_attempts"] = int(attempt + 1)
+            if bool(fetched.get("ok", False)):
+                return fetched
+            last = fetched
+            if attempt + 1 < fetch_retries:
+                time.sleep(retry_delay_seconds)
+        stale = _load_broker_truth_shared_snapshot(
+            project_root=PROJECT_ROOT,
+            broker=broker,
+            max_age_seconds=stale_fallback_max_age_seconds,
+        )
+        if stale is not None and bool(stale.get("ok", False)):
+            stale = dict(stale)
+            stale["_shared_snapshot_stale_fallback"] = True
+            stale["_shared_snapshot_fetch_attempts"] = int(fetch_retries)
+            stale["soft_failure"] = True
+            stale["error"] = str(last.get("error") or "stale_snapshot_fallback")
+            return stale
+        return last
 
     cached = _load_broker_truth_shared_snapshot(
         project_root=PROJECT_ROOT,
@@ -8572,12 +11552,15 @@ def _shared_broker_truth_accounts_payload(
                 )
                 if cached is not None:
                     return cached
-                fetched = trader._live_fetch_accounts_payload()
-                _write_broker_truth_shared_snapshot(
+                fetched = _fetch_with_retries()
+                write_ok = _write_broker_truth_shared_snapshot(
                     project_root=PROJECT_ROOT,
                     broker=broker,
                     fetched=fetched,
                 )
+                if not write_ok:
+                    fetched = dict(fetched or {})
+                    fetched["_shared_snapshot_write_failed"] = True
                 return fetched
             finally:
                 try:
@@ -8585,12 +11568,20 @@ def _shared_broker_truth_accounts_payload(
                 except Exception:
                     pass
 
-    fetched = trader._live_fetch_accounts_payload()
-    _write_broker_truth_shared_snapshot(
+    fetched = _fetch_with_retries()
+    if str(os.getenv("BROKER_TRUTH_SHARED_SNAPSHOT_SKIP_WRITE_ON_LOCK_TIMEOUT", "1") or "1").strip().lower() not in {"0", "false", "no", "off"}:
+        fetched = dict(fetched or {})
+        fetched["_shared_snapshot_write_skipped"] = True
+        fetched["_shared_snapshot_write_skip_reason"] = "lock_timeout"
+        return fetched
+    write_ok = _write_broker_truth_shared_snapshot(
         project_root=PROJECT_ROOT,
         broker=broker,
         fetched=fetched,
     )
+    if not write_ok:
+        fetched = dict(fetched or {})
+        fetched["_shared_snapshot_write_failed"] = True
     return fetched
 
 
@@ -8648,6 +11639,11 @@ def _fetch_broker_truth_snapshot(
         if shared_snapshot_cache_hit:
             out["shared_snapshot_cache_hit"] = True
             out["shared_snapshot_cache_age_seconds"] = float(fetched.get("_shared_snapshot_cache_age_seconds", 0.0) or 0.0)
+        if bool(fetched.get("_shared_snapshot_write_failed", False)):
+            out["shared_snapshot_write_failed"] = True
+        if bool(fetched.get("_shared_snapshot_write_skipped", False)):
+            out["shared_snapshot_write_skipped"] = True
+            out["shared_snapshot_write_skip_reason"] = str(fetched.get("_shared_snapshot_write_skip_reason") or "")
         if soft_failure:
             out["soft_failure"] = True
             out["soft_fail_streak"] = int(fetched.get("soft_fail_streak", 0) or 0)
@@ -8713,6 +11709,11 @@ def _fetch_broker_truth_snapshot(
     if bool(fetched.get("_shared_snapshot_cache_hit", False)):
         out["shared_snapshot_cache_hit"] = True
         out["shared_snapshot_cache_age_seconds"] = float(fetched.get("_shared_snapshot_cache_age_seconds", 0.0) or 0.0)
+    if bool(fetched.get("_shared_snapshot_write_failed", False)):
+        out["shared_snapshot_write_failed"] = True
+    if bool(fetched.get("_shared_snapshot_write_skipped", False)):
+        out["shared_snapshot_write_skipped"] = True
+        out["shared_snapshot_write_skip_reason"] = str(fetched.get("_shared_snapshot_write_skip_reason") or "")
     return out
 
 
@@ -8728,6 +11729,95 @@ def _loop_state_log_path(project_root: str, broker: str) -> str:
     return os.path.join(project_root, "governance", "events", f"loop_state_{ctx.key}_{day}.jsonl")
 
 
+def _parse_env_override_file(path: Path) -> Dict[str, str]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return {}
+    values: Dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if (not line) or line.startswith("#") or ("=" not in line):
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key:
+            values[key] = value.strip()
+    return values
+
+
+def _dynamic_storage_overrides() -> Dict[str, str]:
+    cache = _DYNAMIC_STORAGE_OVERRIDE_CACHE
+    now_monotonic = time.monotonic()
+    if (now_monotonic - float(cache.get("checked_at_monotonic", 0.0) or 0.0)) < _DYNAMIC_STORAGE_OVERRIDE_POLL_SECONDS:
+        values = cache.get("values")
+        if isinstance(values, dict):
+            return dict(values)
+    fingerprint = []
+    for path in (STORAGE_PRESSURE_OVERRIDE_PATH, STORAGE_OVERRIDE_PATH):
+        try:
+            stat = path.stat()
+            fingerprint.append((str(path), int(stat.st_mtime_ns), int(stat.st_size)))
+        except Exception:
+            fingerprint.append((str(path), 0, 0))
+    if tuple(fingerprint) == tuple(cache.get("fingerprint") or ()):
+        cache["checked_at_monotonic"] = now_monotonic
+        values = cache.get("values")
+        return dict(values) if isinstance(values, dict) else {}
+    merged: Dict[str, str] = {}
+    for path in (STORAGE_PRESSURE_OVERRIDE_PATH, STORAGE_OVERRIDE_PATH):
+        merged.update(_parse_env_override_file(path))
+    cache["checked_at_monotonic"] = now_monotonic
+    cache["fingerprint"] = tuple(fingerprint)
+    cache["values"] = dict(merged)
+    return merged
+
+
+def _dynamic_storage_flag(name: str, default: bool = True) -> bool:
+    raw = _dynamic_storage_overrides().get(name)
+    if raw is None:
+        raw = os.getenv(name, "1" if default else "0")
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _dynamic_storage_value(name: str, default: str = "") -> str:
+    raw = _dynamic_storage_overrides().get(name)
+    if raw is None:
+        raw = os.getenv(name, default)
+    return str(raw or "").strip()
+
+
+_HOT_CHANNEL_PRIMARY_TARGETS = {"runtime", "api", "loop_state", "gate", "ingress"}
+
+
+def _resolve_hot_channel_write_targets(path: str, *, channel: str) -> tuple[str, list[str]]:
+    normalized_channel = str(channel or "").strip()
+    default_mirrors = default_channel_mirror_paths(path, project_root=PROJECT_ROOT, ctx=_path_context())
+    if normalized_channel not in _HOT_CHANNEL_PRIMARY_TARGETS:
+        return path, default_mirrors
+
+    norm_path = os.path.abspath(path)
+    channel_root = os.path.abspath(os.path.join(PROJECT_ROOT, "governance", "channels"))
+    if norm_path.startswith(channel_root):
+        return path, []
+
+    primary_mode = _dynamic_storage_value("CHANNEL_LOG_PRIMARY_MODE", "channel").lower()
+    if primary_mode not in {"channel", "legacy"}:
+        primary_mode = "channel"
+    if primary_mode != "channel" or not default_mirrors:
+        return path, default_mirrors
+
+    primary_path = str(default_mirrors[0])
+    mirrors: list[str] = []
+    if _dynamic_storage_flag("LEGACY_HOT_CHANNEL_MIRROR_ENABLED", False):
+        mirrors.append(path)
+    for extra in default_mirrors[1:]:
+        extra_text = str(extra or "").strip()
+        if extra_text and os.path.abspath(extra_text) != os.path.abspath(primary_path):
+            mirrors.append(extra_text)
+    return primary_path, mirrors
+
+
 def _log_api_call(
     *,
     project_root: str,
@@ -8739,6 +11829,8 @@ def _log_api_call(
     error: str = "",
     extra: Optional[Dict[str, Any]] = None,
 ) -> None:
+    if not _dynamic_storage_flag("LOG_API_CALLS", True):
+        return
     row: Dict[str, Any] = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "broker": broker,
@@ -8783,6 +11875,8 @@ def _emit_loop_state(
     reason: str = "",
     extra: Optional[Dict[str, Any]] = None,
 ) -> None:
+    if not _dynamic_storage_flag("LOG_LOOP_STATE", True):
+        return
     row: Dict[str, Any] = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "pid": os.getpid(),
@@ -9359,13 +12453,41 @@ def _spawn_auto_retrain(
     venv_py = str(resolve_runtime_python(project_root))
     retrain_script = os.path.join(project_root, "scripts", "weekly_retrain.py")
     cmd = [venv_py, retrain_script, "--continue-on-error"]
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    profile = _shadow_profile_name() or "default"
+    broker_name = (broker or "unknown").strip().lower() or "unknown"
+    log_dir = os.path.join(project_root, "governance", "training_diagnostics", "retrain_launch_logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, f"shadow_auto_retrain_{broker_name}_{profile}_{stamp}_{os.getpid()}.log")
+    env = os.environ.copy()
+    env["RETRAIN_TRIGGER_SOURCE"] = "shadow_training_loop_auto_retrain"
+    env["RETRAIN_TRIGGER_LABEL"] = "run_shadow_training_loop:auto_retrain"
+    env["RETRAIN_TRIGGER_CONTEXT"] = f"underperformers={int(underperformers)}"
+    env["RETRAIN_TRIGGER_BROKER"] = broker_name
+    env["RETRAIN_TRIGGER_PROFILE"] = profile
+    env["RETRAIN_LAUNCH_LOG_PATH"] = log_path
 
-    proc = subprocess.Popen(cmd, cwd=project_root)
+    with open(log_path, "a", encoding="utf-8") as log_handle:
+        log_handle.write(
+            "[RetrainLaunch] "
+            f"source=shadow_training_loop_auto_retrain broker={broker_name} "
+            f"profile={profile} underperformers={int(underperformers)}\n"
+        )
+        log_handle.flush()
+        proc = subprocess.Popen(
+            cmd,
+            cwd=project_root,
+            env=env,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+        )
     event = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "event": "retrain_started",
         "pid": proc.pid,
         "command": cmd,
+        "log_path": log_path,
+        "trigger_source": env["RETRAIN_TRIGGER_SOURCE"],
         "underperformer_count": underperformers,
         "sample_recommendations": sample_recommendations[:5],
     }
@@ -9598,8 +12720,10 @@ def run_loop(
     async_workers = max(int(os.getenv("ASYNC_PIPELINE_WORKERS", "6")), 2)
 
     feature_cache_enabled = os.getenv("FEATURE_WINDOW_CACHE_ENABLED", "1").strip() == "1"
+    feature_cache_max_entries = max(int(os.getenv("RUNTIME_FEATURE_CACHE_MAX_ENTRIES", "192")), 0)
     feature_cache: Dict[str, Tuple[int, Dict[str, float]]] = {}
     slow_bot_every_n_iters = max(int(os.getenv("SLOW_BOT_EVERY_N_ITERS", "2")), 1)
+    slow_bot_rows_cache_max_symbols = max(int(os.getenv("RUNTIME_SLOW_BOT_CACHE_MAX_SYMBOLS", "48")), 0)
     slow_bot_rows_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
     news_context_enabled = (
@@ -9610,6 +12734,7 @@ def run_loop(
     news_cache_ttl_seconds = max(float(os.getenv("SCHWAB_NEWS_CACHE_TTL_SECONDS", "180")), 15.0)
     news_lookback_hours = max(float(os.getenv("SCHWAB_NEWS_LOOKBACK_HOURS", "24")), 1.0)
     news_max_items = max(int(os.getenv("SCHWAB_NEWS_MAX_ITEMS", "20")), 3)
+    news_cache_max_symbols = max(int(os.getenv("SCHWAB_NEWS_CACHE_MAX_SYMBOLS", "64")), 0)
     news_cache: Dict[str, Tuple[float, Dict[str, float]]] = {}
     news_method_state: Dict[str, Any] = {"disabled": False, "warned": False, "method": ""}
 
@@ -9620,6 +12745,7 @@ def run_loop(
     )
     options_chain_cache_ttl_seconds = max(float(os.getenv("SCHWAB_OPTIONS_CHAIN_CACHE_TTL_SECONDS", "150")), 20.0)
     options_chain_strike_count = max(int(os.getenv("SCHWAB_OPTIONS_CHAIN_STRIKE_COUNT", "30")), 8)
+    options_chain_cache_max_symbols = max(int(os.getenv("SCHWAB_OPTIONS_CHAIN_CACHE_MAX_SYMBOLS", "64")), 0)
     options_chain_cache: Dict[str, Tuple[float, Dict[str, float]]] = {}
     options_chain_method_state: Dict[str, Any] = {"disabled": False, "warned": False, "method": ""}
 
@@ -9773,6 +12899,7 @@ def run_loop(
     paper_mirror_enabled = os.getenv("TOP_BOT_PAPER_TRADING_ENABLED", "0").strip() == "1"
     paper_mirror_top_n = max(int(os.getenv("TOP_BOT_PAPER_TRADING_TOP_N", "2")), 0)
     paper_mirror_min_accuracy = float(os.getenv("TOP_BOT_PAPER_TRADING_MIN_ACC", "0.0"))
+    paper_mirror_all_active = os.getenv("PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS", "1").strip() == "1"
     paper_mirror_profiles_raw = os.getenv("TOP_BOT_PAPER_TRADING_PROFILES", "").strip()
     paper_mirror_profiles = {
         x.strip().lower() for x in paper_mirror_profiles_raw.split(",") if x.strip()
@@ -9790,16 +12917,15 @@ def run_loop(
     )
     paper_mirror_options_profiles_raw = os.getenv(
         "TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES",
-        paper_mirror_profiles_raw,
+        DEFAULT_PAPER_OPTIONS_PROFILE_ALLOWLIST,
     ).strip()
-    paper_mirror_options_profiles = {
-        x.strip().lower() for x in paper_mirror_options_profiles_raw.split(",") if x.strip()
-    }
+    paper_mirror_options_profiles = _paper_options_profile_allowlist()
     current_profile = (_shadow_profile_name() or "default").strip().lower()
     paper_profile_ok = (not paper_mirror_profiles) or (current_profile in paper_mirror_profiles)
-    paper_options_profile_ok = (not paper_mirror_options_profiles) or (current_profile in paper_mirror_options_profiles)
+    paper_options_profile_ok = _paper_options_profile_allowed(current_profile)
     paper_selected_ids: set[str] = set()
     paper_selected_option_ids: set[str] = set()
+    paper_selected_futures_ids: set[str] = set()
     execution_lane_enabled = os.getenv("EXECUTION_LANE_ENABLED", "1").strip() == "1"
     master_execution_lane_enabled = execution_lane_enabled and (
         os.getenv("MASTER_EXECUTION_LANE_ENABLED", "1").strip() == "1"
@@ -9818,9 +12944,10 @@ def run_loop(
         )
 
     paper_trader: Optional[BaseTrader] = None
-    paper_core_requested = paper_mirror_enabled and paper_profile_ok and paper_mirror_top_n > 0
-    paper_options_requested = paper_mirror_options_enabled and paper_options_profile_ok and paper_mirror_options_top_n > 0
-    if inline_paper_execution_enabled and (paper_core_requested or paper_options_requested):
+    paper_core_requested = paper_mirror_enabled and paper_profile_ok and (paper_mirror_all_active or paper_mirror_top_n > 0)
+    paper_options_requested = paper_mirror_options_enabled and paper_options_profile_ok and (paper_mirror_all_active or paper_mirror_options_top_n > 0)
+    paper_futures_requested = paper_mirror_enabled and paper_profile_ok and (paper_mirror_all_active or paper_mirror_top_n > 0)
+    if inline_paper_execution_enabled and (paper_core_requested or paper_options_requested or paper_futures_requested):
         paper_trader = BaseTrader(api_key, secret, redirect, mode="paper")
         paper_trader.execution_enabled = True
         paper_trader.market_data_only = False
@@ -9829,12 +12956,15 @@ def run_loop(
             f"core_min_acc={paper_mirror_min_accuracy:.3f} "
             f"options_top_n={paper_mirror_options_top_n} "
             f"options_min_acc={paper_mirror_options_min_accuracy:.3f} "
+            f"all_active={int(paper_mirror_all_active)} "
             f"profile={current_profile or 'default'}"
         )
-    elif execution_lane_enabled and (paper_core_requested or paper_options_requested or master_execution_lane_enabled):
+    elif execution_lane_enabled and (paper_core_requested or paper_options_requested or paper_futures_requested or master_execution_lane_enabled):
         print(
             f"[ExecutionLane] external_routing_enabled inline_paper={int(inline_paper_execution_enabled)} "
             f"paper_core_requested={int(paper_core_requested)} paper_options_requested={int(paper_options_requested)} "
+            f"paper_futures_requested={int(paper_futures_requested)} "
+            f"all_active={int(paper_mirror_all_active)} "
             f"master_enabled={int(master_execution_lane_enabled)} profile={current_profile or 'default'}"
         )
 
@@ -9966,7 +13096,7 @@ def run_loop(
         now_et = _now_eastern()
         open_now, closed_reason = _in_market_window(now_et, session_start_hour, session_end_hour)
         should_run = (not open_now) and (closed_reason == 'pre_window')
-        if gate_logging_enabled:
+        if _dynamic_storage_flag("LOG_GATE_EVALUATIONS", gate_logging_enabled):
             _log_gate_event(
                 project_root=PROJECT_ROOT,
                 broker=broker,
@@ -9986,7 +13116,7 @@ def run_loop(
                 project_root=PROJECT_ROOT,
                 timeout_seconds=preopen_replay_sanity_timeout_seconds,
             )
-            if gate_logging_enabled:
+            if _dynamic_storage_flag("LOG_GATE_EVALUATIONS", gate_logging_enabled):
                 _log_gate_event(
                     project_root=PROJECT_ROOT,
                     broker=broker,
@@ -10001,7 +13131,7 @@ def run_loop(
                 raise RuntimeError(f"Pre-open replay sanity check failed: {reason}")
             print('[ReplaySanity] pre-open replay check passed (24h)')
     else:
-        if gate_logging_enabled:
+        if _dynamic_storage_flag("LOG_GATE_EVALUATIONS", gate_logging_enabled):
             _log_gate_event(
                 project_root=PROJECT_ROOT,
                 broker=broker,
@@ -10188,9 +13318,9 @@ def run_loop(
         )
 
     def _log_gate(symbol: str, gate: str, passed: bool, reason: str = "", **details: Any) -> None:
-        if not gate_logging_enabled:
+        if not _dynamic_storage_flag("LOG_GATE_EVALUATIONS", gate_logging_enabled):
             return
-        if bool(passed) and (not gate_log_passes):
+        if bool(passed) and (not _dynamic_storage_flag("LOG_GATE_PASSES", gate_log_passes)):
             return
         _log_gate_event(
             project_root=PROJECT_ROOT,
@@ -10215,7 +13345,7 @@ def run_loop(
         key = f"{source}_{status}" if f"{source}_{status}" in iter_ingress else "api_error"
         iter_ingress[key] = iter_ingress.get(key, 0) + 1
         ingress_totals[key] = ingress_totals.get(key, 0) + 1
-        if not data_ingress_logging_enabled:
+        if not _dynamic_storage_flag("LOG_DATA_INGRESS", data_ingress_logging_enabled):
             return
         _log_ingress_event(
             project_root=PROJECT_ROOT,
@@ -10479,6 +13609,10 @@ def run_loop(
                 )
             ]
 
+        registry_infra_bots = [
+            b for b in registry_active_bots
+            if b.bot_role == "infrastructure_sub_bot"
+        ]
         options_virtual_bots_template: List[SubBot] = []
         futures_virtual_bots_template: List[SubBot] = []
         infra_virtual_bots_template: List[SubBot] = []
@@ -10506,17 +13640,23 @@ def run_loop(
                 infra_observer_weight,
             )
 
-        active_bots = list(registry_active_bots)
+        active_bots = [
+            b for b in registry_active_bots
+            if b.bot_role != "infrastructure_sub_bot"
+        ]
         if _is_long_term_profile():
             pre_filter_count = len(active_bots)
             active_bots = _filter_long_term_registry_bots(active_bots)
             if not active_bots:
                 active_bots = [
                     b for b in registry_active_bots
-                    if not (_is_options_sub_bot(b) or _is_futures_sub_bot(b))
+                    if b.bot_role != "infrastructure_sub_bot" and not (_is_options_sub_bot(b) or _is_futures_sub_bot(b))
                 ]
             if not active_bots:
-                active_bots = list(registry_active_bots)
+                active_bots = [
+                    b for b in registry_active_bots
+                    if b.bot_role != "infrastructure_sub_bot"
+                ]
             removed = max(pre_filter_count - len(active_bots), 0)
             if removed > 0:
                 print(
@@ -10524,13 +13664,15 @@ def run_loop(
                     f"kept={len(active_bots)}"
                 )
 
-        if paper_trader is not None:
+        if paper_core_requested or paper_options_requested or paper_futures_requested:
+            paper_registry_segment = "all_active" if paper_mirror_all_active else "core"
             if paper_core_requested:
                 top_paper_bots = _top_paper_mirror_bots(
                     active_bots,
                     top_n=paper_mirror_top_n,
                     min_accuracy=paper_mirror_min_accuracy,
-                    segment="core",
+                    segment=paper_registry_segment,
+                    mirror_all_active=paper_mirror_all_active,
                 )
             else:
                 top_paper_bots = []
@@ -10548,6 +13690,7 @@ def run_loop(
                     top_n=paper_mirror_options_top_n,
                     min_accuracy=paper_mirror_options_min_accuracy,
                     segment="options",
+                    mirror_all_active=paper_mirror_all_active,
                 )
             else:
                 top_paper_options_bots = []
@@ -10559,6 +13702,24 @@ def run_loop(
                     for b in top_paper_options_bots
                 ) or "none"
                 print(f"[PaperMirrorOptions] selected={selected_options_text}")
+            if paper_futures_requested:
+                top_paper_futures_bots = _top_paper_mirror_bots(
+                    futures_virtual_bots_template,
+                    top_n=paper_mirror_top_n,
+                    min_accuracy=paper_mirror_min_accuracy,
+                    segment="futures",
+                    mirror_all_active=paper_mirror_all_active,
+                )
+            else:
+                top_paper_futures_bots = []
+            new_selected_futures_ids = {b.bot_id for b in top_paper_futures_bots}
+            if new_selected_futures_ids != paper_selected_futures_ids:
+                paper_selected_futures_ids = new_selected_futures_ids
+                selected_futures_text = ",".join(
+                    f"{b.bot_id}:{float(b.test_accuracy or 0.0):.3f}"
+                    for b in top_paper_futures_bots
+                ) or "none"
+                print(f"[PaperMirrorFutures] selected={selected_futures_text}")
 
 
         fast_bots, slow_bots = _split_bot_tiers(active_bots)
@@ -10734,7 +13895,7 @@ def run_loop(
                     news_method_state["warned"] = True
                 news_method_state["disabled"] = True
                 feats = _default_news_features()
-                news_cache[sym] = (now_s, feats)
+                _bounded_cache_put(news_cache, sym, (now_s, feats), max_entries=news_cache_max_symbols)
                 return feats
 
             items = _extract_news_items(payload, sym)
@@ -10745,7 +13906,7 @@ def run_loop(
                 lookback_seconds=news_lookback_hours * 3600.0,
                 max_items=news_max_items,
             )
-            news_cache[sym] = (now_s, feats)
+            _bounded_cache_put(news_cache, sym, (now_s, feats), max_entries=news_cache_max_symbols)
             return dict(feats)
 
         def _fetch_symbol_options_features(sym: str, mkt: Dict[str, float]) -> Dict[str, float]:
@@ -10778,7 +13939,7 @@ def run_loop(
                     options_chain_method_state["warned"] = True
                 options_chain_method_state["disabled"] = True
                 feats = default_options_features()
-                options_chain_cache[sym] = (now_s, feats)
+                _bounded_cache_put(options_chain_cache, sym, (now_s, feats), max_entries=options_chain_cache_max_symbols)
                 return feats
 
             feats = summarize_option_chain(
@@ -10817,7 +13978,7 @@ def run_loop(
                     feats["options_near_expiry_norm"] = max(0.0, min(near_exp / 45.0, 1.0))
                     feats["options_far_expiry_norm"] = max(0.0, min(far_exp / 180.0, 1.0))
 
-            options_chain_cache[sym] = (now_s, feats)
+            _bounded_cache_put(options_chain_cache, sym, (now_s, feats), max_entries=options_chain_cache_max_symbols)
             return dict(feats)
 
         def _fetch_calendar_features(sym: str) -> Dict[str, float]:
@@ -11102,7 +14263,7 @@ def run_loop(
         live_macro_snapshot = _load_external_context_category("live_macro")
         sec_edgar_snapshot = _load_external_context_category("sec_edgar")
         extended_quant_snapshot = _load_external_context_category("extended_quant_context")
-        tastytrade_snapshot = _load_external_context_category("tastytrade_context")
+        tastytrade_snapshot = _load_external_context_category("options_flow_context")
         crypto_market_snapshot = _load_external_context_category("crypto_market_context")
         market_crypto_correlation_snapshot = _load_external_context_category("market_crypto_correlation")
         fx_market_snapshot = _load_external_context_category("fx_market_context")
@@ -11354,6 +14515,21 @@ def run_loop(
                     now_ts=now_ts,
                     snapshot=live_macro_snapshot,
                 )
+            live_macro_gate_features = {
+                "live_macro_gate_active_norm": 0.0,
+                "live_macro_gate_confidence_norm": 0.0,
+                "live_macro_risk_off_pressure_norm": 0.0,
+                "live_macro_headwind_norm": 0.0,
+                "live_macro_tailwind_norm": 0.0,
+                "live_macro_oil_shock_norm": 0.0,
+                "live_macro_event_alignment_norm": 0.5,
+            }
+            if live_macro_snapshot:
+                live_macro_gate_features = _derive_live_macro_sleeve_gate_features(
+                    snapshot=live_macro_snapshot,
+                    symbol=symbol,
+                    now_ts=now_ts,
+                )
             for extra_snapshot in (sec_edgar_snapshot, extended_quant_snapshot, crypto_market_snapshot):
                 news_features = _merge_external_context_news_features(news_features, extra_snapshot, symbol=symbol)
                 calendar_features = _merge_external_context_calendar_features(calendar_features, extra_snapshot)
@@ -11376,7 +14552,12 @@ def run_loop(
                     **calendar_features,
                 }
                 if feature_cache_enabled:
-                    feature_cache[feature_cache_key] = (iter_count, dict(shared_features))
+                    _bounded_cache_put(
+                        feature_cache,
+                        feature_cache_key,
+                        (iter_count, dict(shared_features)),
+                        max_entries=feature_cache_max_entries,
+                    )
 
             breadth_features = summarize_breadth_context(
                 symbol=symbol,
@@ -11423,6 +14604,7 @@ def run_loop(
                 **{k: 0.0 for k in _EXTERNAL_CONTEXT_FEATURE_KEYS},
                 **market_micro_features,
                 **external_context_features,
+                **live_macro_gate_features,
                 **dividend_drip_features,
                 **bond_reference_features,
                 **credit_context_features,
@@ -11478,7 +14660,9 @@ def run_loop(
                 if derivatives_specialists_enabled and symbol_is_futures
                 else []
             )
-            infra_observer_bots = list(infra_virtual_bots_template) if always_on_infra_observers_enabled else []
+            infra_observer_bots = list(registry_infra_bots)
+            if always_on_infra_observers_enabled:
+                infra_observer_bots.extend(infra_virtual_bots_template)
             active_options_sub_bots = len(options_specialist_bots)
             active_futures_sub_bots = len(futures_specialist_bots)
             active_infra_sub_bots = len(infra_observer_bots)
@@ -11527,12 +14711,54 @@ def run_loop(
                 shared_features["dividend_quality_score_norm"] = _dividend_quality_score(symbol, shared_features)
                 shared_features = {
                     **shared_features,
+                    **_dividend_underwriting_features(
+                        symbol=symbol,
+                        features=shared_features,
+                        iter_count=iter_count,
+                        state=dividend_policy_state,
+                    ),
                     **_update_dividend_compound_metrics(
                         symbol=symbol,
                         symbol_return_1m=symbol_return_1m,
                         features=shared_features,
                         state=dividend_compound_state,
                     ),
+                }
+                shared_features["dividend_quality_score_norm"] = _dividend_quality_score(symbol, shared_features)
+                shared_features = {
+                    **shared_features,
+                    **_dividend_underwriting_features(
+                        symbol=symbol,
+                        features=shared_features,
+                        iter_count=iter_count,
+                        state=dividend_policy_state,
+                    ),
+                }
+
+            if _is_long_term_profile():
+                profile = _shadow_profile_name()
+                shared_features = {
+                    **shared_features,
+                    **_long_term_underwriting_features(
+                        symbol=symbol,
+                        features=shared_features,
+                        profile=profile,
+                        iter_count=iter_count,
+                        state=long_term_policy_state,
+                    ),
+                }
+                long_term_ten_year_score, long_term_components = _long_term_10y_score(symbol, shared_features, profile)
+                buy_floor, strong_floor = _long_term_buy_floors(profile)
+                shared_features = {
+                    **shared_features,
+                    "long_term_profile_active": 1.0,
+                    "long_term_strict_buy_hold": 1.0 if _env_flag("LONG_TERM_STRICT_BUY_HOLD", "1") else 0.0,
+                    "long_term_horizon_years": float(_long_term_horizon_years()),
+                    "long_term_horizon_10y_plus": 1.0 if _long_term_horizon_years() >= 10 else 0.0,
+                    "long_term_10y_score_norm": long_term_ten_year_score,
+                    "long_term_10y_buy_floor_norm": buy_floor,
+                    "long_term_10y_strong_buy_floor_norm": strong_floor,
+                    **long_term_components,
                 }
 
             lane_preview_features = _behavior_lane_feature_preview(
@@ -11564,7 +14790,15 @@ def run_loop(
 
             eval_bots: List[SubBot] = []
             reused_rows: List[Dict[str, Any]] = []
+            runtime_profile_name = (_shadow_profile_name() or "default").strip().lower()
             for b in candidate_bots:
+                scope_ok, _scope_reasons = _sub_bot_runtime_scope_ok(
+                    b,
+                    symbol=symbol,
+                    profile=runtime_profile_name,
+                )
+                if not scope_ok:
+                    continue
                 key = f"{symbol}:{b.bot_id}"
                 if bot_cooldown_enabled and b.bot_role != "infrastructure_sub_bot":
                     acc = float(b.test_accuracy or 0.5)
@@ -11598,7 +14832,7 @@ def run_loop(
             for row in reused_rows:
                 b_id = str(row.get("bot_id", ""))
                 reasons = list(row.get("reasons", [])) + ["cooldown_reuse"]
-                if log_sub_bot_decisions:
+                if _dynamic_storage_flag("LOG_SUB_BOT_DECISIONS", log_sub_bot_decisions):
                     trader.execute_decision(
                         symbol=symbol,
                         action=str(row.get("action", "HOLD")),
@@ -11614,7 +14848,7 @@ def run_loop(
                 sub_rows.append(row)
 
             for b, action, score, threshold, reasons in batched_rows:
-                if log_sub_bot_decisions:
+                if _dynamic_storage_flag("LOG_SUB_BOT_DECISIONS", log_sub_bot_decisions):
                     trader.execute_decision(
                         symbol=symbol,
                         action=action,
@@ -11641,7 +14875,14 @@ def run_loop(
                     "promoted": bool(b.promoted),
                 }
                 sub_rows.append(row)
-                slow_bot_rows_cache.setdefault(symbol, {})[b.bot_id] = row
+                cached_rows = dict(slow_bot_rows_cache.get(symbol, {}))
+                cached_rows[b.bot_id] = row
+                _bounded_cache_put(
+                    slow_bot_rows_cache,
+                    symbol,
+                    cached_rows,
+                    max_entries=slow_bot_rows_cache_max_symbols,
+                )
 
             if (not evaluate_slow_this_iter) and slow_bots:
                 for b in slow_bots:
@@ -11678,7 +14919,14 @@ def run_loop(
                             threshold=float(row.get("threshold", 0.55)),
                             features=shared_features,
                             gates=gates,
-                            reasons=list(row.get("reasons", [])) + [f"paper_mirror_top_n={paper_mirror_top_n}", f"bot_id={bot_id}"],
+                            reasons=list(row.get("reasons", [])) + [
+                                (
+                                    "paper_mirror_all_active=1"
+                                    if paper_mirror_all_active
+                                    else f"paper_mirror_top_n={paper_mirror_top_n}"
+                                ),
+                                f"bot_id={bot_id}",
+                            ],
                             strategy=f"paper_mirror::{bot_id}",
                             metadata=metadata,
                             intent_kind="paper_mirror",
@@ -11694,7 +14942,14 @@ def run_loop(
                                 threshold=float(row.get("threshold", 0.55)),
                                 features=shared_features,
                                 gates=gates,
-                                reasons=list(row.get("reasons", [])) + [f"paper_mirror_top_n={paper_mirror_top_n}", f"bot_id={bot_id}"],
+                                reasons=list(row.get("reasons", [])) + [
+                                    (
+                                        "paper_mirror_all_active=1"
+                                        if paper_mirror_all_active
+                                        else f"paper_mirror_top_n={paper_mirror_top_n}"
+                                    ),
+                                    f"bot_id={bot_id}",
+                                ],
                                 strategy=f"paper_mirror::{bot_id}",
                                 metadata=metadata,
                             )
@@ -11747,7 +15002,15 @@ def run_loop(
                                 threshold=threshold,
                                 features=shared_features,
                                 gates=gates,
-                                reasons=reasons + [f"paper_mirror_options_top_n={paper_mirror_options_top_n}", f"bot_id={b.bot_id}", "bot_role=options_sub_bot"],
+                                reasons=reasons + [
+                                    (
+                                        "paper_mirror_all_active=1"
+                                        if paper_mirror_all_active
+                                        else f"paper_mirror_options_top_n={paper_mirror_options_top_n}"
+                                    ),
+                                    f"bot_id={b.bot_id}",
+                                    "bot_role=options_sub_bot",
+                                ],
                                 strategy=f"paper_mirror_options::{b.bot_id}",
                                 metadata=option_metadata,
                                 intent_kind="paper_mirror_options",
@@ -11763,13 +15026,21 @@ def run_loop(
                                     threshold=threshold,
                                     features=shared_features,
                                     gates=gates,
-                                    reasons=reasons + [f"paper_mirror_options_top_n={paper_mirror_options_top_n}", f"bot_id={b.bot_id}", "bot_role=options_sub_bot"],
+                                    reasons=reasons + [
+                                        (
+                                            "paper_mirror_all_active=1"
+                                            if paper_mirror_all_active
+                                            else f"paper_mirror_options_top_n={paper_mirror_options_top_n}"
+                                        ),
+                                        f"bot_id={b.bot_id}",
+                                        "bot_role=options_sub_bot",
+                                    ],
                                     strategy=f"paper_mirror_options::{b.bot_id}",
                                     metadata=option_metadata,
                                 )
                             except Exception as exc:
                                 print(f"[PaperMirrorOptions] order_failed symbol={symbol} bot_id={b.bot_id} err={exc}")
-                    if log_sub_bot_decisions:
+                    if _dynamic_storage_flag("LOG_SUB_BOT_DECISIONS", log_sub_bot_decisions):
                         trader.execute_decision(
                             symbol=symbol,
                             action=action,
@@ -11807,7 +15078,68 @@ def run_loop(
                         "test_accuracy": b.test_accuracy,
                     }
                     futures_specialist_rows.append(row)
-                    if log_sub_bot_decisions:
+                    if paper_selected_futures_ids and str(b.bot_id) in paper_selected_futures_ids and action in {"BUY", "SELL"}:
+                        futures_metadata = {
+                            "layer": "futures_sub_bot_paper_mirror",
+                            "snapshot_id": snapshot_id,
+                            "source_profile": _shadow_profile_name() or "default",
+                            "shadow_domain": _shadow_domain_name(broker=broker),
+                            "bot_weight": row["weight"],
+                            "test_accuracy": b.test_accuracy,
+                            "bot_role": "futures_sub_bot",
+                            "bot_id": b.bot_id,
+                            "bot_promoted": bool(b.promoted),
+                            "allow_live_promotion": False,
+                        }
+                        if execution_lane_enabled:
+                            _publish_execution_lane_intent(
+                                broker=broker,
+                                symbol=symbol,
+                                action=action,
+                                quantity=1.0,
+                                model_score=score,
+                                threshold=threshold,
+                                features=shared_features,
+                                gates=gates,
+                                reasons=reasons + [
+                                    (
+                                        "paper_mirror_all_active=1"
+                                        if paper_mirror_all_active
+                                        else f"paper_mirror_futures_top_n={paper_mirror_top_n}"
+                                    ),
+                                    f"bot_id={b.bot_id}",
+                                    "bot_role=futures_sub_bot",
+                                ],
+                                strategy=f"paper_mirror_futures::{b.bot_id}",
+                                metadata=futures_metadata,
+                                intent_kind="paper_mirror_futures",
+                                target_mode="paper",
+                            )
+                        elif paper_trader is not None:
+                            try:
+                                paper_trader.execute_decision(
+                                    symbol=symbol,
+                                    action=action,
+                                    quantity=1,
+                                    model_score=score,
+                                    threshold=threshold,
+                                    features=shared_features,
+                                    gates=gates,
+                                    reasons=reasons + [
+                                        (
+                                            "paper_mirror_all_active=1"
+                                            if paper_mirror_all_active
+                                            else f"paper_mirror_futures_top_n={paper_mirror_top_n}"
+                                        ),
+                                        f"bot_id={b.bot_id}",
+                                        "bot_role=futures_sub_bot",
+                                    ],
+                                    strategy=f"paper_mirror_futures::{b.bot_id}",
+                                    metadata=futures_metadata,
+                                )
+                            except Exception as exc:
+                                print(f"[PaperMirrorFutures] order_failed symbol={symbol} bot_id={b.bot_id} err={exc}")
+                    if _dynamic_storage_flag("LOG_SUB_BOT_DECISIONS", log_sub_bot_decisions):
                         trader.execute_decision(
                             symbol=symbol,
                             action=action,
@@ -11855,7 +15187,7 @@ def run_loop(
                         "observer_meta": observer_meta,
                     }
                     infra_observer_rows.append(row)
-                    if log_sub_bot_decisions:
+                    if _dynamic_storage_flag("LOG_SUB_BOT_DECISIONS", log_sub_bot_decisions):
                         trader.execute_decision(
                             symbol=symbol,
                             action=action,
@@ -11877,12 +15209,59 @@ def run_loop(
                         )
             infra_aux = _derive_infrastructure_aux_features(infra_observer_rows)
             all_sub_rows = sub_rows + options_specialist_rows + futures_specialist_rows + infra_observer_rows
+            cross_bot_conflict_features = {
+                "cross_bot_conflict_norm": _cross_bot_conflict_norm(all_sub_rows)
+            }
+            execution_realism_features = _derive_execution_realism_features(
+                {**shared_features, **cross_bot_conflict_features}
+            )
+            runtime_lane = _runtime_lane_key(
+                symbol=symbol,
+                broker=broker,
+                profile=_shadow_profile_name() or "default",
+                symbol_is_futures=symbol_is_futures,
+            )
+            cooldown_memory_features = {
+                "symbol_cooldown_memory_norm": _symbol_cooldown_memory_norm(
+                    symbol=symbol,
+                    now_ts=now_ts,
+                    iter_count=iter_count,
+                    runtime_lane=str(runtime_lane or "equities").strip().lower() or "equities",
+                    symbol_fail_counts=symbol_fail_counts,
+                    symbol_stale_counts=symbol_stale_counts,
+                    symbol_circuit_hits=symbol_circuit_hits,
+                    symbol_quarantine_until=symbol_quarantine_until,
+                    symbol_regime_cooldown_until_iter=symbol_regime_cooldown_until_iter,
+                    lane_loss_streak=lane_loss_streak,
+                )
+            }
             shared_features = {
                 **shared_features,
                 **flash_aux,
                 **specialist_aux,
                 **infra_aux,
+                **execution_realism_features,
+                **cooldown_memory_features,
+                **cross_bot_conflict_features,
             }
+            profile_name = _shadow_profile_name() or "default"
+            advanced_sleeve_logic_enabled = _advanced_sleeve_logic_enabled(profile_name)
+            if advanced_sleeve_logic_enabled:
+                core_sleeve_overlay_features = _derive_core_sleeve_strategy_features(
+                    profile=profile_name,
+                    rows=all_sub_rows,
+                    features=shared_features,
+                )
+                shared_features = {
+                    **shared_features,
+                    **core_sleeve_overlay_features,
+                    "advanced_sleeve_overlays_enabled": 1.0,
+                }
+            else:
+                shared_features = {
+                    **shared_features,
+                    "advanced_sleeve_overlays_enabled": 0.0,
+                }
             master_decision_started_at = time.perf_counter()
 
             master_outputs: Dict[str, Dict[str, Any]] = {}
@@ -11899,7 +15278,7 @@ def run_loop(
                     "reasons": m_reasons,
                     "vote": m_vote["vote"],
                 }
-                if log_master_variant_decisions:
+                if _dynamic_storage_flag("LOG_MASTER_VARIANT_DECISIONS", log_master_variant_decisions):
                     trader.execute_decision(
                         symbol=symbol,
                         action=m_action,
@@ -11920,6 +15299,13 @@ def run_loop(
                 shared_features,
             )
             gm_action, gm_score, gm_reasons = _apply_transaction_cost_penalty(
+                action=gm_action,
+                score=gm_score,
+                threshold=gm_threshold,
+                reasons=gm_reasons,
+                features=shared_features,
+            )
+            gm_action, gm_score, gm_reasons = _apply_tradeability_realism_control(
                 action=gm_action,
                 score=gm_score,
                 threshold=gm_threshold,
@@ -11976,7 +15362,21 @@ def run_loop(
                     ]
                 shared_features = {**shared_features, **behavior_meta}
 
-            if _is_dividend_profile():
+            if advanced_sleeve_logic_enabled:
+                gm_action, gm_score, gm_reasons, core_profile_overlay = _apply_core_sleeve_strategy_overlay(
+                    symbol=symbol,
+                    action=gm_action,
+                    score=gm_score,
+                    threshold=gm_threshold,
+                    reasons=gm_reasons,
+                    features=shared_features,
+                    rows=all_sub_rows,
+                    profile=profile_name,
+                )
+                if core_profile_overlay:
+                    shared_features = {**shared_features, **core_profile_overlay}
+
+            if advanced_sleeve_logic_enabled and _is_dividend_profile():
                 gm_action, gm_score, gm_reasons, div_overlay = _apply_dividend_strategy_overlay(
                     symbol=symbol,
                     action=gm_action,
@@ -12005,6 +15405,8 @@ def run_loop(
             futures_roll_meta: Dict[str, Any] = {"active": False, "directive": "none"}
             options_margin_meta: Dict[str, Any] = {"active": True, "lane": "options", "ok": True, "reason": "not_evaluated", "required_margin_proxy": 0.0, "available_margin_proxy": 0.0}
             futures_margin_meta: Dict[str, Any] = {"active": True, "lane": "futures", "ok": True, "reason": "not_evaluated", "required_margin_proxy": 0.0, "available_margin_proxy": 0.0}
+            options_lane_dispatch = False
+            futures_lane_dispatch = False
             manual_reconcile_meta: Dict[str, Any] = {"active": False}
             effective_covered_call_shares = int(
                 manual_reconcile_meta.get("covered_call_shares_override", covered_call_shares)
@@ -12012,7 +15414,7 @@ def run_loop(
                 else covered_call_shares
             )
 
-            if _is_long_term_profile():
+            if advanced_sleeve_logic_enabled and _is_long_term_profile():
                 gm_action, gm_score, gm_reasons, long_term_overlay = _apply_long_term_buy_hold_overlay(
                     symbol=symbol,
                     action=gm_action,
@@ -12037,7 +15439,7 @@ def run_loop(
                 if long_term_alloc_overlay:
                     shared_features = {**shared_features, **long_term_alloc_overlay}
 
-            if _is_day_profile():
+            if advanced_sleeve_logic_enabled and _is_day_profile():
                 gm_action, gm_score, gm_reasons, day_overlay = _apply_day_strategy_overlay(
                     symbol=symbol,
                     action=gm_action,
@@ -12063,7 +15465,7 @@ def run_loop(
                 if swing_overlay:
                     shared_features = {**shared_features, **swing_overlay}
 
-            if _is_bond_profile():
+            if advanced_sleeve_logic_enabled and _is_bond_profile():
                 gm_action, gm_score, gm_reasons, bond_overlay = _apply_bond_strategy_overlay(
                     symbol=symbol,
                     action=gm_action,
@@ -12071,6 +15473,7 @@ def run_loop(
                     threshold=gm_threshold,
                     reasons=gm_reasons,
                     features=shared_features,
+                    rows=all_sub_rows,
                 )
                 if bond_overlay:
                     shared_features = {**shared_features, **bond_overlay}
@@ -12256,12 +15659,6 @@ def run_loop(
                 adverse_imbalance=float(execution_guard_meta.get("adverse_imbalance", 0.0) or 0.0),
             )
 
-            runtime_lane = _runtime_lane_key(
-                symbol=symbol,
-                broker=broker,
-                profile=_shadow_profile_name() or "default",
-                symbol_is_futures=symbol_is_futures,
-            )
             lane_budget_mult = _lane_budget_multiplier(runtime_lane)
             lane_base_budget = max(portfolio_base_budget * lane_budget_mult, 0.0)
             runtime_lane_code = {
@@ -12376,6 +15773,37 @@ def run_loop(
                     )
                 ]
 
+            sizing_profile = str(_shadow_profile_name() or "default").strip().lower()
+            sizing_profile_multiplier = {
+                "conservative": 0.82,
+                "aggressive": 1.08,
+                "intraday_aggressive": 0.94,
+                "swing_aggressive": 0.98,
+                "dividend": 0.90,
+                "bond": 0.78,
+                "fx": 0.92,
+                "schwab_futures": 0.90,
+                "crypto_futures": 0.86,
+                "long_term_core_etf": 0.72,
+                "long_term_dividend": 0.76,
+            }.get(sizing_profile, 1.0)
+            sizing_overlap_pressure = max(
+                float(shared_features.get("core_portfolio_overlap_pressure_norm", 0.0) or 0.0),
+                float(shared_features.get("long_term_overlap_rebalance_norm", 0.0) or 0.0),
+                float(shared_features.get("long_term_rebalance_overlap_penalty_norm", 0.0) or 0.0),
+            )
+            sizing_correlation_pressure = _clamp01(
+                1.0 - float(shared_features.get("core_cross_asset_confirmation_norm", 0.5) or 0.5)
+            )
+            sizing_drawdown_pressure = _clamp01(
+                intraday_drawdown_proxy / max(abs(max_intraday_drawdown_proxy), 1e-6)
+            )
+            sizing_liquidity_score = _clamp01(
+                max(
+                    float(shared_features.get("market_micro_tradeability_score_norm", 0.5) or 0.5),
+                    float(shared_features.get("execution_fitness_norm", 0.5) or 0.5),
+                )
+            )
             raw_qty = size_from_action(
                 action=gm_action,
                 score=gm_score,
@@ -12383,6 +15811,12 @@ def run_loop(
                 volatility_1m=volatility_now,
                 equity_proxy=effective_equity_proxy,
                 max_notional_pct=max_notional_pct,
+                confidence_norm=float(shared_features.get("allocation_confidence_norm", 0.5) or 0.5),
+                liquidity_score=sizing_liquidity_score,
+                drawdown_pressure=sizing_drawdown_pressure,
+                overlap_pressure=sizing_overlap_pressure,
+                correlation_pressure=sizing_correlation_pressure,
+                profile_multiplier=sizing_profile_multiplier,
             )
             if gm_action in {"BUY", "SELL"} and raw_qty > 0.0:
                 raw_qty = round(
@@ -12530,6 +15964,10 @@ def run_loop(
             grand_features = {
                 **shared_features,
                 "grand_master_vote": gm_vote["vote"],
+                "grand_master_deployability_norm": float(gm_vote.get("deployability", 0.0) or 0.0),
+                "grand_master_specialist_consensus": float(gm_vote.get("specialist_consensus", 0.0) or 0.0),
+                "grand_master_directional_alignment": float(gm_vote.get("directional_alignment", 0.0) or 0.0),
+                "grand_master_master_disagreement_norm": float(gm_vote.get("master_disagreement", 0.0) or 0.0),
                 "active_sub_bots": float(active_sub_bots_total),
                 "active_options_sub_bots": float(active_options_sub_bots),
                 "active_futures_sub_bots": float(active_futures_sub_bots),
@@ -12567,7 +16005,7 @@ def run_loop(
                 if gm_action in {"BUY", "SELL"}:
                     symbol_circuit_hits[symbol] = max(int(symbol_circuit_hits.get(symbol, 0) or 0) - 1, 0)
 
-            if guard_blocked_intent and log_grand_master_decisions:
+            if guard_blocked_intent and _dynamic_storage_flag("LOG_GRAND_MASTER_DECISIONS", log_grand_master_decisions):
                 trader.execute_decision(
                     symbol=symbol,
                     action=gm_intent_action,
@@ -12610,9 +16048,10 @@ def run_loop(
                 "source_profile": _shadow_profile_name() or "default",
                 "shadow_domain": _shadow_domain_name(broker=broker),
                 "allow_live_promotion": True,
+                "grand_master_meta": dict(gm_vote),
             }
 
-            if log_grand_master_decisions:
+            if _dynamic_storage_flag("LOG_GRAND_MASTER_DECISIONS", log_grand_master_decisions):
                 trader.execute_decision(
                     symbol=symbol,
                     action=gm_action,
@@ -12684,39 +16123,147 @@ def run_loop(
                     },
                 }
             else:
-                optm_action, optm_score, optm_threshold, optm_reasons, optm_vote = _options_master_signal(
-                    grand_action=gm_action,
-                    grand_score=gm_score,
-                    grand_vote=gm_vote["vote"],
-                    features=shared_features,
-                )
-                optm_action, optm_score, optm_reasons = _apply_transaction_cost_penalty(
-                    action=optm_action,
-                    score=optm_score,
-                    threshold=optm_threshold,
-                    reasons=optm_reasons,
-                    features=shared_features,
-                )
-                if log_options_master_decisions:
-                    trader.execute_decision(
-                        symbol=symbol,
-                        action=optm_action,
-                        quantity=1,
-                        model_score=optm_score,
-                        threshold=optm_threshold,
-                        features={**shared_features, "grand_master_vote": gm_vote["vote"], "grand_master_score": gm_score, "options_master_vote": optm_vote["vote"]},
-                        gates={"market_data_ok": mkt["last_price"] > 0, "options_regime_ok": True},
-                        reasons=optm_reasons,
-                        strategy="options_master_bot",
-                        metadata={"layer": "options_master", "snapshot_id": snapshot_id},
+                if paper_options_requested:
+                    optm_action, optm_score, optm_threshold, optm_reasons, optm_vote = _options_master_signal(
+                        grand_action=gm_action,
+                        grand_score=gm_score,
+                        grand_vote=gm_vote["vote"],
+                        features=shared_features,
                     )
+                    optm_action, optm_score, optm_reasons = _apply_transaction_cost_penalty(
+                        action=optm_action,
+                        score=optm_score,
+                        threshold=optm_threshold,
+                        reasons=optm_reasons,
+                        features=shared_features,
+                    )
+                    if _dynamic_storage_flag("LOG_OPTIONS_MASTER_DECISIONS", log_options_master_decisions):
+                        trader.execute_decision(
+                            symbol=symbol,
+                            action=optm_action,
+                            quantity=1,
+                            model_score=optm_score,
+                            threshold=optm_threshold,
+                            features={**shared_features, "grand_master_vote": gm_vote["vote"], "grand_master_score": gm_score, "options_master_vote": optm_vote["vote"]},
+                            gates={"market_data_ok": mkt["last_price"] > 0, "options_regime_ok": True},
+                            reasons=optm_reasons,
+                            strategy="options_master_bot",
+                            metadata={"layer": "options_master", "snapshot_id": snapshot_id},
+                        )
 
-                if overload_mode and skip_options_on_backpressure:
+                    if overload_mode and skip_options_on_backpressure:
+                        options_decision = {
+                            "action": "HOLD",
+                            "score": optm_score,
+                            "threshold": 0.58,
+                            "reasons": ["backpressure_overload_skip_options"],
+                            "plan": {
+                                "symbol": symbol,
+                                "options_style": "NONE",
+                                "underlying_price": mkt.get("last_price", 0.0),
+                                "dte_days": 0,
+                                "contracts": 0,
+                                "strike": None,
+                                "master_vote": optm_vote["vote"],
+                            },
+                        }
+                    else:
+                        options_decision = _build_options_plan(
+                            symbol=symbol,
+                            mkt=shared_features,
+                            master_action=optm_action,
+                            master_score=optm_score,
+                            master_vote=optm_vote["vote"],
+                            covered_call_shares=effective_covered_call_shares,
+                        )
+                    options_decision, options_roll_meta = _options_roll_manager(
+                        decision=options_decision,
+                        features=shared_features,
+                    )
+                    options_decision, options_margin_meta = _apply_derivatives_margin_guard(
+                        decision=options_decision,
+                        lane="options",
+                        broker_truth=broker_truth_state,
+                        features=shared_features,
+                    )
+                    options_margin_ok = bool(options_margin_meta.get("ok", True))
+                    _log_gate(
+                        symbol,
+                        "options_margin_guard",
+                        options_margin_ok,
+                        reason=("ok" if options_margin_ok else str(options_margin_meta.get("reason", "margin_guard_block"))),
+                        required_margin_proxy=float(options_margin_meta.get("required_margin_proxy", 0.0) or 0.0),
+                        available_margin_proxy=float(options_margin_meta.get("available_margin_proxy", 0.0) or 0.0),
+                    )
+                    if not options_margin_ok:
+                        _emit_critical_alert(
+                            project_root=PROJECT_ROOT,
+                            broker=broker,
+                            event="options_margin_guard",
+                            message="options_margin_headroom_insufficient",
+                            details={
+                                "symbol": symbol,
+                                "iter": int(iter_count),
+                                "required_margin_proxy": float(options_margin_meta.get("required_margin_proxy", 0.0) or 0.0),
+                                "available_margin_proxy": float(options_margin_meta.get("available_margin_proxy", 0.0) or 0.0),
+                            },
+                            severity="warn",
+                        )
+                    if _dynamic_storage_flag("LOG_OPTIONS_MASTER_DECISIONS", log_options_master_decisions):
+                        trader.execute_decision(
+                            symbol=symbol,
+                            action=options_decision["action"],
+                            quantity=float(options_decision["plan"].get("contracts", 0) or 0),
+                            model_score=options_decision["score"],
+                            threshold=options_decision["threshold"],
+                            features={**shared_features, "options_master_vote": optm_vote["vote"], "options_master_score": optm_score},
+                            gates={"market_data_ok": mkt["last_price"] > 0, "options_plan_ready": True},
+                            reasons=options_decision["reasons"],
+                            strategy="master_options_bot",
+                            metadata={"layer": "master_options", "snapshot_id": snapshot_id, "options_plan": options_decision["plan"]},
+                        )
+                    if master_execution_lane_enabled:
+                        options_lane_dispatch = _publish_master_plan_intent(
+                            broker=broker,
+                            symbol=symbol,
+                            decision=options_decision,
+                            features={
+                                **shared_features,
+                                "grand_master_vote": gm_vote["vote"],
+                                "grand_master_score": gm_score,
+                                "options_master_vote": optm_vote["vote"],
+                                "options_master_score": optm_score,
+                            },
+                            gates={
+                                **grand_gates,
+                                "options_margin_ok": bool(options_margin_meta.get("ok", True)),
+                            },
+                            strategy="master_options_bot",
+                            layer="master_options",
+                            snapshot_id=snapshot_id,
+                            source_profile=_shadow_profile_name() or "default",
+                            shadow_domain=_shadow_domain_name(broker=broker),
+                            plan_key="options_plan",
+                            intent_kind="master_options",
+                            extra_metadata={
+                                "asset_type": "OPTION",
+                                "runtime_lane": runtime_lane,
+                                "lane_budget_mult": lane_budget_mult,
+                                "grand_master_vote": float(gm_vote["vote"]),
+                                "options_master_vote": float(optm_vote["vote"]),
+                            },
+                        )
+                else:
+                    optm_action = "HOLD"
+                    optm_score = 0.5 + 0.35 * (gm_score - 0.5)
+                    optm_threshold = _shift_threshold(0.60)
+                    optm_reasons = ["paper_options_profile_disabled"]
+                    optm_vote = {"vote": 0.0}
                     options_decision = {
                         "action": "HOLD",
                         "score": optm_score,
-                        "threshold": 0.58,
-                        "reasons": ["backpressure_overload_skip_options"],
+                        "threshold": optm_threshold,
+                        "reasons": ["paper_options_plan_disabled"],
                         "plan": {
                             "symbol": symbol,
                             "options_style": "NONE",
@@ -12724,64 +16271,19 @@ def run_loop(
                             "dte_days": 0,
                             "contracts": 0,
                             "strike": None,
-                            "master_vote": optm_vote["vote"],
+                            "master_vote": 0.0,
                         },
                     }
-                else:
-                    options_decision = _build_options_plan(
-                        symbol=symbol,
-                        mkt=shared_features,
-                        master_action=optm_action,
-                        master_score=optm_score,
-                        master_vote=optm_vote["vote"],
-                        covered_call_shares=effective_covered_call_shares,
-                    )
-                options_decision, options_roll_meta = _options_roll_manager(
-                    decision=options_decision,
-                    features=shared_features,
-                )
-                options_decision, options_margin_meta = _apply_derivatives_margin_guard(
-                    decision=options_decision,
-                    lane="options",
-                    broker_truth=broker_truth_state,
-                    features=shared_features,
-                )
-                options_margin_ok = bool(options_margin_meta.get("ok", True))
-                _log_gate(
-                    symbol,
-                    "options_margin_guard",
-                    options_margin_ok,
-                    reason=("ok" if options_margin_ok else str(options_margin_meta.get("reason", "margin_guard_block"))),
-                    required_margin_proxy=float(options_margin_meta.get("required_margin_proxy", 0.0) or 0.0),
-                    available_margin_proxy=float(options_margin_meta.get("available_margin_proxy", 0.0) or 0.0),
-                )
-                if not options_margin_ok:
-                    _emit_critical_alert(
-                        project_root=PROJECT_ROOT,
-                        broker=broker,
-                        event="options_margin_guard",
-                        message="options_margin_headroom_insufficient",
-                        details={
-                            "symbol": symbol,
-                            "iter": int(iter_count),
-                            "required_margin_proxy": float(options_margin_meta.get("required_margin_proxy", 0.0) or 0.0),
-                            "available_margin_proxy": float(options_margin_meta.get("available_margin_proxy", 0.0) or 0.0),
-                        },
-                        severity="warn",
-                    )
-                if log_options_master_decisions:
-                    trader.execute_decision(
-                        symbol=symbol,
-                        action=options_decision["action"],
-                        quantity=float(options_decision["plan"].get("contracts", 0) or 0),
-                        model_score=options_decision["score"],
-                        threshold=options_decision["threshold"],
-                        features={**shared_features, "options_master_vote": optm_vote["vote"], "options_master_score": optm_score},
-                        gates={"market_data_ok": mkt["last_price"] > 0, "options_plan_ready": True},
-                        reasons=options_decision["reasons"],
-                        strategy="master_options_bot",
-                        metadata={"layer": "master_options", "snapshot_id": snapshot_id, "options_plan": options_decision["plan"]},
-                    )
+                    options_roll_meta = {"active": False, "directive": "profile_disabled"}
+                    options_margin_meta = {
+                        "active": False,
+                        "lane": "options",
+                        "ok": True,
+                        "reason": "profile_disabled",
+                        "required_margin_proxy": 0.0,
+                        "available_margin_proxy": 0.0,
+                        "action": "HOLD",
+                    }
 
                 futm_action, futm_score, futm_threshold, futm_reasons, futm_vote = _futures_master_signal(
                     grand_action=gm_action,
@@ -12797,7 +16299,7 @@ def run_loop(
                     features=shared_features,
                 )
 
-                if log_futures_master_decisions:
+                if _dynamic_storage_flag("LOG_FUTURES_MASTER_DECISIONS", log_futures_master_decisions):
                     trader.execute_decision(
                         symbol=symbol,
                         action=futm_action,
@@ -12868,7 +16370,7 @@ def run_loop(
                         severity="warn",
                     )
 
-                if log_futures_master_decisions:
+                if _dynamic_storage_flag("LOG_FUTURES_MASTER_DECISIONS", log_futures_master_decisions):
                     trader.execute_decision(
                         symbol=symbol,
                         action=futures_decision["action"],
@@ -12880,6 +16382,37 @@ def run_loop(
                         reasons=futures_decision["reasons"],
                         strategy="master_futures_bot",
                         metadata={"layer": "master_futures", "snapshot_id": snapshot_id, "futures_plan": futures_decision["plan"]},
+                    )
+                if master_execution_lane_enabled and paper_futures_requested:
+                    futures_lane_dispatch = _publish_master_plan_intent(
+                        broker=broker,
+                        symbol=symbol,
+                        decision=futures_decision,
+                        features={
+                            **shared_features,
+                            "grand_master_vote": gm_vote["vote"],
+                            "grand_master_score": gm_score,
+                            "futures_master_vote": futm_vote["vote"],
+                            "futures_master_score": futm_score,
+                        },
+                        gates={
+                            **grand_gates,
+                            "futures_margin_ok": bool(futures_margin_meta.get("ok", True)),
+                        },
+                        strategy="master_futures_bot",
+                        layer="master_futures",
+                        snapshot_id=snapshot_id,
+                        source_profile=_shadow_profile_name() or "default",
+                        shadow_domain=_shadow_domain_name(broker=broker),
+                        plan_key="futures_plan",
+                        intent_kind="master_futures",
+                        extra_metadata={
+                            "asset_type": "FUTURE",
+                            "runtime_lane": runtime_lane,
+                            "lane_budget_mult": lane_budget_mult,
+                            "grand_master_vote": float(gm_vote["vote"]),
+                            "futures_master_vote": float(futm_vote["vote"]),
+                        },
                     )
 
             ret_1m = float(symbol_return_1m)
@@ -12908,54 +16441,65 @@ def run_loop(
                 "lag_latency_ms": float(exec_sim.latency_ms),
                 "lag_impact_bps": float(exec_sim.impact_bps),
                 "lag_fee_bps": float(exec_sim.fee_bps),
+                "lag_borrow_fee_bps": float(exec_sim.borrow_fee_bps),
+                "lag_venue_rule_penalty_bps": float(exec_sim.venue_rule_penalty_bps),
+                "lag_queue_position_ratio": float(exec_sim.queue_position_ratio),
+                "lag_cancel_probability": float(exec_sim.cancel_probability),
+                "lag_execution_venue": str(exec_sim.venue),
                 "lag_expected_fill_delta_bps": float(expected_fill_delta_bps),
                 "lag_adjusted_return_1m": float(exec_sim.adjusted_return_1m),
                 "lag_trade_action_norm": (
                     1.0 if gm_action == "BUY" else (-1.0 if gm_action == "SELL" else 0.0)
                 ),
             }
-            for row in all_sub_rows:
-                role = str(row.get("bot_role", "signal_sub_bot")).strip().lower()
-                layer = "sub_bot"
-                if role == "options_sub_bot":
-                    layer = "options_sub_bot"
-                elif role == "futures_sub_bot":
-                    layer = "futures_sub_bot"
-                elif role == "infrastructure_sub_bot":
-                    layer = "infrastructure_sub_bot"
+            if _dynamic_storage_flag("LOG_SHADOW_PNL_ATTRIBUTION", True):
+                for row in all_sub_rows:
+                    role = str(row.get("bot_role", "signal_sub_bot")).strip().lower()
+                    layer = "sub_bot"
+                    if role == "options_sub_bot":
+                        layer = "options_sub_bot"
+                    elif role == "futures_sub_bot":
+                        layer = "futures_sub_bot"
+                    elif role == "infrastructure_sub_bot":
+                        layer = "infrastructure_sub_bot"
+                    _append_jsonl(
+                        _pnl_attribution_path(PROJECT_ROOT, broker=broker),
+                        {
+                            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                            "snapshot_id": snapshot_id,
+                            "symbol": symbol,
+                            "bot_id": row.get("bot_id"),
+                            "layer": layer,
+                            "action": row.get("action"),
+                            "direction": row.get("direction"),
+                            "weight": row.get("weight"),
+                            "return_1m": ret_1m,
+                            "pnl_proxy": float(row.get("direction", 0.0)) * ret_1m * float(row.get("weight", 0.0)),
+                        },
+                    )
                 _append_jsonl(
                     _pnl_attribution_path(PROJECT_ROOT, broker=broker),
                     {
                         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                         "snapshot_id": snapshot_id,
                         "symbol": symbol,
-                        "bot_id": row.get("bot_id"),
-                        "layer": layer,
-                        "action": row.get("action"),
-                        "direction": row.get("direction"),
-                        "weight": row.get("weight"),
+                        "bot_id": "grand_master_bot",
+                        "layer": "grand_master",
+                        "action": gm_action,
+                        "quantity": dispatch_qty,
                         "return_1m": ret_1m,
-                        "pnl_proxy": float(row.get("direction", 0.0)) * ret_1m * float(row.get("weight", 0.0)),
+                        "pnl_proxy": exec_sim.adjusted_return_1m,
+                        "slippage_bps": exec_sim.slippage_bps,
+                        "latency_ms": exec_sim.latency_ms,
+                        "expected_fill_price": exec_sim.expected_fill_price,
+                        "fee_bps": exec_sim.fee_bps,
+                        "borrow_fee_bps": exec_sim.borrow_fee_bps,
+                        "venue_rule_penalty_bps": exec_sim.venue_rule_penalty_bps,
+                        "queue_position_ratio": exec_sim.queue_position_ratio,
+                        "cancel_probability": exec_sim.cancel_probability,
+                        "execution_venue": exec_sim.venue,
                     },
                 )
-            _append_jsonl(
-                _pnl_attribution_path(PROJECT_ROOT, broker=broker),
-                {
-                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                    "snapshot_id": snapshot_id,
-                    "symbol": symbol,
-                    "bot_id": "grand_master_bot",
-                    "layer": "grand_master",
-                    "action": gm_action,
-                    "quantity": dispatch_qty,
-                    "return_1m": ret_1m,
-                    "pnl_proxy": exec_sim.adjusted_return_1m,
-                    "slippage_bps": exec_sim.slippage_bps,
-                    "latency_ms": exec_sim.latency_ms,
-                    "expected_fill_price": exec_sim.expected_fill_price,
-                    "fee_bps": exec_sim.fee_bps,
-                },
-            )
 
             intraday_pnl_proxy += float(exec_sim.adjusted_return_1m)
             peak_intraday_pnl_proxy = max(peak_intraday_pnl_proxy, intraday_pnl_proxy)
@@ -13022,6 +16566,7 @@ def run_loop(
                 "master_action": gm_action,
                 "master_score": gm_score,
                 "master_vote": gm_vote["vote"],
+                "grand_master_meta": dict(gm_vote),
                 "master_intent_action": gm_intent_action,
                 "master_intent_score": gm_intent_score,
                 "master_guard_blocked_intent": guard_blocked_intent,
@@ -13029,6 +16574,11 @@ def run_loop(
                 "grand_master_weights": gm_weights,
                 "options_master": {"action": optm_action, "score": optm_score, "vote": optm_vote["vote"]},
                 "futures_master": {"action": futm_action, "score": futm_score, "vote": futm_vote["vote"]},
+                "master_dispatch": {
+                    "grand_master_execution_lane": bool(master_execution_lane_enabled),
+                    "options_execution_lane": bool(options_lane_dispatch),
+                    "futures_execution_lane": bool(futures_lane_dispatch),
+                },
                 "flash_aux": flash_aux,
                 "specialist_votes": {"options": float(shared_features.get("options_specialist_vote", 0.0) or 0.0), "futures": float(shared_features.get("futures_specialist_vote", 0.0) or 0.0)},
                 "specialist_rows": {"options": options_specialist_rows, "futures": futures_specialist_rows},

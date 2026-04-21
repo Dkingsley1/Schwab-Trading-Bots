@@ -44,13 +44,207 @@ def _acquire_singleton_lock(lock_path: Path):
     return fh
 
 
-def _write_kv_csv(path: Path, rows: list[tuple[str, str]]) -> None:
+def _metric_value_to_str(value: object) -> str:
+    if isinstance(value, bool):
+        return str(value).lower()
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _rows_from_summary_payload(payload: dict[str, object]) -> list[tuple[str, str]]:
+    ordered_keys = [
+        "report_section_01",
+        "day_utc",
+        "requested_day",
+        "resolved_day",
+        "day_fallback_applied",
+        "generated_utc",
+        "db_path",
+        "report_section_02",
+        "combined_decision_total_rows",
+        "combined_governance_total_rows",
+        "combined_blocked_total",
+        "combined_blocked_rate",
+        "raw_data_blocked_total",
+        "raw_data_blocked_rate",
+        "observe_only_data_blocked_total",
+        "observe_only_data_blocked_rate",
+        "data_blocked_total",
+        "data_blocked_rate",
+        "risk_blocked_total",
+        "risk_blocked_rate",
+        "effective_blocked_rate",
+        "data_quality_score",
+        "paper_executed_total",
+        "watchdog_restarts",
+        "report_section_02b",
+        "backpressure_quality_score",
+        "backpressure_quality_label",
+        "backpressure_steady_state_ready",
+        "backpressure_target_breach_count",
+        "pressure_index",
+        "core_pending_lines",
+        "estimated_total_drain_minutes",
+        "stale_stage_pending_lines",
+        "backpressure_target_breaches",
+        "report_section_03",
+        "month_to_date_days_covered",
+        "month_to_date_decision_total_rows",
+        "month_to_date_governance_total_rows",
+        "month_to_date_blocked_total",
+        "month_to_date_data_blocked_total",
+        "month_to_date_risk_blocked_total",
+        "month_to_date_paper_executed_total",
+        "month_to_date_watchdog_restarts",
+        "month_to_date_avg_data_quality_score",
+        "report_section_04",
+        "all_time_days_covered",
+        "all_time_decision_total_rows",
+        "all_time_governance_total_rows",
+        "all_time_blocked_total",
+        "all_time_data_blocked_total",
+        "all_time_risk_blocked_total",
+        "all_time_paper_executed_total",
+        "all_time_watchdog_restarts",
+        "all_time_avg_data_quality_score",
+        "report_section_05",
+    ]
+    rows: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for key in ordered_keys:
+        if key not in payload:
+            continue
+        rows.append((key, _metric_value_to_str(payload[key])))
+        seen.add(key)
+    for key, value in payload.items():
+        key_str = str(key)
+        if key_str in seen or key_str.startswith("report_section_"):
+            continue
+        rows.append((key_str, _metric_value_to_str(value)))
+    return rows
+
+
+def _write_one_numbers_markdown(path: Path, rows: list[tuple[str, str]], *, csv_reference: Path | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["metric", "value"])
-        for r in rows:
-            w.writerow(list(r))
+    row_map = {str(metric): str(value) for metric, value in rows}
+
+    def _row_int(key: str, default: int = 0) -> int:
+        return _safe_int(row_map.get(key), default)
+
+    def _row_float(key: str, default: float = 0.0) -> float:
+        return _safe_float(row_map.get(key), default)
+
+    def _row_bool(key: str, default: bool = False) -> bool:
+        raw = str(row_map.get(key, str(default).lower())).strip().lower()
+        if raw in {"1", "true", "yes", "on"}:
+            return True
+        if raw in {"0", "false", "no", "off"}:
+            return False
+        return default
+
+    def _row_text(key: str, default: str = "") -> str:
+        return str(row_map.get(key, default))
+
+    day = row_map.get("resolved_day") or row_map.get("day_utc") or row_map.get("requested_day") or "unknown"
+    generated_utc = row_map.get("generated_utc", "")
+    requested_day = row_map.get("requested_day", "")
+    resolved_day = row_map.get("resolved_day", day)
+    report_mode = row_map.get("report_mode", "full")
+
+    md_lines = [
+        f"# One Numbers Report ({day})",
+        "",
+        f"Generated: {generated_utc}",
+        f"Requested day: {requested_day}",
+        f"Resolved day: {resolved_day}",
+        f"Report mode: {report_mode}",
+    ]
+    if _row_bool("lightweight_detail_fields_partial"):
+        md_lines.append("Detail fidelity: lightweight cached refresh (rollups are current; some detailed fields may lag the last full build)")
+    md_lines.extend(
+        [
+            "",
+            "## Current Day",
+            f"- Decisions: {_row_int('combined_decision_total_rows')}",
+            f"- Governance rows: {_row_int('combined_governance_total_rows')}",
+            f"- Blocked total: {_row_int('combined_blocked_total')} ({_fmt_pct(_row_float('combined_blocked_rate'))})",
+            f"- Data-blocked total: {_row_int('data_blocked_total')} ({_fmt_pct(_row_float('data_blocked_rate'))})",
+            f"- Risk-blocked total: {_row_int('risk_blocked_total')} ({_fmt_pct(_row_float('risk_blocked_rate'))})",
+            f"- Effective blocked rate: {_fmt_pct(_row_float('effective_blocked_rate'))}",
+            f"- Data quality score: {_row_float('data_quality_score'):.2f}/100",
+            f"- Paper executions: {_row_int('paper_executed_total')}",
+            f"- Watchdog restarts: {_row_int('watchdog_restarts')}",
+            "",
+            "## Backpressure Scorecard",
+            f"- Backpressure quality score: {_row_float('backpressure_quality_score'):.2f}/100",
+            f"- Quality label: {row_map.get('backpressure_quality_label', 'unknown')}",
+            f"- Steady-state ready: {str(_row_bool('backpressure_steady_state_ready')).lower()}",
+            f"- Pressure index: {_row_float('pressure_index'):.3f}",
+            f"- Core pending lines: {_row_int('core_pending_lines')}",
+            f"- Estimated total drain minutes: {_row_text('estimated_total_drain_minutes', 'n/a')}",
+            f"- Stale-stage pending lines: {_row_int('stale_stage_pending_lines')}",
+            f"- Target breaches: {row_map.get('backpressure_target_breaches', 'none') or 'none'}",
+            "",
+            "## Month To Date",
+            f"- Days covered: {_row_int('month_to_date_days_covered')}",
+            f"- Decisions: {_row_int('month_to_date_decision_total_rows')}",
+            f"- Governance rows: {_row_int('month_to_date_governance_total_rows')}",
+            f"- Blocked total: {_row_int('month_to_date_blocked_total')}",
+            f"- Data-blocked total: {_row_int('month_to_date_data_blocked_total')}",
+            f"- Risk-blocked total: {_row_int('month_to_date_risk_blocked_total')}",
+            f"- Paper executions: {_row_int('month_to_date_paper_executed_total')}",
+            f"- Watchdog restarts: {_row_int('month_to_date_watchdog_restarts')}",
+            f"- Avg data quality score: {_row_float('month_to_date_avg_data_quality_score'):.2f}/100",
+            "",
+            "## All Time",
+            f"- Days covered: {_row_int('all_time_days_covered')}",
+            f"- Decisions: {_row_int('all_time_decision_total_rows')}",
+            f"- Governance rows: {_row_int('all_time_governance_total_rows')}",
+            f"- Blocked total: {_row_int('all_time_blocked_total')}",
+            f"- Data-blocked total: {_row_int('all_time_data_blocked_total')}",
+            f"- Risk-blocked total: {_row_int('all_time_risk_blocked_total')}",
+            f"- Paper executions: {_row_int('all_time_paper_executed_total')}",
+            f"- Watchdog restarts: {_row_int('all_time_watchdog_restarts')}",
+            f"- Avg data quality score: {_row_float('all_time_avg_data_quality_score'):.2f}/100",
+            "",
+            "## Diagnostics",
+            f"- Decision stale windows (4h): {_row_int('decision_stale_windows_4h')}",
+            f"- Governance stale windows (4h): {_row_int('governance_stale_windows_4h')}",
+            f"- Storage mode: {row_map.get('ops_storage_mode', 'unknown')}",
+            f"- Logs target: {row_map.get('ops_storage_logs_target', 'unknown')}",
+            "",
+            "## Alerts",
+            f"- ALERT_WATCHDOG_RESTARTS: {str(_row_bool('ALERT_WATCHDOG_RESTARTS')).lower()}",
+            f"- ALERT_STALE_WINDOWS: {str(_row_bool('ALERT_STALE_WINDOWS')).lower()}",
+            f"- ALERT_BLOCKED_RATE: {str(_row_bool('ALERT_BLOCKED_RATE')).lower()}",
+            f"- ALERT_DATA_QUALITY: {str(_row_bool('ALERT_DATA_QUALITY')).lower()}",
+        ]
+    )
+    if csv_reference is not None:
+        md_lines.extend(["", f"CSV: `{csv_reference}`"])
+    path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+
+
+def _refresh_latest_artifact_aliases(*, out_dir: Path, csv_path: Path, md_path: Path, xlsx_path: Path) -> tuple[Path, Path, Path]:
+    latest_csv = out_dir / "latest.csv"
+    latest_md = out_dir / "latest.md"
+    latest_xlsx = out_dir / "latest.xlsx"
+    for alias_path in (latest_csv, latest_md, latest_xlsx):
+        if alias_path.exists() or alias_path.is_symlink():
+            alias_path.unlink()
+    latest_csv.symlink_to(csv_path)
+    latest_md.symlink_to(md_path)
+    latest_xlsx.symlink_to(xlsx_path)
+    return latest_csv, latest_md, latest_xlsx
+
+
+def _refresh_latest_metrics_alias(*, out_dir: Path, metrics_csv_path: Path) -> Path:
+    latest_metrics_csv = out_dir / "latest_metrics.csv"
+    if latest_metrics_csv.exists() or latest_metrics_csv.is_symlink():
+        latest_metrics_csv.unlink()
+    latest_metrics_csv.symlink_to(metrics_csv_path)
+    return latest_metrics_csv
 
 
 def _xlsx_col_name(index: int) -> str:
@@ -87,6 +281,84 @@ def _humanize_metric_label(metric: str) -> str:
     for src, dst in replacements.items():
         text = text.replace(src, dst)
     return text
+
+
+def _one_numbers_metric_label(metric: str) -> str:
+    overrides = {
+        "generated_utc": "Generated UTC",
+        "day_utc": "Report Day (UTC)",
+        "requested_day": "Requested Day",
+        "resolved_day": "Resolved Day",
+        "day_fallback_applied": "Day Fallback Applied",
+        "db_path": "Database Path",
+        "report_mode": "Report Mode",
+        "lightweight_detail_fields_partial": "Lightweight Detail Fields Partial",
+    }
+    return overrides.get(str(metric), _humanize_metric_label(metric))
+
+
+def _one_numbers_display_rows(rows: list[tuple[str, str]]) -> list[tuple[str, str, str, str]]:
+    row_map = {str(metric): str(value) for metric, value in rows}
+    metadata_keys = [
+        "generated_utc",
+        "day_utc",
+        "requested_day",
+        "resolved_day",
+        "day_fallback_applied",
+        "report_mode",
+        "lightweight_detail_fields_partial",
+        "db_path",
+    ]
+    section_name_map = {
+        "Report Metadata": "Report Metadata",
+        "Current Day": "Current Day",
+        "Backpressure Scorecard": "Backpressure Scorecard",
+        "Month To Date": "Month To Date",
+        "All Time": "All Time",
+        "Detailed Metrics": "Detailed Metrics",
+    }
+    display_rows: list[tuple[str, str, str, str]] = []
+    for key in metadata_keys:
+        if key not in row_map:
+            continue
+        display_rows.append(("Report Metadata", _one_numbers_metric_label(key), row_map[key], key))
+
+    current_section = "Report Metadata"
+    for metric, value in rows:
+        metric_str = str(metric)
+        value_str = str(value)
+        if metric_str.startswith("report_section_"):
+            current_section = section_name_map.get(value_str, value_str)
+            continue
+        if metric_str in metadata_keys:
+            continue
+        display_rows.append((current_section or "Detailed Metrics", _one_numbers_metric_label(metric_str), value_str, metric_str))
+    return display_rows
+
+
+def _write_one_numbers_metrics_csv(path: Path, rows: list[tuple[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["section", "label", "value", "metric"])
+        for section, label, value, metric in _one_numbers_display_rows(rows):
+            w.writerow([section, label, value, metric])
+
+
+def _write_one_numbers_csv(path: Path, rows: list[tuple[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    display_rows = _one_numbers_display_rows(rows)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["label", "value"])
+        last_section = ""
+        for section, label, value, _metric in display_rows:
+            if section != last_section:
+                if last_section:
+                    w.writerow(["", ""])
+                w.writerow([section, ""])
+                last_section = section
+            w.writerow([label, value])
 
 
 def _report_title_date(day_value: str) -> str:
@@ -267,6 +539,35 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
+def _backpressure_scorecard_metrics(project_root: Path) -> dict[str, str]:
+    storage_control = _read_json(project_root / "governance" / "health" / "ingestion_storage_control_latest.json")
+    steady_state = storage_control.get("steady_state") if isinstance(storage_control.get("steady_state"), dict) else {}
+    target_status = steady_state.get("target_status") if isinstance(steady_state.get("target_status"), dict) else {}
+    backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
+    target_breaches = [
+        str(item)
+        for item in list(target_status.get("target_breaches") or [])
+        if str(item or "").strip()
+    ]
+    total_pending_lines = _safe_int(backpressure.get("total_pending_lines"), 0)
+    drain_raw = backpressure.get("estimated_total_drain_minutes")
+    if drain_raw in {None, ""} and total_pending_lines > 0:
+        drain_display = "n/a"
+    else:
+        drain_display = f"{_safe_float(drain_raw, 0.0):.3f}"
+    return {
+        "backpressure_quality_score": f"{_safe_float(steady_state.get('quality_score'), 0.0):.2f}",
+        "backpressure_quality_label": str(steady_state.get("quality_label") or "unknown"),
+        "backpressure_steady_state_ready": str(bool(target_status.get("steady_state_ready", False))).lower(),
+        "backpressure_target_breach_count": str(_safe_int(target_status.get("target_breach_count"), len(target_breaches))),
+        "pressure_index": f"{_safe_float(storage_control.get('pressure_index'), 0.0):.3f}",
+        "core_pending_lines": str(_safe_int(backpressure.get("core_pending_lines"), 0)),
+        "estimated_total_drain_minutes": drain_display,
+        "stale_stage_pending_lines": str(_safe_int(backpressure.get("stale_stage_pending_lines"), 0)),
+        "backpressure_target_breaches": ",".join(target_breaches) if target_breaches else "none",
+    }
+
+
 def _default_db_path() -> Path:
     configured = str(os.getenv("SQL_LINK_SERVICE_PRIMARY_DB", "") or "").strip()
     if configured:
@@ -433,6 +734,29 @@ def _data_quality_session_policy(now_utc: datetime) -> dict[str, object]:
     }
 
 
+def _session_aligned_recent_cutoff(now_utc: datetime, *, lookback: timedelta = timedelta(hours=4)) -> datetime:
+    cutoff_utc = now_utc - lookback
+    policy = _data_quality_session_policy(now_utc)
+    if not bool(policy.get("session_aware")):
+        return cutoff_utc
+    if not bool(policy.get("session_open")):
+        return now_utc
+    try:
+        session_tz = ZoneInfo(str(policy.get("timezone") or DEFAULT_REPORT_TIMEZONE))
+    except Exception:
+        session_tz = timezone.utc
+    local_now = now_utc.astimezone(session_tz)
+    start_minutes = _parse_clock_minutes(os.getenv("ONE_NUMBERS_SESSION_START", "09:30"), "09:30")
+    session_start_local = local_now.replace(
+        hour=start_minutes // 60,
+        minute=start_minutes % 60,
+        second=0,
+        microsecond=0,
+    )
+    session_start_utc = session_start_local.astimezone(timezone.utc)
+    return max(cutoff_utc, session_start_utc)
+
+
 def _staleness_penalty(age_seconds: int, grace_seconds: int, divisor_seconds: float, cap: float) -> float:
     overflow = max(float(age_seconds) - max(float(grace_seconds), 0.0), 0.0)
     if overflow <= 0.0:
@@ -484,8 +808,18 @@ def _resolve_report_day(requested_day: str, sqlite_state: dict) -> tuple[str, di
     day_sources = _sqlite_state_sources_by_day(sqlite_state)
     requested = str(requested_day or "").strip() or _default_report_day()
     selected = day_sources.get(requested, _empty_day_sources())
-    if selected["decision"] or selected["governance"]:
+    if selected["decision"]:
         return requested, selected
+
+    decision_candidates = sorted(
+        day
+        for day, entry in day_sources.items()
+        if entry["decision"]
+    )
+    if decision_candidates:
+        prior_or_equal = [day for day in decision_candidates if day <= requested]
+        resolved_day = prior_or_equal[-1] if prior_or_equal else decision_candidates[-1]
+        return resolved_day, day_sources.get(resolved_day, _empty_day_sources())
 
     candidates = sorted(
         day
@@ -498,6 +832,34 @@ def _resolve_report_day(requested_day: str, sqlite_state: dict) -> tuple[str, di
     prior_or_equal = [day for day in candidates if day <= requested]
     resolved_day = prior_or_equal[-1] if prior_or_equal else candidates[-1]
     return resolved_day, day_sources.get(resolved_day, _empty_day_sources())
+
+
+def _latest_report_day_from_db(conn: sqlite3.Connection, requested_day: str) -> str:
+    requested = str(requested_day or "").strip() or _default_report_day()
+    decision_row = conn.execute(
+        """
+        SELECT MAX(substr(source_rel, -14, 8))
+        FROM main.jsonl_records
+        WHERE source_rel LIKE 'decision_explanations/%/decision_explanations_%.jsonl'
+          AND substr(source_rel, -14, 8) <= ?
+        """,
+        (requested,),
+    ).fetchone()
+    decision_day = str((decision_row or [None])[0] or "").strip()
+    if decision_day:
+        return decision_day
+
+    governance_row = conn.execute(
+        """
+        SELECT MAX(substr(source_rel, -14, 8))
+        FROM main.jsonl_records
+        WHERE source_rel LIKE 'governance/%/master_control_%.jsonl'
+          AND substr(source_rel, -14, 8) <= ?
+        """,
+        (requested,),
+    ).fetchone()
+    governance_day = str((governance_row or [None])[0] or "").strip()
+    return governance_day or requested
 
 
 def _chunked(items: list[str], size: int) -> list[list[str]]:
@@ -601,6 +963,103 @@ def _stale_windows(ts_rows: Iterable[tuple], stale_seconds: int) -> int:
         if (stamps[i] - stamps[i - 1]).total_seconds() > stale_seconds:
             gaps += 1
     return gaps
+
+
+def _recent_stale_windows_from_jsonl_files(
+    paths: Iterable[str | Path],
+    *,
+    cutoff_utc: datetime,
+    stale_seconds: int,
+) -> int:
+    stamps: list[datetime] = []
+    for raw_path in paths:
+        path = Path(str(raw_path))
+        if not path.exists():
+            continue
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    raw_ts = str((row if isinstance(row, dict) else {}).get("timestamp_utc") or "").strip()
+                    if not raw_ts:
+                        continue
+                    try:
+                        ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).astimezone(timezone.utc)
+                    except Exception:
+                        continue
+                    if ts >= cutoff_utc:
+                        stamps.append(ts)
+        except Exception:
+            continue
+    return _stale_windows(((ts.isoformat(),) for ts in stamps), stale_seconds)
+
+
+def _model_drift_snapshot(
+    slice_1h: tuple[int, int, int, int],
+    slice_4h: tuple[int, int, int, int],
+) -> dict[str, float | bool | str | int]:
+    rows_1h, buy_1h, sell_1h, blocked_1h = slice_1h
+    rows_4h, buy_4h, sell_4h, blocked_4h = slice_4h
+    actionable_1h = max(buy_1h + sell_1h, 0)
+    actionable_4h = max(buy_4h + sell_4h, 0)
+    buy_rate_1h = buy_1h / max(rows_1h, 1)
+    buy_rate_4h = buy_4h / max(rows_4h, 1)
+    sell_rate_1h = sell_1h / max(rows_1h, 1)
+    sell_rate_4h = sell_4h / max(rows_4h, 1)
+    blocked_rate_1h = blocked_1h / max(rows_1h, 1)
+    blocked_rate_4h = blocked_4h / max(rows_4h, 1)
+    actionable_rate_1h = actionable_1h / max(rows_1h, 1)
+    actionable_rate_4h = actionable_4h / max(rows_4h, 1)
+    drift_candidates = {
+        "buy_rate_drift_abs": abs(buy_rate_1h - buy_rate_4h),
+        "sell_rate_drift_abs": abs(sell_rate_1h - sell_rate_4h),
+        "actionable_rate_drift_abs": abs(actionable_rate_1h - actionable_rate_4h),
+        "blocked_rate_drift_abs": abs(blocked_rate_1h - blocked_rate_4h),
+    }
+    action_mix_drift_abs = max(drift_candidates.values()) if drift_candidates else 0.0
+    min_rows_1h = max(_safe_int(os.getenv("ONE_NUMBERS_MODEL_DRIFT_MIN_ROWS_1H", "120"), 120), 1)
+    min_rows_4h = max(_safe_int(os.getenv("ONE_NUMBERS_MODEL_DRIFT_MIN_ROWS_4H", "480"), 480), 1)
+    min_actionable_1h = max(_safe_int(os.getenv("ONE_NUMBERS_MODEL_DRIFT_MIN_ACTIONABLE_1H", "12"), 12), 0)
+    min_actionable_4h = max(_safe_int(os.getenv("ONE_NUMBERS_MODEL_DRIFT_MIN_ACTIONABLE_4H", "48"), 48), 0)
+    drift_threshold = max(_safe_float(os.getenv("ONE_NUMBERS_MODEL_DRIFT_THRESHOLD", "0.20"), 0.20), 0.0)
+    enough_rows = rows_1h >= min_rows_1h and rows_4h >= min_rows_4h
+    enough_actionable = actionable_1h >= min_actionable_1h and actionable_4h >= min_actionable_4h
+    model_drift_flag = enough_rows and enough_actionable and action_mix_drift_abs >= drift_threshold
+    if not enough_rows:
+        reason = "insufficient_rows"
+    elif not enough_actionable:
+        reason = "low_actionable_activity"
+    elif model_drift_flag:
+        reason = "action_mix_shift"
+    else:
+        reason = "within_threshold"
+    return {
+        "rows_1h": rows_1h,
+        "rows_4h": rows_4h,
+        "actionable_1h": actionable_1h,
+        "actionable_4h": actionable_4h,
+        "buy_rate_1h": buy_rate_1h,
+        "buy_rate_4h": buy_rate_4h,
+        "sell_rate_1h": sell_rate_1h,
+        "sell_rate_4h": sell_rate_4h,
+        "blocked_rate_1h": blocked_rate_1h,
+        "blocked_rate_4h": blocked_rate_4h,
+        "actionable_rate_1h": actionable_rate_1h,
+        "actionable_rate_4h": actionable_rate_4h,
+        "buy_rate_drift_abs": drift_candidates["buy_rate_drift_abs"],
+        "sell_rate_drift_abs": drift_candidates["sell_rate_drift_abs"],
+        "actionable_rate_drift_abs": drift_candidates["actionable_rate_drift_abs"],
+        "blocked_rate_drift_abs": drift_candidates["blocked_rate_drift_abs"],
+        "action_mix_drift_abs": action_mix_drift_abs,
+        "model_drift_flag": model_drift_flag,
+        "model_drift_reason": reason,
+    }
 
 
 def _ensure_sql_snapshot_table(conn: sqlite3.Connection) -> None:
@@ -815,7 +1274,12 @@ def _lightweight_data_quality_score(
     return max(min(score, 100.0), 0.0)
 
 
-def _lightweight_metrics_from_daily_summary(summary: dict, paper_daily: dict) -> dict[str, float | int]:
+def _lightweight_metrics_from_daily_summary(
+    summary: dict,
+    paper_daily: dict,
+    *,
+    now_utc: datetime | None = None,
+) -> dict[str, float | int]:
     decision = summary.get("decision") if isinstance(summary.get("decision"), dict) else {}
     governance = summary.get("governance") if isinstance(summary.get("governance"), dict) else {}
     watchdog = summary.get("watchdog") if isinstance(summary.get("watchdog"), dict) else {}
@@ -832,6 +1296,23 @@ def _lightweight_metrics_from_daily_summary(summary: dict, paper_daily: dict) ->
     watchdog_restart_errors = _safe_int(watchdog.get("restart_errors"), 0)
     decision_stale_windows = _safe_int(decision.get("stale_windows"), 0)
     governance_stale_windows = _safe_int(governance.get("stale_windows"), 0)
+    if now_utc is not None:
+        cutoff_utc = _session_aligned_recent_cutoff(now_utc)
+        stale_seconds = max(_safe_int(os.getenv("ONE_NUMBERS_STALE_SECONDS", "180"), 180), 1)
+        if decision_stale_windows > 0:
+            decision_files = decision.get("files", []) if isinstance(decision.get("files"), list) else []
+            decision_stale_windows = _recent_stale_windows_from_jsonl_files(
+                decision_files,
+                cutoff_utc=cutoff_utc,
+                stale_seconds=stale_seconds,
+            )
+        if governance_stale_windows > 0:
+            governance_files = governance.get("files", []) if isinstance(governance.get("files"), list) else []
+            governance_stale_windows = _recent_stale_windows_from_jsonl_files(
+                governance_files,
+                cutoff_utc=cutoff_utc,
+                stale_seconds=stale_seconds,
+            )
     return {
         "combined_decision_total_rows": decision_total_rows,
         "combined_governance_total_rows": governance_total_rows,
@@ -890,10 +1371,30 @@ def _resolve_lightweight_report_day(requested_day: str, history: dict[str, dict]
     current = history.get(requested, {})
     if isinstance(current, dict):
         decision_rows = _safe_int(((current.get("decision") or {}) if isinstance(current.get("decision"), dict) else {}).get("rows"), 0)
-        governance_rows = _safe_int(((current.get("governance") or {}) if isinstance(current.get("governance"), dict) else {}).get("rows"), 0)
-        if decision_rows > 0 or governance_rows > 0:
+        if decision_rows > 0:
             return requested
-    candidates = sorted(history.keys())
+
+    decision_candidates = sorted(
+        day
+        for day, payload in history.items()
+        if _safe_int(((payload.get("decision") or {}) if isinstance(payload.get("decision"), dict) else {}).get("rows"), 0) > 0
+    )
+    prior_or_equal = [day for day in decision_candidates if day <= requested]
+    if prior_or_equal:
+        return prior_or_equal[-1]
+    if decision_candidates:
+        return decision_candidates[-1]
+
+    current_governance_rows = _safe_int(((current.get("governance") or {}) if isinstance(current.get("governance"), dict) else {}).get("rows"), 0)
+    if current_governance_rows > 0:
+        return requested
+
+    candidates = sorted(
+        day
+        for day, payload in history.items()
+        if _safe_int(((payload.get("decision") or {}) if isinstance(payload.get("decision"), dict) else {}).get("rows"), 0) > 0
+        or _safe_int(((payload.get("governance") or {}) if isinstance(payload.get("governance"), dict) else {}).get("rows"), 0) > 0
+    )
     prior_or_equal = [day for day in candidates if day <= requested]
     if prior_or_equal:
         return prior_or_equal[-1]
@@ -907,7 +1408,13 @@ def _build_lightweight_summary_payload(*, project_root: Path, requested_day: str
     history = _load_daily_runtime_summary_history(project_root)
     resolved_day = _resolve_lightweight_report_day(requested_day, history)
     summary = history.get(resolved_day, {})
-    metrics = _lightweight_metrics_from_daily_summary(summary, paper_history.get(resolved_day, {}))
+    now_utc = datetime.now(timezone.utc)
+    current_report_day = _default_report_day()
+    metrics = _lightweight_metrics_from_daily_summary(
+        summary,
+        paper_history.get(resolved_day, {}),
+        now_utc=now_utc if resolved_day == current_report_day else None,
+    )
     entries: dict[str, dict] = {}
     for day_utc, payload in history.items():
         entries[day_utc] = {
@@ -924,7 +1431,6 @@ def _build_lightweight_summary_payload(*, project_root: Path, requested_day: str
         [entry for day_utc, entry in entries.items() if str(day_utc).startswith(str(resolved_day)[:6])]
     )
     all_time_rollup = _aggregate_rollup(list(entries.values()))
-    now_utc = datetime.now(timezone.utc)
     dq_policy = _data_quality_session_policy(now_utc)
     logs_root = project_root / "logs"
     try:
@@ -943,6 +1449,7 @@ def _build_lightweight_summary_payload(*, project_root: Path, requested_day: str
             "day_fallback_applied": str(requested_day != resolved_day).lower(),
             "report_section_01": "Report Metadata",
             "report_section_02": "Current Day",
+            "report_section_02b": "Backpressure Scorecard",
             "report_section_03": "Month To Date",
             "report_section_04": "All Time",
             "report_section_05": "Detailed Metrics",
@@ -1073,17 +1580,41 @@ def main() -> int:
             requested_day=requested_day,
             db_path=db_path,
         )
+        summary_payload.update(_backpressure_scorecard_metrics(PROJECT_ROOT))
+        rows = _rows_from_summary_payload(summary_payload)
         payload_text = json.dumps(summary_payload, ensure_ascii=True, indent=2)
         latest_json = out_dir / "one_numbers_summary.json"
         health_latest_json = PROJECT_ROOT / "governance" / "health" / "one_numbers_latest.json"
         legacy_latest_dir = out_dir / "latest"
         legacy_latest_json = legacy_latest_dir / "one_numbers_summary.json"
+        legacy_latest_csv = legacy_latest_dir / "one_numbers_latest.csv"
+        legacy_latest_metrics_csv = legacy_latest_dir / "one_numbers_latest_metrics.csv"
+        legacy_latest_md = legacy_latest_dir / "one_numbers_latest.md"
+        legacy_latest_xlsx = legacy_latest_dir / "one_numbers_latest.xlsx"
         latest_json.write_text(payload_text, encoding="utf-8")
         health_latest_json.parent.mkdir(parents=True, exist_ok=True)
         health_latest_json.write_text(payload_text, encoding="utf-8")
         legacy_latest_dir.mkdir(parents=True, exist_ok=True)
         legacy_latest_json.write_text(payload_text, encoding="utf-8")
-        print("One Numbers lightweight mode enabled: used cached daily summary inputs and skipped SQL scan/artifact bundle.")
+        _write_one_numbers_csv(legacy_latest_csv, rows)
+        _write_one_numbers_metrics_csv(legacy_latest_metrics_csv, rows)
+        _write_one_numbers_markdown(legacy_latest_md, rows, csv_reference=out_dir / "latest.csv")
+        _write_one_numbers_xlsx(legacy_latest_xlsx, rows)
+        latest_csv, latest_md, latest_xlsx = _refresh_latest_artifact_aliases(
+            out_dir=out_dir,
+            csv_path=legacy_latest_csv,
+            md_path=legacy_latest_md,
+            xlsx_path=legacy_latest_xlsx,
+        )
+        latest_metrics_csv = _refresh_latest_metrics_alias(
+            out_dir=out_dir,
+            metrics_csv_path=legacy_latest_metrics_csv,
+        )
+        print("One Numbers lightweight mode enabled: used cached daily summary inputs and refreshed latest CSV/XLSX/markdown aliases.")
+        print(f"Latest CSV: {latest_csv}")
+        print(f"Latest MD: {latest_md}")
+        print(f"Latest XLSX: {latest_xlsx}")
+        print(f"Latest metrics CSV: {latest_metrics_csv}")
         print(f"Latest JSON: {latest_json}")
         try:
             if lock_fh is not None:
@@ -1138,6 +1669,11 @@ def main() -> int:
 
     sqlite_state = _resolve_sqlite_state(PROJECT_ROOT)
     day, day_sources = _resolve_report_day(requested_day, sqlite_state)
+    if not day_sources["decision"]:
+        db_day = _latest_report_day_from_db(conn, requested_day)
+        if db_day and db_day != day:
+            day = db_day
+            day_sources = _sqlite_state_sources_by_day(sqlite_state).get(day, _empty_day_sources())
     decision_sources_day = day_sources["decision"]
     governance_sources_day = day_sources["governance"]
     pnl_sources_day = day_sources["pnl"]
@@ -1501,7 +2037,7 @@ def main() -> int:
         return (b - s) / denom
 
     # Stale windows in the last 4h for decisions/governance
-    cutoff_4h = (now_utc - timedelta(hours=4)).isoformat()
+    cutoff_4h = _session_aligned_recent_cutoff(now_utc).isoformat()
     decision_ts_rows = _qall(
         conn,
         """
@@ -1717,11 +2253,15 @@ def main() -> int:
         0,
     )
 
-    # Drift flag: compare buy rate last 1h vs last 4h baseline.
-    buy_rate_1h = s60[1] / max(s60[0], 1)
-    buy_rate_4h = s240[1] / max(s240[0], 1)
-    buy_rate_drift_abs = abs(buy_rate_1h - buy_rate_4h)
-    model_drift_flag = buy_rate_drift_abs >= 0.20
+    drift_snapshot = _model_drift_snapshot(s60, s240)
+    buy_rate_1h = float(drift_snapshot["buy_rate_1h"])
+    buy_rate_4h = float(drift_snapshot["buy_rate_4h"])
+    actionable_rate_1h = float(drift_snapshot["actionable_rate_1h"])
+    actionable_rate_4h = float(drift_snapshot["actionable_rate_4h"])
+    buy_rate_drift_abs = float(drift_snapshot["buy_rate_drift_abs"])
+    action_mix_drift_abs = float(drift_snapshot["action_mix_drift_abs"])
+    model_drift_flag = bool(drift_snapshot["model_drift_flag"])
+    model_drift_reason = str(drift_snapshot["model_drift_reason"])
 
     # Freshness ages
     last_decision_ts = _q1(
@@ -1847,6 +2387,7 @@ def main() -> int:
     score -= min(watchdog_throttled * 2.0, 10.0)
     score -= min(watchdog_restart_errors * 3.0, 12.0)
     data_quality_score = max(min(score, 100.0), 0.0)
+    backpressure_scorecard = _backpressure_scorecard_metrics(PROJECT_ROOT)
 
     # Alert flags
     alerts = {
@@ -1909,6 +2450,16 @@ def main() -> int:
         ("data_quality_score", f"{data_quality_score:.2f}"),
         ("paper_executed_total", str(paper_executed_total)),
         ("watchdog_restarts", str(watchdog_restarts)),
+        ("report_section_02b", "Backpressure Scorecard"),
+        ("backpressure_quality_score", backpressure_scorecard["backpressure_quality_score"]),
+        ("backpressure_quality_label", backpressure_scorecard["backpressure_quality_label"]),
+        ("backpressure_steady_state_ready", backpressure_scorecard["backpressure_steady_state_ready"]),
+        ("backpressure_target_breach_count", backpressure_scorecard["backpressure_target_breach_count"]),
+        ("pressure_index", backpressure_scorecard["pressure_index"]),
+        ("core_pending_lines", backpressure_scorecard["core_pending_lines"]),
+        ("estimated_total_drain_minutes", backpressure_scorecard["estimated_total_drain_minutes"]),
+        ("stale_stage_pending_lines", backpressure_scorecard["stale_stage_pending_lines"]),
+        ("backpressure_target_breaches", backpressure_scorecard["backpressure_target_breaches"]),
         ("report_section_03", "Month To Date"),
         ("month_to_date_days_covered", month_rollup["days_covered"]),
         ("month_to_date_decision_total_rows", month_rollup["decision_total_rows"]),
@@ -1979,8 +2530,12 @@ def main() -> int:
         ("symbol_concentration_top3_share", f"{symbol_concentration_top3_share:.6f}"),
         ("buy_rate_1h", f"{buy_rate_1h:.6f}"),
         ("buy_rate_4h", f"{buy_rate_4h:.6f}"),
+        ("actionable_rate_1h", f"{actionable_rate_1h:.6f}"),
+        ("actionable_rate_4h", f"{actionable_rate_4h:.6f}"),
         ("buy_rate_drift_abs", f"{buy_rate_drift_abs:.6f}"),
+        ("action_mix_drift_abs", f"{action_mix_drift_abs:.6f}"),
         ("model_drift_flag", str(model_drift_flag).lower()),
+        ("model_drift_reason", model_drift_reason),
         ("watchdog_throttled", str(watchdog_throttled)),
         ("watchdog_restart_errors", str(watchdog_restart_errors)),
         ("decision_last_age_sec", str(decision_last_age_sec)),
@@ -2063,11 +2618,13 @@ def main() -> int:
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     csv_path = out_dir / f"one_numbers_{day}_{stamp}.csv"
+    metrics_csv_path = out_dir / f"one_numbers_{day}_{stamp}_metrics.csv"
     md_path = out_dir / f"one_numbers_{day}_{stamp}.md"
     xlsx_path = out_dir / f"one_numbers_{day}_{stamp}.xlsx"
 
     if not args.lightweight:
-        _write_kv_csv(csv_path, rows)
+        _write_one_numbers_csv(csv_path, rows)
+        _write_one_numbers_metrics_csv(metrics_csv_path, rows)
         _write_one_numbers_xlsx(xlsx_path, rows)
 
         stocks_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in stocks_top[:5]) if stocks_top else "n/a"
@@ -2093,6 +2650,16 @@ def main() -> int:
             f"- Effective blocked rate: {_fmt_pct(effective_blocked_rate)}",
             f"- Data quality score: {data_quality_score:.2f}/100",
             f"- Data quality mode: {dq_policy['mode']} (session_open={str(bool(dq_policy['session_open'])).lower()}, tz={dq_policy['timezone']})",
+            "",
+            "## Backpressure Scorecard",
+            f"- Backpressure quality score: {backpressure_scorecard['backpressure_quality_score']}/100",
+            f"- Quality label: {backpressure_scorecard['backpressure_quality_label']}",
+            f"- Steady-state ready: {backpressure_scorecard['backpressure_steady_state_ready']}",
+            f"- Pressure index: {backpressure_scorecard['pressure_index']}",
+            f"- Core pending lines: {backpressure_scorecard['core_pending_lines']}",
+            f"- Estimated total drain minutes: {backpressure_scorecard['estimated_total_drain_minutes']}",
+            f"- Stale-stage pending lines: {backpressure_scorecard['stale_stage_pending_lines']}",
+            f"- Target breaches: {backpressure_scorecard['backpressure_target_breaches']}",
             "",
             "## Month To Date",
             f"- Days covered: {month_rollup['days_covered']}",
@@ -2154,7 +2721,11 @@ def main() -> int:
             "## Risk/Diagnostics",
             f"- Hold-no-edge rate: {_fmt_pct(hold_no_edge_rate)}",
             f"- Symbol concentration top3 share: {_fmt_pct(symbol_concentration_top3_share)}",
-            f"- Drift abs (buy_rate 1h vs 4h): {buy_rate_drift_abs:.4f} (flag={str(model_drift_flag).lower()})",
+            (
+                f"- Drift abs (buy/action mix 1h vs 4h): {buy_rate_drift_abs:.4f} / {action_mix_drift_abs:.4f} "
+                f"(actionable={_fmt_pct(actionable_rate_1h)} / {_fmt_pct(actionable_rate_4h)}, "
+                f"flag={str(model_drift_flag).lower()}, reason={model_drift_reason})"
+            ),
             "",
             "## Bot Stack",
             f"- Overall status: {bot_stack_status}",
@@ -2185,6 +2756,7 @@ def main() -> int:
     latest_csv = out_dir / "latest.csv"
     latest_md = out_dir / "latest.md"
     latest_xlsx = out_dir / "latest.xlsx"
+    latest_metrics_csv = out_dir / "latest_metrics.csv"
     latest_json = out_dir / "one_numbers_summary.json"
     health_latest_json = PROJECT_ROOT / "governance" / "health" / "one_numbers_latest.json"
     legacy_latest_dir = out_dir / "latest"
@@ -2209,15 +2781,16 @@ def main() -> int:
     legacy_latest_json.write_text(payload_text, encoding="utf-8")
 
     if not args.lightweight:
-        if latest_csv.exists() or latest_csv.is_symlink():
-            latest_csv.unlink()
-        if latest_md.exists() or latest_md.is_symlink():
-            latest_md.unlink()
-        if latest_xlsx.exists() or latest_xlsx.is_symlink():
-            latest_xlsx.unlink()
-        latest_csv.symlink_to(csv_path)
-        latest_md.symlink_to(md_path)
-        latest_xlsx.symlink_to(xlsx_path)
+        latest_csv, latest_md, latest_xlsx = _refresh_latest_artifact_aliases(
+            out_dir=out_dir,
+            csv_path=csv_path,
+            md_path=md_path,
+            xlsx_path=xlsx_path,
+        )
+        latest_metrics_csv = _refresh_latest_metrics_alias(
+            out_dir=out_dir,
+            metrics_csv_path=metrics_csv_path,
+        )
 
     # SQL register snapshot
     snapshot_write_ok = False
@@ -2245,6 +2818,7 @@ def main() -> int:
         print(f"Latest CSV: {latest_csv}")
         print(f"Latest MD: {latest_md}")
         print(f"Latest XLSX: {latest_xlsx}")
+        print(f"Latest metrics CSV: {latest_metrics_csv}")
     print(f"Latest JSON: {latest_json}")
     if not args.no_sql_write and snapshot_write_ok:
         print("Registered snapshot in SQLite table: one_numbers_snapshots")

@@ -3,11 +3,13 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 AGENTS_DIR="$HOME/Library/LaunchAgents"
+UID_NUM="$(id -u)"
 LOG_DIR="$PROJECT_ROOT/logs"
 mkdir -p "$AGENTS_DIR" "$LOG_DIR"
 
 RUN_ALL_LAUNCHER="$PROJECT_ROOT/scripts/ops/run_all_sleeves_launchd.sh"
 ALL_SLEEVES_PLIST="$AGENTS_DIR/com.dankingsley.all_sleeves.plist"
+ALL_SLEEVES_LABEL="com.dankingsley.all_sleeves"
 RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-live}"
 MARKET_OPEN_HOUR="${MARKET_SESSION_START_HOUR:-4}"
 LAUNCHD_LOG_DIR="$HOME/Library/Logs/schwab_trading_bot"
@@ -25,7 +27,7 @@ if [[ "$ORCHESTRATOR_MODE" == "all_sleeves" ]]; then
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.dankingsley.all_sleeves</string>
+  <key>Label</key><string>$ALL_SLEEVES_LABEL</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/zsh</string>
@@ -49,11 +51,14 @@ if [[ "$ORCHESTRATOR_MODE" == "all_sleeves" ]]; then
 </plist>
 PLIST
 
-  launchctl unload "$ALL_SLEEVES_PLIST" >/dev/null 2>&1 || true
-  launchctl load "$ALL_SLEEVES_PLIST"
+  launchctl bootout "gui/$UID_NUM" "$ALL_SLEEVES_PLIST" >/dev/null 2>&1 || true
+  launchctl enable "gui/$UID_NUM/$ALL_SLEEVES_LABEL" || true
+  launchctl bootstrap "gui/$UID_NUM" "$ALL_SLEEVES_PLIST"
+  launchctl kickstart -k "gui/$UID_NUM/$ALL_SLEEVES_LABEL" || true
   echo "Installed all-sleeves launcher (orchestrator_mode=all_sleeves)"
 else
-  launchctl bootout "gui/$(id -u)" "$ALL_SLEEVES_PLIST" >/dev/null 2>&1 || launchctl unload "$ALL_SLEEVES_PLIST" >/dev/null 2>&1 || true
+  launchctl bootout "gui/$UID_NUM" "$ALL_SLEEVES_PLIST" >/dev/null 2>&1 || launchctl unload "$ALL_SLEEVES_PLIST" >/dev/null 2>&1 || true
+  launchctl disable "gui/$UID_NUM/$ALL_SLEEVES_LABEL" >/dev/null 2>&1 || true
   rm -f "$ALL_SLEEVES_PLIST" >/dev/null 2>&1 || true
   echo "Skipped all-sleeves launcher (orchestrator_mode=$ORCHESTRATOR_MODE)"
 fi

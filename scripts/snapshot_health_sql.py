@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 
+from core.sqlite_runtime import connect_sqlite
 
 SNAPSHOT_DRILL_KEY = "state_snapshot_drill"
 SNAPSHOT_DRILL_LATEST_REL = Path("exports") / "state_snapshot_drills" / "latest.json"
@@ -92,14 +93,7 @@ def _sqlite_has_table(conn: sqlite3.Connection, table: str) -> bool:
 
 
 def _connect_sqlite(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(path), timeout=120.0)
-    try:
-        conn.execute("PRAGMA busy_timeout=120000")
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-    except Exception:
-        pass
-    return conn
+    return connect_sqlite(path, project_root=path.resolve().parents[1], timeout_seconds=120.0)
 
 
 def _default_raw_debug_context() -> Dict[str, float]:

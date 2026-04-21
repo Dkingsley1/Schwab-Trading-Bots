@@ -58,7 +58,7 @@ def test_runtime_feature_vector_shapes() -> None:
     sequence = [_obs()]
     assert v35._runtime_feature_vector(sequence, 0).shape == (27,)
     assert v38._runtime_feature_vector(sequence, 0).shape == (31,)
-    assert v41._runtime_feature_vector(sequence, 0).shape == (29,)
+    assert v41._runtime_feature_vector(sequence, 0).shape == (43,)
     assert v52._runtime_feature_vector(sequence, 0).shape == (33,)
 
 
@@ -117,3 +117,6 @@ def test_train_brain_uses_runtime_path_without_silent_fallback(monkeypatch) -> N
         assert expected_symbol in captured["symbol_allowlist"]
         assert captured["require_both_sides_precision"] is True
         assert captured["min_accuracy_lift_over_majority"] == 0.02
+        if module is v41:
+            assert "long_term_total_return_income_norm" in captured["feature_names"]
+            assert "long_term_downside_preservation_norm" in captured["feature_names"]

@@ -69,13 +69,20 @@ def _risk_off_signal(obs):
 
 def _quality_signal(obs):
     return _clip01(
-        (0.24 * observation_feature(obs, "dividend_quality_score_norm"))
-        + (0.20 * observation_feature(obs, "dividend_safety_composite_norm"))
-        + (0.14 * observation_feature(obs, "dividend_growth_momentum_norm"))
-        + (0.12 * observation_feature(obs, "dividend_capture_entry_signal_norm"))
-        + (0.10 * observation_feature(obs, "dividend_drip_active_norm"))
-        + (0.10 * observation_feature(obs, "long_term_quality_dividend_norm"))
-        + (0.10 * _quote_quality(obs))
+        (0.16 * observation_feature(obs, "dividend_quality_score_norm"))
+        + (0.14 * observation_feature(obs, "dividend_safety_composite_norm"))
+        + (0.12 * observation_feature(obs, "dividend_fcf_coverage_norm"))
+        + (0.10 * observation_feature(obs, "dividend_structure_aware_quality_norm"))
+        + (0.09 * observation_feature(obs, "dividend_income_quality_norm"))
+        + (0.08 * observation_feature(obs, "dividend_total_return_income_norm"))
+        + (0.08 * observation_feature(obs, "dividend_growth_momentum_norm"))
+        + (0.06 * observation_feature(obs, "dividend_streak_quality_norm"))
+        + (0.05 * observation_feature(obs, "dividend_capture_entry_signal_norm"))
+        + (0.04 * observation_feature(obs, "dividend_drip_active_norm"))
+        + (0.04 * observation_feature(obs, "long_term_quality_dividend_norm"))
+        + (0.04 * observation_feature(obs, "long_term_total_return_income_norm"))
+        + (0.08 * _quote_quality(obs))
+        - (0.10 * observation_feature(obs, "dividend_trap_internal_risk_norm"))
     )
 
 
@@ -136,7 +143,15 @@ def _runtime_feature_vector(sequence, idx):
             observation_feature(obs, "dividend_growth_momentum_norm"),
             observation_feature(obs, "dividend_capture_entry_signal_norm"),
             observation_feature(obs, "dividend_drip_active_norm"),
+            observation_feature(obs, "dividend_streak_quality_norm"),
+            observation_feature(obs, "dividend_fcf_coverage_norm"),
+            observation_feature(obs, "dividend_structure_aware_quality_norm"),
+            observation_feature(obs, "dividend_income_quality_norm"),
+            observation_feature(obs, "dividend_trap_internal_risk_norm"),
+            observation_feature(obs, "dividend_total_return_income_norm"),
+            observation_feature(obs, "dividend_corporate_action_hazard_norm"),
             observation_feature(obs, "long_term_quality_dividend_norm"),
+            observation_feature(obs, "long_term_total_return_income_norm"),
             observation_feature(obs, "capital_flow_outflow_norm"),
             observation_feature(obs, "flow_risk_on_norm"),
             observation_feature(obs, "breadth_risk_off_norm"),
@@ -206,15 +221,18 @@ def _runtime_defensive_dividend_label(sequence, idx, horizon):
     success_score = (
         signed_ret
         + (0.00110 * support)
+        + (0.00055 * observation_feature(obs, "dividend_total_return_income_norm"))
         - (0.00055 * headwind)
         - (0.80 * drawdown)
         - (0.26 * realized)
+        - (0.00040 * observation_feature(obs, "dividend_trap_internal_risk_norm"))
     )
     failure_score = (
         (-signed_ret)
         + (0.00095 * headwind)
         + (0.65 * drawdown)
         + (0.18 * realized)
+        + (0.00045 * observation_feature(obs, "dividend_corporate_action_hazard_norm"))
     )
     if success_score >= 0.00065 and expected_up:
         return 1.0
@@ -251,7 +269,15 @@ def train_brain():
             "dividend_growth_momentum_norm",
             "dividend_capture_entry_signal_norm",
             "dividend_drip_active_norm",
+            "dividend_streak_quality_norm",
+            "dividend_fcf_coverage_norm",
+            "dividend_structure_aware_quality_norm",
+            "dividend_income_quality_norm",
+            "dividend_trap_internal_risk_norm",
+            "dividend_total_return_income_norm",
+            "dividend_corporate_action_hazard_norm",
             "long_term_quality_dividend_norm",
+            "long_term_total_return_income_norm",
             "capital_flow_outflow_norm",
             "flow_risk_on_norm",
             "breadth_risk_off_norm",

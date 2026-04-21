@@ -15,6 +15,7 @@ def _args(**overrides):
     defaults = {
         "youtube_url": "",
         "youtube_channel_url": "",
+        "channel_preset": "",
         "template": "powell",
         "speaker": "Jerome Powell",
         "source": "Federal Reserve",
@@ -37,7 +38,10 @@ def _args(**overrides):
         "media_ingest_asr_model": "",
         "media_ingest_cookies_from_browser": "",
         "media_ingest_wait_buffer_seconds": 1800.0,
+        "media_ingest_retain_policy": "all",
+        "media_ingest_publish_bulletin": False,
         "media_ingest_force_redownload": False,
+        "replay_full_video_on_stream_end": False,
         "once": False,
         "json": False,
     }
@@ -112,6 +116,47 @@ def test_resolve_stream_target_prefers_live_channel_video(monkeypatch):
     assert target["stream_title"] == "Jerome Powell live remarks"
 
 
+def test_probe_channel_streams_hydrates_recent_candidates_when_flat_playlist_omits_live_status(monkeypatch):
+    calls = []
+
+    def _fake_run(args, timeout=90):
+        calls.append(list(args))
+        url = str(args[-1])
+        if url.endswith("/streams"):
+            return {
+                "returncode": 0,
+                "stdout": "",
+                "stderr": "",
+                "payload": {
+                    "entries": [
+                        {"id": "old111", "title": "Older stream", "live_status": "was_live"},
+                        {"id": "live456", "title": "Trump Address", "live_status": ""},
+                    ]
+                },
+            }
+        if "live456" in url:
+            return {
+                "returncode": 0,
+                "stdout": "",
+                "stderr": "",
+                "payload": {
+                    "webpage_url": "https://www.youtube.com/watch?v=live456",
+                    "title": "Trump Address",
+                    "live_status": "is_live",
+                    "is_live": True,
+                },
+            }
+        return {"returncode": 0, "stdout": "", "stderr": "", "payload": {}}
+
+    monkeypatch.setattr(live_macro_auto_watch, "_run_yt_dlp_json", _fake_run)
+
+    probe = live_macro_auto_watch._probe_channel_streams("https://www.youtube.com/@WhiteHouse")
+
+    assert probe["live"]["video_url"] == "https://www.youtube.com/watch?v=live456"
+    assert probe["live"]["live_status"] == "is_live"
+    assert any("live456" in " ".join(call) for call in calls)
+
+
 def test_run_once_waiting_channel_state_is_healthy_and_dedupes_status_events(monkeypatch, tmp_path):
     events = []
     monkeypatch.setattr(
@@ -149,6 +194,107 @@ def test_run_once_waiting_channel_state_is_healthy_and_dedupes_status_events(mon
     assert events[0]["event_type"] == "channel_status"
     assert second["ok"] is True
     assert len(events) == 1
+
+
+def test_launch_media_ingest_for_stream_passes_actionable_args(monkeypatch, tmp_path):
+    log_handles = []
+    popen_calls = []
+
+    class _FakeHandle:
+        def write(self, text):
+            return len(text)
+
+        def flush(self):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeProc:
+        pid = 43210
+
+    monkeypatch.setattr(live_macro_auto_watch, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(
+        Path,
+        "open",
+        lambda self, *args, **kwargs: log_handles.append(self) or _FakeHandle(),
+    )
+    monkeypatch.setattr(
+        live_macro_auto_watch.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: popen_calls.append((cmd, kwargs)) or _FakeProc(),
+    )
+
+    args = _args(
+        symbols="SPY,QQQ",
+        out_file=str(tmp_path / "live_macro_latest.json"),
+        expires_hours=8.0,
+        media_ingest_retain_policy="actionable_only",
+        media_ingest_publish_bulletin=True,
+    )
+    result = live_macro_auto_watch._launch_media_ingest_for_stream(
+        args,
+        youtube_url="https://www.youtube.com/watch?v=abc123",
+        wait_for_live_seconds=90.0,
+    )
+
+    cmd = popen_calls[0][0]
+    assert "--retain-policy" in cmd
+    assert "actionable_only" in cmd
+    assert "--publish-bulletin" in cmd
+    assert "--symbols" in cmd
+    assert result["media_ingest_pid"] == 43210
+
+
+def test_apply_channel_preset_fills_trading_sources() -> None:
+    args = _args(channel_preset="apple_ir")
+
+    out = live_macro_auto_watch._apply_channel_preset(args)
+
+    assert out.youtube_channel_url == "https://www.youtube.com/@Apple"
+    assert out.template == "earnings_call"
+    assert out.source == "Apple IR"
+    assert out.symbols == "AAPL"
+
+
+def test_parse_vtt_cleans_inline_tags_and_repeated_phrases(tmp_path):
+    vtt_path = tmp_path / "sample.vtt"
+    vtt_path.write_text(
+        "WEBVTT\n\n"
+        "00:00:01.000 --> 00:00:05.000\n"
+        "<00:00:01.000><c>MR. WARSH:</c> They should have confidence in their institutions. They should have confidence in their institutions.\n",
+        encoding="utf-8",
+    )
+
+    cues = live_macro_auto_watch._parse_vtt(vtt_path)
+
+    assert len(cues) == 1
+    assert cues[0]["text"] == "MR. WARSH: They should have confidence in their institutions."
+
+
+def test_apply_channel_preset_supports_cspan_legal() -> None:
+    args = _args(channel_preset="cspan_legal")
+
+    out = live_macro_auto_watch._apply_channel_preset(args)
+
+    assert out.youtube_channel_url == "https://www.youtube.com/@CSPAN"
+    assert out.template == "legal_policy"
+    assert out.source == "C-SPAN"
+    assert "XLF" in out.symbols
+
+
+def test_apply_channel_preset_supports_schwab_network() -> None:
+    args = _args(channel_preset="schwab_network")
+
+    out = live_macro_auto_watch._apply_channel_preset(args)
+
+    assert out.youtube_channel_url == "https://www.youtube.com/@SchwabNetwork"
+    assert out.template == "generic"
+    assert out.source == "Schwab Network"
+    assert "SPY" in out.symbols
 
 
 def test_classify_text_uses_expanded_keyword_sets_without_carry_forward():
@@ -313,6 +459,59 @@ def test_run_once_channel_live_triggers_media_ingest_and_calendar_correlation_on
     assert payload["items"][0]["calendar_event_title"] == "FOMC Press Conference"
 
 
+def test_run_once_channel_transition_from_live_runs_post_live_replay_once(monkeypatch, tmp_path):
+    events = []
+    replay_calls = []
+    monkeypatch.setattr(
+        live_macro_auto_watch,
+        "_resolve_stream_target",
+        lambda args: {
+            "mode": "channel",
+            "stream_state": "awaiting_live_stream",
+            "channel_url": "https://www.youtube.com/@CSPAN",
+            "live_probe_url": "https://www.youtube.com/@CSPAN/live",
+            "streams_probe_url": "https://www.youtube.com/@CSPAN/streams",
+            "latest_title": "Kevin Warsh Confirmation Hearing",
+            "latest_video_url": "https://www.youtube.com/watch?v=warsh123",
+            "latest_live_status": "was_live",
+        },
+    )
+    monkeypatch.setattr(
+        live_macro_auto_watch,
+        "append_live_macro_event",
+        lambda **kwargs: events.append(kwargs) or "/tmp/live_macro_events.jsonl",
+    )
+    monkeypatch.setattr(
+        live_macro_auto_watch,
+        "_run_full_video_replay",
+        lambda args, *, youtube_url, out_path: replay_calls.append((youtube_url, str(out_path))) or {
+            "ok": True,
+            "analysis_mode": "full_video_replay",
+            "caption_excerpt": "Full replay summary",
+        },
+    )
+
+    state = {
+        "last_stream_state": "live",
+        "last_live_video_url": "https://www.youtube.com/watch?v=warsh123",
+    }
+    args = _args(
+        youtube_channel_url="https://www.youtube.com/@CSPAN",
+        replay_full_video_on_stream_end=True,
+    )
+    out_path = tmp_path / "live_macro_latest.json"
+
+    first = live_macro_auto_watch._run_once(args, state, out_path)
+    second = live_macro_auto_watch._run_once(args, state, out_path)
+
+    assert first["post_live_replay_triggered"] is True
+    assert first["post_live_replay_reason"] == "replayed_after_stream_end"
+    assert first["post_live_replay_analysis_mode"] == "full_video_replay"
+    assert replay_calls == [("https://www.youtube.com/watch?v=warsh123", str(out_path))]
+    assert second["post_live_replay_reason"] == "already_replayed_for_stream"
+    assert len([event for event in events if event["event_type"] == "post_live_replay"]) == 1
+
+
 def test_run_once_upcoming_channel_arms_media_ingest_inside_calendar_window(monkeypatch, tmp_path):
     events = []
     launches = []
@@ -440,9 +639,62 @@ def test_run_once_waiting_channel_can_arm_from_live_probe_url(monkeypatch, tmp_p
     status = live_macro_auto_watch._run_once(args, {}, tmp_path / "live_macro_latest.json")
 
     assert launches
-    assert launches[0][0] == "https://www.youtube.com/@federalreserve/live"
-    assert status["media_ingest_triggered"] is True
+
+
+def test_run_once_upcoming_channel_arms_media_ingest_without_calendar_match(monkeypatch, tmp_path):
+    launches = []
+    monkeypatch.setattr(
+        live_macro_auto_watch,
+        "_resolve_stream_target",
+        lambda args: {
+            "mode": "channel",
+            "stream_state": "upcoming_detected",
+            "resolved_video_url": "https://www.youtube.com/watch?v=address999",
+            "upcoming_video_url": "https://www.youtube.com/watch?v=address999",
+            "channel_url": "https://www.youtube.com/@WhiteHouse",
+            "stream_title": "President Trump Delivers an Address to the Nation",
+            "upcoming_title": "President Trump Delivers an Address to the Nation",
+        },
+    )
+    monkeypatch.setattr(
+        live_macro_auto_watch,
+        "append_live_macro_event",
+        lambda **kwargs: "/tmp/live_macro_events.jsonl",
+    )
+    monkeypatch.setattr(
+        live_macro_auto_watch,
+        "_launch_media_ingest_for_stream",
+        lambda args, youtube_url, wait_for_live_seconds=0.0: launches.append((youtube_url, wait_for_live_seconds)) or {
+            "media_ingest_triggered": True,
+            "media_ingest_reason": "armed_from_upcoming_stream_detected",
+            "media_ingest_pid": 2468,
+            "media_ingest_log": "/tmp/macro_media_ingest_upcoming.log",
+            "media_ingest_command": ["python", "live_macro_media_ingest.py"],
+            "media_ingest_wait_for_live_seconds": wait_for_live_seconds,
+        },
+    )
+    monkeypatch.setattr(
+        live_macro_auto_watch,
+        "_fetch_schwab_calendar_correlation",
+        lambda args, target: {
+            "calendar_correlation_enabled": True,
+            "calendar_correlation_ok": False,
+            "calendar_correlation_reason": "no_matching_calendar_event",
+        },
+    )
+
+    args = _args(
+        youtube_channel_url="https://www.youtube.com/@WhiteHouse",
+        trigger_media_ingest_on_live=True,
+        media_ingest_wait_buffer_seconds=1200.0,
+        correlate_with_schwab_calendar=True,
+    )
+    status = live_macro_auto_watch._run_once(args, {}, tmp_path / "live_macro_latest.json")
+
+    assert launches == [("https://www.youtube.com/watch?v=address999", 1200.0)]
     assert status["media_ingest_trigger_mode"] == "prelive"
+    assert status["media_ingest_reason"] == "armed_from_upcoming_stream_detected"
+    assert status["media_ingest_triggered"] is True
 
 
 def test_fetch_federal_reserve_calendar_correlation_matches_without_api_key(monkeypatch):

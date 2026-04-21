@@ -315,6 +315,10 @@ class LiveExecutionGuard:
             "expected_slippage_bps": float(sim.slippage_bps),
             "impact_bps": float(sim.impact_bps),
             "latency_ms": float(sim.latency_ms),
+            "partial_fill_ratio": float(sim.partial_fill_ratio),
+            "spread_jump_penalty_bps": float(sim.spread_jump_penalty_bps),
+            "symbol_curve_multiplier": float(sim.symbol_curve_multiplier),
+            "fill_quality_bucket": str(sim.fill_quality_bucket),
         }
 
     def evaluate_fill_quality(

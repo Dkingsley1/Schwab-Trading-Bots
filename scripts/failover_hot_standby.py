@@ -1,6 +1,7 @@
 import argparse
 import glob
 import json
+import os
 import shlex
 import subprocess
 import time
@@ -8,6 +9,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+import sys
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_python import resolve_runtime_python
+
+os.environ.setdefault("BOT_RUNTIME_LANE", os.getenv("BOT_SHADOW_RUNTIME_LANE", "shadow314"))
+RUNTIME_PY = resolve_runtime_python(PROJECT_ROOT)
 LOG_PATH = PROJECT_ROOT / 'governance' / 'watchdog' / 'failover_events.jsonl'
 FALLBACK_LOG_PATH = Path('/tmp/failover_events.jsonl')
 DEFAULT_HEARTBEAT_GLOB = str(PROJECT_ROOT / 'governance' / 'health' / 'shadow_loop_conservative_equities_schwab_*.json')
@@ -94,7 +103,7 @@ def main() -> int:
 
     standby_cmd = args.standby_start_cmd.strip()
     if not standby_cmd:
-        standby_cmd = f"{PROJECT_ROOT}/.venv312/bin/python {PROJECT_ROOT}/scripts/run_parallel_shadows.py --simulate"
+        standby_cmd = f"{RUNTIME_PY} {PROJECT_ROOT}/scripts/run_parallel_shadows.py --simulate"
 
     while True:
         alive = _proc_alive(args.primary_match)

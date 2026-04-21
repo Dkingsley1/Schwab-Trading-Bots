@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -12,14 +13,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.collector_transport import fetch_text
 from core.market_context_features import load_latest_external_context
+from core.fx_twelve_data_guard import (
+    classify_twelve_data_failure,
+    mark_twelve_data_cooldown,
+    twelve_data_cooldown_status,
+)
+from scripts import ops_data_plane
 
 
 ECB_FX_HIST_90D_URL = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist-90d.xml"
@@ -27,6 +34,12 @@ FED_H10_CURRENT_URL = "https://www.federalreserve.gov/releases/h10/current/defau
 ALPHA_VANTAGE_FX_INTRADAY_URL = "https://www.alphavantage.co/query"
 TWELVE_DATA_TIME_SERIES_URL = "https://api.twelvedata.com/time_series"
 USER_AGENT = "schwab-trading-bot/1.0"
+SOURCE_CONTRACTS = {
+    "ecb": {"source_confidence_norm": 0.99, "schema_confidence_norm": 0.95},
+    "fed_h10": {"source_confidence_norm": 0.98, "schema_confidence_norm": 0.9},
+    "alpha_vantage": {"source_confidence_norm": 0.87, "schema_confidence_norm": 0.86},
+    "twelve_data": {"source_confidence_norm": 0.89, "schema_confidence_norm": 0.88},
+}
 
 FEATURE_KEYS = [
     "fx_official_data_available",
@@ -43,6 +56,12 @@ FEATURE_KEYS = [
     "fx_crypto_alignment_norm",
     "fx_macro_dispersion_norm",
     "fx_corr_confidence_norm",
+    "fx_session_asia_norm",
+    "fx_session_london_norm",
+    "fx_session_ny_norm",
+    "fx_rollover_risk_norm",
+    "fx_dxy_yield_confirmation_norm",
+    "fx_carry_proxy_norm",
 ]
 
 PAIR_SYMBOLS = ("EURUSD", "USDJPY", "GBPUSD", "USDCHF", "USDCAD", "AUDUSD")
@@ -106,10 +125,177 @@ def _pct_change(current: float | None, previous: float | None) -> float:
     return (float(current) - float(previous)) / abs(float(previous))
 
 
+def _source_contract_name(url: str) -> str:
+    text = str(url or "")
+    if "ecb.europa.eu" in text:
+        return "ecb"
+    if "federalreserve.gov" in text:
+        return "fed_h10"
+    if "alphavantage.co" in text:
+        return "alpha_vantage"
+    if "twelvedata.com" in text:
+        return "twelve_data"
+    return "fed_h10"
+
+
+def _source_contract(source_name: str) -> dict[str, float]:
+    row = SOURCE_CONTRACTS.get(str(source_name or ""), {})
+    return {
+        "source_confidence_norm": float(row.get("source_confidence_norm", 0.9) or 0.9),
+        "schema_confidence_norm": float(row.get("schema_confidence_norm", 0.9) or 0.9),
+    }
+
+
+def _fetch_text_result(url: str, *, timeout: float = 20.0) -> dict[str, Any]:
+    source_name = _source_contract_name(url)
+    contract = _source_contract(source_name)
+    return fetch_text(
+        url=url,
+        user_agent=USER_AGENT,
+        timeout=timeout,
+        collector_key="fx_market_context",
+        source_name=source_name,
+        entity_key=url,
+        project_root=PROJECT_ROOT,
+        source_confidence_norm=contract["source_confidence_norm"],
+        schema_confidence_norm=contract["schema_confidence_norm"],
+    )
+
+
 def _http_text(url: str, *, timeout: float = 20.0) -> str:
-    req = Request(url=url, headers={"User-Agent": USER_AGENT})
-    with urlopen(req, timeout=timeout) as resp:
-        return resp.read().decode("utf-8", "replace")
+    result = _fetch_text_result(url, timeout=timeout)
+    if not bool(result.get("ok", False)):
+        raise RuntimeError(str(result.get("error") or "http_text_failed"))
+    return str(result.get("text") or "")
+
+
+def _canonical_pair_reconciliation(
+    *,
+    ecb_pairs: Mapping[str, Any],
+    fed_pairs: Mapping[str, Any],
+    twelve_data_intraday: Mapping[str, Any],
+    alpha_vantage_intraday: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    preferred_order = {"twelve_data": 0, "alpha_vantage": 1, "fed_h10": 2, "ecb": 3}
+    provider_floor_recency = {"twelve_data": 0.75, "alpha_vantage": 0.7, "fed_h10": 0.45, "ecb": 0.2}
+
+    def _provider_recency_score(raw_ts: Any) -> float:
+        text = str(raw_ts or "").strip()
+        if not text:
+            return 0.15
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            age_seconds = max(datetime.now(timezone.utc).timestamp() - parsed.astimezone(timezone.utc).timestamp(), 0.0)
+        except Exception:
+            return 0.15
+        if age_seconds <= 30.0 * 60.0:
+            return 1.0
+        if age_seconds <= 2.0 * 3600.0:
+            return 0.9
+        if age_seconds <= 12.0 * 3600.0:
+            return 0.7
+        if age_seconds <= 48.0 * 3600.0:
+            return 0.45
+        return 0.2
+
+    out: dict[str, dict[str, Any]] = {}
+    for pair in PAIR_SYMBOLS:
+        provider_rows: dict[str, dict[str, float | str]] = {}
+        ecb_value = _to_float(ecb_pairs.get(pair), 0.0)
+        if ecb_value > 0.0:
+            provider_rows["ecb"] = {
+                "value": ecb_value,
+                "latest_ts": "",
+                "recency_score": 0.2,
+            }
+        fed_value = _to_float(fed_pairs.get(pair), 0.0)
+        if fed_value > 0.0:
+            provider_rows["fed_h10"] = {
+                "value": fed_value,
+                "latest_ts": "",
+                "recency_score": 0.45,
+            }
+        intraday_row = twelve_data_intraday.get(pair)
+        if isinstance(intraday_row, Mapping) and intraday_row.get("ok"):
+            td_value = _to_float(intraday_row.get("latest_close"), 0.0)
+            if td_value > 0.0:
+                provider_rows["twelve_data"] = {
+                    "value": td_value,
+                    "latest_ts": str(intraday_row.get("latest_ts") or ""),
+                    "recency_score": max(
+                        _provider_recency_score(intraday_row.get("latest_ts")),
+                        float(provider_floor_recency["twelve_data"]),
+                    ),
+                }
+        if pair == "EURUSD" and alpha_vantage_intraday.get("ok"):
+            av_value = _to_float(alpha_vantage_intraday.get("latest_close"), 0.0)
+            if av_value > 0.0:
+                provider_rows["alpha_vantage"] = {
+                    "value": av_value,
+                    "latest_ts": str(alpha_vantage_intraday.get("latest_ts") or ""),
+                    "recency_score": max(
+                        _provider_recency_score(alpha_vantage_intraday.get("latest_ts")),
+                        float(provider_floor_recency["alpha_vantage"]),
+                    ),
+                }
+        if not provider_rows:
+            continue
+        sorted_values = sorted(float(row["value"]) for row in provider_rows.values())
+        mid = len(sorted_values) // 2
+        median_value = (
+            sorted_values[mid]
+            if len(sorted_values) % 2 == 1
+            else (sorted_values[mid - 1] + sorted_values[mid]) / 2.0
+        )
+        candidate_rows: list[tuple[str, float, float]] = []
+        for source, row in provider_rows.items():
+            value = float(row["value"])
+            delta_ratio = abs(value - float(median_value)) / max(float(median_value), 1e-9)
+            if delta_ratio <= 0.0025:
+                candidate_rows.append((source, value, delta_ratio))
+        if not candidate_rows:
+            candidate_rows = [
+                (
+                    source,
+                    float(row["value"]),
+                    abs(float(row["value"]) - float(median_value)) / max(float(median_value), 1e-9),
+                )
+                for source, row in provider_rows.items()
+            ]
+        canonical_source, canonical_value, _ = max(
+            candidate_rows,
+            key=lambda item: (
+                float(provider_rows[item[0]].get("recency_score", 0.0) or 0.0),
+                -float(item[2]),
+                -float(preferred_order.get(str(item[0]), 99)),
+            ),
+        )
+        max_value = max(float(row["value"]) for row in provider_rows.values())
+        min_value = min(float(row["value"]) for row in provider_rows.values())
+        divergence_ratio = 0.0 if median_value <= 0.0 else abs(max_value - min_value) / max(median_value, 1e-9)
+        provider_count = len(provider_rows)
+        confidence = _clamp01((min(provider_count / 4.0, 1.0) * 0.45) + max(1.0 - (divergence_ratio / 0.02), 0.0) * 0.55)
+        provider_votes = {
+            source: {
+                "value": round(float(row["value"]), 6),
+                "latest_ts": str(row.get("latest_ts") or ""),
+                "recency_score": round(float(row.get("recency_score", 0.0) or 0.0), 6),
+                "delta_to_canonical_bps": round(((float(row["value"]) - float(canonical_value)) / max(float(canonical_value), 1e-9)) * 10000.0, 6),
+            }
+            for source, row in provider_rows.items()
+        }
+        out[pair] = {
+            "canonical_source": str(canonical_source),
+            "canonical_value": round(float(canonical_value), 6),
+            "median_value": round(float(median_value), 6),
+            "provider_count": provider_count,
+            "divergence_ratio": round(float(divergence_ratio), 6),
+            "confidence_norm": round(float(confidence), 6),
+            "provider_votes": provider_votes,
+        }
+    return out
 
 
 def _normalize_pair_symbol(raw: Any) -> str:
@@ -129,12 +315,44 @@ def _twelve_data_time_series(
     feed_symbol = PAIR_TWELVE_DATA_SYMBOLS.get(normalized, "")
     if not normalized or not feed_symbol:
         return {"ok": False, "error": "unsupported_pair", "pair_symbol": normalized}
+    cooldown = twelve_data_cooldown_status(PROJECT_ROOT)
+    if bool(cooldown.get("active")):
+        return {
+            "ok": False,
+            "error": (
+                "provider_cooldown_active:"
+                f"{cooldown.get('kind', 'rate_limit')}:{int(float(cooldown.get('remaining_seconds', 0.0) or 0.0))}"
+            ),
+            "pair_symbol": normalized,
+            "cooldown": cooldown,
+        }
     query = (
         f"{TWELVE_DATA_TIME_SERIES_URL}"
         f"?symbol={feed_symbol}&interval={interval}&outputsize={max(int(outputsize), 2)}"
         f"&apikey={api_key}&format=JSON"
     )
-    raw = _http_text(query, timeout=timeout)
+    try:
+        raw = _http_text(query, timeout=timeout)
+    except (HTTPError, URLError, RuntimeError, TimeoutError, OSError) as exc:
+        code = str(getattr(exc, "code", "") or "").strip()
+        message = str(exc)
+        failure_kind = classify_twelve_data_failure(code=code, message=message)
+        marked = {}
+        if failure_kind:
+            marked = mark_twelve_data_cooldown(
+                project_root=PROJECT_ROOT,
+                kind=failure_kind,
+                code=code,
+                message=message,
+                symbol=normalized,
+                source="collect_fx_market_context",
+            )
+        return {
+            "ok": False,
+            "error": f"http_error:{code}:{message}" if code else f"http_error:{message}",
+            "pair_symbol": normalized,
+            "cooldown": marked,
+        }
     try:
         payload = json.loads(raw)
     except Exception:
@@ -144,11 +362,23 @@ def _twelve_data_time_series(
     if str(payload.get("status", "")).strip().lower() == "error":
         code = str(payload.get("code", "")).strip()
         message = str(payload.get("message", "")).strip() or "twelve_data_error"
+        failure_kind = classify_twelve_data_failure(code=code, message=message)
+        marked = {}
+        if failure_kind:
+            marked = mark_twelve_data_cooldown(
+                project_root=PROJECT_ROOT,
+                kind=failure_kind,
+                code=code,
+                message=message,
+                symbol=normalized,
+                source="collect_fx_market_context",
+            )
         return {
             "ok": False,
             "error": f"{code}:{message}" if code else message,
             "pair_symbol": normalized,
             "payload": dict(payload),
+            "cooldown": marked,
         }
     values = payload.get("values")
     if not isinstance(values, list):
@@ -442,6 +672,62 @@ def _risk_alignment(latest_market: Mapping[str, Mapping[str, float]], usd_streng
     return risk_align, crypto_align
 
 
+def _fx_session_state_norms(now_utc: datetime) -> dict[str, float]:
+    hour = float(now_utc.hour) + (float(now_utc.minute) / 60.0)
+    asia = 1.0 if (hour >= 21.0 or hour < 7.0) else 0.0
+    london = 1.0 if 7.0 <= hour < 16.0 else 0.0
+    ny = 1.0 if 13.0 <= hour < 22.0 else 0.0
+    rollover = 1.0 if 20.0 <= hour < 22.0 else 0.0
+    return {
+        "fx_session_asia_norm": asia,
+        "fx_session_london_norm": london,
+        "fx_session_ny_norm": ny,
+        "fx_rollover_risk_norm": rollover,
+    }
+
+
+def _fx_dxy_yield_confirmation(
+    latest_market: Mapping[str, Mapping[str, float]],
+    *,
+    usd_strength_raw: float,
+    proxy_agreement_raw: float,
+) -> float:
+    usd_dir = 0
+    if usd_strength_raw > 1e-6:
+        usd_dir = 1
+    elif usd_strength_raw < -1e-6:
+        usd_dir = -1
+    if usd_dir == 0:
+        return _clamp01(proxy_agreement_raw)
+
+    votes: list[float] = []
+    uup_move = _to_float((latest_market.get("UUP") or {}).get("pct_from_close"), 0.0)
+    if abs(uup_move) > 1e-6:
+        votes.append(1.0 if ((1 if uup_move > 0.0 else -1) == usd_dir) else 0.0)
+    tlt_move = _to_float((latest_market.get("TLT") or {}).get("pct_from_close"), 0.0)
+    if abs(tlt_move) > 1e-6:
+        votes.append(1.0 if ((1 if (-tlt_move) > 0.0 else -1) == usd_dir) else 0.0)
+    if not votes:
+        return _clamp01(proxy_agreement_raw)
+    vote_mean = sum(votes) / max(len(votes), 1)
+    return _clamp01((0.55 * proxy_agreement_raw) + (0.45 * vote_mean))
+
+
+def _fx_carry_proxy(pair_changes: Mapping[str, float]) -> float:
+    carry_components = [
+        _to_float(pair_changes.get("USDJPY"), 0.0),
+        _to_float(pair_changes.get("USDCHF"), 0.0),
+        _to_float(pair_changes.get("USDCAD"), 0.0),
+        -_to_float(pair_changes.get("EURUSD"), 0.0),
+        -_to_float(pair_changes.get("GBPUSD"), 0.0),
+        -_to_float(pair_changes.get("AUDUSD"), 0.0),
+    ]
+    finite = [value for value in carry_components if math.isfinite(value)]
+    if not finite:
+        return 0.5
+    return _signed_norm(sum(finite) / len(finite), 0.04)
+
+
 def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any], dict[str, Any]]:
     now = datetime.now(timezone.utc)
     warnings: list[str] = []
@@ -460,8 +746,8 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
     alpha_vantage_enabled = str(os.getenv("FX_MARKET_CONTEXT_ALPHA_VANTAGE_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"}
     alpha_vantage_api_key = str(os.getenv("ALPHA_VANTAGE_API_KEY", "")).strip()
     source_status: dict[str, Any] = {
-        "ecb": {"ok": False, "url": ECB_FX_HIST_90D_URL, "rows": 0, "error": None},
-        "fed_h10": {"ok": False, "url": FED_H10_CURRENT_URL, "pair_count": 0, "error": None},
+        "ecb": {"ok": False, "url": ECB_FX_HIST_90D_URL, "rows": 0, "error": None, **_source_contract("ecb"), "freshness_norm": 0.0},
+        "fed_h10": {"ok": False, "url": FED_H10_CURRENT_URL, "pair_count": 0, "error": None, **_source_contract("fed_h10"), "freshness_norm": 0.0},
         "macro_cross_asset": {"ok": False, "path": str(PROJECT_ROOT / "exports" / "external_context" / "macro_cross_asset_latest.json"), "error": None},
         "market_proxy": {"ok": False, "symbols": 0, "error": None},
     }
@@ -474,6 +760,8 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
             "interval": twelve_data_interval,
             "outputsize": twelve_data_outputsize,
             "error": None,
+            **_source_contract("twelve_data"),
+            "freshness_norm": 0.0,
         }
     if alpha_vantage_enabled:
         source_status["alpha_vantage"] = {
@@ -483,6 +771,8 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
             "interval": "5min",
             "rows": 0,
             "error": None,
+            **_source_contract("alpha_vantage"),
+            "freshness_norm": 0.0,
         }
 
     ecb_rows: list[dict[str, Any]] = []
@@ -490,12 +780,14 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
         ecb_rows = _parse_ecb_hist_90d(_http_text(ECB_FX_HIST_90D_URL, timeout=timeout))
         source_status["ecb"]["ok"] = len(ecb_rows) >= 2
         source_status["ecb"]["rows"] = len(ecb_rows)
+        source_status["ecb"]["freshness_norm"] = 1.0 if len(ecb_rows) >= 2 else 0.0
         if not source_status["ecb"]["ok"]:
             source_status["ecb"]["error"] = "insufficient_rows"
-    except (HTTPError, URLError, TimeoutError, ET.ParseError, OSError) as exc:
+    except (HTTPError, URLError, RuntimeError, TimeoutError, ET.ParseError, OSError) as exc:
         source_status["ecb"]["error"] = str(exc)
 
     latest_pairs, previous_pairs = _latest_pair_history(ecb_rows)
+    ecb_latest_pairs = dict(latest_pairs)
     pair_changes = {pair: _pct_change(latest_pairs.get(pair), previous_pairs.get(pair)) for pair in PAIR_SYMBOLS}
 
     alpha_vantage_intraday: dict[str, Any] = {}
@@ -506,12 +798,13 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
         source_status["fed_h10"]["ok"] = bool(fed_h10.get("ok"))
         source_status["fed_h10"]["pair_count"] = int(fed_h10.get("pair_count", 0) or 0)
         source_status["fed_h10"]["error"] = fed_h10.get("error")
+        source_status["fed_h10"]["freshness_norm"] = 1.0 if bool(fed_h10.get("ok")) else 0.0
         for pair, value in (fed_h10.get("pair_values") or {}).items():
             latest_pairs[str(pair)] = _to_float(value, latest_pairs.get(str(pair), 0.0))
         for pair, value in (fed_h10.get("previous_pair_values") or {}).items():
             previous_pairs[str(pair)] = _to_float(value, previous_pairs.get(str(pair), 0.0))
         pair_changes = {pair: _pct_change(latest_pairs.get(pair), previous_pairs.get(pair)) for pair in PAIR_SYMBOLS}
-    except (HTTPError, URLError, TimeoutError, OSError) as exc:
+    except (HTTPError, URLError, RuntimeError, TimeoutError, OSError) as exc:
         source_status["fed_h10"]["error"] = str(exc)
 
     if alpha_vantage_enabled and alpha_vantage_api_key:
@@ -525,6 +818,7 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
         source_status["alpha_vantage"]["ok"] = bool(alpha_vantage_intraday.get("ok"))
         source_status["alpha_vantage"]["rows"] = int(alpha_vantage_intraday.get("rows", 0) or 0)
         source_status["alpha_vantage"]["error"] = alpha_vantage_intraday.get("error")
+        source_status["alpha_vantage"]["freshness_norm"] = 1.0 if bool(alpha_vantage_intraday.get("ok")) else 0.0
         if alpha_vantage_intraday.get("ok"):
             av_change = _pct_change(
                 _to_float(alpha_vantage_intraday.get("latest_close"), 0.0),
@@ -561,6 +855,7 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
         source_status["twelve_data"]["ok"] = ok_pairs > 0
         source_status["twelve_data"]["pairs_ok"] = ok_pairs
         source_status["twelve_data"]["error"] = None if ok_pairs > 0 else (";".join(twelve_data_errors[:3]) or "no_pairs_ok")
+        source_status["twelve_data"]["freshness_norm"] = 1.0 if ok_pairs > 0 else 0.0
     elif twelve_data_enabled:
         source_status["twelve_data"]["error"] = "api_key_missing"
 
@@ -598,6 +893,13 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
 
     proxy_agreement_raw, proxy_checks = _proxy_agreement(pair_changes, latest_market, usd_strength_raw)
     risk_alignment, crypto_alignment = _risk_alignment(latest_market, usd_strength_raw)
+    session_norms = _fx_session_state_norms(now)
+    dxy_yield_confirmation = _fx_dxy_yield_confirmation(
+        latest_market,
+        usd_strength_raw=usd_strength_raw,
+        proxy_agreement_raw=proxy_agreement_raw,
+    )
+    carry_proxy = _fx_carry_proxy(pair_changes)
 
     confidence = 0.0
     if source_status["ecb"]["ok"]:
@@ -627,6 +929,20 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
     elif proxy_agreement_raw <= 0.0:
         warnings.append("proxy_agreement_sparse")
 
+    canonical_reconciliation = _canonical_pair_reconciliation(
+        ecb_pairs=ecb_latest_pairs,
+        fed_pairs=fed_h10.get("pair_values") if isinstance(fed_h10.get("pair_values"), Mapping) else {},
+        twelve_data_intraday=twelve_data_intraday,
+        alpha_vantage_intraday=alpha_vantage_intraday,
+    )
+    provider_divergence_warnings = [
+        pair
+        for pair, row in canonical_reconciliation.items()
+        if _to_float(row.get("divergence_ratio"), 0.0) >= 0.01
+    ]
+    if provider_divergence_warnings:
+        warnings.append("fx_provider_divergence_detected")
+
     global_features = {
         "fx_official_data_available": 1.0 if source_status["ecb"]["ok"] else 0.0,
         "fx_eurusd_level_norm": _clamp01(_to_float(latest_pairs.get("EURUSD"), 0.0) / 2.0),
@@ -642,6 +958,12 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
         "fx_crypto_alignment_norm": _clamp01(crypto_alignment),
         "fx_macro_dispersion_norm": _clamp01(macro_dispersion_raw / 0.03),
         "fx_corr_confidence_norm": confidence,
+        "fx_session_asia_norm": float(session_norms["fx_session_asia_norm"]),
+        "fx_session_london_norm": float(session_norms["fx_session_london_norm"]),
+        "fx_session_ny_norm": float(session_norms["fx_session_ny_norm"]),
+        "fx_rollover_risk_norm": float(session_norms["fx_rollover_risk_norm"]),
+        "fx_dxy_yield_confirmation_norm": dxy_yield_confirmation,
+        "fx_carry_proxy_norm": carry_proxy,
     }
 
     symbol_features = {
@@ -659,6 +981,28 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
     payload = {
         "timestamp_utc": now.isoformat(),
         "provider": "fx_market_context",
+        "collection_contract": {
+            "source_contracts": {
+                name: {
+                    "source_confidence_norm": float((row or {}).get("source_confidence_norm", 0.0) or 0.0),
+                    "schema_confidence_norm": float((row or {}).get("schema_confidence_norm", 0.0) or 0.0),
+                    "freshness_norm": float((row or {}).get("freshness_norm", 0.0) or 0.0),
+                }
+                for name, row in source_status.items()
+                if isinstance(row, Mapping) and "source_confidence_norm" in row
+            },
+            "provider_confidence_norm": round(
+                sum(
+                    float((row or {}).get("source_confidence_norm", 0.0) or 0.0)
+                    for row in source_status.values()
+                    if isinstance(row, Mapping) and bool(row.get("ok")) and "source_confidence_norm" in row
+                ) / max(
+                    sum(1 for row in source_status.values() if isinstance(row, Mapping) and bool(row.get("ok")) and "source_confidence_norm" in row),
+                    1,
+                ),
+                6,
+            ),
+        },
         "sources": source_status,
         "derived": {
             "calendar_features": {},
@@ -705,6 +1049,7 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
             },
             "proxy_checks": proxy_checks,
             "latest_market": latest_market,
+            "canonical_reconciliation": canonical_reconciliation,
         },
     }
     health = {
@@ -720,6 +1065,9 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
         "warning_count": len(warnings),
         "warnings": warnings,
         "sources": source_status,
+        "canonical_pairs": len(canonical_reconciliation),
+        "provider_divergence_pairs": provider_divergence_warnings,
+        "source_contracts": payload["collection_contract"]["source_contracts"],
     }
     return payload, health
 
@@ -736,6 +1084,65 @@ def main() -> int:
     health_path = PROJECT_ROOT / "governance" / "health" / "fx_market_context_sync_latest.json"
     _write_json(external_path, payload)
     _write_json(health_path, health)
+    with ops_data_plane.connect(PROJECT_ROOT) as conn:
+        run_uid = ops_data_plane.record_collector_run(
+            conn,
+            collector_key="fx_market_context",
+            cache_key="fx_market_context",
+            command=list(sys.argv),
+            expect_paths=[str(external_path), str(health_path)],
+            fingerprint_files=[],
+            command_fingerprint=hashlib.sha256(" ".join(sys.argv).encode("utf-8")).hexdigest(),
+            skipped=False,
+            rc=0 if bool(health.get("ok", False)) else 1,
+            started_utc=str(health.get("timestamp_utc") or ""),
+            finished_utc=datetime.now(timezone.utc).isoformat(),
+            payload_sha256=ops_data_plane.file_sha256(external_path),
+            metadata={
+                "health": health,
+                "canonical_pairs": int(health.get("canonical_pairs", 0) or 0),
+            },
+            commit=False,
+        )
+        for source_name, row in (health.get("sources") or {}).items():
+            if not isinstance(row, Mapping):
+                continue
+            source_key = ops_data_plane.normalize_entity_key(PROJECT_ROOT, source_name, namespace="source")
+            ops_data_plane.record_watermark(
+                conn,
+                collector_key="fx_market_context",
+                source_name=source_key,
+                entity_key=source_key,
+                watermark_type="collector_sync",
+                watermark_value=str(health.get("timestamp_utc") or ""),
+                payload_sha256=ops_data_plane.file_sha256(health_path),
+                metadata={
+                    "run_uid": run_uid,
+                    "source_key": source_key,
+                    "source_status": dict(row),
+                },
+                commit=False,
+            )
+        for pair, row in (payload.get("derived") or {}).get("canonical_reconciliation", {}).items():
+            if not isinstance(row, Mapping):
+                continue
+            ops_data_plane.record_canonical_reconciliation(
+                conn,
+                domain="fx_pair",
+                entity_key=str(pair),
+                canonical_source=str(row.get("canonical_source") or ""),
+                confidence=_to_float(row.get("confidence_norm"), 0.0),
+                divergence_score=_to_float(row.get("divergence_ratio"), 0.0),
+                canonical_payload={
+                    "pair": pair,
+                    "canonical_value": _to_float(row.get("canonical_value"), 0.0),
+                    "median_value": _to_float(row.get("median_value"), 0.0),
+                },
+                provider_votes=row.get("provider_votes") if isinstance(row.get("provider_votes"), Mapping) else {},
+                metadata={"run_uid": run_uid},
+                commit=False,
+            )
+        conn.commit()
 
     if args.json:
         print(json.dumps(health, ensure_ascii=True))

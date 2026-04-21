@@ -151,4 +151,9 @@ def test_train_brain_uses_scoped_runtime_path_without_fallback(monkeypatch) -> N
     assert captured["sample_filter"] is v12._runtime_sample_filter
     assert captured["confidence_builder"] is v12._runtime_confidence
     assert captured["require_both_sides_precision"] is True
+    assert "shadow_conservative_equities" in captured["mode_allowlist"]
+    assert "TSLA" in captured["symbol_allowlist"]
+    assert captured["sample_stride"] == 2
+    assert captured["min_confidence"] == 0.36
+    assert captured["min_samples"] == 160
     assert captured["min_accuracy_lift_over_majority"] == 0.01

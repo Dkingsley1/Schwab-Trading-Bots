@@ -14,6 +14,7 @@ from core import brain_refinery_v44_intraday_scalp_1m_5m as v44
 from core import brain_refinery_v46_swing_2d_5d as v46
 from core import brain_refinery_v51_vol_regime_transition as v51
 from core import brain_refinery_v54_event_shock_decay as v54
+from core import brain_refinery_v107_cross_asset_master_candidate as v107
 
 
 def _obs(symbol="SPY", last_price=100.0, **overrides):
@@ -223,3 +224,28 @@ def test_train_brain_uses_runtime_path_without_silent_fallback_batch2(monkeypatc
             assert "TQQQ" not in captured["symbol_allowlist"]
         assert captured["require_both_sides_precision"] is True
         assert captured["min_accuracy_lift_over_majority"] == expected_lift
+
+
+def test_v107_cross_asset_master_candidate_uses_broad_runtime_path(monkeypatch) -> None:
+    captured = {}
+
+    def _fake_train_runtime_indicator_bot(**kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(v107, "train_runtime_indicator_bot", _fake_train_runtime_indicator_bot)
+
+    result = v107.train_brain()
+
+    assert result == "ok"
+    assert captured["run_tag"] == "brain_refinery_v107_cross_asset_master_candidate"
+    assert "shadow_bond_equities" in captured["mode_allowlist"]
+    assert "shadow_crypto" in captured["mode_allowlist"]
+    assert "shadow_schwab_futures_equities" in captured["mode_allowlist"]
+    assert "shadow_fx_equities" in captured["mode_allowlist"]
+    assert "BTC-USD" in captured["symbol_allowlist"]
+    assert "TLT" in captured["symbol_allowlist"]
+    assert "/ES" in captured["symbol_allowlist"]
+    assert "EURUSD" in captured["symbol_allowlist"]
+    assert captured["allow_fallback_on_insufficient_data"] is False
+    assert captured["require_both_sides_precision"] is False

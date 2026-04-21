@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from core.sqlite_runtime import sqlite_integrity_summary
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "storage_resilience_control_latest.json"
+CHECKSUM_PATH = PROJECT_ROOT / "governance" / "storage" / "checksum_scrub_latest.json"
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _parse_iso(raw: Any) -> datetime | None:
+    text = str(raw or "").strip().replace("Z", "+00:00")
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _sha(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
+    health_root = project_root / "governance" / "health"
+    mount_guard = _load_json(health_root / "storage_mount_guard_latest.json")
+    failback = _load_json(health_root / "storage_failback_sync_latest.json")
+    split_brain = _load_json(health_root / "storage_split_brain_reconciler_latest.json")
+    state_snapshot = _load_json(project_root / "exports" / "state_snapshot_drills" / "latest.json")
+    backup_restore_event_files = sorted((project_root / "governance" / "watchdog").glob("backup_restore_events.jsonl*"))
+    checksum_targets = [
+        health_root / "storage_mount_guard_latest.json",
+        health_root / "storage_failback_sync_latest.json",
+        health_root / "storage_split_brain_reconciler_latest.json",
+        health_root / "daily_auto_verify_latest.json",
+    ]
+    sqlite_targets = [
+        project_root / "data" / "jsonl_link.sqlite3",
+        project_root / "governance" / "ops_data_plane.sqlite3",
+        project_root / "local_fallback_storage" / "data" / "bot_channel_queue.sqlite3",
+    ]
+    checksum_rows = []
+    for path in checksum_targets:
+        if path.exists() and path.is_file():
+            checksum_rows.append({"path": str(path), "sha256": _sha(path)})
+
+    CHECKSUM_PATH.parent.mkdir(parents=True, exist_ok=True)
+    checksum_payload = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "targets": checksum_rows,
+    }
+    CHECKSUM_PATH.write_text(json.dumps(checksum_payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    database_integrity_checks = [
+        sqlite_integrity_summary(path, project_root=project_root)
+        for path in sqlite_targets
+    ]
+    wal_health_checks = [
+        {
+            "db_path": row.get("db_path", ""),
+            "wal_size_bytes": int(row.get("wal_size_bytes", 0) or 0),
+            "db_size_bytes": int(row.get("db_size_bytes", 0) or 0),
+            "wal_pressure_norm": round(
+                float(row.get("wal_size_bytes", 0) or 0) / max(float(row.get("db_size_bytes", 1) or 1), 1.0),
+                6,
+            ),
+        }
+        for row in database_integrity_checks
+        if bool(row.get("present", False))
+    ]
+
+    snapshot_ts = _parse_iso(state_snapshot.get("timestamp_utc") or state_snapshot.get("generated_utc"))
+    snapshot_age_hours = max((datetime.now(timezone.utc) - snapshot_ts).total_seconds() / 3600.0, 0.0) if snapshot_ts else None
+    dual_root_ready = bool(mount_guard.get("external_available", False)) and (project_root / "local_fallback_storage").exists()
+    warm_standby_ready = (project_root / "local_fallback_storage").exists()
+    restore_drill_fresh = snapshot_age_hours is not None and snapshot_age_hours <= 168.0
+    unresolved_split_brain = int(((split_brain.get("summary") or {}).get("unresolved_conflicts", 0) or 0))
+    reliability_score = sum(
+        [
+            25 if dual_root_ready else 0,
+            20 if warm_standby_ready else 0,
+            20 if restore_drill_fresh else 0,
+            20 if unresolved_split_brain == 0 else 0,
+            15 if bool(checksum_rows) else 0,
+        ]
+    )
+    if database_integrity_checks and not all(bool(row.get("ok", False)) for row in database_integrity_checks if bool(row.get("present", False))):
+        reliability_score = max(reliability_score - 20, 0)
+    payload = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "schema_version": 1,
+        "ok": reliability_score >= 75,
+        "overall_status": "ready" if reliability_score >= 75 else "needs_work",
+        "resilience_score": reliability_score,
+        "dual_root_ready": dual_root_ready,
+        "warm_standby_ready": warm_standby_ready,
+        "restore_drill_fresh": restore_drill_fresh,
+        "snapshot_age_hours": round(float(snapshot_age_hours), 3) if snapshot_age_hours is not None else None,
+        "unresolved_split_brain_conflicts": unresolved_split_brain,
+        "backup_restore_event_files": len(backup_restore_event_files),
+        "checksum_scrub": checksum_payload,
+        "database_integrity_checks": database_integrity_checks,
+        "wal_health_checks": wal_health_checks,
+        "mount_guard": mount_guard,
+        "failback": failback,
+        "top_actions": [
+            "keep local_fallback_storage warm as the standing standby root",
+            "treat checksum_scrub_latest.json as the baseline for post-incident integrity review",
+            "treat quick_check and WAL pressure on the primary SQLite files as first-class storage health signals",
+            "run restore drills on a schedule tight enough to keep snapshot_age_hours below one week",
+        ],
+    }
+    return payload
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Publish storage resilience controls for BOT_LOGS failover, checksums, and restore freshness.")
+    parser.add_argument("--project-root", default=str(PROJECT_ROOT))
+    parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+
+    payload = build_payload(Path(args.project_root).resolve())
+    out_path = Path(args.out_file).expanduser()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=True))
+    else:
+        print(
+            "storage_resilience_control "
+            f"overall_status={payload.get('overall_status', '')} "
+            f"resilience_score={int(payload.get('resilience_score', 0) or 0)}"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

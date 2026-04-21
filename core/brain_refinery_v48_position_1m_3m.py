@@ -91,11 +91,11 @@ def _runtime_sample_filter(sequence, idx, horizon):
         _vote_conviction(observation_feature(obs, "futures_specialist_vote")),
     )
     return (
-        (session_focus >= 0.05 or conviction >= 0.35)
-        and quote_agreement >= 0.75
-        and spread <= 40.0
-        and queue_depth >= 1.0
-        and conviction >= 0.08
+        (session_focus >= 0.08 or conviction >= 0.32)
+        and quote_agreement >= 0.78
+        and spread <= 32.0
+        and queue_depth >= 1.25
+        and conviction >= 0.10
     )
 
 
@@ -129,8 +129,8 @@ def _train_synthetic():
     )
 
 
-if __name__ == "__main__":
-    train_runtime_indicator_bot(
+def train_brain():
+    return train_runtime_indicator_bot(
         run_tag="brain_refinery_v48_position_1m_3m",
         feature_names=[
             "pct_from_close",
@@ -166,12 +166,30 @@ if __name__ == "__main__":
         symbol_allowlist=_TOP_CRYPTO_SYMBOLS,
         sample_filter=_runtime_sample_filter,
         confidence_builder=_runtime_confidence,
-        min_confidence=0.30,
-        lookback_days=21,
+        min_confidence=0.34,
+        lookback_days=30,
         window=24,
         horizon=6,
-        min_samples=224,
-        min_sequences=3,
-        acted_prob_threshold=0.68,
+        min_samples=192,
+        min_sequences=4,
+        min_positive_samples=32,
+        min_negative_samples=32,
+        acted_prob_threshold=0.64,
         fallback_trainer=_train_synthetic,
+        allow_fallback_on_insufficient_data=False,
+        max_best_val_loss=0.6925,
+        max_final_val_loss=0.7050,
+        min_long_precision=0.50,
+        min_short_precision=0.50,
+        require_both_sides_precision=True,
+        min_acted_accuracy=0.52,
+        min_long_acted_count=4,
+        min_short_acted_count=4,
+        min_accuracy_lift_over_majority=0.01,
+        min_label_balance_score=0.16,
+        min_precision_balance_score=0.28,
     )
+
+
+if __name__ == "__main__":
+    train_brain()

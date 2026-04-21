@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -38,6 +39,9 @@ RECENT_ACTIVITY_GLOBS = [
     "tests/**/*.py",
     "logs/**/*.log",
     "governance/health/*.json",
+    "governance/ownership/*.json",
+    "governance/replay/*.json",
+    "governance/champion_challenger/*.json",
     "governance/walk_forward/*.json",
     "governance/events/*.jsonl",
     "governance/watchdog/*.jsonl",
@@ -79,7 +83,28 @@ BUILDOUT_THEME_PATTERNS = (
     ("Control room and orchestration", ("main control room", "orchestration", "launcher", "all sleeves", "control room")),
     ("Sleeve expansion", ("dividend", "bond", "futures", "fx", "coinbase", "crypto", "sector", "core etf")),
     ("Cross-sleeve intelligence", ("correlation", "cross-sleeve", "cross asset", "market context", "fx market", "overlap", "alignment")),
-    ("Training and promotion", ("retrain", "promotion", "walk-forward", "walk forward", "champion", "rollback", "calibration", "training")),
+    (
+        "Training and promotion",
+        (
+            "retrain",
+            "promotion",
+            "walk-forward",
+            "walk forward",
+            "champion",
+            "rollback",
+            "calibration",
+            "training",
+            "schema",
+            "point-in-time",
+            "owner contract",
+            "golden replay",
+            "probation",
+            "drift baseline",
+            "lane scheduler",
+            "promotion packet",
+            "admission contract",
+        ),
+    ),
     ("Ops automation and reporting", ("watchdog", "launchd", "report", "timeline", "commands", "runbook", "autofix")),
     ("Reliability and storage", ("storage", "retention", "sql", "failback", "guardrail", "gate", "drip", "broker truth", "memory", "resource")),
 )
@@ -89,6 +114,9 @@ SIGNIFICANT_CODE_PREFIXES = (
     "scripts/",
     "config/",
     "tests/",
+    "governance/ownership/",
+    "governance/replay/",
+    "governance/champion_challenger/",
 )
 
 SIGNIFICANT_CODE_FILES = {
@@ -102,6 +130,15 @@ SIGNIFICANT_ARTIFACT_PREFIXES = (
     "governance/health/shadow_loop_",
     "governance/health/data_ingress_latest_",
     "governance/health/retrain_",
+    "governance/health/feature_store_manifest_",
+    "governance/health/new_bot_admission_",
+    "governance/health/new_bot_graduation_",
+    "governance/health/schema_migration_guard_",
+    "governance/health/bot_support_owner_guard_",
+    "governance/health/champion_challenger_probation_",
+    "governance/health/golden_replay_",
+    "governance/health/cohort_drift_",
+    "governance/health/promotion_quality_gate_",
     "governance/health/training_success_",
     "governance/health/model_card_",
     "governance/health/preflight_autofix_",
@@ -110,6 +147,9 @@ SIGNIFICANT_ARTIFACT_PREFIXES = (
     "governance/health/sql_link_service_",
     "governance/health/market_crypto_correlation_sync_",
     "governance/health/fx_market_context_sync_",
+    "governance/champion_challenger/promotion_packet_",
+    "governance/ownership/",
+    "governance/replay/",
     "governance/walk_forward/",
     "exports/external_context/market_crypto_correlation_",
     "exports/external_context/fx_market_context_",
@@ -721,6 +761,12 @@ def _path_area(path: str) -> str:
         return "Config"
     if txt.startswith("tests/"):
         return "Tests"
+    if txt.startswith("governance/champion_challenger/"):
+        return "Promotion"
+    if txt.startswith("governance/ownership/"):
+        return "Governance"
+    if txt.startswith("governance/replay/"):
+        return "Training"
     if txt.startswith("governance/health/"):
         return "Governance"
     if txt.startswith("governance/walk_forward/"):
@@ -801,12 +847,40 @@ def _describe_working_change(path: str, status: str) -> Dict[str, str]:
         title = "Timeline report generator"
     elif txt == "scripts/ops/opsctl.sh":
         title = "Ops control entrypoint"
+    elif txt == "scripts/feature_store_manifest.py":
+        title = "Point-in-time feature manifest"
+    elif txt == "scripts/new_bot_admission_guard.py":
+        title = "New bot admission contract"
+    elif txt == "scripts/bot_support_owner_guard.py":
+        title = "Bot support owner contract"
+    elif txt == "scripts/schema_migration_guard.py":
+        title = "Schema migration contract"
+    elif txt == "scripts/retrain_schema_compatibility_guard.py":
+        title = "Retrain schema compatibility"
+    elif txt == "scripts/golden_replay_regression_guard.py":
+        title = "Golden replay regression"
+    elif txt == "scripts/cohort_drift_baseline_guard.py":
+        title = "Cohort drift baseline"
+    elif txt == "scripts/champion_challenger_probation_guard.py":
+        title = "Champion probation guard"
+    elif txt == "scripts/champion_challenger_probation_action.py":
+        title = "Probation demotion automation"
+    elif txt == "scripts/retrain_lane_scheduler.py":
+        title = "Retrain lane scheduler"
+    elif txt == "scripts/promotion_packet_builder.py":
+        title = "Promotion packet contract"
     elif txt == "scripts/collect_market_crypto_correlation_context.py":
         title = "Cross-sleeve correlation collector"
     elif txt == "scripts/collect_fx_market_context.py":
         title = "FX market context collector"
     elif txt in {"README.md", "COMMANDS.md"}:
         title = "Project documentation"
+    elif txt == "governance/ownership/bot_support_owners.json":
+        title = "Bot support ownership map"
+    elif txt == "governance/replay/golden_replay_pack.json":
+        title = "Golden replay pack"
+    elif txt == "governance/champion_challenger/promotion_packet_latest.json":
+        title = "Promotion packet contract"
     elif txt.startswith("scripts/run_long_term_core_etf_shadow.py"):
         title = "Long-term core ETF sleeve"
     elif txt.startswith("scripts/run_long_term_sector_rotation_shadow.py"):
@@ -857,6 +931,111 @@ def _describe_artifact_change(path: str) -> Dict[str, str]:
             "area": "Training",
             "title": "Retrain scorecard",
             "detail": "latest retrain scorecard refreshed",
+        }
+
+    if name == "feature_store_manifest_latest.json":
+        return {
+            "area": "Training",
+            "title": "Point-in-time feature manifest",
+            "detail": "feature lineage and dataset hash manifest refreshed",
+        }
+
+    if name == "new_bot_admission_guard_latest.json":
+        return {
+            "area": "Governance",
+            "title": "New bot admission contract",
+            "detail": "new bot admission contract refreshed",
+        }
+
+    if name == "new_bot_graduation_gate_latest.json":
+        return {
+            "area": "Training",
+            "title": "New bot graduation gate",
+            "detail": "new bot graduation gate refreshed",
+        }
+
+    if name == "schema_migration_guard_latest.json":
+        return {
+            "area": "Governance",
+            "title": "Schema migration contract",
+            "detail": "schema migration compatibility contract refreshed",
+        }
+
+    if name == "bot_support_owner_guard_latest.json":
+        return {
+            "area": "Governance",
+            "title": "Bot support owner contract",
+            "detail": "support owner coverage contract refreshed",
+        }
+
+    if name == "retrain_schema_compatibility_latest.json":
+        return {
+            "area": "Training",
+            "title": "Retrain schema compatibility",
+            "detail": "retrain schema compatibility snapshot refreshed",
+        }
+
+    if name == "golden_replay_regression_latest.json":
+        return {
+            "area": "Training",
+            "title": "Golden replay regression",
+            "detail": "golden replay regression verdict refreshed",
+        }
+
+    if name == "cohort_drift_baseline_latest.json":
+        return {
+            "area": "Training",
+            "title": "Cohort drift baseline",
+            "detail": "cohort drift baseline snapshot refreshed",
+        }
+
+    if name == "champion_challenger_probation_guard_latest.json":
+        return {
+            "area": "Promotion",
+            "title": "Champion probation guard",
+            "detail": "champion/challenger probation guard refreshed",
+        }
+
+    if name == "champion_challenger_probation_action_latest.json":
+        return {
+            "area": "Promotion",
+            "title": "Probation demotion automation",
+            "detail": "automatic promotion freeze and demotion action refreshed",
+        }
+
+    if name == "retrain_lane_scheduler_latest.json":
+        return {
+            "area": "Training",
+            "title": "Retrain lane scheduler",
+            "detail": "isolated retrain lane schedule refreshed",
+        }
+
+    if name == "promotion_quality_gate_latest.json":
+        return {
+            "area": "Promotion",
+            "title": "Promotion quality gate",
+            "detail": "promotion quality gate snapshot refreshed",
+        }
+
+    if name == "promotion_packet_latest.json":
+        return {
+            "area": "Promotion",
+            "title": "Promotion packet contract",
+            "detail": "signed promotion packet refreshed",
+        }
+
+    if name == "bot_support_owners.json":
+        return {
+            "area": "Governance",
+            "title": "Bot support ownership map",
+            "detail": "support owner mapping refreshed",
+        }
+
+    if name == "golden_replay_pack.json":
+        return {
+            "area": "Training",
+            "title": "Golden replay pack",
+            "detail": "golden replay fixture pack refreshed",
         }
 
     if name == "training_success_latest.json":
@@ -1005,6 +1184,23 @@ def _working_change_score(path: str, status: str) -> int:
         "scripts/collect_fx_market_context.py",
     }:
         score += 15
+    elif txt in {
+        "scripts/feature_store_manifest.py",
+        "scripts/new_bot_admission_guard.py",
+        "scripts/bot_support_owner_guard.py",
+        "scripts/schema_migration_guard.py",
+        "scripts/retrain_schema_compatibility_guard.py",
+        "scripts/golden_replay_regression_guard.py",
+        "scripts/cohort_drift_baseline_guard.py",
+        "scripts/champion_challenger_probation_guard.py",
+        "scripts/champion_challenger_probation_action.py",
+        "scripts/retrain_lane_scheduler.py",
+        "scripts/promotion_packet_builder.py",
+        "governance/ownership/bot_support_owners.json",
+        "governance/replay/golden_replay_pack.json",
+        "governance/champion_challenger/promotion_packet_latest.json",
+    }:
+        score += 17
     elif txt in {"README.md", "COMMANDS.md"}:
         score += 12
     elif txt.startswith("core/"):
@@ -1021,7 +1217,29 @@ def _working_change_score(path: str, status: str) -> int:
     if action == "added":
         score += 3
 
-    if any(token in txt for token in ("timeline", "retrain", "dividend", "long_term", "coinbase", "schwab", "correlation", "market_context", "cross_asset")):
+    if any(
+        token in txt
+        for token in (
+            "timeline",
+            "retrain",
+            "dividend",
+            "long_term",
+            "coinbase",
+            "schwab",
+            "correlation",
+            "market_context",
+            "cross_asset",
+            "schema",
+            "golden_replay",
+            "probation",
+            "promotion_packet",
+            "owner",
+            "manifest",
+            "cohort_drift",
+            "admission",
+            "lane",
+        )
+    ):
         score += 3
 
     return score
@@ -1047,6 +1265,36 @@ def _artifact_change_score(path: str) -> int:
 
     if name == "retrain_scorecard_latest.json":
         score += 18
+    elif name == "feature_store_manifest_latest.json":
+        score += 18
+    elif name == "new_bot_admission_guard_latest.json":
+        score += 18
+    elif name == "new_bot_graduation_gate_latest.json":
+        score += 17
+    elif name == "schema_migration_guard_latest.json":
+        score += 18
+    elif name == "bot_support_owner_guard_latest.json":
+        score += 18
+    elif name == "retrain_schema_compatibility_latest.json":
+        score += 19
+    elif name == "golden_replay_regression_latest.json":
+        score += 19
+    elif name == "cohort_drift_baseline_latest.json":
+        score += 18
+    elif name == "champion_challenger_probation_guard_latest.json":
+        score += 18
+    elif name == "champion_challenger_probation_action_latest.json":
+        score += 19
+    elif name == "retrain_lane_scheduler_latest.json":
+        score += 18
+    elif name == "promotion_quality_gate_latest.json":
+        score += 17
+    elif name == "promotion_packet_latest.json":
+        score += 19
+    elif name == "bot_support_owners.json":
+        score += 16
+    elif name == "golden_replay_pack.json":
+        score += 16
     elif name == "training_success_latest.json":
         score += 17
     elif name == "model_card_latest.json":
@@ -1366,8 +1614,23 @@ def _high_signal_artifact_title(title: str) -> bool:
     txt = str(title or "").strip()
     return txt in {
         "Retrain scorecard",
+        "Point-in-time feature manifest",
+        "New bot admission contract",
+        "New bot graduation gate",
+        "Schema migration contract",
+        "Bot support owner contract",
+        "Retrain schema compatibility",
+        "Golden replay regression",
+        "Cohort drift baseline",
         "Training success verdict",
         "Model card export",
+        "Champion probation guard",
+        "Probation demotion automation",
+        "Retrain lane scheduler",
+        "Promotion quality gate",
+        "Promotion packet contract",
+        "Bot support ownership map",
+        "Golden replay pack",
         "Preflight autofix snapshot",
         "Storage failback sync",
         "JSONL-to-SQL ingestion health",
@@ -1385,6 +1648,19 @@ def _high_signal_working_title(title: str) -> bool:
         "Timeline report generator",
         "Ops automation",
         "Trading workflow script",
+        "Point-in-time feature manifest",
+        "New bot admission contract",
+        "Bot support owner contract",
+        "Schema migration contract",
+        "Retrain schema compatibility",
+        "Golden replay regression",
+        "Cohort drift baseline",
+        "Champion probation guard",
+        "Probation demotion automation",
+        "Retrain lane scheduler",
+        "Promotion packet contract",
+        "Bot support ownership map",
+        "Golden replay pack",
         "Cross-sleeve correlation collector",
         "FX market context collector",
         "Core trading engine",
@@ -1444,7 +1720,18 @@ def _build_current_phase_changes(context: Dict[str, Any], limit: int = 8) -> Lis
         if source == "commit":
             focused.append(row)
             continue
-        if source == "working" and area in {"Core", "Scripts", "Ops", "Config", "Docs", "Registry", "Tests"}:
+        if source == "working" and area in {
+            "Core",
+            "Scripts",
+            "Ops",
+            "Config",
+            "Docs",
+            "Registry",
+            "Tests",
+            "Governance",
+            "Training",
+            "Promotion",
+        }:
             focused.append(row)
             continue
         if source == "artifact" and _high_signal_artifact_title(title):
@@ -1685,6 +1972,11 @@ def _pdf_renderer_binary(allow_gui_renderer: bool) -> tuple[str, str]:
     return "", ""
 
 
+def _default_auto_render_pdf() -> bool:
+    renderer, _ = _pdf_renderer_binary(allow_gui_renderer=_default_allow_gui_pdf_renderer())
+    return bool(renderer)
+
+
 def _render_pdf_from_html(html_path: Path, pdf_path: Path, *, allow_gui_renderer: bool) -> tuple[bool, str]:
     renderer, renderer_kind = _pdf_renderer_binary(allow_gui_renderer=allow_gui_renderer)
     if not renderer:
@@ -1692,15 +1984,27 @@ def _render_pdf_from_html(html_path: Path, pdf_path: Path, *, allow_gui_renderer
     html_uri = html_path.resolve().as_uri()
     if renderer_kind == "wkhtmltopdf":
         cmd = [renderer, html_uri, str(pdf_path)]
+        rc, out, err = _run(cmd)
     else:
-        cmd = [
-            renderer,
-            "--headless",
-            "--disable-gpu",
-            f"--print-to-pdf={pdf_path}",
-            html_uri,
-        ]
-    rc, out, err = _run(cmd)
+        profile_dir = Path(tempfile.mkdtemp(prefix="project-timeline-pdf-"))
+        try:
+            cmd = [
+                renderer,
+                "--headless=new",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--silent-launch",
+                "--no-startup-window",
+                "--disable-background-networking",
+                "--metrics-recording-only",
+                f"--user-data-dir={profile_dir}",
+                f"--print-to-pdf={pdf_path}",
+                html_uri,
+            ]
+            rc, out, err = _run(cmd)
+        finally:
+            shutil.rmtree(profile_dir, ignore_errors=True)
     if rc == 0 and pdf_path.exists() and pdf_path.stat().st_size > 0:
         return True, out or "ok"
     detail = err or out or f"rc={rc}"
@@ -2351,7 +2655,12 @@ def main() -> int:
         return 0
 
     if args.render_pdf is None:
-        render_pdf = _env_flag("PROJECT_TIMELINE_AUTO_RENDER_PDF", "0") if args.auto else _env_flag("PROJECT_TIMELINE_RENDER_PDF", "1")
+        auto_render_default = "1" if _default_auto_render_pdf() else "0"
+        render_pdf = (
+            _env_flag("PROJECT_TIMELINE_AUTO_RENDER_PDF", auto_render_default)
+            if args.auto
+            else _env_flag("PROJECT_TIMELINE_RENDER_PDF", "1")
+        )
     else:
         render_pdf = bool(args.render_pdf)
 

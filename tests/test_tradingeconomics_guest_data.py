@@ -105,6 +105,124 @@ def test_external_feeds_context_backfills_from_tradingeconomics_latest(tmp_path:
     assert meta["provider_ok"]["tradingeconomics"] is True
 
 
+def test_external_feeds_context_plumbs_context_quality_and_new_sources(tmp_path: Path) -> None:
+    ext_root = tmp_path / "exports" / "external_feeds" / "tradingeconomics"
+    ext_root.mkdir(parents=True, exist_ok=True)
+    (ext_root / "latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime(2026, 3, 18, 18, 0, tzinfo=timezone.utc).isoformat(),
+                "status": {"ok": True, "datasets_ok_count": 4},
+                "derived": {
+                    "macro_backfill": {},
+                    "calendar_rows": [],
+                    "news_features": {},
+                    "market_breadth": {"index_alignment_score": 0.72},
+                    "bond_reference": {"curve_regime_score": 0.61},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    external_root = tmp_path / "exports" / "external_context"
+    external_root.mkdir(parents=True, exist_ok=True)
+    (external_root / "sec_edgar_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime(2026, 3, 18, 19, 0, tzinfo=timezone.utc).isoformat(),
+                "derived": {"global_features": {"sec_recent_high_impact_1d_norm": 0.9, "sec_mna_7d_norm": 0.6}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (external_root / "extended_quant_context_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime(2026, 3, 18, 19, 5, tzinfo=timezone.utc).isoformat(),
+                "derived": {"global_features": {"cboe_put_call_stress_norm": 0.7, "sofr_funding_stress_norm": 0.5}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (external_root / "official_macro_context_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime(2026, 3, 18, 19, 10, tzinfo=timezone.utc).isoformat(),
+                "derived": {"calendar_features": {"calendar_high_impact_24h_norm": 0.8, "calendar_macro_event_norm": 0.6}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (external_root / "schwab_education_context_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime(2026, 3, 18, 19, 15, tzinfo=timezone.utc).isoformat(),
+                "derived": {"global_features": {"schwab_education_recent_activity_norm": 0.9}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "data" / "external_context").mkdir(parents=True, exist_ok=True)
+    ((tmp_path / "data" / "external_context") / "live_macro_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime(2026, 3, 18, 19, 30, tzinfo=timezone.utc).isoformat(),
+                "derived": {
+                    "news_features": {"news_source_quality_norm": 0.9, "news_entity_relevance_norm": 0.8},
+                    "calendar_features": {"calendar_high_impact_24h_norm": 0.7, "calendar_macro_event_norm": 0.6},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    health_root = tmp_path / "governance" / "health"
+    health_root.mkdir(parents=True, exist_ok=True)
+    (health_root / "collector_contracts_latest.json").write_text(
+        json.dumps(
+            {
+                "collector_count": 4,
+                "required_failure_count": 1,
+                "soft_failure_count": 1,
+                "average_quality_score": 0.8,
+                "rows": [
+                    {"name": "market_micro_context", "quality_score": 0.7},
+                    {"name": "official_macro_context", "quality_score": 0.9},
+                    {"name": "crypto_market_context", "quality_score": 0.6},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (health_root / "source_verification_latest.json").write_text(
+        json.dumps(
+            {
+                "overall": {
+                    "total_sources": 4,
+                    "unverified_sources": ["official_macro_context"],
+                    "counts": {"cross_verified": 2},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    context, _meta = behavior_ds._external_feeds_context(
+        tmp_path,
+        datetime(2026, 3, 18, 20, 0, tzinfo=timezone.utc),
+    )
+
+    assert context["live_macro_gate_active_norm"] == 1.0
+    assert context["live_macro_gate_confidence_norm"] > 0.0
+    assert context["sec_context_signal_norm"] > 0.0
+    assert context["extended_quant_signal_norm"] > 0.0
+    assert context["official_macro_signal_norm"] > 0.0
+    assert context["schwab_education_signal_norm"] > 0.0
+    assert context["market_breadth_signal_norm"] > 0.0
+    assert context["bond_reference_signal_norm"] > 0.0
+    assert context["source_quality_average_score_norm"] == 0.8
+    assert context["source_quality_market_micro_score_norm"] == 0.7
+
+
 def test_external_macro_calendar_proxy_features_merges_tradingeconomics_calendar(monkeypatch) -> None:
     future_ts = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
 

@@ -2,13 +2,22 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import random
 import sqlite3
 import subprocess
+import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.sqlite_runtime import connect_sqlite
+from scripts import ops_data_plane
 
 DEFAULT_INCLUDE_GLOBS = [
     "paper_trades_*.jsonl",
@@ -25,13 +34,18 @@ DEFAULT_INCLUDE_JSON_GLOBS = [
     "master_bot_registry.json",
     "config/**/*.json",
     "governance/health/**/*.json",
+    "governance/feature_store/**/*.json",
     "governance/walk_forward/**/*.json",
     "governance/distillation/**/*.json",
     "governance/canary/**/*.json",
+    "data/external_context/**/*.json",
     "data/trade_history/**/*.json",
+    "exports/external_context/**/*.json",
+    "exports/external_feeds/**/*.json",
     "exports/state_snapshot_drills/latest.json",
 ]
 DEFAULT_JSON_EXCLUDE_PARTS = ["/.git/", "/.venv", "/models/archive/", "/exports/reports/"]
+DISCOVERY_MANIFEST_SCHEMA_VERSION = 1
 
 
 def _now_utc() -> str:
@@ -51,6 +65,10 @@ def _classify_stream(source_rel: str) -> str:
         return "decision_explanations"
     if rel.startswith("decisions/"):
         return "decisions"
+    if rel.startswith("governance/channels/decision/"):
+        return "decisions"
+    if rel.startswith("governance/events/channel_schema_violations_"):
+        return "schema_violations"
     if rel.startswith("governance/events/"):
         return "governance_events"
     if rel.startswith("governance/watchdog/"):
@@ -71,42 +89,125 @@ def _classify_stream(source_rel: str) -> str:
 def _source_priority(source_rel: str) -> int:
     stream = _classify_stream(source_rel)
     weights = {
-        "decision_explanations": 0,
-        "decisions": 1,
-        "governance_events": 2,
-        "governance_watchdog": 3,
-        "governance": 4,
-        "top_level_trade_links": 5,
-        "trade_logs": 6,
-        "paper_broker_bridge": 7,
-        "data": 8,
-        "other": 9,
+        "decisions": 0,
+        "paper_broker_bridge": 1,
+        "top_level_trade_links": 2,
+        "trade_logs": 3,
+        "governance_events": 4,
+        "governance_watchdog": 5,
+        "decision_explanations": 6,
+        "governance": 7,
+        "schema_violations": 8,
+        "data": 9,
+        "other": 10,
     }
-    return int(weights.get(stream, 9))
+    return int(weights.get(stream, 10))
 
 
 def _path_hot_priority(source_rel: str) -> int:
     rel = str(source_rel or "")
-    if rel.startswith("decision_explanations/"):
-        return 0
     if rel.startswith("decisions/"):
+        return 0
+    if rel.startswith("governance/channels/decision/"):
         return 1
+    if rel.startswith("exports/paper_broker_bridge/") or rel.startswith("paper_trades_") or rel.startswith("live_orders_"):
+        return 2
+    if rel.startswith("decision_explanations/"):
+        return 3
+    if rel.startswith("governance/events/channel_schema_violations_"):
+        return 13
     hot_prefixes = (
-        ("governance/events/gate_logs_", 2),
-        ("governance/channels/gate/", 3),
-        ("governance/channels/risk/", 4),
-        ("governance/channels/decision/", 5),
-        ("governance/shadow_", 6),
-        ("governance/channels/api/", 7),
-        ("governance/channels/ingress/", 8),
-        ("governance/channels/runtime/", 9),
+        ("governance/events/gate_logs_", 4),
+        ("governance/channels/gate/", 5),
+        ("governance/channels/risk/", 6),
+        ("governance/shadow_", 7),
+        ("governance/channels/api/", 8),
+        ("governance/channels/ingress/", 9),
+        ("governance/channels/runtime/", 10),
     )
     for prefix, priority in hot_prefixes:
         if rel.startswith(prefix):
             if prefix == "governance/shadow_" and "/shadow_pnl_attribution_" in rel:
-                return 11
+                return 12
             return priority
-    return 9
+    return 11
+
+
+def _storage_temperature_label(source_rel: str) -> str:
+    rel = str(source_rel or "")
+    if rel.startswith("decisions/"):
+        return "hot"
+    if rel.startswith("exports/paper_broker_bridge/") or rel.startswith("paper_trades_") or rel.startswith("live_orders_"):
+        return "hot"
+    if rel.startswith("governance/events/gate_logs_") or rel.startswith("governance/channels/decision/"):
+        return "hot"
+    if _is_cold_lane_path(rel):
+        return "cold"
+    if rel.startswith("decision_explanations/"):
+        return "warm"
+    if _is_deferred_analytics_path(rel):
+        return "warm"
+    if rel.startswith("data/"):
+        return "cool"
+    return "warm"
+
+
+def _storage_tier_label(source_rel: str) -> str:
+    temp = _storage_temperature_label(source_rel)
+    if temp == "hot":
+        return "primary_hot"
+    if temp == "warm":
+        return "primary_warm"
+    if temp == "cool":
+        return "compatibility_cool"
+    return "archive_cold"
+
+
+def _ingestion_lane_label(source_rel: str) -> str:
+    rel = str(source_rel or "")
+    if _is_cold_lane_path(rel):
+        return "cold_lane"
+    if rel.startswith("decisions/") or rel.startswith("exports/paper_broker_bridge/") or rel.startswith("paper_trades_") or rel.startswith("live_orders_"):
+        return "hot_lane"
+    if _is_deferred_analytics_path(rel):
+        return "deferred_lane"
+    return "nearline_lane"
+
+
+def _stale_age_bucket(age_seconds: float) -> str:
+    age = max(float(age_seconds), 0.0)
+    if age < 15 * 60:
+        return "fresh_lt_15m"
+    if age < 2 * 60 * 60:
+        return "recent_lt_2h"
+    if age < 24 * 60 * 60:
+        return "aging_lt_24h"
+    if age < 7 * 24 * 60 * 60:
+        return "stale_lt_7d"
+    return "cold_gte_7d"
+
+
+def _filename_date_rank(source_rel: str, *, anchor_day: Optional[date] = None) -> int:
+    rel = str(source_rel or "")
+    match = re.search(r"(20\d{6})", rel)
+    if not match:
+        return 4
+    raw = match.group(1)
+    try:
+        file_day = datetime.strptime(raw, "%Y%m%d").date()
+    except Exception:
+        return 4
+    base_day = anchor_day or datetime.now(timezone.utc).date()
+    delta_days = max((base_day - file_day).days, 0)
+    if delta_days <= 0:
+        return 0
+    if delta_days == 1:
+        return 1
+    if delta_days <= 3:
+        return 2
+    if delta_days <= 7:
+        return 3
+    return 4
 
 
 def _is_deferred_analytics_path(source_rel: str) -> bool:
@@ -121,10 +222,208 @@ def _is_deferred_analytics_path(source_rel: str) -> bool:
     )
 
 
+def _is_cold_lane_path(source_rel: str) -> bool:
+    rel = str(source_rel or "")
+    return "/shadow_pnl_attribution_" in rel
+
+
 def _parse_csv_values(raw: Optional[str]) -> List[str]:
     if raw is None:
         return []
     return [part.strip() for part in str(raw).split(",") if str(part).strip()]
+
+
+def _discovery_manifest_path(project_root: Path, kind: str) -> Path:
+    suffix = "jsonl" if str(kind).strip().lower() != "json" else "json"
+    return project_root / "governance" / "health" / f"{suffix}_discovery_manifest_latest.json"
+
+
+def _discovery_manifest_max_age_seconds(kind: str) -> float:
+    if str(kind).strip().lower() == "json":
+        env_name = "JSON_DISCOVERY_MANIFEST_MAX_AGE_SECONDS"
+    else:
+        env_name = "JSONL_DISCOVERY_MANIFEST_MAX_AGE_SECONDS"
+    try:
+        return max(float(os.getenv(env_name, "300")), 0.0)
+    except Exception:
+        return 300.0
+
+
+def _scan_matching_files(project_root: Path, include: List[str], excludes: List[str]) -> List[Path]:
+    found: List[Path] = []
+    seen_path = set()
+    seen_resolved = set()
+
+    for pat in include:
+        for p in project_root.glob(pat):
+            if not p.is_file():
+                continue
+            p_str = str(p)
+            if any(part and part in p_str for part in excludes):
+                continue
+            try:
+                resolved = str(p.resolve(strict=False))
+            except Exception:
+                resolved = p_str
+            if p_str in seen_path or resolved in seen_resolved:
+                continue
+            seen_path.add(p_str)
+            seen_resolved.add(resolved)
+            found.append(p)
+    return found
+
+
+_HOT_CHANNEL_DUPLICATE_PATTERNS: tuple[tuple[str, str, str], ...] = (
+    ("api_calls_", "api", "api"),
+    ("data_ingress_", "ingress", "ingress"),
+    ("loop_state_", "loop_state", "loop_state"),
+    ("gate_logs_", "gate", "gate"),
+)
+
+
+def _prefer_channel_primary_logs() -> bool:
+    return str(os.getenv("PREFER_CHANNEL_PRIMARY_LOGS", "1") or "1").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_redundant_hot_channel_duplicate(project_root: Path, path: Path) -> bool:
+    if not _prefer_channel_primary_logs():
+        return False
+    try:
+        rel = str(path.relative_to(project_root)).replace("\\", "/")
+    except Exception:
+        rel = str(path).replace("\\", "/")
+    if not rel.startswith("governance/events/"):
+        return False
+
+    name = path.name
+    runtime_match = re.fullmatch(r"runtime_events_(20\d{6})\.jsonl", name)
+    if runtime_match:
+        day = runtime_match.group(1)
+        return any((project_root / "governance" / "channels" / "runtime").glob(f"*/runtime_{day}.jsonl"))
+
+    for legacy_prefix, channel_name, channel_file_prefix in _HOT_CHANNEL_DUPLICATE_PATTERNS:
+        match = re.fullmatch(rf"{re.escape(legacy_prefix)}(.+)_(20\d{{6}})\.jsonl", name)
+        if not match:
+            continue
+        _context_key, day = match.groups()
+        return any((project_root / "governance" / "channels" / channel_name).glob(f"*/{channel_file_prefix}_{day}.jsonl"))
+    return False
+
+
+def _filter_redundant_hot_channel_duplicates(project_root: Path, files: List[Path]) -> List[Path]:
+    return [path for path in files if not _is_redundant_hot_channel_duplicate(project_root, path)]
+
+
+def _load_discovery_manifest(
+    *,
+    project_root: Path,
+    include_globs: List[str],
+    exclude_parts: List[str],
+    kind: str,
+) -> Optional[List[Path]]:
+    path = _discovery_manifest_path(project_root, kind)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if int(payload.get("schema_version", 0) or 0) != DISCOVERY_MANIFEST_SCHEMA_VERSION:
+        return None
+    if list(payload.get("include_globs") or []) != list(include_globs):
+        return None
+    if list(payload.get("exclude_parts") or []) != list(exclude_parts):
+        return None
+    manifest_ts = str(payload.get("timestamp_utc") or "").strip()
+    if not manifest_ts:
+        return None
+    try:
+        manifest_age = max(
+            datetime.now(timezone.utc).timestamp()
+            - datetime.fromisoformat(manifest_ts.replace("Z", "+00:00")).astimezone(timezone.utc).timestamp(),
+            0.0,
+        )
+    except Exception:
+        return None
+    if manifest_age > _discovery_manifest_max_age_seconds(kind):
+        return None
+
+    rows = payload.get("files") if isinstance(payload.get("files"), list) else []
+    out: List[Path] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            return None
+        rel = str(row.get("source_rel") or "").strip()
+        if not rel:
+            return None
+        path_obj = project_root / rel
+        if not path_obj.is_file():
+            return None
+        try:
+            stat = path_obj.stat()
+        except Exception:
+            return None
+        if int(row.get("size_bytes", -1) or -1) != int(stat.st_size):
+            return None
+        try:
+            manifest_mtime = float(row.get("mtime_epoch", 0.0) or 0.0)
+        except Exception:
+            return None
+        if abs(float(stat.st_mtime) - manifest_mtime) > 1e-6:
+            return None
+        out.append(path_obj)
+    return out
+
+
+def _write_discovery_manifest(
+    *,
+    project_root: Path,
+    include_globs: List[str],
+    exclude_parts: List[str],
+    kind: str,
+    files: List[Path],
+) -> None:
+    rows: List[Dict[str, Any]] = []
+    for path in files:
+        try:
+            rel = str(path.relative_to(project_root))
+        except Exception:
+            rel = str(path)
+        try:
+            stat = path.stat()
+            size_bytes = int(stat.st_size)
+            mtime_epoch = float(stat.st_mtime)
+        except Exception:
+            size_bytes = 0
+            mtime_epoch = 0.0
+        rows.append(
+            {
+                "source_rel": rel,
+                "size_bytes": int(size_bytes),
+                "mtime_epoch": float(mtime_epoch),
+                "source_priority": int(_source_priority(rel)),
+                "temperature": _storage_temperature_label(rel),
+                "storage_tier": _storage_tier_label(rel),
+                "ingestion_lane": _ingestion_lane_label(rel),
+            }
+        )
+
+    payload = {
+        "timestamp_utc": _now_utc(),
+        "schema_version": DISCOVERY_MANIFEST_SCHEMA_VERSION,
+        "project_root": str(project_root),
+        "kind": str(kind),
+        "include_globs": list(include_globs),
+        "exclude_parts": list(exclude_parts),
+        "file_count": len(rows),
+        "total_bytes": int(sum(int(row.get("size_bytes", 0) or 0) for row in rows)),
+        "files": rows,
+    }
+    path = _discovery_manifest_path(project_root, kind)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
 def _json_file_priority(source_rel: str) -> int:
@@ -132,15 +431,19 @@ def _json_file_priority(source_rel: str) -> int:
     weights = {
         "registry": 0,
         "config": 1,
-        "governance_health": 2,
-        "governance_walk_forward": 3,
-        "governance_distillation": 4,
-        "governance_canary": 5,
-        "trade_history_json": 6,
-        "state_snapshot_drill": 7,
-        "json_file": 8,
+        "external_context": 2,
+        "external_feeds": 3,
+        "feature_store": 4,
+        "event_store": 5,
+        "governance_health": 6,
+        "governance_walk_forward": 7,
+        "governance_distillation": 8,
+        "governance_canary": 9,
+        "trade_history_json": 10,
+        "state_snapshot_drill": 11,
+        "json_file": 12,
     }
-    return int(weights.get(stream, 8))
+    return int(weights.get(stream, 12))
 
 
 def _matches_rel_filters(
@@ -174,26 +477,31 @@ def discover_jsonl_files(
     include = include_globs or list(DEFAULT_INCLUDE_GLOBS)
     excludes = exclude_parts or list(DEFAULT_EXCLUDE_PARTS)
 
-    found: List[Path] = []
-    seen_path = set()
-    seen_resolved = set()
+    manifest_rows = _load_discovery_manifest(
+        project_root=project_root,
+        include_globs=include,
+        exclude_parts=excludes,
+        kind="jsonl",
+    )
+    if manifest_rows is not None:
+        manifest_rows = _filter_redundant_hot_channel_duplicates(project_root, manifest_rows)
+    current_rows = _scan_matching_files(project_root, include, excludes)
+    current_rows = _filter_redundant_hot_channel_duplicates(project_root, current_rows)
+    if manifest_rows is not None:
+        manifest_rels = {
+            str(path.relative_to(project_root)) if path.is_relative_to(project_root) else str(path)
+            for path in manifest_rows
+        }
+        current_rels = {
+            str(path.relative_to(project_root)) if path.is_relative_to(project_root) else str(path)
+            for path in current_rows
+        }
+        if manifest_rels == current_rels:
+            return manifest_rows
 
-    for pat in include:
-        for p in project_root.glob(pat):
-            if not p.is_file():
-                continue
-            p_str = str(p)
-            if any(part and part in p_str for part in excludes):
-                continue
-            try:
-                resolved = str(p.resolve(strict=False))
-            except Exception:
-                resolved = p_str
-            if p_str in seen_path or resolved in seen_resolved:
-                continue
-            seen_path.add(p_str)
-            seen_resolved.add(resolved)
-            found.append(p)
+    found = current_rows
+    if manifest_rows is not None and not found:
+        return manifest_rows
 
     def _sort_key(path: Path) -> Tuple[int, float, str]:
         try:
@@ -207,6 +515,13 @@ def discover_jsonl_files(
         return (_source_priority(rel), -mtime, rel)
 
     found.sort(key=_sort_key)
+    _write_discovery_manifest(
+        project_root=project_root,
+        include_globs=include,
+        exclude_parts=excludes,
+        kind="jsonl",
+        files=found,
+    )
     return found
 
 
@@ -254,7 +569,22 @@ def _prioritize_jsonl_files_by_pending_bytes(
     project_root: Path,
     sqlite_state: Dict[str, Dict[str, Any]],
 ) -> List[Path]:
-    def _sort_key(path: Path) -> Tuple[int, int, int, int, int, float, str]:
+    anchor_days: List[datetime.date] = []
+    for path in files:
+        try:
+            rel = str(path.relative_to(project_root))
+        except Exception:
+            rel = str(path)
+        match = re.search(r"(20\d{6})", rel)
+        if not match:
+            continue
+        try:
+            anchor_days.append(datetime.strptime(match.group(1), "%Y%m%d").date())
+        except Exception:
+            continue
+    filename_anchor_day = max(anchor_days) if anchor_days else datetime.now(timezone.utc).date()
+
+    def _sort_key(path: Path) -> Tuple[int, int, int, int, int, int, int, int, float, str]:
         try:
             rel = str(path.relative_to(project_root))
         except Exception:
@@ -270,8 +600,41 @@ def _prioritize_jsonl_files_by_pending_bytes(
         last_offset = int(float(progress.get("last_offset_bytes", 0) or 0))
         pending_bytes = max(size_bytes - max(last_offset, 0), 0)
         has_pending = 0 if pending_bytes > 0 else 1
-        deferred = 1 if _is_deferred_analytics_path(rel) else 0
-        return (has_pending, deferred, _path_hot_priority(rel), -pending_bytes, _source_priority(rel), -mtime, rel)
+        lane = _ingestion_lane_label(rel)
+        lane_rank = {
+            "hot_lane": 0,
+            "nearline_lane": 1,
+            "deferred_lane": 2,
+            "cold_lane": 3,
+        }.get(lane, 1)
+        temperature = _storage_temperature_label(rel)
+        temperature_rank = {
+            "hot": 0,
+            "warm": 1,
+            "cool": 2,
+            "cold": 3,
+        }.get(temperature, 1)
+        filename_date_rank = _filename_date_rank(rel, anchor_day=filename_anchor_day)
+        age_bucket = _stale_age_bucket(max(time.time() - max(mtime, 0.0), 0.0))
+        stale_rank = {
+            "fresh_lt_15m": 0,
+            "recent_lt_2h": 1,
+            "aging_lt_24h": 2,
+            "stale_lt_7d": 3,
+            "cold_gte_7d": 4,
+        }.get(age_bucket, 2)
+        return (
+            has_pending,
+            lane_rank,
+            temperature_rank,
+            filename_date_rank,
+            stale_rank,
+            _path_hot_priority(rel),
+            -pending_bytes,
+            _source_priority(rel),
+            -mtime,
+            rel,
+        )
 
     return sorted(files, key=_sort_key)
 
@@ -287,16 +650,21 @@ def _limit_prioritized_jsonl_files(
         return list(files)
     core_files: List[Path] = []
     deferred_files: List[Path] = []
+    cold_lane_files: List[Path] = []
     for path in files:
         try:
             rel = str(path.relative_to(project_root))
         except Exception:
             rel = str(path)
-        if _is_deferred_analytics_path(rel):
+        if _is_cold_lane_path(rel):
+            cold_lane_files.append(path)
+        elif _is_deferred_analytics_path(rel):
             deferred_files.append(path)
         else:
             core_files.append(path)
     if not core_files:
+        if cold_lane_files:
+            return cold_lane_files[:max_files]
         return deferred_files[:max_files]
 
     kept = core_files[:max_files]
@@ -304,6 +672,10 @@ def _limit_prioritized_jsonl_files(
     if remaining <= 0 or max_deferred_files <= 0:
         return kept
     kept.extend(deferred_files[: min(remaining, max_deferred_files)])
+    remaining = max(max_files - len(kept), 0)
+    cold_budget = max(int(os.getenv("JSONL_SQL_MAX_COLD_LANE_FILES", "0") or 0), 0)
+    if remaining > 0 and cold_budget > 0:
+        kept.extend(cold_lane_files[: min(remaining, cold_budget)])
     return kept
 
 
@@ -438,6 +810,11 @@ def _count_lines(path: Path) -> int:
         return 0
 
 
+def _event_day_utc(event_ts: Optional[datetime], *, fallback_ts: datetime) -> str:
+    dt = event_ts or fallback_ts
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
+
+
 def _derive_start_cursor(progress: Dict[str, Any], stat: os.stat_result) -> Tuple[int, int, str]:
     start_line = int(float(progress.get("last_line", 0) or 0))
     start_offset = int(float(progress.get("last_offset_bytes", 0) or 0))
@@ -474,6 +851,10 @@ def _record_top_pending(
         {
             "source_rel": str(source_rel),
             "stream": _classify_stream(source_rel),
+            "storage_temperature": _storage_temperature_label(source_rel),
+            "storage_tier": _storage_tier_label(source_rel),
+            "ingestion_lane": _ingestion_lane_label(source_rel),
+            "stale_age_bucket": _stale_age_bucket(oldest_age_seconds),
             "pending_lines": int(pending_lines),
             "oldest_pending_age_seconds": round(float(oldest_age_seconds), 3),
             "total_lines": int(total_lines),
@@ -619,6 +1000,9 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection, table: str) -> None:
             decision_id TEXT,
             parent_decision_id TEXT,
             log_schema_version INTEGER,
+            source_day_utc TEXT,
+            source_stream TEXT,
+            source_partition_key TEXT,
             UNIQUE(source_file, line_no)
         )
         """
@@ -635,6 +1019,9 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection, table: str) -> None:
         "decision_id": "TEXT",
         "parent_decision_id": "TEXT",
         "log_schema_version": "INTEGER",
+        "source_day_utc": "TEXT",
+        "source_stream": "TEXT",
+        "source_partition_key": "TEXT",
     }
     for col, col_type in expected_cols.items():
         if col not in cols:
@@ -646,6 +1033,8 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection, table: str) -> None:
     conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_run_id ON {table}(run_id)")
     conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_iter_id ON {table}(iter_id)")
     conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_decision_id ON {table}(decision_id)")
+    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_source_day_stream ON {table}(source_day_utc, source_stream)")
+    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_source_partition_key ON {table}(source_partition_key)")
 
 
 def _json_file_stream(source_rel: str) -> str:
@@ -654,6 +1043,14 @@ def _json_file_stream(source_rel: str) -> str:
         return "registry"
     if rel.startswith("config/"):
         return "config"
+    if rel.startswith("data/external_context/") or rel.startswith("exports/external_context/"):
+        return "external_context"
+    if rel.startswith("exports/external_feeds/"):
+        return "external_feeds"
+    if rel.startswith("governance/feature_store/"):
+        return "feature_store"
+    if rel.startswith("governance/health/point_in_time_event_store"):
+        return "event_store"
     if rel.startswith("governance/health/"):
         return "governance_health"
     if rel.startswith("governance/walk_forward/"):
@@ -782,22 +1179,58 @@ def _sync_file_to_sqlite(
     invalid_sample_limit: int,
     run_id: str,
     iter_id: str,
+    max_lines_per_file: int = 0,
     checkpoint_every_lines: int = 0,
     checkpoint_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     inserted = 0
     invalid = 0
     invalid_logged = 0
+    ops_write_failures = 0
     last_line_seen = max(int(start_line), 0)
     last_offset_seen = max(int(start_offset_bytes), 0)
     last_checkpoint_line = max(int(start_line), 0)
     source_rel = str(file_path.relative_to(project_root))
+    source_stream = _classify_stream(source_rel)
+    expected_schema_version = _log_schema_version()
+    ops_conn = None
+    if not dry_run:
+        try:
+            ops_conn = ops_data_plane.connect(project_root)
+        except Exception:
+            ops_conn = None
 
     rows: List[Tuple[Any, ...]] = []
 
+    def flush_ops() -> None:
+        nonlocal ops_write_failures
+        if ops_conn is None:
+            return
+        try:
+            ops_conn.commit()
+        except Exception:
+            ops_write_failures += 1
+            try:
+                ops_conn.rollback()
+            except Exception:
+                pass
+
+    def _record_ops(write_fn: Callable[[], None]) -> None:
+        nonlocal ops_write_failures
+        if ops_conn is None:
+            return
+        try:
+            write_fn()
+        except Exception:
+            ops_write_failures += 1
+            try:
+                ops_conn.rollback()
+            except Exception:
+                pass
+
     def emit_checkpoint(force: bool = False) -> None:
         nonlocal last_checkpoint_line
-        if checkpoint_cb is None or int(last_line_seen) <= int(last_checkpoint_line):
+        if int(last_line_seen) <= int(last_checkpoint_line):
             return
         if not force and max(int(checkpoint_every_lines), 0) > 0:
             if int(last_line_seen) - int(last_checkpoint_line) < int(checkpoint_every_lines):
@@ -806,72 +1239,163 @@ def _sync_file_to_sqlite(
             if conn is None:
                 raise RuntimeError("sqlite connection missing")
             conn.commit()
-        checkpoint_cb(
-            {
-                "last_line": int(last_line_seen),
-                "last_offset_bytes": int(last_offset_seen),
-                "inserted": int(inserted),
-                "invalid": int(invalid),
-                "invalid_samples_logged": int(invalid_logged),
-            }
-        )
+        if checkpoint_cb is not None:
+            checkpoint_cb(
+                {
+                    "last_line": int(last_line_seen),
+                    "last_offset_bytes": int(last_offset_seen),
+                    "inserted": int(inserted),
+                    "invalid": int(invalid),
+                    "invalid_samples_logged": int(invalid_logged),
+                    "ops_write_failures": int(ops_write_failures),
+                }
+            )
+        if ops_conn is not None:
+            _record_ops(
+                lambda: ops_data_plane.record_watermark(
+                    ops_conn,
+                    collector_key="jsonl_sql",
+                    source_name=table,
+                    entity_key=ops_data_plane.normalize_entity_key(project_root, source_rel),
+                    watermark_type="line_offset",
+                    watermark_value=f"{int(last_line_seen)}:{int(last_offset_seen)}",
+                    metadata={
+                        "source_rel": source_rel,
+                        "table": table,
+                        "last_line": int(last_line_seen),
+                        "last_offset_bytes": int(last_offset_seen),
+                        "inserted": int(inserted),
+                        "invalid": int(invalid),
+                    },
+                    commit=False,
+                )
+            )
+            flush_ops()
         last_checkpoint_line = int(last_line_seen)
 
-    for line_no, raw, next_offset in _iter_new_lines(file_path, start_line, start_offset_bytes):
-        last_line_seen = int(line_no)
-        last_offset_seen = int(next_offset)
-        try:
-            obj = json.loads(raw)
-            payload = json.dumps(obj, ensure_ascii=True, separators=(",", ":"))
-        except Exception as exc:
-            invalid += 1
-            if invalid_logged < max(int(invalid_sample_limit), 0):
-                _log_invalid_line(
-                    invalid_log_path=invalid_log_path,
-                    mode="sqlite",
-                    source_rel=source_rel,
-                    line_no=line_no,
-                    raw=raw,
-                    error=exc,
-                    run_id=run_id,
-                    iter_id=iter_id,
+    try:
+        for line_no, raw, next_offset in _iter_new_lines(file_path, start_line, start_offset_bytes):
+            if int(max_lines_per_file) > 0 and (int(line_no) - max(int(start_line), 0)) > int(max_lines_per_file):
+                break
+            last_line_seen = int(line_no)
+            last_offset_seen = int(next_offset)
+            try:
+                obj = json.loads(raw)
+                payload = json.dumps(obj, ensure_ascii=True, separators=(",", ":"))
+            except Exception as exc:
+                invalid += 1
+                if ops_conn is not None:
+                    _record_ops(
+                        lambda: ops_data_plane.record_dead_letter(
+                            ops_conn,
+                            lane="sqlite",
+                            source_rel=source_rel,
+                            line_no=int(line_no),
+                            offset_bytes=int(next_offset),
+                            error_class=exc.__class__.__name__,
+                            error_message=str(exc),
+                            raw_payload=raw,
+                            run_id=run_id,
+                            iter_id=iter_id,
+                            metadata={"table": table, "file_path": str(file_path)},
+                            commit=False,
+                        )
+                    )
+                if invalid_logged < max(int(invalid_sample_limit), 0):
+                    _log_invalid_line(
+                        invalid_log_path=invalid_log_path,
+                        mode="sqlite",
+                        source_rel=source_rel,
+                        line_no=line_no,
+                        raw=raw,
+                        error=exc,
+                        run_id=run_id,
+                        iter_id=iter_id,
+                    )
+                    invalid_logged += 1
+                continue
+
+            event_ts = _extract_event_ts_utc(obj)
+            if event_ts is not None:
+                latency_s = max(time.time() - event_ts.timestamp(), 0.0)
+                if latency_all is not None:
+                    latency_all.add(latency_s)
+                if latency_stream is not None:
+                    latency_stream.add(latency_s)
+
+            raw_schema = obj.get("log_schema_version")
+            metadata_obj = obj.get("metadata") if isinstance(obj.get("metadata"), dict) else {}
+            if raw_schema is None:
+                raw_schema = metadata_obj.get("log_schema_version")
+            try:
+                observed_schema_version = max(int(raw_schema), 0)
+            except Exception:
+                observed_schema_version = 0
+
+            run_id_row, iter_id_row, decision_id, parent_decision_id, schema_version = _extract_correlation_fields(obj)
+            source_day_utc = _event_day_utc(event_ts, fallback_ts=datetime.now(timezone.utc))
+            source_partition_key = f"{source_day_utc}:{source_stream}"
+            if ops_conn is not None and observed_schema_version != expected_schema_version:
+                _record_ops(
+                    lambda: ops_data_plane.record_schema_drift(
+                        ops_conn,
+                        lane="sqlite",
+                        source_rel=source_rel,
+                        line_no=int(line_no),
+                        observed_schema_version=int(observed_schema_version),
+                        expected_schema_version=int(expected_schema_version),
+                        drift_kind="missing_log_schema_version" if observed_schema_version <= 0 else "schema_version_mismatch",
+                        payload_json=payload,
+                        run_id=run_id_row or run_id,
+                        iter_id=iter_id_row or iter_id,
+                        metadata={"table": table, "file_path": str(file_path)},
+                        commit=False,
+                    )
                 )
-                invalid_logged += 1
-            continue
-
-        event_ts = _extract_event_ts_utc(obj)
-        if event_ts is not None:
-            latency_s = max(time.time() - event_ts.timestamp(), 0.0)
-            if latency_all is not None:
-                latency_all.add(latency_s)
-            if latency_stream is not None:
-                latency_stream.add(latency_s)
-
-        run_id_row, iter_id_row, decision_id, parent_decision_id, schema_version = _extract_correlation_fields(obj)
-        sha1 = hashlib.sha1(payload.encode("utf-8")).hexdigest()
-        rows.append(
-            (
-                str(file_path),
-                source_rel,
-                line_no,
-                _now_utc(),
-                sha1,
-                payload,
-                run_id_row,
-                iter_id_row,
-                decision_id,
-                parent_decision_id,
-                schema_version,
+            sha1 = hashlib.sha1(payload.encode("utf-8")).hexdigest()
+            rows.append(
+                (
+                    str(file_path),
+                    source_rel,
+                    line_no,
+                    _now_utc(),
+                    sha1,
+                    payload,
+                    run_id_row,
+                    iter_id_row,
+                    decision_id,
+                    parent_decision_id,
+                    schema_version,
+                    source_day_utc,
+                    source_stream,
+                    source_partition_key,
+                )
             )
-        )
 
-        if len(rows) >= 1000:
+            if len(rows) >= 1000:
+                if not dry_run:
+                    if conn is None:
+                        raise RuntimeError("sqlite connection missing")
+                    cur = _sqlite_executemany_with_retry(
+                        conn,
+                        f"INSERT OR IGNORE INTO {table} (source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json, run_id, iter_id, decision_id, parent_decision_id, log_schema_version, source_day_utc, source_stream, source_partition_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        rows,
+                        lock_retries=lock_retries,
+                        lock_retry_delay_seconds=lock_retry_delay_seconds,
+                    )
+                    inserted += cur.rowcount if cur.rowcount is not None else 0
+                else:
+                    inserted += len(rows)
+                rows = []
+                emit_checkpoint()
+
+        if rows:
             if not dry_run:
                 if conn is None:
                     raise RuntimeError("sqlite connection missing")
                 cur = _sqlite_executemany_with_retry(
                     conn,
-                    f"INSERT OR IGNORE INTO {table} (source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json, run_id, iter_id, decision_id, parent_decision_id, log_schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    f"INSERT OR IGNORE INTO {table} (source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json, run_id, iter_id, decision_id, parent_decision_id, log_schema_version, source_day_utc, source_stream, source_partition_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     rows,
                     lock_retries=lock_retries,
                     lock_retry_delay_seconds=lock_retry_delay_seconds,
@@ -879,30 +1403,18 @@ def _sync_file_to_sqlite(
                 inserted += cur.rowcount if cur.rowcount is not None else 0
             else:
                 inserted += len(rows)
-            rows = []
-            emit_checkpoint()
 
-    if rows:
-        if not dry_run:
-            if conn is None:
-                raise RuntimeError("sqlite connection missing")
-            cur = _sqlite_executemany_with_retry(
-                conn,
-                f"INSERT OR IGNORE INTO {table} (source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json, run_id, iter_id, decision_id, parent_decision_id, log_schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                rows,
-                lock_retries=lock_retries,
-                lock_retry_delay_seconds=lock_retry_delay_seconds,
-            )
-            inserted += cur.rowcount if cur.rowcount is not None else 0
-        else:
-            inserted += len(rows)
-
-    emit_checkpoint(force=True)
+        emit_checkpoint(force=True)
+    finally:
+        if ops_conn is not None:
+            flush_ops()
+            ops_conn.close()
 
     return {
         "inserted": int(inserted),
         "invalid": int(invalid),
         "invalid_samples_logged": int(invalid_logged),
+        "ops_write_failures": int(ops_write_failures),
         "last_line": int(last_line_seen),
         "last_offset_bytes": int(last_offset_seen),
     }
@@ -1042,6 +1554,7 @@ def _sync_file_to_mysql(
     invalid_sample_limit: int,
     run_id: str,
     iter_id: str,
+    max_lines_per_file: int = 0,
 ) -> Dict[str, Any]:
     inserted = 0
     invalid = 0
@@ -1070,6 +1583,8 @@ def _sync_file_to_mysql(
         vals = []
 
     for line_no, raw, next_offset in _iter_new_lines(file_path, start_line, start_offset_bytes):
+        if int(max_lines_per_file) > 0 and (int(line_no) - max(int(start_line), 0)) > int(max_lines_per_file):
+            break
         last_line_seen = int(line_no)
         last_offset_seen = int(next_offset)
         try:
@@ -1167,6 +1682,11 @@ def main() -> int:
 
     parser.add_argument("--max-files", type=int, default=0)
     parser.add_argument(
+        "--max-lines-per-file",
+        type=int,
+        default=int(os.getenv("INGEST_MAX_LINES_PER_FILE", "0")),
+    )
+    parser.add_argument(
         "--max-deferred-files",
         type=int,
         default=int(os.getenv("INGEST_MAX_DEFERRED_FILES", "2")),
@@ -1216,8 +1736,8 @@ def main() -> int:
             if _matches_rel_filters(
                 source_rel=str(fp.relative_to(project_root)),
                 stream=_json_file_stream(str(fp.relative_to(project_root))),
-                include_streams=[],
-                exclude_streams=[],
+                include_streams=include_streams,
+                exclude_streams=exclude_streams,
                 path_contains=path_contains,
                 path_not_contains=path_not_contains,
             )
@@ -1273,14 +1793,11 @@ def main() -> int:
     if args.mode in {"sqlite", "both"}:
         sqlite_db = Path(args.sqlite_db).resolve() if args.sqlite_db else (project_root / "data" / "jsonl_link.sqlite3")
         if not args.dry_run:
-            sqlite_db.parent.mkdir(parents=True, exist_ok=True)
-            sqlite_conn = sqlite3.connect(
-                str(sqlite_db),
-                timeout=max(float(args.sqlite_timeout_seconds), 1.0),
+            sqlite_conn = connect_sqlite(
+                sqlite_db,
+                project_root=project_root,
+                timeout_seconds=max(float(args.sqlite_timeout_seconds), 1.0),
             )
-            sqlite_conn.execute("PRAGMA journal_mode=WAL")
-            sqlite_conn.execute("PRAGMA synchronous=NORMAL")
-            sqlite_conn.execute(f"PRAGMA busy_timeout={int(max(float(args.sqlite_timeout_seconds), 1.0) * 1000)}")
             _ensure_sqlite_schema(sqlite_conn, args.sqlite_table)
             _ensure_sqlite_json_file_schema(sqlite_conn, args.sqlite_json_table)
         print(f"SQLite target: {sqlite_db} table={args.sqlite_table}")
@@ -1391,6 +1908,7 @@ def main() -> int:
                             "inserted": int(checkpoint["inserted"]),
                             "invalid": int(checkpoint["invalid"]),
                             "invalid_samples_logged": int(checkpoint["invalid_samples_logged"]),
+                            "ops_write_failures": int(checkpoint.get("ops_write_failures", 0) or 0),
                             "pending_lines": int(pending_lines),
                         },
                     )
@@ -1414,6 +1932,7 @@ def main() -> int:
                         invalid_sample_limit=max(args.invalid_sample_limit, 0),
                         run_id=run_id,
                         iter_id=iter_id,
+                        max_lines_per_file=max(int(args.max_lines_per_file), 0),
                         checkpoint_every_lines=max(int(args.sqlite_state_checkpoint_lines), 0),
                         checkpoint_cb=sqlite_checkpoint,
                     )
@@ -1454,6 +1973,9 @@ def main() -> int:
                 total_inserted["sqlite"] += int(result["inserted"])
                 total_invalid["sqlite"] += int(result["invalid"])
                 total_invalid_samples["sqlite"] += int(result["invalid_samples_logged"])
+                lag_metrics["sqlite"]["ops_write_failures"] = int(
+                    lag_metrics["sqlite"].get("ops_write_failures", 0) or 0
+                ) + int(result.get("ops_write_failures", 0) or 0)
 
                 try:
                     post_st = fp.stat()
@@ -1499,6 +2021,7 @@ def main() -> int:
                         "inserted": int(result["inserted"]),
                         "invalid": int(result["invalid"]),
                         "invalid_samples_logged": int(result["invalid_samples_logged"]),
+                        "ops_write_failures": int(result.get("ops_write_failures", 0) or 0),
                         "last_line": int(result["last_line"]),
                         "last_offset_bytes": int(result["last_offset_bytes"]),
                         "pending_lines": int(pending_lines),
@@ -1553,6 +2076,7 @@ def main() -> int:
                         invalid_sample_limit=max(args.invalid_sample_limit, 0),
                         run_id=run_id,
                         iter_id=iter_id,
+                        max_lines_per_file=max(int(args.max_lines_per_file), 0),
                     )
                 except FileNotFoundError:
                     _journal_event(
@@ -1746,6 +2270,8 @@ def main() -> int:
         if not args.dry_run:
             _save_state(state_path, state)
 
+        sqlite_sink_enabled = args.mode in {"sqlite", "both"}
+        mysql_sink_enabled = args.mode in {"mysql", "both"}
         health_payload = {
             "timestamp_utc": _now_utc(),
             "log_schema_version": _log_schema_version(),
@@ -1753,6 +2279,16 @@ def main() -> int:
             "iter_id": iter_id,
             "ingest_run_id": ingest_run_id,
             "mode": args.mode,
+            "sinks": {
+                "sqlite": {
+                    "enabled": bool(sqlite_sink_enabled),
+                    "status": "active" if sqlite_sink_enabled else "disabled_by_link_mode",
+                },
+                "mysql": {
+                    "enabled": bool(mysql_sink_enabled),
+                    "status": "active" if mysql_sink_enabled else "disabled_by_link_mode",
+                },
+            },
             "project_root": str(project_root),
             "state_file": str(state_path),
             "health_file": str(health_file_path),
@@ -1761,16 +2297,20 @@ def main() -> int:
             "json_files_discovered": int(len(json_files)),
             "invalid_log_file": str(invalid_log_path),
             "journal_files": [str(p) for p in journal_paths],
-            "filters": {
-                "include_streams": include_streams,
-                "exclude_streams": exclude_streams,
-                "path_contains": path_contains,
-                "path_not_contains": path_not_contains,
-            },
+        "filters": {
+            "include_streams": include_streams,
+            "exclude_streams": exclude_streams,
+            "path_contains": path_contains,
+            "path_not_contains": path_not_contains,
+            "max_lines_per_file": max(int(args.max_lines_per_file), 0),
+        },
             "sqlite": {
+                "enabled": bool(sqlite_sink_enabled),
+                "status": "active" if sqlite_sink_enabled else "disabled_by_link_mode",
                 "inserted": int(total_inserted["sqlite"]),
                 "invalid": int(total_invalid["sqlite"]),
                 "invalid_samples_logged": int(total_invalid_samples["sqlite"]),
+                "ops_write_failures": int(lag_metrics["sqlite"].get("ops_write_failures", 0) or 0),
                 "pending_lines": int(lag_metrics["sqlite"]["pending_lines"]),
                 "oldest_uningested_age_seconds": float(lag_metrics["sqlite"]["oldest_uningested_age_seconds"]),
                 "files_with_pending": int(lag_metrics["sqlite"]["files_with_pending"]),
@@ -1783,6 +2323,8 @@ def main() -> int:
                 "bytes": int(json_file_metrics["sqlite"]["bytes"]),
             },
             "mysql": {
+                "enabled": bool(mysql_sink_enabled),
+                "status": "active" if mysql_sink_enabled else "disabled_by_link_mode",
                 "inserted": int(total_inserted["mysql"]),
                 "invalid": int(total_invalid["mysql"]),
                 "invalid_samples_logged": int(total_invalid_samples["mysql"]),

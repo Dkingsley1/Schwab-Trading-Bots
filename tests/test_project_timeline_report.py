@@ -31,6 +31,14 @@ def test_pdf_renderer_binary_uses_gui_browser_candidate(monkeypatch, tmp_path):
     assert renderer_kind == "browser"
 
 
+def test_default_auto_render_pdf_detects_available_renderer(monkeypatch, tmp_path):
+    browser = tmp_path / "Google Chrome"
+    browser.write_text("", encoding="utf-8")
+    monkeypatch.setattr(project_timeline_report, "APP_BROWSER_CANDIDATES", (browser,))
+
+    assert project_timeline_report._default_auto_render_pdf() is True
+
+
 def test_build_project_milestone_timeline_filters_out_runtime_heartbeat_noise():
     context = {
         "git": {
@@ -116,6 +124,71 @@ def test_build_current_phase_changes_keeps_high_signal_items_only():
     assert "Bot loop heartbeat" not in titles
 
 
+def test_describe_artifact_change_recognizes_governance_hardening_artifacts():
+    expected_titles = {
+        "governance/health/bot_support_owner_guard_latest.json": "Bot support owner contract",
+        "governance/health/golden_replay_regression_latest.json": "Golden replay regression",
+        "governance/health/retrain_lane_scheduler_latest.json": "Retrain lane scheduler",
+        "governance/champion_challenger/promotion_packet_latest.json": "Promotion packet contract",
+        "governance/replay/golden_replay_pack.json": "Golden replay pack",
+    }
+
+    for path, title in expected_titles.items():
+        row = project_timeline_report._describe_artifact_change(path)
+        assert row["title"] == title
+
+
+def test_build_current_phase_changes_includes_new_governance_training_milestones():
+    context = {
+        "git": {
+            "commits": [],
+            "recent_working_tree_changes": [
+                {
+                    "path": "governance/ownership/bot_support_owners.json",
+                    "status": "M",
+                    "mtime_local": "2026-04-12T12:31:00-04:00",
+                    "mtime_epoch": 5.0,
+                    "is_dir": False,
+                },
+            ],
+        },
+        "ops": {
+            "recent_project_activity_hours": 72,
+            "recent_project_activity": [
+                {
+                    "path": "governance/health/shadow_loop_default_crypto_coinbase_123.json",
+                    "mtime_local": "2026-04-12T12:30:00-04:00",
+                    "mtime_epoch": 1.0,
+                },
+                {
+                    "path": "governance/health/bot_support_owner_guard_latest.json",
+                    "mtime_local": "2026-04-12T12:35:00-04:00",
+                    "mtime_epoch": 2.0,
+                },
+                {
+                    "path": "governance/health/golden_replay_regression_latest.json",
+                    "mtime_local": "2026-04-12T12:36:00-04:00",
+                    "mtime_epoch": 3.0,
+                },
+                {
+                    "path": "governance/champion_challenger/promotion_packet_latest.json",
+                    "mtime_local": "2026-04-12T12:37:00-04:00",
+                    "mtime_epoch": 4.0,
+                },
+            ],
+        },
+    }
+
+    rows = project_timeline_report._build_current_phase_changes(context, limit=10)
+    titles = [str(row.get("title", "")) for row in rows]
+
+    assert "Bot support owner contract" in titles
+    assert "Golden replay regression" in titles
+    assert "Promotion packet contract" in titles
+    assert "Bot support ownership map" in titles
+    assert "Bot loop heartbeat" not in titles
+
+
 def test_build_buildout_summary_groups_milestones_into_themes():
     git_data = {
         "commits": [
@@ -168,6 +241,36 @@ def test_build_buildout_summary_groups_milestones_into_themes():
     assert any("Sleeve expansion" in line for line in summary)
     assert any("Cross-sleeve intelligence" in line for line in summary)
     assert any("Reliability and storage" in line for line in summary)
+
+
+def test_build_buildout_summary_counts_governance_hardening_in_training_and_promotion():
+    git_data = {
+        "commits": [
+            {"date": "2026-04-10T12:00:00+00:00", "sha": "ddd4444", "subject": "feat: harden promotion packet signing and retrain governance"},
+        ]
+    }
+    milestone_timeline = [
+        {
+            "title": "Point-in-time feature manifest",
+            "detail": "feature lineage and dataset hash manifest refreshed",
+            "reference": "governance/health/feature_store_manifest_latest.json",
+            "area": "Training",
+            "sort_epoch": 1.0,
+            "date_local": "2026-04-10T08:00:00-04:00",
+        },
+        {
+            "title": "Promotion packet contract",
+            "detail": "signed promotion packet refreshed",
+            "reference": "governance/champion_challenger/promotion_packet_latest.json",
+            "area": "Promotion",
+            "sort_epoch": 2.0,
+            "date_local": "2026-04-11T08:00:00-04:00",
+        },
+    ]
+
+    summary = project_timeline_report._build_buildout_summary(milestone_timeline, [], git_data)
+
+    assert any("Training and promotion" in line for line in summary)
 
 
 def test_render_markdown_includes_cross_sleeve_intelligence_section():

@@ -90,6 +90,13 @@ def _manual_quarantine(row: dict[str, Any]) -> bool:
     return str(row.get("reason") or "").startswith(marker) or str(row.get("delete_reason") or "").startswith(marker)
 
 
+def _coverage_candidate_active(row: dict[str, Any]) -> bool:
+    if not bool(row.get("coverage_candidate_active", False)):
+        return False
+    stage = str(row.get("coverage_stage") or "").strip().lower()
+    return stage in {"promotion_queue", "coverage_queue", "staged", ""}
+
+
 def _load_registry_rows(path: Path) -> dict[str, dict[str, Any]]:
     payload = _load_json(path)
     rows = payload.get("sub_bots") if isinstance(payload.get("sub_bots"), list) else []
@@ -126,7 +133,7 @@ def _registry_gate_allowed(
         return False, "deleted_from_rotation"
     if _manual_quarantine(row):
         return False, "manual_quarantine"
-    if require_active_registry and (not bool(row.get("active", False))):
+    if require_active_registry and (not bool(row.get("active", False))) and (not _coverage_candidate_active(row)):
         return False, "inactive"
     if (not include_infrastructure) and str(row.get("bot_role") or "") == "infrastructure_sub_bot":
         return False, "infrastructure_sub_bot"
@@ -182,15 +189,12 @@ def main() -> int:
     fail_reasons = []
     near_pass_examples = []
     excluded_counts: dict[str, int] = {}
+    coverage_gap_examples: list[dict[str, Any]] = []
 
     for bot_id, row in bots.items():
         if not isinstance(row, dict):
             continue
         runs = _i(row.get("runs"), 0)
-        if runs < int(args.min_runs_per_bot):
-            continue
-        if str(row.get("status", "")).strip().lower() == "insufficient_runs":
-            continue
 
         if registry_rows:
             eligible, exclude_reason = _registry_gate_allowed(
@@ -202,6 +206,20 @@ def main() -> int:
             if not eligible:
                 excluded_counts[exclude_reason] = excluded_counts.get(exclude_reason, 0) + 1
                 continue
+        status = str(row.get("status", "")).strip().lower()
+        if runs < int(args.min_runs_per_bot) or status == "insufficient_runs":
+            coverage_gap_examples.append(
+                {
+                    "bot_id": str(bot_id),
+                    "runs": runs,
+                    "runs_shortfall": max(int(args.min_runs_per_bot) - runs, 0),
+                    "status": status or "insufficient_runs",
+                    "forward_mean": round(_f(row.get("forward_mean"), 0.0), 6),
+                    "delta": round(_f(row.get("delta"), 0.0), 6),
+                    "trading_quality_score": round(_f(row.get("trading_quality_score"), 0.0), 6),
+                }
+            )
+            continue
 
         considered += 1
         fwd = _f(row.get("forward_mean"), 0.0)
@@ -260,6 +278,7 @@ def main() -> int:
     raw_fail_share = raw_fails / max(considered, 1)
     severe_overfit_share = severe_overfit / max(considered, 1)
     coverage_ok = considered >= int(args.min_considered_bots)
+    coverage_shortfall_bots = max(int(args.min_considered_bots) - considered, 0)
     mean_trading_quality_score = tq_sum / max(considered, 1)
 
     promote_ok = (
@@ -280,6 +299,7 @@ def main() -> int:
         "severe_overfit_share": round(severe_overfit_share, 6),
         "mean_trading_quality_score": round(mean_trading_quality_score, 6),
         "coverage_ok": coverage_ok,
+        "coverage_shortfall_bots": coverage_shortfall_bots,
         "promote_ok": promote_ok,
         "thresholds": {
             "min_forward_mean": float(args.min_forward_mean),
@@ -299,10 +319,15 @@ def main() -> int:
             "enabled": bool(registry_rows),
             "require_active_registry": bool(args.require_active_registry),
             "include_infrastructure": bool(args.include_infrastructure),
+            "coverage_candidate_active_enabled": True,
         },
         "excluded_counts": excluded_counts,
         "fail_examples": fail_reasons[:30],
         "near_pass_examples": near_pass_examples[:30],
+        "coverage_gap_examples": sorted(
+            coverage_gap_examples,
+            key=lambda row: (int(row.get("runs_shortfall", 0)), -int(row.get("runs", 0)), str(row.get("bot_id", ""))),
+        )[:30],
     }
 
     out_path = Path(args.out_file)

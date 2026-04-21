@@ -103,6 +103,28 @@ def _fresh_health_payload(payload: Dict[str, Any], *, max_age_hours: float) -> T
     return payload, age_hours <= max(max_age_hours, 0.0)
 
 
+def _paper_feedback_summary(project_root: Path) -> Dict[str, Any]:
+    payload = _safe_read_json(project_root / "governance" / "health" / "paper_performance_latest.json")
+    sleeves = payload.get("sleeve_latest") if isinstance(payload.get("sleeve_latest"), list) else []
+    total_executions = 0
+    active_sleeves = 0
+    non_flat_strategies = 0
+    for row in sleeves:
+        if not isinstance(row, dict):
+            continue
+        executions = int(float(row.get("executions", 0) or 0))
+        total_executions += max(executions, 0)
+        if executions > 0:
+            active_sleeves += 1
+        non_flat_strategies += max(int(float(row.get("non_flat_strategy_count", 0) or 0)), 0)
+    return {
+        "artifact_present": bool(payload),
+        "total_executions": total_executions,
+        "active_sleeves": active_sleeves,
+        "non_flat_strategies": non_flat_strategies,
+    }
+
+
 def _softmax(z: np.ndarray) -> np.ndarray:
     z = z - np.max(z, axis=1, keepdims=True)
     ez = np.exp(z)
@@ -1086,6 +1108,10 @@ def _data_quality_gate(project_root: Path, *, require_walk_forward_ok: bool) -> 
     max_row_drift = float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MAX_ROW_DRIFT", "1.2"))
     max_stale_drift = float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MAX_STALE_DRIFT", "1.0"))
     require_replay_ok = _parse_bool(os.getenv("TRADE_BEHAVIOR_PROMOTION_REQUIRE_REPLAY_OK", "1"), default=True)
+    require_health_gate_clear = _parse_bool(os.getenv("TRADE_BEHAVIOR_PROMOTION_REQUIRE_HEALTH_GATE_CLEAR", "1"), default=True)
+    require_paper_feedback_floor = _parse_bool(os.getenv("TRADE_BEHAVIOR_PROMOTION_REQUIRE_PAPER_FEEDBACK_FLOOR", "1"), default=True)
+    min_paper_executions = max(int(float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MIN_PAPER_EXECUTIONS", "24"))), 0)
+    min_paper_sleeves = max(int(float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MIN_PAPER_SLEEVES", "3"))), 0)
 
     coverage_ratio = float(coverage.get("coverage_ratio", 0.0) or 0.0)
     if coverage and coverage_ratio < min_coverage_ratio:
@@ -1107,9 +1133,28 @@ def _data_quality_gate(project_root: Path, *, require_walk_forward_ok: bool) -> 
     if require_replay_ok and replay and (not replay_ok):
         reasons.append("replay_preopen_sanity_not_ok")
 
+    health_gates = _safe_read_json(project_root / "governance" / "health" / "health_gates_latest.json")
+    health_gate_triggered = bool(health_gates.get("hard_gate_triggered", False))
+    if require_health_gate_clear:
+        if not health_gates:
+            reasons.append("health_gate_artifact_missing")
+        elif health_gate_triggered:
+            reasons.append("health_gate_triggered")
+
     walk_forward = _safe_read_json(project_root / "governance" / "walk_forward" / "promotion_readiness_latest.json")
     if require_walk_forward_ok and walk_forward and (not bool(walk_forward.get("promote_ok", False))):
         reasons.append("walk_forward_promote_ok=false")
+
+    paper_feedback = _paper_feedback_summary(project_root)
+    if require_paper_feedback_floor:
+        if paper_feedback["total_executions"] < min_paper_executions:
+            reasons.append(
+                f"paper_feedback_executions={paper_feedback['total_executions']} < min={min_paper_executions}"
+            )
+        if paper_feedback["active_sleeves"] < min_paper_sleeves:
+            reasons.append(
+                f"paper_feedback_active_sleeves={paper_feedback['active_sleeves']} < min={min_paper_sleeves}"
+            )
 
     summary = {
         "coverage_ratio": coverage_ratio,
@@ -1126,6 +1171,15 @@ def _data_quality_gate(project_root: Path, *, require_walk_forward_ok: bool) -> 
         "require_replay_ok": require_replay_ok,
         "walk_forward_required": bool(require_walk_forward_ok),
         "walk_forward_promote_ok": bool(walk_forward.get("promote_ok", False)) if walk_forward else None,
+        "health_gate_triggered": health_gate_triggered,
+        "require_health_gate_clear": require_health_gate_clear,
+        "paper_feedback_artifact_present": bool(paper_feedback.get("artifact_present", False)),
+        "paper_feedback_total_executions": int(paper_feedback.get("total_executions", 0) or 0),
+        "paper_feedback_active_sleeves": int(paper_feedback.get("active_sleeves", 0) or 0),
+        "paper_feedback_non_flat_strategies": int(paper_feedback.get("non_flat_strategies", 0) or 0),
+        "require_paper_feedback_floor": require_paper_feedback_floor,
+        "min_paper_executions": min_paper_executions,
+        "min_paper_sleeves": min_paper_sleeves,
     }
     return len(reasons) == 0, reasons, summary
 

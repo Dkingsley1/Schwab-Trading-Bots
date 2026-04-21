@@ -459,10 +459,10 @@ def main() -> int:
         default=int(os.getenv("PARALLEL_SHADOW_AUTH_BOOTSTRAP_TIMEOUT", "600")),
     )
 
-    parser.add_argument("--intraday-threshold-shift", type=float, default=-0.08)
-    parser.add_argument("--swing-threshold-shift", type=float, default=-0.04)
-    parser.add_argument("--intraday-interval-seconds", type=int, default=8)
-    parser.add_argument("--swing-interval-seconds", type=int, default=75)
+    parser.add_argument("--intraday-threshold-shift", type=float, default=-0.015)
+    parser.add_argument("--swing-threshold-shift", type=float, default=-0.005)
+    parser.add_argument("--intraday-interval-seconds", type=int, default=15)
+    parser.add_argument("--swing-interval-seconds", type=int, default=120)
     parser.add_argument(
         "--split-ingress-loops",
         action="store_true",
@@ -471,12 +471,12 @@ def main() -> int:
     parser.add_argument(
         "--intraday-defensive-interval-seconds",
         type=int,
-        default=int(os.getenv("INTRADAY_AGGRESSIVE_DEFENSIVE_INTERVAL_SECONDS", "20")),
+        default=int(os.getenv("INTRADAY_AGGRESSIVE_DEFENSIVE_INTERVAL_SECONDS", "24")),
     )
     parser.add_argument(
         "--swing-defensive-interval-seconds",
         type=int,
-        default=int(os.getenv("SWING_AGGRESSIVE_DEFENSIVE_INTERVAL_SECONDS", "150")),
+        default=int(os.getenv("SWING_AGGRESSIVE_DEFENSIVE_INTERVAL_SECONDS", "180")),
     )
     parser.add_argument(
         "--split-stagger-seconds",

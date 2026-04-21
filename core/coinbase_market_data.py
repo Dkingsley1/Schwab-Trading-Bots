@@ -304,6 +304,7 @@ class CoinbaseMarketDataClient:
         self.product_cache_seconds = max(float(os.getenv("COINBASE_PRODUCT_CACHE_SECONDS", "900")), 0.0)
         self.candle_cache_seconds = max(float(os.getenv("COINBASE_CANDLE_CACHE_SECONDS", "12")), 0.0)
         self.snapshot_max_workers = max(int(os.getenv("COINBASE_SNAPSHOT_MAX_WORKERS", "4")), 2)
+        self.cache_max_entries = max(int(os.getenv("COINBASE_CACHE_MAX_ENTRIES", "256")), 1)
         self._cache_lock = threading.Lock()
         self._cache: Dict[str, Tuple[float, Any]] = {}
         self._ws_cache = _CoinbaseWebsocketCache()
@@ -338,8 +339,22 @@ class CoinbaseMarketDataClient:
         if ttl_seconds <= 0.0:
             return value
         with self._cache_lock:
-            self._cache[key] = (time.time() + float(ttl_seconds), value)
+            self._prune_cache_locked(now_ts=time.time(), keep_key=str(key))
+            self._cache.pop(str(key), None)
+            self._cache[str(key)] = (time.time() + float(ttl_seconds), value)
+            self._prune_cache_locked(now_ts=time.time(), keep_key=str(key))
         return value
+
+    def _prune_cache_locked(self, *, now_ts: float, keep_key: str = "") -> None:
+        expired = [cache_key for cache_key, row in self._cache.items() if now_ts >= float(row[0] or 0.0)]
+        for cache_key in expired:
+            self._cache.pop(cache_key, None)
+        max_entries = max(int(self.cache_max_entries), 0)
+        while max_entries > 0 and len(self._cache) > max_entries:
+            oldest_key = next(iter(self._cache))
+            if oldest_key == keep_key and len(self._cache) > 1:
+                oldest_key = next(iter([name for name in self._cache.keys() if name != keep_key]))
+            self._cache.pop(oldest_key, None)
 
     @staticmethod
     def normalize_symbol(symbol: str) -> str:

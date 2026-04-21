@@ -84,9 +84,17 @@ final class StorageEjectGuard {
 
     func handleDisappeared(_ disk: DADisk) {
         guard matchesTargetDisk(disk) else { return }
-        log("disk disappeared volumeBSD=\(targetVolumeBSDName ?? "none") wholeBSD=\(targetWholeBSDName ?? "none")")
-        targetVolumeBSDName = nil
-        targetWholeBSDName = nil
+        let shouldRestartLocal = serial.sync { () -> Bool in
+            log("disk disappeared volumeBSD=\(targetVolumeBSDName ?? "none") wholeBSD=\(targetWholeBSDName ?? "none")")
+            targetVolumeBSDName = nil
+            targetWholeBSDName = nil
+            return localOverrideActive()
+        }
+        if shouldRestartLocal {
+            serial.async {
+                self.restartLocalCollectionAfterEject()
+            }
+        }
     }
 
     func handleApproval(_ disk: DADisk, action: String) -> Unmanaged<DADissenter>? {
@@ -105,67 +113,65 @@ final class StorageEjectGuard {
             let diskName = StorageEjectGuard.bsdName(for: disk) ?? "unknown"
             log("handling \(action) for disk=\(diskName) mountRoot=\(mountRoot)")
 
-            writeLocalOverride()
+            let switchRC = prepareLocalFallbackForEject()
+            log("prepare-local-for-eject rc=\(switchRC)")
 
-            let syncRC = run(
-                launchPath: "/bin/zsh",
-                arguments: [
-                    "-lc",
-                    "PY=$(zsh \(shellQuote(projectRoot.appendingPathComponent("scripts/ops/runtime_python.sh").path))) && BOT_LOGS_PREFER_EXTERNAL=0 \"$PY\" \(shellQuote(projectRoot.appendingPathComponent("scripts/ops/storage_failback_sync.py").path)) --json",
-                ],
-                timeout: 8
-            )
-            log("storage_failback_sync rc=\(syncRC)")
-
-            let stopRC = run(
-                launchPath: "/bin/zsh",
-                arguments: [
-                    "-lc",
-                    "\(shellQuote(projectRoot.appendingPathComponent("scripts/ops/opsctl.sh").path)) stop",
-                ],
-                timeout: 8
-            )
-            log("opsctl stop rc=\(stopRC)")
-
-            let released = waitForExternalWritersToExit(timeout: 4.0)
-            log("external_writer_release ok=\(released)")
+            let released = releaseExternalMountBlockers(timeout: 12.0)
+            log("external_mount_release ok=\(released)")
             return nil
         }
     }
 
-    func restoreExternalCollection() {
-        log("restoring external collection for mountRoot=\(mountRoot)")
-        clearLocalOverride()
-
-        let syncRC = run(
-            launchPath: "/bin/zsh",
-            arguments: [
-                "-lc",
-                "PY=$(zsh \(shellQuote(projectRoot.appendingPathComponent("scripts/ops/runtime_python.sh").path))) && BOT_LOGS_PREFER_EXTERNAL=1 \"$PY\" \(shellQuote(projectRoot.appendingPathComponent("scripts/ops/storage_failback_sync.py").path)) --json",
-            ],
-            timeout: 12
-        )
-        log("storage_failback_sync restore rc=\(syncRC)")
-
+    func prepareLocalFallbackForEject() -> Int32 {
+        let opsctl = projectRoot.appendingPathComponent("scripts/ops/opsctl.sh").path
         let stopRC = run(
             launchPath: "/bin/zsh",
             arguments: [
                 "-lc",
-                "\(shellQuote(projectRoot.appendingPathComponent("scripts/ops/opsctl.sh").path)) stop",
+                "\(shellQuote(opsctl)) stop",
             ],
-            timeout: 8
+            timeout: 45
         )
-        log("opsctl stop before restore refresh rc=\(stopRC)")
+        log("opsctl stop before eject rc=\(stopRC)")
+        let switchRC = run(
+            launchPath: "/bin/zsh",
+            arguments: [
+                "-lc",
+                "\(shellQuote(opsctl)) storage-switch-local --no-refresh",
+            ],
+            timeout: 60
+        )
+        log("opsctl storage-switch-local --no-refresh rc=\(switchRC)")
+        return switchRC != 0 ? switchRC : stopRC
+    }
 
+    func restartLocalCollectionAfterEject() {
+        let opsctl = projectRoot.appendingPathComponent("scripts/ops/opsctl.sh").path
+        log("restarting local collection after eject for mountRoot=\(mountRoot)")
         let refreshRC = run(
             launchPath: "/bin/zsh",
             arguments: [
                 "-lc",
-                "\(shellQuote(projectRoot.appendingPathComponent("scripts/ops/opsctl.sh").path)) feed-refresh --source all",
+                "\(shellQuote(opsctl)) feed-refresh --source all",
             ],
-            timeout: 30
+            timeout: 180
         )
-        log("opsctl feed-refresh restore rc=\(refreshRC)")
+        log("opsctl feed-refresh local-after-eject rc=\(refreshRC)")
+        let coordinatorRC = run(
+            launchPath: "/bin/zsh",
+            arguments: [
+                "-lc",
+                "\(shellQuote(opsctl)) storage-transition-coordinator --transition-mode local --apply --json >/dev/null 2>&1 || true",
+            ],
+            timeout: 120
+        )
+        log("opsctl storage-transition-coordinator local-after-eject rc=\(coordinatorRC)")
+    }
+
+    func restoreExternalCollection() {
+        log("restoring external collection for mountRoot=\(mountRoot)")
+        let switchRC = switchStorage(mode: "external")
+        log("storage-switch-external rc=\(switchRC)")
     }
 
     func waitForExternalWritersToExit(timeout: TimeInterval) -> Bool {
@@ -189,6 +195,81 @@ final class StorageEjectGuard {
             timeout: 3
         )
         return rc == 0
+    }
+
+    func mountHasOpenHandles() -> Bool {
+        let rc = run(
+            launchPath: "/bin/zsh",
+            arguments: [
+                "-lc",
+                "lsof +D \(shellQuote(mountRoot)) >/dev/null 2>&1",
+            ],
+            timeout: 5
+        )
+        return rc == 0
+    }
+
+    func cleanupKnownMountBlockers(force: Bool) {
+        let signal = force ? "-KILL" : "-TERM"
+        let rc = run(
+            launchPath: "/bin/zsh",
+            arguments: [
+                "-lc",
+                """
+                set +e
+                mount_root=\(shellQuote(mountRoot))
+                lsof +D "$mount_root" -Fpc 2>/dev/null | awk '
+                  /^p/ { pid = substr($0, 2); next }
+                  /^c/ { print pid "|" substr($0, 2) }
+                ' | while IFS='|' read -r pid cmd; do
+                  [[ -n "$pid" ]] || continue
+                  if [[ "$cmd" == "tail" ]]; then
+                    kill \(signal) "$pid" >/dev/null 2>&1 || true
+                    continue
+                  fi
+                  full_cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+                  case "$full_cmd" in
+                    *scripts/data_retention_policy.py*|\
+                    *scripts/run_all_sleeves.py*|\
+                    *scripts/run_parallel_shadows.py*|\
+                    *scripts/run_parallel_aggressive_modes.py*|\
+                    *scripts/run_dividend_shadow.py*|\
+                    *scripts/run_bond_shadow.py*|\
+                    *scripts/run_fx_shadow.py*|\
+                    *scripts/run_shadow_training_loop.py*|\
+                    *scripts/ops/sql_link_shard_manager.py*|\
+                    *scripts/ops/sql_link_writer_service.py*|\
+                    *scripts/link_jsonl_to_sql.py*|\
+                    *scripts/ops/process_watchdog.py*|\
+                    *scripts/ops/storage_maintenance_lane.py*|\
+                    *scripts/ops/external_backlog_drain.py*)
+                      kill \(signal) "$pid" >/dev/null 2>&1 || true
+                      ;;
+                  esac
+                done
+                exit 0
+                """,
+            ],
+            timeout: 8
+        )
+        log("cleanup-known-mount-blockers force=\(force) rc=\(rc)")
+    }
+
+    func releaseExternalMountBlockers(timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        cleanupKnownMountBlockers(force: false)
+        while Date() < deadline {
+            if !mountHasOpenHandles() {
+                return true
+            }
+            if Date().addingTimeInterval(4.0) >= deadline {
+                cleanupKnownMountBlockers(force: true)
+            } else {
+                cleanupKnownMountBlockers(force: false)
+            }
+            Thread.sleep(forTimeInterval: 0.35)
+        }
+        return !mountHasOpenHandles()
     }
 
     func writeLocalOverride() {
@@ -218,6 +299,19 @@ final class StorageEjectGuard {
             return false
         }
         return body.contains("BOT_LOGS_PREFER_EXTERNAL=0")
+    }
+
+    func switchStorage(mode: String) -> Int32 {
+        let opsctl = projectRoot.appendingPathComponent("scripts/ops/opsctl.sh").path
+        let subcommand = (mode == "local") ? "storage-switch-local" : "storage-switch-external"
+        return run(
+            launchPath: "/bin/zsh",
+            arguments: [
+                "-lc",
+                "\(shellQuote(opsctl)) \(subcommand)",
+            ],
+            timeout: 90
+        )
     }
 
     func matchesMountPath(_ disk: DADisk) -> Bool {

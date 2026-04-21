@@ -39,8 +39,20 @@ def main() -> int:
         ('lane_promotion_gate', [str(PY), str(PROJECT_ROOT / 'scripts' / 'lane_promotion_gate.py'), '--json'], False),
         ('promotion_readiness_summary', [str(PY), str(PROJECT_ROOT / 'scripts' / 'promotion_readiness_summary.py'), '--json'], True),
         ('promotion_bottleneck_focus', [str(PY), str(PROJECT_ROOT / 'scripts' / 'promotion_bottleneck_focus.py'), '--json'], True),
+        ('schema_migration_guard', [str(PY), str(PROJECT_ROOT / 'scripts' / 'schema_migration_guard.py'), '--json'], True),
+        ('bot_support_owner_guard', [str(PY), str(PROJECT_ROOT / 'scripts' / 'bot_support_owner_guard.py'), '--json'], True),
+        ('feature_store_manifest', [str(PY), str(PROJECT_ROOT / 'scripts' / 'feature_store_manifest.py'), '--json'], True),
         ('new_bot_graduation_gate', [str(PY), str(PROJECT_ROOT / 'scripts' / 'new_bot_graduation_gate.py'), '--json'], False),
+        ('new_bot_admission_guard', [str(PY), str(PROJECT_ROOT / 'scripts' / 'new_bot_admission_guard.py'), '--json'], True),
+        ('retrain_schema_compatibility_guard', [str(PY), str(PROJECT_ROOT / 'scripts' / 'retrain_schema_compatibility_guard.py'), '--json'], True),
         ('leak_overfit_guard', [str(PY), str(PROJECT_ROOT / 'scripts' / 'leak_overfit_guard.py'), '--json'], False),
+        ('golden_replay_regression_guard', [str(PY), str(PROJECT_ROOT / 'scripts' / 'golden_replay_regression_guard.py'), '--json'], True),
+        ('cohort_drift_baseline_guard', [str(PY), str(PROJECT_ROOT / 'scripts' / 'cohort_drift_baseline_guard.py'), '--json'], True),
+        ('champion_challenger_probation_guard', [str(PY), str(PROJECT_ROOT / 'scripts' / 'champion_challenger_probation_guard.py'), '--json'], True),
+        ('champion_challenger_probation_action', [str(PY), str(PROJECT_ROOT / 'scripts' / 'champion_challenger_probation_action.py'), '--json'], True),
+        ('retrain_lane_scheduler', [str(PY), str(PROJECT_ROOT / 'scripts' / 'retrain_lane_scheduler.py'), '--json'], True),
+        ('promotion_packet_builder', [str(PY), str(PROJECT_ROOT / 'scripts' / 'promotion_packet_builder.py'), '--json'], False),
+        ('promotion_quality_gate', [str(PY), str(PROJECT_ROOT / 'scripts' / 'promotion_quality_gate.py'), '--json'], True),
     ]
 
     if args.apply_retirement:

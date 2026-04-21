@@ -6,10 +6,16 @@ PY="$PROJECT_ROOT/.venv312/bin/python"
 RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-live}"
 SQL_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_sql_link_writer_launchd.sh"
 FX_MARKET_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_fx_market_context_launchd.sh"
+OPTIONS_FLOW_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_options_flow_context_launchd.sh"
 OFFICIAL_MACRO_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_official_macro_context_launchd.sh"
+SCHWAB_EDUCATION_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_schwab_education_context_launchd.sh"
 MARKET_CORR_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_market_crypto_correlation_launchd.sh"
 RETENTION_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_data_retention_launchd.sh"
 ONE_NUMBERS_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_one_numbers_refresh_launchd.sh"
+BACKLOG_RETRY_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_external_backlog_retry_launchd.sh"
+STORAGE_BACKPRESSURE_AUTOPILOT_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_storage_backpressure_autopilot_launchd.sh"
+INFRA_AUTOFIX_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_infrastructure_autofix_launchd.sh"
+BOT_QUALITY_AUTOPILOT_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_bot_quality_autopilot_launchd.sh"
 AGENTS_DIR="$HOME/Library/LaunchAgents"
 LOG_DIR="/tmp"
 UID_NUM="$(id -u)"
@@ -17,10 +23,16 @@ mkdir -p "$AGENTS_DIR"
 
 chmod +x "$SQL_RUN_SCRIPT"
 chmod +x "$FX_MARKET_RUN_SCRIPT"
+chmod +x "$OPTIONS_FLOW_RUN_SCRIPT"
 chmod +x "$OFFICIAL_MACRO_RUN_SCRIPT"
+chmod +x "$SCHWAB_EDUCATION_RUN_SCRIPT"
 chmod +x "$MARKET_CORR_RUN_SCRIPT"
 chmod +x "$RETENTION_RUN_SCRIPT"
 chmod +x "$ONE_NUMBERS_RUN_SCRIPT"
+chmod +x "$BACKLOG_RETRY_RUN_SCRIPT"
+chmod +x "$STORAGE_BACKPRESSURE_AUTOPILOT_RUN_SCRIPT"
+chmod +x "$INFRA_AUTOFIX_RUN_SCRIPT"
+chmod +x "$BOT_QUALITY_AUTOPILOT_RUN_SCRIPT"
 
 WATCHDOG_PLIST="$AGENTS_DIR/com.dankingsley.ops.watchdog.plist"
 REPORT_PLIST="$AGENTS_DIR/com.dankingsley.ops.daily_report.plist"
@@ -31,14 +43,29 @@ MARKET_CORR_PLIST="$AGENTS_DIR/com.dankingsley.ops.market_crypto_correlation.pli
 MARKET_CORR_INTERVAL="${MARKET_CRYPTO_CORRELATION_REFRESH_INTERVAL_SECONDS:-300}"
 FX_MARKET_PLIST="$AGENTS_DIR/com.dankingsley.ops.fx_market_context.plist"
 FX_MARKET_INTERVAL="${FX_MARKET_CONTEXT_REFRESH_INTERVAL_SECONDS:-900}"
+OPTIONS_FLOW_PLIST="$AGENTS_DIR/com.dankingsley.ops.options_flow_context.plist"
+OPTIONS_FLOW_INTERVAL="${OPTIONS_FLOW_EFFICIENCY_INTERVAL_SECONDS:-${OPTIONS_FLOW_REFRESH_INTERVAL_SECONDS:-3600}}"
 OFFICIAL_MACRO_PLIST="$AGENTS_DIR/com.dankingsley.ops.official_macro_context.plist"
 OFFICIAL_MACRO_INTERVAL="${OFFICIAL_MACRO_CONTEXT_REFRESH_INTERVAL_SECONDS:-21600}"
+SCHWAB_EDUCATION_PLIST="$AGENTS_DIR/com.dankingsley.ops.schwab_education_context.plist"
+SCHWAB_EDUCATION_INTERVAL="${SCHWAB_EDUCATION_CONTEXT_REFRESH_INTERVAL_SECONDS:-3600}"
 ONE_NUMBERS_PLIST="$AGENTS_DIR/com.dankingsley.ops.one_numbers_refresh.plist"
 ONE_NUMBERS_INTERVAL="${ONE_NUMBERS_REFRESH_LAUNCHD_INTERVAL_SECONDS:-180}"
 WATCHDOG_INTERVAL="${OPS_WATCHDOG_LAUNCHD_INTERVAL_SECONDS:-180}"
 MAINT_STRATEGY_PLIST="$AGENTS_DIR/com.dankingsley.ops.maintenance_strategy_reloader.plist"
 RETENTION_PLIST="$AGENTS_DIR/com.dankingsley.ops.data_retention.plist"
 RETENTION_INTERVAL="${RETENTION_REFRESH_INTERVAL_SECONDS:-3600}"
+BACKLOG_RETRY_PLIST="$AGENTS_DIR/com.dankingsley.ops.external_backlog_retry.plist"
+BACKLOG_RETRY_INTERVAL="${EXTERNAL_BACKLOG_RETRY_LAUNCHD_INTERVAL_SECONDS:-300}"
+STORAGE_BACKPRESSURE_AUTOPILOT_PLIST="$AGENTS_DIR/com.dankingsley.ops.storage_backpressure_autopilot.plist"
+STORAGE_BACKPRESSURE_AUTOPILOT_INTERVAL="${STORAGE_BACKPRESSURE_AUTOPILOT_INTERVAL_SECONDS:-300}"
+WRITER_COORDINATOR_PLIST="$AGENTS_DIR/com.dankingsley.ops.writer_cycle_coordinator.plist"
+RETENTION_SHERIFF_PLIST="$AGENTS_DIR/com.dankingsley.ops.retention_debt_sheriff.plist"
+BACKPRESSURE_SLO_PLIST="$AGENTS_DIR/com.dankingsley.ops.backpressure_slo_bot.plist"
+INFRA_AUTOFIX_PLIST="$AGENTS_DIR/com.dankingsley.ops.infrastructure_autofix.plist"
+INFRA_AUTOFIX_INTERVAL="${INFRASTRUCTURE_AUTOFIX_INTERVAL_SECONDS:-300}"
+BOT_QUALITY_AUTOPILOT_PLIST="$AGENTS_DIR/com.dankingsley.ops.bot_quality_autopilot.plist"
+BOT_QUALITY_AUTOPILOT_INTERVAL="${BOT_QUALITY_AUTOPILOT_INTERVAL_SECONDS:-1800}"
 
 cat > "$WATCHDOG_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -141,6 +168,21 @@ cat > "$FX_MARKET_PLIST" <<PLIST
 </dict></plist>
 PLIST
 
+cat > "$OPTIONS_FLOW_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.options_flow_context</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$OPTIONS_FLOW_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$OPTIONS_FLOW_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_options_flow_context.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_options_flow_context.err.log</string>
+</dict></plist>
+PLIST
+
 cat > "$OFFICIAL_MACRO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -153,6 +195,21 @@ cat > "$OFFICIAL_MACRO_PLIST" <<PLIST
   <key>StartInterval</key><integer>$OFFICIAL_MACRO_INTERVAL</integer>
   <key>StandardOutPath</key><string>$LOG_DIR/ops_official_macro_context.out.log</string>
   <key>StandardErrorPath</key><string>$LOG_DIR/ops_official_macro_context.err.log</string>
+</dict></plist>
+PLIST
+
+cat > "$SCHWAB_EDUCATION_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.schwab_education_context</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$SCHWAB_EDUCATION_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$SCHWAB_EDUCATION_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_schwab_education_context.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_schwab_education_context.err.log</string>
 </dict></plist>
 PLIST
 
@@ -200,6 +257,66 @@ cat > "$RETENTION_PLIST" <<PLIST
 </dict></plist>
 PLIST
 
+cat > "$BACKLOG_RETRY_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.external_backlog_retry</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$BACKLOG_RETRY_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$BACKLOG_RETRY_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_external_backlog_retry.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_external_backlog_retry.err.log</string>
+</dict></plist>
+PLIST
+
+cat > "$STORAGE_BACKPRESSURE_AUTOPILOT_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.storage_backpressure_autopilot</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$STORAGE_BACKPRESSURE_AUTOPILOT_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$STORAGE_BACKPRESSURE_AUTOPILOT_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_storage_backpressure_autopilot.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_storage_backpressure_autopilot.err.log</string>
+</dict></plist>
+PLIST
+
+cat > "$INFRA_AUTOFIX_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.infrastructure_autofix</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$INFRA_AUTOFIX_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$INFRA_AUTOFIX_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_infrastructure_autofix.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_infrastructure_autofix.err.log</string>
+</dict></plist>
+PLIST
+
+cat > "$BOT_QUALITY_AUTOPILOT_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.bot_quality_autopilot</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$BOT_QUALITY_AUTOPILOT_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$BOT_QUALITY_AUTOPILOT_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_bot_quality_autopilot.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_bot_quality_autopilot.err.log</string>
+</dict></plist>
+PLIST
+
 install_job() {
   local label="$1"
   local plist="$2"
@@ -210,6 +327,15 @@ install_job() {
   echo "Installed: $plist"
 }
 
+remove_job() {
+  local label="$1"
+  local plist="$2"
+  launchctl bootout "gui/$UID_NUM" "$plist" >/dev/null 2>&1 || true
+  launchctl disable "gui/$UID_NUM/$label" >/dev/null 2>&1 || true
+  rm -f "$plist"
+  echo "Removed legacy: $plist"
+}
+
 install_job "com.dankingsley.ops.watchdog" "$WATCHDOG_PLIST"
 install_job "com.dankingsley.ops.daily_report" "$REPORT_PLIST"
 install_job "com.dankingsley.ops.canary_tuner" "$CANARY_PLIST"
@@ -217,9 +343,18 @@ install_job "com.dankingsley.ops.sql_link_writer" "$SQL_PLIST"
 install_job "com.dankingsley.ops.promotion_pipeline" "$PROMO_PLIST"
 install_job "com.dankingsley.ops.market_crypto_correlation" "$MARKET_CORR_PLIST"
 install_job "com.dankingsley.ops.fx_market_context" "$FX_MARKET_PLIST"
+install_job "com.dankingsley.ops.options_flow_context" "$OPTIONS_FLOW_PLIST"
 install_job "com.dankingsley.ops.official_macro_context" "$OFFICIAL_MACRO_PLIST"
+install_job "com.dankingsley.ops.schwab_education_context" "$SCHWAB_EDUCATION_PLIST"
 install_job "com.dankingsley.ops.one_numbers_refresh" "$ONE_NUMBERS_PLIST"
 install_job "com.dankingsley.ops.maintenance_strategy_reloader" "$MAINT_STRATEGY_PLIST"
 install_job "com.dankingsley.ops.data_retention" "$RETENTION_PLIST"
+install_job "com.dankingsley.ops.external_backlog_retry" "$BACKLOG_RETRY_PLIST"
+install_job "com.dankingsley.ops.storage_backpressure_autopilot" "$STORAGE_BACKPRESSURE_AUTOPILOT_PLIST"
+remove_job "com.dankingsley.ops.writer_cycle_coordinator" "$WRITER_COORDINATOR_PLIST"
+remove_job "com.dankingsley.ops.retention_debt_sheriff" "$RETENTION_SHERIFF_PLIST"
+remove_job "com.dankingsley.ops.backpressure_slo_bot" "$BACKPRESSURE_SLO_PLIST"
+install_job "com.dankingsley.ops.infrastructure_autofix" "$INFRA_AUTOFIX_PLIST"
+install_job "com.dankingsley.ops.bot_quality_autopilot" "$BOT_QUALITY_AUTOPILOT_PLIST"
 
 echo "Ops automations installed."

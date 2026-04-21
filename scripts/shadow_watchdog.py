@@ -25,6 +25,7 @@ PARALLEL_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_parallel_shadows.py"
 PARALLEL_AGGRESSIVE_SCRIPT = PROJECT_ROOT / "scripts" / "run_parallel_aggressive_modes.py"
 SHADOW_LOOP_SCRIPT = PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py"
 DIVIDEND_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_dividend_shadow.py"
+DIVIDEND_CAPTURE_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_dividend_capture_shadow.py"
 BOND_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_bond_shadow.py"
 FX_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_fx_shadow.py"
 OPSCTL_SCRIPT = PROJECT_ROOT / "scripts" / "ops" / "opsctl.sh"
@@ -129,6 +130,7 @@ def _start_cmd_python_script_suffixes() -> tuple[str, ...]:
         "/scripts/run_parallel_shadows.py",
         "/scripts/run_parallel_aggressive_modes.py",
         "/scripts/run_dividend_shadow.py",
+        "/scripts/run_dividend_capture_shadow.py",
         "/scripts/run_bond_shadow.py",
         "/scripts/run_fx_shadow.py",
         "/scripts/run_shadow_training_loop.py",
@@ -470,6 +472,13 @@ def _build_default_schwab_futures_cmd() -> str:
 
 def _build_default_dividend_cmd(simulate: bool) -> str:
     base = f"{VENV_PY} {DIVIDEND_SHADOW_SCRIPT} --interval-seconds 60"
+    if simulate:
+        return base + " --simulate"
+    return base
+
+
+def _build_default_dividend_capture_cmd(simulate: bool) -> str:
+    base = f"{VENV_PY} {DIVIDEND_CAPTURE_SHADOW_SCRIPT} --interval-seconds 60"
     if simulate:
         return base + " --simulate"
     return base
@@ -1014,6 +1023,7 @@ def main() -> int:
     parser.add_argument("--coinbase-futures-start-cmd", default=None)
     parser.add_argument("--aggressive-modes-start-cmd", default=None)
     parser.add_argument("--dividend-start-cmd", default=None)
+    parser.add_argument("--dividend-capture-start-cmd", default=None)
     parser.add_argument("--bond-start-cmd", default=None)
     parser.add_argument("--fx-start-cmd", default=None)
     parser.add_argument("--watch-schwab-futures", action="store_true")
@@ -1021,12 +1031,14 @@ def main() -> int:
     parser.add_argument("--watch-coinbase-futures", action="store_true")
     parser.add_argument("--watch-aggressive-modes", action="store_true")
     parser.add_argument("--watch-dividend", action="store_true")
+    parser.add_argument("--watch-dividend-capture", action="store_true")
     parser.add_argument("--watch-bond", action="store_true")
     parser.add_argument("--watch-fx", action="store_true")
     parser.add_argument("--schwab-futures-optional", action="store_true")
     parser.add_argument("--coinbase-optional", action="store_true")
     parser.add_argument("--coinbase-futures-optional", action="store_true")
     parser.add_argument("--dividend-optional", action="store_true")
+    parser.add_argument("--dividend-capture-optional", action="store_true")
     parser.add_argument("--bond-optional", action="store_true")
     parser.add_argument("--fx-optional", action="store_true")
 
@@ -1040,6 +1052,8 @@ def main() -> int:
     parser.add_argument("--aggressive-modes-min-heartbeats", type=int, default=2)
     parser.add_argument("--dividend-heartbeat-stale-seconds", type=int, default=240)
     parser.add_argument("--dividend-min-heartbeats", type=int, default=1)
+    parser.add_argument("--dividend-capture-heartbeat-stale-seconds", type=int, default=240)
+    parser.add_argument("--dividend-capture-min-heartbeats", type=int, default=1)
     parser.add_argument("--bond-heartbeat-stale-seconds", type=int, default=240)
     parser.add_argument("--bond-min-heartbeats", type=int, default=1)
     parser.add_argument("--fx-heartbeat-stale-seconds", type=int, default=240)
@@ -1163,6 +1177,7 @@ def main() -> int:
     coinbase_futures_cmd = args.coinbase_futures_start_cmd or _build_default_coinbase_futures_cmd()
     aggressive_modes_cmd = args.aggressive_modes_start_cmd or _build_default_aggressive_modes_cmd(simulate=args.simulate_schwab)
     dividend_cmd = args.dividend_start_cmd or _build_default_dividend_cmd(simulate=args.simulate_schwab)
+    dividend_capture_cmd = args.dividend_capture_start_cmd or _build_default_dividend_capture_cmd(simulate=args.simulate_schwab)
     bond_cmd = args.bond_start_cmd or _build_default_bond_cmd(simulate=args.simulate_schwab)
     fx_cmd = args.fx_start_cmd or _build_default_fx_cmd(simulate=args.simulate_schwab)
 
@@ -1235,7 +1250,7 @@ def main() -> int:
                 heartbeat_stale_seconds=max(args.aggressive_modes_heartbeat_stale_seconds, 30),
                 min_healthy_heartbeats=max(args.aggressive_modes_min_heartbeats, 1),
                 heartbeat_profiles=("intraday_aggressive", "swing_aggressive"),
-                allow_processless_heartbeat_live=True,
+                allow_processless_heartbeat_live=False,
                 exclude_matches=(() if args.simulate_schwab else ("--simulate",)),
             )
         )
@@ -1250,6 +1265,21 @@ def main() -> int:
                 heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*dividend*_equities_schwab_*.json"),
                 heartbeat_stale_seconds=max(args.dividend_heartbeat_stale_seconds, 30),
                 min_healthy_heartbeats=max(args.dividend_min_heartbeats, 1),
+                exclude_matches=(() if args.simulate_schwab else ("--simulate",)),
+            )
+        )
+
+    if args.watch_dividend_capture:
+        targets.append(
+            Target(
+                name="dividend_capture_shadow",
+                match="scripts/run_dividend_capture_shadow.py",
+                start_cmd=dividend_capture_cmd,
+                required=not args.dividend_capture_optional,
+                heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*dividend_capture*_equities_schwab_*.json"),
+                heartbeat_stale_seconds=max(args.dividend_capture_heartbeat_stale_seconds, 30),
+                min_healthy_heartbeats=max(args.dividend_capture_min_heartbeats, 1),
+                heartbeat_profiles=("dividend_capture",),
                 exclude_matches=(() if args.simulate_schwab else ("--simulate",)),
             )
         )

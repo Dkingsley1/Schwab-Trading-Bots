@@ -44,7 +44,7 @@ def test_maybe_autoprune_external_low_space(monkeypatch, tmp_path):
     watchdog_health = tmp_path / 'governance' / 'health'
     watchdog_health.mkdir(parents=True)
     (watchdog_health / 'process_watchdog_latest.json').write_text(
-        json.dumps({'storage_mode': 'local_fallback'}),
+        json.dumps({'storage_mode': 'external'}),
         encoding='utf-8',
     )
 
@@ -71,6 +71,7 @@ def test_maybe_autoprune_external_low_space(monkeypatch, tmp_path):
     assert payload['candidate_count'] == 5
     assert payload['deleted_count'] == 5
     assert payload['error_count'] == 0
+    assert payload['details']['allow_external_mode_pressure_prune'] is True
     assert not (external_data / 'jsonl_link.sqlite3').exists()
     assert not (external_data / 'bot_channel_queue.sqlite3').exists()
     assert not (external_data / 'jsonl_link.sqlite3-wal.local_fallback').exists()
@@ -95,3 +96,36 @@ def test_acquire_singleton_lock_reports_busy_owner(tmp_path):
 
     fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
     fh.close()
+
+
+def test_build_sqlite_skip_report_classifies_active_queue_and_warm_standby(monkeypatch, tmp_path):
+    project_root = tmp_path / 'project'
+    local_root = project_root / 'local_fallback_storage'
+    external_root = tmp_path / 'external'
+    (local_root / 'data').mkdir(parents=True, exist_ok=True)
+    (external_root / 'data').mkdir(parents=True, exist_ok=True)
+
+    (local_root / 'data' / 'jsonl_link.sqlite3').write_text('local-primary', encoding='utf-8')
+    (external_root / 'data' / 'jsonl_link.sqlite3').write_text('external-primary', encoding='utf-8')
+    (local_root / 'data' / 'bot_channel_queue.sqlite3').write_text('queue-local', encoding='utf-8')
+    (external_root / 'data' / 'bot_channel_queue.sqlite3').write_text('queue-external', encoding='utf-8')
+    (local_root / 'data' / 'snapshot_context.sqlite3').write_text('snapshot-local', encoding='utf-8')
+    (external_root / 'data' / 'snapshot_context.sqlite3').write_text('snapshot-external', encoding='utf-8')
+
+    monkeypatch.setenv('BOT_LOGS_LOCAL_FALLBACK_ROOT', str(local_root))
+    monkeypatch.setenv('BOT_CHANNEL_QUEUE_DB', str(local_root / 'data' / 'bot_channel_queue.sqlite3'))
+
+    payload = storage_failback_sync._build_sqlite_skip_report(
+        project_root,
+        external_root,
+        mode='external',
+        active_root=external_root,
+    )
+
+    assert payload['queue_db_path'] == str(local_root / 'data' / 'bot_channel_queue.sqlite3')
+    by_rel = {row['relative_path']: row for row in payload['entries']}
+    assert by_rel['data/bot_channel_queue.sqlite3']['classification'] == 'active_local_queue'
+    assert by_rel['data/jsonl_link.sqlite3']['classification'] == 'warm_standby_retained'
+    assert by_rel['data/snapshot_context.sqlite3']['classification'] == 'warm_standby_retained'
+    assert payload['summary']['active_local_count'] == 1
+    assert payload['summary']['warm_standby_count'] == 2

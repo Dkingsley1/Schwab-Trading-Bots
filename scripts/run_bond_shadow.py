@@ -60,7 +60,7 @@ def main() -> int:
     parser.add_argument('--simulate', action='store_true', help='Use simulated market feed.')
     parser.add_argument('--symbols', default=os.getenv('BOND_SYMBOLS', DEFAULT_BOND_SYMBOLS))
     parser.add_argument('--context-symbols', default=os.getenv('BOND_CONTEXT_SYMBOLS', DEFAULT_BOND_CONTEXT_SYMBOLS))
-    parser.add_argument('--interval-seconds', type=int, default=int(os.getenv('BOND_SHADOW_INTERVAL', '90')))
+    parser.add_argument('--interval-seconds', type=int, default=int(os.getenv('BOND_SHADOW_INTERVAL', '120')))
     parser.add_argument('--max-iterations', type=int, default=int(os.getenv('BOND_SHADOW_MAX_ITERS', '0')))
     parser.add_argument('--auto-retrain', action='store_true', default=False)
     args = parser.parse_args()
@@ -77,7 +77,7 @@ def main() -> int:
     env['ALLOW_ORDER_EXECUTION'] = '0'
     env['SHADOW_PROFILE'] = 'bond'
     env['SHADOW_DOMAIN'] = 'equities'
-    env.setdefault('SHADOW_THRESHOLD_SHIFT', '+0.02')
+    env.setdefault('SHADOW_THRESHOLD_SHIFT', '+0.06')
 
     cmd = [
         str(VENV_PY),

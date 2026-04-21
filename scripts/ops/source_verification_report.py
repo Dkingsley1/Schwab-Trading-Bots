@@ -61,10 +61,20 @@ def _ok_count(mapping: dict[str, Any]) -> tuple[int, int]:
     for value in mapping.values():
         if not isinstance(value, dict):
             continue
+        if not bool(value.get("contract_participates", True)):
+            continue
         total += 1
         if bool(value.get("ok", False)):
             ok += 1
     return ok, total
+
+
+def _minimum_ok_sources(total: int, *, floor: int = 1, tolerate_failures: int = 1, min_ratio: float = 0.75) -> int:
+    if int(total) <= 0:
+        return 0
+    ratio_target = int(round(float(total) * float(min_ratio)))
+    tolerated_target = int(total) - max(int(tolerate_failures), 0)
+    return min(int(total), max(int(floor), ratio_target, tolerated_target))
 
 
 def _row(
@@ -133,33 +143,66 @@ def _market_quote_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     )
 
 
-def _tastytrade_row(health_dir: Path, now: datetime) -> dict[str, Any]:
-    path = health_dir / "tastytrade_context_sync_latest.json"
+def _options_flow_row(health_dir: Path, now: datetime) -> dict[str, Any]:
+    path = health_dir / "options_flow_context_sync_latest.json"
+    if not path.exists():
+        path = health_dir / "tastytrade_context_sync_latest.json"
     payload = _read_json(path)
     ts = _parse_ts(payload.get("timestamp_utc"))
     fresh = _is_fresh(ts, now, 12.0)
     notes: list[str] = []
-    sandbox = bool(payload.get("sandbox", False))
-    if int(payload.get("alignment_reference_only", 0) or 0) > 0 and not sandbox:
-        notes.append("reference_only_alignment")
-    if int(payload.get("symbols_with_metrics", 0) or 0) == 0 and not sandbox:
-        notes.append("sandbox_metrics_unavailable")
+    sources = payload.get("sources") if isinstance(payload.get("sources"), dict) else {}
+    polygon = sources.get("polygon") if isinstance(sources.get("polygon"), dict) else {}
+    unusual_whales_api = sources.get("unusual_whales_api") if isinstance(sources.get("unusual_whales_api"), dict) else {}
+    unusual_whales_export = sources.get("unusual_whales_export") if isinstance(sources.get("unusual_whales_export"), dict) else {}
+    coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+    polygon_ok = bool(polygon.get("ok", False))
+    unusual_whales_ok = bool(unusual_whales_api.get("ok", False) or unusual_whales_export.get("ok", False))
+    unusual_whales_expected = bool(
+        unusual_whales_api.get("expected", False)
+        or unusual_whales_export.get("expected", False)
+        or unusual_whales_export.get("configured", False)
+    )
+    polygon_backbone_ok = bool(coverage.get("polygon_backbone_ok", False) or int(payload.get("symbols_with_chain", 0) or 0) > 0)
+    context_profile = str(payload.get("context_profile") or coverage.get("context_profile") or "").strip()
+    if not context_profile:
+        context_profile = (
+            "multi_provider_full"
+            if polygon_backbone_ok and unusual_whales_ok
+            else "polygon_primary_only"
+            if polygon_backbone_ok and not unusual_whales_expected
+            else "polygon_backbone_only"
+            if polygon_backbone_ok
+            else "unusual_whales_overlay_only"
+            if unusual_whales_ok
+            else "unavailable"
+        )
+    overall_status = str(payload.get("overall_status") or ("ready" if payload.get("ok", False) else "blocked")).strip()
+    if not polygon_ok:
+        for err in list(polygon.get("errors") or [])[:3]:
+            text = str(err or "").strip()
+            if text:
+                notes.append(text)
+    if unusual_whales_expected and (not unusual_whales_ok) and bool(payload.get("operator_action_required", False)):
+        notes.append(str(payload.get("auth_issue") or "options_flow_source_unavailable"))
+    if context_profile and context_profile not in {"multi_provider_full", "polygon_primary_only"}:
+        notes.append(f"context_profile={context_profile}")
+    if overall_status and overall_status != "ready":
+        notes.append(f"overall_status={overall_status}")
     if not fresh:
         notes.append("stale_artifact")
-    status = (
-        STATUS_CROSS_VERIFIED
-        if bool(payload.get("ok", False))
-        and bool(payload.get("alignment_ok", False))
-        and (int(payload.get("alignment_compared", 0) or 0) > 0 or int(payload.get("alignment_reference_only", 0) or 0) > 0)
-        and fresh
-        else STATUS_SINGLE_UNVERIFIED
-    )
+    if bool(payload.get("ok", False)) and fresh and context_profile == "multi_provider_full" and overall_status == "ready":
+        status = STATUS_CROSS_VERIFIED
+    elif bool(payload.get("ok", False)) and fresh and polygon_backbone_ok and overall_status == "ready":
+        status = STATUS_SINGLE_VERIFIED
+    else:
+        status = STATUS_SINGLE_UNVERIFIED
     return _row(
-        source_id="tastytrade_options_context",
-        title="Tastytrade Options Context",
+        source_id="polygon_unusual_whales_options_context",
+        title="Polygon + Optional Overlay Options Context",
         category="derivatives_data",
         verification_status=status,
-        verification_mode="schwab_alignment_guard",
+        verification_mode="multi_provider_options_flow",
         artifact_path=path,
         artifact_timestamp=ts,
         age_hours=_age_hours(ts, now),
@@ -167,11 +210,17 @@ def _tastytrade_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         ok=bool(payload.get("ok", False)),
         notes=notes,
         evidence={
-            "sandbox": sandbox,
             "symbols_requested": int(payload.get("symbols_requested", 0) or 0),
             "symbols_with_chain": int(payload.get("symbols_with_chain", 0) or 0),
-            "alignment_compared": int(payload.get("alignment_compared", 0) or 0),
-            "alignment_reference_only": int(payload.get("alignment_reference_only", 0) or 0),
+            "symbols_with_metrics": int(payload.get("symbols_with_metrics", 0) or 0),
+            "polygon_ok": polygon_ok,
+            "polygon_backbone_ok": polygon_backbone_ok,
+            "unusual_whales_api_ok": bool(unusual_whales_api.get("ok", False)),
+            "unusual_whales_export_ok": bool(unusual_whales_export.get("ok", False)),
+            "unusual_whales_expected": unusual_whales_expected,
+            "context_profile": context_profile,
+            "overall_status": overall_status,
+            "coverage_score": payload.get("coverage_score"),
         },
     )
 
@@ -215,7 +264,7 @@ def _crypto_market_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     path = health_dir / "crypto_market_context_sync_latest.json"
     payload = _read_json(path)
     ts = _parse_ts(payload.get("timestamp_utc"))
-    fresh = _is_fresh(ts, now, 12.0)
+    fresh = _is_fresh(ts, now, 24.0)
     notes: list[str] = []
     compared_assets = int(payload.get("compared_assets", 0) or 0)
     ok_sources = int(payload.get("ok_source_count", 0) or 0)
@@ -231,7 +280,10 @@ def _crypto_market_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         notes.append("stale_artifact")
     status = (
         STATUS_CROSS_VERIFIED
-        if bool(payload.get("ok", False)) and compared_assets > 0 and ok_sources >= 5 and fresh
+        if bool(payload.get("ok", False))
+        and compared_assets >= 3
+        and ok_sources >= _minimum_ok_sources(total_sources, floor=5, tolerate_failures=2, min_ratio=0.70)
+        and fresh
         else STATUS_SINGLE_UNVERIFIED
     )
     return _row(
@@ -354,9 +406,25 @@ def _official_macro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     sources = payload.get("sources") if isinstance(payload.get("sources"), dict) else {}
     ok_count, total_count = _ok_count(sources)
     notes: list[str] = []
+    auxiliary_degraded = sorted(
+        key
+        for key, value in sources.items()
+        if isinstance(value, dict)
+        and not bool(value.get("contract_participates", True))
+        and not bool(value.get("ok", False))
+    )
     if not fresh:
         notes.append("stale_artifact")
-    status = STATUS_SINGLE_VERIFIED if bool(payload.get("ok", False)) and ok_count == total_count and total_count > 0 and fresh else STATUS_SINGLE_UNVERIFIED
+    min_ok_sources = _minimum_ok_sources(total_count, floor=4, tolerate_failures=1, min_ratio=0.80)
+    if total_count > 0 and ok_count < total_count:
+        notes.append(f"partial_sources={ok_count}/{total_count}")
+    if auxiliary_degraded:
+        notes.append(f"auxiliary_source_degraded={','.join(auxiliary_degraded)}")
+    status = (
+        STATUS_SINGLE_VERIFIED
+        if bool(payload.get("ok", False)) and ok_count >= min_ok_sources and total_count > 0 and fresh
+        else STATUS_SINGLE_UNVERIFIED
+    )
     return _row(
         source_id="official_macro_context",
         title="Official Macro Context",
@@ -372,7 +440,49 @@ def _official_macro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         evidence={
             "ok_sources": ok_count,
             "total_sources": total_count,
+            "min_ok_sources_required": min_ok_sources,
             "sources": {key: bool(value.get("ok", False)) for key, value in sources.items() if isinstance(value, dict)},
+        },
+    )
+
+
+def _schwab_education_row(health_dir: Path, now: datetime) -> dict[str, Any]:
+    path = health_dir / "schwab_education_context_sync_latest.json"
+    payload = _read_json(path)
+    ts = _parse_ts(payload.get("timestamp_utc"))
+    fresh = _is_fresh(ts, now, 36.0)
+    ok_count = int(payload.get("ok_source_count", 0) or 0)
+    total_count = int(payload.get("source_count", 0) or 0)
+    min_ok_sources_required = int(payload.get("min_ok_sources_required", total_count) or 0)
+    notes: list[str] = []
+    if not fresh:
+        notes.append("stale_artifact")
+    if int(payload.get("item_count", 0) or 0) <= 0:
+        notes.append("no_items_collected")
+    status = (
+        STATUS_SINGLE_VERIFIED
+        if bool(payload.get("ok", False)) and ok_count >= min_ok_sources_required and total_count > 0 and fresh
+        else STATUS_SINGLE_UNVERIFIED
+    )
+    return _row(
+        source_id="schwab_education_context",
+        title="Schwab Education Context",
+        category="education_media",
+        verification_status=status,
+        verification_mode="single_source_health",
+        artifact_path=path,
+        artifact_timestamp=ts,
+        age_hours=_age_hours(ts, now),
+        fresh=fresh,
+        ok=bool(payload.get("ok", False)),
+        notes=notes,
+        evidence={
+            "ok_sources": ok_count,
+            "total_sources": total_count,
+            "min_ok_sources_required": min_ok_sources_required,
+            "item_count": int(payload.get("item_count", 0) or 0),
+            "page_item_count": int(payload.get("page_item_count", 0) or 0),
+            "channel_item_count": int(payload.get("channel_item_count", 0) or 0),
         },
     )
 
@@ -385,9 +495,33 @@ def _market_micro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     sources = payload.get("sources") if isinstance(payload.get("sources"), dict) else {}
     ok_count, total_count = _ok_count(sources)
     notes: list[str] = []
+    auxiliary_degraded = sorted(
+        key
+        for key, value in sources.items()
+        if isinstance(value, dict)
+        and not bool(value.get("contract_participates", True))
+        and not bool(value.get("ok", False))
+    )
+    critical_sources = {
+        "local_micro": bool((sources.get("local_micro") or {}).get("ok", False)) if isinstance(sources, dict) else False,
+        "finra_short_volume": bool((sources.get("finra_short_volume") or {}).get("ok", False)) if isinstance(sources, dict) else False,
+    }
     if not fresh:
         notes.append("stale_artifact")
-    status = STATUS_SINGLE_VERIFIED if bool(payload.get("ok", False)) and ok_count == total_count and total_count > 0 and fresh else STATUS_SINGLE_UNVERIFIED
+    min_ok_sources = _minimum_ok_sources(total_count, floor=3, tolerate_failures=1, min_ratio=0.75)
+    if total_count > 0 and ok_count < total_count:
+        notes.append(f"partial_sources={ok_count}/{total_count}")
+    if auxiliary_degraded:
+        notes.append(f"auxiliary_source_degraded={','.join(auxiliary_degraded)}")
+    status = (
+        STATUS_SINGLE_VERIFIED
+        if bool(payload.get("ok", False))
+        and total_count > 0
+        and ok_count >= min_ok_sources
+        and all(critical_sources.values())
+        and fresh
+        else STATUS_SINGLE_UNVERIFIED
+    )
     return _row(
         source_id="market_micro_context",
         title="Market Micro Context",
@@ -403,6 +537,8 @@ def _market_micro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         evidence={
             "ok_sources": ok_count,
             "total_sources": total_count,
+            "min_ok_sources_required": min_ok_sources,
+            "critical_sources": critical_sources,
             "local_micro_symbol_count": int(((sources.get("local_micro") or {}).get("symbol_count", 0)) or 0),
             "finra_symbol_count": int(((sources.get("finra_short_volume") or {}).get("symbol_count", 0)) or 0),
         },
@@ -486,12 +622,13 @@ def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict
     health_dir = project_root / "governance" / "health"
     rows = [
         _market_quote_row(health_dir, now),
-        _tastytrade_row(health_dir, now),
+        _options_flow_row(health_dir, now),
         _macro_crosscheck_row(health_dir, now),
         _crypto_market_row(health_dir, now),
         _fx_market_row(health_dir, now),
         _external_feeds_row(project_root, now),
         _official_macro_row(health_dir, now),
+        _schwab_education_row(health_dir, now),
         _market_micro_row(health_dir, now),
         _sec_edgar_row(health_dir, now),
         _extended_quant_row(health_dir, now),

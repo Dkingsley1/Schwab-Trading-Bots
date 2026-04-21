@@ -32,10 +32,10 @@ def test_token_status_reads_nested_epoch_expiry() -> None:
 
 
 def test_guard_fails_when_auth_reports_success_but_token_stays_stale() -> None:
-    captured: dict = {}
+    captured: list[dict] = []
 
     def _capture_payload(_path: Path, _fallback: Path, payload: dict) -> str:
-        captured["payload"] = payload
+        captured.append(payload)
         return "/tmp/premarket_token_guard_latest.json"
 
     with mock.patch.object(ptg, "_token_status", side_effect=[{"exists": True, "size_bytes": 808}, {"exists": True, "size_bytes": 808}]):
@@ -51,9 +51,10 @@ def test_guard_fails_when_auth_reports_success_but_token_stays_stale() -> None:
                             with mock.patch.object(sys, "argv", ["premarket_token_guard.py"]):
                                 rc = ptg.main()
 
+    primary_payload = next(row for row in captured if "ok" in row)
     assert rc == 2
-    assert captured["payload"]["ok"] is False
-    assert captured["payload"]["refresh_needed_after"] is True
+    assert primary_payload["ok"] is False
+    assert primary_payload["refresh_needed_after"] is True
 
 
 def test_token_needs_refresh_uses_configurable_expiry_floor() -> None:
@@ -71,3 +72,10 @@ def test_token_needs_refresh_uses_configurable_expiry_floor() -> None:
     needs_refresh, reason = ptg._token_needs_refresh(status, max_age_seconds=3600.0, min_expires_seconds=600.0)
     assert needs_refresh is True
     assert reason.startswith("token_expiring_soon:")
+
+
+def test_token_warning_level_scales_with_age() -> None:
+    assert ptg._token_warning_level(100.0, max_age_seconds=1000.0) == "fresh"
+    assert ptg._token_warning_level(600.0, max_age_seconds=1000.0) == "watch"
+    assert ptg._token_warning_level(900.0, max_age_seconds=1000.0) == "warn"
+    assert ptg._token_warning_level(1200.0, max_age_seconds=1000.0) == "critical"

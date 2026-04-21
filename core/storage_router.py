@@ -35,6 +35,8 @@ class StorageRoutingResult:
     autosync_pruned_files: int = 0
     autosync_error_details: tuple[str, ...] = ()
     split_brain_conflicts: int = 0
+    ops_event_recorded: bool = False
+    ops_event_error: str = ""
 
 
 def _resolve_link_target(link_path: Path) -> Path | None:
@@ -115,8 +117,14 @@ def _failback_skip_patterns() -> tuple[str, ...]:
     if not patterns:
         patterns = [
             "data/jsonl_link.sqlite3",
+            "data/jsonl_link.sqlite3-wal",
+            "data/jsonl_link.sqlite3-shm",
             "data/bot_channel_queue.sqlite3",
+            "data/bot_channel_queue.sqlite3-wal",
+            "data/bot_channel_queue.sqlite3-shm",
             "data/snapshot_context.sqlite3",
+            "data/snapshot_context.sqlite3-wal",
+            "data/snapshot_context.sqlite3-shm",
         ]
     return tuple(patterns)
 
@@ -297,6 +305,33 @@ def _split_brain_conflicts(local_root: Path, external_root: Path, link_dirs: Ite
     return int(conflicts)
 
 
+def _record_route_event_safe(project_root: Path, result: StorageRoutingResult) -> tuple[bool, str]:
+    try:
+        from scripts import ops_data_plane
+    except Exception:
+        return False, "ops_data_plane_import_failed"
+    try:
+        with ops_data_plane.connect(project_root) as conn:
+            ops_data_plane.record_storage_route_event(
+                conn,
+                project_root=project_root,
+                mode=result.mode,
+                active_root=result.active_root,
+                switched_links=list(result.switched_links),
+                passthrough_paths=list(result.passthrough_paths),
+                autosync_copied_files=result.autosync_copied_files,
+                autosync_copy_errors=result.autosync_copy_errors,
+                autosync_pruned_files=result.autosync_pruned_files,
+                split_brain_conflicts=result.split_brain_conflicts,
+                metadata={
+                    "autosync_error_details": list(result.autosync_error_details),
+                },
+            )
+    except Exception:
+        return False, "storage_route_event_record_failed"
+    return True, ""
+
+
 def _links_route_to_root(project_root: Path, link_dirs: Iterable[str], target_root: Path) -> bool:
     desired_root = target_root.resolve(strict=False)
     saw_symlink = False
@@ -400,7 +435,7 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
     os.environ["BOT_LOGS_AUTOSYNC_PRUNED_FILES"] = str(autosync_pruned)
     os.environ["BOT_LOGS_AUTOSYNC_ERROR_DETAILS"] = json.dumps(autosync_error_details, ensure_ascii=True)
     os.environ["BOT_LOGS_SPLIT_BRAIN_CONFLICTS"] = str(split_brain_conflicts)
-    return StorageRoutingResult(
+    provisional_result = StorageRoutingResult(
         mode=mode,
         active_root=active_root,
         switched_links=tuple(sorted(switched)),
@@ -411,6 +446,21 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
         autosync_error_details=tuple(autosync_error_details),
         split_brain_conflicts=int(split_brain_conflicts),
     )
+    ops_event_recorded, ops_event_error = _record_route_event_safe(root, provisional_result)
+    result = StorageRoutingResult(
+        mode=provisional_result.mode,
+        active_root=provisional_result.active_root,
+        switched_links=provisional_result.switched_links,
+        passthrough_paths=provisional_result.passthrough_paths,
+        autosync_copied_files=provisional_result.autosync_copied_files,
+        autosync_copy_errors=provisional_result.autosync_copy_errors,
+        autosync_pruned_files=provisional_result.autosync_pruned_files,
+        autosync_error_details=provisional_result.autosync_error_details,
+        split_brain_conflicts=provisional_result.split_brain_conflicts,
+        ops_event_recorded=bool(ops_event_recorded),
+        ops_event_error=str(ops_event_error or ""),
+    )
+    return result
 
 
 def describe_storage_routing(result: StorageRoutingResult) -> str:
@@ -424,5 +474,6 @@ def describe_storage_routing(result: StorageRoutingResult) -> str:
     return (
         f"[StorageRoute] mode={result.mode} active_root={result.active_root} "
         f"switched={switched} passthrough={passthrough} autosync={autosync} "
-        f"split_brain_conflicts={result.split_brain_conflicts}"
+        f"split_brain_conflicts={result.split_brain_conflicts} "
+        f"ops_event_recorded={str(result.ops_event_recorded).lower()}"
     )

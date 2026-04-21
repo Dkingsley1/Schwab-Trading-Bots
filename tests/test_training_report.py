@@ -150,3 +150,85 @@ def test_assessment_lines_call_out_failed_run_and_rollback():
     assert any('Trade behavior candidate regressed' in line for line in lines)
     assert any('previous deployed trade behavior model remained active after rollback' in line for line in lines)
     assert any('Data divergence is above the allowed threshold' in line for line in lines)
+
+
+def test_blocking_reasons_and_overall_status_capture_regression_and_divergence():
+    context = {
+        'summary': {
+            'confirmed_training_success': False,
+            'promotion_quality_ok': False,
+            'daily_verify_ok': False,
+        },
+        'promotion_quality': {
+            'failed_checks': ['promotion_gate_blocked', 'daily_verify_not_ok'],
+        },
+        'promotion_gate': {
+            'promote_ok': False,
+        },
+        'data_divergence': {
+            'ok': False,
+        },
+        'trade_behavior': {
+            'score_delta': -0.02,
+        },
+    }
+
+    reasons = training_report._blocking_reasons(context)
+    status = training_report._overall_status(context, reasons)
+
+    assert reasons == [
+        'training_not_confirmed',
+        'promotion_gate_blocked',
+        'daily_verify_not_ok',
+        'promotion_not_ready',
+        'data_divergence_not_ok',
+        'trade_behavior_regressed',
+    ]
+    assert status == 'blocked'
+
+
+def test_build_context_includes_training_quality_control(tmp_path):
+    scorecard_path = tmp_path / 'retrain_scorecard_latest.json'
+    training_success_path = tmp_path / 'training_success_latest.json'
+    promotion_quality_path = tmp_path / 'promotion_quality_gate_latest.json'
+    promotion_gate_path = tmp_path / 'promotion_gate_latest.json'
+    graduation_path = tmp_path / 'new_bot_graduation_latest.json'
+    daily_verify_path = tmp_path / 'daily_auto_verify_latest.json'
+    divergence_path = tmp_path / 'data_source_divergence_latest.json'
+    lane_scorecard_path = tmp_path / 'unified_lane_scorecard_latest.json'
+    training_quality_control_path = tmp_path / 'training_quality_control_latest.json'
+
+    _write_json(scorecard_path, {'timestamp_utc': '2026-03-12T15:51:23.740633+00:00'})
+    _write_json(training_success_path, {'timestamp_utc': '2026-03-12T15:48:08.116597+00:00', 'trained_count': 1, 'confirmed_training_success': False})
+    _write_json(promotion_quality_path, {'ok': False, 'failed_checks': ['promotion_gate_blocked']})
+    _write_json(promotion_gate_path, {'promote_ok': False, 'coverage_ok': False, 'considered_bots': 1})
+    _write_json(graduation_path, {'ok': False, 'immature_active_count': 0})
+    _write_json(daily_verify_path, {'ok': False, 'failed_checks': ['daily_verify_not_ok']})
+    _write_json(divergence_path, {'ok': True, 'window_hours': 24})
+    _write_json(lane_scorecard_path, {'ok': True, 'lookback_hours': 24, 'rows_used': 10, 'lanes': {}})
+    _write_json(
+        training_quality_control_path,
+        {
+            'ok': False,
+            'overall_status': 'blocked',
+            'training_quality_score': 61.5,
+            'top_priorities': ['runtime_input_coverage', 'stale_active_diagnostics'],
+            'implemented_improvement_count': 17,
+        },
+    )
+
+    context = training_report._build_context(
+        scorecard_path=scorecard_path,
+        training_success_path=training_success_path,
+        promotion_quality_path=promotion_quality_path,
+        promotion_gate_path=promotion_gate_path,
+        graduation_path=graduation_path,
+        daily_verify_path=daily_verify_path,
+        data_divergence_path=divergence_path,
+        lane_scorecard_path=lane_scorecard_path,
+        training_quality_control_path=training_quality_control_path,
+    )
+
+    assert context['training_quality_control']['overall_status'] == 'blocked'
+    assert context['training_quality_control']['implemented_improvement_count'] == 17
+    assert any('Training quality control is blocked' in line for line in context['assessment'])

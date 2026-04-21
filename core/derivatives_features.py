@@ -48,6 +48,15 @@ OPTIONS_FEATURE_KEYS = [
     "options_iv_realized_spread_norm",
     "options_gamma_front_share_norm",
     "options_gamma_expiry_skew_norm",
+    "options_surface_change_norm",
+    "options_strike_expiry_concentration_change_norm",
+    "options_gamma_flip_distance_norm",
+    "options_earnings_setup_norm",
+    "options_iv_crush_risk_norm",
+    "options_assignment_risk_norm",
+    "options_zero_dte_regime_norm",
+    "options_vol_of_vol_change_norm",
+    "options_spread_execution_risk_norm",
 ]
 
 FUTURES_FEATURE_KEYS = [
@@ -79,6 +88,14 @@ FUTURES_FEATURE_KEYS = [
     "futures_mark_index_dislocation_norm",
     "futures_session_volume_profile_norm",
     "futures_calendar_spread_curve_norm",
+    "futures_curve_shift_velocity_norm",
+    "futures_cross_asset_confirmation_norm",
+    "futures_liquidation_squeeze_norm",
+    "futures_intraday_structure_norm",
+    "futures_roll_pressure_norm",
+    "futures_inventory_state_norm",
+    "futures_delivery_hazard_norm",
+    "futures_cash_basis_confirmation_norm",
 ]
 
 CALENDAR_FEATURE_KEYS = [
@@ -97,6 +114,11 @@ CALENDAR_FEATURE_KEYS = [
     "calendar_labor_event_norm",
     "calendar_treasury_auction_norm",
     "calendar_options_expiry_week_norm",
+    "calendar_opex_week_norm",
+    "calendar_month_end_rebalance_norm",
+    "calendar_quarter_end_rebalance_norm",
+    "calendar_futures_roll_window_norm",
+    "calendar_index_rebalance_window_norm",
     "calendar_dividend_events_30d_norm",
     "calendar_dividend_exdate_proximity_norm",
     "calendar_dividend_payout_proximity_norm",
@@ -583,6 +605,8 @@ def summarize_option_chain(
 
     call_wall_distance = 0.0
     put_wall_distance = 0.0
+    call_wall_strike = under if under > 0.0 else 0.0
+    put_wall_strike = under if under > 0.0 else 0.0
     if under > 0.0 and call_wall_oi:
         call_wall_strike = max(call_wall_oi.items(), key=lambda kv: kv[1])[0]
         call_wall_distance = abs(call_wall_strike - under) / max(under, 1e-8)
@@ -617,6 +641,62 @@ def summarize_option_chain(
     gamma_expiry_skew = 0.0
     if gamma_exposure > 0.0:
         gamma_expiry_skew = (gamma_front - gamma_back) / max(gamma_exposure, 1.0)
+    surface_change = _clamp01(
+        (0.30 * _clamp01(abs(iv_term) / 0.25))
+        + (0.25 * _clamp01(abs(iv_skew) / 0.20))
+        + (0.20 * _clamp01(abs(atm_iv - iv_mean) / 0.20))
+        + (0.15 * iv_realized_spread)
+        + (0.10 * _clamp01(abs(_safe_mean(mark_mid_bias)) * 10.0))
+    )
+    strike_expiry_concentration = _clamp01(
+        (0.40 * _clamp01(oi_concentration))
+        + (0.25 * _clamp01(gamma_front_share))
+        + (0.20 * _clamp01(zero_dte_share))
+        + (0.15 * _clamp01(abs(gamma_expiry_skew)))
+    )
+    gamma_flip_distance = 0.0
+    if under > 0.0 and call_wall_strike > 0.0 and put_wall_strike > 0.0:
+        flip_ref = 0.5 * (call_wall_strike + put_wall_strike)
+        gamma_flip_distance = abs(flip_ref - under) / max(under * 0.12, 1.0)
+    earnings_setup = _clamp01(
+        (0.28 * _clamp01(max(21.0 - near_exp, 0.0) / 21.0))
+        + (0.24 * iv_realized_spread)
+        + (0.18 * _clamp01(iv_percentile))
+        + (0.16 * _clamp01(_safe_mean(unusual_flow_ratios) / 4.0))
+        + (0.14 * _clamp01(abs(iv_term) / 0.20))
+    )
+    iv_crush_risk = _clamp01(
+        (0.32 * _clamp01(max(14.0 - near_exp, 0.0) / 14.0))
+        + (0.24 * iv_realized_spread)
+        + (0.18 * _clamp01(iv_percentile))
+        + (0.16 * surface_change)
+        + (0.10 * _clamp01(zero_dte_share))
+    )
+    assignment_risk = _clamp01(
+        (0.34 * _clamp01(max(7.0 - near_exp, 0.0) / 7.0))
+        + (0.24 * _clamp01(oi_concentration))
+        + (0.22 * _clamp01(gamma_front_share))
+        + (0.20 * _clamp01(zero_dte_share))
+    )
+    zero_dte_regime = _clamp01(
+        (0.55 * _clamp01(zero_dte_share))
+        + (0.20 * strike_expiry_concentration)
+        + (0.15 * _clamp01(abs(gamma_expiry_skew)))
+        + (0.10 * _clamp01(sweep_flow))
+    )
+    vol_of_vol_change = _clamp01(
+        (0.38 * surface_change)
+        + (0.24 * _clamp01(abs(iv_term) / 0.20))
+        + (0.20 * _clamp01(abs(iv_skew) / 0.18))
+        + (0.18 * _clamp01(abs(gamma_expiry_skew)))
+    )
+    spread_execution_risk = _clamp01(
+        (0.42 * _clamp01(spread_bps_mean / 150.0))
+        + (0.22 * _clamp01(abs(spread_skew) / 60.0))
+        + (0.18 * _clamp01(zero_dte_share))
+        + (0.10 * _clamp01(abs(_safe_mean(mark_mid_bias)) * 10.0))
+        + (0.08 * _clamp01(abs(iv_term) / 0.20))
+    )
 
     out.update(
         {
@@ -663,6 +743,15 @@ def summarize_option_chain(
             "options_iv_realized_spread_norm": iv_realized_spread,
             "options_gamma_front_share_norm": _clamp01(gamma_front_share),
             "options_gamma_expiry_skew_norm": _signed_centered_norm(gamma_expiry_skew, 1.0),
+            "options_surface_change_norm": surface_change,
+            "options_strike_expiry_concentration_change_norm": strike_expiry_concentration,
+            "options_gamma_flip_distance_norm": _clamp01(gamma_flip_distance),
+            "options_earnings_setup_norm": earnings_setup,
+            "options_iv_crush_risk_norm": iv_crush_risk,
+            "options_assignment_risk_norm": assignment_risk,
+            "options_zero_dte_regime_norm": zero_dte_regime,
+            "options_vol_of_vol_change_norm": vol_of_vol_change,
+            "options_spread_execution_risk_norm": spread_execution_risk,
         }
     )
     return out
@@ -897,11 +986,17 @@ def summarize_futures_quote_features(
 
     curve_rows = _extract_futures_curve_rows(payload, now_ts=ts_now)
     curve_norm = 0.5
+    curve_step_slopes: List[float] = []
     if len(curve_rows) >= 2:
         near_dte, near_basis = curve_rows[0]
         far_dte, far_basis = curve_rows[-1]
         slope_bps_per_month = (far_basis - near_basis) / max((far_dte - near_dte) / 30.0, 1e-6)
         curve_norm = _clamp01((slope_bps_per_month + 150.0) / 300.0)
+        for prev, curr in zip(curve_rows, curve_rows[1:]):
+            prev_dte, prev_basis = prev
+            curr_dte, curr_basis = curr
+            slope = (curr_basis - prev_basis) / max((curr_dte - prev_dte) / 30.0, 1e-6)
+            curve_step_slopes.append(slope)
     elif expiry_days > 0.0:
         curve_norm = _clamp01((basis_bps / max(expiry_days, 1.0) * 30.0 + 150.0) / 300.0)
 
@@ -920,6 +1015,65 @@ def summarize_futures_quote_features(
             session_profile_norm = _clamp01(math.log1p(abs(raw)) / 4.0)
         else:
             session_profile_norm = _clamp01((raw + 2.0) / 4.0)
+    curve_shift_velocity = 0.0
+    if curve_step_slopes:
+        curve_shift_velocity = _clamp01(max(abs(val) for val in curve_step_slopes) / 300.0)
+    elif expiry_days > 0.0:
+        curve_shift_velocity = _clamp01(abs((basis_bps / max(expiry_days, 1.0)) * 30.0) / 300.0)
+    directional_votes: List[float] = []
+    for signed_value, min_abs in (
+        (imbalance, 0.05),
+        (taker_imbalance, 0.05),
+        (float(cvd_raw or 0.0), max(cvd_scale * 0.05, 1.0)),
+        (vwap_bias, 0.003),
+        (basis_bps, 25.0),
+    ):
+        if abs(signed_value) >= min_abs:
+            directional_votes.append(1.0 if signed_value > 0.0 else -1.0)
+    if abs(funding_val) >= 0.0003:
+        directional_votes.append(1.0 if funding_val > 0.0 else -1.0)
+    if float(long_short_ratio or 1.0) >= 1.05:
+        directional_votes.append(1.0)
+    elif float(long_short_ratio or 1.0) <= 0.95:
+        directional_votes.append(-1.0)
+    cross_asset_confirmation = 0.0
+    if directional_votes:
+        cross_asset_confirmation = abs(sum(directional_votes)) / max(len(directional_votes), 1)
+    liquidation_squeeze = _clamp01(
+        (0.34 * _clamp01(math.log1p(max(liq_total, 0.0)) / 12.0))
+        + (0.22 * _clamp01(abs(taker_imbalance)))
+        + (0.18 * _clamp01(abs(float(long_short_ratio or 1.0) - 1.0) / 0.75))
+        + (0.14 * _clamp01(abs(funding_val) * 600.0))
+        + (0.12 * _clamp01(basis_divergence_bps / 300.0))
+    )
+    intraday_structure = _clamp01(
+        (0.24 * depth_ratio)
+        + (0.22 * (1.0 - _clamp01(spread_bps / 80.0)))
+        + (0.20 * _clamp01(abs(imbalance)))
+        + (0.18 * _clamp01(abs(vwap_bias) / 0.03))
+        + (0.16 * session_profile_norm)
+    )
+    roll_pressure = _clamp01(
+        (0.38 * _clamp01(max(14.0 - expiry_days, 0.0) / 14.0))
+        + (0.28 * curve_shift_velocity)
+        + (0.18 * _clamp01(abs(basis_bps) / 250.0))
+        + (0.16 * abs(term_structure - 0.5) * 2.0)
+    )
+    inventory_state = _signed_centered_norm(
+        (0.45 * imbalance) + (0.30 * taker_imbalance) + (0.25 * (vwap_bias / 0.03 if abs(vwap_bias) > 0.0 else 0.0)),
+        1.0,
+    )
+    delivery_hazard = _clamp01(
+        (0.50 * _clamp01(max(7.0 - expiry_days, 0.0) / 7.0))
+        + (0.25 * _clamp01(basis_divergence_bps / 250.0))
+        + (0.25 * _clamp01(dislocation_bps / 200.0))
+    )
+    cash_basis_confirmation = _clamp01(
+        (0.45 * _clamp01(cross_asset_confirmation))
+        + (0.25 * (1.0 - _clamp01(dislocation_bps / 300.0)))
+        + (0.20 * (1.0 - _clamp01(basis_divergence_bps / 400.0)))
+        + (0.10 * _clamp01(abs(basis_bps) / 250.0))
+    )
 
     out.update(
         {
@@ -951,6 +1105,14 @@ def summarize_futures_quote_features(
             "futures_mark_index_dislocation_norm": _clamp01(dislocation_bps / 300.0),
             "futures_session_volume_profile_norm": session_profile_norm,
             "futures_calendar_spread_curve_norm": curve_norm,
+            "futures_curve_shift_velocity_norm": curve_shift_velocity,
+            "futures_cross_asset_confirmation_norm": _clamp01(cross_asset_confirmation),
+            "futures_liquidation_squeeze_norm": liquidation_squeeze,
+            "futures_intraday_structure_norm": intraday_structure,
+            "futures_roll_pressure_norm": roll_pressure,
+            "futures_inventory_state_norm": inventory_state,
+            "futures_delivery_hazard_norm": delivery_hazard,
+            "futures_cash_basis_confirmation_norm": cash_basis_confirmation,
         }
     )
     return out

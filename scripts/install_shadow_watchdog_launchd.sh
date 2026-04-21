@@ -4,6 +4,8 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNNER_SCRIPT="$PROJECT_ROOT/scripts/ops/run_shadow_watchdog_launchd.sh"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.dankingsley.shadow_watchdog.plist"
+LABEL="com.dankingsley.shadow_watchdog"
+UID_NUM="$(id -u)"
 LOG_DIR="$HOME/Library/Logs/schwab_trading_bot"
 OUT_LOG="$LOG_DIR/shadow_watchdog.out.log"
 ERR_LOG="$LOG_DIR/shadow_watchdog.err.log"
@@ -19,7 +21,7 @@ cat > "$PLIST_PATH" <<PLIST
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.dankingsley.shadow_watchdog</string>
+  <string>$LABEL</string>
 
   <key>ProgramArguments</key>
   <array>
@@ -32,16 +34,18 @@ cat > "$PLIST_PATH" <<PLIST
     <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key><string>$HOME</string>
     <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
+    <key>BOT_RUNTIME_LANE</key><string>${BOT_RUNTIME_LANE:-${BOT_SHADOW_RUNTIME_LANE:-shadow314}}</string>
     <key>MARKET_SESSION_START_HOUR</key><string>$MARKET_OPEN_HOUR</string>
     <key>MARKET_DATA_ONLY</key><string>1</string>
     <key>ALLOW_ORDER_EXECUTION</key><string>0</string>
     <key>TOP_BOT_PAPER_TRADING_TOP_N</key><string>${TOP_BOT_PAPER_TRADING_TOP_N:-5}</string>
     <key>TOP_BOT_PAPER_TRADING_MIN_ACC</key><string>${TOP_BOT_PAPER_TRADING_MIN_ACC:-0.55}</string>
-    <key>TOP_BOT_PAPER_TRADING_PROFILES</key><string>${TOP_BOT_PAPER_TRADING_PROFILES:-default,conservative,aggressive,intraday_aggressive,swing_aggressive,dividend,bond}</string>
+    <key>TOP_BOT_PAPER_TRADING_PROFILES</key><string>${TOP_BOT_PAPER_TRADING_PROFILES:-default,conservative,aggressive,intraday_aggressive,swing_aggressive,dividend,bond,fx}</string>
+    <key>DIVIDEND_CAPTURE_SHADOW_ENABLED</key><string>${DIVIDEND_CAPTURE_SHADOW_ENABLED:-1}</string>
     <key>TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED</key><string>${TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED:-1}</string>
     <key>TOP_BOT_PAPER_TRADING_OPTIONS_TOP_N</key><string>${TOP_BOT_PAPER_TRADING_OPTIONS_TOP_N:-2}</string>
     <key>TOP_BOT_PAPER_TRADING_OPTIONS_MIN_ACC</key><string>${TOP_BOT_PAPER_TRADING_OPTIONS_MIN_ACC:-0.55}</string>
-    <key>TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES</key><string>${TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES:-default,conservative,aggressive,intraday_aggressive,swing_aggressive,dividend,bond}</string>
+    <key>TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES</key><string>${TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES:-default,aggressive,intraday_aggressive,swing_aggressive}</string>
     <key>SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_TOP_N</key><string>${SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_TOP_N:-10}</string>
     <key>SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_MIN_ACC</key><string>${SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_MIN_ACC:-0.53}</string>
     <key>SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_PROFILES</key><string>${SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_PROFILES:-schwab_futures}</string>
@@ -77,7 +81,10 @@ cat > "$PLIST_PATH" <<PLIST
 PLIST
 
 launchctl unload "$PLIST_PATH" >/dev/null 2>&1 || true
-launchctl load "$PLIST_PATH"
+launchctl bootout "gui/$UID_NUM" "$PLIST_PATH" >/dev/null 2>&1 || true
+launchctl enable "gui/$UID_NUM/$LABEL" || true
+launchctl bootstrap "gui/$UID_NUM" "$PLIST_PATH"
+launchctl kickstart -k "gui/$UID_NUM/$LABEL" || true
 
 echo "Installed and loaded: $PLIST_PATH"
 echo "Logs: $OUT_LOG and $ERR_LOG"

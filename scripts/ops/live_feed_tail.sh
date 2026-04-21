@@ -3,13 +3,22 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WATCHDOG_LOG_DIR="$HOME/Library/Logs/schwab_trading_bot"
+MEMORY_OVERRIDE_FILE="$PROJECT_ROOT/config/.env.memory_efficiency_override"
+
+if [[ -f "$MEMORY_OVERRIDE_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$MEMORY_OVERRIDE_FILE"
+fi
 
 SOURCE="schwab"
 SYMBOL=""
 LINES="40"
+LINES_EXPLICIT="0"
 RAW="0"
 SNAPSHOT="0"
 INCLUDE_DECISIONS="${LIVE_FEED_INCLUDE_DECISIONS_DEFAULT:-0}"
+MEMORY_AWARE="${LIVE_FEED_MEMORY_AWARE_DEFAULT:-1}"
+DECISION_FILE_MODE="${LIVE_FEED_DECISION_FILE_MODE:-day_plus_latest}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -23,6 +32,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --lines)
       LINES="${2:-40}"
+      LINES_EXPLICIT="1"
       shift 2
       ;;
     --raw)
@@ -41,9 +51,17 @@ while [[ $# -gt 0 ]]; do
       INCLUDE_DECISIONS="0"
       shift
       ;;
+    --memory-aware)
+      MEMORY_AWARE="1"
+      shift
+      ;;
+    --no-memory-aware)
+      MEMORY_AWARE="0"
+      shift
+      ;;
     -h|--help)
       cat <<'EOF'
-Usage: scripts/ops/live_feed_tail.sh [--source schwab|coinbase|fx|futures|schwab_futures|coinbase_futures|main|all] [--symbol SYMBOL] [--lines 40] [--raw] [--snapshot] [--include-decisions]
+Usage: scripts/ops/live_feed_tail.sh [--source schwab|coinbase|fx|futures|schwab_futures|coinbase_futures|main|all] [--symbol SYMBOL] [--lines 40] [--raw] [--snapshot] [--include-decisions] [--memory-aware|--no-memory-aware]
 
 Examples:
   scripts/ops/live_feed_tail.sh
@@ -53,7 +71,8 @@ Examples:
   scripts/ops/live_feed_tail.sh --source futures
   scripts/ops/live_feed_tail.sh --source main --lines 80
   scripts/ops/live_feed_tail.sh --source all --lines 80
-  scripts/ops/live_feed_tail.sh --source all --lines 80 --include-decisions
+  scripts/ops/live_feed_tail.sh --source all --include-decisions
+  scripts/ops/live_feed_tail.sh --source all --include-decisions --no-memory-aware
   scripts/ops/live_feed_tail.sh --source all --lines 80 --snapshot
 EOF
       exit 0
@@ -73,6 +92,33 @@ fi
 if [[ "$SOURCE" != "schwab" && "$SOURCE" != "coinbase" && "$SOURCE" != "fx" && "$SOURCE" != "futures" && "$SOURCE" != "schwab_futures" && "$SOURCE" != "coinbase_futures" && "$SOURCE" != "main" && "$SOURCE" != "all" ]]; then
   echo "--source must be schwab, coinbase, fx, futures, schwab_futures, coinbase_futures, main, or all" >&2
   exit 2
+fi
+
+HEAVY_REQUESTED="0"
+if [[ "$SOURCE" == "all" && "$INCLUDE_DECISIONS" == "1" ]]; then
+  HEAVY_REQUESTED="1"
+fi
+
+MEMORY_PROFILE="${BOT_MEMORY_EFFICIENCY_PROFILE:-}"
+HEAVY_DEFAULT_LINES="${LIVE_FEED_HEAVY_DEFAULT_LINES:-120}"
+HEAVY_PRESSURE_LINES="${LIVE_FEED_HEAVY_PRESSURE_LINES:-80}"
+DECISION_FILE_MODE_PRESSURE="${LIVE_FEED_DECISION_FILE_MODE_PRESSURE:-latest_only}"
+PRESSURE_OPTIMIZED="0"
+
+if [[ "$HEAVY_REQUESTED" == "1" && "$LINES_EXPLICIT" != "1" ]]; then
+  LINES="$HEAVY_DEFAULT_LINES"
+fi
+
+if [[ "$HEAVY_REQUESTED" == "1" && "$MEMORY_AWARE" == "1" ]]; then
+  case "$MEMORY_PROFILE" in
+    constrained|air_safe)
+      if [[ "$LINES_EXPLICIT" != "1" ]]; then
+        LINES="$HEAVY_PRESSURE_LINES"
+      fi
+      DECISION_FILE_MODE="$DECISION_FILE_MODE_PRESSURE"
+      PRESSURE_OPTIMIZED="1"
+      ;;
+  esac
 fi
 
 DAY_UTC="$(date -u +%Y%m%d)"
@@ -100,6 +146,10 @@ latest_log() {
 
 append_decision_json_dir() {
   local dir="$1"
+  if [[ "$DECISION_FILE_MODE" == "latest_only" ]]; then
+    append_file "$(latest_log "$PROJECT_ROOT/decision_explanations/$dir/decision_explanations_*.jsonl")"
+    return
+  fi
   append_file "$PROJECT_ROOT/decision_explanations/$dir/decision_explanations_${DAY_LOCAL}.jsonl"
   append_file "$PROJECT_ROOT/decision_explanations/$dir/decision_explanations_${DAY_UTC}.jsonl"
   append_file "$(latest_log "$PROJECT_ROOT/decision_explanations/$dir/decision_explanations_*.jsonl")"
@@ -164,7 +214,7 @@ if [[ ${#files[@]} -eq 0 ]]; then
   exit 1
 fi
 
-echo "live_feed source=$SOURCE local_day=$DAY_LOCAL utc_day=$DAY_UTC symbol=${SYMBOL:-ALL} lines=$LINES include_decisions=$INCLUDE_DECISIONS"
+echo "live_feed source=$SOURCE local_day=$DAY_LOCAL utc_day=$DAY_UTC symbol=${SYMBOL:-ALL} lines=$LINES include_decisions=$INCLUDE_DECISIONS memory_profile=${MEMORY_PROFILE:-default} memory_aware=$MEMORY_AWARE decision_mode=$DECISION_FILE_MODE pressure_optimized=$PRESSURE_OPTIMIZED"
 for f in "${files[@]}"; do
   echo " - $f"
 done

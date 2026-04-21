@@ -13,31 +13,43 @@ from runtime_training_common import (
 
 _SIMPLE_RUNTIME_MODES = [
     "shadow_equities",
+    "shadow_aggressive_equities",
+    "shadow_intraday_aggressive_equities",
+    "shadow_swing_aggressive_equities",
     "shadow_conservative_equities",
     "shadow_dividend_equities",
-    "shadow_swing_aggressive_equities",
+    "shadow_bond_equities",
+    "shadow_crypto",
+    "shadow_crypto_futures_crypto",
 ]
 _SIMPLE_SYMBOLS = [
     "SPY",
     "QQQ",
     "DIA",
     "IWM",
-    "SCHD",
-    "VIG",
-    "DGRO",
     "XLK",
     "XLF",
     "XLI",
     "XLV",
     "XLP",
     "XLU",
-    "XLRE",
-    "XLE",
+    "SMH",
+    "TLT",
+    "IEF",
+    "LQD",
+    "HYG",
     "AAPL",
     "MSFT",
     "NVDA",
     "AMZN",
     "META",
+    "BTC-USD",
+    "ETH-USD",
+    "SOL-USD",
+    "AVAX-USD",
+    "LINK-USD",
+    "LTC-USD",
+    "DOGE-USD",
 ]
 
 
@@ -156,12 +168,12 @@ def _runtime_sample_filter(sequence, idx, horizon):
     trend_support = _trend_support(obs)
     bias = abs(_direction_bias(obs))
     return (
-        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.82
-        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.24
-        and abs(observation_feature(obs, "spread_bps")) <= 28.0
-        and observation_feature(obs, "queue_depth", 0.0) >= 1.0
-        and trend_support >= 0.24
-        and bias >= 0.0010
+        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.84
+        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.22
+        and abs(observation_feature(obs, "spread_bps")) <= 24.0
+        and observation_feature(obs, "queue_depth", 0.0) >= 1.25
+        and trend_support >= 0.26
+        and bias >= 0.0012
     )
 
 
@@ -269,14 +281,16 @@ def train_brain():
         symbol_allowlist=_SIMPLE_SYMBOLS,
         sample_filter=_runtime_sample_filter,
         confidence_builder=_runtime_confidence,
-        min_confidence=0.44,
-        sample_stride=4,
-        lookback_days=30,
+        min_confidence=0.40,
+        sample_stride=2,
+        lookback_days=60,
         window=20,
         horizon=6,
-        min_samples=1200,
-        min_sequences=12,
-        acted_prob_threshold=0.66,
+        min_samples=192,
+        min_sequences=4,
+        min_positive_samples=32,
+        min_negative_samples=32,
+        acted_prob_threshold=0.68,
         fallback_trainer=_train_synthetic,
         allow_fallback_on_insufficient_data=False,
         max_best_val_loss=0.6925,
@@ -285,9 +299,12 @@ def train_brain():
         min_short_precision=0.54,
         require_both_sides_precision=True,
         min_acted_accuracy=0.57,
+        min_long_acted_count=5,
+        min_short_acted_count=5,
         min_accuracy_lift_over_majority=0.03,
         min_label_balance_score=0.20,
         min_precision_balance_score=0.45,
+        max_acted_coverage=0.34,
     )
 
 

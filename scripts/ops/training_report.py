@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -16,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT_DIR = PROJECT_ROOT / "exports" / "reports" / "training_reports"
 LATEST_METADATA_PATH = PROJECT_ROOT / "governance" / "health" / "training_report_latest.json"
 OPERATOR_NOTES_PATH = PROJECT_ROOT / "governance" / "health" / "retrain_operator_notes_latest.json"
+TRAINING_QUALITY_CONTROL_PATH = PROJECT_ROOT / "governance" / "health" / "training_quality_control_latest.json"
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -150,11 +152,29 @@ def _render_pdf_from_html(html_path: Path, pdf_path: Path, *, allow_gui_renderer
     html_uri = html_path.resolve().as_uri()
     if renderer_kind == "wkhtmltopdf":
         cmd = [renderer, html_uri, str(pdf_path)]
+        rc, out, err = _run(cmd)
     else:
-        cmd = [renderer, "--headless", "--disable-gpu", f"--print-to-pdf={pdf_path}", html_uri]
-    rc, out, err = _run(cmd)
-    if rc == 0 and pdf_path.exists() and pdf_path.stat().st_size > 0:
-        return True, out or "ok"
+        profile_dir = Path(tempfile.mkdtemp(prefix="training-report-pdf-"))
+        try:
+            cmd = [
+                renderer,
+                "--headless=new",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--silent-launch",
+                "--no-startup-window",
+                "--disable-background-networking",
+                "--metrics-recording-only",
+                f"--user-data-dir={profile_dir}",
+                f"--print-to-pdf={pdf_path}",
+                html_uri,
+            ]
+            rc, out, err = _run(cmd)
+        finally:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+    if pdf_path.exists() and pdf_path.stat().st_size > 0:
+        return True, out or err or "ok"
     return False, err or out or f"rc={rc}"
 
 
@@ -245,8 +265,72 @@ def _assessment_lines(context: Dict[str, Any]) -> List[str]:
         note_summary = str(operator_notes.get("summary", "") or "").strip()
         if note_summary:
             lines.append(f"Operator note carried into this retrain: {note_summary}")
+    training_quality = context.get("training_quality_control") if isinstance(context.get("training_quality_control"), dict) else {}
+    if training_quality:
+        overall_status = str(training_quality.get("overall_status", "") or "").strip()
+        quality_score = _coerce_float(training_quality.get("training_quality_score"))
+        top_priorities = [str(item).strip() for item in (training_quality.get("top_priorities") or []) if str(item).strip()]
+        if overall_status:
+            score_text = f"{quality_score:.2f}" if quality_score is not None else "unknown"
+            if top_priorities:
+                lines.append(
+                    "Training quality control is "
+                    f"{overall_status} at score={score_text}; top priorities: {', '.join(top_priorities[:4])}."
+                )
+            else:
+                lines.append(f"Training quality control is {overall_status} at score={score_text}.")
 
     return lines
+
+
+def _blocking_reasons(context: Dict[str, Any]) -> List[str]:
+    summary = context.get("summary") if isinstance(context.get("summary"), dict) else {}
+    promotion_quality = context.get("promotion_quality") if isinstance(context.get("promotion_quality"), dict) else {}
+    promotion_gate = context.get("promotion_gate") if isinstance(context.get("promotion_gate"), dict) else {}
+    divergence = context.get("data_divergence") if isinstance(context.get("data_divergence"), dict) else {}
+    trade = context.get("trade_behavior") if isinstance(context.get("trade_behavior"), dict) else {}
+
+    reasons: List[str] = []
+    if not bool(summary.get("confirmed_training_success", False)):
+        reasons.append("training_not_confirmed")
+    if not bool(summary.get("promotion_quality_ok", False)):
+        reasons.extend(str(item).strip() for item in (promotion_quality.get("failed_checks") or []) if str(item).strip())
+    if not bool(summary.get("daily_verify_ok", False)):
+        reasons.append("daily_verify_not_ok")
+    if promotion_gate and not bool(promotion_gate.get("promote_ok", False)):
+        reasons.append("promotion_not_ready")
+    if divergence and (divergence.get("ok") is False):
+        reasons.append("data_divergence_not_ok")
+    score_delta = _coerce_float(trade.get("score_delta"))
+    if score_delta is not None and score_delta < 0.0:
+        reasons.append("trade_behavior_regressed")
+
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for reason in reasons:
+        key = str(reason).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        ordered.append(key)
+    return ordered
+
+
+def _overall_status(context: Dict[str, Any], blocking_reasons: List[str]) -> str:
+    summary = context.get("summary") if isinstance(context.get("summary"), dict) else {}
+    promotion_gate = context.get("promotion_gate") if isinstance(context.get("promotion_gate"), dict) else {}
+    trade = context.get("trade_behavior") if isinstance(context.get("trade_behavior"), dict) else {}
+    score_delta = _coerce_float(trade.get("score_delta"))
+
+    if not blocking_reasons and bool(summary.get("confirmed_training_success", False)) and bool(promotion_gate.get("promote_ok", False)):
+        return "ready"
+    if blocking_reasons and any(reason in {"training_not_confirmed", "data_divergence_not_ok"} for reason in blocking_reasons):
+        return "blocked"
+    if score_delta is not None and score_delta < 0.0:
+        return "regressed"
+    if blocking_reasons:
+        return "needs_attention"
+    return "unknown"
 
 
 def _build_context(
@@ -259,6 +343,7 @@ def _build_context(
     daily_verify_path: Path,
     data_divergence_path: Path,
     lane_scorecard_path: Path,
+    training_quality_control_path: Path = TRAINING_QUALITY_CONTROL_PATH,
     trade_log_path: str = "",
 ) -> Dict[str, Any]:
     scorecard = _load_json(scorecard_path)
@@ -269,6 +354,7 @@ def _build_context(
     daily_verify = _load_json(daily_verify_path)
     data_divergence = _load_json(data_divergence_path)
     lane_scorecard = _load_json(lane_scorecard_path)
+    training_quality_control = _load_json(training_quality_control_path)
     fallback_operator_notes = _load_json(OPERATOR_NOTES_PATH)
 
     resolved_trade_log = _resolve_trade_log(trade_log_path, scorecard)
@@ -364,6 +450,17 @@ def _build_context(
             "rows_used": int(lane_scorecard.get("rows_used", 0) or 0),
             "lane_rows": _load_lane_rows(lane_scorecard),
         },
+        "training_quality_control": {
+            "ok": bool(training_quality_control.get("ok", False)),
+            "overall_status": str(training_quality_control.get("overall_status", "") or ""),
+            "training_quality_score": _coerce_float(training_quality_control.get("training_quality_score")),
+            "top_priorities": [
+                str(item).strip()
+                for item in (training_quality_control.get("top_priorities") or [])
+                if str(item).strip()
+            ],
+            "implemented_improvement_count": int(training_quality_control.get("implemented_improvement_count", 0) or 0),
+        },
         "data_divergence": {
             "ok": bool(data_divergence.get("ok", False)),
             "window_hours": int(data_divergence.get("window_hours", 0) or 0),
@@ -385,6 +482,7 @@ def _build_context(
             "daily_verify": str(daily_verify_path),
             "data_divergence": str(data_divergence_path),
             "unified_lane_scorecard": str(lane_scorecard_path),
+            "training_quality_control": str(training_quality_control_path),
             "trade_behavior_log": str(resolved_trade_log) if resolved_trade_log is not None else "",
             "operator_notes": str(OPERATOR_NOTES_PATH),
         },
@@ -401,6 +499,7 @@ def _render_markdown(context: Dict[str, Any]) -> str:
     graduation = context["new_bot_graduation"]
     trade = context["trade_behavior"]
     lane_scorecard = context["lane_scorecard"]
+    training_quality_control = context.get("training_quality_control") if isinstance(context.get("training_quality_control"), dict) else {}
     divergence = context["data_divergence"]
     operator_notes = context.get("operator_notes") if isinstance(context.get("operator_notes"), dict) else {}
 
@@ -501,6 +600,17 @@ def _render_markdown(context: Dict[str, Any]) -> str:
             f"symbol={row.get('symbol', '')} minute={row.get('minute', '')} rel_spread={_fmt_num(row.get('rel_spread'))} n={row.get('n', '')}"
         )
 
+    lines.extend(
+        [
+            "",
+            "## Training Quality Control",
+            f"- Overall status: {training_quality_control.get('overall_status', 'unknown') or 'unknown'}",
+            f"- Quality score: {_fmt_num(training_quality_control.get('training_quality_score'), 2)}",
+            f"- Implemented improvements: {int(training_quality_control.get('implemented_improvement_count', 0) or 0)}",
+            f"- Top priorities: {', '.join(training_quality_control.get('top_priorities', [])[:6]) if training_quality_control.get('top_priorities') else 'none'}",
+        ]
+    )
+
     lines.extend(["", "## Lane Scorecard"])
     for row in lane_scorecard["lane_rows"]:
         lines.append(
@@ -546,10 +656,19 @@ def _render_html(context: Dict[str, Any]) -> str:
     graduation = context["new_bot_graduation"]
     trade = context["trade_behavior"]
     test_metrics = trade["test_metrics"]
+    training_quality_control = context.get("training_quality_control") if isinstance(context.get("training_quality_control"), dict) else {}
     divergence = context["data_divergence"]
     operator_notes = context.get("operator_notes") if isinstance(context.get("operator_notes"), dict) else {}
 
     assessment_html = "".join(f"<li>{html.escape(line)}</li>" for line in context["assessment"])
+    training_quality_html = (
+        "<ul>"
+        f"<li><strong>Overall status</strong>: {html.escape(str(training_quality_control.get('overall_status') or 'unknown'))}</li>"
+        f"<li><strong>Quality score</strong>: {html.escape(_fmt_num(training_quality_control.get('training_quality_score'), 2))}</li>"
+        f"<li><strong>Implemented improvements</strong>: {html.escape(str(int(training_quality_control.get('implemented_improvement_count', 0) or 0)))}</li>"
+        f"<li><strong>Top priorities</strong>: {html.escape(', '.join(training_quality_control.get('top_priorities', [])[:6]) if training_quality_control.get('top_priorities') else 'none')}</li>"
+        "</ul>"
+    )
     promotion_reasons_html = "".join(f"<li>{html.escape(str(line))}</li>" for line in trade["promotion_reasons"][:8])
     failed_checks_html = "".join(f"<li>{html.escape(str(line))}</li>" for line in promotion_quality["failed_checks"][:10])
     offenders_html = "".join(
@@ -649,6 +768,10 @@ def _render_html(context: Dict[str, Any]) -> str:
       <h2>Assessment</h2>
       <ul>{assessment_html}</ul>
     </section>
+    <section class=\"section\">
+      <h2>Training Quality Control</h2>
+      {training_quality_html}
+    </section>
 {operator_notes_html}
 
     <section class=\"section\">
@@ -713,6 +836,7 @@ def main() -> int:
     parser.add_argument("--daily-verify", default=str(PROJECT_ROOT / "governance" / "health" / "daily_auto_verify_latest.json"))
     parser.add_argument("--data-divergence", default=str(PROJECT_ROOT / "governance" / "health" / "data_source_divergence_latest.json"))
     parser.add_argument("--lane-scorecard", default=str(PROJECT_ROOT / "governance" / "health" / "unified_lane_scorecard_latest.json"))
+    parser.add_argument("--training-quality-control", default=str(TRAINING_QUALITY_CONTROL_PATH))
     parser.add_argument("--trade-log", default="")
     parser.add_argument(
         "--render-pdf",
@@ -740,6 +864,7 @@ def main() -> int:
         daily_verify_path=Path(args.daily_verify),
         data_divergence_path=Path(args.data_divergence),
         lane_scorecard_path=Path(args.lane_scorecard),
+        training_quality_control_path=Path(args.training_quality_control),
         trade_log_path=str(args.trade_log),
     )
     md_text = _render_markdown(context)
@@ -782,6 +907,8 @@ def main() -> int:
     else:
         ts_pdf = None
 
+    blocking_reasons = _blocking_reasons(context)
+    overall_status = _overall_status(context, blocking_reasons)
     payload = {
         "latest_markdown": str(latest_md),
         "latest_printable_html": str(latest_html),
@@ -792,6 +919,10 @@ def main() -> int:
         "pdf_ok": bool(pdf_ok),
         "pdf_detail": str(pdf_detail),
         "generated_utc": context["generated_utc"],
+        "overall_status": overall_status,
+        "blocking_reasons": blocking_reasons,
+        "ship_candidate_count": 1 if overall_status in {"ready", "needs_attention", "regressed"} else 0,
+        "promotion_ready_count": 1 if overall_status == "ready" else 0,
         "allow_gui_pdf_renderer": bool(allow_gui_pdf_renderer),
         "summary": context["summary"],
         "trade_behavior": {
@@ -801,6 +932,7 @@ def main() -> int:
             "promoted": context["trade_behavior"].get("promoted"),
             "deployed_from_previous": context["trade_behavior"].get("deployed_from_previous"),
         },
+        "training_quality_control": context["training_quality_control"],
     }
     LATEST_METADATA_PATH.parent.mkdir(parents=True, exist_ok=True)
     LATEST_METADATA_PATH.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")

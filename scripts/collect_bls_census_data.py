@@ -18,7 +18,7 @@ FRED_SERIES_ALIASES = {
 }
 
 
-def _load_env_file(path: Path) -> None:
+def _load_env_file(path: Path, *, override: bool = False) -> None:
     if not path.exists():
         return
     for raw in path.read_text(encoding="utf-8").splitlines():
@@ -28,14 +28,22 @@ def _load_env_file(path: Path) -> None:
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
+        if key and (override or key not in os.environ):
             os.environ[key] = value
 
 
 def _bootstrap_env() -> None:
-    _load_env_file(PROJECT_ROOT / ".env")
-    _load_env_file(PROJECT_ROOT / "config" / ".env")
-    _load_env_file(PROJECT_ROOT / "config" / ".env.live")
+    for path, override in [
+        (PROJECT_ROOT / ".env", False),
+        (PROJECT_ROOT / ".env.live", True),
+        (PROJECT_ROOT / "config" / ".env", True),
+        (PROJECT_ROOT / "config" / ".env.live", True),
+        (PROJECT_ROOT / ".env.secrets.local", True),
+        (PROJECT_ROOT / ".env.live.secrets.local", True),
+        (PROJECT_ROOT / "config" / ".env.secrets.local", True),
+        (PROJECT_ROOT / "config" / ".env.live.secrets.local", True),
+    ]:
+        _load_env_file(path, override=override)
 
 
 def _sanitize_url(url: str) -> str:
@@ -162,7 +170,7 @@ def collect(args: argparse.Namespace) -> int:
 
     census_key = os.getenv("CENSUS_API_KEY", "").strip()
     if not census_key:
-        print("CENSUS_API_KEY missing in environment (.env/.env.live)")
+        print("CENSUS_API_KEY missing in environment (.env/.env.live/.env.live.secrets.local)")
         return 2
     census_dataset = os.getenv("CENSUS_DATASET", "2023/acs/acs5")
     census_get = os.getenv("CENSUS_GET_VARS", "NAME,B01001_001E")
@@ -247,7 +255,7 @@ def collect(args: argparse.Namespace) -> int:
 
     # FRED
     if not fred_key:
-        status["fred"]["error"] = "FRED_API_KEY missing in environment (.env/.env.live)"
+        status["fred"]["error"] = "FRED_API_KEY missing in environment (.env/.env.live/.env.live.secrets.local)"
     else:
         fred_base_url = "https://api.stlouisfed.org/fred/series/observations"
         if fred_series:
@@ -321,7 +329,7 @@ def collect(args: argparse.Namespace) -> int:
 
     # BEA (dataset list metadata pull)
     if not bea_key:
-        status["bea"]["error"] = "BEA_API_KEY missing in environment (.env/.env.live)"
+        status["bea"]["error"] = "BEA_API_KEY missing in environment (.env/.env.live/.env.live.secrets.local)"
     else:
         bea_base_url = "https://apps.bea.gov/api/data"
         bea_url = bea_base_url + "?" + urlencode(

@@ -190,7 +190,7 @@ def test_collect_external_live_sqlite_pressure_rows_when_low_space(monkeypatch, 
     watchdog_health = tmp_path / 'governance' / 'health'
     watchdog_health.mkdir(parents=True)
     (watchdog_health / 'process_watchdog_latest.json').write_text(
-        json.dumps({'storage_mode': 'local_fallback'}),
+        json.dumps({'storage_mode': 'external'}),
         encoding='utf-8',
     )
 
@@ -215,10 +215,13 @@ def test_collect_external_live_sqlite_pressure_rows_when_low_space(monkeypatch, 
 
     assert len(rows) == 5
     assert meta['external_low_space'] is True
+    assert meta['storage_mode'] == 'external'
+    assert meta['allow_external_mode_pressure_prune'] is True
     assert meta['pressure_shard_file_candidates'] == 1
     assert meta['pressure_local_fallback_copy_candidates'] == 1
     assert meta['pressure_candidates'] == 5
     assert meta['pressure_shard_local_fallback_candidates'] == 1
+    assert meta['pressure_unmirrored_shard_candidates_skipped'] == 0
 
 
 def test_main_reports_candidates_for_nested_shard_local_fallback(monkeypatch, tmp_path):
@@ -352,9 +355,15 @@ def test_main_can_stage_old_files_into_stale_section(monkeypatch, tmp_path):
     assert old_health.exists() is False
     assert payload['deleted_files'] == 0
     assert payload['stale_stage']['staged_files'] == 2
+    assert payload['stale_stage']['candidate_by_temperature']
+    assert payload['stale_stage']['staged_by_storage_tier']
     assert len(manifest_rows) == 2
     assert any('logs' in row['staged_path'] for row in manifest_rows)
     assert any('governance_health' in row['staged_path'] for row in manifest_rows)
+    assert all(row['temperature_label'] in {'warm', 'cool', 'cold'} for row in manifest_rows)
+    assert all(row['storage_tier'] in {'warm_stage', 'cool_stage', 'cold_stage'} for row in manifest_rows)
+    assert all(row['age_bucket'] for row in manifest_rows)
+    assert all(row['stale_reason'] for row in manifest_rows)
 
 
 def test_main_can_purge_old_stale_stage_files(monkeypatch, tmp_path):
@@ -388,3 +397,97 @@ def test_main_can_purge_old_stale_stage_files(monkeypatch, tmp_path):
     assert rc == 0
     assert stale_file.exists() is False
     assert payload['stale_stage']['purge']['deleted_files'] == 1
+
+
+def test_main_stage_only_can_stage_all_candidate_labels(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_retention_policy, 'PROJECT_ROOT', tmp_path)
+
+    log_dir = tmp_path / 'logs'
+    decisions_dir = tmp_path / 'decisions'
+    log_dir.mkdir(parents=True)
+    decisions_dir.mkdir(parents=True)
+
+    old_log = log_dir / 'old.log'
+    old_decision = decisions_dir / 'old.jsonl'
+    old_log.write_text('log', encoding='utf-8')
+    old_decision.write_text('decision', encoding='utf-8')
+
+    old_epoch = 1_735_689_600
+    os.utime(old_log, (old_epoch, old_epoch))
+    os.utime(old_decision, (old_epoch, old_epoch))
+
+    monkeypatch.setattr(
+        data_retention_policy.sys,
+        'argv',
+        [
+            'data_retention_policy.py',
+            '--apply',
+            '--skip-sqlite-vacuum',
+            '--stale-stage',
+            '--stale-stage-only',
+            '--stale-stage-sections',
+            'all',
+            '--logs-days',
+            '1',
+            '--decisions-days',
+            '1',
+        ],
+    )
+
+    rc = data_retention_policy.main()
+    payload = json.loads((tmp_path / 'governance' / 'health' / 'data_retention_latest.json').read_text(encoding='utf-8'))
+    stale_root = tmp_path / 'data' / 'stale_stage'
+
+    assert rc == 0
+    assert old_log.exists() is False
+    assert old_decision.exists() is False
+    assert payload['deleted_files'] == 0
+    assert payload['stale_stage']['stage_only'] is True
+    assert payload['stale_stage']['staged_files'] == 2
+    assert (stale_root / 'logs').exists() is True
+    assert (stale_root / 'decisions').exists() is True
+
+
+def test_main_stage_only_leaves_unmatched_candidates_in_place(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_retention_policy, 'PROJECT_ROOT', tmp_path)
+
+    log_dir = tmp_path / 'logs'
+    decisions_dir = tmp_path / 'decisions'
+    log_dir.mkdir(parents=True)
+    decisions_dir.mkdir(parents=True)
+
+    old_log = log_dir / 'old.log'
+    old_decision = decisions_dir / 'old.jsonl'
+    old_log.write_text('log', encoding='utf-8')
+    old_decision.write_text('decision', encoding='utf-8')
+
+    old_epoch = 1_735_689_600
+    os.utime(old_log, (old_epoch, old_epoch))
+    os.utime(old_decision, (old_epoch, old_epoch))
+
+    monkeypatch.setattr(
+        data_retention_policy.sys,
+        'argv',
+        [
+            'data_retention_policy.py',
+            '--apply',
+            '--skip-sqlite-vacuum',
+            '--stale-stage',
+            '--stale-stage-only',
+            '--stale-stage-sections',
+            'logs',
+            '--logs-days',
+            '1',
+            '--decisions-days',
+            '1',
+        ],
+    )
+
+    rc = data_retention_policy.main()
+    payload = json.loads((tmp_path / 'governance' / 'health' / 'data_retention_latest.json').read_text(encoding='utf-8'))
+
+    assert rc == 0
+    assert old_log.exists() is False
+    assert old_decision.exists() is True
+    assert payload['deleted_files'] == 0
+    assert payload['stale_stage']['staged_files'] == 1

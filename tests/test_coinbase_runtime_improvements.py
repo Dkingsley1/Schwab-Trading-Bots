@@ -65,6 +65,21 @@ def test_coinbase_client_caches_product_and_candles(monkeypatch) -> None:
     assert calls.count("/products/BTC-USD/candles") == 1
 
 
+def test_coinbase_client_prunes_cache_to_max_entries(monkeypatch) -> None:
+    monkeypatch.setenv("COINBASE_CACHE_MAX_ENTRIES", "2")
+    client = CoinbaseMarketDataClient(timeout_seconds=0.1)
+
+    client._cache_set("product:BTC-USD", {"product_id": "BTC-USD"}, 900.0)
+    client._cache_set("product:ETH-USD", {"product_id": "ETH-USD"}, 900.0)
+    client._cache_set("candles:SOL-USD:60:60", [[1710000000.0, 99.0, 101.0, 100.0, 100.5, 25.0]], 30.0)
+
+    assert len(client._cache) == 2
+    assert "product:BTC-USD" not in client._cache
+    assert "product:ETH-USD" in client._cache
+    assert "candles:SOL-USD:60:60" in client._cache
+    client.close()
+
+
 def test_coinbase_market_snapshot_adds_execution_relevant_features(monkeypatch) -> None:
     monkeypatch.setenv("COINBASE_SNAPSHOT_MAX_WORKERS", "4")
     client = CoinbaseMarketDataClient(timeout_seconds=0.1)
@@ -191,6 +206,35 @@ def test_simulate_execution_applies_market_specific_scale_and_fee(monkeypatch) -
     assert result.fee_bps == 1.8
     assert result.slippage_bps > result.fee_bps
     assert result.expected_fill_price > 100.0
+    assert result.queue_position_ratio > 0.0
+    assert result.cancel_probability > 0.0
+    assert result.venue == "coinbase_crypto"
+
+
+def test_simulate_execution_surfaces_borrow_and_venue_penalties(monkeypatch) -> None:
+    monkeypatch.setenv("EXEC_SIM_BASE_BORROW_FEE_BPS_EQUITIES", "7.5")
+    monkeypatch.setenv("EXEC_SIM_VENUE_RULE_PENALTY_BPS_EQUITIES", "3.0")
+
+    result = simulate_execution(
+        action="SELL_SHORT",
+        last_price=50.0,
+        return_1m=-0.001,
+        spread_bps=14.0,
+        volatility_1m=0.015,
+        latency_ms=350.0,
+        bid_size=12.0,
+        ask_size=12.0,
+        order_size=8.0,
+        broker="schwab",
+        market_kind="equities",
+        symbol="AAPL",
+    )
+
+    assert result.borrow_fee_bps == 7.5
+    assert result.venue_rule_penalty_bps == 3.0
+    assert 0.0 < result.queue_position_ratio <= 1.0
+    assert result.cancel_probability > 0.0
+    assert result.venue == "schwab_equities"
 
 
 def test_jsonl_write_buffer_dedupes_recent_message_ids_per_path() -> None:
@@ -316,6 +360,7 @@ def test_build_futures_plan_emits_funding_mean_revert_style() -> None:
             "futures_vwap_bias_norm": 0.50,
             "futures_negative_bias_norm": 0.48,
             "futures_funding_rate_norm": 0.72,
+            "futures_long_short_ratio_norm": 0.72,
             "calendar_event_proximity_norm": 0.10,
             "calendar_high_impact_24h_norm": 0.12,
         },

@@ -11,6 +11,7 @@ import uuid
 import time
 from datetime import datetime, timezone
 from math import gcd
+from pathlib import Path
 
 try:
     from zoneinfo import ZoneInfo
@@ -75,6 +76,78 @@ _FUTURES_CONTRACT_MULTIPLIERS = {
     "6B": 62500.0,
 }
 _FUTURES_CONTRACT_RE = re.compile(r"^/?([A-Z0-9]+?)([FGHJKMNQUVXZ])(\d{1,4})$")
+
+
+_DYNAMIC_STORAGE_OVERRIDE_CACHE: Dict[str, Any] = {
+    "checked_at_monotonic": 0.0,
+    "fingerprint": (),
+    "values": {},
+}
+_DYNAMIC_STORAGE_OVERRIDE_POLL_SECONDS = 2.0
+
+
+def _parse_env_override_file(path: Path) -> Dict[str, str]:
+    values: Dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return values
+    for raw in lines:
+        line = str(raw or "").strip()
+        if (not line) or line.startswith("#") or ("=" not in line):
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key:
+            values[key] = value.strip()
+    return values
+
+
+def _dynamic_storage_override_paths(project_root: str) -> Tuple[Path, Path]:
+    root = Path(project_root).resolve()
+    return (
+        root / "config" / ".env.storage_pressure_override",
+        root / "config" / ".env.storage_override",
+    )
+
+
+def _dynamic_storage_overrides(project_root: str) -> Dict[str, str]:
+    cache = _DYNAMIC_STORAGE_OVERRIDE_CACHE
+    now_monotonic = time.monotonic()
+    if (now_monotonic - float(cache.get("checked_at_monotonic", 0.0) or 0.0)) < _DYNAMIC_STORAGE_OVERRIDE_POLL_SECONDS:
+        values = cache.get("values")
+        if isinstance(values, dict):
+            return dict(values)
+
+    paths = _dynamic_storage_override_paths(project_root)
+    fingerprint = []
+    for path in paths:
+        try:
+            stat = path.stat()
+            fingerprint.append((str(path), int(stat.st_mtime_ns), int(stat.st_size)))
+        except Exception:
+            fingerprint.append((str(path), 0, 0))
+
+    if tuple(fingerprint) == tuple(cache.get("fingerprint") or ()):
+        cache["checked_at_monotonic"] = now_monotonic
+        values = cache.get("values")
+        return dict(values) if isinstance(values, dict) else {}
+
+    merged: Dict[str, str] = {}
+    for path in paths:
+        merged.update(_parse_env_override_file(path))
+
+    cache["checked_at_monotonic"] = now_monotonic
+    cache["fingerprint"] = tuple(fingerprint)
+    cache["values"] = dict(merged)
+    return merged
+
+
+def _dynamic_storage_flag(project_root: str, name: str, default: bool = True) -> bool:
+    raw = _dynamic_storage_overrides(project_root).get(name)
+    if raw is None:
+        raw = os.getenv(name, "1" if default else "0")
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class BaseTrader:
@@ -743,6 +816,9 @@ class BaseTrader:
         decision_entry: Dict[str, Any],
         safety: Optional[Dict[str, Any]] = None,
     ) -> None:
+        if not _dynamic_storage_flag(self.project_root, "LOG_DECISION_EXPLANATIONS", True):
+            return
+
         gates = decision_entry.get("gates", {})
         gate_summary = ", ".join(
             f"{k}={'PASS' if bool(v) else 'FAIL'}" for k, v in gates.items()
@@ -3147,6 +3223,19 @@ class BaseTrader:
                     bid_size=float(model_inputs.get("bid_size", 1000.0)),
                     ask_size=float(model_inputs.get("ask_size", 1000.0)),
                 )
+            realized_fill_price = self._as_float(paper_pnl.get("fill_price"), 0.0)
+            realized_slippage_bps = 0.0
+            if self._is_trade_action(action) and ref_price > 0.0 and realized_fill_price > 0.0:
+                if str(action).upper().startswith("BUY"):
+                    realized_slippage_bps = max(((realized_fill_price - ref_price) / ref_price) * 10000.0, 0.0)
+                elif str(action).upper().startswith("SELL"):
+                    realized_slippage_bps = max(((ref_price - realized_fill_price) / ref_price) * 10000.0, 0.0)
+            tradeability_score = self._as_float(features.get("tradeability_score"), self._as_float(paper_metadata.get("tradeability_score"), 0.0))
+            source_quality_norm = self._as_float(features.get("news_source_quality_norm"), self._as_float(paper_metadata.get("source_quality_norm"), 0.0))
+            event_proximity_norm = self._as_float(features.get("calendar_event_proximity_norm"), self._as_float(paper_metadata.get("event_proximity_norm"), 0.0))
+            allocation_conflict_norm = self._as_float(features.get("allocation_conflict_norm"), self._as_float(paper_metadata.get("allocation_conflict_norm"), 0.0))
+            model_spread_bps = float(model_inputs.get("spread_bps", 0.0) or 0.0)
+            spread_regime = "wide" if model_spread_bps >= 20.0 else ("normal" if model_spread_bps >= 8.0 else "tight")
 
             paper = self._record_jsonl(
                 self.paper_log_path,
@@ -3169,10 +3258,21 @@ class BaseTrader:
                     "expected_fill_price": float(expected_fill.get("expected_fill_price", 0.0) or 0.0),
                     "expected_slippage_bps": float(expected_fill.get("expected_slippage_bps", 0.0) or 0.0),
                     "expected_impact_bps": float(expected_fill.get("impact_bps", 0.0) or 0.0),
-                    "model_spread_bps": float(model_inputs.get("spread_bps", 0.0) or 0.0),
+                    "expected_partial_fill_ratio": float(expected_fill.get("partial_fill_ratio", 1.0) or 1.0),
+                    "expected_spread_jump_penalty_bps": float(expected_fill.get("spread_jump_penalty_bps", 0.0) or 0.0),
+                    "expected_symbol_curve_multiplier": float(expected_fill.get("symbol_curve_multiplier", 1.0) or 1.0),
+                    "expected_fill_quality_bucket": str(expected_fill.get("fill_quality_bucket") or ""),
+                    "realized_slippage_bps": float(realized_slippage_bps),
+                    "slippage_gap_bps": round(float(realized_slippage_bps - float(expected_fill.get("expected_slippage_bps", 0.0) or 0.0)), 6),
+                    "model_spread_bps": model_spread_bps,
                     "model_latency_ms": float(model_inputs.get("latency_ms", 0.0) or 0.0),
                     "model_bid_size": float(model_inputs.get("bid_size", 0.0) or 0.0),
                     "model_ask_size": float(model_inputs.get("ask_size", 0.0) or 0.0),
+                    "spread_regime": spread_regime,
+                    "tradeability_score": float(tradeability_score),
+                    "source_quality_norm": float(source_quality_norm),
+                    "event_proximity_norm": float(event_proximity_norm),
+                    "allocation_conflict_norm": float(allocation_conflict_norm),
                     **paper_pnl,
                 },
             )

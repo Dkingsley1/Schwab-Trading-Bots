@@ -117,6 +117,8 @@ def _label_matches_stale_stage(label: str, sections: set[str]) -> bool:
     token = raw.lower()
     if not token or not sections:
         return False
+    if "all" in sections or "*" in sections:
+        return True
     if token in sections:
         return True
     if token == "logs" and "logs" in sections:
@@ -167,6 +169,117 @@ def _unique_destination(path: Path) -> Path:
         seq += 1
 
 
+def _path_age_days(path: Path) -> float:
+    try:
+        mt = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        return 0.0
+    return max((datetime.now(timezone.utc) - mt).total_seconds() / 86400.0, 0.0)
+
+
+def _stale_stage_age_bucket(path: Path) -> str:
+    age_days = _path_age_days(path)
+    if age_days < 2.0:
+        return "recent_lt_2d"
+    if age_days < 7.0:
+        return "aging_lt_7d"
+    if age_days < 30.0:
+        return "stale_lt_30d"
+    return "cold_gte_30d"
+
+
+def _stale_stage_temperature_label(label: str, path: Path) -> str:
+    section = str(label or "").strip().lower()
+    name = path.name.lower()
+    if ".local_fallback" in name:
+        return "cool"
+    if section in {"logs", "governance_health", "governance_events", "governance_watchdog", "governance_channels"}:
+        return "warm"
+    if section.startswith("exports") or section.startswith("governance_shadow") or section == "debug_snapshots":
+        return "cool"
+    if "sqlite" in section or "data" in section:
+        return "cold"
+    return "warm"
+
+
+def _stale_stage_storage_tier(label: str, path: Path) -> str:
+    temperature = _stale_stage_temperature_label(label, path)
+    if temperature == "warm":
+        return "warm_stage"
+    if temperature == "cool":
+        return "cool_stage"
+    return "cold_stage"
+
+
+def _stale_stage_economic_value(label: str, path: Path) -> str:
+    section = str(label or "").strip().lower()
+    name = path.name.lower()
+    if ".local_fallback" in name:
+        return "low"
+    if section == "decisions":
+        return "critical"
+    if section == "decision_explanations":
+        return "high"
+    if section.startswith("governance"):
+        return "medium"
+    if section == "logs" or section.startswith("exports") or section == "debug_snapshots":
+        return "low"
+    if "sqlite" in section or "data" in section:
+        return "medium"
+    return "medium"
+
+
+def _economic_value_score(bucket: str) -> int:
+    return {
+        "low": 0,
+        "medium": 1,
+        "high": 2,
+        "critical": 3,
+    }.get(str(bucket or "").strip().lower(), 1)
+
+
+def _stale_stage_reason(label: str, path: Path) -> str:
+    section = str(label or "").strip().lower()
+    name = path.name.lower()
+    if ".local_fallback" in name:
+        return "stale_fallback_copy"
+    if section == "debug_snapshots":
+        return "snapshot_retention_expired"
+    if section.startswith("exports"):
+        return "export_retention_expired"
+    if section.startswith("governance"):
+        return "governance_retention_expired"
+    if section == "logs":
+        return "log_retention_expired"
+    if "sqlite" in section or "data" in section:
+        return "ingestion_state_retention_expired"
+    return "retention_window_expired"
+
+
+def _summarize_stale_stage_paths(paths: list[Path], *, label: str) -> dict[str, object]:
+    by_temperature: dict[str, int] = {}
+    by_storage_tier: dict[str, int] = {}
+    by_age_bucket: dict[str, int] = {}
+    by_economic_value: dict[str, int] = {}
+    for path in _dedupe_paths(paths):
+        if not path.exists():
+            continue
+        temperature = _stale_stage_temperature_label(label, path)
+        tier = _stale_stage_storage_tier(label, path)
+        age_bucket = _stale_stage_age_bucket(path)
+        value_bucket = _stale_stage_economic_value(label, path)
+        by_temperature[temperature] = by_temperature.get(temperature, 0) + 1
+        by_storage_tier[tier] = by_storage_tier.get(tier, 0) + 1
+        by_age_bucket[age_bucket] = by_age_bucket.get(age_bucket, 0) + 1
+        by_economic_value[value_bucket] = by_economic_value.get(value_bucket, 0) + 1
+    return {
+        "by_temperature": by_temperature,
+        "by_storage_tier": by_storage_tier,
+        "by_age_bucket": by_age_bucket,
+        "by_economic_value": by_economic_value,
+    }
+
+
 def _move_paths_to_stale_stage(
     *,
     paths: list[Path],
@@ -180,10 +293,19 @@ def _move_paths_to_stale_stage(
     moved_bytes = 0
     moved_paths: list[str] = []
     errors: list[str] = []
+    by_temperature: dict[str, int] = {}
+    by_storage_tier: dict[str, int] = {}
+    by_age_bucket: dict[str, int] = {}
+    by_economic_value: dict[str, int] = {}
     for path in _dedupe_paths(paths):
         if not path.exists():
             continue
         size_bytes = _path_size_bytes(path)
+        temperature = _stale_stage_temperature_label(label, path)
+        storage_tier = _stale_stage_storage_tier(label, path)
+        age_bucket = _stale_stage_age_bucket(path)
+        economic_value = _stale_stage_economic_value(label, path)
+        stale_reason = _stale_stage_reason(label, path)
         rel = _stale_relative_path(path, project_root=project_root, external_root=external_root)
         dest = _unique_destination(stale_root / str(label or "unknown") / rel)
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -199,16 +321,89 @@ def _move_paths_to_stale_stage(
             "original_path": str(path),
             "staged_path": str(dest),
             "size_bytes": int(size_bytes),
+            "temperature_label": temperature,
+            "storage_tier": storage_tier,
+            "age_bucket": age_bucket,
+            "economic_value": economic_value,
+            "economic_value_score": int(_economic_value_score(economic_value)),
+            "age_days": round(_path_age_days(dest), 3),
+            "stale_reason": stale_reason,
         }
         _append_jsonl(manifest_path, row)
         moved += 1
         moved_bytes += int(size_bytes)
         moved_paths.append(str(dest))
+        by_temperature[temperature] = by_temperature.get(temperature, 0) + 1
+        by_storage_tier[storage_tier] = by_storage_tier.get(storage_tier, 0) + 1
+        by_age_bucket[age_bucket] = by_age_bucket.get(age_bucket, 0) + 1
+        by_economic_value[economic_value] = by_economic_value.get(economic_value, 0) + 1
     return {
         "moved": int(moved),
         "moved_bytes": int(moved_bytes),
         "moved_paths": moved_paths,
         "errors": errors,
+        "by_temperature": by_temperature,
+        "by_storage_tier": by_storage_tier,
+        "by_age_bucket": by_age_bucket,
+        "by_economic_value": by_economic_value,
+    }
+
+
+def _compact_stale_manifest(
+    *,
+    manifest_path: Path,
+    keep_recent_purged: int = 256,
+) -> dict[str, object]:
+    if not manifest_path.exists():
+        return {
+            "ran": False,
+            "reason": "manifest_missing",
+            "lines_before": 0,
+            "lines_after": 0,
+            "lines_dropped": 0,
+            "active_rows_kept": 0,
+            "purged_rows_kept": 0,
+        }
+
+    active_rows: list[dict[str, object]] = []
+    purged_rows: list[dict[str, object]] = []
+    lines_before = 0
+
+    for raw in manifest_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        lines_before += 1
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(row, dict):
+            continue
+        event = str(row.get("event") or "").strip().lower()
+        staged_path_text = str(row.get("staged_path") or "").strip()
+        staged_path = Path(staged_path_text) if staged_path_text else None
+        if event == "purged":
+            purged_rows.append(row)
+            continue
+        if staged_path is not None and staged_path.exists():
+            active_rows.append(row)
+
+    kept_purged = purged_rows[-max(int(keep_recent_purged), 0) :] if keep_recent_purged > 0 else []
+    compacted_rows = active_rows + kept_purged
+    compacted_text = "\n".join(json.dumps(row, ensure_ascii=True) for row in compacted_rows)
+    if compacted_text:
+        compacted_text += "\n"
+    manifest_path.write_text(compacted_text, encoding="utf-8")
+
+    return {
+        "ran": True,
+        "reason": "ok",
+        "lines_before": int(lines_before),
+        "lines_after": int(len(compacted_rows)),
+        "lines_dropped": int(max(lines_before - len(compacted_rows), 0)),
+        "active_rows_kept": int(len(active_rows)),
+        "purged_rows_kept": int(len(kept_purged)),
     }
 
 
@@ -234,7 +429,62 @@ def _purge_old_stale_stage(
                 if mt < cutoff:
                     rows.append(path)
     bytes_total = sum(_path_size_bytes(path) for path in rows)
-    deleted, errors = _delete_paths(rows)
+    deleted = 0
+    errors = 0
+    deleted_bytes = 0
+    by_label: dict[str, int] = {}
+    by_temperature: dict[str, int] = {}
+    by_storage_tier: dict[str, int] = {}
+    by_age_bucket: dict[str, int] = {}
+    by_economic_value: dict[str, int] = {}
+    error_rows: list[str] = []
+    for path in sorted(_dedupe_paths(rows), key=lambda item: len(str(item)), reverse=True):
+        label = "unknown"
+        try:
+            rel = path.relative_to(stale_root)
+            if rel.parts:
+                label = str(rel.parts[0] or "unknown")
+        except ValueError:
+            label = "unknown"
+        size_bytes = _path_size_bytes(path)
+        temperature = _stale_stage_temperature_label(label, path)
+        storage_tier = _stale_stage_storage_tier(label, path)
+        age_bucket = _stale_stage_age_bucket(path)
+        economic_value = _stale_stage_economic_value(label, path)
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+        except OSError as exc:
+            errors += 1
+            error_rows.append(f"{path}:{exc}")
+            continue
+        deleted += 1
+        deleted_bytes += int(size_bytes)
+        by_label[label] = by_label.get(label, 0) + 1
+        by_temperature[temperature] = by_temperature.get(temperature, 0) + 1
+        by_storage_tier[storage_tier] = by_storage_tier.get(storage_tier, 0) + 1
+        by_age_bucket[age_bucket] = by_age_bucket.get(age_bucket, 0) + 1
+        by_economic_value[economic_value] = by_economic_value.get(economic_value, 0) + 1
+        _append_jsonl(
+            manifest_path,
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "event": "purged",
+                "label": label,
+                "staged_path": str(path),
+                "size_bytes": int(size_bytes),
+                "temperature_label": temperature,
+                "storage_tier": storage_tier,
+                "age_bucket": age_bucket,
+                "economic_value": economic_value,
+                "economic_value_score": int(_economic_value_score(economic_value)),
+                "age_days": round(_path_age_days(path), 3),
+                "purge_window_days": int(older_than_days),
+                "stale_reason": _stale_stage_reason(label, path),
+            },
+        )
     if stale_root.exists():
         for root, dirs, files in os.walk(stale_root, topdown=False):
             if dirs or files:
@@ -246,12 +496,21 @@ def _purge_old_stale_stage(
                 path.rmdir()
             except OSError:
                 continue
+    manifest_compaction = _compact_stale_manifest(manifest_path=manifest_path)
     return {
         "candidate_files": int(len(rows)),
         "candidate_bytes": int(bytes_total),
         "deleted_files": int(deleted),
+        "deleted_bytes": int(deleted_bytes),
         "delete_errors": int(errors),
         "older_than_days": int(older_than_days),
+        "deleted_by_label": by_label,
+        "deleted_by_temperature": by_temperature,
+        "deleted_by_storage_tier": by_storage_tier,
+        "deleted_by_age_bucket": by_age_bucket,
+        "deleted_by_economic_value": by_economic_value,
+        "manifest_compaction": manifest_compaction,
+        "errors": error_rows,
     }
 
 
@@ -309,6 +568,10 @@ def _external_low_space_autoprune_min_free_bytes() -> int:
             return 0
 
     return _external_min_free_bytes()
+
+
+def _allow_external_mode_pressure_prune() -> bool:
+    return os.getenv("RETENTION_EXTERNAL_LIVE_SQLITE_ALLOW_EXTERNAL_MODE_PRESSURE_PRUNE", "1").strip() == "1"
 
 
 def _disk_free_bytes(path: Path) -> int | None:
@@ -468,15 +731,20 @@ def _collect_external_live_sqlite_pressure_rows(
 ) -> tuple[list[Path], dict[str, object]]:
     storage_mode = _current_storage_mode(project_root)
     pressure = _probe_external_storage_pressure(external_root)
+    allow_external_mode = _allow_external_mode_pressure_prune()
     details: dict[str, object] = {
         **pressure,
         "storage_mode": storage_mode,
         "require_local_fallback": bool(require_local_fallback),
+        "allow_external_mode_pressure_prune": bool(allow_external_mode),
     }
     if not bool(pressure.get("external_low_space", False)):
         details["skipped_reason"] = "external_not_low_space"
         return [], details
-    if require_local_fallback and storage_mode not in LOCAL_FALLBACK_STORAGE_MODES:
+    external_mode_override = bool(
+        allow_external_mode and str(storage_mode or "").strip() == "external"
+    )
+    if require_local_fallback and storage_mode not in LOCAL_FALLBACK_STORAGE_MODES and not external_mode_override:
         details["skipped_reason"] = "storage_mode_not_local_fallback"
         return [], details
 
@@ -511,11 +779,23 @@ def _collect_external_live_sqlite_pressure_rows(
     shard_local_fallback_rows: list[Path] = []
     external_shard_root = external_data_root / "sql_link_shards"
     local_shard_root = local_data_root / "sql_link_shards"
+    skipped_unmirrored_shard_rows = 0
     if external_shard_root.exists() and local_shard_root.exists():
-        shard_rows = [
-            path for path in external_shard_root.rglob("*")
-            if path.is_file() and ".local_fallback" not in path.name
-        ]
+        shard_rows = []
+        for path in external_shard_root.rglob("*"):
+            if not path.is_file() or ".local_fallback" in path.name:
+                continue
+            include = True
+            if external_mode_override:
+                try:
+                    rel_path = path.relative_to(external_shard_root)
+                except Exception:
+                    rel_path = Path(path.name)
+                include = (local_shard_root / rel_path).exists()
+            if include:
+                shard_rows.append(path)
+            else:
+                skipped_unmirrored_shard_rows += 1
         candidates.extend(shard_rows)
     if external_shard_root.exists():
         shard_local_fallback_rows = [path for path in external_shard_root.glob("*.local_fallback*") if path.is_file()]
@@ -527,6 +807,7 @@ def _collect_external_live_sqlite_pressure_rows(
     details["pressure_local_fallback_copy_candidates"] = int(len(local_fallback_copies))
     details["pressure_shard_file_candidates"] = int(len(shard_rows))
     details["pressure_shard_local_fallback_candidates"] = int(len(shard_local_fallback_rows))
+    details["pressure_unmirrored_shard_candidates_skipped"] = int(skipped_unmirrored_shard_rows)
     return candidates, details
 
 
@@ -833,8 +1114,8 @@ def _invoke_with_timeout(timeout_seconds: float, fn: Callable[..., Any], *args: 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prune old data artifacts by retention policy.")
-    parser.add_argument("--decisions-days", type=int, default=int(os.getenv("RETENTION_DECISIONS_DAYS", "30")))
-    parser.add_argument("--decision-explanations-days", type=int, default=int(os.getenv("RETENTION_DECISION_EXPLANATIONS_DAYS", "30")))
+    parser.add_argument("--decisions-days", type=int, default=int(os.getenv("RETENTION_DECISIONS_DAYS", "5")))
+    parser.add_argument("--decision-explanations-days", type=int, default=int(os.getenv("RETENTION_DECISION_EXPLANATIONS_DAYS", "5")))
     parser.add_argument("--governance-days", type=int, default=int(os.getenv("RETENTION_GOVERNANCE_DAYS", "45")))
     parser.add_argument("--exports-days", type=int, default=int(os.getenv("RETENTION_EXPORTS_DAYS", "30")))
     parser.add_argument("--backup-drills-days", type=int, default=int(os.getenv("RETENTION_BACKUP_DRILLS_DAYS", "14")))
@@ -903,6 +1184,7 @@ def main() -> int:
     parser.add_argument("--archive-cold-export-batch-size", type=int, default=int(os.getenv("RETENTION_ARCHIVE_COLD_EXPORT_BATCH_SIZE", os.getenv("SQL_LINK_SERVICE_HOT_COLD_ARCHIVE_BATCH_SIZE", "50000"))))
     parser.add_argument("--archive-cold-export-compression", default=os.getenv("RETENTION_ARCHIVE_COLD_EXPORT_COMPRESSION", os.getenv("SQL_LINK_SERVICE_HOT_COLD_ARCHIVE_COMPRESSION", "zstd")))
     parser.add_argument("--stale-stage", action=argparse.BooleanOptionalAction, default=os.getenv("RETENTION_STALE_STAGE_ENABLED", "0").strip() == "1")
+    parser.add_argument("--stale-stage-only", action=argparse.BooleanOptionalAction, default=os.getenv("RETENTION_STALE_STAGE_ONLY", "0").strip() == "1")
     parser.add_argument("--stale-stage-root", default=os.getenv("RETENTION_STALE_STAGE_ROOT", str(_default_stale_stage_root(PROJECT_ROOT))))
     parser.add_argument("--stale-stage-manifest", default=os.getenv("RETENTION_STALE_STAGE_MANIFEST", ""))
     parser.add_argument("--stale-stage-sections", default=os.getenv("RETENTION_STALE_STAGE_SECTIONS", ",".join(DEFAULT_STALE_STAGE_SECTION_TOKENS)))
@@ -1130,24 +1412,56 @@ def main() -> int:
     stale_stage_root = Path(args.stale_stage_root).expanduser()
     stale_stage_manifest = _stale_manifest_path(stale_stage_root, args.stale_stage_manifest)
     stale_stage_rows_by_label: dict[str, list[Path]] = {}
-    hard_delete_rows: list[Path] = []
+    hard_delete_candidates: list[tuple[str, Path]] = []
     for label, rows in candidate_rows_by_label.items():
         if args.stale_stage and _label_matches_stale_stage(label, stale_stage_sections):
             stale_stage_rows_by_label[label] = list(rows)
-        else:
-            hard_delete_rows.extend(rows)
+        elif not args.stale_stage_only:
+            hard_delete_candidates.extend((label, path) for path in rows)
+    candidate_temperature_summary: dict[str, int] = {}
+    candidate_storage_tier_summary: dict[str, int] = {}
+    candidate_age_bucket_summary: dict[str, int] = {}
+    candidate_economic_value_summary: dict[str, int] = {}
+    for label, rows in stale_stage_rows_by_label.items():
+        summary = _summarize_stale_stage_paths(list(rows), label=label)
+        for key, value in dict(summary.get("by_temperature", {}) or {}).items():
+            candidate_temperature_summary[str(key)] = candidate_temperature_summary.get(str(key), 0) + int(value)
+        for key, value in dict(summary.get("by_storage_tier", {}) or {}).items():
+            candidate_storage_tier_summary[str(key)] = candidate_storage_tier_summary.get(str(key), 0) + int(value)
+        for key, value in dict(summary.get("by_age_bucket", {}) or {}).items():
+            candidate_age_bucket_summary[str(key)] = candidate_age_bucket_summary.get(str(key), 0) + int(value)
+        for key, value in dict(summary.get("by_economic_value", {}) or {}).items():
+            candidate_economic_value_summary[str(key)] = candidate_economic_value_summary.get(str(key), 0) + int(value)
+
+    hard_delete_candidates.sort(
+        key=lambda item: (
+            int(_economic_value_score(_stale_stage_economic_value(item[0], item[1]))),
+            -_path_age_days(item[1]),
+            str(item[1]),
+        )
+    )
+    hard_delete_rows: list[Path] = [path for _, path in hard_delete_candidates]
 
     stale_stage_payload: dict[str, object] = {
         "enabled": bool(args.stale_stage),
+        "stage_only": bool(args.stale_stage_only),
         "root": str(stale_stage_root),
         "manifest_path": str(stale_stage_manifest),
         "sections": sorted(stale_stage_sections),
         "candidate_files": int(sum(len(rows) for rows in stale_stage_rows_by_label.values())),
         "candidate_bytes": int(sum(_path_size_bytes(path) for rows in stale_stage_rows_by_label.values() for path in rows)),
+        "candidate_by_temperature": candidate_temperature_summary,
+        "candidate_by_storage_tier": candidate_storage_tier_summary,
+        "candidate_by_age_bucket": candidate_age_bucket_summary,
+        "candidate_by_economic_value": candidate_economic_value_summary,
         "staged_files": 0,
         "staged_bytes": 0,
         "delete_errors": 0,
         "staged_by_label": {},
+        "staged_by_temperature": {},
+        "staged_by_storage_tier": {},
+        "staged_by_age_bucket": {},
+        "staged_by_economic_value": {},
         "purge_enabled": bool(args.stale_purge),
         "purge": {},
     }
@@ -1160,6 +1474,10 @@ def main() -> int:
             staged_files = 0
             staged_bytes = 0
             stage_errors = 0
+            staged_temperature_summary: dict[str, int] = {}
+            staged_storage_tier_summary: dict[str, int] = {}
+            staged_age_bucket_summary: dict[str, int] = {}
+            staged_economic_value_summary: dict[str, int] = {}
             for label, rows in stale_stage_rows_by_label.items():
                 result = _move_paths_to_stale_stage(
                     paths=rows,
@@ -1178,10 +1496,22 @@ def main() -> int:
                 staged_files += int(result.get("moved", 0) or 0)
                 staged_bytes += int(result.get("moved_bytes", 0) or 0)
                 stage_errors += len(result.get("errors", []) or [])
+                for key, value in dict(result.get("by_temperature", {}) or {}).items():
+                    staged_temperature_summary[str(key)] = staged_temperature_summary.get(str(key), 0) + int(value)
+                for key, value in dict(result.get("by_storage_tier", {}) or {}).items():
+                    staged_storage_tier_summary[str(key)] = staged_storage_tier_summary.get(str(key), 0) + int(value)
+                for key, value in dict(result.get("by_age_bucket", {}) or {}).items():
+                    staged_age_bucket_summary[str(key)] = staged_age_bucket_summary.get(str(key), 0) + int(value)
+                for key, value in dict(result.get("by_economic_value", {}) or {}).items():
+                    staged_economic_value_summary[str(key)] = staged_economic_value_summary.get(str(key), 0) + int(value)
             stale_stage_payload["staged_by_label"] = staged_by_label
             stale_stage_payload["staged_files"] = int(staged_files)
             stale_stage_payload["staged_bytes"] = int(staged_bytes)
             stale_stage_payload["delete_errors"] = int(stage_errors)
+            stale_stage_payload["staged_by_temperature"] = staged_temperature_summary
+            stale_stage_payload["staged_by_storage_tier"] = staged_storage_tier_summary
+            stale_stage_payload["staged_by_age_bucket"] = staged_age_bucket_summary
+            stale_stage_payload["staged_by_economic_value"] = staged_economic_value_summary
         if args.stale_purge:
             stale_stage_payload["purge"] = _purge_old_stale_stage(
                 stale_root=stale_stage_root,

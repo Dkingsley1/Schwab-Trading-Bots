@@ -1,4 +1,5 @@
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -12,12 +13,15 @@ import mac_notification_watch as watch
 
 
 def test_power_event_candidates_include_recent_clamshell_sleep(monkeypatch) -> None:
+    now = datetime.now(timezone.utc).astimezone()
+    sleep_stamp = now.strftime("%Y-%m-%d %H:%M:%S %z")
+    open_stamp = (now - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S %z")
     monkeypatch.setattr(
         watch,
         "_recent_pmset_lines",
         lambda limit=watch.PMSET_POWER_LOG_TAIL_LINES: [
-            "2026-03-27 16:26:14 -0400 Sleep                Entering Sleep state due to 'Clamshell Sleep':TCPKeepAlive=active Using Batt (Charge:100%) 5 secs",
-            "2026-03-27 17:16:05 -0400 Assertions           PID 358(powerd) Created UserIsActive \"com.apple.powermanagement.lidopen\" 00:00:00  id:0x0x9000092e5 [System: PrevIdle PrevDisp PrevSleep DeclUser kCPU kDisp]",
+            f"{sleep_stamp} Sleep                Entering Sleep state due to 'Clamshell Sleep':TCPKeepAlive=active Using Batt (Charge:100%) 5 secs",
+            f"{open_stamp} Assertions           PID 358(powerd) Created UserIsActive \"com.apple.powermanagement.lidopen\" 00:00:00  id:0x0x9000092e5 [System: PrevIdle PrevDisp PrevSleep DeclUser kCPU kDisp]",
         ],
     )
     candidates = watch._power_event_candidates(24 * 60 * 60)
@@ -35,3 +39,22 @@ def test_power_event_severity_and_heading() -> None:
     assert watch._event_severity(open_key, "") == "info"
     assert watch._notification_heading(close_key, "") == ("Trading Bot Critical", "Laptop Closed")
     assert watch._notification_heading(open_key, "") == ("Trading Bot Incident", "Laptop Opened")
+
+
+def test_notification_body_adds_action_hint_for_tripwire() -> None:
+    key = "tripwire:all_sleeves"
+    body = watch._notification_body(key, "Tripwire triggered for all_sleeves")
+
+    assert "Tripwire triggered for all_sleeves" in body
+    assert "Action: keep live halted and inspect the tripwire incidents." in body
+
+
+def test_notification_body_adds_action_hint_for_guardrail_warning() -> None:
+    key = "critical_alert:warn:latest_default"
+    message = "Margin Guard [Aggressive / Schwab]\nPosition limit reached"
+
+    body = watch._notification_body(key, message)
+
+    assert "Margin Guard [Aggressive / Schwab]" in body
+    assert "Position limit reached" in body
+    assert "Action: review the guardrail and keep the lane constrained." in body

@@ -87,6 +87,33 @@ def _registry_teacher_candidates(
     return out
 
 
+def _curated_teacher_candidates(path: Path) -> list[dict[str, Any]]:
+    payload = _load_json(path, default={})
+    rows = payload.get("qualified_teachers") if isinstance(payload.get("qualified_teachers"), list) else []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        bot_id = str(row.get("bot_id") or "").strip()
+        role = str(row.get("bot_role") or row.get("role") or "unknown").strip() or "unknown"
+        if not bot_id:
+            continue
+        out.append(
+            {
+                "bot_id": bot_id,
+                "role": role,
+                "runs": _safe_int(row.get("walk_forward_runs"), 0),
+                "forward_mean": _safe_float(row.get("walk_forward_forward_mean"), _safe_float(row.get("registry_accuracy"), 0.0)),
+                "delta": _safe_float(row.get("walk_forward_delta"), 0.0),
+                "score": _safe_float(row.get("teacher_score"), 0.0),
+                "source": str(row.get("source") or "teacher_quality_guard"),
+                "teacher_score": _safe_float(row.get("teacher_score"), 0.0),
+                "teacher_grade": str(row.get("teacher_grade") or ""),
+            }
+        )
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Teacher-student distillation planner for new bots.")
     parser.add_argument("--walk-forward", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "walk_forward_latest.json"))
@@ -100,6 +127,7 @@ def main() -> int:
     parser.add_argument("--teacher-weight", type=float, default=0.30, help="Soft-target blend weight for teacher signals.")
     parser.add_argument("--teacher-min-registry-accuracy", type=float, default=0.65)
     parser.add_argument("--teacher-min-registry-quality", type=float, default=0.75)
+    parser.add_argument("--teacher-quality", default=str(PROJECT_ROOT / "governance" / "distillation" / "teacher_quality_latest.json"))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -107,6 +135,7 @@ def main() -> int:
     bots = (wf.get("bots") or {}) if isinstance(wf, dict) else {}
     registry = _load_json(Path(args.registry), default={})
     role_by_bot = _role_map(registry)
+    curated_teachers = _curated_teacher_candidates(Path(args.teacher_quality))
 
     teacher_candidates: list[dict[str, Any]] = []
     students: list[dict[str, Any]] = []
@@ -153,7 +182,7 @@ def main() -> int:
     )
 
     teacher_by_id: dict[str, dict[str, Any]] = {}
-    for candidate in teacher_candidates:
+    for candidate in curated_teachers + teacher_candidates:
         bot_id = str(candidate.get("bot_id", "")).strip()
         if not bot_id:
             continue
@@ -194,6 +223,8 @@ def main() -> int:
                         "role": t["role"],
                         "forward_mean": round(_safe_float(t["forward_mean"]), 6),
                         "delta": round(_safe_float(t["delta"]), 6),
+                        "teacher_score": round(_safe_float(t.get("teacher_score"), _safe_float(t.get("score"), 0.0)), 6),
+                        "teacher_grade": str(t.get("teacher_grade") or ""),
                     }
                     for t in selected
                 ],
@@ -205,6 +236,7 @@ def main() -> int:
         "inputs": {
             "walk_forward": str(Path(args.walk_forward)),
             "registry": str(Path(args.registry)),
+            "teacher_quality": str(Path(args.teacher_quality)),
             "teacher_min_forward_mean": args.teacher_min_forward_mean,
             "teacher_min_runs": args.teacher_min_runs,
             "teacher_max": args.teacher_max,
@@ -218,6 +250,7 @@ def main() -> int:
             "teacher_count": len(teachers),
             "student_count": len(students),
             "assignment_count": len(assignments),
+            "curated_teacher_count": len(curated_teachers),
         },
         "teachers": teachers,
         "assignments": assignments,

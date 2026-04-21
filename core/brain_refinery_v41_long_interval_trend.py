@@ -100,6 +100,12 @@ def _long_trend_support(obs):
         + (0.18 * observation_feature(obs, "swing_weekly_trend_confirm_norm"))
         + (0.16 * observation_feature(obs, "swing_regime_trend_norm"))
         + (0.10 * observation_feature(obs, "swing_regime_alignment_norm"))
+        + (0.10 * observation_feature(obs, "long_term_valuation_anchor_norm"))
+        + (0.10 * observation_feature(obs, "long_term_quality_persistence_norm"))
+        + (0.08 * observation_feature(obs, "long_term_downside_preservation_norm"))
+        + (0.06 * observation_feature(obs, "long_term_accumulation_discipline_norm"))
+        + (0.05 * (1.0 - observation_feature(obs, "long_term_overlap_crowding_norm", 0.0)))
+        + (0.04 * (1.0 - observation_feature(obs, "long_term_tax_friction_norm", 0.0)))
         + (0.04 * observation_feature(obs, "lead_lag_alignment_norm"))
         + (0.04 * _quote_quality(obs))
     )
@@ -111,14 +117,19 @@ def _long_trend_bias(obs):
     )
     return float(
         np.clip(
-            (0.20 * observation_feature(obs, "behavior_prior"))
-            + (0.16 * observation_feature(obs, "capital_flow_signed_scaled"))
-            + (0.14 * observation_feature(obs, "flow_direction_signed"))
-            + (0.14 * observation_feature(obs, "mom_15m") * 85.0)
-            + (0.10 * observation_feature(obs, "pct_from_close") * 90.0)
-            + (0.10 * breadth_balance)
+            (0.15 * observation_feature(obs, "behavior_prior"))
+            + (0.14 * observation_feature(obs, "capital_flow_signed_scaled"))
+            + (0.12 * observation_feature(obs, "flow_direction_signed"))
+            + (0.12 * observation_feature(obs, "mom_15m") * 85.0)
+            + (0.08 * observation_feature(obs, "pct_from_close") * 90.0)
+            + (0.08 * breadth_balance)
             + (0.08 * _centered01(observation_feature(obs, "swing_sector_relative_strength_norm", 0.5)))
-            + (0.08 * observation_feature(obs, "lead_lag_alignment_norm")),
+            + (0.07 * observation_feature(obs, "long_term_total_return_income_norm"))
+            + (0.06 * observation_feature(obs, "long_term_capital_allocation_quality_norm"))
+            + (0.05 * observation_feature(obs, "lead_lag_alignment_norm"))
+            - (0.05 * observation_feature(obs, "long_term_overlap_crowding_norm", 0.0))
+            - (0.04 * observation_feature(obs, "long_term_corporate_action_hazard_norm", 0.0))
+            - (0.04 * observation_feature(obs, "long_term_duration_sensitivity_norm", 0.0)),
             -1.0,
             1.0,
         )
@@ -153,11 +164,25 @@ def _runtime_feature_vector(sequence, idx):
             observation_feature(obs, "capital_flow_signed_scaled"),
             observation_feature(obs, "flow_direction_signed"),
             observation_feature(obs, "flow_risk_on_norm"),
+            observation_feature(obs, "long_term_valuation_anchor_norm"),
+            observation_feature(obs, "long_term_valuation_history_norm"),
+            observation_feature(obs, "long_term_capital_allocation_quality_norm"),
+            observation_feature(obs, "long_term_quality_persistence_norm"),
+            observation_feature(obs, "long_term_accumulation_discipline_norm"),
+            observation_feature(obs, "long_term_overlap_crowding_norm"),
+            observation_feature(obs, "long_term_duration_sensitivity_norm"),
+            observation_feature(obs, "long_term_total_return_income_norm"),
+            observation_feature(obs, "long_term_position_age_norm"),
+            observation_feature(obs, "long_term_cost_basis_gap_norm"),
+            observation_feature(obs, "long_term_tax_friction_norm"),
+            observation_feature(obs, "long_term_corporate_action_hazard_norm"),
+            observation_feature(obs, "long_term_downside_preservation_norm"),
             price_change(sequence, idx, 3),
             price_change(sequence, idx, 6),
             feature_std(sequence, idx, "pct_from_close", 8),
             feature_ema(sequence, idx, "behavior_prior", 4),
             feature_ema(sequence, idx, "swing_regime_trend_norm", 5),
+            feature_ema(sequence, idx, "long_term_total_return_income_norm", 5),
         ],
         dtype=np.float32,
     )
@@ -172,6 +197,7 @@ def _runtime_sample_filter(sequence, idx, horizon):
         and observation_feature(obs, "queue_depth", 0.0) >= 1.0
         and _long_trend_support(obs) >= 0.24
         and abs(_long_trend_bias(obs)) >= 0.12
+        and observation_feature(obs, "long_term_accumulation_discipline_norm", 1.0) >= 0.24
     )
 
 
@@ -184,7 +210,8 @@ def _runtime_confidence(sequence, idx, horizon):
         + (0.22 * bias)
         + (0.16 * _quote_quality(obs))
         + (0.16 * observation_feature(obs, "flow_risk_on_norm"))
-        + (0.12 * observation_feature(obs, "market_micro_trend_persistence_norm"))
+        + (0.08 * observation_feature(obs, "market_micro_trend_persistence_norm"))
+        + (0.04 * observation_feature(obs, "long_term_downside_preservation_norm"))
     )
 
 
@@ -208,12 +235,17 @@ def _runtime_long_trend_label(sequence, idx, horizon):
         (0.0010 * support)
         + (0.00030 * _quote_quality(obs))
         + (0.00025 * observation_feature(obs, "flow_risk_on_norm"))
+        + (0.00030 * observation_feature(obs, "long_term_total_return_income_norm"))
+        + (0.00020 * observation_feature(obs, "long_term_capital_allocation_quality_norm"))
     )
     penalty = (
         (0.26 * drawdown)
         + (0.20 * realized)
         + (0.00020 * observation_feature(obs, "breadth_risk_off_norm"))
         + (0.00015 * observation_feature(obs, "options_vol_expectation_norm"))
+        + (0.00018 * observation_feature(obs, "long_term_overlap_crowding_norm"))
+        + (0.00016 * observation_feature(obs, "long_term_duration_sensitivity_norm"))
+        + (0.00016 * observation_feature(obs, "long_term_corporate_action_hazard_norm"))
     )
     success_score = signed_ret + support_bonus - penalty
     failure_score = (
@@ -276,11 +308,25 @@ def train_brain():
             "capital_flow_signed_scaled",
             "flow_direction_signed",
             "flow_risk_on_norm",
+            "long_term_valuation_anchor_norm",
+            "long_term_valuation_history_norm",
+            "long_term_capital_allocation_quality_norm",
+            "long_term_quality_persistence_norm",
+            "long_term_accumulation_discipline_norm",
+            "long_term_overlap_crowding_norm",
+            "long_term_duration_sensitivity_norm",
+            "long_term_total_return_income_norm",
+            "long_term_position_age_norm",
+            "long_term_cost_basis_gap_norm",
+            "long_term_tax_friction_norm",
+            "long_term_corporate_action_hazard_norm",
+            "long_term_downside_preservation_norm",
             "ret_3",
             "ret_6",
             "pct_from_close_std_8",
             "behavior_prior_ema_4",
             "swing_regime_trend_norm_ema_5",
+            "long_term_total_return_income_norm_ema_5",
         ],
         runtime_feature_builder=_runtime_feature_vector,
         runtime_label_builder=_runtime_long_trend_label,

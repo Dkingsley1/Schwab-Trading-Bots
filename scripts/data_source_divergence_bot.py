@@ -84,12 +84,14 @@ def _summarize_bucket_map(
     comparison_mode: str,
     scope: str = "",
     profile_dirs=None,
+    min_price_count: int = 2,
 ):
     worst_rel = 0.0
     compared = 0
     offenders = []
+    min_count = max(int(min_price_count), 2)
     for meta_key, prices in bucket_map.items():
-        if len(prices) < 2:
+        if len(prices) < min_count:
             continue
         meta = dict(meta_key)
         mn = min(prices)
@@ -119,6 +121,7 @@ def _summarize_bucket_map(
         "max_relative_spread": float(max_relative_spread),
         "offenders": offenders[:50],
         "comparison_mode": comparison_mode,
+        "min_price_count": int(min_count),
     }
     if scope:
         payload["scope"] = scope
@@ -176,6 +179,7 @@ def build_divergence_payloads(project_root: Path, *, hours: int, max_relative_sp
         comparison_mode="cross_profile",
         scope="all_profiles",
         profile_dirs=sorted({d for dirs in scope_dirs.values() for d in dirs}),
+        min_price_count=2,
     )
 
     scope_payloads = {}
@@ -188,6 +192,7 @@ def build_divergence_payloads(project_root: Path, *, hours: int, max_relative_sp
             comparison_mode="within_profile",
             scope=scope,
             profile_dirs=scope_dirs.get(scope, set()),
+            min_price_count=3,
         )
 
     for scope in ("bond_profile", "non_bond_profiles"):
@@ -201,6 +206,7 @@ def build_divergence_payloads(project_root: Path, *, hours: int, max_relative_sp
                 comparison_mode="within_profile",
                 scope=scope,
                 profile_dirs=scope_dirs.get(scope, set()),
+                min_price_count=3,
             ),
         )
 
@@ -214,6 +220,7 @@ def build_divergence_payloads(project_root: Path, *, hours: int, max_relative_sp
             comparison_mode="within_profile",
             scope=shadow_dir,
             profile_dirs=[shadow_dir],
+            min_price_count=3,
         )
 
     scope_offenders = []

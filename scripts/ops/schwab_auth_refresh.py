@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import argparse
+import importlib
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +13,18 @@ from typing import Any, Dict
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TOKEN_PATH = PROJECT_ROOT / "token.json"
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "schwab_auth_refresh_latest.json"
+BROWSER_APP_ALIASES = {
+    "chrome": "Google Chrome",
+    "google chrome": "Google Chrome",
+    "google-chrome": "Google Chrome",
+    "chromium": "Chromium",
+    "safari": "Safari",
+    "firefox": "Firefox",
+    "edge": "Microsoft Edge",
+    "microsoft edge": "Microsoft Edge",
+    "microsoft-edge": "Microsoft Edge",
+    "msedge": "Microsoft Edge",
+}
 
 
 def _token_status(path: Path) -> Dict[str, Any]:
@@ -91,6 +105,112 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _normalize_browser_app_name(requested_browser: str | None) -> str | None:
+    raw = str(requested_browser or "").strip()
+    if not raw:
+        return None
+    return BROWSER_APP_ALIASES.get(raw.lower(), raw)
+
+
+def _open_url_via_applescript(url: str, requested_browser: str | None) -> tuple[bool, str]:
+    if sys.platform != "darwin":
+        return False, "not_macos"
+
+    app_name = _normalize_browser_app_name(requested_browser)
+    if not app_name:
+        return False, "missing_app_name"
+
+    script = (
+        f'tell application "{app_name}"\n'
+        "activate\n"
+        f'open location "{url}"\n'
+        "end tell\n"
+    )
+    proc = subprocess.run(
+        ["/usr/bin/osascript", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode == 0:
+        return True, f"applescript_app:{app_name}"
+    stderr = (proc.stderr or "").strip()
+    stdout = (proc.stdout or "").strip()
+    return False, stderr or stdout or f"exit_{proc.returncode}"
+
+
+def _open_url_via_macos(url: str, requested_browser: str | None) -> tuple[bool, str]:
+    if sys.platform != "darwin":
+        return False, "not_macos"
+
+    ok, method = _open_url_via_applescript(url, requested_browser)
+    if ok:
+        return True, method
+
+    commands = []
+    app_name = _normalize_browser_app_name(requested_browser)
+    if app_name:
+        commands.append(["/usr/bin/open", "-a", app_name, url])
+    commands.append(["/usr/bin/open", url])
+
+    last_error = ""
+    for command in commands:
+        proc = subprocess.run(command, capture_output=True, text=True, check=False)
+        if proc.returncode == 0:
+            method = f"open_app:{app_name}" if len(command) >= 4 else "open_default"
+            return True, method
+        stderr = (proc.stderr or "").strip()
+        stdout = (proc.stdout or "").strip()
+        last_error = stderr or stdout or f"exit_{proc.returncode}"
+    return False, last_error or "open_failed"
+
+
+class _SchwabAuthBrowserController:
+    def __init__(self, requested_browser: str | None, primary_controller: Any = None) -> None:
+        self.requested_browser = requested_browser
+        self.primary_controller = primary_controller
+
+    def open(self, url: str, new: int = 0, autoraise: bool = True) -> bool:
+        ok, _ = _open_url_via_macos(url, self.requested_browser)
+        if ok:
+            browser_label = _normalize_browser_app_name(self.requested_browser) or "default browser"
+            print(f"Opening Schwab authorization page in {browser_label}...")
+            return True
+
+        if self.primary_controller is not None:
+            try:
+                return bool(self.primary_controller.open(url, new=new, autoraise=autoraise))
+            except Exception:
+                return False
+        return False
+
+
+def _install_schwab_browser_fallback() -> bool:
+    try:
+        schwab_auth = importlib.import_module("schwab.auth")
+    except Exception:
+        return False
+
+    webbrowser_mod = getattr(schwab_auth, "webbrowser", None)
+    original_get = getattr(webbrowser_mod, "get", None)
+    if webbrowser_mod is None or original_get is None:
+        return False
+    if getattr(original_get, "_schwab_auth_refresh_patched", False):
+        return True
+
+    def _patched_get(requested_browser: str | None = None):
+        primary_controller = None
+        try:
+            primary_controller = original_get(requested_browser)
+        except Exception:
+            primary_controller = None
+        return _SchwabAuthBrowserController(requested_browser, primary_controller=primary_controller)
+
+    _patched_get._schwab_auth_refresh_patched = True  # type: ignore[attr-defined]
+    webbrowser_mod.get = _patched_get
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Interactive Schwab OAuth refresh.")
     parser.add_argument("--token-path", default=str(DEFAULT_TOKEN_PATH))
@@ -102,6 +222,11 @@ def main() -> int:
         default=float(os.getenv("SCHWAB_AUTH_MIN_EXPIRES_SECONDS", os.getenv("PREMARKET_TOKEN_MIN_EXPIRES_SECONDS", "600"))),
     )
     parser.add_argument("--requested-browser", default="")
+    parser.add_argument(
+        "--prompt-before-browser",
+        action="store_true",
+        help="Require an extra ENTER press before opening the browser.",
+    )
     parser.add_argument("--skip-account-probe", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -125,6 +250,7 @@ def main() -> int:
         "token_after": {},
         "callback_url": callback_url,
         "requested_browser": args.requested_browser or None,
+        "prompt_before_browser": bool(args.prompt_before_browser),
         "account_probe_ok": None,
         "account_probe_status_code": None,
         "reason": "",
@@ -144,7 +270,13 @@ def main() -> int:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
 
-    os.environ["SCHWAB_AUTH_INTERACTIVE"] = "1"
+    _install_schwab_browser_fallback()
+
+    # In schwab-py, "interactive" only controls whether it pauses for an
+    # extra ENTER press before opening the browser. For this explicit
+    # browser-based auth command, immediate launch is the least surprising
+    # default, while still allowing the old pause behavior when requested.
+    os.environ["SCHWAB_AUTH_INTERACTIVE"] = "1" if args.prompt_before_browser else "0"
     # Force the interactive flow to mint a genuinely new token instead of silently
     # accepting an already-near-expiry token from disk.
     os.environ["SCHWAB_MAX_TOKEN_AGE_SECONDS"] = os.getenv("SCHWAB_INTERACTIVE_FORCE_MAX_TOKEN_AGE_SECONDS", "1")

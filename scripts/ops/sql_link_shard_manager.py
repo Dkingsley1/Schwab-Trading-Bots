@@ -4,12 +4,19 @@ import json
 import os
 import sqlite3
 import subprocess
+import sys
 import time
-from datetime import datetime, timezone
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts import ops_data_plane
+
 PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
 LINK_SCRIPT = PROJECT_ROOT / "scripts" / "link_jsonl_to_sql.py"
 HOT_RETENTION_SCRIPT = PROJECT_ROOT / "scripts" / "sql_hot_retention.py"
@@ -33,6 +40,7 @@ HEALTH_ROOT = PROJECT_ROOT / "governance" / "health"
 EVENT_ROOT = PROJECT_ROOT / "governance" / "events"
 LATEST_HEALTH = HEALTH_ROOT / "sql_link_service_latest.json"
 PROGRESS_HEALTH = HEALTH_ROOT / "sql_link_service_progress_latest.json"
+REQUEST_PATH = HEALTH_ROOT / "sql_link_service_request_latest.json"
 MAINTENANCE_STATE_PATH = HEALTH_ROOT / "sql_link_service_maintenance_state.json"
 INTEGRITY_MARKER_ROOT = HEALTH_ROOT / "sql_link_integrity"
 
@@ -76,12 +84,53 @@ DEFAULT_SHARD_DEFS = {
         ),
         "skip_json_files": False,
         "max_files": 12,
+        "state_checkpoint_lines": 500,
+        "merge_max_json_file_rows": 64,
     },
     "crypto_governance": {
-        "include_streams": "governance_events,governance_watchdog,governance",
+        "include_streams": "governance_events,governance_watchdog,governance,governance_walk_forward,governance_distillation,governance_canary",
         "path_contains": "shadow_crypto/,shadow_crypto_futures_crypto/,default_crypto_coinbase,crypto_futures_crypto_coinbase,default_crypto_schwab,crypto_futures_crypto_schwab",
+        "path_not_contains": (
+            "governance/channels/api/default_crypto_schwab/,"
+            "governance/channels/ingress/default_crypto_schwab/,"
+            "governance/channels/api/crypto_futures_crypto_schwab/,"
+            "governance/channels/ingress/crypto_futures_crypto_schwab/"
+        ),
         "skip_json_files": False,
         "max_files": 12,
+        "max_lines_per_file": 8000,
+        "state_checkpoint_lines": 2000,
+        "merge_max_jsonl_rows": 6000,
+        "merge_max_json_file_rows": 128,
+    },
+    "crypto_api_ingress": {
+        "include_streams": "governance",
+        "path_contains": (
+            "governance/channels/api/default_crypto_schwab/,"
+            "governance/channels/ingress/default_crypto_schwab/,"
+            "governance/channels/api/crypto_futures_crypto_schwab/,"
+            "governance/channels/ingress/crypto_futures_crypto_schwab/"
+        ),
+        "skip_json_files": True,
+        "max_files": 6,
+        "max_lines_per_file": 16000,
+        "state_checkpoint_lines": 2000,
+        "merge_priority": "low",
+        "merge_to_primary": False,
+    },
+    "crypto_runtime": {
+        "include_streams": "governance",
+        "path_contains": (
+            "governance/channels/runtime/default_crypto_coinbase/,"
+            "governance/channels/runtime/crypto_futures_crypto_coinbase/,"
+            "governance/channels/runtime/default_crypto_schwab/,"
+            "governance/channels/runtime/crypto_futures_crypto_schwab/"
+        ),
+        "skip_json_files": True,
+        "max_files": 6,
+        "max_lines_per_file": 12000,
+        "state_checkpoint_lines": 2000,
+        "merge_max_jsonl_rows": 8000,
     },
     "crypto_trading_fast": {
         "include_streams": "paper_broker_bridge,top_level_trade_links",
@@ -94,23 +143,99 @@ DEFAULT_SHARD_DEFS = {
         "path_contains": "shadow_crypto/,shadow_crypto_futures_crypto/,default_crypto_coinbase,crypto_futures_crypto_coinbase,default_crypto_schwab,crypto_futures_crypto_schwab",
         "skip_json_files": True,
         "max_files": 8,
+        "merge_priority": "low",
+        "merge_hot_days": 3,
+        "hot_retention_enabled": True,
+        "hot_retention_max_db_gb": 8.0,
+        "hot_retention_trigger_growth_gb": 1.5,
+        "hot_retention_trigger_rows": 150000,
+        "hot_retention_hot_days": 3,
+        "hot_retention_hot_hours": 0,
+        "hot_retention_archive_period": "month",
+        "hot_retention_archive_retention_days": 365,
+        "hot_retention_vacuum_threshold_gb": 4.0,
+        "hot_retention_batch_size": 90000,
+        "hot_retention_max_rows": 250000,
     },
     "crypto_shadow_attribution": {
         "include_streams": "governance",
         "path_contains": "shadow_pnl_attribution_,shadow_crypto/,shadow_crypto_futures_crypto/,default_crypto_coinbase,crypto_futures_crypto_coinbase,default_crypto_schwab,crypto_futures_crypto_schwab",
         "skip_json_files": True,
         "max_files": 8,
+        "merge_to_primary": False,
+        "hot_retention_enabled": True,
+        "hot_retention_max_db_gb": 1.5,
+        "hot_retention_trigger_growth_gb": 0.5,
+        "hot_retention_trigger_rows": 100000,
+        "hot_retention_hot_days": 1,
+        "hot_retention_hot_hours": 0,
+        "hot_retention_archive_period": "day",
+        "hot_retention_archive_retention_days": 90,
+        "hot_retention_vacuum_threshold_gb": 1.0,
+        "hot_retention_batch_size": 120000,
+        "hot_retention_max_rows": 250000,
     },
     "crypto_trading": {
         "include_streams": "decisions,trade_logs",
         "path_contains": "shadow_crypto/,shadow_crypto_futures_crypto/,default_crypto_coinbase,crypto_futures_crypto_coinbase,default_crypto_schwab,crypto_futures_crypto_schwab",
         "skip_json_files": True,
         "max_files": 10,
+        "max_lines_per_file": 12000,
+        "state_checkpoint_lines": 2000,
+        "merge_max_jsonl_rows": 8000,
     },
     "governance": {
-        "include_streams": "governance_events,governance_watchdog,governance",
-        "path_not_contains": "shadow_pnl_attribution_,shadow_crypto/,shadow_crypto_futures_crypto/,default_crypto_coinbase,crypto_futures_crypto_coinbase,default_crypto_schwab,crypto_futures_crypto_schwab",
+        "include_streams": "governance_events,governance_watchdog,governance,governance_walk_forward,governance_distillation,governance_canary",
+        "path_not_contains": (
+            "shadow_pnl_attribution_,"
+            "shadow_crypto/,shadow_crypto_futures_crypto/,"
+            "default_crypto_coinbase,crypto_futures_crypto_coinbase,"
+            "default_crypto_schwab,crypto_futures_crypto_schwab,"
+            "governance/watchdog/,"
+            "governance/channels/runtime/,"
+            "governance/events/channel_schema_violations_"
+        ),
         "skip_json_files": False,
+        "max_lines_per_file": 8000,
+        "state_checkpoint_lines": 2000,
+        "merge_max_jsonl_rows": 6000,
+        "merge_max_json_file_rows": 128,
+    },
+    "support_watchdog": {
+        "include_streams": "governance_watchdog",
+        "path_contains": "governance/watchdog/",
+        "skip_json_files": True,
+        "max_files": 4,
+        "max_lines_per_file": 96000,
+        "state_checkpoint_lines": 4000,
+        "merge_max_jsonl_rows": 64000,
+        "merge_priority": "low",
+        "merge_to_primary": False,
+    },
+    "schema_violations": {
+        "include_streams": "schema_violations",
+        "path_contains": "governance/events/channel_schema_violations_",
+        "skip_json_files": True,
+        "max_files": 2,
+        "max_lines_per_file": 4000,
+        "state_checkpoint_lines": 1000,
+        "merge_priority": "low",
+        "merge_to_primary": False,
+    },
+    "runtime": {
+        "include_streams": "governance",
+        "path_contains": "governance/channels/runtime/",
+        "path_not_contains": (
+            "governance/channels/runtime/default_crypto_coinbase/,"
+            "governance/channels/runtime/crypto_futures_crypto_coinbase/,"
+            "governance/channels/runtime/default_crypto_schwab/,"
+            "governance/channels/runtime/crypto_futures_crypto_schwab/"
+        ),
+        "skip_json_files": True,
+        "max_files": 10,
+        "max_lines_per_file": 12000,
+        "state_checkpoint_lines": 2000,
+        "merge_max_jsonl_rows": 8000,
     },
     "trading_fast": {
         "include_streams": "paper_broker_bridge,top_level_trade_links",
@@ -123,6 +248,19 @@ DEFAULT_SHARD_DEFS = {
         "path_not_contains": "shadow_crypto/,shadow_crypto_futures_crypto/,default_crypto_coinbase,crypto_futures_crypto_coinbase,default_crypto_schwab,crypto_futures_crypto_schwab",
         "skip_json_files": True,
         "max_files": 8,
+        "merge_priority": "low",
+        "merge_hot_days": 3,
+        "hot_retention_enabled": True,
+        "hot_retention_max_db_gb": 12.0,
+        "hot_retention_trigger_growth_gb": 2.0,
+        "hot_retention_trigger_rows": 200000,
+        "hot_retention_hot_days": 3,
+        "hot_retention_hot_hours": 0,
+        "hot_retention_archive_period": "month",
+        "hot_retention_archive_retention_days": 365,
+        "hot_retention_vacuum_threshold_gb": 6.0,
+        "hot_retention_batch_size": 90000,
+        "hot_retention_max_rows": 300000,
     },
     "shadow_attribution": {
         "include_streams": "governance",
@@ -130,29 +268,61 @@ DEFAULT_SHARD_DEFS = {
         "path_not_contains": "shadow_crypto/,shadow_crypto_futures_crypto/,default_crypto_coinbase,crypto_futures_crypto_coinbase,default_crypto_schwab,crypto_futures_crypto_schwab",
         "skip_json_files": True,
         "max_files": 8,
+        "merge_to_primary": False,
+        "hot_retention_enabled": True,
+        "hot_retention_max_db_gb": 2.0,
+        "hot_retention_trigger_growth_gb": 0.5,
+        "hot_retention_trigger_rows": 100000,
+        "hot_retention_hot_days": 1,
+        "hot_retention_hot_hours": 0,
+        "hot_retention_archive_period": "day",
+        "hot_retention_archive_retention_days": 90,
+        "hot_retention_vacuum_threshold_gb": 1.0,
+        "hot_retention_batch_size": 120000,
+        "hot_retention_max_rows": 250000,
     },
     "aggressive_trading": {
         "include_streams": "decisions,trade_logs",
         "path_contains": "shadow_aggressive_,shadow_intraday_aggressive_,shadow_swing_aggressive_",
         "path_not_contains": "shadow_crypto/,shadow_crypto_futures_crypto/,default_crypto_coinbase,crypto_futures_crypto_coinbase,default_crypto_schwab,crypto_futures_crypto_schwab",
         "skip_json_files": True,
-        "max_files": 10,
+        "max_files": 12,
+        "max_lines_per_file": 20000,
+        "state_checkpoint_lines": 2000,
+        "merge_max_jsonl_rows": 16000,
     },
     "trading": {
         "include_streams": "decisions,trade_logs",
         "path_not_contains": "shadow_crypto/,shadow_crypto_futures_crypto/,default_crypto_coinbase,crypto_futures_crypto_coinbase,default_crypto_schwab,crypto_futures_crypto_schwab,shadow_aggressive_,shadow_intraday_aggressive_,shadow_swing_aggressive_",
         "skip_json_files": True,
+        "max_files": 14,
+        "max_lines_per_file": 16000,
+        "state_checkpoint_lines": 2000,
+        "merge_max_jsonl_rows": 12000,
     },
     "data": {
-        "include_streams": "data",
-        "skip_json_files": True,
+        "include_streams": "data,external_context,external_feeds,feature_store,event_store",
+        "path_contains": (
+            "data/external_context/,"
+            "exports/external_context/,"
+            "exports/external_feeds/,"
+            "governance/feature_store/,"
+            "governance/health/point_in_time_event_store_latest.json,"
+            "governance/health/collector_contracts_latest.json,"
+            "governance/health/source_verification_latest.json,"
+            "governance/health/data_source_divergence_"
+        ),
+        "skip_json_files": False,
+        "max_files": 18,
+        "merge_priority": "low",
+        "merge_to_primary": False,
     },
 }
 ARCHIVE_MAINTENANCE_GLOBS = ("*.compact.sqlite3", "*.precompact.bak.sqlite3")
 LEGACY_DEFAULT_SHARDS = "trading,governance,data"
 PRE_FAST_DEFAULT_SHARDS = "crypto_governance,crypto_trading,governance,trading,data"
 PRE_BACKLOG_SPLIT_DEFAULT_SHARDS = "health_fast,crypto_trading_fast,trading_fast,crypto_governance,crypto_trading,governance,trading,data"
-CURRENT_DEFAULT_SHARDS = "health_fast,crypto_trading_fast,trading_fast,crypto_explanations,explanations,crypto_shadow_attribution,shadow_attribution,crypto_governance,crypto_trading,governance,aggressive_trading,trading,data"
+CURRENT_DEFAULT_SHARDS = "health_fast,trading_fast,crypto_trading_fast,runtime,crypto_runtime,crypto_api_ingress,aggressive_trading,trading,crypto_trading,governance,support_watchdog,crypto_governance,schema_violations,data,explanations,crypto_explanations,shadow_attribution,crypto_shadow_attribution"
 
 
 def _now_utc() -> str:
@@ -161,9 +331,27 @@ def _now_utc() -> str:
 
 def _db_size_gb(path: Path) -> float:
     try:
-        return float(path.stat().st_size) / (1024.0 ** 3)
+        logical_bytes = float(path.stat().st_size)
     except Exception:
         return 0.0
+
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1)
+        try:
+            page_size_row = conn.execute("PRAGMA page_size").fetchone()
+            page_count_row = conn.execute("PRAGMA page_count").fetchone()
+            freelist_row = conn.execute("PRAGMA freelist_count").fetchone()
+        finally:
+            conn.close()
+        page_size = int(page_size_row[0] if page_size_row and page_size_row[0] is not None else 0)
+        page_count = int(page_count_row[0] if page_count_row and page_count_row[0] is not None else 0)
+        freelist_count = int(freelist_row[0] if freelist_row and freelist_row[0] is not None else 0)
+        live_page_bytes = max(page_count - freelist_count, 0) * max(page_size, 0)
+        if live_page_bytes > 0:
+            logical_bytes = min(logical_bytes, float(live_page_bytes))
+    except Exception:
+        pass
+    return logical_bytes / (1024.0 ** 3)
 
 
 def _wal_size_gb(path: Path) -> float:
@@ -207,6 +395,8 @@ def _busy_progress_summary() -> dict:
         "completed_merge_count": _as_int(payload.get("completed_merge_count"), 0),
         "merged_rows_this_cycle": _as_int(payload.get("merged_rows_this_cycle"), 0),
         "primary_db": str(payload.get("primary_db") or ""),
+        "primary_db_realpath": str(payload.get("primary_db_realpath") or ""),
+        "primary_db_role": str(payload.get("primary_db_role") or ""),
     }
     return {k: v for k, v in summary.items() if v not in ("", 0)}
 
@@ -214,6 +404,111 @@ def _busy_progress_summary() -> dict:
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+def _parse_iso_utc(raw: object) -> datetime | None:
+    text = str(raw or "").strip().replace("Z", "+00:00")
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _sanitize_request_env_overrides(raw: object) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    allowed_prefixes = ("SQL_LINK_SERVICE_",)
+    allowed_exact = {
+        "INGEST_MAX_DEFERRED_FILES",
+        "JSONL_SQL_MAX_COLD_LANE_FILES",
+        "LOG_DATA_INGRESS",
+        "LOG_API_CALLS",
+        "LOG_LOOP_STATE",
+        "LOG_SHADOW_PNL_ATTRIBUTION",
+    }
+    cleaned: dict[str, str] = {}
+    for key, value in raw.items():
+        name = str(key or "").strip()
+        if not name:
+            continue
+        if not (name in allowed_exact or any(name.startswith(prefix) for prefix in allowed_prefixes)):
+            continue
+        cleaned[name] = str(value)
+    return cleaned
+
+
+def _load_active_request(path: Path = REQUEST_PATH) -> dict[str, object]:
+    payload = _load_json(path)
+    if not payload:
+        return {}
+    if payload.get("active") is False:
+        return {}
+    expires_utc = _parse_iso_utc(payload.get("expires_utc"))
+    if expires_utc is not None and expires_utc <= datetime.now(timezone.utc):
+        try:
+            path.unlink()
+        except Exception:
+            pass
+        return {}
+    overrides = _sanitize_request_env_overrides(payload.get("env_overrides"))
+    if not overrides:
+        return {}
+    return {
+        "request_kind": str(payload.get("request_kind") or ""),
+        "requested_at": str(payload.get("requested_at") or ""),
+        "expires_utc": str(payload.get("expires_utc") or ""),
+        "reason": str(payload.get("reason") or ""),
+        "env_overrides": overrides,
+    }
+
+
+@contextmanager
+def _temporary_env_overrides(overrides: dict[str, str]):
+    if not overrides:
+        yield
+        return
+    previous: dict[str, str | None] = {}
+    try:
+        for key, value in overrides.items():
+            previous[key] = os.environ.get(key)
+            os.environ[key] = str(value)
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _dynamic_env_value(overrides: dict[str, str], name: str, default: object) -> str:
+    if name in overrides:
+        return str(overrides[name])
+    return str(os.getenv(name, str(default)))
+
+
+def _dynamic_env_int(overrides: dict[str, str], name: str, default: int) -> int:
+    try:
+        return int(str(_dynamic_env_value(overrides, name, default)).strip())
+    except Exception:
+        return int(default)
+
+
+def _dynamic_env_float(overrides: dict[str, str], name: str, default: float) -> float:
+    try:
+        return float(str(_dynamic_env_value(overrides, name, default)).strip())
+    except Exception:
+        return float(default)
+
+
+def _dynamic_env_flag(overrides: dict[str, str], name: str, default: bool) -> bool:
+    raw = str(_dynamic_env_value(overrides, name, "1" if default else "0")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _write_service_progress(
@@ -229,7 +524,9 @@ def _write_service_progress(
     running: bool = True,
     ok: bool = True,
     note: str = "",
+    active_request: dict[str, object] | None = None,
 ) -> None:
+    primary_db_realpath = str(primary_db.resolve(strict=False))
     payload = {
         "timestamp_utc": _now_utc(),
         "status": ("running" if running else ("ok" if ok else "error")),
@@ -239,6 +536,8 @@ def _write_service_progress(
         "current_step": str(current_step or ""),
         "lock_path": str(lock_path),
         "primary_db": str(primary_db),
+        "primary_db_realpath": primary_db_realpath,
+        "primary_db_role": _primary_db_role(primary_db, Path(primary_db_realpath)),
         "maintenance_state_path": str(MAINTENANCE_STATE_PATH),
         "shards": shard_results if isinstance(shard_results, list) else [],
         "merge_results": merge_results if isinstance(merge_results, list) else [],
@@ -247,6 +546,7 @@ def _write_service_progress(
         "completed_merge_count": len(merge_results or []),
         "merged_rows_this_cycle": int(merged_rows_this_cycle),
         "note": str(note or ""),
+        "active_request": active_request if isinstance(active_request, dict) else {},
     }
     _write_json(PROGRESS_HEALTH, payload)
 
@@ -271,6 +571,23 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except Exception:
         return int(default)
+
+
+def _configured_primary_db_path(raw: str) -> Path:
+    text = str(raw or "").strip()
+    if not text:
+        return PRIMARY_DB_PATH
+    return Path(text).expanduser()
+
+
+def _primary_db_role(primary_db: Path, primary_db_realpath: Path | None = None) -> str:
+    raw_path = str(primary_db)
+    real_path = str((primary_db_realpath or primary_db).resolve(strict=False))
+    if "/local_fallback_storage/" in raw_path or "/local_fallback_storage/" in real_path:
+        return "compatibility_cache"
+    if primary_db == PRIMARY_DB_PATH:
+        return "routed_primary"
+    return "override_primary"
 
 
 def _as_reason_list(raw: object) -> list[str]:
@@ -302,6 +619,28 @@ def _load_maintenance_state(path: Path, *, db_size_gb: float, wal_size_gb: float
     }
 
 
+def _load_shard_hot_state(
+    maintenance_state: dict[str, object],
+    *,
+    shard_name: str,
+    db_size_gb: float,
+) -> dict[str, object]:
+    buckets = maintenance_state.setdefault("shard_hot_retention", {})
+    if not isinstance(buckets, dict):
+        buckets = {}
+        maintenance_state["shard_hot_retention"] = buckets
+    raw = buckets.get(shard_name, {}) if isinstance(buckets.get(shard_name), dict) else {}
+    state = {
+        "last_run_utc": str(raw.get("last_run_utc") or ""),
+        "last_run_epoch": _as_float(raw.get("last_run_epoch"), 0.0),
+        "baseline_db_size_gb": _as_float(raw.get("baseline_db_size_gb"), db_size_gb),
+        "rows_since_last_run": _as_int(raw.get("rows_since_last_run"), 0),
+        "last_trigger_reasons": _as_reason_list(raw.get("last_trigger_reasons")),
+    }
+    buckets[shard_name] = state
+    return state
+
+
 def _merged_rows_inserted(merge_results: list[dict[str, object]]) -> int:
     total = 0
     for row in merge_results:
@@ -310,6 +649,22 @@ def _merged_rows_inserted(merge_results: list[dict[str, object]]) -> int:
         total += _as_int(row.get("jsonl_rows_inserted"), 0)
         total += _as_int(row.get("json_file_rows_inserted"), 0)
     return max(total, 0)
+
+
+def _should_skip_low_priority_merge(
+    *,
+    shard: dict[str, object],
+    primary_db_size_gb: float,
+    skip_threshold_gb: float,
+) -> tuple[bool, str]:
+    merge_priority = str(shard.get("merge_priority", "normal") or "normal").strip().lower()
+    if merge_priority != "low":
+        return False, ""
+    if float(skip_threshold_gb) <= 0.0:
+        return False, ""
+    if float(primary_db_size_gb) < float(skip_threshold_gb):
+        return False, ""
+    return True, f"primary_db_size_gb>={float(skip_threshold_gb):g}"
 
 
 def _wal_checkpoint_trigger_reasons(
@@ -344,13 +699,11 @@ def _hot_retention_trigger_reasons(
     has_successful_run: bool,
 ) -> list[str]:
     reasons: list[str] = []
+    if max_db_gb > 0.0 and db_size_gb >= max_db_gb:
+        reasons.append(f"{'bootstrap_' if not has_successful_run else ''}db_size_gb>={max_db_gb:g}")
     if not has_successful_run:
-        if max_db_gb > 0.0 and db_size_gb >= max_db_gb:
-            reasons.append(f"bootstrap_db_size_gb>={max_db_gb:g}")
         return reasons
     if growth_trigger_gb <= 0.0 and row_trigger <= 0:
-        if max_db_gb > 0.0 and db_size_gb >= max_db_gb:
-            reasons.append(f"db_size_gb>={max_db_gb:g}")
         return reasons
     if growth_trigger_gb > 0.0 and db_growth_gb >= growth_trigger_gb:
         reasons.append(f"db_growth_gb>={growth_trigger_gb:g}")
@@ -375,6 +728,93 @@ def _env_flag(name: str, default: bool) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = str(os.getenv(name, str(default))).strip()
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
+def _effective_cycle_args(args: argparse.Namespace, overrides: dict[str, str]) -> argparse.Namespace:
+    values = vars(args).copy()
+    values["interval_seconds"] = max(_dynamic_env_int(overrides, "SQL_LINK_SERVICE_INTERVAL_SECONDS", int(args.interval_seconds)), 10)
+    values["link_mode"] = str(_dynamic_env_value(overrides, "SQL_LINK_SERVICE_LINK_MODE", str(args.link_mode or "sqlite")) or "sqlite")
+    values["shards"] = str(_dynamic_env_value(overrides, "SQL_LINK_SERVICE_SHARDS", str(args.shards or "")))
+    values["low_priority_merge_skip_gb"] = max(
+        _dynamic_env_float(overrides, "SQL_LINK_SERVICE_LOW_PRIORITY_MERGE_SKIP_GB", float(args.low_priority_merge_skip_gb)),
+        0.0,
+    )
+    values["merge_max_seconds_per_cycle"] = max(
+        _dynamic_env_float(overrides, "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE", float(args.merge_max_seconds_per_cycle)),
+        0.0,
+    )
+    values["auto_wal_checkpoint"] = _dynamic_env_flag(overrides, "SQL_LINK_SERVICE_AUTO_WAL_CHECKPOINT", bool(args.auto_wal_checkpoint))
+    values["wal_checkpoint_threshold_gb"] = max(
+        _dynamic_env_float(overrides, "SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB", float(args.wal_checkpoint_threshold_gb)),
+        0.0,
+    )
+    values["wal_checkpoint_trigger_growth_gb"] = max(
+        _dynamic_env_float(overrides, "SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_GROWTH_GB", float(args.wal_checkpoint_trigger_growth_gb)),
+        0.0,
+    )
+    values["wal_checkpoint_trigger_rows"] = max(
+        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_ROWS", int(args.wal_checkpoint_trigger_rows)),
+        0,
+    )
+    values["wal_checkpoint_min_interval_seconds"] = max(
+        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_WAL_CHECKPOINT_MIN_INTERVAL_SECONDS", int(args.wal_checkpoint_min_interval_seconds)),
+        60,
+    )
+    values["wal_truncate_max_gb"] = max(
+        _dynamic_env_float(overrides, "SQL_LINK_SERVICE_WAL_TRUNCATE_MAX_GB", float(args.wal_truncate_max_gb)),
+        0.0,
+    )
+    values["wal_checkpoint_mode"] = str(
+        _dynamic_env_value(overrides, "SQL_LINK_SERVICE_WAL_CHECKPOINT_MODE", str(args.wal_checkpoint_mode or "auto")) or "auto"
+    )
+    values["auto_hot_retention"] = _dynamic_env_flag(overrides, "SQL_LINK_SERVICE_AUTO_HOT_RETENTION", bool(args.auto_hot_retention))
+    values["hot_retention_max_db_gb"] = max(
+        _dynamic_env_float(overrides, "SQL_LINK_SERVICE_HOT_MAX_DB_GB", float(args.hot_retention_max_db_gb)),
+        0.0,
+    )
+    values["hot_retention_trigger_growth_gb"] = max(
+        _dynamic_env_float(overrides, "SQL_LINK_SERVICE_HOT_TRIGGER_GROWTH_GB", float(args.hot_retention_trigger_growth_gb)),
+        0.0,
+    )
+    values["hot_retention_trigger_rows"] = max(
+        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_HOT_TRIGGER_ROWS", int(args.hot_retention_trigger_rows)),
+        0,
+    )
+    values["hot_retention_hot_days"] = max(
+        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_HOT_DAYS", int(args.hot_retention_hot_days)),
+        0,
+    )
+    values["hot_retention_hot_hours"] = max(
+        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_HOT_HOURS", int(args.hot_retention_hot_hours)),
+        0,
+    )
+    values["hot_retention_batch_size"] = max(
+        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_HOT_BATCH_SIZE", int(args.hot_retention_batch_size)),
+        1000,
+    )
+    values["hot_retention_max_rows"] = max(
+        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_HOT_MAX_ROWS", int(args.hot_retention_max_rows)),
+        0,
+    )
+    values["hot_retention_min_interval_seconds"] = max(
+        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS", int(args.hot_retention_min_interval_seconds)),
+        60,
+    )
+    return argparse.Namespace(**values)
+
+
+def _merge_hot_cutoff_utc(days: int) -> str:
+    if int(days) <= 0:
+        return ""
+    return (datetime.now(timezone.utc) - timedelta(days=max(int(days), 1))).isoformat()
+
+
 def _archive_maintenance_blockers(archive_root: str) -> list[str]:
     root = Path(str(archive_root or "")).expanduser()
     if not root.exists():
@@ -384,6 +824,69 @@ def _archive_maintenance_blockers(archive_root: str) -> list[str]:
         for path in sorted(root.glob(pattern)):
             blockers.append(str(path))
     return blockers
+
+
+def _stale_local_fallback_paths(*roots: Path, older_than_seconds: int) -> list[Path]:
+    cutoff_epoch = time.time() - max(int(older_than_seconds), 0)
+    rows: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        try:
+            base = Path(root)
+        except Exception:
+            continue
+        if not base.exists():
+            continue
+        for path in base.rglob("*.local_fallback*"):
+            if not path.is_file():
+                continue
+            key = str(path.resolve(strict=False))
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                if float(path.stat().st_mtime) > cutoff_epoch:
+                    continue
+            except Exception:
+                continue
+            rows.append(path)
+    rows.sort(key=lambda item: float(item.stat().st_mtime) if item.exists() else 0.0)
+    return rows
+
+
+def _prune_stale_local_fallback_artifacts(
+    *,
+    roots: list[Path],
+    older_than_seconds: int,
+    max_files: int,
+) -> dict[str, object]:
+    candidates = _stale_local_fallback_paths(*roots, older_than_seconds=max(int(older_than_seconds), 0))
+    deleted_files = 0
+    deleted_bytes = 0
+    delete_errors = 0
+    deleted_paths: list[str] = []
+    for path in candidates[: max(int(max_files), 0) or len(candidates)]:
+        try:
+            size = int(path.stat().st_size)
+        except Exception:
+            size = 0
+        try:
+            path.unlink()
+            deleted_files += 1
+            deleted_bytes += max(size, 0)
+            deleted_paths.append(str(path))
+        except OSError:
+            delete_errors += 1
+    return {
+        "enabled": True,
+        "roots": [str(root) for root in roots],
+        "older_than_seconds": int(older_than_seconds),
+        "candidate_files": int(len(candidates)),
+        "deleted_files": int(deleted_files),
+        "deleted_bytes": int(deleted_bytes),
+        "delete_errors": int(delete_errors),
+        "deleted_paths": deleted_paths[:20],
+    }
 
 
 def _integrity_marker_path(shard_name: str) -> Path:
@@ -616,6 +1119,42 @@ def _read_shard_cursor(conn: sqlite3.Connection, shard_name: str) -> tuple[int, 
     return int(row[0] or 0), int(row[1] or 0)
 
 
+def _merge_upper_bound_id(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    last_id: int,
+    merge_hot_cutoff_utc: str,
+    row_limit: int,
+) -> int:
+    params: list[object] = [int(last_id)]
+    where_sql = "WHERE id > ?"
+    if str(merge_hot_cutoff_utc or "").strip():
+        where_sql += " AND ingested_at >= ?"
+        params.append(str(merge_hot_cutoff_utc))
+    if int(row_limit) > 0:
+        params.append(int(row_limit))
+        row = conn.execute(
+            f"""
+            SELECT COALESCE(MAX(id), 0)
+            FROM (
+                SELECT id
+                FROM sharddb.{table}
+                {where_sql}
+                ORDER BY id
+                LIMIT ?
+            )
+            """,
+            tuple(params),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            f"SELECT COALESCE(MAX(id), 0) FROM sharddb.{table} {where_sql}",
+            tuple(params),
+        ).fetchone()
+    return int((row or (0,))[0] or 0)
+
+
 def _probe_shard_merge_state(
     *,
     shard_name: str,
@@ -677,6 +1216,9 @@ def _merge_shard_into_primary(
     shard_db: Path,
     primary_db: Path,
     sqlite_timeout_seconds: int,
+    merge_hot_cutoff_utc: str = "",
+    merge_max_jsonl_rows: int = 0,
+    merge_max_json_file_rows: int = 0,
 ) -> dict[str, object]:
     result = {
         "shard": shard_name,
@@ -689,6 +1231,12 @@ def _merge_shard_into_primary(
         "last_json_file_id": 0,
         "jsonl_cursor_reset": False,
         "json_file_cursor_reset": False,
+        "merge_hot_cutoff_utc": str(merge_hot_cutoff_utc or ""),
+        "max_jsonl_id": 0,
+        "max_json_file_id": 0,
+        "merge_target_jsonl_id": 0,
+        "merge_target_json_file_id": 0,
+        "merge_capped": False,
     }
     if not shard_db.exists():
         result["ok"] = False
@@ -708,43 +1256,81 @@ def _merge_shard_into_primary(
             max_jsonl_id = int(
                 conn.execute("SELECT COALESCE(MAX(id), 0) FROM sharddb.jsonl_records").fetchone()[0] or 0
             )
+            result["max_jsonl_id"] = max_jsonl_id
             if max_jsonl_id > 0 and last_jsonl_id > max_jsonl_id:
                 last_jsonl_id = 0
                 result["jsonl_cursor_reset"] = True
-            col_list = ",".join(JSONL_COLUMNS)
-            conn.execute(
-                f"""
-                INSERT OR IGNORE INTO main.jsonl_records ({col_list})
-                SELECT {col_list}
-                FROM sharddb.jsonl_records
-                WHERE id > ?
-                ORDER BY id
-                """,
-                (last_jsonl_id,),
+            target_jsonl_id = _merge_upper_bound_id(
+                conn,
+                table="jsonl_records",
+                last_id=last_jsonl_id,
+                merge_hot_cutoff_utc=str(merge_hot_cutoff_utc or ""),
+                row_limit=max(int(merge_max_jsonl_rows), 0),
             )
-            result["jsonl_rows_inserted"] = int(conn.execute("SELECT changes()").fetchone()[0] or 0)
-            last_jsonl_id = max_jsonl_id
+            result["merge_target_jsonl_id"] = int(target_jsonl_id)
+            if int(target_jsonl_id) > int(last_jsonl_id):
+                col_list = ",".join(JSONL_COLUMNS)
+                params: tuple[object, ...]
+                where_sql = "WHERE id > ? AND id <= ?"
+                params = (last_jsonl_id, target_jsonl_id)
+                if str(merge_hot_cutoff_utc or "").strip():
+                    where_sql += " AND ingested_at >= ?"
+                    params = (last_jsonl_id, target_jsonl_id, str(merge_hot_cutoff_utc))
+                conn.execute(
+                    f"""
+                    INSERT OR IGNORE INTO main.jsonl_records ({col_list})
+                    SELECT {col_list}
+                    FROM sharddb.jsonl_records
+                    {where_sql}
+                    ORDER BY id
+                    """,
+                    params,
+                )
+                result["jsonl_rows_inserted"] = int(conn.execute("SELECT changes()").fetchone()[0] or 0)
+                result["merge_capped"] = bool(
+                    int(merge_max_jsonl_rows) > 0 and int(target_jsonl_id) < int(max_jsonl_id)
+                )
+                last_jsonl_id = target_jsonl_id
 
         if _table_exists(conn, "sharddb", "json_file_records"):
             max_json_file_id = int(
                 conn.execute("SELECT COALESCE(MAX(id), 0) FROM sharddb.json_file_records").fetchone()[0] or 0
             )
+            result["max_json_file_id"] = max_json_file_id
             if max_json_file_id > 0 and last_json_file_id > max_json_file_id:
                 last_json_file_id = 0
                 result["json_file_cursor_reset"] = True
-            col_list = ",".join(JSON_FILE_COLUMNS)
-            conn.execute(
-                f"""
-                INSERT OR IGNORE INTO main.json_file_records ({col_list})
-                SELECT {col_list}
-                FROM sharddb.json_file_records
-                WHERE id > ?
-                ORDER BY id
-                """,
-                (last_json_file_id,),
+            target_json_file_id = _merge_upper_bound_id(
+                conn,
+                table="json_file_records",
+                last_id=last_json_file_id,
+                merge_hot_cutoff_utc=str(merge_hot_cutoff_utc or ""),
+                row_limit=max(int(merge_max_json_file_rows), 0),
             )
-            result["json_file_rows_inserted"] = int(conn.execute("SELECT changes()").fetchone()[0] or 0)
-            last_json_file_id = max_json_file_id
+            result["merge_target_json_file_id"] = int(target_json_file_id)
+            if int(target_json_file_id) > int(last_json_file_id):
+                col_list = ",".join(JSON_FILE_COLUMNS)
+                params = (last_json_file_id, target_json_file_id)
+                where_sql = "WHERE id > ? AND id <= ?"
+                if str(merge_hot_cutoff_utc or "").strip():
+                    where_sql += " AND ingested_at >= ?"
+                    params = (last_json_file_id, target_json_file_id, str(merge_hot_cutoff_utc))
+                conn.execute(
+                    f"""
+                    INSERT OR IGNORE INTO main.json_file_records ({col_list})
+                    SELECT {col_list}
+                    FROM sharddb.json_file_records
+                    {where_sql}
+                    ORDER BY id
+                    """,
+                    params,
+                )
+                result["json_file_rows_inserted"] = int(conn.execute("SELECT changes()").fetchone()[0] or 0)
+                result["merge_capped"] = bool(
+                    result["merge_capped"]
+                    or (int(merge_max_json_file_rows) > 0 and int(target_json_file_id) < int(max_json_file_id))
+                )
+                last_json_file_id = target_json_file_id
 
         conn.execute(
             """
@@ -774,6 +1360,7 @@ def _run_hot_retention(
     *,
     db_path: Path,
     hot_days: int,
+    hot_hours: int,
     batch_size: int,
     max_rows: int,
     archive_db: str,
@@ -794,8 +1381,6 @@ def _run_hot_retention(
         str(db_path),
         "--archive-db",
         str(archive_db),
-        "--hot-days",
-        str(max(hot_days, 1)),
         "--batch-size",
         str(max(batch_size, 1000)),
         "--max-rows",
@@ -806,6 +1391,10 @@ def _run_hot_retention(
         str(max(archive_retention_days, 0)),
         "--json",
     ]
+    if int(hot_hours) > 0:
+        cmd.extend(["--hot-hours", str(max(hot_hours, 1))])
+    else:
+        cmd.extend(["--hot-days", str(max(hot_days, 1))])
     if archive_prune_vacuum:
         cmd.append("--archive-prune-vacuum")
     if str(archive_root or "").strip():
@@ -834,6 +1423,13 @@ def _run_hot_retention(
         check=False,
     )
     return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
+
+
+def _shard_inserted_rows(shard_result: dict[str, object]) -> int:
+    health = shard_result.get("health", {}) if isinstance(shard_result.get("health"), dict) else {}
+    sqlite_bucket = health.get("sqlite", {}) if isinstance(health.get("sqlite"), dict) else {}
+    sqlite_json_bucket = health.get("sqlite_json_files", {}) if isinstance(health.get("sqlite_json_files"), dict) else {}
+    return _as_int(sqlite_bucket.get("inserted"), 0) + _as_int(sqlite_json_bucket.get("inserted"), 0)
 
 
 def _run_queue_retention(
@@ -912,6 +1508,7 @@ def _run_wal_checkpoint(
 def _build_shards(shard_names: list[str]) -> list[dict[str, object]]:
     day_utc = datetime.now(timezone.utc).strftime("%Y%m%d")
     specs: list[dict[str, object]] = []
+    heat_map = ops_data_plane.load_shard_heat_map(PROJECT_ROOT)
     for name in shard_names:
         safe_name = str(name).strip().lower().replace("-", "_")
         if not safe_name:
@@ -922,7 +1519,31 @@ def _build_shards(shard_names: list[str]) -> list[dict[str, object]]:
         path_contains = os.getenv(_shard_env(safe_name, "PATH_CONTAINS"), defaults.get("path_contains", ""))
         path_not_contains = os.getenv(_shard_env(safe_name, "PATH_NOT_CONTAINS"), defaults.get("path_not_contains", ""))
         skip_json_files = _env_flag(_shard_env(safe_name, "SKIP_JSON_FILES"), bool(defaults.get("skip_json_files", True)))
+        merge_to_primary = _env_flag(_shard_env(safe_name, "MERGE_TO_PRIMARY"), bool(defaults.get("merge_to_primary", True)))
+        merge_hot_days = max(_env_int(_shard_env(safe_name, "MERGE_HOT_DAYS"), int(defaults.get("merge_hot_days", 0) or 0)), 0)
+        hot_retention_enabled = _env_flag(_shard_env(safe_name, "HOT_RETENTION_ENABLED"), bool(defaults.get("hot_retention_enabled", False)))
+        max_lines_per_file = max(
+            _env_int(_shard_env(safe_name, "MAX_LINES_PER_FILE"), int(defaults.get("max_lines_per_file", 0) or 0)),
+            0,
+        )
+        state_checkpoint_lines = max(
+            _env_int(_shard_env(safe_name, "STATE_CHECKPOINT_LINES"), int(defaults.get("state_checkpoint_lines", 10000) or 10000)),
+            0,
+        )
+        merge_max_jsonl_rows = max(
+            _env_int(_shard_env(safe_name, "MERGE_MAX_JSONL_ROWS"), int(defaults.get("merge_max_jsonl_rows", 0) or 0)),
+            0,
+        )
+        merge_max_json_file_rows = max(
+            _env_int(_shard_env(safe_name, "MERGE_MAX_JSON_FILE_ROWS"), int(defaults.get("merge_max_json_file_rows", 0) or 0)),
+            0,
+        )
+        archive_root_default = SHARD_DB_ROOT / "archives" / safe_name
+        cold_export_root_default = SHARD_DB_ROOT / "cold_archives" / safe_name
         max_files = max(_env_int(_shard_env(safe_name, "MAX_FILES"), int(defaults.get("max_files", 0) or 0)), 0)
+        heat_row = heat_map.get(safe_name, {})
+        if bool(heat_row.get("promotion_candidate", False)):
+            max_files += 2
         specs.append(
             {
                 "name": safe_name,
@@ -931,13 +1552,39 @@ def _build_shards(shard_names: list[str]) -> list[dict[str, object]]:
                 "path_contains": path_contains,
                 "path_not_contains": path_not_contains,
                 "skip_json_files": skip_json_files,
+                "merge_to_primary": merge_to_primary,
+                "merge_priority": str(os.getenv(_shard_env(safe_name, "MERGE_PRIORITY"), str(defaults.get("merge_priority", "normal") or "normal"))),
+                "merge_hot_days": merge_hot_days,
                 "max_files": max_files,
+                "max_lines_per_file": max_lines_per_file,
+                "state_checkpoint_lines": state_checkpoint_lines,
+                "merge_max_jsonl_rows": merge_max_jsonl_rows,
+                "merge_max_json_file_rows": merge_max_json_file_rows,
                 "sqlite_db": SHARD_DB_ROOT / f"jsonl_link_{safe_name}.sqlite3",
                 "state_file": SHARD_STATE_ROOT / f"jsonl_sql_link_state_{safe_name}.json",
                 "health_file": HEALTH_ROOT / f"jsonl_sql_ingestion_health_{safe_name}_latest.json",
                 "journal_file": HEALTH_ROOT / f"jsonl_ingest_batch_journal_{safe_name}_latest.jsonl",
                 "journal_events_file": EVENT_ROOT / f"jsonl_ingest_batches_{safe_name}_{day_utc}.jsonl",
                 "invalid_log_file": EVENT_ROOT / f"jsonl_ingestion_invalid_{safe_name}_{day_utc}.jsonl",
+                "hot_retention_enabled": hot_retention_enabled,
+                "hot_retention_max_db_gb": _env_float(_shard_env(safe_name, "HOT_RETENTION_MAX_DB_GB"), float(defaults.get("hot_retention_max_db_gb", 0.0) or 0.0)),
+                "hot_retention_trigger_growth_gb": _env_float(_shard_env(safe_name, "HOT_RETENTION_TRIGGER_GROWTH_GB"), float(defaults.get("hot_retention_trigger_growth_gb", 0.0) or 0.0)),
+                "hot_retention_trigger_rows": max(_env_int(_shard_env(safe_name, "HOT_RETENTION_TRIGGER_ROWS"), int(defaults.get("hot_retention_trigger_rows", 0) or 0)), 0),
+                "hot_retention_hot_days": max(_env_int(_shard_env(safe_name, "HOT_RETENTION_HOT_DAYS"), int(defaults.get("hot_retention_hot_days", 0) or 0)), 0),
+                "hot_retention_hot_hours": max(_env_int(_shard_env(safe_name, "HOT_RETENTION_HOT_HOURS"), int(defaults.get("hot_retention_hot_hours", 0) or 0)), 0),
+                "hot_retention_batch_size": max(_env_int(_shard_env(safe_name, "HOT_RETENTION_BATCH_SIZE"), int(defaults.get("hot_retention_batch_size", 50000) or 50000)), 1000),
+                "hot_retention_max_rows": max(_env_int(_shard_env(safe_name, "HOT_RETENTION_MAX_ROWS"), int(defaults.get("hot_retention_max_rows", 0) or 0)), 0),
+                "hot_retention_archive_period": str(os.getenv(_shard_env(safe_name, "HOT_RETENTION_ARCHIVE_PERIOD"), str(defaults.get("hot_retention_archive_period", "day") or "day"))),
+                "hot_retention_archive_retention_days": max(_env_int(_shard_env(safe_name, "HOT_RETENTION_ARCHIVE_RETENTION_DAYS"), int(defaults.get("hot_retention_archive_retention_days", 365) or 365)), 0),
+                "hot_retention_vacuum_threshold_gb": _env_float(_shard_env(safe_name, "HOT_RETENTION_VACUUM_THRESHOLD_GB"), float(defaults.get("hot_retention_vacuum_threshold_gb", 0.0) or 0.0)),
+                "hot_retention_min_interval_seconds": max(_env_int(_shard_env(safe_name, "HOT_RETENTION_MIN_INTERVAL_SECONDS"), int(defaults.get("hot_retention_min_interval_seconds", 300) or 300)), 60),
+                "hot_retention_archive_root": os.getenv(_shard_env(safe_name, "HOT_RETENTION_ARCHIVE_ROOT"), str(archive_root_default)),
+                "hot_retention_cold_export_root": os.getenv(_shard_env(safe_name, "HOT_RETENTION_COLD_EXPORT_ROOT"), str(cold_export_root_default if hot_retention_enabled else "")),
+                "hot_retention_cold_export_format": str(os.getenv(_shard_env(safe_name, "HOT_RETENTION_COLD_EXPORT_FORMAT"), str(defaults.get("hot_retention_cold_export_format", "parquet") or "parquet"))),
+                "hot_retention_cold_export_batch_size": max(_env_int(_shard_env(safe_name, "HOT_RETENTION_COLD_EXPORT_BATCH_SIZE"), int(defaults.get("hot_retention_cold_export_batch_size", 50000) or 50000)), 1000),
+                "hot_retention_cold_export_compression": str(os.getenv(_shard_env(safe_name, "HOT_RETENTION_COLD_EXPORT_COMPRESSION"), str(defaults.get("hot_retention_cold_export_compression", "zstd") or "zstd"))),
+                "heat_promotion_candidate": bool(heat_row.get("promotion_candidate", False)),
+                "last_heat_score": float(heat_row.get("last_heat_score", 0.0) or 0.0),
             }
         )
     return specs
@@ -946,6 +1593,7 @@ def _build_shards(shard_names: list[str]) -> list[dict[str, object]]:
 def _run_shard_links(
     *,
     shards: list[dict[str, object]],
+    link_mode: str,
     sqlite_timeout_seconds: int,
     sqlite_lock_retries: int,
     sqlite_lock_retry_delay_seconds: float,
@@ -967,7 +1615,7 @@ def _run_shard_links(
             "--project-root",
             str(PROJECT_ROOT),
             "--mode",
-            "sqlite",
+            str(link_mode or "sqlite"),
             "--sqlite-db",
             str(shard["sqlite_db"]),
             "--state-file",
@@ -998,6 +1646,10 @@ def _run_shard_links(
                 cmd.extend([flag, raw])
         if int(shard.get("max_files", 0) or 0) > 0:
             cmd.extend(["--max-files", str(int(shard["max_files"]))])
+        if int(shard.get("max_lines_per_file", 0) or 0) > 0:
+            cmd.extend(["--max-lines-per-file", str(int(shard["max_lines_per_file"]))])
+        if int(shard.get("state_checkpoint_lines", 0) or 0) > 0:
+            cmd.extend(["--sqlite-state-checkpoint-lines", str(int(shard["state_checkpoint_lines"]))])
         if bool(shard.get("skip_json_files")):
             cmd.append("--skip-json-files")
         proc = subprocess.run(
@@ -1029,6 +1681,8 @@ def _run_shard_links(
                     "path_contains": _parse_csv(str(shard.get("path_contains", "") or "")),
                     "path_not_contains": _parse_csv(str(shard.get("path_not_contains", "") or "")),
                     "max_files": int(shard.get("max_files", 0) or 0),
+                    "max_lines_per_file": int(shard.get("max_lines_per_file", 0) or 0),
+                    "state_checkpoint_lines": int(shard.get("state_checkpoint_lines", 0) or 0),
                     "skip_json_files": bool(shard.get("skip_json_files")),
                 },
                 "recovery": recoveries.get(str(shard["name"]), {}),
@@ -1048,13 +1702,16 @@ def _run_shard_links(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Sharded SQL linker manager with incremental merge back into the primary SQLite DB.")
-    parser.add_argument("--interval-seconds", type=int, default=int(os.getenv("SQL_LINK_SERVICE_INTERVAL_SECONDS", "45")))
+    parser.add_argument("--interval-seconds", type=int, default=int(os.getenv("SQL_LINK_SERVICE_INTERVAL_SECONDS", "20")))
     parser.add_argument("--sqlite-timeout-seconds", type=int, default=int(os.getenv("SQL_LINK_SERVICE_SQLITE_TIMEOUT", "300")))
     parser.add_argument("--sqlite-lock-retries", type=int, default=int(os.getenv("SQL_LINK_SERVICE_LOCK_RETRIES", "200")))
     parser.add_argument("--sqlite-lock-retry-delay-seconds", type=float, default=float(os.getenv("SQL_LINK_SERVICE_LOCK_RETRY_DELAY_SECONDS", "0.5")))
+    parser.add_argument("--link-mode", choices=("sqlite", "both"), default=os.getenv("SQL_LINK_SERVICE_LINK_MODE", "sqlite"))
     parser.add_argument("--lock-path", default=str(PROJECT_ROOT / "governance" / "locks" / "jsonl_sql_writer.lock"))
     parser.add_argument("--primary-db", default=os.getenv("SQL_LINK_SERVICE_PRIMARY_DB", str(PRIMARY_DB_PATH)))
     parser.add_argument("--shards", default=os.getenv("SQL_LINK_SERVICE_SHARDS", ""))
+    parser.add_argument("--low-priority-merge-skip-gb", type=float, default=float(os.getenv("SQL_LINK_SERVICE_LOW_PRIORITY_MERGE_SKIP_GB", "120")))
+    parser.add_argument("--merge-max-seconds-per-cycle", type=float, default=float(os.getenv("SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE", "60")))
     parser.add_argument("--auto-wal-checkpoint", action="store_true", default=os.getenv("SQL_LINK_SERVICE_AUTO_WAL_CHECKPOINT", "1") == "1")
     parser.add_argument("--wal-checkpoint-threshold-gb", type=float, default=float(os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB", "2")))
     parser.add_argument("--wal-checkpoint-trigger-growth-gb", type=float, default=float(os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_GROWTH_GB", "1.5")))
@@ -1063,20 +1720,21 @@ def main() -> int:
     parser.add_argument("--wal-truncate-max-gb", type=float, default=float(os.getenv("SQL_LINK_SERVICE_WAL_TRUNCATE_MAX_GB", "8")))
     parser.add_argument("--wal-checkpoint-mode", choices=("auto", "passive", "truncate", "restart"), default=os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_MODE", "auto"))
     parser.add_argument("--auto-hot-retention", action="store_true", default=os.getenv("SQL_LINK_SERVICE_AUTO_HOT_RETENTION", "1") == "1")
-    parser.add_argument("--hot-retention-max-db-gb", type=float, default=float(os.getenv("SQL_LINK_SERVICE_HOT_MAX_DB_GB", "25")))
-    parser.add_argument("--hot-retention-trigger-growth-gb", type=float, default=float(os.getenv("SQL_LINK_SERVICE_HOT_TRIGGER_GROWTH_GB", "12")))
-    parser.add_argument("--hot-retention-trigger-rows", type=int, default=int(os.getenv("SQL_LINK_SERVICE_HOT_TRIGGER_ROWS", "2500000")))
-    parser.add_argument("--hot-retention-hot-days", type=int, default=int(os.getenv("SQL_LINK_SERVICE_HOT_DAYS", "5")))
+    parser.add_argument("--hot-retention-max-db-gb", type=float, default=float(os.getenv("SQL_LINK_SERVICE_HOT_MAX_DB_GB", "12")))
+    parser.add_argument("--hot-retention-trigger-growth-gb", type=float, default=float(os.getenv("SQL_LINK_SERVICE_HOT_TRIGGER_GROWTH_GB", "2")))
+    parser.add_argument("--hot-retention-trigger-rows", type=int, default=int(os.getenv("SQL_LINK_SERVICE_HOT_TRIGGER_ROWS", "500000")))
+    parser.add_argument("--hot-retention-hot-days", type=int, default=int(os.getenv("SQL_LINK_SERVICE_HOT_DAYS", "3")))
+    parser.add_argument("--hot-retention-hot-hours", type=int, default=int(os.getenv("SQL_LINK_SERVICE_HOT_HOURS", "0")))
     parser.add_argument("--hot-retention-batch-size", type=int, default=int(os.getenv("SQL_LINK_SERVICE_HOT_BATCH_SIZE", "120000")))
     parser.add_argument("--hot-retention-max-rows", type=int, default=int(os.getenv("SQL_LINK_SERVICE_HOT_MAX_ROWS", "1000000")))
     parser.add_argument("--hot-retention-min-interval-seconds", type=int, default=int(os.getenv("SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS", "180")))
-    parser.add_argument("--hot-retention-vacuum-threshold-gb", type=float, default=float(os.getenv("SQL_LINK_SERVICE_HOT_VACUUM_THRESHOLD_GB", "150")))
+    parser.add_argument("--hot-retention-vacuum-threshold-gb", type=float, default=float(os.getenv("SQL_LINK_SERVICE_HOT_VACUUM_THRESHOLD_GB", "20")))
     parser.add_argument("--hot-retention-archive-db", default=os.getenv("SQL_LINK_SERVICE_HOT_ARCHIVE_DB", str(PROJECT_ROOT / "data" / "jsonl_link_archive.sqlite3")))
     parser.add_argument("--hot-retention-archive-root", default=os.getenv("SQL_LINK_SERVICE_HOT_ARCHIVE_ROOT", str(PROJECT_ROOT / "data" / "jsonl_link_archives")))
     parser.add_argument("--hot-retention-archive-period", choices=("single", "day", "month"), default=os.getenv("SQL_LINK_SERVICE_HOT_ARCHIVE_PERIOD", "day"))
     parser.add_argument("--hot-retention-archive-retention-days", type=int, default=int(os.getenv("SQL_LINK_SERVICE_HOT_ARCHIVE_RETENTION_DAYS", "365")))
     parser.add_argument("--hot-retention-archive-prune-vacuum", action="store_true", default=os.getenv("SQL_LINK_SERVICE_HOT_ARCHIVE_PRUNE_VACUUM", "1") == "1")
-    parser.add_argument("--hot-retention-cold-export-root", default=os.getenv("SQL_LINK_SERVICE_HOT_COLD_ARCHIVE_ROOT", ""))
+    parser.add_argument("--hot-retention-cold-export-root", default=os.getenv("SQL_LINK_SERVICE_HOT_COLD_ARCHIVE_ROOT", str(PROJECT_ROOT / "data" / "cold_archives" / "jsonl_link_primary")))
     parser.add_argument("--hot-retention-cold-export-format", choices=("parquet",), default=os.getenv("SQL_LINK_SERVICE_HOT_COLD_ARCHIVE_FORMAT", "parquet"))
     parser.add_argument("--hot-retention-cold-export-batch-size", type=int, default=int(os.getenv("SQL_LINK_SERVICE_HOT_COLD_ARCHIVE_BATCH_SIZE", "50000")))
     parser.add_argument("--hot-retention-cold-export-compression", default=os.getenv("SQL_LINK_SERVICE_HOT_COLD_ARCHIVE_COMPRESSION", "zstd"))
@@ -1091,6 +1749,9 @@ def main() -> int:
     parser.add_argument("--queue-retention-cleanup-consumer-state-days", type=int, default=int(os.getenv("SQL_LINK_SERVICE_QUEUE_CLEANUP_CONSUMER_STATE_DAYS", "30")))
     parser.add_argument("--queue-retention-prune-orphans", action="store_true", default=os.getenv("SQL_LINK_SERVICE_QUEUE_PRUNE_ORPHANS", "0") == "1")
     parser.add_argument("--queue-retention-orphan-days", type=int, default=int(os.getenv("SQL_LINK_SERVICE_QUEUE_ORPHAN_DAYS", "45")))
+    parser.add_argument("--auto-local-fallback-prune", action="store_true", default=os.getenv("SQL_LINK_SERVICE_AUTO_LOCAL_FALLBACK_PRUNE", "1") == "1")
+    parser.add_argument("--local-fallback-prune-older-than-seconds", type=int, default=int(os.getenv("SQL_LINK_SERVICE_LOCAL_FALLBACK_PRUNE_OLDER_THAN_SECONDS", "43200")))
+    parser.add_argument("--local-fallback-prune-max-files", type=int, default=int(os.getenv("SQL_LINK_SERVICE_LOCAL_FALLBACK_PRUNE_MAX_FILES", "200")))
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -1132,7 +1793,7 @@ def main() -> int:
     fh.write(f"pid={os.getpid()} started={_now_utc()} cmd=sql_link_shard_manager")
     fh.flush()
 
-    primary_db = Path(args.primary_db).resolve()
+    primary_db = _configured_primary_db_path(args.primary_db)
     primary_db.parent.mkdir(parents=True, exist_ok=True)
     SHARD_DB_ROOT.mkdir(parents=True, exist_ok=True)
     SHARD_STATE_ROOT.mkdir(parents=True, exist_ok=True)
@@ -1152,7 +1813,14 @@ def main() -> int:
     while True:
         ts = _now_utc()
         cycle_ts = time.time()
-        shards = _build_shards(shard_names)
+        active_request = _load_active_request(REQUEST_PATH)
+        request_overrides = active_request.get("env_overrides", {}) if isinstance(active_request.get("env_overrides"), dict) else {}
+        cycle_args = _effective_cycle_args(args, request_overrides)
+        cycle_shard_names = _parse_csv(_normalized_shard_config(str(cycle_args.shards or "")))
+        if not cycle_shard_names:
+            cycle_shard_names = list(shard_names)
+        with _temporary_env_overrides(request_overrides):
+            shards = _build_shards(cycle_shard_names)
         merge_results: list[dict[str, object]] = []
         _write_service_progress(
             cycle_started_utc=ts,
@@ -1165,25 +1833,29 @@ def main() -> int:
             merged_rows_this_cycle=0,
             running=True,
             ok=True,
+            active_request=active_request,
         )
-        shard_results = _run_shard_links(
-            shards=shards,
-            sqlite_timeout_seconds=int(args.sqlite_timeout_seconds),
-            sqlite_lock_retries=int(args.sqlite_lock_retries),
-            sqlite_lock_retry_delay_seconds=float(args.sqlite_lock_retry_delay_seconds),
-            progress_callback=lambda rows: _write_service_progress(
-                cycle_started_utc=ts,
-                current_step="shard_linking",
-                lock_path=lock_path,
-                primary_db=primary_db,
+        with _temporary_env_overrides(request_overrides):
+            shard_results = _run_shard_links(
                 shards=shards,
-                shard_results=rows,
-                merge_results=merge_results,
-                merged_rows_this_cycle=0,
-                running=True,
-                ok=True,
-            ),
-        )
+                link_mode=str(cycle_args.link_mode or "sqlite"),
+                sqlite_timeout_seconds=int(cycle_args.sqlite_timeout_seconds),
+                sqlite_lock_retries=int(cycle_args.sqlite_lock_retries),
+                sqlite_lock_retry_delay_seconds=float(cycle_args.sqlite_lock_retry_delay_seconds),
+                progress_callback=lambda rows: _write_service_progress(
+                    cycle_started_utc=ts,
+                    current_step="shard_linking",
+                    lock_path=lock_path,
+                    primary_db=primary_db,
+                    shards=shards,
+                    shard_results=rows,
+                    merge_results=merge_results,
+                    merged_rows_this_cycle=0,
+                    running=True,
+                    ok=True,
+                    active_request=active_request,
+                ),
+            )
 
         _write_service_progress(
             cycle_started_utc=ts,
@@ -1196,17 +1868,18 @@ def main() -> int:
             merged_rows_this_cycle=0,
             running=True,
             ok=True,
+            active_request=active_request,
         )
+        merge_started_ts = time.time()
         for shard in shards:
             result = next((row for row in shard_results if row["shard"] == shard["name"]), None)
             if result and int(result.get("rc", 1)) == 0:
-                merge_probe = _probe_shard_merge_state(
-                    shard_name=str(shard["name"]),
-                    shard_db=Path(str(shard["sqlite_db"])),
-                    primary_db=primary_db,
-                    sqlite_timeout_seconds=int(args.sqlite_timeout_seconds),
-                )
-                if bool(merge_probe.get("ok", False)) and not bool(merge_probe.get("merge_required", True)):
+                merge_budget_seconds = max(float(cycle_args.merge_max_seconds_per_cycle), 0.0)
+                if (
+                    merge_budget_seconds > 0.0
+                    and str(shard.get("name") or "") != "health_fast"
+                    and (time.time() - merge_started_ts) >= merge_budget_seconds
+                ):
                     merge_results.append(
                         {
                             "shard": str(shard["name"]),
@@ -1214,24 +1887,150 @@ def main() -> int:
                             "primary_db": str(primary_db),
                             "ok": True,
                             "skipped": True,
-                            "reason": "merge_up_to_date",
+                            "reason": f"merge_cycle_budget_exhausted:{round(time.time() - merge_started_ts, 3)}s",
                             "jsonl_rows_inserted": 0,
                             "json_file_rows_inserted": 0,
-                            "last_jsonl_id": int(merge_probe.get("last_jsonl_id", 0) or 0),
-                            "last_json_file_id": int(merge_probe.get("last_json_file_id", 0) or 0),
-                            "max_jsonl_id": int(merge_probe.get("max_jsonl_id", 0) or 0),
-                            "max_json_file_id": int(merge_probe.get("max_json_file_id", 0) or 0),
+                            "last_jsonl_id": 0,
+                            "last_json_file_id": 0,
+                            "max_jsonl_id": 0,
+                            "max_json_file_id": 0,
+                        }
+                    )
+                    _write_service_progress(
+                        cycle_started_utc=ts,
+                        current_step="merge_primary",
+                        lock_path=lock_path,
+                        primary_db=primary_db,
+                        shards=shards,
+                        shard_results=shard_results,
+                        merge_results=merge_results,
+                        merged_rows_this_cycle=_merged_rows_inserted(merge_results),
+                        running=True,
+                        ok=True,
+                        active_request=active_request,
+                    )
+                    continue
+                if str(cycle_args.link_mode or "sqlite") != "sqlite":
+                    merge_results.append(
+                        {
+                            "shard": str(shard["name"]),
+                            "shard_db": str(shard["sqlite_db"]),
+                            "primary_db": str(primary_db),
+                            "ok": True,
+                            "skipped": True,
+                            "reason": f"merge_disabled_for_link_mode_{str(cycle_args.link_mode or 'sqlite')}",
+                            "jsonl_rows_inserted": 0,
+                            "json_file_rows_inserted": 0,
+                            "last_jsonl_id": 0,
+                            "last_json_file_id": 0,
+                            "max_jsonl_id": 0,
+                            "max_json_file_id": 0,
+                        }
+                    )
+                    _write_service_progress(
+                        cycle_started_utc=ts,
+                        current_step="merge_primary",
+                        lock_path=lock_path,
+                        primary_db=primary_db,
+                        shards=shards,
+                        shard_results=shard_results,
+                        merge_results=merge_results,
+                        merged_rows_this_cycle=_merged_rows_inserted(merge_results),
+                        running=True,
+                        ok=True,
+                        active_request=active_request,
+                    )
+                    continue
+                skip_merge, skip_reason = _should_skip_low_priority_merge(
+                    shard=shard,
+                    primary_db_size_gb=_db_size_gb(primary_db),
+                    skip_threshold_gb=float(cycle_args.low_priority_merge_skip_gb),
+                )
+                if skip_merge:
+                    merge_results.append(
+                        {
+                            "shard": str(shard["name"]),
+                            "shard_db": str(shard["sqlite_db"]),
+                            "primary_db": str(primary_db),
+                            "ok": True,
+                            "skipped": True,
+                            "reason": f"primary_merge_deferred:{skip_reason}",
+                            "jsonl_rows_inserted": 0,
+                            "json_file_rows_inserted": 0,
+                            "last_jsonl_id": 0,
+                            "last_json_file_id": 0,
+                            "max_jsonl_id": 0,
+                            "max_json_file_id": 0,
+                        }
+                    )
+                    _write_service_progress(
+                        cycle_started_utc=ts,
+                        current_step="merge_primary",
+                        lock_path=lock_path,
+                        primary_db=primary_db,
+                        shards=shards,
+                        shard_results=shard_results,
+                        merge_results=merge_results,
+                        merged_rows_this_cycle=_merged_rows_inserted(merge_results),
+                        running=True,
+                        ok=True,
+                        active_request=active_request,
+                    )
+                    continue
+                if not bool(shard.get("merge_to_primary", True)):
+                    merge_results.append(
+                        {
+                            "shard": str(shard["name"]),
+                            "shard_db": str(shard["sqlite_db"]),
+                            "primary_db": str(primary_db),
+                            "ok": True,
+                            "skipped": True,
+                            "reason": "cold_lane_no_primary_merge",
+                            "jsonl_rows_inserted": 0,
+                            "json_file_rows_inserted": 0,
+                            "last_jsonl_id": 0,
+                            "last_json_file_id": 0,
+                            "max_jsonl_id": 0,
+                            "max_json_file_id": 0,
                         }
                     )
                 else:
-                    merge_results.append(
-                        _merge_shard_into_primary(
-                            shard_name=str(shard["name"]),
-                            shard_db=Path(str(shard["sqlite_db"])),
-                            primary_db=primary_db,
-                            sqlite_timeout_seconds=int(args.sqlite_timeout_seconds),
+                    merge_probe = _probe_shard_merge_state(
+                                shard_name=str(shard["name"]),
+                                shard_db=Path(str(shard["sqlite_db"])),
+                                primary_db=primary_db,
+                                sqlite_timeout_seconds=int(cycle_args.sqlite_timeout_seconds),
+                            )
+                    if bool(merge_probe.get("ok", False)) and not bool(merge_probe.get("merge_required", True)):
+                        merge_results.append(
+                            {
+                                "shard": str(shard["name"]),
+                                "shard_db": str(shard["sqlite_db"]),
+                                "primary_db": str(primary_db),
+                                "ok": True,
+                                "skipped": True,
+                                "reason": "merge_up_to_date",
+                                "jsonl_rows_inserted": 0,
+                                "json_file_rows_inserted": 0,
+                                "last_jsonl_id": int(merge_probe.get("last_jsonl_id", 0) or 0),
+                                "last_json_file_id": int(merge_probe.get("last_json_file_id", 0) or 0),
+                                "max_jsonl_id": int(merge_probe.get("max_jsonl_id", 0) or 0),
+                                "max_json_file_id": int(merge_probe.get("max_json_file_id", 0) or 0),
+                                "merge_hot_cutoff_utc": _merge_hot_cutoff_utc(int(shard.get("merge_hot_days", 0) or 0)),
+                            }
                         )
-                    )
+                    else:
+                        merge_results.append(
+                            _merge_shard_into_primary(
+                                shard_name=str(shard["name"]),
+                                shard_db=Path(str(shard["sqlite_db"])),
+                                primary_db=primary_db,
+                                sqlite_timeout_seconds=int(cycle_args.sqlite_timeout_seconds),
+                                merge_hot_cutoff_utc=_merge_hot_cutoff_utc(int(shard.get("merge_hot_days", 0) or 0)),
+                                merge_max_jsonl_rows=int(shard.get("merge_max_jsonl_rows", 0) or 0),
+                                merge_max_json_file_rows=int(shard.get("merge_max_json_file_rows", 0) or 0),
+                            )
+                        )
                 _write_service_progress(
                     cycle_started_utc=ts,
                     current_step="merge_primary",
@@ -1243,9 +2042,117 @@ def main() -> int:
                     merged_rows_this_cycle=_merged_rows_inserted(merge_results),
                     running=True,
                     ok=True,
+                    active_request=active_request,
                 )
 
-        overall_rc = 0 if all(int(row.get("rc", 1)) == 0 for row in shard_results) and all(bool(row.get("ok", False)) for row in merge_results) else 1
+        shard_hot_retention_results: list[dict[str, object]] = []
+        for shard in shards:
+            shard_name = str(shard["name"])
+            result = next((row for row in shard_results if row["shard"] == shard_name), None)
+            if not result or int(result.get("rc", 1)) != 0 or not bool(shard.get("hot_retention_enabled", False)):
+                continue
+            db_path = Path(str(shard["sqlite_db"]))
+            db_size = _db_size_gb(db_path)
+            shard_state = _load_shard_hot_state(maintenance_state, shard_name=shard_name, db_size_gb=db_size)
+            shard_state["rows_since_last_run"] = _as_int(shard_state.get("rows_since_last_run"), 0) + _shard_inserted_rows(result)
+            growth_gb = max(db_size - _as_float(shard_state.get("baseline_db_size_gb"), db_size), 0.0)
+            trigger_reasons = _hot_retention_trigger_reasons(
+                db_size_gb=db_size,
+                max_db_gb=float(shard.get("hot_retention_max_db_gb", 0.0) or 0.0),
+                db_growth_gb=growth_gb,
+                growth_trigger_gb=float(shard.get("hot_retention_trigger_growth_gb", 0.0) or 0.0),
+                rows_since_last_run=_as_int(shard_state.get("rows_since_last_run"), 0),
+                row_trigger=int(shard.get("hot_retention_trigger_rows", 0) or 0),
+                has_successful_run=bool(str(shard_state.get("last_run_utc") or "").strip()),
+            )
+            shard_retention = {
+                "shard": shard_name,
+                "enabled": True,
+                "db_path": str(db_path),
+                "db_size_gb_before": round(db_size, 3),
+                "max_db_gb": float(shard.get("hot_retention_max_db_gb", 0.0) or 0.0),
+                "trigger_growth_gb": float(shard.get("hot_retention_trigger_growth_gb", 0.0) or 0.0),
+                "trigger_rows": int(shard.get("hot_retention_trigger_rows", 0) or 0),
+                "rows_since_last_run": _as_int(shard_state.get("rows_since_last_run"), 0),
+                "db_growth_gb_since_last_run": round(growth_gb, 3),
+                "hot_days": int(shard.get("hot_retention_hot_days", 0) or 0),
+                "hot_hours": int(shard.get("hot_retention_hot_hours", 0) or 0),
+                "archive_root": str(shard.get("hot_retention_archive_root") or ""),
+                "cold_export_root": str(shard.get("hot_retention_cold_export_root") or ""),
+                "trigger_reasons": list(trigger_reasons),
+                "ran": False,
+                "rc": 0,
+                "stdout_tail": "",
+                "stderr_tail": "",
+                "details": {},
+                "skipped_reason": "",
+            }
+            if trigger_reasons:
+                since_last = cycle_ts - float(_as_float(shard_state.get("last_run_epoch"), 0.0))
+                if since_last >= max(int(shard.get("hot_retention_min_interval_seconds", 300) or 300), 60):
+                    do_vacuum = db_size >= float(shard.get("hot_retention_vacuum_threshold_gb", 0.0) or 0.0)
+                    rc, out, err = _run_hot_retention(
+                        db_path=db_path,
+                        hot_days=int(shard.get("hot_retention_hot_days", 1) or 1),
+                        hot_hours=int(shard.get("hot_retention_hot_hours", 0) or 0),
+                        batch_size=int(shard.get("hot_retention_batch_size", 50000) or 50000),
+                        max_rows=int(shard.get("hot_retention_max_rows", 0) or 0),
+                        archive_db=str(Path(str(shard.get("hot_retention_archive_root") or "")) / "latest.sqlite3"),
+                        archive_root=str(shard.get("hot_retention_archive_root") or ""),
+                        archive_period=str(shard.get("hot_retention_archive_period", "day") or "day"),
+                        archive_retention_days=int(shard.get("hot_retention_archive_retention_days", 365) or 365),
+                        archive_prune_vacuum=True,
+                        cold_export_root=str(shard.get("hot_retention_cold_export_root") or ""),
+                        cold_export_format=str(shard.get("hot_retention_cold_export_format", "parquet") or "parquet"),
+                        cold_export_batch_size=int(shard.get("hot_retention_cold_export_batch_size", 50000) or 50000),
+                        cold_export_compression=str(shard.get("hot_retention_cold_export_compression", "zstd") or "zstd"),
+                        vacuum=do_vacuum,
+                    )
+                    shard_retention.update(
+                        {
+                            "ran": True,
+                            "rc": int(rc),
+                            "stdout_tail": "\n".join(out.splitlines()[-12:]),
+                            "stderr_tail": "\n".join(err.splitlines()[-12:]),
+                            "details": _parse_json_output(out),
+                            "vacuum": bool(do_vacuum),
+                        }
+                    )
+                    if int(rc) == 0:
+                        shard_state.update(
+                            {
+                                "last_run_utc": ts,
+                                "last_run_epoch": float(cycle_ts),
+                                "baseline_db_size_gb": round(_db_size_gb(db_path), 3),
+                                "rows_since_last_run": 0,
+                                "last_trigger_reasons": list(trigger_reasons),
+                            }
+                        )
+                else:
+                    shard_retention["skipped_reason"] = f"min_interval_not_met:{int(since_last)}s"
+            else:
+                shard_retention["skipped_reason"] = "below_data_trigger"
+            shard_retention["db_size_gb_after"] = round(_db_size_gb(db_path), 3)
+            shard_hot_retention_results.append(shard_retention)
+
+        local_fallback_prune = {
+            "enabled": bool(args.auto_local_fallback_prune),
+            "candidate_files": 0,
+            "deleted_files": 0,
+            "deleted_bytes": 0,
+            "delete_errors": 0,
+            "deleted_paths": [],
+            "roots": [],
+            "older_than_seconds": int(args.local_fallback_prune_older_than_seconds),
+        }
+        if args.auto_local_fallback_prune:
+            local_fallback_prune = _prune_stale_local_fallback_artifacts(
+                roots=[HEALTH_ROOT, PROJECT_ROOT / "data"],
+                older_than_seconds=int(args.local_fallback_prune_older_than_seconds),
+                max_files=int(args.local_fallback_prune_max_files),
+            )
+
+        overall_rc = 0 if all(int(row.get("rc", 1)) == 0 for row in shard_results) and all(bool(row.get("ok", False)) for row in merge_results) and all(int(row.get("rc", 0)) == 0 for row in shard_hot_retention_results if bool(row.get("ran", False))) else 1
         merged_rows = _merged_rows_inserted(merge_results)
         for key in ("wal_checkpoint", "hot_retention"):
             bucket = maintenance_state.get(key, {})
@@ -1258,20 +2165,20 @@ def main() -> int:
         checkpoint_wal_growth_gb = max(wal_size - _as_float(checkpoint_state.get("baseline_wal_size_gb"), wal_size), 0.0)
         checkpoint_trigger_reasons = _wal_checkpoint_trigger_reasons(
             wal_size_gb=wal_size,
-            wal_threshold_gb=float(args.wal_checkpoint_threshold_gb),
+            wal_threshold_gb=float(cycle_args.wal_checkpoint_threshold_gb),
             wal_growth_gb=checkpoint_wal_growth_gb,
-            wal_growth_trigger_gb=float(args.wal_checkpoint_trigger_growth_gb),
+            wal_growth_trigger_gb=float(cycle_args.wal_checkpoint_trigger_growth_gb),
             rows_since_last_run=checkpoint_rows_since_last,
-            row_trigger=int(args.wal_checkpoint_trigger_rows),
+            row_trigger=int(cycle_args.wal_checkpoint_trigger_rows),
         )
         wal_checkpoint = {
-            "enabled": bool(args.auto_wal_checkpoint),
+            "enabled": bool(cycle_args.auto_wal_checkpoint),
             "wal_size_gb_before": round(wal_size, 3),
-            "threshold_gb": float(args.wal_checkpoint_threshold_gb),
-            "trigger_growth_gb": float(args.wal_checkpoint_trigger_growth_gb),
-            "trigger_rows": int(args.wal_checkpoint_trigger_rows),
-            "truncate_max_gb": float(args.wal_truncate_max_gb),
-            "mode": str(args.wal_checkpoint_mode),
+            "threshold_gb": float(cycle_args.wal_checkpoint_threshold_gb),
+            "trigger_growth_gb": float(cycle_args.wal_checkpoint_trigger_growth_gb),
+            "trigger_rows": int(cycle_args.wal_checkpoint_trigger_rows),
+            "truncate_max_gb": float(cycle_args.wal_truncate_max_gb),
+            "mode": str(cycle_args.wal_checkpoint_mode),
             "rows_since_last_run": int(checkpoint_rows_since_last),
             "wal_growth_gb_since_last_run": round(checkpoint_wal_growth_gb, 3),
             "trigger_reasons": list(checkpoint_trigger_reasons),
@@ -1282,16 +2189,16 @@ def main() -> int:
             "details": {},
             "skipped_reason": "",
         }
-        if args.auto_wal_checkpoint and overall_rc == 0 and wal_size <= 0.0:
+        if cycle_args.auto_wal_checkpoint and overall_rc == 0 and wal_size <= 0.0:
             wal_checkpoint["skipped_reason"] = "no_wal"
-        elif args.auto_wal_checkpoint and overall_rc == 0 and checkpoint_trigger_reasons:
+        elif cycle_args.auto_wal_checkpoint and overall_rc == 0 and checkpoint_trigger_reasons:
             since_last = cycle_ts - float(last_wal_checkpoint_ts)
-            if since_last >= max(int(args.wal_checkpoint_min_interval_seconds), 60):
+            if since_last >= max(int(cycle_args.wal_checkpoint_min_interval_seconds), 60):
                 rc, out, err = _run_wal_checkpoint(
                     db_path=primary_db,
-                    checkpoint_threshold_gb=float(args.wal_checkpoint_threshold_gb),
-                    truncate_max_gb=float(args.wal_truncate_max_gb),
-                    checkpoint_mode=str(args.wal_checkpoint_mode),
+                    checkpoint_threshold_gb=float(cycle_args.wal_checkpoint_threshold_gb),
+                    truncate_max_gb=float(cycle_args.wal_truncate_max_gb),
+                    checkpoint_mode=str(cycle_args.wal_checkpoint_mode),
                 )
                 wal_checkpoint.update(
                     {
@@ -1315,39 +2222,41 @@ def main() -> int:
                     )
             else:
                 wal_checkpoint["skipped_reason"] = f"min_interval_not_met:{int(since_last)}s"
-        elif args.auto_wal_checkpoint:
+        elif cycle_args.auto_wal_checkpoint:
             wal_checkpoint["skipped_reason"] = "link_failed" if overall_rc != 0 else "below_data_trigger"
         wal_checkpoint["wal_size_gb_after"] = round(_wal_size_gb(primary_db), 3)
 
-        archive_blockers = _archive_maintenance_blockers(str(args.hot_retention_archive_root or ""))
+        archive_blockers = _archive_maintenance_blockers(str(cycle_args.hot_retention_archive_root or ""))
         db_size = _db_size_gb(primary_db)
         hot_state = maintenance_state.get("hot_retention", {}) if isinstance(maintenance_state.get("hot_retention"), dict) else {}
         hot_rows_since_last = _as_int(hot_state.get("rows_since_last_run"), 0)
         hot_db_growth_gb = max(db_size - _as_float(hot_state.get("baseline_db_size_gb"), db_size), 0.0)
         hot_trigger_reasons = _hot_retention_trigger_reasons(
             db_size_gb=db_size,
-            max_db_gb=float(args.hot_retention_max_db_gb),
+            max_db_gb=float(cycle_args.hot_retention_max_db_gb),
             db_growth_gb=hot_db_growth_gb,
-            growth_trigger_gb=float(args.hot_retention_trigger_growth_gb),
+            growth_trigger_gb=float(cycle_args.hot_retention_trigger_growth_gb),
             rows_since_last_run=hot_rows_since_last,
-            row_trigger=int(args.hot_retention_trigger_rows),
+            row_trigger=int(cycle_args.hot_retention_trigger_rows),
             has_successful_run=bool(str(hot_state.get("last_run_utc") or "").strip()),
         )
         hot_retention = {
-            "enabled": bool(args.auto_hot_retention),
+            "enabled": bool(cycle_args.auto_hot_retention),
             "db_size_gb_before": round(db_size, 3),
-            "max_db_gb": float(args.hot_retention_max_db_gb),
-            "trigger_growth_gb": float(args.hot_retention_trigger_growth_gb),
-            "trigger_rows": int(args.hot_retention_trigger_rows),
-            "archive_db": str(args.hot_retention_archive_db),
-            "archive_root": str(args.hot_retention_archive_root or ""),
-            "archive_period": str(args.hot_retention_archive_period),
-            "archive_retention_days": int(args.hot_retention_archive_retention_days),
-            "archive_prune_vacuum": bool(args.hot_retention_archive_prune_vacuum),
-            "cold_export_root": str(args.hot_retention_cold_export_root or ""),
-            "cold_export_format": str(args.hot_retention_cold_export_format),
-            "batch_size": int(args.hot_retention_batch_size),
-            "max_rows": int(args.hot_retention_max_rows),
+            "max_db_gb": float(cycle_args.hot_retention_max_db_gb),
+            "trigger_growth_gb": float(cycle_args.hot_retention_trigger_growth_gb),
+            "trigger_rows": int(cycle_args.hot_retention_trigger_rows),
+            "hot_days": int(cycle_args.hot_retention_hot_days),
+            "hot_hours": int(cycle_args.hot_retention_hot_hours),
+            "archive_db": str(cycle_args.hot_retention_archive_db),
+            "archive_root": str(cycle_args.hot_retention_archive_root or ""),
+            "archive_period": str(cycle_args.hot_retention_archive_period),
+            "archive_retention_days": int(cycle_args.hot_retention_archive_retention_days),
+            "archive_prune_vacuum": bool(cycle_args.hot_retention_archive_prune_vacuum),
+            "cold_export_root": str(cycle_args.hot_retention_cold_export_root or ""),
+            "cold_export_format": str(cycle_args.hot_retention_cold_export_format),
+            "batch_size": int(cycle_args.hot_retention_batch_size),
+            "max_rows": int(cycle_args.hot_retention_max_rows),
             "rows_since_last_run": int(hot_rows_since_last),
             "db_growth_gb_since_last_run": round(hot_db_growth_gb, 3),
             "trigger_reasons": list(hot_trigger_reasons),
@@ -1361,24 +2270,25 @@ def main() -> int:
         }
         if archive_blockers:
             hot_retention["skipped_reason"] = "archive_maintenance_blocked"
-        elif args.auto_hot_retention and overall_rc == 0 and hot_trigger_reasons:
+        elif cycle_args.auto_hot_retention and overall_rc == 0 and hot_trigger_reasons:
             since_last = cycle_ts - float(last_hot_retention_ts)
-            if since_last >= max(int(args.hot_retention_min_interval_seconds), 60):
-                do_vacuum = db_size >= float(args.hot_retention_vacuum_threshold_gb)
+            if since_last >= max(int(cycle_args.hot_retention_min_interval_seconds), 60):
+                do_vacuum = db_size >= float(cycle_args.hot_retention_vacuum_threshold_gb)
                 rc, out, err = _run_hot_retention(
                     db_path=primary_db,
-                    hot_days=int(args.hot_retention_hot_days),
-                    batch_size=int(args.hot_retention_batch_size),
-                    max_rows=int(args.hot_retention_max_rows),
-                    archive_db=str(args.hot_retention_archive_db),
-                    archive_root=str(args.hot_retention_archive_root or ""),
-                    archive_period=str(args.hot_retention_archive_period),
-                    archive_retention_days=int(args.hot_retention_archive_retention_days),
-                    archive_prune_vacuum=bool(args.hot_retention_archive_prune_vacuum),
-                    cold_export_root=str(args.hot_retention_cold_export_root or ""),
-                    cold_export_format=str(args.hot_retention_cold_export_format),
-                    cold_export_batch_size=int(args.hot_retention_cold_export_batch_size),
-                    cold_export_compression=str(args.hot_retention_cold_export_compression),
+                    hot_days=int(cycle_args.hot_retention_hot_days),
+                    hot_hours=int(cycle_args.hot_retention_hot_hours),
+                    batch_size=int(cycle_args.hot_retention_batch_size),
+                    max_rows=int(cycle_args.hot_retention_max_rows),
+                    archive_db=str(cycle_args.hot_retention_archive_db),
+                    archive_root=str(cycle_args.hot_retention_archive_root or ""),
+                    archive_period=str(cycle_args.hot_retention_archive_period),
+                    archive_retention_days=int(cycle_args.hot_retention_archive_retention_days),
+                    archive_prune_vacuum=bool(cycle_args.hot_retention_archive_prune_vacuum),
+                    cold_export_root=str(cycle_args.hot_retention_cold_export_root or ""),
+                    cold_export_format=str(cycle_args.hot_retention_cold_export_format),
+                    cold_export_batch_size=int(cycle_args.hot_retention_cold_export_batch_size),
+                    cold_export_compression=str(cycle_args.hot_retention_cold_export_compression),
                     vacuum=do_vacuum,
                 )
                 hot_retention.update(
@@ -1404,7 +2314,7 @@ def main() -> int:
                     )
             else:
                 hot_retention["skipped_reason"] = f"min_interval_not_met:{int(since_last)}s"
-        elif args.auto_hot_retention:
+        elif cycle_args.auto_hot_retention:
             hot_retention["skipped_reason"] = "below_data_trigger" if overall_rc == 0 else "link_failed"
         hot_retention["db_size_gb_after"] = round(_db_size_gb(primary_db), 3)
 
@@ -1467,8 +2377,27 @@ def main() -> int:
             "ok": overall_rc == 0,
             "rc": int(overall_rc),
             "mode": "sharded_merge",
+            "link_mode": str(cycle_args.link_mode or "sqlite"),
+            "sinks": {
+                "sqlite": {
+                    "enabled": True,
+                    "status": "active",
+                },
+                "mysql": {
+                    "enabled": str(cycle_args.link_mode or "sqlite") in {"mysql", "both"},
+                    "status": (
+                        "active"
+                        if str(cycle_args.link_mode or "sqlite") in {"mysql", "both"}
+                        else "disabled_by_link_mode"
+                    ),
+                },
+            },
+            "low_priority_merge_skip_gb": float(cycle_args.low_priority_merge_skip_gb),
+            "merge_max_seconds_per_cycle": float(cycle_args.merge_max_seconds_per_cycle),
+            "primary_db_role": _primary_db_role(primary_db),
             "lock_path": str(lock_path),
             "primary_db": str(primary_db),
+            "primary_db_realpath": str(primary_db.resolve(strict=False)),
             "sqlite_db_size_gb": round(_db_size_gb(primary_db), 3),
             "sqlite_wal_size_gb": round(_wal_size_gb(primary_db), 3),
             "queue_db_size_gb": round(_db_size_gb(queue_db_path), 3),
@@ -1478,8 +2407,11 @@ def main() -> int:
             "merge_results": merge_results,
             "wal_checkpoint": wal_checkpoint,
             "hot_retention": hot_retention,
+            "shard_hot_retention": shard_hot_retention_results,
             "queue_retention": queue_retention,
+            "local_fallback_prune": local_fallback_prune,
             "archive_maintenance_blockers": archive_blockers,
+            "active_request": active_request,
         }
         LATEST_HEALTH.parent.mkdir(parents=True, exist_ok=True)
         LATEST_HEALTH.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
@@ -1494,6 +2426,7 @@ def main() -> int:
             merged_rows_this_cycle=int(merged_rows),
             running=False,
             ok=overall_rc == 0,
+            active_request=active_request,
         )
         maintenance_state["timestamp_utc"] = ts
         _write_json(MAINTENANCE_STATE_PATH, maintenance_state)
@@ -1505,7 +2438,7 @@ def main() -> int:
 
         if args.once:
             break
-        time.sleep(max(int(args.interval_seconds), 10))
+        time.sleep(max(int(cycle_args.interval_seconds), 10))
 
     return 0
 

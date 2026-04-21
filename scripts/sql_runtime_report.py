@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, List, Tuple
 
+from core.sqlite_runtime import connect_sqlite
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = PROJECT_ROOT / "data" / "jsonl_link.sqlite3"
@@ -73,9 +74,13 @@ def main() -> int:
     day_governance_like = f"governance/%/master_control_{day}.jsonl"
     day_watchdog_like = f"governance/watchdog/watchdog_events_{day}.jsonl"
 
-    conn = sqlite3.connect(str(db_path), timeout=max(float(args.sqlite_timeout_seconds), 1.0))
-    conn.execute(f"PRAGMA busy_timeout={int(max(float(args.sqlite_timeout_seconds), 1.0) * 1000)}")
-    conn.execute("PRAGMA query_only=ON")
+    conn = connect_sqlite(
+        db_path,
+        project_root=PROJECT_ROOT,
+        timeout_seconds=max(float(args.sqlite_timeout_seconds), 1.0),
+        query_only=True,
+        readonly=True,
+    )
 
     total_rows = None
     min_ing = None

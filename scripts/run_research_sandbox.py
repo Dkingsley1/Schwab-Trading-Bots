@@ -1,11 +1,17 @@
 import argparse
 import json
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_python import resolve_runtime_python
+
+PY = resolve_runtime_python(PROJECT_ROOT)
 
 
 def _run(cmd: list[str]) -> dict:
@@ -16,6 +22,7 @@ def _run(cmd: list[str]) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Research sandbox pipeline (dataset + walk-forward + gate).")
     parser.add_argument("--out", default=str(PROJECT_ROOT / "exports" / "research_sandbox" / "latest.json"))
+    parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
     steps = []
@@ -33,7 +40,10 @@ def main() -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
-    print(str(out))
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=True))
+    else:
+        print(str(out))
     return 0 if ok else 1
 
 

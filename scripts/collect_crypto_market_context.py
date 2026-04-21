@@ -13,15 +13,14 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.collector_transport import attach_collection_confidence, fetch_json, fetch_text
 from core.market_context_features import default_structured_news_features, summarize_structured_news_items
 
 
@@ -321,15 +320,23 @@ def _http_json(
     headers: dict[str, str] | None = None,
     body: bytes | None = None,
 ) -> Any:
-    req_headers = {
-        "User-Agent": user_agent,
-        "Accept": "application/json",
-    }
-    if headers:
-        req_headers.update(headers)
-    req = Request(url=url, method=method.upper(), headers=req_headers, data=body)
-    with urlopen(req, timeout=max(float(timeout), 1.0)) as resp:
-        return json.loads(resp.read().decode("utf-8", "replace"))
+    result = fetch_json(
+        url=url,
+        user_agent=user_agent,
+        timeout=timeout,
+        method=method,
+        headers=headers,
+        body=body,
+        collector_key="crypto_market_context",
+        source_name="crypto_market_context",
+        entity_key=url,
+        project_root=PROJECT_ROOT,
+        source_confidence_norm=0.92,
+        schema_confidence_norm=0.9,
+    )
+    if not bool(result.get("ok", False)):
+        raise RuntimeError(str(result.get("error") or "http_json_failed"))
+    return result.get("json")
 
 
 def _http_text(
@@ -339,28 +346,34 @@ def _http_text(
     timeout: float,
     headers: dict[str, str] | None = None,
 ) -> str:
-    req_headers = {
-        "User-Agent": user_agent,
-        "Accept": "*/*",
-    }
-    if headers:
-        req_headers.update(headers)
-    req = Request(url=url, method="GET", headers=req_headers)
-    with urlopen(req, timeout=max(float(timeout), 1.0)) as resp:
-        return resp.read().decode("utf-8", "replace")
+    result = fetch_text(
+        url=url,
+        user_agent=user_agent,
+        timeout=timeout,
+        headers=headers,
+        collector_key="crypto_market_context",
+        source_name="crypto_market_context",
+        entity_key=url,
+        project_root=PROJECT_ROOT,
+        source_confidence_norm=0.88,
+        schema_confidence_norm=0.86,
+    )
+    if not bool(result.get("ok", False)):
+        raise RuntimeError(str(result.get("error") or "http_text_failed"))
+    return str(result.get("text") or "")
 
 
 def _safe_http_json(**kwargs: Any) -> tuple[Any | None, str | None]:
     try:
         return _http_json(**kwargs), None
-    except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
+    except (RuntimeError, TimeoutError, OSError, ValueError) as exc:
         return None, str(exc)
 
 
 def _safe_http_text(**kwargs: Any) -> tuple[str | None, str | None]:
     try:
         return _http_text(**kwargs), None
-    except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
+    except (RuntimeError, TimeoutError, OSError, ValueError) as exc:
         return None, str(exc)
 
 
@@ -588,6 +601,9 @@ def _build_news_row(
         "broad_market": broad_market,
         "macro_event": False,
         "source_quality_norm": 0.8,
+        "source_confidence_norm": 0.8,
+        "schema_confidence_norm": 0.88,
+        "freshness_norm": 1.0 if published else 0.65,
     }
     if related:
         row["symbols"] = related
@@ -596,7 +612,12 @@ def _build_news_row(
         row["sentiment_hint"] = sentiment_hint
     if shock_hint > 0.0:
         row["shock_hint"] = shock_hint
-    return row
+    return attach_collection_confidence(
+        row,
+        source_confidence_norm=float(row.get("source_confidence_norm") or row.get("source_quality_norm") or 0.8),
+        schema_confidence_norm=float(row.get("schema_confidence_norm") or 0.88),
+        freshness_norm=float(row.get("freshness_norm") or 1.0),
+    )
 
 
 def _parse_rss_news_items(

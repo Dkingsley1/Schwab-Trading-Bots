@@ -342,6 +342,7 @@ def main() -> int:
     parser.add_argument("--cold-export-batch-size", type=int, default=50000)
     parser.add_argument("--cold-export-compression", default="zstd")
     parser.add_argument("--hot-days", type=int, default=30)
+    parser.add_argument("--hot-hours", type=int, default=0, help="Optional hourly hot window that takes precedence over hot-days when greater than zero.")
     parser.add_argument("--batch-size", type=int, default=50000)
     parser.add_argument("--max-rows", type=int, default=0, help="Maximum rows to move in one pass (0 = unlimited).")
     parser.add_argument("--vacuum", action="store_true")
@@ -358,7 +359,13 @@ def main() -> int:
     archive_root = Path(args.archive_root).expanduser().resolve() if str(args.archive_root).strip() else None
     cold_export_root = Path(args.cold_export_root).expanduser().resolve() if str(args.cold_export_root).strip() else None
 
-    cutoff = (_now_utc() - timedelta(days=max(args.hot_days, 1))).isoformat()
+    if int(args.hot_hours) > 0:
+        cutoff_dt = _now_utc() - timedelta(hours=max(args.hot_hours, 1))
+        hot_window = {"unit": "hours", "value": int(max(args.hot_hours, 1))}
+    else:
+        cutoff_dt = _now_utc() - timedelta(days=max(args.hot_days, 1))
+        hot_window = {"unit": "days", "value": int(max(args.hot_days, 1))}
+    cutoff = cutoff_dt.isoformat()
 
     src = _connect(db_path)
     src.row_factory = sqlite3.Row
@@ -457,6 +464,8 @@ def main() -> int:
         "archive_root": str(archive_root) if archive_root else "",
         "archive_period": str(args.archive_period),
         "hot_days": int(args.hot_days),
+        "hot_hours": int(max(args.hot_hours, 0)),
+        "hot_window": hot_window,
         "batch_size": int(args.batch_size),
         "max_rows": int(max_rows),
         "moved_rows": int(total_moved),

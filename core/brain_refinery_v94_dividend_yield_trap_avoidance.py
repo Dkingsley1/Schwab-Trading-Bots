@@ -68,15 +68,21 @@ def _yield_trap_signal(obs):
     quality = observation_feature(obs, "dividend_quality_score_norm")
     safety = observation_feature(obs, "dividend_safety_composite_norm")
     return _clip01(
-        0.22 * observation_feature(obs, "dividend_yield_norm")
-        + 0.18 * observation_feature(obs, "dividend_payout_ratio_norm")
+        0.16 * observation_feature(obs, "dividend_yield_norm")
+        + 0.13 * observation_feature(obs, "dividend_payout_ratio_norm")
+        + 0.12 * observation_feature(obs, "dividend_trap_internal_risk_norm")
+        + 0.10 * observation_feature(obs, "dividend_cut_freeze_risk_norm")
+        + 0.09 * observation_feature(obs, "dividend_debt_funded_risk_norm")
+        + 0.08 * observation_feature(obs, "dividend_forward_hazard_norm")
         + 0.12 * (1.0 - quality)
-        + 0.12 * (1.0 - safety)
-        + 0.12 * observation_feature(obs, "dividend_compound_drawdown_norm")
-        + 0.10 * observation_feature(obs, "dividend_ex_slippage_risk_norm")
-        + 0.08 * observation_feature(obs, "dividend_drip_cash_only_norm")
-        + 0.06 * (1.0 - observation_feature(obs, "dividend_drip_active_norm"))
+        + 0.10 * (1.0 - safety)
+        + 0.08 * observation_feature(obs, "dividend_compound_drawdown_norm")
+        + 0.06 * observation_feature(obs, "dividend_ex_slippage_risk_norm")
+        + 0.05 * observation_feature(obs, "dividend_drip_cash_only_norm")
+        + 0.04 * (1.0 - observation_feature(obs, "dividend_drip_active_norm"))
         - 0.04 * observation_feature(obs, "dividend_drip_confidence_norm")
+        - 0.04 * observation_feature(obs, "dividend_income_quality_norm")
+        - 0.03 * observation_feature(obs, "dividend_fcf_coverage_norm")
         + 0.08 * observation_feature(obs, "capital_flow_outflow_norm")
         + 0.06 * observation_feature(obs, "options_negative_bias_norm")
     )
@@ -107,6 +113,16 @@ def _runtime_feature_vector(sequence, idx):
             observation_feature(obs, "dividend_tax_qualified_hold_norm"),
             observation_feature(obs, "dividend_growth_momentum_norm"),
             observation_feature(obs, "dividend_rebalance_due_norm"),
+            observation_feature(obs, "dividend_fcf_coverage_norm"),
+            observation_feature(obs, "dividend_total_return_income_norm"),
+            observation_feature(obs, "dividend_cut_freeze_risk_norm"),
+            observation_feature(obs, "dividend_debt_funded_risk_norm"),
+            observation_feature(obs, "dividend_structure_aware_quality_norm"),
+            observation_feature(obs, "dividend_forward_hazard_norm"),
+            observation_feature(obs, "dividend_income_quality_norm"),
+            observation_feature(obs, "dividend_trap_internal_risk_norm"),
+            observation_feature(obs, "dividend_corporate_action_hazard_norm"),
+            observation_feature(obs, "dividend_tax_friction_norm"),
             observation_feature(obs, "capital_flow_outflow_norm"),
             observation_feature(obs, "options_negative_bias_norm"),
             observation_feature(obs, "data_quality_quote_agreement_norm"),
@@ -114,6 +130,7 @@ def _runtime_feature_vector(sequence, idx):
             price_change(sequence, idx, 12),
             feature_ema(sequence, idx, "dividend_quality_score_norm", 4),
             feature_ema(sequence, idx, "dividend_payout_ratio_norm", 4),
+            feature_ema(sequence, idx, "dividend_trap_internal_risk_norm", 4),
         ],
         dtype=np.float32,
     )
@@ -136,10 +153,12 @@ def _runtime_confidence(sequence, idx, horizon):
         + 0.45 * observation_feature(obs, "bond_credit_risk_off_norm")
     )
     quality_gap = _clip01(
-        0.50 * (1.0 - observation_feature(obs, "dividend_quality_score_norm"))
-        + 0.50 * (1.0 - observation_feature(obs, "dividend_safety_composite_norm"))
+        0.34 * (1.0 - observation_feature(obs, "dividend_quality_score_norm"))
+        + 0.24 * (1.0 - observation_feature(obs, "dividend_safety_composite_norm"))
+        + 0.22 * observation_feature(obs, "dividend_cut_freeze_risk_norm")
+        + 0.20 * observation_feature(obs, "dividend_debt_funded_risk_norm")
     )
-    return (0.34 * trap_signal) + (0.24 * macro_stress) + (0.20 * quality_gap) + (0.12 * quote_quality) + (0.10 * observation_feature(obs, "dividend_ex_slippage_risk_norm"))
+    return (0.30 * trap_signal) + (0.22 * macro_stress) + (0.20 * quality_gap) + (0.10 * quote_quality) + (0.10 * observation_feature(obs, "dividend_ex_slippage_risk_norm")) + (0.08 * observation_feature(obs, "dividend_forward_hazard_norm"))
 
 
 def _runtime_yield_trap_label(sequence, idx, horizon):
@@ -151,9 +170,14 @@ def _runtime_yield_trap_label(sequence, idx, horizon):
     fwd_ret = future_return(sequence, idx, horizon)
     dd = abs(future_max_drawdown(sequence, idx, horizon))
     realized = future_realized_vol(sequence, idx, horizon)
+    forward_hazard = observation_feature(obs, "dividend_forward_hazard_norm")
+    trap_internal = observation_feature(obs, "dividend_trap_internal_risk_norm")
+    coverage_quality = observation_feature(obs, "dividend_fcf_coverage_norm")
     safe_recovery = _clip01(
-        0.55 * observation_feature(obs, "dividend_quality_score_norm")
-        + 0.45 * observation_feature(obs, "dividend_safety_composite_norm")
+        0.34 * observation_feature(obs, "dividend_quality_score_norm")
+        + 0.26 * observation_feature(obs, "dividend_safety_composite_norm")
+        + 0.20 * observation_feature(obs, "dividend_income_quality_norm")
+        + 0.20 * observation_feature(obs, "dividend_structure_aware_quality_norm")
         - 0.35 * trap_signal
     )
     downside_score = (
@@ -161,10 +185,13 @@ def _runtime_yield_trap_label(sequence, idx, horizon):
         + (0.78 * dd)
         + (0.22 * realized)
         + (0.0008 * trap_signal)
+        + (0.0006 * forward_hazard)
+        + (0.0004 * trap_internal)
     )
     upside_score = (
         fwd_ret
         + (0.0010 * safe_recovery)
+        + (0.0006 * coverage_quality)
         - (0.65 * dd)
         - (0.20 * realized)
         - (0.0005 * trap_signal)
@@ -199,8 +226,8 @@ def _train_synthetic():
     )
 
 
-if __name__ == "__main__":
-    train_runtime_indicator_bot(
+def train_brain():
+    return train_runtime_indicator_bot(
         run_tag="brain_refinery_v94_dividend_yield_trap_avoidance",
         feature_names=[
             "pct_from_close",
@@ -224,6 +251,16 @@ if __name__ == "__main__":
             "dividend_tax_qualified_hold_norm",
             "dividend_growth_momentum_norm",
             "dividend_rebalance_due_norm",
+            "dividend_fcf_coverage_norm",
+            "dividend_total_return_income_norm",
+            "dividend_cut_freeze_risk_norm",
+            "dividend_debt_funded_risk_norm",
+            "dividend_structure_aware_quality_norm",
+            "dividend_forward_hazard_norm",
+            "dividend_income_quality_norm",
+            "dividend_trap_internal_risk_norm",
+            "dividend_corporate_action_hazard_norm",
+            "dividend_tax_friction_norm",
             "capital_flow_outflow_norm",
             "options_negative_bias_norm",
             "data_quality_quote_agreement_norm",
@@ -231,6 +268,7 @@ if __name__ == "__main__":
             "ret_12",
             "dividend_quality_score_ema_4",
             "dividend_payout_ratio_ema_4",
+            "dividend_trap_internal_risk_ema_4",
         ],
         runtime_feature_builder=_runtime_feature_vector,
         runtime_label_builder=_runtime_yield_trap_label,
@@ -253,3 +291,7 @@ if __name__ == "__main__":
         min_accuracy_lift_over_majority=0.02,
         min_precision_balance_score=0.35,
     )
+
+
+if __name__ == "__main__":
+    train_brain()

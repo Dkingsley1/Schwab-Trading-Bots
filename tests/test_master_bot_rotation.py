@@ -71,6 +71,42 @@ def test_floor_override_only_revives_passing_rotation_candidates(tmp_path) -> No
     assert result["brain_refinery_deleted"].active is False
 
 
+def test_floor_override_uses_supportable_recovery_when_walk_forward_coverage_is_sparse(tmp_path) -> None:
+    master = MasterBot(project_root=str(tmp_path), min_active_bots=2)
+    master.walk_forward_map = {
+        "brain_refinery_good": {
+            "runs": 30,
+            "status": "pass",
+            "forward_mean": 0.61,
+            "delta": 0.0,
+            "trading_quality_score": 0.63,
+        },
+        "brain_refinery_unsupported": {
+            "runs": 30,
+            "status": "pass",
+            "forward_mean": 0.64,
+            "delta": 0.01,
+            "trading_quality_score": 0.66,
+        },
+    }
+
+    statuses = [
+        _status("brain_refinery_good", reason="correlation_pruned_gt_0.92", quality=0.82),
+        _status("brain_refinery_stale", reason="stale_training_diagnostic", quality=0.74),
+        _status("brain_refinery_unsupported", reason="unsupported_runtime_inputs", quality=0.91),
+        _status("brain_refinery_planned", reason="planned_roster_expansion_slot", quality=0.95),
+    ]
+
+    result = {status.bot_id: status for status in master._enforce_min_active_bots(statuses)}
+
+    assert result["brain_refinery_good"].active is True
+    assert result["brain_refinery_good"].reason == "min_active_floor_override_2"
+    assert result["brain_refinery_stale"].active is True
+    assert result["brain_refinery_stale"].reason == "min_active_floor_override_2:supportable_recovery"
+    assert result["brain_refinery_unsupported"].active is False
+    assert result["brain_refinery_planned"].active is False
+
+
 def test_role_floor_restores_best_infrastructure_canary(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("MASTER_MIN_ACTIVE_INFRASTRUCTURE_BOTS", "4")
     monkeypatch.setenv("MASTER_INFRA_FLOOR_MIN_QUALITY_SCORE", "0.44")
@@ -82,6 +118,7 @@ def test_role_floor_restores_best_infrastructure_canary(tmp_path, monkeypatch) -
         _status("brain_refinery_v86_risk_budget_allocator_v2", role="infrastructure_sub_bot", reason="within_operating_band", quality=0.50),
         _status("brain_refinery_v67_correlation_penalty_layer", role="infrastructure_sub_bot", reason="graduation_hold:forward_mean<0.520", quality=0.468),
         _status("brain_refinery_v69_cost_aware_execution_filter", role="infrastructure_sub_bot", reason="graduation_hold:forward_mean<0.520", quality=0.465),
+        _status("brain_refinery_v80_execution_feasibility_sentinel", role="infrastructure_sub_bot", reason="unsupported_runtime_inputs", quality=0.90),
     ]
     for st in statuses[:3]:
         st.active = True
@@ -90,7 +127,9 @@ def test_role_floor_restores_best_infrastructure_canary(tmp_path, monkeypatch) -
 
     assert result["brain_refinery_v67_correlation_penalty_layer"].active is True
     assert result["brain_refinery_v67_correlation_penalty_layer"].reason == "role_floor_infrastructure_sub_bot"
-    assert result["brain_refinery_v69_cost_aware_execution_filter"].active is False
+    assert result["brain_refinery_v69_cost_aware_execution_filter"].active is True
+    assert result["brain_refinery_v69_cost_aware_execution_filter"].reason == "role_floor_infrastructure_sub_bot"
+    assert result["brain_refinery_v80_execution_feasibility_sentinel"].active is False
 
 
 def test_train_from_outcomes_preserves_bots_without_fresh_logs(tmp_path) -> None:

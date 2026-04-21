@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -139,4 +140,38 @@ def test_sql_writable_uses_nonblocking_probe_file(tmp_path: Path) -> None:
         assert src._sql_writable() is True
         assert not (db_path.parent / ".session_ready_write_probe").exists()
     finally:
+        src.DB_PATH = original_db
+
+
+def test_main_allows_parallel_launcher_per_expected_profile(tmp_path: Path, monkeypatch, capsys) -> None:
+    original_root = src.PROJECT_ROOT
+    original_db = src.DB_PATH
+    try:
+        src.PROJECT_ROOT = tmp_path
+        src.DB_PATH = tmp_path / "data" / "jsonl_link.sqlite3"
+        now = datetime.now(timezone.utc)
+        activity_details = {
+            "crypto_futures": {"latest": now, "heartbeat": now, "checkpoint": None},
+            "default": {"latest": now, "heartbeat": now, "checkpoint": None},
+            "fx": {"latest": now, "heartbeat": now, "checkpoint": None},
+            "schwab_futures": {"latest": now, "heartbeat": now, "checkpoint": None},
+        }
+        monkeypatch.setattr(src, "_sql_writable", lambda: True)
+        monkeypatch.setattr(src, "_proc_count", lambda match: 4)
+        monkeypatch.setattr(src, "_profile_activity_details", lambda: activity_details)
+        monkeypatch.setattr(src, "_latest_heartbeat_age_sec", lambda activity=None: 12.0)
+        monkeypatch.setattr(src, "_halt_flag_detail", lambda: (False, str(tmp_path / "halt.flag")))
+        monkeypatch.setattr(src, "_profile_heartbeat_ok", lambda profile, max_age_sec, activity=None: (True, "age_sec=12.0"))
+        monkeypatch.setattr(sys, "argv", ["session_ready_check.py", "--json"])
+
+        rc = src.main()
+        payload = json.loads(capsys.readouterr().out)
+
+        assert rc == 0
+        assert payload["ok"] is True
+        process_state = next(row for row in payload["checks"] if row["name"] == "process_state")
+        assert process_state["ok"] is True
+        assert process_state["details"] == "parallel_launcher_count=4 allowed=4"
+    finally:
+        src.PROJECT_ROOT = original_root
         src.DB_PATH = original_db

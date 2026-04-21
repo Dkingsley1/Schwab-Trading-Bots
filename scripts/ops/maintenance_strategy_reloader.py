@@ -10,12 +10,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
 STATE_FILE = PROJECT_ROOT / "governance" / "health" / "maintenance_strategy_reloader_latest.json"
 SQL_WRITER_LABEL = f"gui/{os.getuid()}/com.dankingsley.ops.sql_link_writer"
-WATCH_KEYS = ("SQL_LINK_SERVICE_", "RETENTION_", "SQLITE_", "BOT_LOGS_")
+WATCH_KEYS = ("SQL_LINK_SERVICE_", "RETENTION_", "SQLITE_", "BOT_LOGS_", "INGEST_", "JSONL_SQL_", "LOG_")
 ARCHIVE_ROOT = PROJECT_ROOT / "data" / "jsonl_link_archives"
 MAINTENANCE_GLOBS = ("*.compact.sqlite3", "*.precompact.bak.sqlite3")
 WATCH_FILES = [
     PROJECT_ROOT / "config" / ".env",
     PROJECT_ROOT / "config" / ".env.live",
+    PROJECT_ROOT / "config" / ".env.storage_pressure_override",
     PROJECT_ROOT / "config" / ".env.storage_override",
     PROJECT_ROOT / "config" / ".env.maintenance",
 ]
@@ -134,7 +135,7 @@ def main() -> int:
     applied_fingerprint = previous_applied
 
     if changed and not deferred:
-        if any(key.startswith("SQL_LINK_SERVICE_") for key in keys):
+        if any(key.startswith(("SQL_LINK_SERVICE_", "INGEST_", "JSONL_SQL_")) for key in keys):
             actions.append(
                 {
                     "name": "restart_sql_link_writer",

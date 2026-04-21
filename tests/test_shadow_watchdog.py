@@ -262,3 +262,18 @@ def test_heartbeat_health_requires_live_pid_for_processless_mode(tmp_path) -> No
     assert count == 1
     assert age is not None
     assert live_count == 0
+
+
+def test_aggressive_modes_target_is_not_allowed_to_be_processless() -> None:
+    target = Target(
+        name="aggressive_modes_parallel",
+        match="scripts/run_parallel_aggressive_modes.py",
+        start_cmd="echo hi",
+        heartbeat_glob="/tmp/shadow_loop_*aggressive*_equities_schwab_*.json",
+        heartbeat_stale_seconds=180,
+        min_healthy_heartbeats=2,
+        heartbeat_profiles=("intraday_aggressive", "swing_aggressive"),
+        allow_processless_heartbeat_live=False,
+    )
+
+    assert target.allow_processless_heartbeat_live is False
