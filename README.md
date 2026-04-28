@@ -40,7 +40,7 @@ flowchart TD
 - Added canonical signal-generation evidence at `governance/events/signal_generation_*.jsonl` for good trade-intent signals and blocked/weak/no-trade signals.
 - Added a system source-of-truth map: [docs/architecture/SOURCE_OF_TRUTH.md](docs/architecture/SOURCE_OF_TRUTH.md).
 - Added an architecture decision record for source-of-truth and signal evidence: [docs/architecture/ADR-0001-system-source-of-truth.md](docs/architecture/ADR-0001-system-source-of-truth.md).
-- Added Codex project guardrails in `AGENTS.md` and `scripts/ops/codex_project_guard.py` to reduce AI-assisted project drift.
+- Added Codex project guardrails in [AGENTS.md](AGENTS.md) and `scripts/ops/codex_project_guard.py` to reduce AI-assisted project drift.
 - Regenerated `COMMANDS.md` from the command inventory, keeping `Most Used` pinned first and the remaining sections alphabetized.
 - Improved report opening through `scripts/ops/open_report_artifact.sh`, including incident-report PDF regeneration and fallback behavior.
 - Updated Schwab interactive auth tooling so the Chrome consent handoff and token-readiness posture are visible in health artifacts.
@@ -71,7 +71,6 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/runbook.sh live
 ./scripts/runbook.sh retrain
 ./scripts/ops/open_report_artifact.sh bundle
-./scripts/ops/opsctl.sh codex-project-guard --staged --json
 ```
 
 ## Notes
