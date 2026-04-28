@@ -62,18 +62,13 @@ The important generated artifacts are:
 ## Auto-Refreshed Highlights
 
 <!-- SHOWCASE_HIGHLIGHTS_START -->
-_Generated at 2026-04-28 13:50 UTC_
+_Generated at 2026-04-28 14:27 UTC_
 
-- Active registry lineup: `30` of `107` bots are active.
-- Live collection snapshot: `8/15` lane artifacts are reporting `running`.
-- Institutional readiness: `100.00/100` with status `industry_leaning`.
-- Live/runtime posture: live readiness `degraded` at `100.00/100`, runtime separation `degraded`.
-- Autonomy posture: `87.27/100` with status `blocked`, playbooks `7`, open incidents `0`.
-- Architecture upgrades: `10/12` ready proof surfaces, host profile `max_throughput`, portable proof `ready`.
-- Crypto context: `14/14` healthy sources and `7/7` healthy news feeds.
-- Correlation overlay: mode `exact`, aligned pairs `6`.
-- PyTorch sidecar: `0` active assist candidates across `0` tracked runs.
-- Top active lineup by test accuracy: `brain_refinery_v95_rates_regime_bond_bot` (100.0%), `brain_refinery_v99_defensive_dividend_concentration` (100.0%), `brain_refinery_v10_seasonal` (93.8%).
+- Active registry lineup: `26` of `94` bots are active.
+- Live collection snapshot: `0/0` lane artifacts are reporting `running`.
+- Crypto context: `0/0` healthy sources and `0/0` healthy news feeds.
+- Correlation overlay: mode `exact`, aligned pairs `0`.
+- Top active lineup by test accuracy: `brain_refinery_v95_rates_regime_bond_bot` (100.0%), `brain_refinery_v96_credit_spread_rotation_bot` (89.5%), `brain_refinery_v35_dmi_state_machine` (85.2%).
 
 Full generated detail lives in [docs/showcase/generated/highlights_latest.md](docs/showcase/generated/highlights_latest.md).
 <!-- SHOWCASE_HIGHLIGHTS_END -->
