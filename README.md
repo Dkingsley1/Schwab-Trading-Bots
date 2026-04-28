@@ -4,10 +4,13 @@ AI-assisted multi-sleeve trading research and paper-execution platform built aro
 
 This repository is the working system I use to build, test, document, and operate a trading automation platform with GPT/Codex-style AI engineering tools in the loop. The emphasis is practical: shipping features in a real codebase, maintaining source-of-truth docs, adding tests, debugging broker/auth flows, and keeping operator commands reproducible.
 
+**Technical focus:** AI-assisted software engineering, GPT/Codex tools, Claude/GPT-style workflows, Python, algorithmic trading, quantitative research, signal generation, market data ingestion, paper trading, risk metrics, Sharpe ratio, Sortino ratio, JSONL event streams, SQL, automation, testing, and GitHub documentation.
+
 ## What This Demonstrates
 
 - Hands-on AI-assisted software engineering with GPT/Codex-style tools across implementation, debugging, documentation, testing, and GitHub workflows.
 - Multi-sleeve trading research architecture spanning equities, crypto, futures, dividend, bond, macro, and defensive strategy lanes.
+- Market data ingestion, signal generation, paper trading, JSONL/SQL data workflows, and operational automation.
 - Risk-adjusted performance reporting, including Sortino ratio for aggressive sleeves and Sharpe ratio for conservative sleeves.
 - Good/bad signal-generation logging through auditable JSONL event streams.
 - Operator runbooks generated from source-controlled command inventory instead of hand-maintained notes.
