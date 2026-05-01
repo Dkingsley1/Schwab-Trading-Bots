@@ -54,6 +54,10 @@ def test_memory_efficiency_control_recommends_constrained_profile_under_pressure
     assert payload["recommended_env_overrides"]["RUNTIME_TRAIN_BATCH_SIZE_CAP"] == "48"
     assert payload["recommended_env_overrides"]["SQLITE_TEMP_STORE_MODE"] == "FILE"
     assert payload["recommended_env_overrides"]["BOT_OPS_SQLITE_CACHE_SIZE_KB"] == "2048"
+    assert payload["recommended_env_overrides"]["QUANT_MODEL_TRANSFORMER_SEQUENCE"] == "32"
+    assert payload["recommended_env_overrides"]["QUANT_MODEL_DML_CROSSFIT_FOLDS"] == "2"
+    assert payload["recommended_env_overrides"]["QUANT_MODEL_DMS_STEPS"] == "12"
+    assert payload["unified_memory_telemetry"]["competitive_advantage_state"] == "eroding_under_swap"
 
 
 def test_memory_efficiency_control_downshifts_for_dual_creative_session(tmp_path: Path) -> None:
@@ -142,6 +146,7 @@ def test_memory_efficiency_control_keeps_single_creative_app_looser_on_max_tier(
     assert payload["recommended_env_overrides"]["ASYNC_PIPELINE_WORKERS"] == "4"
     assert payload["recommended_env_overrides"]["SQLITE_TEMP_STORE_MODE"] == "FILE"
     assert payload["recommended_env_overrides"]["BOT_OPS_SQLITE_CACHE_SIZE_KB"] == "4096"
+    assert payload["unified_memory_telemetry"]["memory_architecture"] == "unified"
 
 
 def test_write_override_shell_quotes_values_with_spaces(tmp_path: Path) -> None:

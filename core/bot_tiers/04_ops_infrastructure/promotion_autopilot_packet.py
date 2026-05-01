@@ -1,0 +1,1 @@
+../../../scripts/ops/promotion_autopilot_packet.py

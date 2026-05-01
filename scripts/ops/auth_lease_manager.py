@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,7 @@ DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "auth_lease_manager_
 def build_payload(
     project_root: Path = PROJECT_ROOT,
     *,
-    min_lease_seconds: int = 1800,
+    min_lease_seconds: int = 1200,
     critical_lease_seconds: int = 600,
     max_guard_age_minutes: float = 60.0,
 ) -> dict[str, Any]:
@@ -100,8 +101,8 @@ def build_payload(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Track broker/auth lease health for multi-week runtime windows.")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
-    parser.add_argument("--min-lease-seconds", type=int, default=1800)
-    parser.add_argument("--critical-lease-seconds", type=int, default=600)
+    parser.add_argument("--min-lease-seconds", type=int, default=int(os.getenv("SCHWAB_AUTH_LEASE_MIN_SECONDS", "1200")))
+    parser.add_argument("--critical-lease-seconds", type=int, default=int(os.getenv("SCHWAB_AUTH_LEASE_CRITICAL_SECONDS", "600")))
     parser.add_argument("--max-guard-age-minutes", type=float, default=60.0)
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--json", action="store_true")

@@ -58,13 +58,13 @@ class MasterBot:
         project_root: str,
         preferred_low: float = 0.55,
         preferred_high: float = 0.65,
-        deactivate_below: float = 0.50,
-        quality_floor: float = 0.52,
+        deactivate_below: float = 0.60,
+        quality_floor: float = 0.60,
         flash_crash_weight_cap: float = 0.35,
-        decay_guard_drop: float = 0.08,
-        promotion_margin: float = 0.005,
+        decay_guard_drop: float = 0.05,
+        promotion_margin: float = 0.015,
         no_improvement_retire_streak: int = 3,
-        min_active_bots: int = 50,
+        min_active_bots: int = 150,
         correlation_prune_threshold: float = 0.92,
     ) -> None:
         self.project_root = project_root
@@ -84,15 +84,20 @@ class MasterBot:
         self.signal_group_weight_target = float(os.getenv("SIGNAL_GROUP_WEIGHT_TARGET", "0.50"))
         self.min_active_options_bots = max(int(os.getenv("MASTER_MIN_ACTIVE_OPTIONS_BOTS", "6")), 0)
         self.min_active_infrastructure_bots = max(int(os.getenv("MASTER_MIN_ACTIVE_INFRASTRUCTURE_BOTS", "6")), 0)
+        self.quant_research_zero_weight = os.getenv("MASTER_QUANT_RESEARCH_ZERO_WEIGHT", "1").strip() == "1"
+        self.quant_model_control_file = os.getenv(
+            "QUANT_MODEL_CONTROL_FILE",
+            os.path.join(self.project_root, "governance", "health", "quant_model_control_latest.json"),
+        )
         self.infrastructure_always_active = os.getenv("MASTER_INFRASTRUCTURE_ALWAYS_ACTIVE", "1").strip() == "1"
         self.infrastructure_floor_min_quality_score = float(os.getenv("MASTER_INFRA_FLOOR_MIN_QUALITY_SCORE", "0.44"))
         self.walk_forward_fail_penalty = float(os.getenv("WALK_FORWARD_FAIL_PENALTY", "0.82"))
         self.walk_forward_min_forward_mean = float(os.getenv("WALK_FORWARD_MIN_FORWARD_MEAN", "0.51"))
         self.graduation_gate_enabled = os.getenv("MASTER_GRADUATION_GATE_ENABLED", "1").strip() == "1"
         self.graduation_min_runs = max(int(os.getenv("GRADUATION_MIN_RUNS", "24")), 1)
-        self.graduation_min_forward_mean = float(os.getenv("GRADUATION_MIN_FORWARD_MEAN", "0.52"))
-        self.graduation_min_delta = float(os.getenv("GRADUATION_MIN_DELTA", "-0.02"))
-        self.min_trading_quality_score = float(os.getenv("MASTER_MIN_TRADING_QUALITY_SCORE", "0.50"))
+        self.graduation_min_forward_mean = float(os.getenv("GRADUATION_MIN_FORWARD_MEAN", "0.58"))
+        self.graduation_min_delta = float(os.getenv("GRADUATION_MIN_DELTA", "0.00"))
+        self.min_trading_quality_score = float(os.getenv("MASTER_MIN_TRADING_QUALITY_SCORE", "0.60"))
         self.trading_quality_weight = min(max(float(os.getenv("MASTER_TRADING_QUALITY_WEIGHT", "0.35")), 0.0), 0.8)
         self.freeze_bot_count_enabled = os.getenv("MASTER_FREEZE_BOT_COUNT", "1").strip() == "1"
         self.strict_live_pass_only = os.getenv("MASTER_STRICT_LIVE_PASS_ONLY", "1").strip() == "1"
@@ -359,6 +364,8 @@ class MasterBot:
     @staticmethod
     def _bucket(bot_id: str, bot_role: str) -> str:
         name = (bot_id or "").lower()
+        if any(t in name for t in ("quant", "monte_carlo", "kalman", "heston", "merton", "hawkes", "signature", "neural_sde", "pinn", "pinsde", "critic", "hmm", "omni", "symbolic", "rlbf", "equivariant", "transformer")):
+            return "quant_research"
         if bot_role == "infrastructure_sub_bot":
             if any(t in name for t in ("risk", "drawdown", "budget", "allocator", "sentinel")):
                 return "risk"
@@ -486,7 +493,11 @@ class MasterBot:
         active = bool(normalized.get("active", False)) and (not deleted_from_rotation)
         normalized["deleted_from_rotation"] = deleted_from_rotation
         normalized["active"] = active
-        normalized["lifecycle_state"] = cls._normalized_lifecycle_state(active, deleted_from_rotation)
+        lifecycle = str(normalized.get("lifecycle_state") or "").strip().lower()
+        if lifecycle == "data_collection_only" and active and not deleted_from_rotation:
+            normalized["lifecycle_state"] = "data_collection_only"
+        else:
+            normalized["lifecycle_state"] = cls._normalized_lifecycle_state(active, deleted_from_rotation)
         if deleted_from_rotation:
             normalized["weight"] = 0.0
         return normalized
@@ -1007,8 +1018,26 @@ class MasterBot:
         return statuses
 
 
+    def _weight_blocked(self, status: BotStatus) -> bool:
+        row = self.prev_status_by_bot.get(status.bot_id, {})
+        if not isinstance(row, dict):
+            return False
+        lifecycle = str(row.get("lifecycle_state") or "").strip().lower()
+        if lifecycle == "data_collection_only":
+            return True
+        if bool(row.get("training_excluded", False)) or bool(row.get("exclude_from_training", False)):
+            return True
+        if str(row.get("execution_policy_label") or "").strip().lower() == "research_only_no_execution":
+            return True
+        if self.quant_research_zero_weight and str(row.get("sleeve_family") or "").strip().lower() == "quant_models":
+            return True
+        return False
+
     def _assign_weights(self, statuses: List[BotStatus]) -> List[BotStatus]:
-        active = [s for s in statuses if s.active]
+        active = [s for s in statuses if s.active and not self._weight_blocked(s)]
+        for s in statuses:
+            if s.active and self._weight_blocked(s):
+                s.weight = 0.0
         total = sum(max(s.preference_score, 1e-8) for s in active)
 
         if total <= 0.0:
@@ -1065,6 +1094,7 @@ class MasterBot:
             rows.append(self._normalize_registry_row(asdict(status)))
 
         active_rows = [row for row in rows if bool(row.get("active", False))]
+        data_collection_rows = [row for row in rows if str(row.get("lifecycle_state") or "").strip().lower() == "data_collection_only"]
         active_count = len(active_rows)
         inactive_count = len(rows) - active_count
         deleted_count = sum(1 for row in rows if bool(row.get("deleted_from_rotation", False)))
@@ -1096,6 +1126,8 @@ class MasterBot:
                 "signal_group_weight_target": self.signal_group_weight_target,
                 "min_active_options_bots": self.min_active_options_bots,
                 "min_active_infrastructure_bots": self.min_active_infrastructure_bots,
+                "quant_research_zero_weight": self.quant_research_zero_weight,
+                "quant_model_control_file": self.quant_model_control_file,
                 "infrastructure_always_active": self.infrastructure_always_active,
                 "infrastructure_floor_min_quality_score": self.infrastructure_floor_min_quality_score,
                 "quality_score_formula": {
@@ -1113,6 +1145,9 @@ class MasterBot:
                 "active_infrastructure_sub_bots": sum(1 for row in rows if bool(row.get("active", False)) and row.get("bot_role") == "infrastructure_sub_bot"),
                 "inactive_signal_sub_bots": sum(1 for row in rows if (not bool(row.get("active", False))) and row.get("bot_role") == "signal_sub_bot"),
                 "inactive_infrastructure_sub_bots": sum(1 for row in rows if (not bool(row.get("active", False))) and row.get("bot_role") == "infrastructure_sub_bot"),
+                "active_quant_model_bots": sum(1 for row in rows if bool(row.get("active", False)) and row.get("sleeve_family") == "quant_models"),
+                "data_collection_only_bots": len(data_collection_rows),
+                "zero_weight_research_bots": sum(1 for row in active_rows if float(row.get("weight") or 0.0) == 0.0 and str(row.get("lifecycle_state") or "").strip().lower() == "data_collection_only"),
                 "promoted_models": sum(1 for row in rows if bool(row.get("promoted", False))),
                 "held_previous_models": sum(1 for row in rows if not bool(row.get("promoted", False))),
                 "deletion_guard_ok": bool(self.deletion_guard_ok),

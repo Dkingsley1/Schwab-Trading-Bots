@@ -34,6 +34,24 @@ def test_storage_resilience_control_scores_warm_failover_and_checksums(tmp_path:
     assert payload["checksum_scrub"]["targets"]
 
 
+def test_storage_resilience_control_fast_mode_skips_large_db_quick_check(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    (project_root / "local_fallback_storage" / "data").mkdir(parents=True, exist_ok=True)
+    (project_root / "data").mkdir(parents=True, exist_ok=True)
+    (project_root / "governance").mkdir(parents=True, exist_ok=True)
+    _write_json(project_root / "governance" / "health" / "storage_mount_guard_latest.json", {"external_available": True})
+    _write_json(project_root / "governance" / "health" / "storage_failback_sync_latest.json", {"mode": "external"})
+    _write_json(project_root / "governance" / "health" / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    _write_json(project_root / "exports" / "state_snapshot_drills" / "latest.json", {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "ok": True})
+    _write_json(project_root / "governance" / "health" / "daily_auto_verify_latest.json", {"ok": True})
+    (project_root / "data" / "jsonl_link.sqlite3").write_bytes(b"0" * 2048)
+
+    payload = resilience_src.build_payload(project_root, fast=True, max_quick_check_db_gb=0.000001)
+
+    assert payload["integrity_mode"] == "fast"
+    assert payload["database_integrity_checks"][0]["quick_check"] == "skipped_fast_mode_large_db"
+
+
 def test_operator_cockpit_aggregates_upgrade_surfaces(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     _write_json(project_root / "governance" / "health" / "runtime_gate_dashboard_latest.json", {"overall": {"status": "degraded", "ok": False, "attention": ["storage_resilience_control_needs_work"]}})

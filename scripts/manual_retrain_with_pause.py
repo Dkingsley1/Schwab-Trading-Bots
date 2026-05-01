@@ -11,9 +11,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.runtime_python import resolve_runtime_python
+from core.runtime_python import resolve_training_python
 
-VENV_PY = resolve_runtime_python(PROJECT_ROOT)
+VENV_PY = resolve_training_python(PROJECT_ROOT)
 WEEKLY_RETRAIN = PROJECT_ROOT / "scripts" / "weekly_retrain.py"
 PARALLEL_SHADOWS = PROJECT_ROOT / "scripts" / "run_parallel_shadows.py"
 

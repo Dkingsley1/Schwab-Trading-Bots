@@ -12,7 +12,8 @@ if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
   source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" "$PROFILE" --quiet
 fi
 
-"$PYTHON_BIN" "$PROJECT_ROOT/scripts/sqlite_performance_maintenance.py" \
+"$PROJECT_ROOT/scripts/ops/run_guarded_maintenance.sh" sqlite_maintenance \
+  "$PYTHON_BIN" "$PROJECT_ROOT/scripts/sqlite_performance_maintenance.py" \
   --wal-checkpoint-threshold-gb "${SQLITE_WAL_CHECKPOINT_THRESHOLD_GB:-${SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB:-2}}" \
   --wal-truncate-max-gb "${SQLITE_WAL_TRUNCATE_MAX_GB:-${SQL_LINK_SERVICE_WAL_TRUNCATE_MAX_GB:-8}}" \
   --wal-checkpoint-mode "${SQLITE_WAL_CHECKPOINT_MODE:-${SQL_LINK_SERVICE_WAL_CHECKPOINT_MODE:-auto}}" \

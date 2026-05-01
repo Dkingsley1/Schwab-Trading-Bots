@@ -68,6 +68,8 @@ def test_html_page_has_phone_reconnect_watchdog() -> None:
     assert 'Paste the phone-feed token from the terminal output, then tap Use Token.' in phone_server.HTML_PAGE
     assert 'window.localStorage.getItem("live_feed_phone_token")' in phone_server.HTML_PAGE
     assert 'fetch(`/api/feed?${params.toString()}`' in phone_server.HTML_PAGE
+    assert 'function authParams(extra = {})' in phone_server.HTML_PAGE
+    assert 'params.set("token", token);' in phone_server.HTML_PAGE
     assert 'loadSnapshot({ replace: true });' in phone_server.HTML_PAGE
     assert 'indexOf("\\n"' in phone_server.HTML_PAGE
     assert 'replace(/\\r\\n/g, "\\n")' in phone_server.HTML_PAGE
@@ -111,3 +113,29 @@ def test_tailscale_candidate_urls_include_dns_and_ip(monkeypatch) -> None:
 def test_helper_basics(tmp_path: Path) -> None:
     assert phone_server._load_json(tmp_path / "missing.json") == {}
     assert phone_server._is_loopback_host("localhost") is True
+
+
+def test_status_summary_includes_expansion_health(tmp_path: Path, monkeypatch) -> None:
+    health = tmp_path / "governance" / "health"
+    (health / "runtime_gate_dashboard_latest.json").parent.mkdir(parents=True, exist_ok=True)
+    (health / "runtime_gate_dashboard_latest.json").write_text('{"overall":{"status":"ok","attention":[]}}', encoding="utf-8")
+    (health / "health_gates_latest.json").write_text('{"data_quality_score":0.87,"hard_gate_triggered":false}', encoding="utf-8")
+    (health / "quant_model_control_latest.json").write_text('{"overall_status":"watch","features":{"quant_model_resource_pressure_norm":0.42}}', encoding="utf-8")
+    (health / "memory_efficiency_control_latest.json").write_text('{"recommended_profile":"constrained"}', encoding="utf-8")
+    (health / "global_killswitch_latest.json").write_text('{"halt_state":"clear_ready","operating_mode":"degraded_collection","expansion_pressure_score":0.2}', encoding="utf-8")
+
+    monkeypatch.setattr(phone_server, "RUNTIME_DASHBOARD", health / "runtime_gate_dashboard_latest.json")
+    monkeypatch.setattr(phone_server, "HEALTH_GATES", health / "health_gates_latest.json")
+    monkeypatch.setattr(phone_server, "QUANT_MODEL_CONTROL", health / "quant_model_control_latest.json")
+    monkeypatch.setattr(phone_server, "MEMORY_EFFICIENCY", health / "memory_efficiency_control_latest.json")
+    monkeypatch.setattr(phone_server, "GLOBAL_KILLSWITCH", health / "global_killswitch_latest.json")
+
+    summary = phone_server._status_summary()
+
+    assert summary["dashboard_status"] == "ok"
+    assert summary["halt_state"] == "clear_ready"
+    assert summary["operating_mode"] == "degraded_collection"
+    assert summary["quant_status"] == "watch"
+    assert summary["quant_resource_pressure"] == 0.42
+    assert summary["memory_profile"] == "constrained"
+    assert summary["phone_mirror_profile"] == "expanded_system_safe"

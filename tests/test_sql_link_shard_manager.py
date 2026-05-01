@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -411,6 +412,7 @@ def test_effective_cycle_args_applies_live_request_env() -> None:
         shards="health_fast,governance",
         low_priority_merge_skip_gb=120.0,
         merge_max_seconds_per_cycle=60.0,
+        shard_link_timeout_seconds=180,
         auto_wal_checkpoint=True,
         wal_checkpoint_threshold_gb=2.0,
         wal_checkpoint_trigger_growth_gb=1.5,
@@ -435,6 +437,7 @@ def test_effective_cycle_args_applies_live_request_env() -> None:
             "SQL_LINK_SERVICE_SHARDS": "health_fast,runtime,trading",
             "SQL_LINK_SERVICE_INTERVAL_SECONDS": "12",
             "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "25",
+            "SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS": "45",
             "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "240000",
         },
     )
@@ -442,7 +445,50 @@ def test_effective_cycle_args_applies_live_request_env() -> None:
     assert effective.shards == "health_fast,runtime,trading"
     assert effective.interval_seconds == 12
     assert effective.merge_max_seconds_per_cycle == 25.0
+    assert effective.shard_link_timeout_seconds == 45
     assert effective.hot_retention_batch_size == 240000
+
+
+def test_run_shard_links_records_timeout_and_continues(tmp_path, monkeypatch) -> None:
+    health_file = tmp_path / "health.json"
+    shard = {
+        "name": "trading",
+        "sqlite_db": tmp_path / "trading.sqlite3",
+        "state_file": tmp_path / "state.json",
+        "health_file": health_file,
+        "journal_file": tmp_path / "journal.jsonl",
+        "journal_events_file": tmp_path / "journal_events.jsonl",
+        "invalid_log_file": tmp_path / "invalid.jsonl",
+        "include_streams": "decisions",
+        "path_contains": "decisions/paper/",
+        "skip_json_files": True,
+        "max_files": 1,
+        "max_lines_per_file": 100,
+        "state_checkpoint_lines": 10,
+    }
+    monkeypatch.setattr(
+        shard_manager,
+        "_quarantine_shard_artifacts",
+        lambda **kwargs: {"triggered": False},
+    )
+
+    def fake_run(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd=["link"], timeout=1, output="working", stderr="slow")
+
+    monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
+
+    results = shard_manager._run_shard_links(
+        shards=[shard],
+        link_mode="sqlite",
+        sqlite_timeout_seconds=30,
+        sqlite_lock_retries=0,
+        sqlite_lock_retry_delay_seconds=0.1,
+        shard_link_timeout_seconds=1,
+    )
+
+    assert results[0]["rc"] == 124
+    assert results[0]["timed_out"] is True
+    assert results[0]["timeout_seconds"] == 1
 
 
 def test_build_shards_reads_hourly_hot_retention_overrides(monkeypatch) -> None:

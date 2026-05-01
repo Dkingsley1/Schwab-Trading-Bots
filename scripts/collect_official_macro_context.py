@@ -30,7 +30,10 @@ USER_AGENT = "schwab-trading-bot/1.0"
 RSS_DISCOVERY_RE = re.compile(r"""href=["']([^"']*(?:feed|rss|xml)[^"']*)["']""", re.IGNORECASE)
 DATE_RE = re.compile(r"([A-Z][a-z]{2,9}\.? \d{1,2}, \d{4})")
 TIME_RE = re.compile(r"^\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.)$", re.IGNORECASE)
-FED_EVENT_RE = re.compile(r"^(Speech|Discussion|Testimony|Remarks?)\s*-\s*(.+)$", re.IGNORECASE)
+FED_EVENT_RE = re.compile(
+    r"^(?:(Speech|Discussion|Testimony|Remarks?)\s*-\s*(.+)|FOMC\s+(?:Meeting|Meetings|Minutes|Press Conference)|Beige Book)$",
+    re.IGNORECASE,
+)
 NUMERIC_FIELD_RE = re.compile(r"(?i)\b(actual|forecast|previous|prior|revised|revision)\b[^0-9\-]{0,8}(-?\d+(?:\.\d+)?)")
 SPEAKER_RE = re.compile(r"(?i)\b(chair|vice chair|governor|president)\s+([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,2})")
 
@@ -51,9 +54,14 @@ HTML_LINK_RE = re.compile(r"""(?is)<a\b[^>]*href=["']([^"']+)["'][^>]*>(.*?)</a>
 _ET_ZONE = ZoneInfo("America/New_York") if ZoneInfo is not None else None
 
 
-def _federal_reserve_calendar_url(year: int, month: int) -> str:
+def _federal_reserve_calendar_urls(year: int, month: int) -> list[str]:
     slug = datetime(year, month, 1, tzinfo=timezone.utc).strftime("%Y-%B").lower()
-    return f"https://www.federalreserve.gov/newsevents/{slug}.htm"
+    numeric_slug = f"{year}-{month:02d}"
+    urls = [
+        f"https://www.federalreserve.gov/newsevents/{slug}.htm",
+        f"https://www.federalreserve.gov/newsevents/{numeric_slug}.htm",
+    ]
+    return list(dict.fromkeys(urls))
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -464,7 +472,8 @@ def _combine_month_day_time(year: int, month: int, day: int, time_text: str) -> 
         dt = datetime.strptime(f"{year:04d}-{month:02d}-{day:02d} {normalized}", "%Y-%m-%d %I:%M %p")
     except Exception:
         return None
-    return dt.replace(tzinfo=timezone.utc).isoformat()
+    local_tz = _ET_ZONE or timezone.utc
+    return dt.replace(tzinfo=local_tz).astimezone(timezone.utc).isoformat()
 
 
 def _parse_federal_reserve_calendar_text(page_text: str, *, year: int, month: int) -> list[dict[str, Any]]:
@@ -630,8 +639,12 @@ def collect(args: argparse.Namespace) -> int:
         if (year, month) in seen_months:
             continue
         seen_months.add((year, month))
-        page_url = _federal_reserve_calendar_url(year, month)
-        page_text, page_error = _safe_http_text(page_url, timeout=args.timeout_seconds)
+        page_text = None
+        page_error = None
+        for page_url in _federal_reserve_calendar_urls(year, month):
+            page_text, page_error = _safe_http_text(page_url, timeout=args.timeout_seconds)
+            if page_text:
+                break
         if not page_text:
             if page_error:
                 future_month = (year, month) != (now.year, now.month)

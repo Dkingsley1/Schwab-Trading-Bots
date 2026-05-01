@@ -206,8 +206,10 @@ def build_payload(
         "alert_window_hours": int(hours),
         "severity_counts": severity_counts,
         "critical_backlog": {
-            "unacked_count": len(unacked_critical),
-            "unsent_count": len(unsent_critical),
+            "unacked_count": len(grouped_unacked),
+            "unsent_count": len(grouped_unsent),
+            "raw_unacked_count": len(unacked_critical),
+            "raw_unsent_count": len(unsent_critical),
             "unacked_events": unacked_critical[:12],
             "unsent_events": unsent_critical[:12],
         },

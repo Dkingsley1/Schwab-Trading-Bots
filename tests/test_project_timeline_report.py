@@ -1,5 +1,6 @@
 import fcntl
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -37,6 +38,19 @@ def test_default_auto_render_pdf_detects_available_renderer(monkeypatch, tmp_pat
     monkeypatch.setattr(project_timeline_report, "APP_BROWSER_CANDIDATES", (browser,))
 
     assert project_timeline_report._default_auto_render_pdf() is True
+
+
+def test_run_returns_timeout_payload(monkeypatch):
+    def _timeout(*_args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=["chrome"], timeout=kwargs.get("timeout", 2.0))
+
+    monkeypatch.setattr(project_timeline_report.subprocess, "run", _timeout)
+
+    rc, out, err = project_timeline_report._run(["chrome"], timeout_seconds=2.0)
+
+    assert rc == 124
+    assert out == ""
+    assert "timeout_after_seconds=2.0" in err
 
 
 def test_build_project_milestone_timeline_filters_out_runtime_heartbeat_noise():

@@ -182,10 +182,10 @@ def train_brain():
         min_long_precision=0.50,
         min_short_precision=0.50,
         require_both_sides_precision=True,
-        min_acted_accuracy=0.52,
+        min_acted_accuracy=0.60,
         min_long_acted_count=4,
         min_short_acted_count=4,
-        min_accuracy_lift_over_majority=0.01,
+        min_accuracy_lift_over_majority=0.03,
         min_label_balance_score=0.16,
         min_precision_balance_score=0.28,
     )

@@ -18,12 +18,16 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.runtime_python import resolve_runtime_python
+from core.storage_mounts import find_target_external_volume, resolve_external_storage
 
 PY = resolve_runtime_python(PROJECT_ROOT)
 DEFAULT_STATE_PATH = PROJECT_ROOT / 'governance' / 'health' / 'process_watchdog_state.json'
 DEFAULT_OUT_PATH = PROJECT_ROOT / 'governance' / 'health' / 'process_watchdog_latest.json'
 FALLBACK_STATE_PATH = Path('/tmp/process_watchdog_state.json')
 FALLBACK_OUT_PATH = Path('/tmp/process_watchdog_latest.json')
+HEALTH_DIR = PROJECT_ROOT / 'governance' / 'health'
+GLOBAL_HALT_FLAG = HEALTH_DIR / 'GLOBAL_TRADING_HALT.flag'
+OPERATOR_STOP_FLAG = HEALTH_DIR / 'OPERATOR_STOP.flag'
 DEFAULT_STORAGE_MOUNT_GUARD_PATH = PROJECT_ROOT / 'governance' / 'health' / 'storage_mount_guard_latest.json'
 FALLBACK_STORAGE_MOUNT_GUARD_PATH = Path('/tmp/storage_mount_guard_latest.json')
 SNAPSHOT_SCRIPT = PROJECT_ROOT / 'scripts' / 'collect_debug_snapshot.sh'
@@ -40,6 +44,34 @@ def _env_flag(name: str, default: str = '0') -> bool:
 
 def _split_csv(raw: str) -> List[str]:
     return [x.strip() for x in (raw or '').split(',') if x.strip()]
+
+
+def _default_require_paper_executor() -> bool:
+    explicit = os.getenv('OPS_WATCHDOG_REQUIRE_PAPER_EXECUTOR', '').strip()
+    if explicit:
+        return explicit == '1'
+
+    require_all_sleeves = _env_flag('OPS_WATCHDOG_REQUIRE_ALL_SLEEVES', '1')
+    run_all_sleeves_with_paper = _env_flag('RUN_ALL_SLEEVES_WITH_PAPER_EXECUTOR', '1')
+    if require_all_sleeves and run_all_sleeves_with_paper:
+        return False
+    return True
+
+
+def _safety_pause_state() -> Dict[str, Any]:
+    operator_stop_active = OPERATOR_STOP_FLAG.exists()
+    global_halt_active = GLOBAL_HALT_FLAG.exists()
+    pause_reason = ''
+    if operator_stop_active:
+        pause_reason = 'operator_stop_active'
+    elif global_halt_active:
+        pause_reason = 'global_halt_active'
+    return {
+        'operator_stop_active': bool(operator_stop_active),
+        'global_halt_active': bool(global_halt_active),
+        'active': bool(operator_stop_active or global_halt_active),
+        'reason': pause_reason,
+    }
 
 
 def _proc_running(pattern: str, exclude_patterns: List[str] | None = None) -> int:
@@ -232,6 +264,7 @@ def _resolved_restart_storms(
         heartbeat_ok = bool(row.get('heartbeat_ok', False))
         heartbeat_age_seconds = float(row.get('heartbeat_age_seconds', 0.0) or 0.0)
         heartbeat_max_age_seconds = float(row.get('heartbeat_max_age_seconds', 0.0) or 0.0)
+        paused_by_safety_flags = bool(row.get('paused_by_safety_flags', False))
         last_age = max(now - last_restart_epoch.get(name, now), 0.0)
         unresolved = running_count <= 0 or not heartbeat_ok or last_age < row_settle_seconds
         healthy_and_fresh = (
@@ -241,6 +274,8 @@ def _resolved_restart_storms(
         )
         if healthy_and_fresh and last_age >= row_min_healthy_seconds:
             unresolved = False
+        if paused_by_safety_flags:
+            unresolved = False
         storm = {
             'name': name,
             'count': int(count),
@@ -249,6 +284,8 @@ def _resolved_restart_storms(
             'settle_seconds': int(row_settle_seconds),
             'resolved': not unresolved,
         }
+        if paused_by_safety_flags:
+            storm['resolution_reason'] = str(row.get('safety_pause_reason') or 'paused_by_safety_flags')
         recent.append(storm)
         if unresolved:
             active.append(storm)
@@ -358,8 +395,6 @@ def _refresh_runtime_reports(
             rc, _stdout, err = _run([
                 str(PY),
                 str(PROJECT_ROOT / 'scripts' / 'build_one_numbers_report.py'),
-                '--lightweight',
-                '--no-sql-write',
             ])
             out['one_numbers']['refreshed'] = rc == 0
             out['one_numbers']['rc'] = int(rc)
@@ -598,13 +633,8 @@ def _storage_failback_sync_cmd() -> List[str]:
 
 
 def _resolve_external_storage_paths() -> Tuple[Path, Path]:
-    mount_root = Path(os.getenv('BOT_LOGS_EXTERNAL_MOUNT', '/Volumes/BOT_LOGS')).expanduser()
-    configured_root = os.getenv('BOT_LOGS_EXTERNAL_PROJECT_ROOT', '').strip()
-    if configured_root:
-        return mount_root, Path(configured_root).expanduser()
-
-    project_dir = os.getenv('BOT_LOGS_EXTERNAL_PROJECT_DIR', 'schwab_trading_bot').strip() or 'schwab_trading_bot'
-    return mount_root, (mount_root / project_dir)
+    resolution = resolve_external_storage()
+    return resolution.mount_root, resolution.external_root
 
 
 def _external_min_free_bytes() -> int:
@@ -633,7 +663,9 @@ def _disk_free_bytes(path: Path) -> int | None:
 
 
 def _probe_storage_mount() -> Dict[str, Any]:
-    mount_root, external_root = _resolve_external_storage_paths()
+    resolution = resolve_external_storage()
+    mount_root, external_root = resolution.mount_root, resolution.external_root
+    target_volume = find_target_external_volume()
     mount_present = bool(mount_root.exists() and mount_root.is_dir())
     external_root_exists = bool(external_root.exists() and external_root.is_dir())
     external_root_writable = bool(external_root_exists and os.access(external_root, os.W_OK))
@@ -649,7 +681,12 @@ def _probe_storage_mount() -> Dict[str, Any]:
     )
 
     if not mount_present:
-        unavailable_reason = 'mount_missing'
+        if target_volume is not None and not target_volume.is_mounted:
+            unavailable_reason = 'volume_unmounted'
+        else:
+            unavailable_reason = 'mount_missing'
+    elif target_volume is not None and not target_volume.is_mounted:
+        unavailable_reason = 'volume_unmounted'
     elif not external_root_exists:
         unavailable_reason = 'root_missing'
     elif not external_root_writable:
@@ -663,6 +700,17 @@ def _probe_storage_mount() -> Dict[str, Any]:
     return {
         'mount_root': str(mount_root),
         'external_root': str(external_root),
+        'configured_mount_root': str(resolution.configured_mount_root),
+        'configured_project_root': str(resolution.configured_project_root) if resolution.configured_project_root else '',
+        'candidate_mount_roots': [str(path) for path in resolution.candidate_mount_roots],
+        'matched_mount_root': str(resolution.matched_mount_root) if resolution.matched_mount_root else '',
+        'match_reason': str(resolution.match_reason),
+        'target_volume_device_identifier': str(target_volume.device_identifier) if target_volume else '',
+        'target_volume_name': str(target_volume.volume_name) if target_volume else '',
+        'target_volume_uuid': str(target_volume.volume_uuid) if target_volume else '',
+        'target_volume_mount_point': str(target_volume.mount_point) if target_volume else '',
+        'target_volume_present': bool(target_volume is not None),
+        'target_volume_mounted': bool(target_volume.is_mounted) if target_volume else False,
         'mount_present': mount_present,
         'external_root_exists': external_root_exists,
         'external_root_writable': external_root_writable,
@@ -735,7 +783,7 @@ def _storage_mode_transition_alert(previous_mode: str, current_mode: str, *, sup
             suppress_seconds=max(suppress_seconds, 60),
         )
 
-    if previous_mode in {'local_fallback', 'local_fallback_split_brain'} and current_mode == 'external':
+    if previous_mode in {'local_fallback', 'local_fallback_split_brain'} and current_mode in {'external', 'external_curated'}:
         return _alert(
             'info',
             'storage_external_restored',
@@ -752,7 +800,7 @@ def main() -> int:
     parser.add_argument('--max-restarts-per-hour', type=int, default=int(os.getenv('OPS_WATCHDOG_MAX_RESTARTS_PER_HOUR', '6')))
     parser.add_argument('--require-all-sleeves', action='store_true', default=os.getenv('OPS_WATCHDOG_REQUIRE_ALL_SLEEVES', '1') == '1')
     parser.add_argument('--require-coinbase', action='store_true', default=os.getenv('OPS_WATCHDOG_REQUIRE_COINBASE', '1') == '1')
-    parser.add_argument('--require-paper-executor', action='store_true', default=os.getenv('OPS_WATCHDOG_REQUIRE_PAPER_EXECUTOR', '1') == '1')
+    parser.add_argument('--require-paper-executor', action='store_true', default=_default_require_paper_executor())
     parser.add_argument('--refresh-reports', action='store_true', default=os.getenv('OPS_WATCHDOG_REFRESH_REPORTS', '1') == '1')
     parser.add_argument('--refresh-max-age-seconds', type=int, default=int(os.getenv('OPS_WATCHDOG_REFRESH_MAX_AGE_SECONDS', '7200')))
     parser.add_argument('--all-sleeves-heartbeat-stale-seconds', type=int, default=int(os.getenv('OPS_WATCHDOG_ALL_SLEEVES_HEARTBEAT_STALE_SECONDS', '360')))
@@ -837,10 +885,17 @@ def main() -> int:
         }
 
         if not storage_mount_present:
+            unavailable_reason = str(storage_mount_guard.get('external_unavailable_reason') or '')
+            if unavailable_reason == 'volume_unmounted':
+                alert_message = (
+                    f"External BOT_LOGS volume is present but not mounted at {storage_mount_guard.get('mount_root')}."
+                )
+            else:
+                alert_message = f"External BOT_LOGS mount missing at {storage_mount_guard.get('mount_root')}."
             storage_mount_transition['alert'] = _alert(
                 'critical',
                 'storage_external_mount_missing',
-                f"External BOT_LOGS mount missing at {storage_mount_guard.get('mount_root')}.",
+                alert_message,
                 suppress_seconds=max(args.alert_suppress_seconds, 60),
             )
         else:
@@ -995,6 +1050,8 @@ def main() -> int:
     restarts: List[Dict[str, Any]] = []
     status: List[Dict[str, Any]] = []
     alerts: List[Dict[str, Any]] = []
+    safety_pause = _safety_pause_state()
+    safety_pause_target_names = {str(t.get('name') or '') for t in targets if str(t.get('name') or '') != 'sql_link_writer'}
 
     for t in targets:
         running = _proc_running(t['pattern'], exclude_patterns=t.get('exclude_patterns', []))
@@ -1025,6 +1082,15 @@ def main() -> int:
             row['heartbeat_max_age_seconds'] = float(heartbeat_max_age)
 
         process_live = (running > 0) or (alt_running > 0)
+        if safety_pause['active'] and t['name'] in safety_pause_target_names:
+            row['paused_by_safety_flags'] = True
+            row['safety_pause_reason'] = str(safety_pause.get('reason') or 'safety_pause_active')
+            row['operator_stop_active'] = bool(safety_pause.get('operator_stop_active', False))
+            row['global_halt_active'] = bool(safety_pause.get('global_halt_active', False))
+            row['restart_skipped'] = 'paused_by_safety_flags'
+            status.append(row)
+            continue
+
         if process_live and heartbeat_ok:
             status.append(row)
             continue
@@ -1130,6 +1196,7 @@ def main() -> int:
         'restarts': restarts,
         'restart_storms': restart_storms,
         'recent_restart_storms': recent_restart_storms,
+        'safety_pause': safety_pause,
         'alerts': alerts,
         'max_restarts_per_hour': int(args.max_restarts_per_hour),
         'maintenance': maintenance,

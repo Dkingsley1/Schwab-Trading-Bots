@@ -6,7 +6,7 @@ RUNNER_SCRIPT="$PROJECT_ROOT/scripts/ops/run_shadow_watchdog_launchd.sh"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.dankingsley.shadow_watchdog.plist"
 LABEL="com.dankingsley.shadow_watchdog"
 UID_NUM="$(id -u)"
-LOG_DIR="$HOME/Library/Logs/schwab_trading_bot"
+LOG_DIR="${SHADOW_WATCHDOG_LAUNCHD_LOG_DIR:-$PROJECT_ROOT/logs/launchd_watchdog}"
 OUT_LOG="$LOG_DIR/shadow_watchdog.out.log"
 ERR_LOG="$LOG_DIR/shadow_watchdog.err.log"
 RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-live}"
@@ -34,7 +34,7 @@ cat > "$PLIST_PATH" <<PLIST
     <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key><string>$HOME</string>
     <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
-    <key>BOT_RUNTIME_LANE</key><string>${BOT_RUNTIME_LANE:-${BOT_SHADOW_RUNTIME_LANE:-shadow314}}</string>
+    <key>BOT_RUNTIME_LANE</key><string>${BOT_RUNTIME_LANE:-${BOT_SHADOW_RUNTIME_LANE:-shadow}}</string>
     <key>MARKET_SESSION_START_HOUR</key><string>$MARKET_OPEN_HOUR</string>
     <key>MARKET_DATA_ONLY</key><string>1</string>
     <key>ALLOW_ORDER_EXECUTION</key><string>0</string>
@@ -45,7 +45,7 @@ cat > "$PLIST_PATH" <<PLIST
     <key>TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED</key><string>${TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED:-1}</string>
     <key>TOP_BOT_PAPER_TRADING_OPTIONS_TOP_N</key><string>${TOP_BOT_PAPER_TRADING_OPTIONS_TOP_N:-2}</string>
     <key>TOP_BOT_PAPER_TRADING_OPTIONS_MIN_ACC</key><string>${TOP_BOT_PAPER_TRADING_OPTIONS_MIN_ACC:-0.55}</string>
-    <key>TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES</key><string>${TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES:-default,aggressive,intraday_aggressive,swing_aggressive}</string>
+    <key>TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES</key><string>${TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES:-default,aggressive,intraday_aggressive,swing_aggressive,options_on_futures,options_on_futures_aggressive}</string>
     <key>SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_TOP_N</key><string>${SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_TOP_N:-10}</string>
     <key>SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_MIN_ACC</key><string>${SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_MIN_ACC:-0.53}</string>
     <key>SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_PROFILES</key><string>${SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_PROFILES:-schwab_futures}</string>

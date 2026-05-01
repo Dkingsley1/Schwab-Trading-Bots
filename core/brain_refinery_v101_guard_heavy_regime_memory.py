@@ -14,10 +14,13 @@ _MODES = [
     "shadow_equities",
     "shadow_aggressive_equities",
     "shadow_intraday_aggressive_equities",
+    "shadow_swing_aggressive_equities",
     "shadow_conservative_equities",
     "shadow_dividend_equities",
+    "shadow_bond_equities",
     "shadow_crypto",
     "shadow_crypto_futures_crypto",
+    "shadow_schwab_futures_equities",
 ]
 
 
@@ -84,9 +87,9 @@ def _runtime_feature_vector(sequence, idx):
 def _runtime_sample_filter(sequence, idx, horizon):
     obs = sequence[idx]
     return (
-        base_runtime_gate(obs, min_quote_agreement=0.80, max_quote_deviation=0.24, max_spread_bps=28.0, min_queue_depth=0.0)
-        and max(_guard_pressure(obs), _risk_on(obs)) >= 0.18
-        and abs(_bias(obs)) >= 0.07
+        base_runtime_gate(obs, min_quote_agreement=0.74, max_quote_deviation=0.32, max_spread_bps=36.0, min_queue_depth=0.0, max_latency_ms=3200.0)
+        and max(_guard_pressure(obs), _risk_on(obs)) >= 0.10
+        and abs(_bias(obs)) >= 0.03
     )
 
 
@@ -109,12 +112,12 @@ def _runtime_guard_memory_label(sequence, idx, horizon):
         horizon,
         bias=_bias(obs),
         support=max(_guard_pressure(obs), _risk_on(obs)),
-        min_support=0.18,
-        min_abs_bias=0.07,
-        move_base=0.00115,
-        move_scale=0.00055,
-        success_floor=0.00032,
-        failure_floor=0.00052,
+        min_support=0.10,
+        min_abs_bias=0.03,
+        move_base=0.00075,
+        move_scale=0.00060,
+        success_floor=0.00012,
+        failure_floor=0.00028,
     )
 
 
@@ -145,24 +148,24 @@ def train_brain():
         runtime_label_builder=_runtime_guard_memory_label,
         sample_filter=_runtime_sample_filter,
         confidence_builder=_runtime_confidence,
-        min_confidence=0.34,
+        min_confidence=0.22,
         lookback_days=45,
         mode_allowlist=_MODES,
         window=24,
         horizon=6,
-        min_samples=320,
-        min_sequences=4,
-        min_positive_samples=80,
-        min_negative_samples=80,
+        min_samples=96,
+        min_sequences=3,
+        min_positive_samples=12,
+        min_negative_samples=12,
         max_best_val_loss=0.695,
         max_final_val_loss=0.705,
         min_long_precision=0.52,
         min_short_precision=0.52,
         require_both_sides_precision=True,
-        min_acted_accuracy=0.55,
-        min_long_acted_count=6,
-        min_short_acted_count=6,
-        min_accuracy_lift_over_majority=0.015,
+        min_acted_accuracy=0.60,
+        min_long_acted_count=4,
+        min_short_acted_count=4,
+        min_accuracy_lift_over_majority=0.03,
         min_precision_balance_score=0.35,
         allow_fallback_on_insufficient_data=False,
     )

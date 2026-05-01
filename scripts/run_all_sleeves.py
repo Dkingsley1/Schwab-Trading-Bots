@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -26,12 +27,105 @@ DIVIDEND_SHADOW = PROJECT_ROOT / "scripts" / "run_dividend_shadow.py"
 DIVIDEND_CAPTURE_SHADOW = PROJECT_ROOT / "scripts" / "run_dividend_capture_shadow.py"
 BOND_SHADOW = PROJECT_ROOT / "scripts" / "run_bond_shadow.py"
 FX_SHADOW = PROJECT_ROOT / "scripts" / "run_fx_shadow.py"
+SPECIALIZED_SLEEVE_SHADOW = PROJECT_ROOT / "scripts" / "run_specialized_sleeve_shadow.py"
 AGGRESSIVE_MODES = PROJECT_ROOT / "scripts" / "run_parallel_aggressive_modes.py"
 EXECUTION_LANE = PROJECT_ROOT / "scripts" / "run_execution_lane.py"
 HALT_FLAG_PATH = PROJECT_ROOT / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
 PREFLIGHT_SCRIPT = PROJECT_ROOT / "scripts" / "shadow_preflight.py"
 DEBUG_SNAPSHOT_SCRIPT = PROJECT_ROOT / "scripts" / "collect_debug_snapshot.sh"
 CAPTURE_CONFIG_SCRIPT = PROJECT_ROOT / "scripts" / "capture_run_config.py"
+PAPER_TRADE_LOCK_PATH = PROJECT_ROOT / "governance" / "health" / "PAPER_TRADE_LOCK.flag"
+
+DEFAULT_SYMBOLS_CORE = (
+    "SPY,QQQ,DIA,IWM,MDY,VOO,VTI,RSP,"
+    "AAPL,MSFT,NVDA,AMD,AVGO,TSM,ASML,MU,ARM,SMH,SOXX,"
+    "AMZN,GOOG,GOOGL,META,NFLX,DIS,WBD,ORCL,CRM,ADBE,NOW,PLTR,"
+    "JPM,BAC,GS,MS,BLK,SCHW,AXP,V,MA,"
+    "LLY,UNH,JNJ,ABBV,MRK,ABT,PFE,"
+    "COST,WMT,HD,MCD,NKE,SBUX,"
+    "CAT,DE,GE,BA,RTX,LMT,NOC,"
+    "XOM,CVX,COP,EOG,SLB,MPC,VLO,"
+    "BKNG,ABNB,MAR,HLT"
+)
+DEFAULT_SYMBOLS_VOLATILE = (
+    "SOXL,SOXS,TQQQ,SQQQ,SPXL,SPXS,LABU,LABD,UVXY,VIXY,"
+    "MSTR,SMCI,COIN,TSLA,AMD,NVDA,PLTR,ARM,MARA,RIOT,CLSK,HOOD,"
+    "IBIT,FBTC,ETHA,ETHE"
+)
+DEFAULT_SYMBOLS_DEFENSIVE = (
+    "TLT,GLD,XLV,XLU,XLP,MO,HYG,LQD,UUP,XLE,XLF,XLI,XLK,XLY,XLC,XLB,XLRE,"
+    "XAR,KRE,XOP,IEF,SHY,TIP,TLH,JNK,AGG,BND,MUB,IGIB,USHY,FLOT,VGIT,VCIT,EMB,"
+    "SCHD,VIG,DGRO,HDV,NOBL,VYM,DIVO,JEPI,JEPQ,SPLV,VTV,"
+    "JNJ,PG,KO,PEP,MCD,ABBV,ABT,MRK,PFE,T,VZ,O,VICI,MAIN,"
+    "ITA,LMT,NOC,RTX,GD,LHX,LDOS"
+)
+DEFAULT_SYMBOLS_COMMOD_FX_INTL = "DBC,USO,UNG,CORN,WEAT,SLV,CPER,URA,UUP,FXE,FXY,FXB,FXC,FXA,CYB,EUO,YCS,UDN,EFA,EEM,EWJ,FXI,EWZ,INDA,IXUS"
+DEFAULT_DIVIDEND_SYMBOLS = "SCHD,VIG,DGRO,HDV,NOBL,VYM,DIVO,JEPI,JEPQ,SPYD,DIV,FDVV,SCHY,JNJ,PG,KO,PEP,MCD,MO,ABBV,ABT,MRK,PFE,T,VZ,O,VICI,MAIN,XOM,CVX,COP,KMI,MPC,PSX,VLO,EOG,SLB,MSFT,AAPL"
+DEFAULT_BOND_SYMBOLS = "TLT,IEF,SHY,TIP,LQD,HYG,JNK,AGG,BND,TLH,MUB,IGIB,USHY,FLOT,VGIT,VCIT,EMB,BIL,SGOV"
+DEFAULT_FX_SYMBOLS = "UUP,FXE,FXY,FXB,FXC,FXA,CYB,EUO,YCS,UDN,CEW,DBV"
+DEFAULT_FX_CONTEXT_SYMBOLS = "SPY,QQQ,TLT,GLD,UUP,FXE,FXY,FXB,FXC,FXA,EFA,EEM,USO,DBC"
+SPECIALIZED_SLEEVE_PROFILES = (
+    "volatility",
+    "pairs_correlation",
+    "stat_arb_market_neutral",
+    "earnings_event",
+    "commodity_inflation",
+    "international_macro",
+    "market_making_liquidity",
+    "short_bias_hedge",
+    "single_name_options_event",
+    "rates_credit_macro",
+    "cash_rotation_tactical",
+    "futures_index_intraday",
+    "futures_rates_curve",
+    "futures_commodity_macro",
+    "crypto_futures_basis",
+    "futures_event_reaction",
+    "options_on_futures",
+    "options_on_futures_aggressive",
+    "compound_options",
+    "swaptions",
+    "structured_products",
+    "synthetic_cdo",
+    "cdo_squared",
+    "cdo_cubed",
+    "variance_volatility_swaps",
+    "barrier_lookback_options",
+    "second_third_order_greeks",
+    "high_frequency_market_making",
+    "tail_risk_parity",
+    "black_swan_hedging",
+    "sovereign_debt_macro",
+    "gamma_scalping",
+    "statistical_arbitrage",
+    "vanna_volga_hedging",
+    "order_flow_market_microstructure",
+    "dispersion_trading",
+    "cross_asset_basis_training",
+    "volatility_arbitrage",
+    "rainbow_options",
+    "quant_pricing_models",
+    "state_space_models",
+    "tail_dependency_risk",
+    "optimization_research",
+    "nlp_sentiment_agents",
+    "adaptive_architectures",
+    "adversarial_ml_security",
+    "low_latency_orchestration",
+    "alternative_data_ingestion",
+    "privacy_zkp_controls",
+    "gpu_quant_acceleration",
+    "qemc_path_volatility",
+    "transport_topology_research",
+    "neural_sde_kan_hedging",
+    "order_flow_toxicity",
+    "signature_hawkes_generators",
+    "crowd_physics_games",
+    "lit_order_book_transformers",
+    "critic_hmm_pinsde",
+    "causal_omni_symbolic",
+    "rlbf_dms_equivariant",
+)
 
 
 @dataclass
@@ -40,17 +134,41 @@ class JobSpec:
     cmd: list[str]
     env: dict[str, str]
     breaker_group: str
+    heartbeat_path: Path | None = None
+    heartbeat_stale_seconds: int = 0
+    heartbeat_startup_grace_seconds: int = 0
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _paper_trade_lock_enabled() -> bool:
+    lock_override = os.getenv("PAPER_TRADE_LOCK_PATH", "").strip()
+    lock_path = Path(lock_override) if lock_override else PAPER_TRADE_LOCK_PATH
+    return _env_flag("PAPER_TRADE_LOCK", "0") or lock_path.exists()
+
+
+def _apply_paper_trade_lock(args: argparse.Namespace) -> bool:
+    if not _paper_trade_lock_enabled():
+        return False
+
+    os.environ["PAPER_TRADE_LOCK"] = "1"
+    os.environ["TOP_BOT_ENABLE_LIVE_EXECUTION"] = "0"
+    os.environ["EXECUTION_LANE_LIVE_ENABLED"] = "0"
+    os.environ["RUN_ALL_SLEEVES_WITH_LIVE_EXECUTOR"] = "0"
+    if bool(getattr(args, "with_live_executor", False)):
+        args.with_live_executor = False
+        print("[PaperTradeLock] live executor disabled while paper trade lock is active.")
+        _emit_incident_snapshot("paper_trade_lock_disabled_live_executor", "run_all_sleeves_startup")
+    return True
+
+
 def _global_trading_halt_enabled() -> bool:
     return _env_flag("GLOBAL_TRADING_HALT", "0") or HALT_FLAG_PATH.exists()
 
 
-def _route_storage_or_fail() -> bool:
+def _route_storage_or_fail() -> dict[str, Any] | None:
     try:
         if str(PROJECT_ROOT) not in sys.path:
             sys.path.insert(0, str(PROJECT_ROOT))
@@ -58,21 +176,104 @@ def _route_storage_or_fail() -> bool:
 
         routing = route_runtime_storage(PROJECT_ROOT)
         print(describe_storage_routing(routing))
-        return True
+        return {
+            "mode": str(getattr(routing, "mode", "") or ""),
+            "active_root": str(getattr(routing, "active_root", "") or ""),
+        }
     except Exception as exc:
         print(f"[StorageRoute] startup blocked err={exc}")
-        return False
+        return None
 
 
 def _disk_free_gb(path: Path) -> float:
     usage = shutil.disk_usage(path)
     return usage.free / (1024 ** 3)
 
+
+def _storage_disk_probe_path(storage_route: dict[str, Any] | None) -> Path:
+    active_root = ""
+    if isinstance(storage_route, dict):
+        active_root = str(storage_route.get("active_root") or "").strip()
+    if active_root:
+        return Path(active_root)
+    return PROJECT_ROOT
+
+
+def _disk_gate_status(
+    storage_route: dict[str, Any] | None,
+    *,
+    local_min_free_gb: float,
+    storage_min_free_gb: float,
+) -> dict[str, Any]:
+    local_probe = PROJECT_ROOT
+    storage_probe = _storage_disk_probe_path(storage_route)
+    local_free_gb = _disk_free_gb(local_probe)
+    storage_free_gb = _disk_free_gb(storage_probe)
+    local_min = max(float(local_min_free_gb), 0.1)
+    storage_min = max(float(storage_min_free_gb), 0.1)
+    blocked_reasons: list[str] = []
+    if local_free_gb < local_min:
+        blocked_reasons.append("local_project_disk")
+    if storage_free_gb < storage_min:
+        blocked_reasons.append("runtime_storage_disk")
+    return {
+        "ok": not blocked_reasons,
+        "blocked_reasons": blocked_reasons,
+        "local_probe": str(local_probe),
+        "local_free_gb": local_free_gb,
+        "local_min_free_gb": local_min,
+        "storage_probe": str(storage_probe),
+        "storage_free_gb": storage_free_gb,
+        "storage_min_free_gb": storage_min,
+    }
+
+
 def _safe_float(v, default: float = 0.0) -> float:
     try:
         return float(v)
     except Exception:
         return default
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _job_heartbeat_stale(
+    spec: JobSpec,
+    *,
+    started_at: float,
+    now_ts: float | None = None,
+) -> tuple[bool, str]:
+    heartbeat_path = spec.heartbeat_path
+    stale_after = max(int(spec.heartbeat_stale_seconds or 0), 0)
+    if heartbeat_path is None or stale_after <= 0:
+        return False, ""
+
+    now_epoch = float(now_ts if now_ts is not None else time.time())
+    startup_grace = max(int(spec.heartbeat_startup_grace_seconds or 0), 0)
+    elapsed = max(now_epoch - float(started_at or 0.0), 0.0)
+    if elapsed < float(startup_grace):
+        return False, "startup_grace"
+
+    if not heartbeat_path.exists():
+        return True, "heartbeat_missing"
+
+    payload = _read_json(heartbeat_path)
+    if bool(payload.get("stale", False)):
+        return True, "payload_stale"
+
+    try:
+        file_age = max(now_epoch - heartbeat_path.stat().st_mtime, 0.0)
+    except Exception:
+        return True, "heartbeat_stat_failed"
+
+    if file_age >= float(stale_after):
+        return True, f"heartbeat_age={file_age:.1f}s"
+    return False, ""
 
 
 def _acquire_singleton_lock(lock_path: Path):
@@ -291,20 +492,34 @@ def main() -> int:
         default=_env_flag("RUN_ALL_SLEEVES_WITH_LIVE_EXECUTOR", "0"),
         help="Run the standalone live execution lane consumer.",
     )
+    parser.add_argument(
+        "--with-specialized-sleeves",
+        action="store_true",
+        default=_env_flag("RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES", "1"),
+        help="Run collect-only volatility, pairs, stat-arb, earnings, commodity, and international macro sleeves.",
+    )
     parser.add_argument("--parallel-interval-seconds", type=int, default=int(os.getenv("SHADOW_LOOP_INTERVAL", "15")))
     parser.add_argument("--dividend-interval-seconds", type=int, default=int(os.getenv("DIVIDEND_SHADOW_INTERVAL", "60")))
     parser.add_argument("--dividend-capture-interval-seconds", type=int, default=int(os.getenv("DIVIDEND_CAPTURE_SHADOW_INTERVAL", os.getenv("DIVIDEND_SHADOW_INTERVAL", "60"))))
     parser.add_argument("--bond-interval-seconds", type=int, default=int(os.getenv("BOND_SHADOW_INTERVAL", "120")))
     parser.add_argument("--fx-interval-seconds", type=int, default=int(os.getenv("FX_SHADOW_INTERVAL", "45")))
+    parser.add_argument("--specialized-interval-seconds", type=int, default=int(os.getenv("SPECIALIZED_SLEEVE_INTERVAL", "120")))
     parser.add_argument("--broker", default=os.getenv("DATA_BROKER", "schwab"), choices=["schwab", "coinbase"])
     parser.add_argument("--max-iterations", type=int, default=int(os.getenv("SHADOW_LOOP_MAX_ITERS", "0")))
-    parser.add_argument("--symbols-core", default=os.getenv("SHADOW_SYMBOLS_CORE", ""))
-    parser.add_argument("--symbols-volatile", default=os.getenv("SHADOW_SYMBOLS_VOLATILE", ""))
-    parser.add_argument("--symbols-defensive", default=(os.getenv("SHADOW_SYMBOLS_DEFENSIVE", "") + "," + os.getenv("SHADOW_SYMBOLS_COMMOD_FX_INTL", "")).strip(","))
-    parser.add_argument("--dividend-symbols", default=os.getenv("DIVIDEND_SYMBOLS", ""))
-    parser.add_argument("--bond-symbols", default=os.getenv("BOND_SYMBOLS", ""))
-    parser.add_argument("--fx-symbols", default=os.getenv("FX_SYMBOLS", ""))
-    parser.add_argument("--fx-context-symbols", default=os.getenv("FX_CONTEXT_SYMBOLS", ""))
+    parser.add_argument("--symbols-core", default=os.getenv("SHADOW_SYMBOLS_CORE", DEFAULT_SYMBOLS_CORE))
+    parser.add_argument("--symbols-volatile", default=os.getenv("SHADOW_SYMBOLS_VOLATILE", DEFAULT_SYMBOLS_VOLATILE))
+    parser.add_argument(
+        "--symbols-defensive",
+        default=(
+            os.getenv("SHADOW_SYMBOLS_DEFENSIVE", DEFAULT_SYMBOLS_DEFENSIVE)
+            + ","
+            + os.getenv("SHADOW_SYMBOLS_COMMOD_FX_INTL", DEFAULT_SYMBOLS_COMMOD_FX_INTL)
+        ).strip(","),
+    )
+    parser.add_argument("--dividend-symbols", default=os.getenv("DIVIDEND_SYMBOLS", DEFAULT_DIVIDEND_SYMBOLS))
+    parser.add_argument("--bond-symbols", default=os.getenv("BOND_SYMBOLS", DEFAULT_BOND_SYMBOLS))
+    parser.add_argument("--fx-symbols", default=os.getenv("FX_SYMBOLS", DEFAULT_FX_SYMBOLS))
+    parser.add_argument("--fx-context-symbols", default=os.getenv("FX_CONTEXT_SYMBOLS", DEFAULT_FX_CONTEXT_SYMBOLS))
     parser.add_argument("--restart-delay-seconds", type=int, default=int(os.getenv("ALL_SLEEVES_RESTART_DELAY", "3")))
     parser.add_argument("--max-restarts-per-hour", type=int, default=int(os.getenv("ALL_SLEEVES_MAX_RESTARTS_PER_HOUR", "40")))
     parser.add_argument("--no-restart-on-exit", dest="restart_on_exit", action="store_false", default=True)
@@ -320,12 +535,14 @@ def main() -> int:
     parser.add_argument("--nice-dividend-capture", type=int, default=int(os.getenv("SLEEVE_NICE_DIVIDEND_CAPTURE", os.getenv("SLEEVE_NICE_DIVIDEND", "10"))))
     parser.add_argument("--nice-bond", type=int, default=int(os.getenv("SLEEVE_NICE_BOND", "10")))
     parser.add_argument("--nice-fx", type=int, default=int(os.getenv("SLEEVE_NICE_FX", "9")))
+    parser.add_argument("--nice-specialized", type=int, default=int(os.getenv("SLEEVE_NICE_SPECIALIZED", "12")))
     parser.add_argument("--nice-aggressive", type=int, default=int(os.getenv("SLEEVE_NICE_AGGRESSIVE", "5")))
     parser.add_argument("--workers-baseline", type=int, default=int(os.getenv("SLEEVE_WORKERS_BASELINE", os.getenv("ASYNC_PIPELINE_WORKERS", "4"))))
     parser.add_argument("--workers-dividend", type=int, default=int(os.getenv("SLEEVE_WORKERS_DIVIDEND", "2")))
     parser.add_argument("--workers-dividend-capture", type=int, default=int(os.getenv("SLEEVE_WORKERS_DIVIDEND_CAPTURE", os.getenv("SLEEVE_WORKERS_DIVIDEND", "2"))))
     parser.add_argument("--workers-bond", type=int, default=int(os.getenv("SLEEVE_WORKERS_BOND", "2")))
     parser.add_argument("--workers-fx", type=int, default=int(os.getenv("SLEEVE_WORKERS_FX", "2")))
+    parser.add_argument("--workers-specialized", type=int, default=int(os.getenv("SLEEVE_WORKERS_SPECIALIZED", "1")))
     parser.add_argument("--workers-aggressive", type=int, default=int(os.getenv("SLEEVE_WORKERS_AGGRESSIVE", "3")))
 
     parser.add_argument("--disable-circuit-breakers", action="store_true")
@@ -340,12 +557,20 @@ def main() -> int:
         "--hard-min-free-gb",
         type=float,
         default=float(os.getenv("ALL_SLEEVES_HARD_MIN_FREE_GB", "15")),
-        help="Hard startup block if free disk is below this GB threshold.",
+        help="Hard startup block if active runtime storage is below this GB threshold.",
+    )
+    parser.add_argument(
+        "--local-hard-min-free-gb",
+        type=float,
+        default=float(os.getenv("ALL_SLEEVES_LOCAL_HARD_MIN_FREE_GB", "2")),
+        help="Hard startup block if the local project volume is below this GB threshold.",
     )
 
     args = parser.parse_args()
+    paper_trade_lock_active = _apply_paper_trade_lock(args)
 
-    if not _route_storage_or_fail():
+    storage_route = _route_storage_or_fail()
+    if not storage_route:
         return 6
 
     if _global_trading_halt_enabled():
@@ -357,13 +582,29 @@ def main() -> int:
         print(f"ERROR: missing venv python: {VENV_PY}")
         return 2
 
-    free_gb = _disk_free_gb(PROJECT_ROOT)
-    if free_gb < max(float(args.hard_min_free_gb), 0.1):
+    disk_gate = _disk_gate_status(
+        storage_route,
+        local_min_free_gb=float(args.local_hard_min_free_gb),
+        storage_min_free_gb=float(args.hard_min_free_gb),
+    )
+    if not bool(disk_gate.get("ok", False)):
         print(
-            f"[HardDiskGate] blocked free_gb={free_gb:.2f} "
-            f"min_required_gb={float(args.hard_min_free_gb):.2f}"
+            "[HardDiskGate] blocked "
+            f"reasons={','.join(disk_gate.get('blocked_reasons') or [])} "
+            f"local_free_gb={float(disk_gate.get('local_free_gb') or 0.0):.2f} "
+            f"local_min_required_gb={float(disk_gate.get('local_min_free_gb') or 0.0):.2f} "
+            f"storage_probe={disk_gate.get('storage_probe')} "
+            f"storage_free_gb={float(disk_gate.get('storage_free_gb') or 0.0):.2f} "
+            f"storage_min_required_gb={float(disk_gate.get('storage_min_free_gb') or 0.0):.2f}"
         )
-        _emit_incident_snapshot("hard_disk_gate_blocked", f"free_gb={free_gb:.2f}")
+        _emit_incident_snapshot(
+            "hard_disk_gate_blocked",
+            (
+                f"reasons={','.join(disk_gate.get('blocked_reasons') or [])};"
+                f"local_free_gb={float(disk_gate.get('local_free_gb') or 0.0):.2f};"
+                f"storage_free_gb={float(disk_gate.get('storage_free_gb') or 0.0):.2f}"
+            ),
+        )
         return 5
 
     lock_path = Path(os.getenv("ALL_SLEEVES_LOCK_PATH", str(PROJECT_ROOT / "governance" / "all_sleeves.lock")))
@@ -381,6 +622,11 @@ def main() -> int:
     base_env = os.environ.copy()
     base_env["MARKET_DATA_ONLY"] = "1"
     base_env["ALLOW_ORDER_EXECUTION"] = "0"
+    if paper_trade_lock_active:
+        base_env["PAPER_TRADE_LOCK"] = "1"
+        base_env["TOP_BOT_ENABLE_LIVE_EXECUTION"] = "0"
+        base_env["EXECUTION_LANE_LIVE_ENABLED"] = "0"
+        base_env["RUN_ALL_SLEEVES_WITH_LIVE_EXECUTOR"] = "0"
     base_env["EXECUTION_LANE_ENABLED"] = os.getenv("EXECUTION_LANE_ENABLED", "1")
     base_env["MASTER_EXECUTION_LANE_ENABLED"] = os.getenv("MASTER_EXECUTION_LANE_ENABLED", "1")
     base_env["INLINE_PAPER_EXECUTION_ENABLED"] = os.getenv("INLINE_PAPER_EXECUTION_ENABLED", "0")
@@ -472,6 +718,25 @@ def main() -> int:
         env["SCHWAB_FOREX_API_VERIFIED"] = os.getenv("SCHWAB_FOREX_API_VERIFIED", "0")
         specs["fx"] = JobSpec("fx", fx_cmd, env, breaker_group="core")
 
+    if args.with_specialized_sleeves:
+        for profile in SPECIALIZED_SLEEVE_PROFILES:
+            cmd = [
+                "nice", "-n", str(args.nice_specialized),
+                str(VENV_PY), str(SPECIALIZED_SLEEVE_SHADOW),
+                "--broker", args.broker,
+                "--profile", profile,
+                "--interval-seconds", str(max(args.specialized_interval_seconds, 30)),
+                "--max-iterations", str(args.max_iterations),
+            ]
+            if args.simulate:
+                cmd.append("--simulate")
+            env = dict(base_env)
+            env["ASYNC_PIPELINE_WORKERS"] = str(max(args.workers_specialized, 1))
+            env["AUTO_RETRAIN_ON_GOVERNANCE"] = "0"
+            env["SLEEVE_LIFECYCLE_STATE"] = "data_collection_only"
+            env["TRAINING_EXCLUDED_UNTIL_READY"] = "1"
+            specs[profile] = JobSpec(profile, cmd, env, breaker_group="core")
+
     if args.with_aggressive_modes:
         aggressive_cmd = [
             "nice", "-n", str(args.nice_aggressive),
@@ -494,7 +759,16 @@ def main() -> int:
         env = dict(base_env)
         env["MARKET_DATA_ONLY"] = "0"
         env["ALLOW_ORDER_EXECUTION"] = "1"
-        specs["paper_executor"] = JobSpec("paper_executor", paper_exec_cmd, env, breaker_group="core")
+        paper_heartbeat_stale_seconds = max(int(os.getenv("OPS_WATCHDOG_PAPER_EXECUTOR_HEARTBEAT_STALE_SECONDS", "240") or 240), 60)
+        specs["paper_executor"] = JobSpec(
+            "paper_executor",
+            paper_exec_cmd,
+            env,
+            breaker_group="core",
+            heartbeat_path=PROJECT_ROOT / "governance" / "health" / "execution_lane_paper_latest.json",
+            heartbeat_stale_seconds=paper_heartbeat_stale_seconds,
+            heartbeat_startup_grace_seconds=paper_heartbeat_stale_seconds,
+        )
 
     if args.with_live_executor:
         live_exec_cmd = [
@@ -505,10 +779,21 @@ def main() -> int:
         env = dict(base_env)
         env["MARKET_DATA_ONLY"] = "0"
         env["ALLOW_ORDER_EXECUTION"] = "1"
-        specs["live_executor"] = JobSpec("live_executor", live_exec_cmd, env, breaker_group="core")
+        live_heartbeat_stale_seconds = max(int(os.getenv("OPS_WATCHDOG_EXECUTION_HEARTBEAT_STALE_SECONDS", "240") or 240), 60)
+        specs["live_executor"] = JobSpec(
+            "live_executor",
+            live_exec_cmd,
+            env,
+            breaker_group="core",
+            heartbeat_path=PROJECT_ROOT / "governance" / "health" / "execution_lane_live_latest.json",
+            heartbeat_stale_seconds=live_heartbeat_stale_seconds,
+            heartbeat_startup_grace_seconds=live_heartbeat_stale_seconds,
+        )
 
     procs: dict[str, subprocess.Popen] = {}
+    proc_started_at: dict[str, float] = {}
     restart_history: dict[str, list[float]] = {name: [] for name in specs}
+    quarantined_jobs: dict[str, dict[str, object]] = {}
     breaker_streaks: dict[str, int] = {"core": 0}
     group_disabled_until: dict[str, float] = {"core": 0.0}
     last_breaker_check_ts = 0.0
@@ -517,6 +802,7 @@ def main() -> int:
     try:
         for name, spec in specs.items():
             procs[name] = _spawn(spec)
+            proc_started_at[name] = time.time()
             time.sleep(0.8)
 
         print("All sleeves live:", ", ".join(specs.keys()))
@@ -556,8 +842,15 @@ def main() -> int:
                             proc.terminate()
 
             for name, proc in list(procs.items()):
+                if name in quarantined_jobs:
+                    continue
                 code = proc.poll()
                 if code is None:
+                    stale, reason = _job_heartbeat_stale(specs[name], started_at=proc_started_at.get(name, 0.0))
+                    if stale:
+                        print(f"[{name}] heartbeat_stale reason={reason}; recycling child")
+                        _emit_incident_snapshot("execution_lane_heartbeat_stale", f"{name}:{reason}")
+                        proc.terminate()
                     continue
 
                 print(f"[{name}] exited code={code}")
@@ -575,17 +868,24 @@ def main() -> int:
                     continue
 
                 if not _within_restart_budget(restart_history[name], args.max_restarts_per_hour):
-                    _stop_processes(procs)
                     _emit_incident_snapshot("restart_budget_exceeded", f"{name}:{args.max_restarts_per_hour}")
+                    quarantined_jobs[name] = {
+                        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                        "reason": "restart_budget_exceeded",
+                        "last_exit_code": int(code),
+                        "max_restarts_per_hour": int(args.max_restarts_per_hour),
+                    }
+                    procs.pop(name, None)
                     print(
-                        f"Stopped: {name} exceeded restart budget "
-                        f"({args.max_restarts_per_hour}/hour)."
+                        f"[{name}] quarantined reason=restart_budget_exceeded "
+                        f"budget={args.max_restarts_per_hour}/hour parent=continuing"
                     )
-                    return 1
+                    continue
 
                 time.sleep(max(args.restart_delay_seconds, 1))
                 restart_history[name].append(time.time())
                 procs[name] = _spawn(specs[name])
+                proc_started_at[name] = time.time()
                 print(f"[{name}] restart_count_last_hour={len(restart_history[name])}")
 
             time.sleep(1.0)

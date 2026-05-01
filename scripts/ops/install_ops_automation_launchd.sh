@@ -12,14 +12,29 @@ SCHWAB_EDUCATION_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_schwab_education_cont
 MARKET_CORR_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_market_crypto_correlation_launchd.sh"
 RETENTION_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_data_retention_launchd.sh"
 ONE_NUMBERS_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_one_numbers_refresh_launchd.sh"
+ONE_NUMBERS_REGRESSION_GUARD_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_one_numbers_regression_guard_launchd.sh"
 BACKLOG_RETRY_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_external_backlog_retry_launchd.sh"
 STORAGE_BACKPRESSURE_AUTOPILOT_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_storage_backpressure_autopilot_launchd.sh"
+STORAGE_PRESSURE_CLEARANCE_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_storage_pressure_clearance_launchd.sh"
+STORAGE_RECONNECT_INFRABOT_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_storage_reconnect_infrabot_launchd.sh"
 INFRA_AUTOFIX_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_infrastructure_autofix_launchd.sh"
+MASTER_INFRA_SUPERVISOR_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_master_infrastructure_supervisor_launchd.sh"
+SCHWAB_AUTH_SUPERVISOR_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_schwab_auth_supervisor_launchd.sh"
+COMMAND_VALIDITY_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_command_validity_launchd.sh"
+SYSTEM_DRIFT_GUARD_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_system_drift_guard_launchd.sh"
+SYSTEM_DRIFT_AUTOPILOT_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_system_drift_autopilot_launchd.sh"
 BOT_QUALITY_AUTOPILOT_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_bot_quality_autopilot_launchd.sh"
+STORAGE_STANDBY_PRUNE_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_storage_standby_prune_launchd.sh"
+GRADE_REGRESSION_AUTOPILOT_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_grade_regression_autopilot_launchd.sh"
+SECTION_GRADE_AUTOPILOT_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_section_grade_autopilot_launchd.sh"
+CHROME_HEADLESS_GUARD_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_chrome_headless_guard_launchd.sh"
+SYSTEM_SUMMARY_AUTOPILOT_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_system_summary_autopilot_launchd.sh"
+CREATIVE_COTENANT_GUARD_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_creative_cotenant_guard_launchd.sh"
 AGENTS_DIR="$HOME/Library/LaunchAgents"
-LOG_DIR="/tmp"
+LOG_DIR="${BOT_OPS_LAUNCHD_LOG_DIR:-/tmp/schwab_trading_bot/launchd_ops}"
 UID_NUM="$(id -u)"
 mkdir -p "$AGENTS_DIR"
+mkdir -p "$LOG_DIR"
 
 chmod +x "$SQL_RUN_SCRIPT"
 chmod +x "$FX_MARKET_RUN_SCRIPT"
@@ -29,10 +44,24 @@ chmod +x "$SCHWAB_EDUCATION_RUN_SCRIPT"
 chmod +x "$MARKET_CORR_RUN_SCRIPT"
 chmod +x "$RETENTION_RUN_SCRIPT"
 chmod +x "$ONE_NUMBERS_RUN_SCRIPT"
+chmod +x "$ONE_NUMBERS_REGRESSION_GUARD_RUN_SCRIPT"
 chmod +x "$BACKLOG_RETRY_RUN_SCRIPT"
 chmod +x "$STORAGE_BACKPRESSURE_AUTOPILOT_RUN_SCRIPT"
+chmod +x "$STORAGE_PRESSURE_CLEARANCE_RUN_SCRIPT"
+chmod +x "$STORAGE_RECONNECT_INFRABOT_RUN_SCRIPT"
 chmod +x "$INFRA_AUTOFIX_RUN_SCRIPT"
+chmod +x "$MASTER_INFRA_SUPERVISOR_RUN_SCRIPT"
+chmod +x "$SCHWAB_AUTH_SUPERVISOR_RUN_SCRIPT"
+chmod +x "$COMMAND_VALIDITY_RUN_SCRIPT"
+chmod +x "$SYSTEM_DRIFT_GUARD_RUN_SCRIPT"
+chmod +x "$SYSTEM_DRIFT_AUTOPILOT_RUN_SCRIPT"
 chmod +x "$BOT_QUALITY_AUTOPILOT_RUN_SCRIPT"
+chmod +x "$STORAGE_STANDBY_PRUNE_RUN_SCRIPT"
+chmod +x "$GRADE_REGRESSION_AUTOPILOT_RUN_SCRIPT"
+chmod +x "$SECTION_GRADE_AUTOPILOT_RUN_SCRIPT"
+chmod +x "$CHROME_HEADLESS_GUARD_RUN_SCRIPT"
+chmod +x "$SYSTEM_SUMMARY_AUTOPILOT_RUN_SCRIPT"
+chmod +x "$CREATIVE_COTENANT_GUARD_RUN_SCRIPT"
 
 WATCHDOG_PLIST="$AGENTS_DIR/com.dankingsley.ops.watchdog.plist"
 REPORT_PLIST="$AGENTS_DIR/com.dankingsley.ops.daily_report.plist"
@@ -50,7 +79,9 @@ OFFICIAL_MACRO_INTERVAL="${OFFICIAL_MACRO_CONTEXT_REFRESH_INTERVAL_SECONDS:-2160
 SCHWAB_EDUCATION_PLIST="$AGENTS_DIR/com.dankingsley.ops.schwab_education_context.plist"
 SCHWAB_EDUCATION_INTERVAL="${SCHWAB_EDUCATION_CONTEXT_REFRESH_INTERVAL_SECONDS:-3600}"
 ONE_NUMBERS_PLIST="$AGENTS_DIR/com.dankingsley.ops.one_numbers_refresh.plist"
+ONE_NUMBERS_REGRESSION_GUARD_PLIST="$AGENTS_DIR/com.dankingsley.ops.one_numbers_regression_guard.plist"
 ONE_NUMBERS_INTERVAL="${ONE_NUMBERS_REFRESH_LAUNCHD_INTERVAL_SECONDS:-180}"
+ONE_NUMBERS_REGRESSION_GUARD_INTERVAL="${ONE_NUMBERS_REGRESSION_GUARD_INTERVAL_SECONDS:-300}"
 WATCHDOG_INTERVAL="${OPS_WATCHDOG_LAUNCHD_INTERVAL_SECONDS:-180}"
 MAINT_STRATEGY_PLIST="$AGENTS_DIR/com.dankingsley.ops.maintenance_strategy_reloader.plist"
 RETENTION_PLIST="$AGENTS_DIR/com.dankingsley.ops.data_retention.plist"
@@ -59,13 +90,39 @@ BACKLOG_RETRY_PLIST="$AGENTS_DIR/com.dankingsley.ops.external_backlog_retry.plis
 BACKLOG_RETRY_INTERVAL="${EXTERNAL_BACKLOG_RETRY_LAUNCHD_INTERVAL_SECONDS:-300}"
 STORAGE_BACKPRESSURE_AUTOPILOT_PLIST="$AGENTS_DIR/com.dankingsley.ops.storage_backpressure_autopilot.plist"
 STORAGE_BACKPRESSURE_AUTOPILOT_INTERVAL="${STORAGE_BACKPRESSURE_AUTOPILOT_INTERVAL_SECONDS:-300}"
+STORAGE_PRESSURE_CLEARANCE_PLIST="$AGENTS_DIR/com.dankingsley.ops.storage_pressure_clearance.plist"
+STORAGE_PRESSURE_CLEARANCE_INTERVAL="${STORAGE_PRESSURE_CLEARANCE_INTERVAL_SECONDS:-180}"
+STORAGE_RECONNECT_INFRABOT_PLIST="$AGENTS_DIR/com.dankingsley.ops.storage_reconnect_infrabot.plist"
+STORAGE_RECONNECT_INFRABOT_INTERVAL="${STORAGE_RECONNECT_INFRABOT_INTERVAL_SECONDS:-240}"
 WRITER_COORDINATOR_PLIST="$AGENTS_DIR/com.dankingsley.ops.writer_cycle_coordinator.plist"
 RETENTION_SHERIFF_PLIST="$AGENTS_DIR/com.dankingsley.ops.retention_debt_sheriff.plist"
 BACKPRESSURE_SLO_PLIST="$AGENTS_DIR/com.dankingsley.ops.backpressure_slo_bot.plist"
 INFRA_AUTOFIX_PLIST="$AGENTS_DIR/com.dankingsley.ops.infrastructure_autofix.plist"
 INFRA_AUTOFIX_INTERVAL="${INFRASTRUCTURE_AUTOFIX_INTERVAL_SECONDS:-300}"
+MASTER_INFRA_SUPERVISOR_PLIST="$AGENTS_DIR/com.dankingsley.ops.master_infrastructure_supervisor.plist"
+MASTER_INFRA_SUPERVISOR_INTERVAL="${MASTER_INFRASTRUCTURE_SUPERVISOR_INTERVAL_SECONDS:-300}"
+SCHWAB_AUTH_SUPERVISOR_PLIST="$AGENTS_DIR/com.dankingsley.ops.schwab_auth_supervisor.plist"
+SCHWAB_AUTH_SUPERVISOR_INTERVAL="${SCHWAB_AUTH_SUPERVISOR_INTERVAL_SECONDS:-120}"
+COMMAND_VALIDITY_PLIST="$AGENTS_DIR/com.dankingsley.ops.command_validity.plist"
+COMMAND_VALIDITY_INTERVAL="${COMMAND_VALIDITY_INTERVAL_SECONDS:-600}"
+SYSTEM_DRIFT_GUARD_PLIST="$AGENTS_DIR/com.dankingsley.ops.system_drift_guard.plist"
+SYSTEM_DRIFT_GUARD_INTERVAL="${SYSTEM_DRIFT_GUARD_INTERVAL_SECONDS:-600}"
+SYSTEM_DRIFT_AUTOPILOT_PLIST="$AGENTS_DIR/com.dankingsley.ops.system_drift_autopilot.plist"
+SYSTEM_DRIFT_AUTOPILOT_INTERVAL="${SYSTEM_DRIFT_AUTOPILOT_INTERVAL_SECONDS:-600}"
 BOT_QUALITY_AUTOPILOT_PLIST="$AGENTS_DIR/com.dankingsley.ops.bot_quality_autopilot.plist"
 BOT_QUALITY_AUTOPILOT_INTERVAL="${BOT_QUALITY_AUTOPILOT_INTERVAL_SECONDS:-1800}"
+STORAGE_STANDBY_PRUNE_PLIST="$AGENTS_DIR/com.dankingsley.ops.storage_standby_prune.plist"
+STORAGE_STANDBY_PRUNE_INTERVAL="${BOT_LOGS_STANDBY_PRUNE_INTERVAL_SECONDS:-300}"
+GRADE_REGRESSION_AUTOPILOT_PLIST="$AGENTS_DIR/com.dankingsley.ops.grade_regression_autopilot.plist"
+GRADE_REGRESSION_AUTOPILOT_INTERVAL="${GRADE_REGRESSION_AUTOPILOT_INTERVAL_SECONDS:-600}"
+SECTION_GRADE_AUTOPILOT_PLIST="$AGENTS_DIR/com.dankingsley.ops.section_grade_autopilot.plist"
+SECTION_GRADE_AUTOPILOT_INTERVAL="${SECTION_GRADE_AUTOPILOT_INTERVAL_SECONDS:-600}"
+CHROME_HEADLESS_GUARD_PLIST="$AGENTS_DIR/com.dankingsley.ops.chrome_headless_guard.plist"
+CHROME_HEADLESS_GUARD_INTERVAL="${CHROME_HEADLESS_GUARD_INTERVAL_SECONDS:-300}"
+SYSTEM_SUMMARY_AUTOPILOT_PLIST="$AGENTS_DIR/com.dankingsley.ops.system_summary_autopilot.plist"
+SYSTEM_SUMMARY_AUTOPILOT_INTERVAL="${SYSTEM_SUMMARY_AUTOPILOT_INTERVAL_SECONDS:-1800}"
+CREATIVE_COTENANT_GUARD_PLIST="$AGENTS_DIR/com.dankingsley.ops.creative_cotenant_guard.plist"
+CREATIVE_COTENANT_GUARD_INTERVAL="${CREATIVE_COTENANT_GUARD_INTERVAL_SECONDS:-120}"
 
 cat > "$WATCHDOG_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -228,6 +285,66 @@ cat > "$ONE_NUMBERS_PLIST" <<PLIST
 </dict></plist>
 PLIST
 
+cat > "$ONE_NUMBERS_REGRESSION_GUARD_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.one_numbers_regression_guard</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$ONE_NUMBERS_REGRESSION_GUARD_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$ONE_NUMBERS_REGRESSION_GUARD_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_one_numbers_regression_guard.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_one_numbers_regression_guard.err.log</string>
+</dict></plist>
+PLIST
+
+cat > "$COMMAND_VALIDITY_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.command_validity</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$COMMAND_VALIDITY_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$COMMAND_VALIDITY_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_command_validity.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_command_validity.err.log</string>
+</dict></plist>
+PLIST
+
+cat > "$SYSTEM_DRIFT_GUARD_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.system_drift_guard</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$SYSTEM_DRIFT_GUARD_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$SYSTEM_DRIFT_GUARD_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_system_drift_guard.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_system_drift_guard.err.log</string>
+</dict></plist>
+PLIST
+
+cat > "$SYSTEM_DRIFT_AUTOPILOT_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.system_drift_autopilot</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$SYSTEM_DRIFT_AUTOPILOT_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$SYSTEM_DRIFT_AUTOPILOT_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_system_drift_autopilot.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_system_drift_autopilot.err.log</string>
+</dict></plist>
+PLIST
+
 cat > "$MAINT_STRATEGY_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -287,6 +404,36 @@ cat > "$STORAGE_BACKPRESSURE_AUTOPILOT_PLIST" <<PLIST
 </dict></plist>
 PLIST
 
+cat > "$STORAGE_PRESSURE_CLEARANCE_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.storage_pressure_clearance</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$STORAGE_PRESSURE_CLEARANCE_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$STORAGE_PRESSURE_CLEARANCE_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_storage_pressure_clearance.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_storage_pressure_clearance.err.log</string>
+</dict></plist>
+PLIST
+
+cat > "$STORAGE_RECONNECT_INFRABOT_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.storage_reconnect_infrabot</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$STORAGE_RECONNECT_INFRABOT_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$STORAGE_RECONNECT_INFRABOT_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_storage_reconnect_infrabot.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_storage_reconnect_infrabot.err.log</string>
+</dict></plist>
+PLIST
+
 cat > "$INFRA_AUTOFIX_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -314,6 +461,126 @@ cat > "$BOT_QUALITY_AUTOPILOT_PLIST" <<PLIST
   <key>StartInterval</key><integer>$BOT_QUALITY_AUTOPILOT_INTERVAL</integer>
   <key>StandardOutPath</key><string>$LOG_DIR/ops_bot_quality_autopilot.out.log</string>
   <key>StandardErrorPath</key><string>$LOG_DIR/ops_bot_quality_autopilot.err.log</string>
+</dict></plist>
+PLIST
+
+cat > "$MASTER_INFRA_SUPERVISOR_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.master_infrastructure_supervisor</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$MASTER_INFRA_SUPERVISOR_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$MASTER_INFRA_SUPERVISOR_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_master_infrastructure_supervisor.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_master_infrastructure_supervisor.err.log</string>
+</dict></plist>
+PLIST
+
+cat > "$SCHWAB_AUTH_SUPERVISOR_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.schwab_auth_supervisor</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$SCHWAB_AUTH_SUPERVISOR_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$SCHWAB_AUTH_SUPERVISOR_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_schwab_auth_supervisor.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_schwab_auth_supervisor.err.log</string>
+</dict></plist>
+PLIST
+
+cat > "$STORAGE_STANDBY_PRUNE_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.storage_standby_prune</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$STORAGE_STANDBY_PRUNE_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$STORAGE_STANDBY_PRUNE_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_storage_standby_prune.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_storage_standby_prune.err.log</string>
+</dict></plist>
+PLIST
+
+cat > "$GRADE_REGRESSION_AUTOPILOT_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.grade_regression_autopilot</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$GRADE_REGRESSION_AUTOPILOT_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$GRADE_REGRESSION_AUTOPILOT_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_grade_regression_autopilot.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_grade_regression_autopilot.err.log</string>
+</dict></plist>
+PLIST
+
+cat > "$SECTION_GRADE_AUTOPILOT_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.section_grade_autopilot</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$SECTION_GRADE_AUTOPILOT_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$SECTION_GRADE_AUTOPILOT_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_section_grade_autopilot.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_section_grade_autopilot.err.log</string>
+</dict></plist>
+PLIST
+
+cat > "$CHROME_HEADLESS_GUARD_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.chrome_headless_guard</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$CHROME_HEADLESS_GUARD_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$CHROME_HEADLESS_GUARD_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_chrome_headless_guard.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_chrome_headless_guard.err.log</string>
+</dict></plist>
+PLIST
+
+cat > "$SYSTEM_SUMMARY_AUTOPILOT_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.system_summary_autopilot</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$SYSTEM_SUMMARY_AUTOPILOT_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$SYSTEM_SUMMARY_AUTOPILOT_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_system_summary_autopilot.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_system_summary_autopilot.err.log</string>
+</dict></plist>
+PLIST
+
+cat > "$CREATIVE_COTENANT_GUARD_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.creative_cotenant_guard</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$CREATIVE_COTENANT_GUARD_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$CREATIVE_COTENANT_GUARD_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_creative_cotenant_guard.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_creative_cotenant_guard.err.log</string>
 </dict></plist>
 PLIST
 
@@ -347,14 +614,28 @@ install_job "com.dankingsley.ops.options_flow_context" "$OPTIONS_FLOW_PLIST"
 install_job "com.dankingsley.ops.official_macro_context" "$OFFICIAL_MACRO_PLIST"
 install_job "com.dankingsley.ops.schwab_education_context" "$SCHWAB_EDUCATION_PLIST"
 install_job "com.dankingsley.ops.one_numbers_refresh" "$ONE_NUMBERS_PLIST"
+install_job "com.dankingsley.ops.one_numbers_regression_guard" "$ONE_NUMBERS_REGRESSION_GUARD_PLIST"
+install_job "com.dankingsley.ops.command_validity" "$COMMAND_VALIDITY_PLIST"
+install_job "com.dankingsley.ops.system_drift_guard" "$SYSTEM_DRIFT_GUARD_PLIST"
+install_job "com.dankingsley.ops.system_drift_autopilot" "$SYSTEM_DRIFT_AUTOPILOT_PLIST"
 install_job "com.dankingsley.ops.maintenance_strategy_reloader" "$MAINT_STRATEGY_PLIST"
 install_job "com.dankingsley.ops.data_retention" "$RETENTION_PLIST"
 install_job "com.dankingsley.ops.external_backlog_retry" "$BACKLOG_RETRY_PLIST"
 install_job "com.dankingsley.ops.storage_backpressure_autopilot" "$STORAGE_BACKPRESSURE_AUTOPILOT_PLIST"
+install_job "com.dankingsley.ops.storage_pressure_clearance" "$STORAGE_PRESSURE_CLEARANCE_PLIST"
+install_job "com.dankingsley.ops.storage_reconnect_infrabot" "$STORAGE_RECONNECT_INFRABOT_PLIST"
 remove_job "com.dankingsley.ops.writer_cycle_coordinator" "$WRITER_COORDINATOR_PLIST"
 remove_job "com.dankingsley.ops.retention_debt_sheriff" "$RETENTION_SHERIFF_PLIST"
 remove_job "com.dankingsley.ops.backpressure_slo_bot" "$BACKPRESSURE_SLO_PLIST"
 install_job "com.dankingsley.ops.infrastructure_autofix" "$INFRA_AUTOFIX_PLIST"
+install_job "com.dankingsley.ops.master_infrastructure_supervisor" "$MASTER_INFRA_SUPERVISOR_PLIST"
+install_job "com.dankingsley.ops.schwab_auth_supervisor" "$SCHWAB_AUTH_SUPERVISOR_PLIST"
 install_job "com.dankingsley.ops.bot_quality_autopilot" "$BOT_QUALITY_AUTOPILOT_PLIST"
+install_job "com.dankingsley.ops.storage_standby_prune" "$STORAGE_STANDBY_PRUNE_PLIST"
+install_job "com.dankingsley.ops.grade_regression_autopilot" "$GRADE_REGRESSION_AUTOPILOT_PLIST"
+install_job "com.dankingsley.ops.section_grade_autopilot" "$SECTION_GRADE_AUTOPILOT_PLIST"
+install_job "com.dankingsley.ops.chrome_headless_guard" "$CHROME_HEADLESS_GUARD_PLIST"
+install_job "com.dankingsley.ops.system_summary_autopilot" "$SYSTEM_SUMMARY_AUTOPILOT_PLIST"
+install_job "com.dankingsley.ops.creative_cotenant_guard" "$CREATIVE_COTENANT_GUARD_PLIST"
 
 echo "Ops automations installed."

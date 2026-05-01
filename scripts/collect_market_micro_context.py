@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import signal
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -28,6 +29,7 @@ from core.collector_transport import fetch_json, fetch_text
 USER_AGENT = "schwab-trading-bot/1.0"
 TREASURY_AUCTIONS_URL = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query"
 FINRA_REGSHO_URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{stamp}.txt"
+HEALTH_PATH = PROJECT_ROOT / "governance" / "health" / "market_micro_sync_latest.json"
 NASDAQ_TRADE_HALTS_URL = "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts"
 SOURCE_CONTRACTS = {
     "treasury_auctions": {"source_confidence_norm": 0.97, "schema_confidence_norm": 0.94},
@@ -1358,14 +1360,42 @@ def collect(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Collect free market microstructure and trading context.")
-    parser.add_argument("--timeout-seconds", type=float, default=8.0)
+    parser.add_argument("--timeout-seconds", type=float, default=4.0)
+    parser.add_argument("--max-runtime-seconds", type=int, default=int(os.getenv("MARKET_MICRO_MAX_RUNTIME_SECONDS", "75")))
     parser.add_argument("--lookback-days", type=int, default=21)
-    parser.add_argument("--finra-lookback-days", type=int, default=15)
+    parser.add_argument("--finra-lookback-days", type=int, default=5)
     parser.add_argument("--symbols", default="")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--test-only", action="store_true")
     args = parser.parse_args()
-    return collect(args)
+    max_runtime = max(int(args.max_runtime_seconds or 0), 0)
+    if max_runtime > 0 and hasattr(signal, "SIGALRM"):
+        def _timeout(_signum, _frame):
+            raise TimeoutError(f"market_micro_max_runtime_exceeded:{max_runtime}s")
+
+        signal.signal(signal.SIGALRM, _timeout)
+        signal.alarm(max_runtime)
+    try:
+        return collect(args)
+    except TimeoutError as exc:
+        payload = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "ok": False,
+            "timeout": True,
+            "error": str(exc),
+            "sources": {},
+            "source_contracts": {},
+        }
+        HEALTH_PATH.parent.mkdir(parents=True, exist_ok=True)
+        HEALTH_PATH.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=True))
+        else:
+            print(f"market_micro_context timeout err={exc}")
+        return 124
+    finally:
+        if max_runtime > 0 and hasattr(signal, "SIGALRM"):
+            signal.alarm(0)
 
 
 if __name__ == "__main__":

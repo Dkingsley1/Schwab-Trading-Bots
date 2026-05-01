@@ -318,6 +318,14 @@ def test_behavior_feature_vector_v2_accepts_market_crypto_correlation_features()
             "market_crypto_current_alignment_norm": 0.24,
             "market_crypto_divergence_norm": 0.69,
             "market_crypto_corr_confidence_norm": 1.0,
+            "market_crypto_sleeve_coverage_norm": 0.72,
+            "market_crypto_sleeve_avg_abs_corr_norm": 0.63,
+            "market_crypto_sleeve_dispersion_norm": 0.31,
+            "market_crypto_sleeve_confidence_norm": 0.84,
+            "market_crypto_risk_on_crypto_alignment_norm": 0.67,
+            "market_crypto_fx_crypto_inverse_corr_norm": 0.73,
+            "market_crypto_rates_crypto_corr_norm": 0.44,
+            "market_crypto_energy_crypto_corr_norm": 0.59,
         },
         {},
     )
@@ -326,6 +334,8 @@ def test_behavior_feature_vector_v2_accepts_market_crypto_correlation_features()
     assert vec[0, loop._BEHAVIOR_FEATURE_NAMES_V2.index("market_crypto_risk_corr_norm")] == 0.58
     assert vec[0, loop._BEHAVIOR_FEATURE_NAMES_V2.index("market_crypto_current_alignment_norm")] == 0.24
     assert vec[0, loop._BEHAVIOR_FEATURE_NAMES_V2.index("market_crypto_corr_confidence_norm")] == 1.0
+    assert vec[0, loop._BEHAVIOR_FEATURE_NAMES_V2.index("market_crypto_sleeve_coverage_norm")] == 0.72
+    assert vec[0, loop._BEHAVIOR_FEATURE_NAMES_V2.index("market_crypto_fx_crypto_inverse_corr_norm")] == 0.73
 
 
 def test_behavior_feature_schema_includes_market_crypto_correlation_features() -> None:
@@ -339,6 +349,14 @@ def test_behavior_feature_schema_includes_market_crypto_correlation_features() -
         "market_crypto_current_alignment_norm",
         "market_crypto_divergence_norm",
         "market_crypto_corr_confidence_norm",
+        "market_crypto_sleeve_coverage_norm",
+        "market_crypto_sleeve_avg_abs_corr_norm",
+        "market_crypto_sleeve_dispersion_norm",
+        "market_crypto_sleeve_confidence_norm",
+        "market_crypto_risk_on_crypto_alignment_norm",
+        "market_crypto_fx_crypto_inverse_corr_norm",
+        "market_crypto_rates_crypto_corr_norm",
+        "market_crypto_energy_crypto_corr_norm",
     ]
     for key in keys:
         assert key in behavior_ds.FEATURE_NAMES

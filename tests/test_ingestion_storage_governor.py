@@ -48,6 +48,9 @@ def test_ingestion_storage_governor_marks_route_drift_and_targets_routed_paths(t
     assert payload["throttle_controls"]["deferred_files_budget"] == 0
     assert payload["throttle_controls"]["log_gate_evaluations"] == "0"
     assert payload["throttle_controls"]["log_shadow_pnl_attribution"] == "0"
+    assert payload["queue_watermarks"]["overall_status"] == "blocked"
+    assert payload["writer_shedding"]["level"] == "protect_core"
+    assert payload["writer_shedding"]["freeze_cold_lanes"] is True
 
 
 def test_ingestion_storage_governor_allows_small_deferred_trickle_when_core_is_low(tmp_path: Path) -> None:
@@ -167,6 +170,7 @@ def test_ingestion_storage_governor_treats_watchdog_support_backlog_as_non_core_
     assert payload["pressure"]["support_pending_lines"] == 178000
     assert payload["env_overrides"]["SQL_LINK_SERVICE_SHARD_SUPPORT_WATCHDOG_MAX_LINES_PER_FILE"] == "96000"
     assert any("support shard" in action for action in payload["top_actions"])
+    assert payload["writer_shedding"]["shed_support_telemetry"] is True
 
 
 def test_ingestion_storage_governor_write_override_includes_profile_and_queue_paths(tmp_path: Path) -> None:

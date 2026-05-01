@@ -122,7 +122,7 @@ def test_build_audit_payload_counts_artifact_backed_active_when_diagnostic_is_st
                     "lifecycle_state": "active",
                     "model_path": str(model_path),
                     "quality_score": 0.91,
-                    "test_accuracy": 0.67,
+                    "test_accuracy": 0.77,
                 }
             ]
         },
@@ -151,3 +151,84 @@ def test_build_audit_payload_counts_artifact_backed_active_when_diagnostic_is_st
 
     assert payload["supportability_counts"]["artifact_backed_active"] == 1
     assert payload["supportability_counts"].get("unsupported_stale_diagnostics", 0) == 0
+
+
+def test_build_audit_payload_counts_registry_seeded_active_when_snapshot_is_fresh(tmp_path: Path) -> None:
+    registry_path = tmp_path / "master_bot_registry.json"
+    diagnostics_dir = tmp_path / "governance" / "training_diagnostics"
+    snapshot_path = tmp_path / "governance" / "health" / "runtime_training_snapshot_latest.json"
+    _write_json(
+        registry_path,
+        {
+            "sub_bots": [
+                {
+                    "bot_id": "brain_refinery_v59_risk_sentinel",
+                    "bot_role": "signal_sub_bot",
+                    "active": True,
+                    "lifecycle_state": "active",
+                    "quality_score": 0.44,
+                    "test_accuracy": 0.76,
+                }
+            ]
+        },
+    )
+    _write_json(
+        snapshot_path,
+        {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "sequence_count": 120,
+            "row_count": 1600,
+        },
+    )
+
+    payload = src.build_audit_payload(
+        registry_path=registry_path,
+        diagnostics_dir=diagnostics_dir,
+        snapshot_health_path=snapshot_path,
+    )
+
+    assert payload["runtime_snapshot_ready"] is True
+    assert payload["supportability_counts"]["registry_seeded_active"] == 1
+    assert payload["active_registry_seeded"][0]["bot_id"] == "brain_refinery_v59_risk_sentinel"
+
+
+def test_build_audit_payload_counts_staged_support_recovery_for_bounded_stale_active(tmp_path: Path) -> None:
+    registry_path = tmp_path / "master_bot_registry.json"
+    diagnostics_dir = tmp_path / "governance" / "training_diagnostics"
+    snapshot_path = tmp_path / "governance" / "health" / "runtime_training_snapshot_latest.json"
+    _write_json(
+        registry_path,
+        {
+            "sub_bots": [
+                {
+                    "bot_id": "brain_refinery_v31_defensive_rotation",
+                    "bot_role": "options_sub_bot",
+                    "active": True,
+                    "lifecycle_state": "active",
+                    "reason": "min_active_floor_override_30:supportable_recovery",
+                    "promotion_reason": "manual_collection_restore",
+                    "quality_score": 0.19,
+                    "test_accuracy": 0.75,
+                    "candidate_quality_score": 0.27,
+                    "candidate_test_accuracy": 0.76,
+                }
+            ]
+        },
+    )
+    _write_json(
+        snapshot_path,
+        {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "sequence_count": 120,
+            "row_count": 1600,
+        },
+    )
+
+    payload = src.build_audit_payload(
+        registry_path=registry_path,
+        diagnostics_dir=diagnostics_dir,
+        snapshot_health_path=snapshot_path,
+    )
+
+    assert payload["supportability_counts"]["staged_support_recovery"] == 1
+    assert payload["active_staged_support_recovery"][0]["bot_id"] == "brain_refinery_v31_defensive_rotation"

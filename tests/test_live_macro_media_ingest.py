@@ -250,6 +250,34 @@ def test_source_priority_profile_and_official_candidates_support_legal_policy():
     assert any("supremecourt.gov" in item["url"] for item in candidates)
 
 
+def test_source_provenance_profile_distinguishes_cspan_from_fed() -> None:
+    cspan = live_macro_media_ingest._source_provenance_profile(
+        declared_source="C-SPAN",
+        youtube_url="https://www.youtube.com/watch?v=cspan123",
+        metadata={
+            "channel_url": "https://www.youtube.com/@CSPAN",
+            "channel": "C-SPAN",
+            "title": "Jerome Powell Testifies Before Congress",
+            "webpage_url": "https://www.youtube.com/watch?v=cspan123",
+        },
+    )
+    mismatch = live_macro_media_ingest._source_provenance_profile(
+        declared_source="C-SPAN",
+        youtube_url="https://www.youtube.com/watch?v=fed123",
+        metadata={
+            "channel_url": "https://www.youtube.com/@federalreserve",
+            "channel": "Federal Reserve",
+            "title": "FOMC Press Conference",
+            "webpage_url": "https://www.youtube.com/watch?v=fed123",
+        },
+    )
+
+    assert cspan["source_channel_match"] is True
+    assert cspan["source_provenance_status"] == "matched"
+    assert mismatch["source_channel_match"] is False
+    assert mismatch["source_provenance_status"] == "source_channel_mismatch"
+
+
 def test_run_ingest_discards_non_actionable_media_when_requested(monkeypatch, tmp_path):
     audio_file = tmp_path / "captured.mp3"
     audio_file.write_bytes(b"fake-audio")

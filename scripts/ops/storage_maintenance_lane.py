@@ -19,6 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.runtime_python import resolve_runtime_python
+from core.storage_mounts import resolve_external_storage
 
 
 PY = resolve_runtime_python(PROJECT_ROOT)
@@ -386,11 +387,8 @@ def _retry_writer_maintenance(
 
 
 def _storage_roots(project_root: Path) -> tuple[Path, Path]:
-    configured = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "") or "").strip()
-    mount_root = Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")).expanduser()
-    project_dir = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot") or "schwab_trading_bot").strip() or "schwab_trading_bot"
-    external_root = Path(configured).expanduser() if configured else mount_root / project_dir
-    return mount_root, external_root
+    resolution = resolve_external_storage()
+    return resolution.mount_root, resolution.external_root
 
 
 def build_storage_maintenance_payload(

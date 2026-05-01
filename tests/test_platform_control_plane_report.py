@@ -23,6 +23,7 @@ def test_platform_control_plane_report_aggregates_core_sections(tmp_path) -> Non
     (project_root / "governance" / "feature_store").mkdir(parents=True, exist_ok=True)
     (project_root / "governance" / "research").mkdir(parents=True, exist_ok=True)
     (project_root / "governance" / "migrations").mkdir(parents=True, exist_ok=True)
+    (project_root / "config" / "security").mkdir(parents=True, exist_ok=True)
     (project_root / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
     (project_root / "scripts").mkdir(parents=True, exist_ok=True)
     (project_root / "exports" / "paper_broker_bridge" / "paper").mkdir(parents=True, exist_ok=True)
@@ -82,12 +83,32 @@ def test_platform_control_plane_report_aggregates_core_sections(tmp_path) -> Non
         json.dumps({"ok": True}),
         encoding="utf-8",
     )
+    (project_root / "governance" / "health" / "incident_closeout_autopilot_latest.json").write_text(
+        json.dumps({"overall_status": "ready", "closeout_ready": True, "closeout_score": 94.0}),
+        encoding="utf-8",
+    )
+    (project_root / "governance" / "health" / "live_canary_control_latest.json").write_text(
+        json.dumps({"overall_status": "degraded", "preapproved_supervised_ready": True, "staged_preclearance_ready": True}),
+        encoding="utf-8",
+    )
+    (project_root / "governance" / "health" / "runtime_artifact_refresh_latest.json").write_text(
+        json.dumps({"overall_status": "ready", "missing_required_artifacts": []}),
+        encoding="utf-8",
+    )
+    (project_root / "governance" / "health" / "incident_timeline_latest.json").write_text(
+        json.dumps({"stitched_threads": [{"incident_id": "inc_1"}]}),
+        encoding="utf-8",
+    )
+    (project_root / "governance" / "health" / "cost_telemetry_latest.json").write_text(
+        json.dumps({"overall_status": "ready"}),
+        encoding="utf-8",
+    )
     (project_root / "governance" / "health" / "derived_state_latest.json").write_text(
         json.dumps({"risk_level": "medium", "gross_risk_budget": 0.61}),
         encoding="utf-8",
     )
     (project_root / "governance" / "health" / "security_audit_latest.json").write_text(
-        json.dumps({"ok": True, "overall_status": "ready"}),
+        json.dumps({"ok": True, "overall_status": "ready", "summary": {"key_rotation_schedule_defined": True, "mutation_latest_age_hours": 1.0}}),
         encoding="utf-8",
     )
     (project_root / "governance" / "health" / "secret_scan_latest.json").write_text(
@@ -164,6 +185,21 @@ def test_platform_control_plane_report_aggregates_core_sections(tmp_path) -> Non
     )
     (project_root / "governance" / "walk_forward" / "promotion_readiness_latest.json").write_text(json.dumps({"promote_ok": False}), encoding="utf-8")
     (project_root / "governance" / "champion_challenger" / "registry.json").write_text(json.dumps({"champion": {"name": "alpha"}, "stages": ["research", "shadow", "paper", "promoted", "live"]}), encoding="utf-8")
+    (project_root / "governance" / "champion_challenger" / "promotion_packet_latest.json").write_text(
+        json.dumps(
+            {
+                "packet_complete": True,
+                "signature": {"verified": True},
+                "replayability_contract": {"hash_bundle_complete": True, "exact_replay_ready": True},
+                "committee": {"approvers": ["risk", "research"], "seed_ready": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (project_root / "governance" / "champion_challenger" / "promotion_autopilot_packet_latest.json").write_text(
+        json.dumps({"committee_packet_seed_ready": True, "signability_contract": {"committee_packet_seed_ready": True}}),
+        encoding="utf-8",
+    )
     (project_root / "governance" / "lifecycle" / "model_lifecycle_latest.json").write_text(
         json.dumps(
             {
@@ -197,9 +233,44 @@ def test_platform_control_plane_report_aggregates_core_sections(tmp_path) -> Non
         + "\n",
         encoding="utf-8",
     )
+    (project_root / "governance" / "experiments" / "immutable_experiment_ledger_latest.json").write_text(
+        json.dumps(
+            {
+                "append_only_ready": True,
+                "latest_signature_ready": True,
+                "latest_attestation_ready": True,
+                "latest_exact_replay_ready": True,
+            }
+        ),
+        encoding="utf-8",
+    )
     (project_root / "governance" / "audits" / "registry_mutation_latest.json").write_text(json.dumps({"actor": "test"}), encoding="utf-8")
     (project_root / "governance" / "audits" / "registry_mutation_journal_20260401.jsonl").write_text(
         json.dumps({"event": "mutation"}) + "\n",
+        encoding="utf-8",
+    )
+    (project_root / "config" / "security" / "rbac_roles.json").write_text(
+        json.dumps(
+            {
+                "roles": [
+                    {"role": "research_reviewer"},
+                    {"role": "risk_reviewer"},
+                    {"role": "live_operator"},
+                    {"role": "risk_operator"},
+                    {"role": "storage_maintainer"},
+                    {"role": "audit_reviewer"},
+                ],
+                "separation_of_duties": {
+                    "promotion_approval_requires_distinct_roles": ["research_reviewer", "risk_reviewer"],
+                    "live_execution_enable_requires_roles": ["live_operator", "risk_operator"],
+                    "artifact_delete_requires_roles": ["storage_maintainer", "audit_reviewer"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (project_root / "config" / "security" / "key_rotation_policy.json").write_text(
+        json.dumps({"rotation": {"api_keys_days": 30, "broker_tokens_days": 7, "signing_keys_days": 90}}),
         encoding="utf-8",
     )
     (project_root / "governance" / "risk" / "portfolio_risk_latest.json").write_text(
@@ -208,6 +279,24 @@ def test_platform_control_plane_report_aggregates_core_sections(tmp_path) -> Non
     )
     (project_root / "governance" / "risk" / "execution_budget_latest.json").write_text(
         json.dumps({"gross_risk_budget": 0.75, "max_total_actions_per_hour": 18}),
+        encoding="utf-8",
+    )
+    (project_root / "governance" / "allocator").mkdir(parents=True, exist_ok=True)
+    (project_root / "governance" / "allocator" / "portfolio_capacity_curve_latest.json").write_text(
+        json.dumps(
+            {
+                "summary": {"curve_count": 3, "allocator_ready": True},
+                "curves": [{"symbol": "AAPL", "venue": "nasdaq", "clock_bucket": "open", "regime": "normal"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (project_root / "governance" / "allocator" / "portfolio_allocator_service_latest.json").write_text(
+        json.dumps({"allocator_contract": {"venue_time_capacity_ready": True, "regime_budget_ready": True}}),
+        encoding="utf-8",
+    )
+    (project_root / "governance" / "risk" / "risk_service_boundary_latest.json").write_text(
+        json.dumps({"independent_service_boundary": {"service_isolation_ready": True, "policy_hash_count": 3}}),
         encoding="utf-8",
     )
     (project_root / "governance" / "watchdog" / "sleeve_slo_latest.json").write_text(
@@ -220,6 +309,24 @@ def test_platform_control_plane_report_aggregates_core_sections(tmp_path) -> Non
     (project_root / "scripts" / "release_ops.sh").write_text("#!/bin/zsh\n", encoding="utf-8")
     (project_root / "exports" / "state_snapshot_drills" / "latest.json").write_text(
         json.dumps({"ok": True}),
+        encoding="utf-8",
+    )
+    (project_root / "governance" / "health" / "chaos_drill_coordinator_latest.json").write_text(
+        json.dumps(
+            {
+                "overall_status": "ready",
+                "restore_discipline": {"restore_proof_ready": True},
+                "schedule_contract": {"discipline_ready": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (project_root / "governance" / "health" / "cross_host_parity_report_latest.json").write_text(
+        json.dumps({"overall_status": "ready", "proof_written_count": 3}),
+        encoding="utf-8",
+    )
+    (project_root / "governance" / "watchdog" / "backup_restore_events.jsonl").write_text(
+        json.dumps({"ok": True}) + "\n",
         encoding="utf-8",
     )
     (project_root / "exports" / "paper_broker_bridge" / "paper" / "paper_bridge_orders_20260401.jsonl").write_text(
@@ -264,6 +371,77 @@ def test_platform_control_plane_report_aggregates_core_sections(tmp_path) -> Non
     assert payload["morning_control_plane"]["sql_storage"]["sql_sync_step"] == "merge_primary"
     assert payload["institutional_readiness"]["overall_score"] > 0.0
     assert payload["institutional_domains_by_slug"]["point_in_time_data_lineage"]["score"] >= 80.0
-    assert payload["institutional_domains_by_slug"]["immutable_experiment_tracking"]["status"] in {"advancing", "strong"}
+    assert payload["institutional_domains_by_slug"]["immutable_experiment_tracking"]["score"] >= 96.0
+    assert payload["institutional_domains_by_slug"]["portfolio_construction"]["score"] >= 90.0
+    assert payload["institutional_domains_by_slug"]["independent_risk_services"]["score"] >= 90.0
+    assert payload["institutional_domains_by_slug"]["transaction_cost_and_capacity"]["score"] >= 90.0
     assert payload["institutional_domains_by_slug"]["high_fidelity_simulator"]["score"] >= 70.0
+    assert payload["institutional_domains_by_slug"]["formal_model_governance"]["score"] >= 100.0
+    assert payload["institutional_domains_by_slug"]["observability_and_slo"]["score"] >= 100.0
     assert payload["institutional_domains_by_slug"]["developer_process"]["status"] in {"advancing", "strong"}
+
+
+def test_platform_control_plane_report_credits_seeded_governance_and_bounded_preclearance(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    health_root = project_root / "governance" / "health"
+    walk_root = project_root / "governance" / "walk_forward"
+    champion_root = project_root / "governance" / "champion_challenger"
+    risk_root = project_root / "governance" / "risk"
+    lifecycle_root = project_root / "governance" / "lifecycle"
+    audits_root = project_root / "governance" / "audits"
+    feature_store_root = project_root / "governance" / "feature_store"
+    research_root = project_root / "governance" / "research"
+
+    for path in [health_root, walk_root, champion_root, risk_root, lifecycle_root, audits_root, feature_store_root, research_root]:
+        path.mkdir(parents=True, exist_ok=True)
+
+    (champion_root / "registry.json").write_text(json.dumps({"champion": {"name": "alpha"}, "stages": ["paper", "promoted"]}), encoding="utf-8")
+    (health_root / "promotion_quality_gate_latest.json").write_text(json.dumps({"ok": True}), encoding="utf-8")
+    (walk_root / "promotion_readiness_latest.json").write_text(json.dumps({"promote_ok": False}), encoding="utf-8")
+    (lifecycle_root / "model_lifecycle_latest.json").write_text(json.dumps({"ok": True}), encoding="utf-8")
+    (audits_root / "registry_mutation_latest.json").write_text(json.dumps({"actor": "test"}), encoding="utf-8")
+    (health_root / "incident_closeout_autopilot_latest.json").write_text(
+        json.dumps({"overall_status": "degraded", "closeout_ready": False, "bounded_closeout_path_ready": True}),
+        encoding="utf-8",
+    )
+    (health_root / "live_canary_control_latest.json").write_text(
+        json.dumps({"overall_status": "degraded", "staged_preclearance_ready": True, "supervised_canary_ready": False}),
+        encoding="utf-8",
+    )
+    (champion_root / "promotion_autopilot_packet_latest.json").write_text(
+        json.dumps(
+            {
+                "overall_status": "degraded",
+                "committee_packet_seed_ready": True,
+                "signability_contract": {"committee_packet_seed_ready": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (health_root / "training_lineage_manifest_latest.json").write_text(
+        json.dumps({"overall_status": "degraded", "promotion_packet_seed_ready": True}),
+        encoding="utf-8",
+    )
+    (risk_root / "portfolio_risk_latest.json").write_text(json.dumps({"risk_score": 42.0}), encoding="utf-8")
+    (risk_root / "execution_budget_latest.json").write_text(json.dumps({"max_total_actions_per_hour": 12}), encoding="utf-8")
+    (health_root / "live_reconciliation_slo_latest.json").write_text(json.dumps({"ok": True}), encoding="utf-8")
+    (health_root / "paper_reconciliation_slo_latest.json").write_text(json.dumps({"ok": True}), encoding="utf-8")
+    (health_root / "session_ready_latest.json").write_text(json.dumps({"ok": True}), encoding="utf-8")
+    (feature_store_root / "latest.json").write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "dataset_contract": {"rows_sha256": "rows-hash"},
+                "point_in_time_contract": {"dataset_join_keys": ["snapshot_id", "symbol"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (research_root / "multiple_testing_guard_latest.json").write_text(json.dumps({"ok": True}), encoding="utf-8")
+    (research_root / "decay_monitor_latest.json").write_text(json.dumps({"overall_status": "ready"}), encoding="utf-8")
+
+    payload = report.build_report(project_root, max_rows=10)
+
+    assert payload["institutional_domains_by_slug"]["formal_model_governance"]["score"] >= 80.0
+    assert payload["institutional_domains_by_slug"]["independent_risk_services"]["score"] >= 70.0
+    assert payload["institutional_domains_by_slug"]["observability_and_slo"]["score"] >= 60.0

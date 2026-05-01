@@ -92,6 +92,16 @@ _LOW_SIGNAL_RECENT: Dict[str, float] = {}
 _LOW_SIGNAL_RECENT_LOCK = threading.Lock()
 _SCHEMA_VIOLATION_RECENT: Dict[str, float] = {}
 _SCHEMA_VIOLATION_RECENT_LOCK = threading.Lock()
+SIGNAL_GENERATION_STATUSES = {
+    "PAPER_EXECUTED",
+    "LIVE_EXECUTED",
+    "SHADOW_ONLY",
+    "DATA_ONLY_BLOCKED",
+    "PAPER_GUARD_BLOCKED",
+    "LIVE_GUARD_BLOCKED",
+    "BLOCKED",
+    "HOLD",
+}
 
 
 def _as_bool(value: Any) -> bool:
@@ -252,6 +262,79 @@ def _thin_low_signal_payloads(path: str, payloads: Sequence[Dict[str, Any]]) -> 
     return kept
 
 
+def _signal_generation_classification(payload: Dict[str, Any]) -> tuple[str, str]:
+    status = str(payload.get("status") or "").strip().upper()
+    action = str(payload.get("action") or "").strip().upper()
+    score = payload.get("score")
+    threshold = payload.get("threshold")
+    generated_trade_intent = action in {"BUY", "SELL"} or str(payload.get("intent_action") or "").strip().upper() in {"BUY", "SELL"}
+    blocked = "BLOCKED" in status or "GUARD" in status
+    executed = status in {"PAPER_EXECUTED", "LIVE_EXECUTED"}
+    shadow_intent = status == "SHADOW_ONLY" and generated_trade_intent
+    if executed or shadow_intent:
+        return "good_signal", "trade_intent_generated"
+    if blocked and generated_trade_intent:
+        return "bad_signal", "trade_intent_blocked"
+    if status == "DATA_ONLY_BLOCKED":
+        return "bad_signal", "data_only_blocked"
+    if action == "HOLD" or status == "HOLD":
+        return "bad_signal", "hold_or_no_trade_signal"
+    if score is not None and threshold is not None:
+        try:
+            if float(score) >= float(threshold):
+                return "good_signal", "score_above_threshold"
+            return "bad_signal", "score_below_threshold"
+        except Exception:
+            pass
+    return "bad_signal", "no_executable_signal"
+
+
+def _signal_generation_events(
+    *,
+    project_root: str,
+    target_path: str,
+    payloads: Sequence[Dict[str, Any]],
+) -> None:
+    if not project_root or not payloads:
+        return
+    norm_path = str(target_path or "").replace("\\", "/")
+    if "decision_explanations/" not in norm_path and "/decisions/" not in norm_path and "trade_decisions_" not in norm_path:
+        return
+
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    out_path = os.path.join(project_root, "governance", "events", f"signal_generation_{day}.jsonl")
+    lines: list[str] = []
+    for payload in payloads:
+        status = str(payload.get("status") or "").strip().upper()
+        action = str(payload.get("action") or "").strip().upper()
+        if status and status not in SIGNAL_GENERATION_STATUSES and action not in {"BUY", "SELL", "HOLD"}:
+            continue
+        classification, reason = _signal_generation_classification(payload)
+        row: Dict[str, Any] = {
+            "timestamp_utc": now_utc_iso(),
+            "event": "signal_generation",
+            "signal_quality": classification,
+            "reason": reason,
+            "source_path": str(target_path or ""),
+            "symbol": str(payload.get("symbol") or ""),
+            "action": action,
+            "status": status,
+            "strategy": str(payload.get("strategy") or payload.get("bot_id") or ""),
+            "score": payload.get("score"),
+            "threshold": payload.get("threshold"),
+            "message_id": str(payload.get("message_id") or ""),
+            "parent_message_id": str(payload.get("parent_message_id") or payload.get("parent_decision_id") or ""),
+            "log_schema_version": log_schema_version(),
+        }
+        corr = current_correlation()
+        if corr.get("run_id"):
+            row["run_id"] = corr["run_id"]
+        if corr.get("iter_id"):
+            row["iter_id"] = corr["iter_id"]
+        lines.append(json.dumps(enrich_log_row(row), ensure_ascii=True) + "\n")
+    _write_lines(out_path, lines)
+
+
 def _schema_errors(payload: Dict[str, Any], *, schema: str) -> List[str]:
     req = CHANNEL_SCHEMA_REQUIRED.get(str(schema or "").strip(), ())
     if not req:
@@ -292,6 +375,7 @@ def safe_append_jsonl_batch(
 
     lines = [json.dumps(p, ensure_ascii=True) + "\n" for p in payloads]
     if _write_lines(path, lines):
+        _signal_generation_events(project_root=project_root, target_path=path, payloads=payloads)
         return len(payloads)
 
     _emit_write_failure_event(
@@ -306,13 +390,9 @@ def safe_append_jsonl_batch(
 def _default_queue_db(project_root: str) -> str:
     if not project_root:
         return ""
-    override = str(os.getenv("BOT_CHANNEL_QUEUE_DB", "") or "").strip()
-    if override:
-        return override
-    local_root = str(os.getenv("BOT_CHANNEL_QUEUE_LOCAL_ROOT", "") or "").strip()
-    if local_root:
-        return str(Path(local_root).expanduser() / "data" / "bot_channel_queue.sqlite3")
-    return str(Path(project_root) / "local_fallback_storage" / "data" / "bot_channel_queue.sqlite3")
+    from core.channel_queue import default_queue_db_path
+
+    return default_queue_db_path(project_root)
 
 
 def _queue_publish(
@@ -452,7 +532,6 @@ def safe_append_channel_batch(
     valid_payloads = _thin_low_signal_payloads(path, valid_payloads)
     if not valid_payloads:
         return 0
-
     lines = [json.dumps(p, ensure_ascii=True) + "\n" for p in valid_payloads]
     if not _write_lines(path, lines):
         _emit_write_failure_event(
@@ -462,6 +541,7 @@ def safe_append_channel_batch(
             error=RuntimeError("channel_batch_append_failed"),
         )
         return 0
+    _signal_generation_events(project_root=project_root, target_path=path, payloads=valid_payloads)
 
     mirrors = [str(p) for p in (mirror_paths or []) if str(p or "").strip()]
     for mirror in mirrors:

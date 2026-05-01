@@ -40,6 +40,7 @@ def test_portable_brain_contract_prefers_native_on_apple_silicon(monkeypatch, tm
     assert payload["cross_platform_proof_node"]["shadow_replay_supported"] is True
     assert payload["parity_contract"]["parity_focus"] == "mlx_vs_portable_replay"
     assert payload["nightly_proof_contract"]["ready"] is True
+    assert payload["unified_memory_telemetry"]["competitive_advantage"] == "apple_silicon_unified_memory"
 
 
 def test_portable_brain_contract_prefers_portable_profile_on_linux(monkeypatch, tmp_path: Path) -> None:
@@ -73,3 +74,4 @@ def test_portable_brain_contract_prefers_portable_profile_on_linux(monkeypatch, 
     assert payload["cross_platform_proof_node"]["status"] in {"ready", "active_host_candidate"}
     assert payload["parity_contract"]["nightly_proof_supported"] is True
     assert "backend_parity_report" in payload["nightly_proof_contract"]["report_paths"]
+    assert payload["unified_memory_telemetry"]["competitive_advantage"] == "portable_runtime_contract"

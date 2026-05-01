@@ -1,0 +1,1 @@
+../../../scripts/ops/infrastructure_autofix_bot.py

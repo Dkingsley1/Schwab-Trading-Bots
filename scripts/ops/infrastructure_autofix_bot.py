@@ -23,7 +23,13 @@ COMMANDS_HYGIENE_SCRIPT = Path(__file__).resolve().with_name("commands_hygiene_b
 COMMAND_VALIDITY_SCRIPT = Path(__file__).resolve().with_name("command_validity_bot.py")
 OPTIONS_FLOW_EXPORT_HYGIENE_SCRIPT = Path(__file__).resolve().with_name("options_flow_export_hygiene_bot.py")
 OPTIONS_FLOW_EFFICIENCY_SCRIPT = Path(__file__).resolve().with_name("options_flow_efficiency_bot.py")
-STORAGE_BACKPRESSURE_AUTOPILOT_SCRIPT = Path(__file__).resolve().with_name("storage_backpressure_autopilot.py")
+STORAGE_PRESSURE_CLEARANCE_SCRIPT = Path(__file__).resolve().with_name("storage_pressure_clearance_bot.py")
+STORAGE_RECONNECT_INFRABOT_SCRIPT = Path(__file__).resolve().with_name("storage_reconnect_infrabot.py")
+CORE_BOT_MATERIALIZATION_INFRABOT_SCRIPT = Path(__file__).resolve().with_name("core_bot_materialization_infrabot.py")
+CORE_BOT_TIER_ORGANIZER_SCRIPT = Path(__file__).resolve().with_name("organize_core_bot_tiers.py")
+ONE_NUMBERS_REGRESSION_GUARD_SCRIPT = Path(__file__).resolve().with_name("one_numbers_regression_guard.py")
+STATEFUL_STORAGE_REGRESSION_GUARD_SCRIPT = Path(__file__).resolve().with_name("stateful_storage_regression_guard.py")
+MASTER_INFRA_SUPERVISOR_SCRIPT = Path(__file__).resolve().with_name("master_infrastructure_supervisor.py")
 
 
 def _safe_int(raw: Any, default: int = 0) -> int:
@@ -38,6 +44,43 @@ def _safe_float(raw: Any, default: float = 0.0) -> float:
         return float(raw)
     except Exception:
         return float(default)
+
+
+def _artifact_candidates(project_root: Path, raw_path: str | Path) -> list[Path]:
+    path = Path(raw_path)
+    if path.is_absolute():
+        return [path]
+    candidates = [project_root / path]
+    parts = path.parts
+    if parts and parts[0] in {"data", "decisions", "decision_explanations", "exports", "governance", "logs", "models"}:
+        candidates.append(project_root / "local_fallback_storage" / path)
+        candidates.append(Path("/Volumes/BOT_LOGS/schwab_trading_bot") / path)
+    out: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(candidate)
+    return out
+
+
+def _load_freshest_json(project_root: Path, raw_path: str | Path) -> dict[str, Any]:
+    best_payload: dict[str, Any] = {}
+    best_mtime = -1.0
+    for candidate in _artifact_candidates(project_root, raw_path):
+        payload = load_json(candidate)
+        if not payload:
+            continue
+        try:
+            mtime = candidate.stat().st_mtime
+        except Exception:
+            mtime = 0.0
+        if mtime >= best_mtime:
+            best_payload = payload
+            best_mtime = mtime
+    return best_payload
 
 
 def _collector_contract_row(payload: dict[str, Any], name: str) -> dict[str, Any]:
@@ -100,23 +143,32 @@ def build_payload(
     apply: bool = False,
     timeout_sec: int = 1200,
 ) -> dict[str, Any]:
-    health_root = project_root / "governance" / "health"
-    daily_verify = load_json(health_root / "daily_auto_verify_latest.json")
-    storage_control = load_json(health_root / "ingestion_storage_control_latest.json")
-    collector_contracts = load_json(health_root / "collector_contracts_latest.json")
-    source_verification = load_json(health_root / "source_verification_latest.json")
-    options_flow_context = load_json(health_root / "options_flow_context_sync_latest.json")
+    daily_verify = _load_freshest_json(project_root, "governance/health/daily_auto_verify_latest.json")
+    storage_control = _load_freshest_json(project_root, "governance/health/ingestion_storage_control_latest.json")
+    collector_contracts = _load_freshest_json(project_root, "governance/health/collector_contracts_latest.json")
+    source_verification = _load_freshest_json(project_root, "governance/health/source_verification_latest.json")
+    options_flow_context = _load_freshest_json(project_root, "governance/health/options_flow_context_sync_latest.json")
     if not options_flow_context:
-        options_flow_context = load_json(health_root / "tastytrade_context_sync_latest.json")
-    schwab_education_context = load_json(health_root / "schwab_education_context_sync_latest.json")
-    auth_lease = load_json(health_root / "auth_lease_manager_latest.json")
-    blackstart = load_json(health_root / "blackstart_recovery_latest.json")
-    freshness = load_json(health_root / "artifact_freshness_slo_latest.json")
-    snapshot_cache = load_json(health_root / "runtime_snapshot_cache_control_latest.json")
-    remote_alert = load_json(health_root / "remote_alert_control_latest.json")
-    training_quality = load_json(health_root / "training_quality_control_latest.json")
-    supportability = load_json(health_root / "supportability_control_latest.json")
-    bot_quality = load_json(health_root / "bot_quality_autopilot_latest.json")
+        options_flow_context = _load_freshest_json(project_root, "governance/health/tastytrade_context_sync_latest.json")
+    schwab_education_context = _load_freshest_json(project_root, "governance/health/schwab_education_context_sync_latest.json")
+    auth_lease = _load_freshest_json(project_root, "governance/health/auth_lease_manager_latest.json")
+    schwab_auth_supervisor = _load_freshest_json(project_root, "governance/health/schwab_auth_supervisor_latest.json")
+    blackstart = _load_freshest_json(project_root, "governance/health/blackstart_recovery_latest.json")
+    freshness = _load_freshest_json(project_root, "governance/health/artifact_freshness_slo_latest.json")
+    snapshot_cache = _load_freshest_json(project_root, "governance/health/runtime_snapshot_cache_control_latest.json")
+    remote_alert = _load_freshest_json(project_root, "governance/health/remote_alert_control_latest.json")
+    training_quality = _load_freshest_json(project_root, "governance/health/training_quality_control_latest.json")
+    supportability = _load_freshest_json(project_root, "governance/health/supportability_control_latest.json")
+    bot_quality = _load_freshest_json(project_root, "governance/health/bot_quality_autopilot_latest.json")
+    system_drift = _load_freshest_json(project_root, "governance/health/system_drift_guard_latest.json")
+    one_numbers_guard = _load_freshest_json(project_root, "governance/health/one_numbers_regression_guard_latest.json")
+    stateful_storage_guard = _load_freshest_json(project_root, "governance/health/stateful_storage_regression_guard_latest.json")
+    storage_reconnect = _load_freshest_json(project_root, "governance/health/storage_reconnect_infrabot_latest.json")
+    storage_reconnect_guard = _load_freshest_json(project_root, "governance/health/storage_reconnect_regression_guard_latest.json")
+    core_bot_materialization = _load_freshest_json(project_root, "governance/health/core_bot_materialization_infrabot_latest.json")
+    core_bot_materialization_guard = _load_freshest_json(project_root, "governance/health/core_bot_materialization_guard_latest.json")
+    core_bot_tier_organizer = _load_freshest_json(project_root, "governance/health/core_bot_tier_organizer_latest.json")
+    master_infra = _load_freshest_json(project_root, "governance/health/master_infrastructure_supervisor_latest.json")
 
     failed_checks = daily_verify.get("failed_checks") if isinstance(daily_verify.get("failed_checks"), list) else []
     repair_plan: list[dict[str, Any]] = []
@@ -139,9 +191,59 @@ def build_payload(
     total_drain_minutes = _safe_float(storage_backpressure.get("estimated_total_drain_minutes"), 0.0)
     if storage_status in {"blocked", "degraded", "needs_work"}:
         add_plan(
-            "storage_backpressure_autopilot",
+            "storage_pressure_clearance",
             f"ingestion_storage_status={storage_status} retention_debt_gb={retention_debt_gb:.3f} pending_lines={total_pending_lines} total_drain_minutes={total_drain_minutes:.3f}",
-            [str(PYTHON_BIN), str(STORAGE_BACKPRESSURE_AUTOPILOT_SCRIPT), "--apply", "--json"],
+            [str(PYTHON_BIN), str(STORAGE_PRESSURE_CLEARANCE_SCRIPT), "--apply", "--force-clear-stale-gate", "--json"],
+        )
+
+    stateful_storage_status = str(stateful_storage_guard.get("overall_status") or "")
+    if not stateful_storage_guard or stateful_storage_status in {"blocked", "degraded", "needs_work"}:
+        add_plan(
+            "stateful_storage_regression_guard",
+            f"stateful_storage_status={stateful_storage_status or 'missing'}",
+            [str(PYTHON_BIN), str(STATEFUL_STORAGE_REGRESSION_GUARD_SCRIPT), "--apply", "--json"],
+        )
+
+    storage_reconnect_status = str(storage_reconnect.get("overall_status") or "")
+    storage_reconnect_guard_status = str(storage_reconnect_guard.get("overall_status") or "")
+    if (
+        not storage_reconnect
+        or storage_reconnect_status in {"blocked", "degraded", "needs_work"}
+        or storage_reconnect_guard_status in {"blocked", "degraded", "needs_work"}
+    ):
+        add_plan(
+            "storage_reconnect_infrabot",
+            f"reconnect_status={storage_reconnect_status or 'missing'} guard_status={storage_reconnect_guard_status or 'missing'}",
+            [str(PYTHON_BIN), str(STORAGE_RECONNECT_INFRABOT_SCRIPT), "--apply", "--json"],
+        )
+
+    core_materialization_status = str(core_bot_materialization.get("overall_status") or "")
+    core_materialization_guard_status = str(core_bot_materialization_guard.get("overall_status") or "")
+    if (
+        not core_bot_materialization
+        or core_materialization_status in {"blocked", "degraded", "needs_work"}
+        or core_materialization_guard_status in {"blocked", "degraded", "needs_work"}
+    ):
+        add_plan(
+            "core_bot_materialization_infrabot",
+            f"materialization_status={core_materialization_status or 'missing'} guard_status={core_materialization_guard_status or 'missing'}",
+            [str(PYTHON_BIN), str(CORE_BOT_MATERIALIZATION_INFRABOT_SCRIPT), "--apply", "--json"],
+        )
+    core_tier_status = str(core_bot_tier_organizer.get("overall_status") or "")
+    if not core_bot_tier_organizer or core_tier_status in {"blocked", "degraded", "needs_work"}:
+        add_plan(
+            "core_bot_tier_organizer",
+            f"tier_status={core_tier_status or 'missing'}",
+            [str(PYTHON_BIN), str(CORE_BOT_TIER_ORGANIZER_SCRIPT), "--json"],
+        )
+
+    one_numbers_status = str(one_numbers_guard.get("overall_status") or "")
+    one_numbers_weaknesses = one_numbers_guard.get("weaknesses") if isinstance(one_numbers_guard.get("weaknesses"), list) else []
+    if not one_numbers_guard or one_numbers_status in {"blocked", "degraded"} or one_numbers_weaknesses:
+        add_plan(
+            "one_numbers_regression_guard",
+            f"one_numbers_status={one_numbers_status or 'missing'} weaknesses={len(one_numbers_weaknesses)}",
+            [str(PYTHON_BIN), str(ONE_NUMBERS_REGRESSION_GUARD_SCRIPT), "--apply", "--json"],
         )
 
     schwab_contract = _collector_contract_row(collector_contracts, "schwab_education_context")
@@ -233,13 +335,51 @@ def build_payload(
                 "--json",
             ],
         )
+    drift_status = str(system_drift.get("overall_status") or "")
+    if drift_status in {"blocked", "degraded"}:
+        add_plan(
+            "system_drift_autopilot",
+            f"system_drift_status={drift_status}",
+            [
+                str(PYTHON_BIN),
+                str(project_root / "scripts" / "ops" / "system_drift_autopilot.py"),
+                "--apply",
+                "--json",
+            ],
+        )
+
+    master_status = str(master_infra.get("overall_status") or "")
+    if not master_infra or master_status in {"blocked", "degraded"}:
+        add_plan(
+            "master_infrastructure_supervisor_refresh",
+            f"master_infra_status={master_status or 'missing'}",
+            [str(PYTHON_BIN), str(MASTER_INFRA_SUPERVISOR_SCRIPT), "--json"],
+        )
+        for check in master_infra.get("checks") or []:
+            if not isinstance(check, dict) or check.get("name") != "launchd_job_health":
+                continue
+            if check.get("status") in {"blocked", "degraded"}:
+                add_plan(
+                    "ops_automation_launchd_install",
+                    "launchd_job_health_not_ready",
+                    [str(project_root / "scripts" / "ops" / "install_ops_automation_launchd.sh")],
+                )
+            break
 
     auth_status = str(auth_lease.get("overall_status") or "")
     if auth_status in {"blocked", "degraded"}:
         add_plan(
-            "premarket_token_guard",
+            "schwab_auth_supervisor",
             f"auth_lease_status={auth_status}",
-            [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "premarket_token_guard.py"), "--always-auth", "--json"],
+            [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "schwab_auth_supervisor.py"), "--apply", "--json"],
+        )
+
+    schwab_auth_status = str(schwab_auth_supervisor.get("overall_status") or "")
+    if schwab_auth_status in {"blocked", "degraded"}:
+        add_plan(
+            "schwab_auth_supervisor",
+            f"schwab_auth_supervisor_status={schwab_auth_status}",
+            [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "schwab_auth_supervisor.py"), "--apply", "--json"],
         )
 
     if str(freshness.get("overall_status") or "") in {"blocked", "degraded"}:
@@ -302,11 +442,16 @@ def build_payload(
         ):
             attempts.append(_run_json(cmd, cwd=project_root, timeout_sec=min(int(timeout_sec), 300)))
 
-    failed_attempts = [row for row in attempts if int(row.get("rc", 1)) != 0]
+    hard_failed_attempts = [
+        row
+        for row in attempts
+        if bool(row.get("timed_out", False)) or int(row.get("rc", 1)) not in {0, 2}
+    ]
+    degraded_attempts = [row for row in attempts if int(row.get("rc", 1)) == 2 and not bool(row.get("timed_out", False))]
     overall_status = "ready"
-    if operator_followups or failed_attempts:
+    if operator_followups or hard_failed_attempts:
         overall_status = "blocked"
-    elif repair_plan:
+    elif repair_plan or degraded_attempts:
         overall_status = "degraded"
 
     recommended_actions = ordered_unique(
@@ -343,6 +488,9 @@ def build_payload(
             "unsent_critical_alerts": _safe_int(((remote_alert.get("critical_backlog") or {}).get("unsent_count")), 0),
             "storage_total_pending_lines": total_pending_lines,
             "storage_total_drain_minutes": total_drain_minutes,
+            "stateful_storage_local_gb": _safe_float(((stateful_storage_guard.get("metrics") or {}).get("local_stateful_gb")), 0.0),
+            "storage_reconnect_repair_plan_count": _safe_int(((storage_reconnect.get("metrics") or {}).get("repair_plan_count")), 0),
+            "storage_reconnect_missing_contract_count": _safe_int(((storage_reconnect_guard.get("metrics") or {}).get("missing_contract_count")), 0),
             "commands_duplicate_entries": _safe_int((((commands_hygiene_payload.get("metrics") or {}).get("duplicate_entry_count"))), 0),
             "commands_runbook_changed": bool(commands_hygiene_payload.get("runbook_changed", False)),
             "commands_blocked_entries": _safe_int((((command_validity_payload.get("metrics") or {}).get("blocked_entry_count"))), 0),
@@ -351,8 +499,19 @@ def build_payload(
             "infrastructure_autofix_bot",
             "commands_hygiene_bot",
             "command_validity_bot",
+            "system_drift_guard",
+            "system_drift_autopilot",
             "daily_verify_auto_remediation_bot",
+            "storage_pressure_clearance_bot",
+            "storage_reconnect_infrabot",
+            "storage_reconnect_regression_guard",
+            "core_bot_materialization_infrabot",
+            "core_bot_materialization_guard",
+            "core_bot_tier_organizer",
             "storage_backpressure_autopilot",
+            "stateful_storage_regression_guard",
+            "one_numbers_regression_guard",
+            "master_infrastructure_supervisor",
             "premarket_token_guard",
             "bot_quality_autopilot",
             "restart_sanity_bundle",

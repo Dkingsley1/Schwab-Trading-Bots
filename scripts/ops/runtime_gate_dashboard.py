@@ -70,6 +70,11 @@ def _artifact_config(project_root: Path) -> Dict[str, Dict[str, Any]]:
             "max_age_minutes": _days_to_minutes(2.0),
             "required": False,
         },
+        "canary_auto_tuner": {
+            "paths": [project_root / "governance" / "health" / "canary_auto_tuner_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
         "ingestion_storage_control": {
             "paths": [project_root / "governance" / "health" / "ingestion_storage_control_latest.json"],
             "max_age_minutes": _days_to_minutes(2.0),
@@ -110,6 +115,11 @@ def _artifact_config(project_root: Path) -> Dict[str, Dict[str, Any]]:
             "max_age_minutes": _days_to_minutes(2.0),
             "required": False,
         },
+        "security_evidence_autofix": {
+            "paths": [project_root / "governance" / "health" / "security_evidence_autofix_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
         "ingestion_priority_queue": {
             "paths": [project_root / "governance" / "health" / "ingestion_priority_queue_latest.json"],
             "max_age_minutes": _days_to_minutes(2.0),
@@ -133,6 +143,16 @@ def _artifact_config(project_root: Path) -> Dict[str, Dict[str, Any]]:
         "operator_cockpit": {
             "paths": [project_root / "governance" / "health" / "operator_cockpit_latest.json"],
             "max_age_minutes": _days_to_minutes(1.0),
+            "required": False,
+        },
+        "incident_closeout_autopilot": {
+            "paths": [project_root / "governance" / "health" / "incident_closeout_autopilot_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "live_canary_control": {
+            "paths": [project_root / "governance" / "health" / "live_canary_control_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
             "required": False,
         },
         "regime_control_plane": {
@@ -519,6 +539,9 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     if name == "ingestion_storage_control":
         backpressure = payload.get("backpressure") if isinstance(payload.get("backpressure"), dict) else {}
         storage = payload.get("storage") if isinstance(payload.get("storage"), dict) else {}
+        queue_watermarks = payload.get("queue_watermarks") if isinstance(payload.get("queue_watermarks"), dict) else {}
+        writer_shedding = payload.get("writer_shedding") if isinstance(payload.get("writer_shedding"), dict) else {}
+        route_verification = payload.get("external_route_verification") if isinstance(payload.get("external_route_verification"), dict) else {}
         return {
             "overall_status": str(payload.get("overall_status", "") or ""),
             "severity": str(payload.get("severity", "") or ""),
@@ -530,15 +553,24 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             "backlog_quarantine_status": str(storage.get("backlog_quarantine_status", "") or ""),
             "backlog_quarantine_candidate_files": int(storage.get("backlog_quarantine_candidate_files", 0) or 0),
             "backlog_quarantine_moved_files": int(storage.get("backlog_quarantine_moved_files", 0) or 0),
+            "queue_watermarks_overall_status": str(queue_watermarks.get("overall_status", "") or ""),
+            "writer_shedding_level": str(writer_shedding.get("level", "") or ""),
+            "writer_shedding_active": bool(writer_shedding.get("active", False)),
+            "external_route_verification_state": str(route_verification.get("verification_state", "") or ""),
         }
     if name == "ingestion_storage_governor":
         sql_primary_db = payload.get("sql_primary_db") if isinstance(payload.get("sql_primary_db"), dict) else {}
         throttles = payload.get("throttle_controls") if isinstance(payload.get("throttle_controls"), dict) else {}
+        queue_watermarks = payload.get("queue_watermarks") if isinstance(payload.get("queue_watermarks"), dict) else {}
+        writer_shedding = payload.get("writer_shedding") if isinstance(payload.get("writer_shedding"), dict) else {}
         return {
             "profile": str(payload.get("profile", "") or ""),
             "route_drift": bool(sql_primary_db.get("route_drift", False)),
             "deferred_files_budget": int(throttles.get("deferred_files_budget", 0) or 0),
             "cold_files_budget": int(throttles.get("cold_files_budget", 0) or 0),
+            "queue_watermarks_overall_status": str(queue_watermarks.get("overall_status", "") or ""),
+            "writer_shedding_level": str(writer_shedding.get("level", "") or ""),
+            "writer_shedding_active": bool(writer_shedding.get("active", False)),
         }
     if name == "external_backlog_drain":
         drain_overrides = payload.get("drain_overrides") if isinstance(payload.get("drain_overrides"), dict) else {}
@@ -943,6 +975,36 @@ def _live_sql_writer_pid(artifact: Dict[str, Any]) -> int | None:
     return pid
 
 
+def _artifact_contract(artifacts: Dict[str, Dict[str, Any]], name: str) -> Dict[str, Any]:
+    artifact = artifacts.get(name, {})
+    exists = bool(artifact.get("exists"))
+    stale = bool(artifact.get("stale"))
+    summary = artifact.get("summary") if isinstance(artifact.get("summary"), dict) else {}
+    status = str(summary.get("overall_status") or summary.get("status") or artifact.get("status") or "unknown")
+    artifact_status = "fresh"
+    artifact_reason = "ok"
+    if not exists:
+        artifact_status = "missing"
+        artifact_reason = "artifact_missing"
+        status = "unknown"
+    elif stale:
+        artifact_status = "stale"
+        artifact_reason = "artifact_stale"
+        if status in {"", "ok"}:
+            status = "unknown"
+    elif not summary:
+        artifact_status = "summary_empty"
+        artifact_reason = "artifact_summary_empty"
+        status = "unknown"
+    return {
+        "artifact_status": artifact_status,
+        "artifact_reason": artifact_reason,
+        "source_path": str(artifact.get("path") or ""),
+        "required": bool(artifact.get("required", False)),
+        "status": status or "unknown",
+    }
+
+
 def _severity_from_attention(attention: list[str]) -> int:
     if any(item.endswith("_missing") for item in attention):
         return 3
@@ -1342,6 +1404,13 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         "roster_resilience_planner": artifacts.get("roster_resilience_planner", {}).get("summary", {}),
         "chaos_drill_coordinator": artifacts.get("chaos_drill_coordinator", {}).get("summary", {}),
     }
+    runtime_contract = _artifact_contract(artifacts, "runtime_access_mode")
+    apple_contract = _artifact_contract(artifacts, "apple_silicon_profile")
+    memory_contract = _artifact_contract(artifacts, "memory_efficiency_control")
+    training_contract = _artifact_contract(artifacts, "training_report")
+    storage_contract = _artifact_contract(artifacts, "ingestion_storage_control")
+    resilience_contract = _artifact_contract(artifacts, "storage_resilience_control")
+    platform_contract = _artifact_contract(artifacts, "platform_control_plane")
     payload = {
         "timestamp_utc": now.isoformat(),
         "overall": {
@@ -1359,37 +1428,42 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             "daily_auto_verify_not_ok": "daily_auto_verify_not_ok" in attention,
         },
         "runtime": {
-            "mode": str(runtime_summary.get("mode", "") or ""),
-            "ml_backend": str(runtime_summary.get("ml_backend", "") or ""),
+            **runtime_contract,
+            "mode": str(runtime_summary.get("mode", "") or "unknown"),
+            "ml_backend": str(runtime_summary.get("ml_backend", "") or "unknown"),
             "portable_enabled": bool(runtime_summary.get("portable_enabled", False)),
             "backend_contract": runtime_summary.get("backend_contract") if isinstance(runtime_summary.get("backend_contract"), dict) else {},
         },
         "apple_silicon": {
-            "applied_tier": str(apple_summary.get("applied_tier", "") or ""),
-            "detected_tier": str(apple_summary.get("detected_tier", "") or ""),
+            **apple_contract,
+            "applied_tier": str(apple_summary.get("applied_tier", "") or "unknown"),
+            "detected_tier": str(apple_summary.get("detected_tier", "") or "unknown"),
             "memory_gb": float(apple_summary.get("memory_gb", 0.0) or 0.0),
-            "chip": str(apple_summary.get("chip", "") or ""),
+            "chip": str(apple_summary.get("chip", "") or "unknown"),
         },
         "memory": {
-            "overall_status": str(memory_summary.get("overall_status", "") or ""),
-            "recommended_profile": str(memory_summary.get("recommended_profile", "") or ""),
-            "memory_pressure_state": str(memory_summary.get("memory_pressure_state", "") or ""),
-            "memory_pressure_kind": str(memory_summary.get("memory_pressure_kind", "") or ""),
+            **memory_contract,
+            "overall_status": str(memory_summary.get("overall_status", "") or memory_contract["status"]),
+            "recommended_profile": str(memory_summary.get("recommended_profile", "") or "unknown"),
+            "memory_pressure_state": str(memory_summary.get("memory_pressure_state", "") or "unknown"),
+            "memory_pressure_kind": str(memory_summary.get("memory_pressure_kind", "") or "unknown"),
             "swap_used_gb": float(memory_summary.get("swap_used_gb", 0.0) or 0.0),
         },
         "training": {
-            "overall_status": str(training_summary.get("overall_status", "") or ""),
+            **training_contract,
+            "overall_status": str(training_summary.get("overall_status", "") or training_contract["status"]),
             "blocking_reasons": training_summary.get("blocking_reasons") if isinstance(training_summary.get("blocking_reasons"), list) else [],
             "quality_score": float(training_quality_summary.get("training_quality_score", 0.0) or 0.0),
             "top_priorities": training_quality_summary.get("top_priorities") if isinstance(training_quality_summary.get("top_priorities"), list) else [],
             "active_supportability_score": float(training_quality_summary.get("active_supportability_score", 0.0) or 0.0),
         },
         "storage": {
-            "overall_status": str(storage_summary.get("overall_status", "") or ""),
-            "severity": str(storage_summary.get("severity", "") or ""),
+            **storage_contract,
+            "overall_status": str(storage_summary.get("overall_status", "") or storage_contract["status"]),
+            "severity": str(storage_summary.get("severity", "") or "unknown"),
             "pressure_index": float(storage_summary.get("pressure_index", 0.0) or 0.0),
-            "recommended_operating_mode": str(storage_summary.get("recommended_operating_mode", "") or ""),
-            "pressure_profile": str(governor_summary.get("profile", "") or ""),
+            "recommended_operating_mode": str(storage_summary.get("recommended_operating_mode", "") or "unknown"),
+            "pressure_profile": str(governor_summary.get("profile", "") or "unknown"),
             "sql_primary_route_drift": bool(governor_summary.get("route_drift", False)),
             "deferred_files_budget": int(governor_summary.get("deferred_files_budget", 0) or 0),
             "cold_files_budget": int(governor_summary.get("cold_files_budget", 0) or 0),
@@ -1409,6 +1483,10 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             "estimated_core_drain_minutes": storage_summary.get("estimated_core_drain_minutes"),
             "estimated_total_drain_minutes": storage_summary.get("estimated_total_drain_minutes"),
             "retention_debt_gb": float(storage_summary.get("retention_debt_gb", 0.0) or 0.0),
+            "queue_watermarks_status": str(storage_summary.get("queue_watermarks_overall_status", "") or "unknown"),
+            "writer_shedding_level": str(storage_summary.get("writer_shedding_level", "") or str(governor_summary.get("writer_shedding_level", "") or "unknown")),
+            "writer_shedding_active": bool(storage_summary.get("writer_shedding_active", False) or governor_summary.get("writer_shedding_active", False)),
+            "external_route_verification_state": str(storage_summary.get("external_route_verification_state", "") or "unknown"),
         },
         "ingestion_queue": {
             "queue_depth": int(queue_summary.get("queue_depth", 0) or 0),
@@ -1417,7 +1495,8 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             "event_count": int(queue_summary.get("event_count", 0) or 0),
         },
         "storage_resilience": {
-            "overall_status": str(resilience_summary.get("overall_status", "") or ""),
+            **resilience_contract,
+            "overall_status": str(resilience_summary.get("overall_status", "") or resilience_contract["status"]),
             "resilience_score": int(resilience_summary.get("resilience_score", 0) or 0),
             "restore_drill_fresh": bool(resilience_summary.get("restore_drill_fresh", False)),
             "unresolved_split_brain_conflicts": int(resilience_summary.get("unresolved_split_brain_conflicts", 0) or 0),
@@ -1444,9 +1523,11 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             "release_freeze_active": bool((long_runtime_summary.get("release_freeze_guard") or {}).get("active", False)),
             "bench_depth": int((long_runtime_summary.get("roster_resilience_planner") or {}).get("bench_depth", 0) or 0),
             "overdue_chaos_drills": int((long_runtime_summary.get("chaos_drill_coordinator") or {}).get("overdue_drills", 0) or 0),
+            "artifact_contracts": {name: _artifact_contract(artifacts, name) for name in long_runtime_summary},
         },
         "platform": {
-            "overall_status": str(platform_summary.get("overall_status", "") or ""),
+            **platform_contract,
+            "overall_status": str(platform_summary.get("overall_status", "") or platform_contract["status"]),
             "overall_score": float(platform_summary.get("overall_score", 0.0) or 0.0),
             "top_priorities": platform_summary.get("top_priorities") if isinstance(platform_summary.get("top_priorities"), list) else [],
             "weakest_domains": platform_summary.get("weakest_domains") if isinstance(platform_summary.get("weakest_domains"), list) else [],

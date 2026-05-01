@@ -329,3 +329,167 @@ def test_storage_backpressure_autopilot_repeats_cycles_until_targets_clear(tmp_p
     sheriff_cmds = [cmd for cmd in seen if Path(cmd[1]).name == "retention_debt_sheriff.py"]
     assert sheriff_cmds
     assert "--force" in sheriff_cmds[0]
+
+
+def test_storage_backpressure_autopilot_forces_writer_focus_when_core_backlog_is_concentrated(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "degraded",
+            "severity": "critical",
+            "backpressure": {
+                "pending_lines_threshold": 15000,
+                "total_pending_lines": 760000,
+                "estimated_total_drain_minutes": 120.0,
+            },
+            "storage": {
+                "retention_debt_gb": 0.1,
+                "backlog_drain_recommended_now": True,
+                "backlog_quarantine_candidate_files": 0,
+            },
+            "data_integrity": {"sql_invalid_lines": 0},
+        },
+    )
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 760000,
+            "pending_lines_total": 760000,
+            "top_pending_files": [
+                {"source_rel": "governance/execution_lanes/execution_results_20260422.jsonl", "pending_lines": 310000},
+                {"source_rel": "governance/execution_lanes/execution_promotions_20260422.jsonl", "pending_lines": 280000},
+                {"source_rel": "governance/execution_lanes/execution_intents_20260422.jsonl", "pending_lines": 90000},
+            ],
+        },
+    )
+
+    monkeypatch.setattr(
+        autopilot_src.backpressure_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "ready",
+            "actionable": True,
+            "recommended_profile": "critical_backpressure",
+            "recommended_actions": ["apply the governor"],
+        },
+    )
+    monkeypatch.setattr(
+        autopilot_src.coordinator_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "ready",
+            "actionable": True,
+            "drain_ready": True,
+            "maintenance_ready": True,
+            "recommended_actions": ["run the drain window"],
+        },
+    )
+    monkeypatch.setattr(
+        autopilot_src.sheriff_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "idle",
+            "actionable": False,
+            "focus": {
+                "focus_shards": [],
+                "targeted_retention_debt_gb": 0.0,
+                "severe_focus": False,
+            },
+            "recommended_actions": [],
+        },
+    )
+
+    payload = autopilot_src.build_payload(project_root, apply=False)
+
+    assert payload["core_focus"]["concentrated_core_backlog"] is True
+    coordinator_cmd = next(row["cmd"] for row in payload["repair_plan"] if row["name"] == "writer_cycle_coordinator")
+    assert "--maintenance-force" in coordinator_cmd
+    assert payload["metrics"]["core_focus_concentrated"] is True
+
+
+def test_storage_backpressure_autopilot_includes_drainer_fleet_for_focused_backlog(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "severity": "critical",
+            "backpressure": {
+                "pending_lines_threshold": 15000,
+                "total_pending_lines": 64000,
+                "estimated_total_drain_minutes": 120.0,
+            },
+            "storage": {
+                "retention_debt_gb": 0.0,
+                "backlog_drain_recommended_now": True,
+                "backlog_quarantine_candidate_files": 0,
+            },
+            "data_integrity": {"sql_invalid_lines": 0},
+        },
+    )
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 64000,
+            "pending_lines_total": 64000,
+            "top_pending_files": [
+                {
+                    "source_rel": "governance/channels/decision/conservative_equities_schwab/decision_20260430.jsonl",
+                    "pending_lines": 32000,
+                    "oldest_pending_age_seconds": 1800.0,
+                },
+                {
+                    "source_rel": "governance/channels/decision/aggressive_equities_schwab/decision_20260430.jsonl",
+                    "pending_lines": 30000,
+                    "oldest_pending_age_seconds": 1800.0,
+                },
+            ],
+        },
+    )
+
+    monkeypatch.setattr(
+        autopilot_src.backpressure_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "ready",
+            "actionable": True,
+            "recommended_profile": "critical_backpressure",
+            "recommended_actions": [],
+        },
+    )
+    monkeypatch.setattr(
+        autopilot_src.coordinator_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "ready",
+            "actionable": True,
+            "drain_ready": True,
+            "maintenance_ready": True,
+            "recommended_actions": [],
+        },
+    )
+    monkeypatch.setattr(
+        autopilot_src.sheriff_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "idle",
+            "actionable": False,
+            "focus": {
+                "focus_shards": [],
+                "targeted_retention_debt_gb": 0.0,
+                "severe_focus": False,
+            },
+            "recommended_actions": [],
+        },
+    )
+
+    payload = autopilot_src.build_payload(project_root, apply=False)
+
+    names = [row["name"] for row in payload["repair_plan"]]
+    assert "backpressure_drainer_fleet" in names
+    assert names.index("backpressure_drainer_fleet") < names.index("writer_cycle_coordinator")
+    assert payload["previews"]["backpressure_drainer_fleet"]["active_drainer"] == "core_decision_drainer"
+    assert payload["metrics"]["drainer_ready_count"] >= 1

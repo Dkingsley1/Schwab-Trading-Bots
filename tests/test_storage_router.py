@@ -184,6 +184,7 @@ class StorageRouterTests(unittest.TestCase):
             root = Path(td) / 'repo'
             root.mkdir()
             external_root = Path(td) / 'external'
+            external_root.mkdir(parents=True, exist_ok=True)
             ops_db = root / 'governance' / 'ops_data_plane.sqlite3'
 
             previous = self._set_env(

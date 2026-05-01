@@ -162,3 +162,95 @@ def test_publish_master_plan_intent_skips_non_trade_plan(monkeypatch) -> None:
 
     assert published is False
     assert calls == []
+
+
+def test_collect_only_rows_do_not_vote_or_create_conflict() -> None:
+    rows = [
+        {
+            "bot_id": "brain_refinery_v247_market_neutral_pairs_execution_bot",
+            "action": "BUY",
+            "direction": 1.0,
+            "weight": 0.0,
+            "lifecycle_state": "data_collection_only",
+            "training_excluded": True,
+            "eligible_for_master_vote": False,
+        },
+        {
+            "bot_id": "brain_refinery_v4_simple",
+            "action": "SELL",
+            "direction": -1.0,
+            "weight": 0.4,
+            "eligible_for_master_vote": True,
+        },
+    ]
+
+    assert loop._weighted_direction_vote(rows) == -1.0
+    assert loop._cross_bot_conflict_norm(rows) == 0.0
+
+
+def test_sleeve_family_aux_tracks_only_eligible_votes() -> None:
+    rows = [
+        {
+            "bot_id": "brain_refinery_v227_day_trading_opening_range_breakout_bot",
+            "slot_kind": "day_trading_signal",
+            "action": "BUY",
+            "direction": 1.0,
+            "weight": 0.3,
+            "eligible_for_master_vote": True,
+        },
+        {
+            "bot_id": "brain_refinery_v247_market_neutral_pairs_execution_bot",
+            "slot_kind": "market_neutral_signal",
+            "action": "SELL",
+            "direction": -1.0,
+            "weight": 0.0,
+            "lifecycle_state": "data_collection_only",
+            "eligible_for_master_vote": False,
+        },
+    ]
+
+    aux = loop._derive_sleeve_family_aux_features(rows)
+
+    assert aux["day_trading_sleeve_active"] == 1.0
+    assert aux["day_trading_sleeve_vote"] == 1.0
+    assert aux["market_neutral_sleeve_active"] == 0.0
+    assert aux["market_neutral_sleeve_vote"] == 0.0
+    assert aux["sleeve_family_collect_only_pressure_norm"] == 0.5
+
+
+def test_grand_master_label_quality_and_sleeve_pressure_gate_weak_edges() -> None:
+    action, score, threshold, reasons, meta = loop._grand_master_vote(
+        {
+            "trend": _master_output(0.30, score=0.63),
+            "mean_revert": _master_output(0.10, action="HOLD", score=0.55),
+            "shock": _master_output(0.08, score=0.56),
+        },
+        {"trend": 0.50, "mean_revert": 0.25, "shock": 0.25},
+        {
+            "infra_vote": 0.02,
+            "infra_risk_throttle_norm": 0.22,
+            "infra_confidence_calibrator_scale_norm": 0.50,
+            "options_specialist_vote": 0.18,
+            "futures_specialist_vote": 0.10,
+            "sleeve_family_consensus_vote": 0.25,
+            "sleeve_family_collect_only_pressure_norm": 0.80,
+            "label_contract_quality_norm": 0.25,
+            "flow_direction_signed": 0.20,
+            "flow_conviction_norm": 0.30,
+            "flow_stress_norm": 0.20,
+            "lead_lag_signal_signed": 0.15,
+            "lead_lag_confidence_norm": 0.35,
+            "lead_lag_break_norm": 0.20,
+            "market_micro_order_flow_imbalance_norm": 0.58,
+            "execution_fitness_norm": 0.45,
+            "market_micro_tradeability_score_norm": 0.48,
+            "cross_bot_conflict_norm": 0.12,
+        },
+    )
+
+    assert action == "HOLD"
+    assert score >= 0.0
+    assert threshold > 0.0
+    assert meta["label_contract_quality"] == 0.25
+    assert meta["collect_only_pressure"] == 0.80
+    assert any("label_contract_quality=" in reason for reason in reasons)

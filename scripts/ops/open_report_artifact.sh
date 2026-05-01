@@ -11,15 +11,29 @@ usage() {
 Usage: open_report_artifact.sh [--print-only] <report>
 
 Reports:
+  summary
   crash
+  framework
+  special
   posttrade
   training
   timeline
+  incident
+  incident-packet
   paper
+  calibration
+  daily-auto-verify
+  modelcard
   sentiment
+  macro
+  source
+  replay
+  unified
+  explainability
   bundle
   correlation
   botstack
+  strategy-inventory
   sendout
 EOF
 }
@@ -41,7 +55,24 @@ open_or_print() {
     printf '%s\n' "$target"
     return 0
   fi
-  /usr/bin/open "$target"
+  if [[ "$target" == *.pdf ]]; then
+    if /usr/bin/open -a Preview "$target"; then
+      /usr/bin/osascript -e 'tell application "Preview" to activate' >/dev/null 2>&1 || true
+      return 0
+    fi
+    if /usr/bin/open "$target"; then
+      return 0
+    fi
+    /usr/bin/open -R "$target" >/dev/null 2>&1 || true
+    printf 'Could not open PDF automatically. Finder target: %s\n' "$target" >&2
+    return 1
+  fi
+  if /usr/bin/open "$target"; then
+    return 0
+  fi
+  /usr/bin/open -R "$target" >/dev/null 2>&1 || true
+  printf 'Could not open artifact automatically. Finder target: %s\n' "$target" >&2
+  return 1
 }
 
 run_opsctl() {
@@ -50,12 +81,34 @@ run_opsctl() {
   fi
 }
 
+run_opsctl_checked() {
+  (cd "$PROJECT_ROOT" && ./scripts/ops/opsctl.sh "$@" >/dev/null)
+}
+
+run_python_script() {
+  local script="$1"
+  shift
+  local py
+  py="$(cd "$PROJECT_ROOT" && zsh ./scripts/ops/runtime_python.sh)"
+  if ! (cd "$PROJECT_ROOT" && "$py" "$script" "$@" >/dev/null); then
+    return 0
+  fi
+}
+
+run_python_script_checked() {
+  local script="$1"
+  shift
+  local py
+  py="$(cd "$PROJECT_ROOT" && zsh ./scripts/ops/runtime_python.sh)"
+  (cd "$PROJECT_ROOT" && "$py" "$script" "$@" >/dev/null)
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --print-only)
       PRINT_ONLY=1
       ;;
-    crash|posttrade|training|timeline|paper|sentiment|bundle|correlation|botstack|sendout)
+    summary|crash|framework|special|posttrade|training|timeline|incident|incident-packet|paper|calibration|daily-auto-verify|modelcard|sentiment|macro|source|replay|unified|explainability|bundle|correlation|botstack|strategy-inventory|sendout)
       REPORT_KIND="$1"
       ;;
     -h|--help)
@@ -78,76 +131,168 @@ fi
 
 REPORT=""
 case "$REPORT_KIND" in
+  summary)
+    run_opsctl system-summary --refresh-supporting-artifacts --render-pdf --allow-gui-pdf-renderer --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/reports/system_summary/system_summary_latest.pdf" \
+      "$PROJECT_ROOT/exports/reports/system_summary/system_summary_latest.html")"
+    ;;
   crash)
-    run_opsctl crash-report --lookback-days "$CRASH_LOOKBACK_DAYS" --recent-limit 40 --allow-gui-pdf-renderer --json
+    run_opsctl report-pdfs --only crash_report_digest --json
     REPORT="$(pick_existing \
       "$PROJECT_ROOT/exports/reports/crash_reports/crash_report_digest_latest.pdf" \
       "$PROJECT_ROOT/exports/reports/crash_reports/crash_report_digest_print_latest.html" \
       "$PROJECT_ROOT/exports/reports/crash_reports/crash_report_digest_latest.md")"
     ;;
+  framework)
+    run_opsctl system-explainers
+    run_opsctl report-pdfs --only framework_map_v2 --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/reports/system_explainers/framework_map_v2_latest.pdf" \
+      "$PROJECT_ROOT/exports/reports/system_explainers/framework_map_v2_latest.html")"
+    ;;
+  special)
+    run_opsctl report-pdfs --only special_features --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/reports/showcase/special_features_latest.pdf" \
+      "$PROJECT_ROOT/docs/showcase/generated/special_features_latest.html")"
+    ;;
   posttrade)
-    run_opsctl post-trade-analysis --day "$(date -u +%Y%m%d)" --hours 24 --json
-    run_opsctl report-pdfs --allow-gui-pdf-renderer --json
+    POST_TRADE_ANALYSIS_SUBCOMMAND_TIMEOUT_SECONDS="${POST_TRADE_ANALYSIS_SUBCOMMAND_TIMEOUT_SECONDS:-12}" run_opsctl post-trade-analysis --day "$(date -u +%Y%m%d)" --hours 24 --json
+    run_opsctl report-pdfs --only post_trade_analysis --json
     REPORT="$(pick_existing \
       "$PROJECT_ROOT/exports/reports/post_trade_analysis_latest.pdf" \
       "$PROJECT_ROOT/exports/reports/pdf_render_sources/post_trade_analysis_latest.html" \
       "$PROJECT_ROOT/exports/reports/post_trade_analysis_latest.md")"
     ;;
   training)
-    run_opsctl training-report --allow-gui-pdf-renderer --json
+    run_opsctl report-pdfs --only training_report --json
     REPORT="$(pick_existing \
       "$PROJECT_ROOT/exports/reports/training_reports/training_report_latest.pdf" \
       "$PROJECT_ROOT/exports/reports/training_reports/training_report_print_latest.html" \
       "$PROJECT_ROOT/exports/reports/training_reports/training_report_latest.md")"
     ;;
   timeline)
-    run_opsctl timeline-report --render-pdf --allow-gui-pdf-renderer --json
+    run_opsctl report-pdfs --only project_timeline --json
     REPORT="$(pick_existing \
       "$PROJECT_ROOT/exports/reports/project_timeline/project_timeline_latest.pdf" \
       "$PROJECT_ROOT/exports/reports/project_timeline/project_timeline_print_latest.html" \
       "$PROJECT_ROOT/exports/reports/project_timeline/project_timeline_latest.md")"
     ;;
+  incident)
+    run_opsctl report-pdfs --only incident_report --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/reports/incident_report_latest.pdf" \
+      "$PROJECT_ROOT/exports/reports/incident_report_latest.html" \
+      "$PROJECT_ROOT/exports/reports/incident_report_latest.md")"
+    ;;
+  incident-packet)
+    run_opsctl report-pdfs --only incident_review_packet --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/reports/incident_review_packet_latest.pdf" \
+      "$PROJECT_ROOT/governance/health/incident_review_packet_latest.json")"
+    ;;
   paper)
-    run_opsctl paper-performance --day "$(date -u +%Y%m%d)" --week-days 7 --json
+    run_opsctl paper-performance --day "$(date -u +%Y%m%d)" --week-days 7 --no-allow-gui-pdf-renderer --json
+    run_opsctl report-pdfs --only paper_performance --json
     REPORT="$(pick_existing \
       "$PROJECT_ROOT/exports/reports/paper_performance_latest.pdf" \
       "$PROJECT_ROOT/exports/reports/paper_performance_latest.html" \
       "$PROJECT_ROOT/exports/reports/paper_performance_latest.md")"
     ;;
+  calibration)
+    run_opsctl report-pdfs --only paper_execution_calibration --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/sql_reports/paper_execution_calibration_latest.pdf" \
+      "$PROJECT_ROOT/governance/health/paper_execution_calibration_latest.json")"
+    ;;
+  daily-auto-verify)
+    run_opsctl daily-auto-verify --json
+    run_opsctl report-pdfs --only daily_auto_verify --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/sql_reports/daily_auto_verify_latest.pdf" \
+      "$PROJECT_ROOT/governance/health/daily_auto_verify_latest.json")"
+    ;;
+  modelcard)
+    run_opsctl report-pdfs --only model_card --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/sql_reports/model_card_latest.pdf" \
+      "$PROJECT_ROOT/exports/sql_reports/model_card_latest.json" \
+      "$PROJECT_ROOT/governance/health/model_card_latest.json")"
+    ;;
   sentiment)
-    run_opsctl sentiment-report --day "$(date -u +%Y%m%d)" --allow-gui-pdf-renderer --json
+    run_opsctl report-pdfs --only sentiment_report --json
     REPORT="$(pick_existing \
       "$PROJECT_ROOT/exports/reports/sentiment_report_latest.pdf" \
       "$PROJECT_ROOT/exports/reports/sentiment_report_latest.html" \
       "$PROJECT_ROOT/exports/reports/sentiment_report_latest.md")"
     ;;
+  macro)
+    run_opsctl macro-crosscheck --json
+    run_opsctl report-pdfs --only macro_crosscheck --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/reports/macro_crosscheck_latest.pdf" \
+      "$PROJECT_ROOT/exports/reports/macro_crosscheck_latest.md")"
+    ;;
+  source)
+    run_opsctl source-verification --json
+    run_opsctl report-pdfs --only source_verification --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/reports/source_verification_latest.pdf" \
+      "$PROJECT_ROOT/exports/reports/source_verification_latest.md")"
+    ;;
+  replay)
+    run_python_script scripts/replay_feature_ablation_report.py --json
+    run_opsctl report-pdfs --only replay_feature_ablation --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/sql_reports/replay_feature_ablation_latest.pdf" \
+      "$PROJECT_ROOT/exports/sql_reports/replay_feature_ablation_latest.md" \
+      "$PROJECT_ROOT/exports/sql_reports/replay_feature_ablation_latest.json")"
+    ;;
+  unified)
+    run_opsctl scorecard --json
+    run_opsctl report-pdfs --only unified_lane_scorecard --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/sql_reports/unified_lane_scorecard_latest.pdf" \
+      "$PROJECT_ROOT/exports/sql_reports/unified_lane_scorecard_latest.md")"
+    ;;
+  explainability)
+    run_opsctl explainability --json
+    run_opsctl report-pdfs --only bot_explainability --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/sql_reports/bot_explainability_latest.pdf" \
+      "$PROJECT_ROOT/exports/sql_reports/bot_explainability_latest.json" \
+      "$PROJECT_ROOT/governance/health/bot_explainability_latest.json")"
+    ;;
   bundle)
-    run_opsctl report-pdfs --allow-gui-pdf-renderer --json
+    run_opsctl report-pdfs --json
     REPORT="$(pick_existing \
       "$PROJECT_ROOT/exports/reports/report_pdf_bundle_latest.pdf" \
       "$PROJECT_ROOT/exports/reports/report_pdf_bundle_latest.html")"
     ;;
   correlation)
-    run_opsctl report-pdfs --allow-gui-pdf-renderer --json
+    run_opsctl report-pdfs --only market_crypto_correlation --json
     REPORT="$(pick_existing \
       "$PROJECT_ROOT/exports/reports/market_crypto_correlation_latest.pdf" \
       "$PROJECT_ROOT/exports/reports/market_crypto_correlation_latest.md")"
     ;;
   botstack)
-    run_opsctl bot-stack-report --top 25 --render-pdf --allow-gui-pdf-renderer
+    run_opsctl report-pdfs --only active_bot_stack --json
     REPORT="$(pick_existing \
       "$PROJECT_ROOT/exports/bot_stack_status/latest.pdf" \
       "$PROJECT_ROOT/exports/bot_stack_status/latest.html" \
       "$PROJECT_ROOT/exports/bot_stack_status/latest.md")"
     ;;
+  strategy-inventory)
+    run_opsctl strategy-inventory --json
+    run_opsctl report-pdfs --only strategy_inventory --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/reports/strategy_inventory/strategy_inventory_latest.pdf" \
+      "$PROJECT_ROOT/exports/reports/strategy_inventory/strategy_inventory_latest.md" \
+      "$PROJECT_ROOT/governance/health/strategy_inventory_latest.json")"
+    ;;
   sendout)
-    run_opsctl crash-report --lookback-days "$CRASH_LOOKBACK_DAYS" --recent-limit 40 --allow-gui-pdf-renderer --json
-    run_opsctl post-trade-analysis --day "$(date -u +%Y%m%d)" --hours 24 --json
-    run_opsctl training-report --allow-gui-pdf-renderer --json
-    run_opsctl timeline-report --render-pdf --allow-gui-pdf-renderer --json
-    run_opsctl paper-performance --day "$(date -u +%Y%m%d)" --week-days 7 --json
-    run_opsctl sentiment-report --day "$(date -u +%Y%m%d)" --allow-gui-pdf-renderer --json
-    run_opsctl report-pdfs --allow-gui-pdf-renderer --json
+    run_opsctl report-pdfs --json
     REPORT="$(pick_existing \
       "$PROJECT_ROOT/exports/reports/report_pdf_bundle_latest.pdf" \
       "$PROJECT_ROOT/exports/reports/report_pdf_bundle_latest.html")"

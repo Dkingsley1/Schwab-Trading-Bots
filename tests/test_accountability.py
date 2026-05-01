@@ -148,3 +148,25 @@ def test_schema_violation_log_dedupes_and_summarizes_payload(monkeypatch, tmp_pa
     assert rows[0]["payload"]["symbol"] == "SPY"
     assert rows[0]["payload"]["payload_key_count"] >= 5
     assert "details" not in rows[0]["payload"]
+
+
+def test_signal_generation_event_logs_good_and_bad_decisions(tmp_path: Path) -> None:
+    path = tmp_path / "decision_explanations" / "shadow_aggressive_equities" / "decision_explanations_20260428.jsonl"
+
+    wrote = accountability.safe_append_jsonl_batch(
+        str(path),
+        [
+            {"timestamp_utc": "2026-04-28T14:30:00+00:00", "status": "SHADOW_ONLY", "symbol": "SPY", "action": "BUY", "score": 0.7, "threshold": 0.5},
+            {"timestamp_utc": "2026-04-28T14:31:00+00:00", "status": "PAPER_GUARD_BLOCKED", "symbol": "QQQ", "action": "BUY", "score": 0.8, "threshold": 0.5},
+        ],
+        project_root=str(tmp_path),
+        source="unit_test",
+    )
+
+    day = accountability.datetime.now(accountability.timezone.utc).strftime("%Y%m%d")
+    signal_path = tmp_path / "governance" / "events" / f"signal_generation_{day}.jsonl"
+    rows = [json.loads(line) for line in signal_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert wrote == 2
+    assert [row["signal_quality"] for row in rows] == ["good_signal", "bad_signal"]
+    assert rows[0]["reason"] == "trade_intent_generated"
+    assert rows[1]["reason"] == "trade_intent_blocked"

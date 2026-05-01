@@ -82,29 +82,38 @@ def test_roster_expansion_slots_build_and_apply_registry(tmp_path: Path) -> None
 
     payload = slots_src.build_payload(project_root)
 
-    assert payload["summary"]["planned_slot_count"] == 13
-    assert payload["summary"]["missing_slot_count"] == 13
-    assert payload["summary"]["role_counts"]["infrastructure_sub_bot"] == 4
-    assert payload["summary"]["role_counts"]["signal_sub_bot"] == 4
-    assert payload["summary"]["role_counts"]["options_sub_bot"] == 5
+    assert payload["summary"]["planned_slot_count"] == len(slots_src.DEFAULT_SLOT_SPECS)
+    assert payload["summary"]["missing_slot_count"] == len(slots_src.DEFAULT_SLOT_SPECS)
+    assert payload["summary"]["role_counts"]["infrastructure_sub_bot"] >= 28
+    assert payload["summary"]["role_counts"]["signal_sub_bot"] >= 136
+    assert payload["summary"]["role_counts"]["options_sub_bot"] >= 29
+    assert payload["summary"]["role_counts"]["futures_sub_bot"] == 17
     assert payload["roster_slots"][0]["priority"] == "critical"
     assert payload["summary"]["live_regime"] == "risk_off_shock"
     assert payload["summary"]["regime_fit_slot_count"] >= 1
     regime_slot_ids = [row["bot_id"] for row in payload["current_regime_priority_slots"]]
-    assert payload["current_regime_priority_slots"][0]["bot_id"] == "brain_refinery_v107_infra_teacher_execution_quality_champion"
+    assert payload["current_regime_priority_slots"][0]["bot_id"] == "brain_refinery_v109_defensive_options_risk_off_teacher"
     assert "brain_refinery_v109_defensive_options_risk_off_teacher" in regime_slot_ids
 
     apply_result = slots_src.apply_registry(project_root, registry_path=project_root / "master_bot_registry.json")
     registry = json.loads((project_root / "master_bot_registry.json").read_text(encoding="utf-8"))
     bot_ids = {str(row.get("bot_id") or "") for row in registry.get("sub_bots") or []}
 
-    assert apply_result["added_slots"] == 13
-    assert "brain_refinery_v107_infra_teacher_execution_quality_champion" in bot_ids
+    assert apply_result["added_slots"] == len(slots_src.DEFAULT_SLOT_SPECS)
+    assert "brain_refinery_v267_infra_teacher_execution_quality_champion" in bot_ids
     assert "brain_refinery_v116_drawdown_circuit_allocator" in bot_ids
     assert "brain_refinery_v119_put_call_stress_reversal_overlay" in bot_ids
-    assert registry["summary"]["total_bots"] == 14
-    assert registry["summary"]["inactive_infrastructure_sub_bots"] == 4
-    assert registry["summary"]["inactive_signal_sub_bots"] == 5
+    assert "brain_refinery_v120_energy_shock_inflation_pass_through" in bot_ids
+    assert "brain_refinery_v129_liquidity_void_air_pocket_guard" in bot_ids
+    assert "brain_refinery_v136_news_sentiment_crowding_reversal" in bot_ids
+    assert "brain_refinery_v257_crypto_spot_momentum_regime_bot" in bot_ids
+    assert "brain_refinery_v266_crypto_weekend_gap_liquidity_bot" in bot_ids
+    assert "brain_refinery_v313_master_roster_load_balancer" in bot_ids
+    assert "brain_refinery_v317_collection_observation_value_ranker" in bot_ids
+    assert registry["summary"]["total_bots"] == len(slots_src.DEFAULT_SLOT_SPECS) + 1
+    assert registry["summary"]["active_bots"] == len(slots_src.DEFAULT_SLOT_SPECS)
+    assert registry["summary"]["inactive_infrastructure_sub_bots"] == 0
+    assert registry["summary"]["inactive_signal_sub_bots"] == 1
 
 
 def test_roster_resilience_planner_surfaces_expansion_plan(tmp_path: Path) -> None:
@@ -143,7 +152,7 @@ def test_roster_resilience_planner_surfaces_expansion_plan(tmp_path: Path) -> No
                 "planned_slot_count": 13,
                 "registered_slot_count": 6,
                 "missing_slot_count": 7,
-                "critical_slots_missing": ["brain_refinery_v107_infra_teacher_execution_quality_champion"],
+                "critical_slots_missing": ["brain_refinery_v267_infra_teacher_execution_quality_champion"],
                 "live_regime": "risk_off_shock",
             },
             "current_regime_priority_slots": [

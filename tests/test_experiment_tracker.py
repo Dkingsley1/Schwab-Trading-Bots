@@ -35,6 +35,17 @@ def test_build_experiment_row_tracks_replayability_bundle(tmp_path: Path) -> Non
         json.dumps({"manifest_hash": "content-store-hash"}),
         encoding="utf-8",
     )
+    signing_key = project_root / "governance" / "experiments" / "immutable_ledger_signing_key.txt"
+    signing_key.parent.mkdir(parents=True, exist_ok=True)
+    signing_key.write_text("ledger-secret", encoding="utf-8")
+    approval = project_root / "governance" / "approvals" / "committee.json"
+    rollback = project_root / "governance" / "releases" / "rollback.json"
+    deploy = project_root / "governance" / "releases" / "deploy.json"
+    approval.parent.mkdir(parents=True, exist_ok=True)
+    rollback.parent.mkdir(parents=True, exist_ok=True)
+    approval.write_text(json.dumps({"approved": True}), encoding="utf-8")
+    rollback.write_text(json.dumps({"rollback": "bundle-a"}), encoding="utf-8")
+    deploy.write_text(json.dumps({"deploy": "bundle-a"}), encoding="utf-8")
 
     row = tracker.build_experiment_row(
         project_root,
@@ -45,10 +56,17 @@ def test_build_experiment_row_tracks_replayability_bundle(tmp_path: Path) -> Non
         model_file="models/model.npz",
         replay_file="governance/health/replay_end_to_end_latest.json",
         tags=["canary", "pytorch"],
+        event_type="promotion_candidate",
+        approval_file=str(approval),
+        rollback_file=str(rollback),
+        deploy_file=str(deploy),
+        signing_secret="ledger-secret",
+        signing_key_id="immutable_ledger_signing_key.txt",
     )
 
     assert row["name"] == "shadow_canary"
     assert row["status"] == "completed"
+    assert row["event_type"] == "promotion_candidate"
     assert row["tags"] == ["canary", "pytorch"]
     assert row["artifact_hashes"]["datasets/train.parquet"]
     assert row["artifact_hashes"]["models/model.npz"]
@@ -59,4 +77,13 @@ def test_build_experiment_row_tracks_replayability_bundle(tmp_path: Path) -> Non
     assert row["replayability"]["content_store_manifest_hash"] == "content-store-hash"
     assert row["replayability"]["exact_replay_ready"] is True
     assert len(row["replayability"]["bundle_hash"]) == 64
+    assert row["attestations"]["attestation_ready"] is True
+    assert row["ledger_contract"]["signature_ready"] is True
     assert row["experiment_id"].startswith("exp_")
+
+    summary = tracker.write_experiment_artifacts(project_root, row)
+    assert summary["ledger_row_count"] == 1
+    assert summary["overall_status"] == "ready"
+    assert summary["latest_exact_replay_ready"] is True
+    assert summary["latest_signature_ready"] is True
+    assert summary["latest_attestation_ready"] is True

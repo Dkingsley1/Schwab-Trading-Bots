@@ -28,6 +28,31 @@ flowchart TD
     L --> H
 ```
 
+## Current Advancements
+
+The platform now has an explicit source-of-truth contract for how commands, reports, broker truth, storage, and decisions are owned and verified. Start with [docs/architecture/SOURCE_OF_TRUTH.md](docs/architecture/SOURCE_OF_TRUTH.md), then read [docs/architecture/ADR-0001-system-source-of-truth.md](docs/architecture/ADR-0001-system-source-of-truth.md) for the design decision behind it.
+
+Key operating upgrades:
+
+- Aggressive sleeves now report Sortino ratio from daily PnL changes so downside volatility is the primary risk-adjusted lens for high-conviction lanes.
+- Conservative sleeves now report Sharpe ratio from daily PnL changes so total volatility stays visible for capital-preservation lanes.
+- Signal generation now has a canonical event stream at `governance/events/signal_generation_*.jsonl`, recording both good trade-intent signals and bad, blocked, or no-trade signals.
+- Codex work now has project guardrails in `AGENTS.md` and `scripts/ops/codex_project_guard.py` to prevent source-of-truth drift, mixed-domain staging, and separate-domain README/docs leakage.
+- `COMMANDS.md` is generated and alphabetized from `scripts/ops/commands_hygiene_bot.py`, with a command contract hash written to `governance/health/commands_contract_latest.json`.
+- Report opening now uses `scripts/ops/open_report_artifact.sh` as the resilient entrypoint, including incident-report PDF regeneration with HTML/markdown fallback.
+- Schwab interactive auth defaults to Chrome for the browser consent flow and records the requested/resolved browser in the auth refresh artifact.
+
+## Operational Evidence
+
+The important generated artifacts are:
+
+- `governance/health/paper_performance_latest.json`: sleeve scoreboard, PnL, Sortino/Sharpe fields, chart/PDF metadata.
+- `governance/events/signal_generation_*.jsonl`: good and bad signal generation audit stream.
+- `governance/health/schwab_auth_refresh_latest.json`: browser handoff, token readiness, and account-probe outcome.
+- `governance/health/schwab_auth_supervisor_latest.json`: token lease, callback-port, and broker-readiness posture.
+- `governance/health/codex_project_guard_latest.json`: Codex source-of-truth and scope-drift guard result.
+- `exports/reports/incident_report_latest.pdf`: decision-oriented incident report opened through the resilient report helper.
+
 ## Showcase Projects
 
 1. [Live Multi-Asset Paper Trading Platform](docs/showcase/projects/01-live-multi-asset-paper-platform.md)
@@ -39,17 +64,17 @@ flowchart TD
 ## Auto-Refreshed Highlights
 
 <!-- SHOWCASE_HIGHLIGHTS_START -->
-_Generated at 2026-04-21 17:02 UTC_
+_Generated at 2026-05-01 17:02 UTC_
 
-- Active registry lineup: `30` of `107` bots are active.
-- Live collection snapshot: `4/15` lane artifacts are reporting `running`.
-- Institutional readiness: `81.25/100` with status `advancing`.
-- Live/runtime posture: live readiness `ready` at `100.00/100`, runtime separation `blocked`.
-- Autonomy posture: `19.00/100` with status `blocked`, playbooks `12`, open incidents `3`.
-- Architecture upgrades: `4/12` ready proof surfaces, host profile `max_throughput`, portable proof `ready`.
+- Active registry lineup: `428` of `492` bots are active.
+- Live collection snapshot: `3/75` lane artifacts are reporting `running`.
+- Institutional readiness: `93.72/100` with status `industry_leaning`.
+- Live/runtime posture: live readiness `blocked` at `65.00/100`, runtime separation `blocked`.
+- Autonomy posture: `41.10/100` with status `blocked`, playbooks `3`, open incidents `2`.
+- Architecture upgrades: `4/12` ready proof surfaces, host profile ``, portable proof ``.
 - Crypto context: `14/14` healthy sources and `7/7` healthy news feeds.
 - Correlation overlay: mode `exact`, aligned pairs `6`.
-- PyTorch sidecar: `1` active assist candidates across `1` tracked runs.
+- PyTorch sidecar: `0` active assist candidates across `0` tracked runs.
 - Top active lineup by test accuracy: `brain_refinery_v95_rates_regime_bond_bot` (100.0%), `brain_refinery_v99_defensive_dividend_concentration` (100.0%), `brain_refinery_v10_seasonal` (93.8%).
 
 Full generated detail lives in [docs/showcase/generated/highlights_latest.md](docs/showcase/generated/highlights_latest.md).
@@ -59,12 +84,14 @@ Full generated detail lives in [docs/showcase/generated/highlights_latest.md](do
 
 - Canonical commands: [COMMANDS.md](COMMANDS.md)
 - Terminal helper: [scripts/runbook.sh](scripts/runbook.sh)
-- Canonical reports page: [REPORTS.md](REPORTS.md)
-- Report helper: [scripts/reportbook.sh](scripts/reportbook.sh)
+- System source-of-truth map: [docs/architecture/SOURCE_OF_TRUTH.md](docs/architecture/SOURCE_OF_TRUTH.md)
+- Architecture decision record: [docs/architecture/ADR-0001-system-source-of-truth.md](docs/architecture/ADR-0001-system-source-of-truth.md)
+- Codex project guardrails: [AGENTS.md](AGENTS.md)
+- Report opener: [scripts/ops/open_report_artifact.sh](scripts/ops/open_report_artifact.sh)
 
 ## Switchboard And Tailoring
 
-- `scripts/run_mode_switchboard.py` is the runtime mode switchboard. In this repo it is also the closest thing to a "brain switch" command.
+- `scripts/run_mode_switchboard.py` is the runtime mode switchboard for launching coordinated `shadow`, `paper`, and `live` lanes.
 - It launches one `main.py` child per mode by setting `BOT_MODE` to `shadow`, `paper`, or `live` from `SWITCHBOARD_MODES`.
 - It is a mode launcher, not a one-click architecture exporter by itself.
 
@@ -86,6 +113,8 @@ SWITCHBOARD_MODES="shadow,paper,live" "$PY" scripts/run_mode_switchboard.py
 The architecture handoff packet is:
 - this [README.md](README.md)
 - the system map above
+- [docs/architecture/SOURCE_OF_TRUTH.md](docs/architecture/SOURCE_OF_TRUTH.md)
+- [docs/architecture/ADR-0001-system-source-of-truth.md](docs/architecture/ADR-0001-system-source-of-truth.md)
 - [docs/showcase/README.md](docs/showcase/README.md)
 - [DATA_INGESTION_SOURCES.md](DATA_INGESTION_SOURCES.md)
 - [COMMANDS.md](COMMANDS.md)
@@ -96,7 +125,7 @@ That packet is the clean summary to hand to another engineer or AI tool before t
 
 The switchboard script itself is portable Python, but this repo is still Mac and Apple Silicon first as shipped. A Windows or Linux move is a guided retargeting workflow, not a one-command lift-and-shift.
 
-Use this order if you want the brain switch to work efficiently on Windows or Linux:
+Use this order if you want the runtime mode switchboard to work efficiently on Windows or Linux:
 
 1. Export the handoff packet above and give it to your AI tool or engineer first.
 2. Retarget the runtime backend before first launch. `main.py` imports `mlx` immediately, so Windows/Linux need a replacement backend or import shim before the switchboard can start child processes cleanly.
@@ -148,12 +177,13 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/runbook.sh
 ./scripts/runbook.sh live
 ./scripts/runbook.sh retrain
-./scripts/reportbook.sh bundle
+./scripts/ops/open_report_artifact.sh bundle
 python3 scripts/ops/update_showcase_highlights.py
 ```
 
 ## Notes
 
-- Use `COMMANDS.md` as the source of truth for launch, retrain, storage, and SQL commands.
-- Use `REPORTS.md` as the source of truth for report generation and report bundle locations.
+- Use `docs/architecture/SOURCE_OF_TRUTH.md` to find the owning source for commands, reports, broker truth, signal logs, and storage.
+- Run `./scripts/ops/opsctl.sh codex-project-guard --staged --json` before Codex-authored commits or GitHub updates.
+- Use `COMMANDS.md` as the generated command surface; edit `scripts/ops/commands_hygiene_bot.py` when command truth changes.
 - The showcase highlight section is generated from repo artifacts, not hand-maintained.

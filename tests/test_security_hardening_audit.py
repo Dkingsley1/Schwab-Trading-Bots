@@ -1,5 +1,6 @@
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -16,6 +17,7 @@ def _write_json(path: Path, payload: dict) -> None:
 
 
 def test_security_hardening_audit_checks_rbac_and_secret_scan(tmp_path: Path, monkeypatch) -> None:
+    now = datetime.now(timezone.utc).isoformat()
     (tmp_path / ".githooks").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".githooks" / "pre-commit").write_text("python scripts/secret_scan.py --staged\n", encoding="utf-8")
     (tmp_path / ".gitignore").write_text("token.json\n", encoding="utf-8")
@@ -24,9 +26,13 @@ def test_security_hardening_audit_checks_rbac_and_secret_scan(tmp_path: Path, mo
     (tmp_path / "exports" / "env_snapshots").mkdir(parents=True, exist_ok=True)
     (tmp_path / "exports" / "env_snapshots" / "snapshot.json").write_text("{}", encoding="utf-8")
     (tmp_path / "governance" / "audits").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "governance" / "audits" / "registry_mutation_latest.json").write_text(
+        json.dumps({"timestamp_utc": now}),
+        encoding="utf-8",
+    )
     (tmp_path / "governance" / "audits" / "registry_mutation_journal_20260406.jsonl").write_text("{}\n", encoding="utf-8")
     _write_json(
-        tmp_path / "governance" / "security" / "rbac_roles.json",
+        tmp_path / "config" / "security" / "rbac_roles.json",
         {
             "roles": [
                 {"role": "research_reviewer"},
@@ -44,8 +50,18 @@ def test_security_hardening_audit_checks_rbac_and_secret_scan(tmp_path: Path, mo
         },
     )
     _write_json(
+        tmp_path / "config" / "security" / "key_rotation_policy.json",
+        {
+            "rotation": {
+                "api_keys_days": 30,
+                "broker_tokens_days": 7,
+                "signing_keys_days": 90,
+            }
+        },
+    )
+    _write_json(
         tmp_path / "governance" / "health" / "secret_scan_latest.json",
-        {"timestamp_utc": "2026-04-06T12:00:00+00:00", "findings_count": 0},
+        {"timestamp_utc": now, "findings_count": 0},
     )
 
     monkeypatch.setattr(src, "PROJECT_ROOT", tmp_path)
@@ -57,4 +73,5 @@ def test_security_hardening_audit_checks_rbac_and_secret_scan(tmp_path: Path, mo
     assert rc == 0
     assert payload["ok"] is True
     assert payload["summary"]["rbac_role_count"] == 6
-
+    assert payload["summary"]["key_rotation_schedule_defined"] is True
+    assert payload["summary"]["rbac_manifest_path"].endswith("config/security/rbac_roles.json")

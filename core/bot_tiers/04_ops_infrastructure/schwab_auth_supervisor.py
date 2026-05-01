@@ -1,0 +1,1 @@
+../../../scripts/ops/schwab_auth_supervisor.py

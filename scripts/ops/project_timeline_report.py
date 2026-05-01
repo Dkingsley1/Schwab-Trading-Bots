@@ -55,6 +55,7 @@ RECENT_ACTIVITY_GLOBS = [
     "exports/reports/project_timeline/*.html",
     "exports/reports/project_timeline/*.pdf",
 ]
+PDF_RENDER_TIMEOUT_SECONDS = float(os.getenv("PROJECT_TIMELINE_PDF_TIMEOUT_SECONDS", "20"))
 
 
 RECENT_ACTIVITY_EXCLUDE_PREFIXES = [
@@ -201,7 +202,7 @@ def _acquire_singleton_lock(lock_path: Path, *, blocking: bool):
     return fh, ""
 
 
-def _run(cmd: List[str]) -> tuple[int, str, str]:
+def _run(cmd: List[str], timeout_seconds: float | None = None) -> tuple[int, str, str]:
     try:
         proc = subprocess.run(
             cmd,
@@ -209,8 +210,14 @@ def _run(cmd: List[str]) -> tuple[int, str, str]:
             capture_output=True,
             text=True,
             check=False,
+            timeout=timeout_seconds,
         )
         return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
+    except subprocess.TimeoutExpired as exc:
+        out = str(exc.output or "").strip()
+        err = str(exc.stderr or "").strip()
+        detail = "\n".join([line for line in [err, f"timeout_after_seconds={timeout_seconds}"] if line])
+        return 124, out, detail
     except Exception as exc:  # pragma: no cover - defensive fallback
         return 1, "", str(exc)
 
@@ -1984,7 +1991,7 @@ def _render_pdf_from_html(html_path: Path, pdf_path: Path, *, allow_gui_renderer
     html_uri = html_path.resolve().as_uri()
     if renderer_kind == "wkhtmltopdf":
         cmd = [renderer, html_uri, str(pdf_path)]
-        rc, out, err = _run(cmd)
+        rc, out, err = _run(cmd, timeout_seconds=PDF_RENDER_TIMEOUT_SECONDS)
     else:
         profile_dir = Path(tempfile.mkdtemp(prefix="project-timeline-pdf-"))
         try:
@@ -2002,7 +2009,7 @@ def _render_pdf_from_html(html_path: Path, pdf_path: Path, *, allow_gui_renderer
                 f"--print-to-pdf={pdf_path}",
                 html_uri,
             ]
-            rc, out, err = _run(cmd)
+            rc, out, err = _run(cmd, timeout_seconds=PDF_RENDER_TIMEOUT_SECONDS)
         finally:
             shutil.rmtree(profile_dir, ignore_errors=True)
     if rc == 0 and pdf_path.exists() and pdf_path.stat().st_size > 0:

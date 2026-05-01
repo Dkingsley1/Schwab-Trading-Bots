@@ -29,12 +29,17 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
             writer.writerow(row)
 
 
+def _recent_fixture_day(offset_days: int = 1) -> tuple[datetime, str]:
+    base = (datetime.now(timezone.utc) - timedelta(days=offset_days)).replace(hour=14, minute=0, second=0, microsecond=0)
+    return base, base.strftime("%Y%m%d")
+
+
 def test_collect_market_crypto_correlation_context_joins_stock_and_crypto_roots(tmp_path: Path) -> None:
     project_root = tmp_path / "repo"
     external_root = tmp_path / "external"
-    base_ts = datetime(2026, 3, 22, 13, 0, tzinfo=timezone.utc)
-    btc_path = project_root / "governance" / "shadow_crypto" / "master_control_20260322.jsonl"
-    bond_path = external_root / "governance" / "shadow_bond_equities" / "master_control_20260322.jsonl"
+    base_ts, stamp = _recent_fixture_day()
+    btc_path = project_root / "governance" / "shadow_crypto" / f"master_control_{stamp}.jsonl"
+    bond_path = external_root / "governance" / "shadow_bond_equities" / f"master_control_{stamp}.jsonl"
 
     crypto_moves = [-0.018, -0.012, -0.006, -0.001, 0.004, 0.010, 0.016, 0.021]
     stock_moves = [-0.015, -0.010, -0.004, -0.001, 0.003, 0.009, 0.013, 0.018]
@@ -139,18 +144,30 @@ def test_collect_market_crypto_correlation_context_joins_stock_and_crypto_roots(
 
     assert status["ok"] is True
     assert status["aligned_pairs"] >= 3
+    assert status["schema_version"] >= 2
+    assert status["sleeve_baskets_observed"] >= 6
+    assert status["sleeve_aligned_pairs"] >= 6
+    assert status["total_aligned_pairs"] > status["aligned_pairs"]
     assert payload["derived"]["global_features"]["market_crypto_risk_corr_norm"] > 0.9
     assert payload["derived"]["global_features"]["market_crypto_uup_inverse_corr_norm"] > 0.9
+    assert payload["derived"]["global_features"]["market_crypto_sleeve_coverage_norm"] > 0.0
+    assert payload["derived"]["global_features"]["market_crypto_sleeve_confidence_norm"] > 0.2
+    assert payload["derived"]["global_features"]["market_crypto_risk_on_crypto_alignment_norm"] > 0.9
+    assert payload["derived"]["global_features"]["market_crypto_fx_crypto_inverse_corr_norm"] > 0.9
+    assert payload["derived"]["sleeve_baskets"]["crypto"]["symbol_count"] >= 3
+    assert payload["derived"]["sleeve_pair_metrics"]
+    assert payload["derived"]["sleeve_correlation_matrix"]["crypto"]["equity_core"] is not None
     assert payload["derived"]["symbol_features"]["BTC-USD"]["market_crypto_spy_corr_norm"] > 0.9
+    assert payload["derived"]["symbol_features"]["BTC-USD"]["market_crypto_sleeve_coverage_norm"] > 0.0
     assert payload["derived"]["symbol_features"]["BTC-USD"]["market_crypto_corr_confidence_norm"] > 0.2
 
 
 def test_collect_market_crypto_correlation_context_keeps_live_crypto_jsonl_when_stock_csv_exists(tmp_path: Path) -> None:
     project_root = tmp_path / "repo"
     external_root = tmp_path / "external"
-    crypto_path = project_root / "governance" / "shadow_crypto" / "master_control_20260323.jsonl"
-    stock_csv_path = external_root / "exports" / "csv" / "master_control_20260323.csv"
-    base_ts = datetime(2026, 3, 23, 14, 0, tzinfo=timezone.utc)
+    base_ts, stamp = _recent_fixture_day()
+    crypto_path = project_root / "governance" / "shadow_crypto" / f"master_control_{stamp}.jsonl"
+    stock_csv_path = external_root / "exports" / "csv" / f"master_control_{stamp}.csv"
 
     crypto_rows = []
     stock_csv_rows = []
@@ -232,9 +249,9 @@ def test_collect_market_crypto_correlation_context_keeps_live_crypto_jsonl_when_
 def test_collect_market_crypto_correlation_context_carries_forward_last_usable_overlap(tmp_path: Path) -> None:
     project_root = tmp_path / "repo"
     external_root = tmp_path / "external"
-    base_ts = datetime(2026, 3, 21, 20, 0, tzinfo=timezone.utc)
-    btc_path = project_root / "governance" / "shadow_crypto" / "master_control_20260321.jsonl"
-    stock_path = external_root / "governance" / "shadow_aggressive_equities" / "master_control_20260321.jsonl"
+    base_ts, stamp = _recent_fixture_day()
+    btc_path = project_root / "governance" / "shadow_crypto" / f"master_control_{stamp}.jsonl"
+    stock_path = external_root / "governance" / "shadow_aggressive_equities" / f"master_control_{stamp}.jsonl"
 
     crypto_moves = [-0.016, -0.010, -0.005, 0.000, 0.004, 0.009, 0.014, 0.019]
     stock_moves = [-0.013, -0.008, -0.003, 0.000, 0.003, 0.007, 0.011, 0.015]
@@ -314,9 +331,9 @@ def test_collect_market_crypto_correlation_context_carries_forward_last_usable_o
 def test_collect_market_crypto_correlation_context_uses_approximate_overlap_when_buckets_do_not_match(tmp_path: Path) -> None:
     project_root = tmp_path / "repo"
     external_root = tmp_path / "external"
-    crypto_path = project_root / "governance" / "shadow_crypto" / "master_control_20260322.jsonl"
-    stock_path = external_root / "governance" / "shadow_aggressive_equities" / "master_control_20260322.jsonl"
-    base_ts = datetime(2026, 3, 22, 14, 0, tzinfo=timezone.utc)
+    base_ts, stamp = _recent_fixture_day()
+    crypto_path = project_root / "governance" / "shadow_crypto" / f"master_control_{stamp}.jsonl"
+    stock_path = external_root / "governance" / "shadow_aggressive_equities" / f"master_control_{stamp}.jsonl"
 
     crypto_rows = []
     stock_rows = []
@@ -380,9 +397,9 @@ def test_collect_market_crypto_correlation_context_uses_approximate_overlap_when
 def test_collect_market_crypto_correlation_context_limits_asof_gap_during_market_hours(tmp_path: Path) -> None:
     project_root = tmp_path / "repo"
     external_root = tmp_path / "external"
-    crypto_path = project_root / "governance" / "shadow_crypto" / "master_control_20260323.jsonl"
-    stock_path = external_root / "governance" / "shadow_aggressive_equities" / "master_control_20260323.jsonl"
-    base_ts = datetime(2026, 3, 23, 14, 0, tzinfo=timezone.utc)
+    base_ts, stamp = _recent_fixture_day()
+    crypto_path = project_root / "governance" / "shadow_crypto" / f"master_control_{stamp}.jsonl"
+    stock_path = external_root / "governance" / "shadow_aggressive_equities" / f"master_control_{stamp}.jsonl"
 
     crypto_rows = []
     stock_rows = []
@@ -446,9 +463,9 @@ def test_collect_market_crypto_correlation_context_limits_asof_gap_during_market
 def test_collect_market_crypto_correlation_context_reuses_cached_result_when_inputs_unchanged(tmp_path: Path) -> None:
     project_root = tmp_path / "repo"
     external_root = tmp_path / "external"
-    crypto_path = project_root / "governance" / "shadow_crypto" / "master_control_20260324.jsonl"
-    stock_path = external_root / "governance" / "shadow_aggressive_equities" / "master_control_20260324.jsonl"
-    base_ts = datetime(2026, 3, 24, 14, 0, tzinfo=timezone.utc)
+    base_ts, stamp = _recent_fixture_day()
+    crypto_path = project_root / "governance" / "shadow_crypto" / f"master_control_{stamp}.jsonl"
+    stock_path = external_root / "governance" / "shadow_aggressive_equities" / f"master_control_{stamp}.jsonl"
 
     crypto_rows = []
     stock_rows = []
@@ -522,3 +539,4 @@ def test_collect_market_crypto_correlation_context_reuses_cached_result_when_inp
     assert first_status["cache_result_reused"] is False
     assert second_status["cache_result_reused"] is True
     assert second_status["aligned_pairs"] >= 1
+    assert second_status["schema_version"] >= 2

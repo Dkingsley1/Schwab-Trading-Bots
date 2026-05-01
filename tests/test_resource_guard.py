@@ -71,6 +71,52 @@ def test_optional_job_allows_green_pressure(monkeypatch) -> None:
     assert reasons == []
 
 
+def test_default_guard_uses_runtime_disk_but_keeps_local_floor(monkeypatch) -> None:
+    monkeypatch.setenv("RESOURCE_GUARD_MIN_LOCAL_DISK_GB", "2")
+    snapshot = {
+        "memory_available_pct": 68.0,
+        "memory_free_pct": 18.0,
+        "load1_per_core": 0.6,
+        "disk_free_gb": 705.0,
+        "local_disk_free_gb": 4.5,
+        "editing_app_cpu_sum": 20.0,
+    }
+
+    ok, reasons = resource_guard.evaluate(
+        snapshot,
+        max_load_per_core=1.8,
+        min_disk_gb=20.0,
+        min_memory_free_pct=10.0,
+        max_editing_cpu=180.0,
+    )
+
+    assert ok is True
+    assert reasons == []
+
+
+def test_default_guard_blocks_when_local_floor_is_too_low(monkeypatch) -> None:
+    monkeypatch.setenv("RESOURCE_GUARD_MIN_LOCAL_DISK_GB", "2")
+    snapshot = {
+        "memory_available_pct": 68.0,
+        "memory_free_pct": 18.0,
+        "load1_per_core": 0.6,
+        "disk_free_gb": 705.0,
+        "local_disk_free_gb": 1.0,
+        "editing_app_cpu_sum": 20.0,
+    }
+
+    ok, reasons = resource_guard.evaluate(
+        snapshot,
+        max_load_per_core=1.8,
+        min_disk_gb=20.0,
+        min_memory_free_pct=10.0,
+        max_editing_cpu=180.0,
+    )
+
+    assert ok is False
+    assert reasons == ["local_disk_free_low:1.0<2.0"]
+
+
 def test_refresh_job_allows_swap_only_pressure_with_healthy_headroom(monkeypatch) -> None:
     monkeypatch.setenv("RESOURCE_GUARD_OPTIONAL_BLOCK_ON_MEMORY_STATES", "yellow,red")
     snapshot = {

@@ -21,6 +21,7 @@ from core.halt_flags import inspect_halt_flag
 from core.runtime_python import resolve_runtime_python
 
 VENV_PY = resolve_runtime_python(PROJECT_ROOT)
+ALL_SLEEVES_SCRIPT = PROJECT_ROOT / "scripts" / "run_all_sleeves.py"
 PARALLEL_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_parallel_shadows.py"
 PARALLEL_AGGRESSIVE_SCRIPT = PROJECT_ROOT / "scripts" / "run_parallel_aggressive_modes.py"
 SHADOW_LOOP_SCRIPT = PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py"
@@ -54,6 +55,7 @@ class Target:
     allow_processless_heartbeat_live: bool = False
     exclude_matches: tuple[str, ...] = ()
     terminate_excluded_conflicts: bool = True
+    suppress_tripwire_when_parent_live: bool = False
     unhealthy_streak: int = 0
     tripwire_open: bool = False
 
@@ -127,6 +129,7 @@ def _start_cmd_executable_suffixes() -> tuple[str, ...]:
 
 def _start_cmd_python_script_suffixes() -> tuple[str, ...]:
     return (
+        "/scripts/run_all_sleeves.py",
         "/scripts/run_parallel_shadows.py",
         "/scripts/run_parallel_aggressive_modes.py",
         "/scripts/run_dividend_shadow.py",
@@ -424,7 +427,7 @@ def _start_target(start_cmd: str | Sequence[str], dry_run: bool) -> tuple[bool, 
 
 
 def _build_default_schwab_cmd(simulate: bool) -> str:
-    base = f"{VENV_PY} {PARALLEL_SHADOW_SCRIPT}"
+    base = f"{VENV_PY} {ALL_SLEEVES_SCRIPT} --with-aggressive-modes"
     if simulate:
         return base + " --simulate"
     return base
@@ -759,6 +762,13 @@ def _tripwire_payload(
         heartbeat_required = bool(target.heartbeat_glob and target.heartbeat_stale_seconds > 0)
         heartbeat_lost = bool(entry.get("heartbeat_lost", False))
         tripwire_unhealthy = heartbeat_lost if heartbeat_required else (not bool(entry.get("process_live", False)))
+        if (
+            heartbeat_required
+            and heartbeat_lost
+            and bool(entry.get("process_live", False))
+            and bool(target.suppress_tripwire_when_parent_live)
+        ):
+            tripwire_unhealthy = False
 
         if enabled and tripwire_unhealthy:
             target.unhealthy_streak += 1
@@ -1184,7 +1194,7 @@ def main() -> int:
     targets: list[Target] = [
         Target(
             name="schwab_parallel",
-            match="scripts/run_parallel_shadows.py",
+            match="scripts/run_all_sleeves.py",
             start_cmd=schwab_cmd,
             required=True,
             heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*_equities_schwab_*.json"),
@@ -1192,6 +1202,7 @@ def main() -> int:
             min_healthy_heartbeats=max(args.schwab_min_heartbeats, 1),
             heartbeat_profiles=("conservative", "aggressive"),
             allow_processless_heartbeat_live=True,
+            suppress_tripwire_when_parent_live=True,
             exclude_matches=(() if args.simulate_schwab else ("--simulate",)),
         )
     ]

@@ -1,0 +1,1 @@
+../../../scripts/ops/stale_artifact_reaper_bot.py

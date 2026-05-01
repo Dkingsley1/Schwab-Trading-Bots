@@ -107,6 +107,38 @@ def _count_unique_csv(*values: str) -> int:
     return len(seen)
 
 
+def _split_unique_csv(raw: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in str(raw or "").split(","):
+        token = part.strip().upper()
+        if token and token not in seen:
+            seen.add(token)
+            out.append(token)
+    return out
+
+
+def _budgeted_realtime_symbols(env: dict[str, str], realtime_symbols: str, realtime_context_symbols: str) -> tuple[str, dict[str, object]]:
+    full_symbols = _split_unique_csv(realtime_symbols) or _split_unique_csv(DEFAULT_FX_REALTIME_SYMBOLS)
+    priority_symbols = _split_unique_csv(realtime_context_symbols) or full_symbols
+    ordered = priority_symbols + [symbol for symbol in full_symbols if symbol not in set(priority_symbols)]
+    max_credits_per_minute = max(int(str(env.get("FX_TWELVE_DATA_MAX_CREDITS_PER_MINUTE", "8") or "8")), 0)
+    reserved_credits = max(int(str(env.get("FX_TWELVE_DATA_CREDIT_RESERVE", "3") or "3")), 0)
+    usable_credits = max(max_credits_per_minute - reserved_credits, 0)
+    default_pairs_per_run = min(max(usable_credits, 1), len(ordered)) if max_credits_per_minute > 0 else len(ordered)
+    max_pairs_per_run = max(int(str(env.get("FX_TWELVE_DATA_MAX_PAIRS_PER_RUN", str(default_pairs_per_run)) or str(default_pairs_per_run))), 0)
+    selected_count = min(max_pairs_per_run, usable_credits) if max_credits_per_minute > 0 else max_pairs_per_run
+    selected = ordered[:selected_count]
+    deferred = ordered[len(selected) :]
+    return ",".join(selected), {
+        "selected_symbols": selected,
+        "deferred_symbols": deferred,
+        "max_credits_per_minute": max_credits_per_minute,
+        "credit_reserve": reserved_credits,
+        "credit_budget_per_run": selected_count,
+    }
+
+
 def _realtime_interval_seconds(
     env: dict[str, str],
     requested_interval: int,
@@ -452,10 +484,11 @@ def _run_supervised_session(args: argparse.Namespace, env: dict[str, str]) -> in
     off_hours_only = _env_flag(env, "FX_OFF_HOURS_CONTEXT_ONLY", True)
     realtime_symbols = str(env.get("FX_REALTIME_SYMBOLS", DEFAULT_FX_REALTIME_SYMBOLS) or DEFAULT_FX_REALTIME_SYMBOLS)
     realtime_context_symbols = str(env.get("FX_REALTIME_CONTEXT_SYMBOLS", DEFAULT_FX_REALTIME_CONTEXT_SYMBOLS) or DEFAULT_FX_REALTIME_CONTEXT_SYMBOLS)
+    budgeted_realtime_symbols, realtime_budget = _budgeted_realtime_symbols(env, realtime_symbols, realtime_context_symbols)
     realtime_interval_seconds = _realtime_interval_seconds(
         env,
         int(args.interval_seconds),
-        realtime_symbols,
+        budgeted_realtime_symbols or realtime_symbols,
         realtime_context_symbols,
     )
     sync_interval = max(int(str(env.get("FX_OFF_HOURS_CONTEXT_SYNC_SECONDS", "300")) or "300"), 60)
@@ -482,7 +515,7 @@ def _run_supervised_session(args: argparse.Namespace, env: dict[str, str]) -> in
                 provider_status=provider_status,
                 default_symbols=args.symbols,
                 default_context_symbols=args.context_symbols,
-                realtime_symbols=realtime_symbols,
+                realtime_symbols=budgeted_realtime_symbols or realtime_symbols,
                 realtime_context_symbols=realtime_context_symbols,
             )
             desired_mode = str(desired.get("mode") or "")
@@ -507,7 +540,8 @@ def _run_supervised_session(args: argparse.Namespace, env: dict[str, str]) -> in
                             f"[FXSession] state={desired_mode} "
                             f"forex_open={int(forex_session_open)} proxy_open={int(proxy_session_open)} "
                             f"local={proxy_session.get('local_timestamp')} tz={proxy_session.get('timezone')} "
-                            f"interval={realtime_interval_seconds if desired_mode == 'live_forex_quotes' else int(args.interval_seconds)}"
+                            f"interval={realtime_interval_seconds if desired_mode == 'live_forex_quotes' else int(args.interval_seconds)} "
+                            f"fx_budget={realtime_budget.get('credit_budget_per_run')}"
                         )
                     child = subprocess.Popen(
                         _build_loop_cmd(

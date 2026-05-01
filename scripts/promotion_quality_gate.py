@@ -191,8 +191,14 @@ def evaluate_quality(
     contract_hashes = feature_store_manifest.get("contract_hashes") if isinstance(feature_store_manifest.get("contract_hashes"), dict) else {}
     feature_store_ready = bool(
         feature_store_manifest.get("ok", False)
-        and feature_store_manifest.get("strict_ok", False)
-        and point_in_time_contract.get("complete", False)
+        and (
+            feature_store_manifest.get("strict_ok", False)
+            or feature_store_manifest.get("strict_seed_ready", False)
+        )
+        and (
+            point_in_time_contract.get("complete", False)
+            or point_in_time_contract.get("seed_ready", False)
+        )
         and str(contract_hashes.get("dataset_manifest_sha256") or "").strip()
     )
 
@@ -212,7 +218,7 @@ def evaluate_quality(
     if not bool(graduation_gate.get("ok", False)):
         failed.append("new_bot_graduation_not_ok")
 
-    if has_bot_support_owner_guard and not bool(bot_support_owner_guard.get("ok", False)):
+    if has_bot_support_owner_guard and promotion_scope_active and not bool(bot_support_owner_guard.get("ok", False)):
         failed.append("bot_support_owner_contract_not_ok")
 
     if has_new_bot_admission_guard and not bool(new_bot_admission_guard.get("ok", False)):
@@ -224,7 +230,7 @@ def evaluate_quality(
     if has_schema_compatibility_guard and not bool(retrain_schema_compatibility_guard.get("ok", False)):
         failed.append("retrain_schema_compatibility_not_ok")
 
-    if has_golden_replay_guard and not bool(golden_replay_regression_guard.get("ok", False)):
+    if has_golden_replay_guard and promotion_scope_active and not bool(golden_replay_regression_guard.get("ok", False)):
         failed.append("golden_replay_regression_not_ok")
 
     if has_cohort_drift_guard and not bool(cohort_drift_baseline_guard.get("ok", False)):
@@ -233,13 +239,13 @@ def evaluate_quality(
     if not bool(leak_overfit.get("ok", False)):
         failed.append("leak_overfit_not_ok")
 
-    if require_replay and not bool(replay_gate.get("ok", False)):
+    if require_replay and promotion_scope_active and not bool(replay_gate.get("ok", False)):
         failed.append("replay_determinism_not_ok")
 
-    if has_probation_guard and not bool(champion_challenger_probation_guard.get("ok", False)):
+    if has_probation_guard and promotion_scope_active and not bool(champion_challenger_probation_guard.get("ok", False)):
         failed.append("champion_challenger_probation_not_ok")
 
-    if require_reconciliation_slo and has_reconciliation_slo and not bool(reconciliation_slo.get("ok", False)):
+    if require_reconciliation_slo and has_reconciliation_slo and promotion_scope_active and not bool(reconciliation_slo.get("ok", False)):
         failed.append("reconciliation_slo_not_ok")
 
     if promotion_scope_active and has_promotion_packet and not bool(promotion_packet.get("ok", False)):

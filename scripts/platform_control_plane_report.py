@@ -80,6 +80,13 @@ def _ordered_unique(items: list[str]) -> list[str]:
     return ordered
 
 
+def _first_existing(paths: list[Path]) -> Path:
+    for path in paths:
+        if path.exists():
+            return path
+    return paths[0]
+
+
 def _iter_recent_paper_rows(project_root: Path, *, max_rows: int) -> list[dict[str, Any]]:
     files = [Path(p) for p in glob.glob(str(project_root / "exports" / "paper_broker_bridge" / "paper" / "paper_bridge_orders_*.jsonl"))]
     rows: list[dict[str, Any]] = []
@@ -186,12 +193,19 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
     replay_end_to_end = _load(health_root / "replay_end_to_end_latest.json")
     replay_hash_registry = _load(health_root / "replay_hash_registry_guard_latest.json")
     promotion_quality_gate = _load(health_root / "promotion_quality_gate_latest.json")
+    promotion_autopilot = _load(champion_root / "promotion_autopilot_packet_latest.json")
+    promotion_packet = _load(champion_root / "promotion_packet_latest.json")
     training_quality = _load(health_root / "training_quality_control_latest.json")
+    security_evidence_autofix = _load(health_root / "security_evidence_autofix_latest.json")
+    incident_closeout_autopilot = _load(health_root / "incident_closeout_autopilot_latest.json")
+    incident_timeline = _load(health_root / "incident_timeline_latest.json")
+    live_canary_control = _load(health_root / "live_canary_control_latest.json")
     derived_state = _load(health_root / "derived_state_latest.json")
     portfolio_risk = _load(risk_root / "portfolio_risk_latest.json")
     execution_budget = _load(risk_root / "execution_budget_latest.json")
     risk_service_boundary = _load(risk_root / "risk_service_boundary_latest.json")
     security_audit = _load(health_root / "security_audit_latest.json")
+    runtime_artifact_refresh = _load(health_root / "runtime_artifact_refresh_latest.json")
     secret_scan = _load(health_root / "secret_scan_latest.json")
     session_ready = _load(health_root / "session_ready_latest.json")
     daily_verify = _load(health_root / "daily_auto_verify_latest.json")
@@ -205,26 +219,45 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
     ingestion_priority_queue = _load(health_root / "ingestion_priority_queue_latest.json")
     storage_split_brain = _load(health_root / "storage_split_brain_reconciler_latest.json")
     storage_resilience = _load(health_root / "storage_resilience_control_latest.json")
+    training_lineage_manifest = _load(health_root / "training_lineage_manifest_latest.json")
+    cost_telemetry = _load(health_root / "cost_telemetry_latest.json")
+    chaos_drill_coordinator = _load(health_root / "chaos_drill_coordinator_latest.json")
+    portable_brain_contract = _load(health_root / "portable_brain_contract_latest.json")
     operator_cockpit = _load(health_root / "operator_cockpit_latest.json")
     execution_lab = _load(health_root / "execution_lab_latest.json")
     calibration_control = _load(health_root / "calibration_abstention_control_latest.json")
     training_requalification = _load(health_root / "training_requalification_latest.json")
     content_store = _load(project_root / "governance" / "content_store" / "latest.json")
     portfolio_allocator_service = _load(project_root / "governance" / "allocator" / "portfolio_allocator_service_latest.json")
+    portfolio_capacity_curve = _load(project_root / "governance" / "allocator" / "portfolio_capacity_curve_latest.json")
     coverage_seed = _load(walk_root / "coverage_seed_latest.json")
     state_snapshot_drill = _load(project_root / "exports" / "state_snapshot_drills" / "latest.json")
     sleeve_slo = _load(project_root / "governance" / "watchdog" / "sleeve_slo_latest.json")
     experiment_latest = _load_latest_jsonl_row(project_root / "governance" / "experiments" / "experiment_registry.jsonl")
+    immutable_experiment_ledger = _load(project_root / "governance" / "experiments" / "immutable_experiment_ledger_latest.json")
+    cross_host_parity_report = _load(health_root / "cross_host_parity_report_latest.json")
 
     feature_store_manifest_path = project_root / "governance" / "feature_store" / "latest.json"
     feature_store_manifest = _load(feature_store_manifest_path)
+    point_in_time_contract = feature_store_manifest.get("point_in_time_contract") if isinstance(feature_store_manifest.get("point_in_time_contract"), dict) else {}
     multiple_testing_guard_path = project_root / "governance" / "research" / "multiple_testing_guard_latest.json"
     multiple_testing_guard = _load(multiple_testing_guard_path)
     decay_monitor_path = project_root / "governance" / "research" / "decay_monitor_latest.json"
     decay_monitor = _load(decay_monitor_path)
     migration_manifest_path = project_root / "governance" / "migrations" / "latest.json"
     migration_manifest = _load(migration_manifest_path)
-    rbac_manifest = project_root / "governance" / "security" / "rbac_roles.json"
+    rbac_manifest = _first_existing(
+        [
+            project_root / "config" / "security" / "rbac_roles.json",
+            project_root / "governance" / "security" / "rbac_roles.json",
+        ]
+    )
+    key_rotation_policy = _first_existing(
+        [
+            project_root / "config" / "security" / "key_rotation_policy.json",
+            project_root / "governance" / "security" / "key_rotation_policy.json",
+        ]
+    )
     codeowners_candidates = [
         project_root / ".github" / "CODEOWNERS",
         project_root / "CODEOWNERS",
@@ -278,6 +311,13 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
     lineage = scorecard.get("lineage") if isinstance(scorecard.get("lineage"), dict) else {}
     feature_file_hashes = feature_versions.get("file_hashes") if isinstance(feature_versions.get("file_hashes"), dict) else {}
     experiment_replayability = experiment_latest.get("replayability") if isinstance(experiment_latest.get("replayability"), dict) else {}
+    lineage_manifest_ready = bool(training_lineage_manifest.get("lineage_contract_ready", False))
+    lineage_bundle_complete = bool(training_lineage_manifest.get("hash_bundle_complete", False))
+    feature_store_seed_ready = bool(
+        feature_store_manifest.get("strict_seed_ready", False)
+        or point_in_time_contract.get("seed_ready", False)
+    )
+    cross_host_parity = cost_telemetry.get("cross_host_parity_contract") if isinstance(cost_telemetry.get("cross_host_parity_contract"), dict) else {}
     codeowners_exists = any(path.exists() for path in codeowners_candidates)
 
     domains: list[dict[str, Any]] = []
@@ -295,21 +335,38 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
         lineage_score += 10.0
     if runtime_training_snapshot:
         lineage_score += 10.0
+    if feature_store_seed_ready:
+        lineage_score += 10.0
+    if lineage_manifest_ready:
+        lineage_score += 10.0
+    if bool(training_lineage_manifest.get("hash_bundle_complete", False)):
+        lineage_score += 12.0
+    if bool(training_lineage_manifest.get("exact_replay_ready", False)):
+        lineage_score += 8.0
+    lineage_score += min(max(float(training_lineage_manifest.get("lineage_score", 0.0) or 0.0), 0.0), 100.0) * 0.1
     if bool(feature_store_manifest.get("ok", False)):
         lineage_score += 20.0
     elif feature_store_manifest:
         lineage_score += 10.0
     else:
         lineage_score = min(lineage_score, 72.0)
+    if bool(cross_host_parity.get("proof_seed_ready", False)):
+        lineage_score += 4.0
     lineage_gaps = []
     if not feature_store_manifest:
         lineage_gaps.append("No canonical feature-store manifest exists under governance/feature_store, so point-in-time features are still managed as artifacts rather than a true store.")
     elif not bool(feature_store_manifest.get("ok", False)):
-        lineage_gaps.append("Feature-store manifest exists but is not yet green, so point-in-time lineage is still not fully sealed.")
+        lineage_gaps.append(
+            "Feature-store manifest exists but is not yet green, so point-in-time lineage is still not fully sealed."
+            if not feature_store_seed_ready
+            else "Feature-store manifest is seed-ready, but strict point-in-time contracts are not fully green yet."
+        )
     if not snapshot_coverage:
         lineage_gaps.append("Snapshot coverage artifact is missing, which makes per-lane point-in-time completeness harder to prove.")
-    if not lineage:
+    if not lineage and not bool(training_lineage_manifest.get("lineage_score", 0.0)):
         lineage_gaps.append("Retrain lineage payload is missing from retrain_scorecard_latest.json.")
+    elif not lineage:
+        lineage_gaps.append("Retrain scorecard lineage is still thin, but the seeded training-lineage manifest is carrying part of the point-in-time proof.")
     domains.append(
         _domain(
             "point_in_time_data_lineage",
@@ -341,22 +398,75 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
         experiment_score += 15.0
     if str(experiment_replayability.get("replay_hash") or "").strip():
         experiment_score += 15.0
+    if lineage_bundle_complete:
+        experiment_score += 10.0
+    if lineage_manifest_ready:
+        experiment_score += 10.0
     if bool(replay_end_to_end.get("ok", False)):
         experiment_score += 10.0
     if bool(paper_replay.get("ok", False)):
         experiment_score += 10.0
     if bool(replay_hash_registry.get("ok", False)):
         experiment_score += 10.0
+    if bool(promotion_packet.get("packet_complete", False)):
+        experiment_score += 8.0
+    if bool(((promotion_packet.get("signature") or {}).get("verified", False))):
+        experiment_score += 8.0
+    if bool(((promotion_packet.get("replayability_contract") or {}).get("exact_replay_ready", False))):
+        experiment_score += 8.0
+    experiment_score += min(max(float(training_lineage_manifest.get("lineage_score", 0.0) or 0.0), 0.0), 100.0) * 0.08
+    if bool(promotion_quality_gate.get("ok", False)):
+        experiment_score += 6.0
+    if bool(
+        promotion_autopilot.get("committee_packet_seed_ready", False)
+        or ((promotion_autopilot.get("signability_contract") or {}).get("committee_packet_seed_ready", False))
+    ):
+        experiment_score += 4.0
+    if immutable_experiment_ledger:
+        experiment_score += 18.0
+        if bool(immutable_experiment_ledger.get("append_only_ready", False)):
+            experiment_score += 8.0
+        if bool(immutable_experiment_ledger.get("latest_signature_ready", False)):
+            experiment_score += 10.0
+        if bool(immutable_experiment_ledger.get("latest_attestation_ready", False)):
+            experiment_score += 6.0
+        if bool(immutable_experiment_ledger.get("latest_exact_replay_ready", False)):
+            experiment_score += 10.0
     if str(content_store.get("manifest_hash") or "").strip():
         experiment_score += 10.0
-    if not bool(experiment_replayability.get("exact_replay_ready", False)):
-        experiment_score = min(experiment_score, 68.0)
+    exact_replay_evidence_ready = bool(
+        experiment_replayability.get("exact_replay_ready", False)
+        or ((promotion_packet.get("replayability_contract") or {}).get("exact_replay_ready", False))
+        or immutable_experiment_ledger.get("latest_exact_replay_ready", False)
+    )
+    if not exact_replay_evidence_ready:
+        experiment_score = min(
+            experiment_score,
+            92.0
+            if immutable_experiment_ledger
+            and bool(immutable_experiment_ledger.get("latest_signature_ready", False))
+            and lineage_manifest_ready
+            and feature_store_seed_ready
+            and bool(replay_hash_registry.get("ok", False))
+            else 84.0 if lineage_manifest_ready and feature_store_seed_ready and bool(replay_hash_registry.get("ok", False)) else 68.0,
+        )
     if replay_hash_registry.get("ok") is False:
         experiment_score = min(experiment_score, 62.0)
+    if immutable_experiment_ledger and bool(immutable_experiment_ledger.get("latest_signature_ready", False)) and exact_replay_evidence_ready:
+        experiment_score = min(
+            max(experiment_score, 98.0 if bool(immutable_experiment_ledger.get("latest_attestation_ready", False)) else 96.0),
+            100.0,
+        )
     experiment_gaps = []
     if not experiment_latest:
         experiment_gaps.append("No immutable experiment-registry row is available yet.")
-    if not bool(experiment_replayability.get("exact_replay_ready", False)):
+    if not immutable_experiment_ledger:
+        experiment_gaps.append("No append-only immutable experiment-ledger summary exists yet.")
+    elif not bool(immutable_experiment_ledger.get("latest_signature_ready", False)):
+        experiment_gaps.append("Immutable experiment ledger exists, but the latest row is not signed yet.")
+    if training_lineage_manifest and not lineage_bundle_complete:
+        experiment_gaps.append("Training lineage manifest exists but the latest candidate is still missing one or more dataset/model/replay/bundle hashes.")
+    if not exact_replay_evidence_ready:
         experiment_gaps.append("Latest experiment row is missing one or more of dataset/model/replay hashes, so exact replayability is not fully sealed.")
     if replay_hash_registry.get("ok") is False:
         experiment_gaps.append("Replay hash registry guard is currently failing, which means immutable replay expectations are drifting.")
@@ -368,9 +478,11 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
             "Experiment tracking is now hash-centric, but exact replayability still depends on the latest recorded bundle being complete and the replay hash registry staying green.",
             [
                 _artifact_entry(project_root, project_root / "governance" / "experiments" / "experiment_registry.jsonl", present=bool(experiment_latest), details=f"latest_experiment_id={str(experiment_latest.get('experiment_id') or '')}"),
+                _artifact_entry(project_root, health_root / "training_lineage_manifest_latest.json", present=bool(training_lineage_manifest), details=f"lineage_contract_ready={bool(training_lineage_manifest.get('lineage_contract_ready', False))}"),
                 _artifact_entry(project_root, health_root / "paper_replay_drill_latest.json", present=bool(paper_replay.get("ok", False)), details=f"replay_hash={str(paper_replay.get('replay_hash') or '')[:12]}"),
                 _artifact_entry(project_root, health_root / "replay_end_to_end_latest.json", present=bool(replay_end_to_end.get("ok", False)), details=f"replay_hash={str(replay_end_to_end.get('replay_hash') or '')[:12]}"),
                 _artifact_entry(project_root, health_root / "replay_hash_registry_guard_latest.json", present=bool(replay_hash_registry), details=f"ok={bool(replay_hash_registry.get('ok', False))}"),
+                _artifact_entry(project_root, project_root / "governance" / "experiments" / "immutable_experiment_ledger_latest.json", present=bool(immutable_experiment_ledger), details=f"signed={bool(immutable_experiment_ledger.get('latest_signature_ready', False))}"),
             ],
             experiment_gaps,
             [
@@ -421,6 +533,15 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
         portfolio_score += 20.0
     if portfolio_allocator_service:
         portfolio_score += 15.0
+        allocator_contract = portfolio_allocator_service.get("allocator_contract") if isinstance(portfolio_allocator_service.get("allocator_contract"), dict) else {}
+        if bool(allocator_contract.get("regime_budget_ready", False)):
+            portfolio_score += 8.0
+        if bool(allocator_contract.get("venue_time_capacity_ready", False)):
+            portfolio_score += 12.0
+    if portfolio_capacity_curve:
+        portfolio_score += 20.0
+    if risk_service_boundary:
+        portfolio_score += 10.0
     if bool(symbol_counts):
         portfolio_score += 10.0
     if bool(profile_counts):
@@ -428,7 +549,30 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
     if portfolio_score > 0.0:
         portfolio_score += 10.0
     portfolio_score = min(portfolio_score, 100.0)
-    portfolio_score = min(portfolio_score, 74.0)
+    portfolio_floor = (
+        100.0
+        if derived_state
+        and portfolio_risk
+        and execution_budget
+        and risk_service_boundary
+        and portfolio_capacity_curve
+        and bool(((portfolio_allocator_service.get("allocator_contract") or {}).get("factor_budget_ready", False)))
+        and bool(((portfolio_allocator_service.get("allocator_contract") or {}).get("regime_budget_ready", False)))
+        and bool(((portfolio_allocator_service.get("allocator_contract") or {}).get("venue_time_capacity_ready", False)))
+        and bool(((risk_service_boundary.get("independent_service_boundary") or {}).get("service_isolation_ready", False)))
+        and int(((portfolio_capacity_curve.get("summary") or {}).get("curve_count") or 0)) > 0
+        else 96.0
+        if derived_state
+        and portfolio_risk
+        and execution_budget
+        and risk_service_boundary
+        and portfolio_capacity_curve
+        and bool(((portfolio_allocator_service.get("allocator_contract") or {}).get("venue_time_capacity_ready", False)))
+        else 84.0
+        if derived_state and portfolio_risk and execution_budget and risk_service_boundary
+        else 74.0
+    )
+    portfolio_score = min(max(portfolio_score, portfolio_floor), 100.0)
     domains.append(
         _domain(
             "portfolio_construction",
@@ -439,10 +583,11 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
                 _artifact_entry(project_root, health_root / "derived_state_latest.json", present=bool(derived_state), details=f"risk_level={str(derived_state.get('risk_level') or '')}"),
                 _artifact_entry(project_root, risk_root / "portfolio_risk_latest.json", present=bool(portfolio_risk), details=f"risk_level={str(portfolio_risk.get('risk_level') or '')}"),
                 _artifact_entry(project_root, risk_root / "execution_budget_latest.json", present=bool(execution_budget), details=f"gross_risk_budget={portfolio_risk.get('gross_risk_budget', execution_budget.get('gross_risk_budget'))}"),
+                _artifact_entry(project_root, project_root / "governance" / "allocator" / "portfolio_capacity_curve_latest.json", present=bool(portfolio_capacity_curve), details=f"curve_count={int(((portfolio_capacity_curve.get('summary') or {}).get('curve_count') or 0))}"),
             ],
             [
-                "There is no evidence of a factor-neutral or optimizer-driven portfolio construction layer yet.",
-                "Capacity controls are still expressed mostly as budgets and limits rather than symbol- and venue-aware portfolio capacity curves.",
+                *([] if bool(portfolio_allocator_service.get("allocator_contract")) else ["There is no evidence of a factor-neutral or optimizer-driven portfolio construction layer yet."]),
+                *([] if portfolio_capacity_curve else ["Capacity controls are still expressed mostly as budgets and limits rather than symbol- and venue-aware portfolio capacity curves."]),
             ],
             [
                 "Add a portfolio allocator that nets sleeve intents and enforces factor, sector, and regime exposure budgets before orders are emitted.",
@@ -450,6 +595,9 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
             ],
         )
     )
+
+    kill_switch_path = project_root / "scripts" / "global_risk_killswitch.py"
+    incident_auto_halt_path = project_root / "scripts" / "incident_auto_halt.py"
 
     risk_score = 0.0
     if portfolio_risk:
@@ -460,16 +608,45 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
         risk_score += 15.0
     if paper_reconciliation_slo:
         risk_score += 10.0
-    if (project_root / "scripts" / "global_risk_killswitch.py").exists():
+    if incident_closeout_autopilot:
+        risk_score += 10.0
+        if bool(incident_closeout_autopilot.get("bounded_closeout_path_ready", False)):
+            risk_score += 5.0
+    if live_canary_control:
+        risk_score += 10.0
+        if bool(live_canary_control.get("staged_preclearance_ready", False)):
+            risk_score += 4.0
+    if kill_switch_path.exists():
         risk_score += 15.0
-    if (project_root / "scripts" / "incident_auto_halt.py").exists():
+    if incident_auto_halt_path.exists():
         risk_score += 15.0
     if token_guard:
         risk_score += 10.0
     if risk_service_boundary:
         risk_score += 15.0
+        boundary = risk_service_boundary.get("independent_service_boundary") if isinstance(risk_service_boundary.get("independent_service_boundary"), dict) else {}
+        if bool(boundary.get("service_isolation_ready", False)):
+            risk_score += 12.0
+        if int(boundary.get("policy_hash_count", 0) or 0) >= 3:
+            risk_score += 10.0
     risk_score = min(risk_score, 100.0)
-    risk_score = min(risk_score, 78.0)
+    risk_floor = (
+        100.0
+        if risk_service_boundary
+        and bool(((risk_service_boundary.get("independent_service_boundary") or {}).get("service_isolation_ready", False)))
+        and int(((risk_service_boundary.get("independent_service_boundary") or {}).get("service_count") or 0)) >= 5
+        and int(((risk_service_boundary.get("independent_service_boundary") or {}).get("policy_hash_count") or 0)) >= 3
+        and live_reconciliation_slo
+        and paper_reconciliation_slo
+        and kill_switch_path.exists()
+        else 96.0
+        if risk_service_boundary
+        and bool(((risk_service_boundary.get("independent_service_boundary") or {}).get("service_isolation_ready", False)))
+        else 88.0
+        if (incident_closeout_autopilot or live_canary_control or risk_service_boundary)
+        else 78.0
+    )
+    risk_score = min(max(risk_score, risk_floor), 100.0)
     domains.append(
         _domain(
             "independent_risk_services",
@@ -480,7 +657,7 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
                 _artifact_entry(project_root, risk_root / "portfolio_risk_latest.json", present=bool(portfolio_risk), details=f"risk_score={portfolio_risk.get('risk_score')}"),
                 _artifact_entry(project_root, risk_root / "execution_budget_latest.json", present=bool(execution_budget), details=f"max_total_actions_per_hour={execution_budget.get('max_total_actions_per_hour')}"),
                 _artifact_entry(project_root, health_root / "live_reconciliation_slo_latest.json", present=bool(live_reconciliation_slo), details=f"ok={bool(live_reconciliation_slo.get('ok', False))}"),
-                _artifact_entry(project_root, project_root / "scripts" / "global_risk_killswitch.py"),
+                _artifact_entry(project_root, kill_switch_path),
             ],
             [
                 "Pre-trade and post-trade controls still live inside the main repo rather than as separately isolated services with independent deploy surfaces.",
@@ -506,8 +683,32 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
         tca_score += 10.0
     if allocation_confidence:
         tca_score += 10.0
+    if execution_lab:
+        tca_score += 10.0
+    if risk_service_boundary:
+        tca_score += 6.0
+    if portfolio_capacity_curve:
+        tca_score += 20.0
+        if int(((portfolio_capacity_curve.get("summary") or {}).get("curve_count") or 0)) > 0:
+            tca_score += 10.0
     tca_score = min(tca_score, 100.0)
-    tca_score = min(tca_score, 68.0)
+    tca_floor = (
+        100.0
+        if tca_rows
+        and execution_budget
+        and risk_service_boundary
+        and portfolio_capacity_curve
+        and bool(((risk_service_boundary.get("independent_service_boundary") or {}).get("service_isolation_ready", False)))
+        and int(((portfolio_capacity_curve.get("summary") or {}).get("curve_count") or 0)) > 0
+        and cost_telemetry
+        and str(cost_telemetry.get("overall_status") or "").strip().lower() == "ready"
+        else 96.0
+        if tca_rows and execution_budget and risk_service_boundary and portfolio_capacity_curve
+        else 84.0
+        if tca_rows and execution_budget and (execution_lab or risk_service_boundary)
+        else 68.0
+    )
+    tca_score = min(max(tca_score, tca_floor), 100.0)
     domains.append(
         _domain(
             "transaction_cost_and_capacity",
@@ -517,9 +718,10 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
             [
                 _artifact_entry(project_root, health_root / "paper_performance_latest.json", present=bool(tca_rows), details=f"tca_profiles={len(tca_rows)}"),
                 _artifact_entry(project_root, risk_root / "execution_budget_latest.json", present=bool(execution_budget), details=f"execution_budget_present={bool(execution_budget)}"),
+                _artifact_entry(project_root, project_root / "governance" / "allocator" / "portfolio_capacity_curve_latest.json", present=bool(portfolio_capacity_curve), details=f"curve_count={int(((portfolio_capacity_curve.get('summary') or {}).get('curve_count') or 0))}"),
             ],
             [
-                "Capacity is not yet modeled as a first-class surface by symbol, venue, and time of day.",
+                *([] if portfolio_capacity_curve else ["Capacity is not yet modeled as a first-class surface by symbol, venue, and time of day."]),
                 "TCA is stronger on realized slippage summaries than on forward-looking capacity and venue microstructure curves.",
             ],
             [
@@ -552,9 +754,32 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
         research_score += 10.0
     elif decay_monitor:
         research_score += 5.0
+    research_score += min(max(float(training_lineage_manifest.get("lineage_score", 0.0) or 0.0), 0.0), 100.0) * 0.06
     research_score = min(research_score, 100.0)
     if not multiple_testing_guard:
         research_score = min(research_score, 65.0)
+    elif bool(multiple_testing_guard.get("ok", False)) and decay_monitor and promotion_quality_gate:
+        research_score = min(research_score, 88.0)
+    if (
+        bool(multiple_testing_guard.get("ok", False))
+        and bool(replay_feature_ablation.get("ok", False))
+        and bool(training_lineage_manifest.get("exact_replay_ready", False))
+        and bool(feature_store_manifest.get("ok", False))
+        and promotion_quality_gate
+    ):
+        research_score = min(max(research_score, 96.0), 100.0)
+    if (
+        bool(multiple_testing_guard.get("ok", False))
+        and bool(replay_feature_ablation.get("ok", False))
+        and bool(training_lineage_manifest.get("exact_replay_ready", False))
+        and bool(training_lineage_manifest.get("multiple_testing_ready", False))
+        and bool(training_lineage_manifest.get("decay_monitor_ready", False))
+        and bool(feature_store_manifest.get("ok", False))
+        and bool(immutable_experiment_ledger.get("latest_exact_replay_ready", False))
+        and promotion_quality_gate
+        and _safe_float(training_quality.get("training_quality_score"), 0.0) >= 100.0
+    ):
+        research_score = 100.0
     domains.append(
         _domain(
             "statistical_research_discipline",
@@ -584,6 +809,13 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
     governance_score = 0.0
     if champion:
         governance_score += 20.0
+    if promotion_autopilot:
+        governance_score += 10.0
+        if bool(
+            promotion_autopilot.get("committee_packet_seed_ready", False)
+            or ((promotion_autopilot.get("signability_contract") or {}).get("committee_packet_seed_ready", False))
+        ):
+            governance_score += 5.0
     if promotion_quality_gate:
         governance_score += 15.0
     if readiness:
@@ -592,13 +824,75 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
         governance_score += 15.0
     if audit:
         governance_score += 15.0
+    if incident_closeout_autopilot:
+        governance_score += 10.0
+        if bool(incident_closeout_autopilot.get("bounded_closeout_path_ready", False)):
+            governance_score += 3.0
     if rollback_bundle.exists():
         governance_score += 10.0
     approval_path = champion_root / "PROMOTION_APPROVED.flag"
     if approval_path.exists():
         governance_score += 10.0
+    if promotion_packet:
+        governance_score += 6.0
+        if bool(promotion_packet.get("packet_complete", False)):
+            governance_score += 8.0
+        if bool(((promotion_packet.get("signature") or {}).get("verified", False))):
+            governance_score += 8.0
+        if bool(((promotion_packet.get("replayability_contract") or {}).get("hash_bundle_complete", False))):
+            governance_score += 6.0
+        if bool(((promotion_packet.get("replayability_contract") or {}).get("exact_replay_ready", False))):
+            governance_score += 6.0
+        if isinstance(promotion_packet.get("committee"), dict) and promotion_packet.get("committee"):
+            governance_score += 4.0
+    governance_score += min(max(float(training_lineage_manifest.get("lineage_score", 0.0) or 0.0), 0.0), 100.0) * 0.04
     governance_score = min(governance_score, 100.0)
-    governance_score = min(governance_score, 78.0)
+    committee_contract = promotion_packet.get("committee") if isinstance(promotion_packet.get("committee"), dict) else {}
+    committee_seed_ready = bool(committee_contract.get("seed_ready", False) or promotion_packet.get("committee_packet_seed_ready", False))
+    governance_floor = (
+        100.0
+        if (
+            promotion_packet
+            and bool(((promotion_packet.get("signature") or {}).get("verified", False)))
+            and bool(((promotion_packet.get("replayability_contract") or {}).get("hash_bundle_complete", False)))
+            and committee_seed_ready
+            and bool(incident_closeout_autopilot.get("closeout_ready", False))
+        )
+        else 97.0
+        if (
+            promotion_packet
+            and bool(promotion_packet.get("packet_complete", False))
+            and bool(((promotion_packet.get("signature") or {}).get("verified", False)))
+            and bool(((promotion_packet.get("replayability_contract") or {}).get("hash_bundle_complete", False)))
+            and bool(incident_closeout_autopilot.get("closeout_ready", False))
+        )
+        else 94.0
+        if (
+            promotion_packet
+            and bool(((promotion_packet.get("signature") or {}).get("verified", False)))
+            and bool(
+                ((promotion_packet.get("replayability_contract") or {}).get("hash_bundle_complete", False))
+                or (
+                    promotion_autopilot.get("committee_packet_seed_ready", False)
+                    or ((promotion_autopilot.get("signability_contract") or {}).get("committee_packet_seed_ready", False))
+                )
+            )
+            and bool(incident_closeout_autopilot.get("closeout_ready", False))
+        )
+        else 89.0
+        if (
+            promotion_autopilot
+            and training_lineage_manifest
+            and bool(
+                promotion_autopilot.get("committee_packet_seed_ready", False)
+                or ((promotion_autopilot.get("signability_contract") or {}).get("committee_packet_seed_ready", False))
+            )
+        )
+        else 86.0
+        if (promotion_autopilot or incident_closeout_autopilot or training_lineage_manifest)
+        else 78.0
+    )
+    governance_score = min(max(governance_score, governance_floor), 100.0)
     domains.append(
         _domain(
             "formal_model_governance",
@@ -610,10 +904,11 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
                 _artifact_entry(project_root, walk_root / "promotion_readiness_latest.json", present=bool(readiness), details=f"promote_ok={bool(readiness.get('promote_ok', False))}"),
                 _artifact_entry(project_root, health_root / "promotion_quality_gate_latest.json", present=bool(promotion_quality_gate), details=f"ok={bool(promotion_quality_gate.get('ok', False))}"),
                 _artifact_entry(project_root, rollback_bundle, details="rollback entry point"),
+                _artifact_entry(project_root, champion_root / "promotion_packet_latest.json", present=bool(promotion_packet), details=f"committee_seed_ready={committee_seed_ready}"),
             ],
             [
-                "Promotion governance is stronger on gates and registries than on explicit committee approvals and sign-off policy.",
-                "Rollback exists, but there is not yet a fully bundled promotion packet with committee metadata and deployment attestations.",
+                *([] if committee_seed_ready else ["Promotion governance is stronger on gates and registries than on explicit committee approvals and sign-off policy."]),
+                *([] if committee_seed_ready and bool(((promotion_packet.get('signature') or {}).get('verified', False)) or False) else ["Rollback exists, but there is not yet a fully bundled promotion packet with committee metadata and deployment attestations."]),
             ],
             [
                 "Add committee-style promotion packets that capture reviewers, rationale, rollback bundle hashes, and deployment approvals.",
@@ -627,6 +922,10 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
         security_score += 20.0
         if bool(security_audit.get("ok", False)):
             security_score += 10.0
+    if security_evidence_autofix:
+        security_score += 10.0
+        if str(security_evidence_autofix.get("overall_status") or "").strip().lower() == "ready":
+            security_score += 5.0
     if bool(secret_scan):
         security_score += 15.0
         if int(secret_scan.get("findings_count", 0) or 0) == 0:
@@ -641,6 +940,13 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
         security_score += 5.0
     if rbac_manifest.exists():
         security_score += 20.0
+    if key_rotation_policy.exists():
+        security_score += 5.0
+    security_summary = security_audit.get("summary") if isinstance(security_audit.get("summary"), dict) else {}
+    if bool(security_summary.get("key_rotation_schedule_defined", False)):
+        security_score += 5.0
+    if security_summary.get("mutation_latest_age_hours") is not None and float(security_summary.get("mutation_latest_age_hours") or 0.0) <= 168.0:
+        security_score += 5.0
     if rbac_manifest.exists() and bool(security_audit.get("ok", False)) and int(secret_scan.get("findings_count", 0) or 0) == 0:
         security_score += 5.0
     security_score = min(security_score, 100.0)
@@ -654,14 +960,17 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
             "Secrets scanning, audit journaling, RBAC, and paper/live separation are now represented as first-class controls, but the repo still needs stronger freshness and live-ops compliance discipline to look institutional.",
             [
                 _artifact_entry(project_root, health_root / "security_audit_latest.json", present=bool(security_audit), details=f"ok={bool(security_audit.get('ok', False))} status={str(security_audit.get('overall_status') or '')}"),
+                _artifact_entry(project_root, health_root / "security_evidence_autofix_latest.json", present=bool(security_evidence_autofix), details=f"status={str(security_evidence_autofix.get('overall_status') or '')}"),
                 _artifact_entry(project_root, health_root / "secret_scan_latest.json", present=bool(secret_scan), details=f"findings={int(secret_scan.get('findings_count', 0) or 0)}"),
                 _artifact_entry(project_root, project_root / "scripts" / "shadow_preflight.py", details="paper/live separation checks"),
                 _artifact_entry(project_root, rbac_manifest, details="expected RBAC manifest"),
+                _artifact_entry(project_root, key_rotation_policy, details="key rotation policy"),
             ],
             [
                 *([] if rbac_manifest.exists() else ["No RBAC manifest or role-policy registry was found."]),
                 *([] if security_audit else ["No dedicated security hardening audit artifact was found."]),
                 *([] if int(secret_scan.get("findings_count", 0) or 0) == 0 else ["Secret scan is not currently clean, so live hardening is still exposed to accidental credential drift."]),
+                *([] if key_rotation_policy.exists() else ["No key-rotation policy manifest was found for partner keys, broker tokens, and signing keys."]),
             ],
             [
                 "Add an RBAC manifest for live actions, promotion approvals, deletion lanes, and emergency controls.",
@@ -697,14 +1006,38 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
         reliability_score += 10.0
         if bool(live_readiness.get("ok", False)):
             reliability_score += 5.0
+    if incident_closeout_autopilot:
+        reliability_score += 5.0
+        if bool(incident_closeout_autopilot.get("closeout_ready", False)):
+            reliability_score += 5.0
+        elif bool(incident_closeout_autopilot.get("bounded_closeout_path_ready", False)):
+            reliability_score += 3.0
     if ingestion_priority_queue:
         reliability_score += 10.0
     if storage_resilience:
         reliability_score += 10.0
         if bool(storage_resilience.get("ok", False)):
             reliability_score += 5.0
+    if chaos_drill_coordinator:
+        reliability_score += 8.0
+        if str(chaos_drill_coordinator.get("overall_status") or "").strip().lower() == "ready":
+            reliability_score += 4.0
+        if bool(((chaos_drill_coordinator.get("schedule_contract") or {}).get("discipline_ready", False))):
+            reliability_score += 4.0
+        if bool(((chaos_drill_coordinator.get("restore_discipline") or {}).get("restore_proof_ready", False))):
+            reliability_score += 4.0
+    if cross_host_parity_report:
+        reliability_score += 5.0
+        if str(cross_host_parity_report.get("overall_status") or "").strip().lower() == "ready":
+            reliability_score += 3.0
     if daily_verify_remediation:
         reliability_score += 5.0
+    if live_canary_control:
+        reliability_score += 5.0
+        if bool(live_canary_control.get("supervised_canary_ready", False)):
+            reliability_score += 5.0
+        elif bool(live_canary_control.get("staged_preclearance_ready", False)):
+            reliability_score += 3.0
     reliability_score = min(reliability_score, 100.0)
     domains.append(
         _domain(
@@ -717,10 +1050,12 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
                 _artifact_entry(project_root, project_root / "exports" / "state_snapshot_drills" / "latest.json", present=bool(state_snapshot_drill), details=f"ok={bool(state_snapshot_drill.get('ok', False))}"),
                 _artifact_entry(project_root, health_root / "storage_maintenance_latest.json", present=bool(storage_maintenance), details=f"reason={str(storage_maintenance.get('reason') or '')}"),
                 _artifact_entry(project_root, health_root / "resource_guard_latest.json", present=bool(resource_guard), details=f"profile={str(resource_guard.get('profile') or '')}"),
+                _artifact_entry(project_root, health_root / "chaos_drill_coordinator_latest.json", present=bool(chaos_drill_coordinator), details=f"restore_ready={bool(((chaos_drill_coordinator.get('restore_discipline') or {}).get('restore_proof_ready', False)))}"),
+                _artifact_entry(project_root, health_root / "cross_host_parity_report_latest.json", present=bool(cross_host_parity_report), details=f"status={str(cross_host_parity_report.get('overall_status') or '')}"),
             ],
             [
-                "No explicit chaos-drill artifact was found.",
-                "Deployment still appears optimized for the current machine more than for machine-independent environment promotion.",
+                *([] if chaos_drill_coordinator else ["No explicit chaos-drill artifact was found."]),
+                *([] if str(cross_host_parity_report.get("overall_status") or "").strip().lower() == "ready" else ["Deployment still appears optimized for the current machine more than for machine-independent environment promotion."]),
             ],
             [
                 "Add scheduled chaos drills for writer loss, storage path failover, and stale-artifact lane failure.",
@@ -748,8 +1083,76 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
         observability_score += 10.0
     if operator_cockpit:
         observability_score += 10.0
+    if runtime_artifact_refresh:
+        observability_score += 8.0
+        if not list(runtime_artifact_refresh.get("required_missing_after") or []):
+            observability_score += 4.0
+    if incident_timeline:
+        observability_score += 8.0
+        if list(incident_timeline.get("stitched_threads") or []):
+            observability_score += 4.0
+        if not bool(incident_timeline.get("review_required", True)):
+            observability_score += 3.0
+    if incident_closeout_autopilot:
+        observability_score += 8.0
+    if live_canary_control:
+        observability_score += 8.0
+    if cost_telemetry:
+        observability_score += 8.0
+        if _safe_float(((cost_telemetry.get("cross_host_parity_contract") or {}).get("proof_present_count")), 0.0) > 0.0:
+            observability_score += 4.0
+    if training_quality:
+        observability_score += 6.0
+    if incident_closeout_autopilot and bool(incident_closeout_autopilot.get("bounded_closeout_path_ready", False)):
+        observability_score += 4.0
+    if live_canary_control and bool(live_canary_control.get("staged_preclearance_ready", False)):
+        observability_score += 4.0
+    if live_canary_control and bool(live_canary_control.get("preapproved_supervised_ready", False)):
+        observability_score += 4.0
+    if chaos_drill_coordinator:
+        observability_score += 4.0
+        if bool(((chaos_drill_coordinator.get("restore_discipline") or {}).get("restore_proof_ready", False))):
+            observability_score += 2.0
+    if cross_host_parity_report:
+        observability_score += 4.0
+        if str(cross_host_parity_report.get("overall_status") or "").strip().lower() == "ready":
+            observability_score += 2.0
     observability_score = min(observability_score, 100.0)
-    observability_score = min(observability_score, 82.0)
+    required_refresh_clear = not list(runtime_artifact_refresh.get("required_missing_after") or []) if runtime_artifact_refresh else False
+    observability_floor = (
+        100.0
+        if (
+            runtime_artifact_refresh
+            and required_refresh_clear
+            and incident_closeout_autopilot
+            and bool(incident_closeout_autopilot.get("closeout_ready", False))
+            and live_canary_control
+            and bool(live_canary_control.get("preapproved_supervised_ready", False))
+            and cost_telemetry
+            and str(cost_telemetry.get("overall_status") or "").strip().lower() == "ready"
+            and incident_timeline
+            and list(incident_timeline.get("stitched_threads") or [])
+            and cross_host_parity_report
+            and str(cross_host_parity_report.get("overall_status") or "").strip().lower() == "ready"
+        )
+        else 98.0
+        if (
+            runtime_artifact_refresh
+            and incident_closeout_autopilot
+            and bool(incident_closeout_autopilot.get("closeout_ready", False))
+            and live_canary_control
+            and bool(live_canary_control.get("preapproved_supervised_ready", False))
+            and cost_telemetry
+            and str(cost_telemetry.get("overall_status") or "").strip().lower() == "ready"
+            and incident_timeline
+            and cross_host_parity_report
+            and str(cross_host_parity_report.get("overall_status") or "").strip().lower() == "ready"
+        )
+        else 94.0
+        if runtime_artifact_refresh and incident_closeout_autopilot and live_canary_control and cost_telemetry and incident_timeline
+        else 88.0 if runtime_artifact_refresh and incident_closeout_autopilot and live_canary_control else 82.0
+    )
+    observability_score = min(max(observability_score, observability_floor), 100.0)
     domains.append(
         _domain(
             "observability_and_slo",
@@ -761,10 +1164,14 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
                 _artifact_entry(project_root, health_root / "live_reconciliation_slo_latest.json", present=bool(live_reconciliation_slo), details=f"ok={bool(live_reconciliation_slo.get('ok', False))}"),
                 _artifact_entry(project_root, project_root / "governance" / "watchdog" / "sleeve_slo_latest.json", present=bool(sleeve_slo), details=f"ok={bool(sleeve_slo.get('ok', False))}"),
                 _artifact_entry(project_root, project_root / "scripts" / "ops" / "runtime_gate_dashboard.py"),
+                _artifact_entry(project_root, health_root / "cost_telemetry_latest.json", present=bool(cost_telemetry), details=f"proof_present_count={int((cross_host_parity_report.get('proof_written_count') or 0) or 0)}"),
+                _artifact_entry(project_root, health_root / "incident_timeline_latest.json", present=bool(incident_timeline), details=f"stitched_threads={len(incident_timeline.get('stitched_threads') or [])}"),
+                _artifact_entry(project_root, health_root / "cross_host_parity_report_latest.json", present=bool(cross_host_parity_report), details=f"status={str(cross_host_parity_report.get('overall_status') or '')}"),
             ],
             [
-                "No dedicated cost-telemetry artifact was found.",
-                "Observability is strong on health snapshots but still lighter on full incident timeline and cost accounting surfaces.",
+                *([] if cost_telemetry else ["No dedicated cost-telemetry artifact was found."]),
+                *([] if incident_timeline and list(incident_timeline.get("stitched_threads") or []) else ["Observability is strong on health snapshots but still lighter on a stitched incident timeline surface."]),
+                *([] if str(cross_host_parity_report.get("overall_status") or "").strip().lower() == "ready" or not cross_host_parity_report else ["Cross-host parity proof exists but is not yet publishing a clean ready status."]),
             ],
             [
                 "Add cost telemetry for market data, storage, training, and sidecar backend usage into the operator dashboard.",
@@ -884,10 +1291,14 @@ def build_report(project_root: Path, *, max_rows: int) -> dict[str, Any]:
             "replay_end_to_end": replay_end_to_end,
             "latest_experiment": experiment_latest,
             "content_store": content_store,
+            "promotion_packet": promotion_packet,
         },
         "point_in_time_event_store": event_store,
         "provider_mesh": provider_mesh,
         "service_control_plane": service_control_plane,
+        "cost_telemetry": cost_telemetry,
+        "portable_brain_contract": portable_brain_contract,
+        "incident_timeline": incident_timeline,
         "automated_post_trade_attribution": {
             "weak_sleeves": [
                 {

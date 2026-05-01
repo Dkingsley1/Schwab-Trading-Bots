@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 OUT = PROJECT_ROOT / 'governance' / 'health' / 'lock_watchdog_latest.json'
 
 PID_RE = re.compile(r'pid=(\d+)')
+POLICY_LOCK_NAMES = {'paper_trade.lock', 'PAPER_TRADE_LOCK.flag'}
 
 
 def _pid_alive(pid: int) -> bool:
@@ -30,6 +31,10 @@ def _extract_pid(text: str) -> int | None:
         return None
 
 
+def _is_policy_lock(path: Path, text: str) -> bool:
+    return path.name in POLICY_LOCK_NAMES or 'live_data_paper_trade_only' in (text or '')
+
+
 def _lock_candidates() -> list[Path]:
     rows: list[Path] = []
     rows.extend(Path(PROJECT_ROOT / 'governance').glob('*.lock'))
@@ -46,6 +51,7 @@ def main() -> int:
 
     stale: list[dict] = []
     healthy: list[dict] = []
+    policy_locks: list[dict] = []
 
     for path in _lock_candidates():
         text = ''
@@ -53,6 +59,10 @@ def main() -> int:
             text = path.read_text(encoding='utf-8', errors='ignore')
         except Exception:
             text = ''
+
+        if _is_policy_lock(path, text):
+            policy_locks.append({'lock_path': str(path), 'reason': 'persistent_policy'})
+            continue
 
         pid = _extract_pid(text)
         if pid is None:
@@ -77,6 +87,7 @@ def main() -> int:
     payload = {
         'timestamp_utc': datetime.now(timezone.utc).isoformat(),
         'healthy_locks': healthy,
+        'policy_locks': policy_locks,
         'stale_locks': stale,
         'apply': bool(args.apply),
         'removed': removed,

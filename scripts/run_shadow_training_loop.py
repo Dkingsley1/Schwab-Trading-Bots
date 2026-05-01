@@ -45,6 +45,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from core.base_trader import BaseTrader
+from core.brokers import BrokerRuntimeConfig, available_broker_names_for_role, normalize_broker_name
 from core.execution_simulator import simulate_execution
 from core.risk_engine import apply_risk_limits
 from core.position_sizing import size_from_action
@@ -63,6 +64,17 @@ from core.derivatives_features import (
     summarize_calendar_payload,
     summarize_futures_quote_features,
     summarize_option_chain,
+)
+from core.exotic_derivatives_plumbing import (
+    EXOTIC_DERIVATIVE_FEATURE_KEYS,
+    default_exotic_derivative_features,
+    is_exotic_derivative_sleeve,
+    summarize_exotic_derivative_proxy_features,
+)
+from core.advanced_quant_models import (
+    QUANT_MODEL_FEATURE_KEYS,
+    default_quant_model_features,
+    summarize_quant_model_features,
 )
 from core.market_context_features import (
     BOND_REFERENCE_FEATURE_KEYS,
@@ -85,7 +97,7 @@ from core.market_context_features import (
     summarize_data_quality_context,
     summarize_structured_news_items,
 )
-from core.runtime_python import resolve_runtime_python
+from core.runtime_python import resolve_runtime_python, resolve_training_python
 from core.runtime_layers import (
     BackpressureController,
     CanaryRollout,
@@ -275,6 +287,15 @@ _EXTERNAL_CONTEXT_FEATURE_KEYS = [
     "options_zero_dte_regime_norm",
     "options_vol_of_vol_change_norm",
     "options_spread_execution_risk_norm",
+    "options_higher_order_greek_pressure_norm",
+    "options_barrier_touch_risk_norm",
+    "options_lookback_path_dependency_norm",
+    "options_variance_swap_proxy_norm",
+    "options_volatility_swap_proxy_norm",
+    "options_gamma_scalping_pressure_norm",
+    "options_vanna_volga_hedge_pressure_norm",
+    "options_dispersion_trade_proxy_norm",
+    "options_volatility_arbitrage_proxy_norm",
     "crypto_deribit_futures_oi_norm",
     "crypto_deribit_options_oi_norm",
     "crypto_deribit_mark_iv_norm",
@@ -301,6 +322,14 @@ _EXTERNAL_CONTEXT_FEATURE_KEYS = [
     "market_crypto_current_alignment_norm",
     "market_crypto_divergence_norm",
     "market_crypto_corr_confidence_norm",
+    "market_crypto_sleeve_coverage_norm",
+    "market_crypto_sleeve_avg_abs_corr_norm",
+    "market_crypto_sleeve_dispersion_norm",
+    "market_crypto_sleeve_confidence_norm",
+    "market_crypto_risk_on_crypto_alignment_norm",
+    "market_crypto_fx_crypto_inverse_corr_norm",
+    "market_crypto_rates_crypto_corr_norm",
+    "market_crypto_energy_crypto_corr_norm",
     "fx_official_data_available",
     "fx_eurusd_level_norm",
     "fx_eurusd_momentum_norm",
@@ -329,6 +358,7 @@ _EXTERNAL_CONTEXT_FEATURE_KEYS = [
     "live_macro_oil_shock_norm",
     "live_macro_event_alignment_norm",
 ]
+_EXTERNAL_CONTEXT_FEATURE_KEYS = list(dict.fromkeys(_EXTERNAL_CONTEXT_FEATURE_KEYS + list(QUANT_MODEL_FEATURE_KEYS)))
 
 
 @dataclass
@@ -340,6 +370,42 @@ class SubBot:
     test_accuracy: Optional[float]
     promoted: bool = False
     bot_role: str = "signal_sub_bot"
+    lifecycle_state: str = ""
+    slot_kind: str = ""
+    training_excluded: bool = False
+
+
+def _bot_master_vote_eligible(bot: SubBot) -> bool:
+    lifecycle_state = str(bot.lifecycle_state or "").strip().lower()
+    if lifecycle_state == "data_collection_only":
+        return False
+    if bool(bot.training_excluded):
+        return False
+    if float(bot.weight or 0.0) <= 0.0:
+        return False
+    return True
+
+
+def _row_master_vote_eligible(row: Dict[str, Any]) -> bool:
+    if bool(row.get("eligible_for_master_vote", True)) is False:
+        return False
+    lifecycle_state = str(row.get("lifecycle_state") or "").strip().lower()
+    if lifecycle_state == "data_collection_only":
+        return False
+    if bool(row.get("training_excluded", False)):
+        return False
+    if float(row.get("weight", 0.0) or 0.0) <= 0.0:
+        return False
+    return True
+
+
+def _bot_vote_weight_and_direction(bot: SubBot, action: str, population_size: int) -> tuple[float, float, bool]:
+    eligible = _bot_master_vote_eligible(bot)
+    if eligible:
+        weight = float(bot.weight if bot.weight > 0 else 1.0 / max(population_size, 1))
+        direction = 1.0 if str(action).upper() == "BUY" else (-1.0 if str(action).upper() == "SELL" else 0.0)
+        return weight, direction, True
+    return 0.0, 0.0, False
 
 
 def _intent_message_id(*parts: Any) -> str:
@@ -646,6 +712,9 @@ def _parse_sub_bots(registry: Dict[str, Any]) -> List[SubBot]:
                 test_accuracy=float(row["test_accuracy"]) if row.get("test_accuracy") is not None else None,
                 promoted=bool(row.get("promoted", False)),
                 bot_role=str(row.get("bot_role", "signal_sub_bot")),
+                lifecycle_state=str(row.get("lifecycle_state", "")),
+                slot_kind=str(row.get("slot_kind", "")),
+                training_excluded=bool(row.get("training_excluded", False)),
             )
         )
     if not bots:
@@ -1558,8 +1627,12 @@ def _cross_bot_conflict_norm(rows: List[Dict[str, Any]]) -> float:
     hold_weight = 0.0
     role_balance: Dict[str, float] = {}
     for row in rows:
+        if not _row_master_vote_eligible(row):
+            continue
         action = str(row.get("action") or "HOLD").upper()
-        weight = abs(float(row.get("weight", 0.0) or 0.0)) or 1.0
+        weight = abs(float(row.get("weight", 0.0) or 0.0))
+        if weight <= 0.0:
+            continue
         role = str(row.get("bot_role") or "signal_sub_bot").strip().lower() or "signal_sub_bot"
         if action == "BUY":
             buy_weight += weight
@@ -1590,13 +1663,17 @@ def _bot_concentration_norm(rows: Optional[List[Dict[str, Any]]]) -> float:
     totals: Dict[str, float] = {}
     directional_total = 0.0
     for row in rows:
+        if not _row_master_vote_eligible(row):
+            continue
         action = str(row.get("action") or "HOLD").upper()
         if action not in {"BUY", "SELL"}:
             continue
         bot_id = str(row.get("bot_id") or row.get("strategy") or "").strip().lower()
         if not bot_id:
             continue
-        weight = abs(float(row.get("weight", 0.0) or 0.0)) or 1.0
+        weight = abs(float(row.get("weight", 0.0) or 0.0))
+        if weight <= 0.0:
+            continue
         totals[bot_id] = totals.get(bot_id, 0.0) + weight
         directional_total += weight
     if directional_total <= 0.0 or not totals:
@@ -2729,21 +2806,14 @@ def _augment_news_features_with_event_proxy(
     return out
 
 
-def _try_schwab_news_method(client: Any, method_name: str, symbol: str, limit: int) -> Optional[Any]:
-    method = getattr(client, method_name, None)
-    if not callable(method):
-        return None
-
-    candidates = [
-        ((symbol,), {"limit": limit}),
-        ((symbol,), {}),
-        ((), {"symbol": symbol, "limit": limit}),
-        ((), {"symbol": symbol}),
-        ((), {"symbols": symbol, "limit": limit}),
-        ((), {"symbols": symbol}),
-    ]
-
-    for args, kwargs in candidates:
+def _try_broker_candidate_payload(
+    client: Any,
+    candidates: Iterable[Tuple[str, Tuple[Any, ...], Dict[str, Any]]],
+) -> Tuple[Optional[Any], str]:
+    for method_name, args, kwargs in candidates:
+        method = getattr(client, method_name, None)
+        if not callable(method):
+            continue
         try:
             resp = method(*args, **kwargs)
         except TypeError:
@@ -2755,86 +2825,12 @@ def _try_schwab_news_method(client: Any, method_name: str, symbol: str, limit: i
             continue
         if hasattr(resp, "json"):
             try:
-                return resp.json()
+                return resp.json(), method_name
             except Exception:
                 continue
-        return resp
+        return resp, method_name
 
-    return None
-
-
-def _try_schwab_option_chain_method(client: Any, method_name: str, symbol: str, strike_count: int) -> Optional[Any]:
-    method = getattr(client, method_name, None)
-    if not callable(method):
-        return None
-
-    candidates = [
-        ((symbol,), {'strike_count': strike_count, 'include_quotes': True}),
-        ((symbol,), {'strike_count': strike_count}),
-        ((symbol,), {'include_quotes': True}),
-        ((symbol,), {}),
-        ((), {'symbol': symbol, 'strike_count': strike_count, 'include_quotes': True}),
-        ((), {'symbol': symbol, 'strike_count': strike_count}),
-        ((), {'symbol': symbol, 'include_quotes': True}),
-        ((), {'symbol': symbol}),
-    ]
-
-    for args, kwargs in candidates:
-        try:
-            resp = method(*args, **kwargs)
-        except TypeError:
-            continue
-        except Exception:
-            continue
-
-        if resp is None:
-            continue
-        if hasattr(resp, 'json'):
-            try:
-                return resp.json()
-            except Exception:
-                continue
-        return resp
-
-    return None
-
-
-def _try_schwab_calendar_method(client: Any, method_name: str, symbol: str, days_ahead: int) -> Optional[Any]:
-    method = getattr(client, method_name, None)
-    if not callable(method):
-        return None
-
-    now_utc = datetime.now(timezone.utc)
-    end_utc = now_utc + timedelta(days=max(days_ahead, 1))
-
-    candidates = [
-        ((), {'symbol': symbol, 'start_datetime': now_utc, 'end_datetime': end_utc}),
-        ((), {'symbols': symbol, 'start_datetime': now_utc, 'end_datetime': end_utc}),
-        ((), {'symbol': symbol}),
-        ((), {'symbols': symbol}),
-        ((), {'start_datetime': now_utc, 'end_datetime': end_utc}),
-        ((symbol,), {}),
-        ((), {}),
-    ]
-
-    for args, kwargs in candidates:
-        try:
-            resp = method(*args, **kwargs)
-        except TypeError:
-            continue
-        except Exception:
-            continue
-
-        if resp is None:
-            continue
-        if hasattr(resp, 'json'):
-            try:
-                return resp.json()
-            except Exception:
-                continue
-        return resp
-
-    return None
+    return None, ""
 
 
 def _row_get_ci(row: Dict[str, Any], *keys: str) -> Any:
@@ -3440,6 +3436,46 @@ def _market_snapshot_from_coinbase(client: CoinbaseMarketDataClient, symbol: str
     return out
 
 
+def _market_snapshot_from_broker_quote(trader: BaseTrader, symbol: str) -> Dict[str, float]:
+    fetched = trader._fetch_live_quote(symbol=symbol)
+    if not fetched.get("ok"):
+        raise RuntimeError(
+            f"{trader.broker_name}_quote_failed symbol={symbol} err={fetched.get('error', 'unknown')}"
+        )
+
+    snapshot = fetched.get("quote_snapshot") if isinstance(fetched.get("quote_snapshot"), dict) else {}
+    last_price = _to_float(snapshot.get("last_price"), 0.0)
+    mark_price = _to_float(snapshot.get("mark_price"), 0.0)
+    bid = _to_float(snapshot.get("bid_price"), 0.0)
+    ask = _to_float(snapshot.get("ask_price"), 0.0)
+    if last_price <= 0.0:
+        last_price = max(mark_price, bid, ask, 0.0)
+    if last_price <= 0.0:
+        raise RuntimeError(f"{trader.broker_name}_quote_missing_price symbol={symbol}")
+
+    prev_close = max(mark_price, last_price)
+    pct_from_close = (last_price - prev_close) / max(prev_close, 1e-8) if prev_close > 0.0 else 0.0
+    spread_bps = 0.0
+    if bid > 0.0 and ask > bid:
+        spread_bps = ((ask - bid) / max(last_price, ask, bid, 1e-8)) * 10000.0
+
+    return {
+        "last_price": float(last_price),
+        "prev_close": float(prev_close),
+        "pct_from_close": float(pct_from_close),
+        "vol_30m": 0.0,
+        "mom_5m": 0.0,
+        "range_pos": 0.5,
+        "spread_bps": float(spread_bps),
+        "bid_size": float(max(float(os.getenv("BROKER_QUOTE_DEFAULT_BID_SIZE", "500") or 500), 1.0)),
+        "ask_size": float(max(float(os.getenv("BROKER_QUOTE_DEFAULT_ASK_SIZE", "500") or 500), 1.0)),
+        "snapshot_ts_utc": time.time(),
+        "quote_history_relative_deviation": 0.0,
+        "quote_history_agreement_norm": 1.0,
+        **_default_dividend_features(),
+        **default_bond_reference_features(),
+    }
+
 
 def _market_snapshot_simulated(last_price: float) -> Dict[str, float]:
     t = time.time()
@@ -3708,7 +3744,11 @@ def _derive_specialist_aux_features(options_rows: List[Dict[str, Any]], futures_
         num = 0.0
         den = 0.0
         for r in rows:
-            w = max(float(r.get("weight", 0.0) or 0.0), 1e-6)
+            if not _row_master_vote_eligible(r):
+                continue
+            w = max(float(r.get("weight", 0.0) or 0.0), 0.0)
+            if w <= 0.0:
+                continue
             a = str(r.get("action", "HOLD")).upper()
             v = 1.0 if a == "BUY" else (-1.0 if a == "SELL" else 0.0)
             num += w * v
@@ -3738,11 +3778,76 @@ def _weighted_direction_vote(decisions: List[Dict[str, Any]]) -> float:
     num = 0.0
     den = 0.0
     for row in decisions:
-        weight = max(float(row.get("weight", 0.0) or 0.0), 1e-6)
+        if not _row_master_vote_eligible(row):
+            continue
+        weight = max(float(row.get("weight", 0.0) or 0.0), 0.0)
+        if weight <= 0.0:
+            continue
         direction = float(row.get("direction", 0.0) or 0.0)
         num += weight * direction
         den += weight
     return _clamp11(num / max(den, 1e-8))
+
+
+def _sleeve_family_for_row(row: Dict[str, Any]) -> str:
+    slot_kind = str(row.get("slot_kind") or "").strip().lower()
+    bot_id = str(row.get("bot_id") or "").strip().lower()
+    haystack = f"{slot_kind} {bot_id}"
+    families = {
+        "day_trading": ("day_trading", "same_session", "opening_range", "vwap"),
+        "swing": ("swing", "multi_day"),
+        "conservative": ("conservative", "capital_preservation", "cash_parking"),
+        "dividend": ("dividend", "income", "drip", "payout"),
+        "market_neutral": ("market_neutral", "pairs", "stat_arb"),
+        "volatility_regime": ("volatility_regime", "term_structure", "vix"),
+        "sector_master": ("sector_master", "sector_rotation"),
+        "position_lifecycle": ("position_lifecycle", "trim_add_hold", "tax_aware"),
+    }
+    for family, tokens in families.items():
+        if any(token in haystack for token in tokens):
+            return family
+    return "general"
+
+
+def _derive_sleeve_family_aux_features(rows: List[Dict[str, Any]]) -> Dict[str, float]:
+    families = [
+        "day_trading",
+        "swing",
+        "conservative",
+        "dividend",
+        "market_neutral",
+        "volatility_regime",
+        "sector_master",
+        "position_lifecycle",
+    ]
+    grouped: Dict[str, List[Dict[str, Any]]] = {family: [] for family in families}
+    collect_only_count = 0
+    eligible_count = 0
+    for row in rows:
+        lifecycle_state = str(row.get("lifecycle_state") or "").strip().lower()
+        if lifecycle_state == "data_collection_only":
+            collect_only_count += 1
+        if _row_master_vote_eligible(row):
+            eligible_count += 1
+        family = _sleeve_family_for_row(row)
+        if family in grouped:
+            grouped[family].append(row)
+
+    out: Dict[str, float] = {
+        "sleeve_family_eligible_count_norm": _clamp01(eligible_count / 25.0),
+        "sleeve_family_collect_only_pressure_norm": _clamp01(collect_only_count / max(len(rows), 1)),
+    }
+    votes: List[float] = []
+    for family in families:
+        family_rows = grouped.get(family, [])
+        vote = _weighted_direction_vote(family_rows)
+        active = 1.0 if any(_row_master_vote_eligible(row) for row in family_rows) else 0.0
+        out[f"{family}_sleeve_active"] = active
+        out[f"{family}_sleeve_vote"] = vote
+        if active > 0.0:
+            votes.append(vote)
+    out["sleeve_family_consensus_vote"] = _clamp11(sum(votes) / max(len(votes), 1)) if votes else 0.0
+    return out
 
 
 def _infrastructure_observer_signal(
@@ -4909,6 +5014,10 @@ def _grand_master_weights(features: Dict[str, float]) -> Dict[str, float]:
     shock_strength += 0.18 * float(features.get("market_micro_options_flow_norm", 0.0) or 0.0)
     shock_strength += 0.18 * float(features.get("market_micro_short_pressure_norm", 0.0) or 0.0)
     shock_strength += 0.14 * float(features.get("market_micro_credit_flow_norm", 0.0) or 0.0)
+    shock_strength += 0.20 * float(features.get("quant_cvar_tail_risk_norm", 0.0) or 0.0)
+    shock_strength += 0.16 * float(features.get("quant_copula_dependency_norm", 0.0) or 0.0)
+    shock_strength += 0.14 * float(features.get("quant_heston_vol_risk_norm", 0.0) or 0.0)
+    shock_strength += 0.12 * float(features.get("quant_merton_jump_risk_norm", 0.0) or 0.0)
     flow_direction = abs(float(features.get("flow_direction_signed", 0.0) or 0.0))
     flow_risk_on = float(features.get("flow_risk_on_norm", 0.0) or 0.0)
     flow_risk_off = float(features.get("flow_risk_off_norm", 0.0) or 0.0)
@@ -5027,7 +5136,29 @@ def _grand_master_vote(
     )
     tradeability = _clamp01(float(features.get("market_micro_tradeability_score_norm", 0.5) or 0.5))
     cross_bot_conflict = _clamp01(float(features.get("cross_bot_conflict_norm", 0.0) or 0.0))
-    specialist_consensus = _clamp11(0.55 * options_vote + 0.45 * futures_vote)
+    sleeve_consensus = _clamp11(float(features.get("sleeve_family_consensus_vote", 0.0) or 0.0))
+    sleeve_collect_pressure = _clamp01(float(features.get("sleeve_family_collect_only_pressure_norm", 0.0) or 0.0))
+    label_contract_quality = _clamp01(float(features.get("label_contract_quality_norm", 1.0) or 1.0))
+    market_neutral_vote = _clamp11(float(features.get("market_neutral_sleeve_vote", 0.0) or 0.0))
+    volatility_regime_vote = _clamp11(float(features.get("volatility_regime_sleeve_vote", 0.0) or 0.0))
+    sector_master_vote = _clamp11(float(features.get("sector_master_sleeve_vote", 0.0) or 0.0))
+    position_lifecycle_vote = _clamp11(float(features.get("position_lifecycle_sleeve_vote", 0.0) or 0.0))
+    quant_data_conf = _clamp01(float(features.get("quant_model_data_confidence_norm", 0.0) or 0.0))
+    quant_resource_pressure = _clamp01(float(features.get("quant_model_resource_pressure_norm", 0.0) or 0.0))
+    quant_tail_pressure = max(
+        _clamp01(float(features.get("quant_cvar_tail_risk_norm", 0.0) or 0.0)),
+        _clamp01(float(features.get("quant_copula_dependency_norm", 0.0) or 0.0)),
+        _clamp01(float(features.get("quant_heston_vol_risk_norm", 0.0) or 0.0)),
+        _clamp01(float(features.get("quant_merton_jump_risk_norm", 0.0) or 0.0)),
+    )
+    quant_state_conf = 0.5 * _clamp01(float(features.get("quant_kalman_filter_confidence_norm", 0.0) or 0.0)) + 0.5 * _clamp01(float(features.get("quant_particle_filter_confidence_norm", 0.0) or 0.0))
+    sleeve_guard_vote = _clamp11(
+        0.35 * market_neutral_vote
+        + 0.25 * volatility_regime_vote
+        + 0.20 * sector_master_vote
+        + 0.20 * position_lifecycle_vote
+    )
+    specialist_consensus = _clamp11(0.42 * options_vote + 0.34 * futures_vote + 0.16 * sleeve_consensus + 0.08 * sleeve_guard_vote)
     directional_alignment = _clamp11(
         0.50 * flow_direction + 0.30 * lead_lag_signal + 0.20 * micro_order_flow
     )
@@ -5041,8 +5172,15 @@ def _grand_master_vote(
         + 0.14 * tradeability
         + 0.12 * infra_conf_scale
         + 0.12 * lead_lag_conf
+        + 0.08 * abs(sleeve_consensus)
         + 0.08 * flow_conviction
+        + 0.05 * quant_data_conf
+        + 0.04 * quant_state_conf
+        - 0.14 * (1.0 - label_contract_quality)
+        - 0.08 * sleeve_collect_pressure
         - 0.16 * infra_risk
+        - 0.14 * quant_resource_pressure
+        - 0.12 * quant_tail_pressure
         - 0.12 * flow_stress
         - 0.12 * lead_lag_break
         - 0.12 * cross_bot_conflict
@@ -5056,6 +5194,8 @@ def _grand_master_vote(
         directional_conflict = _clamp01(max((-vote_sign * directional_alignment), 0.0))
     vote += 0.12 * infra_vote
     vote += 0.10 * specialist_consensus
+    vote += 0.06 * sleeve_consensus
+    vote += 0.04 * sleeve_guard_vote
     vote += 0.08 * directional_alignment
     vote -= 0.16 * specialist_conflict + 0.14 * directional_conflict + 0.10 * master_disagreement
     deploy_scale = min(max(0.40 + 0.85 * deployability, 0.25), 1.05)
@@ -5063,9 +5203,13 @@ def _grand_master_vote(
         max(
             1.0
             - 0.42 * infra_risk
+            - 0.18 * quant_resource_pressure
+            - 0.16 * quant_tail_pressure
             - 0.18 * flow_stress
             - 0.16 * lead_lag_break
-            - 0.14 * cross_bot_conflict,
+            - 0.14 * cross_bot_conflict
+            - 0.10 * (1.0 - label_contract_quality)
+            - 0.08 * sleeve_collect_pressure,
             0.20,
         ),
         1.0,
@@ -5078,6 +5222,8 @@ def _grand_master_vote(
             0.22
             + 0.10 * (1.0 - deployability)
             + 0.06 * infra_risk
+            + 0.04 * quant_tail_pressure
+            + 0.03 * quant_resource_pressure
             + 0.05 * master_disagreement,
             0.18,
         ),
@@ -5089,6 +5235,8 @@ def _grand_master_vote(
                 0.60
                 + 0.05 * (1.0 - deployability)
                 + 0.04 * infra_risk
+                + 0.03 * quant_tail_pressure
+                + 0.02 * quant_resource_pressure
                 + 0.03 * master_disagreement,
                 0.56,
             ),
@@ -5100,7 +5248,13 @@ def _grand_master_vote(
         action = "HOLD"
     elif infra_risk >= 0.92 and deployability < 0.60:
         action = "HOLD"
+    elif quant_resource_pressure >= 0.82 and deployability < 0.64:
+        action = "HOLD"
+    elif quant_tail_pressure >= 0.88 and abs(vote) < (directional_trigger + 0.14):
+        action = "HOLD"
     elif master_disagreement >= 0.72 and abs(vote) < (directional_trigger + 0.08):
+        action = "HOLD"
+    elif label_contract_quality < 0.45 and abs(vote) < (directional_trigger + 0.10):
         action = "HOLD"
     elif vote > directional_trigger:
         action = "BUY"
@@ -5114,7 +5268,13 @@ def _grand_master_vote(
         "master_weights=" + ",".join(details),
         f"infra_vote={infra_vote:.3f}",
         f"infra_risk={infra_risk:.3f}",
+        f"quant_resource_pressure={quant_resource_pressure:.3f}",
+        f"quant_tail_pressure={quant_tail_pressure:.3f}",
+        f"quant_data_confidence={quant_data_conf:.3f}",
         f"specialist_consensus={specialist_consensus:.3f}",
+        f"sleeve_consensus={sleeve_consensus:.3f}",
+        f"label_contract_quality={label_contract_quality:.3f}",
+        f"collect_only_pressure={sleeve_collect_pressure:.3f}",
         f"directional_alignment={directional_alignment:.3f}",
         f"master_disagreement={master_disagreement:.3f}",
         f"deployability={deployability:.3f}",
@@ -5123,8 +5283,16 @@ def _grand_master_vote(
     return action, score, threshold, reasons, {
         "vote": vote,
         "deployability": float(deployability),
+        "quant_resource_pressure": float(quant_resource_pressure),
+        "quant_tail_pressure": float(quant_tail_pressure),
+        "quant_data_confidence": float(quant_data_conf),
+        "quant_state_confidence": float(quant_state_conf),
         "directional_trigger": float(directional_trigger),
         "specialist_consensus": float(specialist_consensus),
+        "sleeve_consensus": float(sleeve_consensus),
+        "sleeve_guard_vote": float(sleeve_guard_vote),
+        "label_contract_quality": float(label_contract_quality),
+        "collect_only_pressure": float(sleeve_collect_pressure),
         "directional_alignment": float(directional_alignment),
         "master_disagreement": float(master_disagreement),
         "specialist_conflict": float(specialist_conflict),
@@ -5765,6 +5933,7 @@ def _build_options_plan(
     plan["master_vote"] = master_vote
     plan["spread_width_pct"] = 0.04
     plan["wheel_enabled"] = wheel_enabled
+    plan["contract_multiplier"] = _options_contract_multiplier_for_symbol(symbol)
     if "wheel_phase" not in plan and str(plan.get("strategy_family", "")).lower() == "wheel":
         plan["wheel_phase"] = "covered_call" if can_cover else "cash_secured_put"
     plan["context"] = {
@@ -6730,6 +6899,15 @@ _BEHAVIOR_FEATURE_NAMES_V2 = [
     "options_zero_dte_regime_norm",
     "options_vol_of_vol_change_norm",
     "options_spread_execution_risk_norm",
+    "options_higher_order_greek_pressure_norm",
+    "options_barrier_touch_risk_norm",
+    "options_lookback_path_dependency_norm",
+    "options_variance_swap_proxy_norm",
+    "options_volatility_swap_proxy_norm",
+    "options_gamma_scalping_pressure_norm",
+    "options_vanna_volga_hedge_pressure_norm",
+    "options_dispersion_trade_proxy_norm",
+    "options_volatility_arbitrage_proxy_norm",
     "crypto_deribit_futures_oi_norm",
     "crypto_deribit_options_oi_norm",
     "crypto_deribit_mark_iv_norm",
@@ -6756,6 +6934,14 @@ _BEHAVIOR_FEATURE_NAMES_V2 = [
     "market_crypto_current_alignment_norm",
     "market_crypto_divergence_norm",
     "market_crypto_corr_confidence_norm",
+    "market_crypto_sleeve_coverage_norm",
+    "market_crypto_sleeve_avg_abs_corr_norm",
+    "market_crypto_sleeve_dispersion_norm",
+    "market_crypto_sleeve_confidence_norm",
+    "market_crypto_risk_on_crypto_alignment_norm",
+    "market_crypto_fx_crypto_inverse_corr_norm",
+    "market_crypto_rates_crypto_corr_norm",
+    "market_crypto_energy_crypto_corr_norm",
     "fx_official_data_available",
     "fx_eurusd_level_norm",
     "fx_eurusd_momentum_norm",
@@ -7356,6 +7542,14 @@ def _behavior_feature_vector_v2(symbol: str, action_hint: str, features: Dict[st
         'market_crypto_current_alignment_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_current_alignment_norm', features.get('market_crypto_current_alignment_norm', 0.0)) or 0.0)),
         'market_crypto_divergence_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_divergence_norm', features.get('market_crypto_divergence_norm', 0.0)) or 0.0)),
         'market_crypto_corr_confidence_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_corr_confidence_norm', features.get('market_crypto_corr_confidence_norm', 0.0)) or 0.0)),
+        'market_crypto_sleeve_coverage_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_sleeve_coverage_norm', features.get('market_crypto_sleeve_coverage_norm', 0.0)) or 0.0)),
+        'market_crypto_sleeve_avg_abs_corr_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_sleeve_avg_abs_corr_norm', features.get('market_crypto_sleeve_avg_abs_corr_norm', 0.0)) or 0.0)),
+        'market_crypto_sleeve_dispersion_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_sleeve_dispersion_norm', features.get('market_crypto_sleeve_dispersion_norm', 0.0)) or 0.0)),
+        'market_crypto_sleeve_confidence_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_sleeve_confidence_norm', features.get('market_crypto_sleeve_confidence_norm', 0.0)) or 0.0)),
+        'market_crypto_risk_on_crypto_alignment_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_risk_on_crypto_alignment_norm', features.get('market_crypto_risk_on_crypto_alignment_norm', 0.0)) or 0.0)),
+        'market_crypto_fx_crypto_inverse_corr_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_fx_crypto_inverse_corr_norm', features.get('market_crypto_fx_crypto_inverse_corr_norm', 0.0)) or 0.0)),
+        'market_crypto_rates_crypto_corr_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_rates_crypto_corr_norm', features.get('market_crypto_rates_crypto_corr_norm', 0.0)) or 0.0)),
+        'market_crypto_energy_crypto_corr_norm': _behavior_clamp01(float(snapshot_ctx.get('market_crypto_energy_crypto_corr_norm', features.get('market_crypto_energy_crypto_corr_norm', 0.0)) or 0.0)),
         'fx_official_data_available': _behavior_clamp01(float(snapshot_ctx.get('fx_official_data_available', features.get('fx_official_data_available', 0.0)) or 0.0)),
         'fx_eurusd_level_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_eurusd_level_norm', features.get('fx_eurusd_level_norm', 0.0)) or 0.0)),
         'fx_eurusd_momentum_norm': _behavior_clamp01(float(snapshot_ctx.get('fx_eurusd_momentum_norm', features.get('fx_eurusd_momentum_norm', 0.0)) or 0.0)),
@@ -7894,7 +8088,7 @@ def _shadow_profile_name() -> str:
     return os.getenv("SHADOW_PROFILE", "").strip().lower()
 
 
-DEFAULT_PAPER_OPTIONS_PROFILE_ALLOWLIST = "default,aggressive,intraday_aggressive,swing_aggressive"
+DEFAULT_PAPER_OPTIONS_PROFILE_ALLOWLIST = "default,aggressive,intraday_aggressive,swing_aggressive,options_on_futures,options_on_futures_aggressive"
 
 
 def _parse_profile_csv(raw: str) -> set[str]:
@@ -10931,16 +11125,79 @@ def _pick_metric_candidate(numeric: Dict[str, List[float]], tokens: List[str]) -
     return 0.0
 
 
+def _find_securities_account(payload: Any) -> Dict[str, Any]:
+    if isinstance(payload, dict):
+        account = payload.get("securitiesAccount")
+        if isinstance(account, dict):
+            return account
+        for value in payload.values():
+            found = _find_securities_account(value)
+            if found:
+                return found
+    elif isinstance(payload, list):
+        for row in payload:
+            found = _find_securities_account(row)
+            if found:
+                return found
+    return {}
+
+
+def _balance_float(row: Dict[str, Any], key: str) -> float:
+    try:
+        value = float(row.get(key, 0.0) or 0.0)
+    except Exception:
+        return 0.0
+    return value if math.isfinite(value) else 0.0
+
+
+def _first_positive_balance(rows: List[Dict[str, Any]], keys: List[str]) -> float:
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key in keys:
+            value = _balance_float(row, key)
+            if value > 0.0:
+                return float(value)
+    return 0.0
+
+
 def _extract_account_metrics(payload: Any) -> Dict[str, float]:
+    account = _find_securities_account(payload)
+    current_balances = account.get("currentBalances") if isinstance(account.get("currentBalances"), dict) else {}
+    projected_balances = account.get("projectedBalances") if isinstance(account.get("projectedBalances"), dict) else {}
+    initial_balances = account.get("initialBalances") if isinstance(account.get("initialBalances"), dict) else {}
+    balance_rows = [current_balances, projected_balances, initial_balances]
+
     numeric: Dict[str, List[float]] = {}
     _collect_numeric_key_values(payload, numeric)
 
-    equity = _pick_metric_candidate(numeric, ["liquidationvalue", "netliquidation", "equity", "accountvalue"])
-    cash_balance = _pick_metric_candidate(numeric, ["cashbalance", "cashavailable", "moneymarketfund"])
-    buying_power = _pick_metric_candidate(numeric, ["buyingpower", "daytradingbuyingpower"])
-    available_funds = _pick_metric_candidate(numeric, ["availablefunds", "cashavailablefortrading", "availabletrading"])
-    initial_margin = _pick_metric_candidate(numeric, ["initialmargin", "initialrequirement"])
-    maintenance_margin = _pick_metric_candidate(numeric, ["maintenancemargin", "maintenancerequirement"])
+    equity = _first_positive_balance(
+        balance_rows,
+        ["liquidationValue", "equity", "accountValue"],
+    ) or _pick_metric_candidate(numeric, ["liquidationvalue", "netliquidation", "equity", "accountvalue"])
+    cash_balance = _first_positive_balance(
+        balance_rows,
+        ["cashBalance", "cashAvailableForTrading", "moneyMarketFund", "totalCash"],
+    ) or _pick_metric_candidate(numeric, ["cashbalance", "cashavailable", "moneymarketfund"])
+    buying_power = _first_positive_balance(
+        [current_balances, projected_balances],
+        ["buyingPower", "buyingPowerNonMarginableTrade", "stockBuyingPower", "dayTradingBuyingPower"],
+    ) or _first_positive_balance(
+        [initial_balances],
+        ["buyingPower", "buyingPowerNonMarginableTrade", "stockBuyingPower", "dayTradingBuyingPower"],
+    ) or _pick_metric_candidate(numeric, ["buyingpower"])
+    available_funds = _first_positive_balance(
+        [current_balances, projected_balances, initial_balances],
+        ["availableFunds", "availableFundsNonMarginableTrade", "cashAvailableForTrading", "availableTrading"],
+    ) or _pick_metric_candidate(numeric, ["availablefunds", "cashavailablefortrading", "availabletrading"])
+    initial_margin = _first_positive_balance(
+        balance_rows,
+        ["initialMarginRequirement", "initialRequirement", "initialMargin"],
+    ) or _pick_metric_candidate(numeric, ["initialmargin", "initialrequirement"])
+    maintenance_margin = _first_positive_balance(
+        balance_rows,
+        ["maintenanceRequirement", "maintenanceMarginRequirement", "maintenanceMargin"],
+    ) or _pick_metric_candidate(numeric, ["maintenancemargin", "maintenancerequirement"])
 
     return {
         "equity": float(max(equity, 0.0)),
@@ -10976,11 +11233,11 @@ def _broker_margin_available_proxy(broker_truth: Dict[str, Any], lane: str) -> f
     if not isinstance(metrics, dict):
         metrics = {}
 
-    available = max(
-        _to_float(metrics.get("available_funds"), 0.0),
-        _to_float(metrics.get("buying_power"), 0.0),
-        _to_float(metrics.get("cash_balance"), 0.0),
-    )
+    available = _to_float(metrics.get("available_funds"), 0.0)
+    if available <= 0.0:
+        available = _to_float(metrics.get("buying_power"), 0.0)
+    if available <= 0.0:
+        available = _to_float(metrics.get("cash_balance"), 0.0)
     equity = _to_float(metrics.get("equity"), 0.0)
     if available <= 0.0 and equity > 0.0:
         lane_key = (lane or "").strip().lower()
@@ -10997,6 +11254,16 @@ def _broker_margin_available_proxy(broker_truth: Dict[str, Any], lane: str) -> f
     headroom_pct = float(caps.get(lane_key, caps.get("default", 0.70)))
     headroom_pct = min(max(headroom_pct, 0.05), 1.0)
     return float(max(available, 0.0) * headroom_pct)
+
+
+def _broker_margin_truth_has_basis(broker_truth: Dict[str, Any]) -> bool:
+    metrics = broker_truth.get("account_metrics") if isinstance(broker_truth, dict) else {}
+    if not isinstance(metrics, dict):
+        return False
+    for key in ("available_funds", "buying_power", "cash_balance", "equity"):
+        if _to_float(metrics.get(key), 0.0) > 0.0:
+            return True
+    return False
 
 
 def _default_capital_flow_state() -> Dict[str, Any]:
@@ -11100,6 +11367,21 @@ def _effective_account_equity_proxy(
     }
 
 
+def _is_crypto_option_symbol(symbol: str) -> bool:
+    token = str(symbol or "").strip().upper()
+    if not token:
+        return False
+    if token.endswith(("-USD", "-USDC", "-USDT", "-BTC", "-ETH")):
+        return True
+    return token in {"BTC", "ETH", "SOL", "AVAX", "LTC", "LINK", "DOGE"}
+
+
+def _options_contract_multiplier_for_symbol(symbol: str) -> float:
+    if _is_crypto_option_symbol(symbol):
+        return max(_to_float(os.getenv("CRYPTO_OPTIONS_CONTRACT_MULTIPLIER", "1"), 1.0), 0.000001)
+    return max(_to_float(os.getenv("EQUITY_OPTIONS_CONTRACT_MULTIPLIER", "100"), 100.0), 1.0)
+
+
 def _estimate_options_margin_proxy(decision: Dict[str, Any]) -> float:
     plan = decision.get("plan") if isinstance(decision, dict) else {}
     if not isinstance(plan, dict):
@@ -11114,7 +11396,11 @@ def _estimate_options_margin_proxy(decision: Dict[str, Any]) -> float:
     if contracts <= 0:
         return 0.0
 
-    notional = px * 100.0 * float(contracts)
+    multiplier = _to_float(plan.get("contract_multiplier"), 0.0)
+    if multiplier <= 0.0:
+        multiplier = _options_contract_multiplier_for_symbol(str(plan.get("symbol", "") or ""))
+
+    notional = px * multiplier * float(contracts)
     family = str(plan.get("strategy_family", "") or "").strip().lower()
 
     family_mult = {
@@ -11134,7 +11420,7 @@ def _estimate_options_margin_proxy(decision: Dict[str, Any]) -> float:
 
     strike = _to_float(plan.get("strike"), 0.0)
     if style == "WHEEL_CASH_SECURED_PUT" and strike > 0.0:
-        margin = strike * 100.0 * float(contracts)
+        margin = strike * multiplier * float(contracts)
     elif style in {"COVERED_CALL", "WHEEL_COVERED_CALL", "PROTECTIVE_COLLAR"}:
         margin = max(notional * 0.05, 0.0)
 
@@ -11148,7 +11434,7 @@ def _estimate_options_margin_proxy(decision: Dict[str, Any]) -> float:
             strikes.append(s)
     if len(strikes) >= 2:
         width = max(max(strikes) - min(strikes), 0.0)
-        defined_risk = width * 100.0 * float(contracts)
+        defined_risk = width * multiplier * float(contracts)
         if family in {"credit_spread", "debit_spread", "neutral_income", "calendar", "diagonal_income"}:
             margin = min(max(margin, 0.0), max(defined_risk, 0.0))
 
@@ -11224,8 +11510,19 @@ def _apply_derivatives_margin_guard(
         required = 0.0
 
     available = _broker_margin_available_proxy(broker_truth, lane_key)
+    margin_truth_available = _broker_margin_truth_has_basis(broker_truth)
+    execution_enabled = (not _env_flag("MARKET_DATA_ONLY", "1")) and _env_flag("ALLOW_ORDER_EXECUTION", "0")
     cushion = max(_to_float(os.getenv("DERIVATIVES_MARGIN_GUARD_MIN_CUSHION", "1.05"), 1.05), 1.0)
-    ok = (required <= 0.0) or ((required * cushion) <= max(available, 0.0))
+    advisory_no_truth = bool(required > 0.0 and available <= 0.0 and not margin_truth_available and not execution_enabled)
+    if advisory_no_truth:
+        ok = True
+        reason = "shadow_no_broker_margin_truth"
+    elif required > 0.0 and available <= 0.0 and not margin_truth_available:
+        ok = False
+        reason = "broker_margin_truth_unavailable"
+    else:
+        ok = (required <= 0.0) or ((required * cushion) <= max(available, 0.0))
+        reason = "ok" if ok else "margin_headroom_insufficient"
 
     meta = {
         "active": True,
@@ -11233,9 +11530,12 @@ def _apply_derivatives_margin_guard(
         "ok": bool(ok),
         "required_margin_proxy": float(required),
         "available_margin_proxy": float(available),
+        "broker_margin_truth_available": bool(margin_truth_available),
+        "advisory": bool(advisory_no_truth),
+        "execution_enabled": bool(execution_enabled),
         "margin_cushion": float(cushion),
         "action": action,
-        "reason": "ok" if ok else "margin_headroom_insufficient",
+        "reason": reason,
     }
 
     if ok:
@@ -12094,6 +12394,39 @@ def _env_int(name: str, default: int) -> int:
         return int(default)
 
 
+def _broker_context_env_names(broker: str, suffix: str) -> List[str]:
+    token = re.sub(r"[^A-Z0-9]+", "_", normalize_broker_name(broker).upper()).strip("_")
+    names = [f"BROKER_{str(suffix or '').strip().upper()}"]
+    if token:
+        names.append(f"{token}_{str(suffix or '').strip().upper()}")
+    return names
+
+
+def _broker_context_env_value(broker: str, suffix: str, default: str) -> str:
+    for env_name in _broker_context_env_names(broker, suffix):
+        if env_name in os.environ:
+            return os.getenv(env_name, default)
+    return default
+
+
+def _broker_context_env_flag(broker: str, suffix: str, default: str = "0") -> bool:
+    return str(_broker_context_env_value(broker, suffix, default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _broker_context_env_int(broker: str, suffix: str, default: int) -> int:
+    try:
+        return int(float(_broker_context_env_value(broker, suffix, str(default)) or default))
+    except Exception:
+        return int(default)
+
+
+def _broker_context_env_float(broker: str, suffix: str, default: float) -> float:
+    try:
+        return float(_broker_context_env_value(broker, suffix, str(default)) or default)
+    except Exception:
+        return float(default)
+
+
 def _normalize_runtime_symbol(broker: str, symbol: str) -> str:
     raw = str(symbol or "").strip()
     if not raw:
@@ -12450,7 +12783,7 @@ def _spawn_auto_retrain(
     sample_recommendations: List[Dict[str, Any]],
     broker: Optional[str] = None,
 ) -> subprocess.Popen:
-    venv_py = str(resolve_runtime_python(project_root))
+    venv_py = str(resolve_training_python(project_root))
     retrain_script = os.path.join(project_root, "scripts", "weekly_retrain.py")
     cmd = [venv_py, retrain_script, "--continue-on-error"]
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -12519,9 +12852,13 @@ def run_loop(
     if _global_trading_halt_enabled():
         raise RuntimeError("GLOBAL_TRADING_HALT=1 set; refusing to start shadow loop")
 
-    broker = (broker or "schwab").strip().lower()
-    if broker not in {"schwab", "coinbase"}:
-        raise RuntimeError(f"Unsupported broker: {broker}")
+    broker_runtime = BrokerRuntimeConfig.from_env(default_broker=broker or os.getenv("DATA_BROKER", "schwab"))
+    broker = normalize_broker_name(broker or broker_runtime.broker_for_role("market_data"))
+    supported_market_brokers = set(available_broker_names_for_role("market_data"))
+    if broker not in supported_market_brokers:
+        supported_text = ",".join(sorted(supported_market_brokers))
+        raise RuntimeError(f"Unsupported market-data broker: {broker} supported={supported_text}")
+    paper_execution_broker = normalize_broker_name(broker_runtime.broker_for_role("paper"))
 
     os.environ["SHADOW_DOMAIN"] = _shadow_domain_name(broker=broker)
 
@@ -12533,13 +12870,18 @@ def run_loop(
     os.environ["CORRELATION_RUN_ID"] = run_id
     os.environ["CORRELATION_ITER_ID"] = ""
 
-    api_key = os.getenv("SCHWAB_API_KEY", "YOUR_KEY_HERE")
-    secret = os.getenv("SCHWAB_SECRET", "YOUR_SECRET_HERE")
-    redirect = os.getenv("SCHWAB_REDIRECT", "https://127.0.0.1:8182")
     covered_call_shares = int(os.getenv("COVERED_CALL_SHARES", "0"))
 
-    if broker == "schwab" and (not simulate) and (api_key == "YOUR_KEY_HERE" or secret == "YOUR_SECRET_HERE"):
-        raise RuntimeError("Real credentials are required unless --simulate is used")
+    trader = BaseTrader.from_env(
+        mode="shadow",
+        broker=broker,
+        role="market_data",
+        runtime_config=broker_runtime,
+    )
+    trader.token_path = os.path.join(PROJECT_ROOT, "token.json")
+
+    if (not simulate) and trader.broker_capabilities.requires_auth and trader.credentials_are_placeholder():
+        raise RuntimeError(f"Real {trader.broker_display_name} credentials are required unless --simulate is used")
 
     registry_path = os.path.join(PROJECT_ROOT, "master_bot_registry.json")
     registry, bots = _fresh_registry(registry_path)
@@ -12547,6 +12889,11 @@ def run_loop(
     print(
         f"Shadow profile={_shadow_profile_name() or 'default'} domain={_shadow_domain_name(broker=broker)} "
         f"threshold_shift={_threshold_shift():+.3f}"
+    )
+    print(
+        "[BrokerConfig] "
+        f"market_data={broker} paper_execution={paper_execution_broker} "
+        f"auth={broker_runtime.auth_broker_name} live_execution={broker_runtime.execution_broker_name}"
     )
 
     behavior_bias_enabled = os.getenv("ENABLE_TRADE_BEHAVIOR_BIAS", "1").strip() == "1"
@@ -12565,12 +12912,22 @@ def run_loop(
         else:
             print("Trade behavior bias enabled but no model found; running without behavior prior.")
 
-    trader = BaseTrader(api_key, secret, redirect, mode="shadow")
-    trader.token_path = os.path.join(PROJECT_ROOT, "token.json")
-
     client = None
     if not simulate:
-        if broker == "schwab":
+        if broker == "coinbase":
+            client = CoinbaseMarketDataClient(timeout_seconds=float(os.getenv("COINBASE_TIMEOUT_SECONDS", "8")))
+            client.set_live_symbols(list(dict.fromkeys(symbols + context_symbols)))
+            _append_jsonl(
+                _event_bus_path(PROJECT_ROOT),
+                {
+                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                    "event": "api_client_initialized",
+                    "broker": broker,
+                    "timeout_seconds": float(os.getenv("COINBASE_TIMEOUT_SECONDS", "8")),
+                },
+            )
+            print("Shadow loop connected to Coinbase public market data.")
+        else:
             auth_started = time.perf_counter()
             try:
                 client = trader.authenticate()
@@ -12579,7 +12936,7 @@ def run_loop(
                     project_root=PROJECT_ROOT,
                     broker=broker,
                     symbol="*",
-                    endpoint="schwab.authenticate",
+                    endpoint=f"{broker}.authenticate",
                     status="ok",
                     latency_ms=latency_ms,
                 )
@@ -12592,7 +12949,7 @@ def run_loop(
                         "latency_ms": round(latency_ms, 3),
                     },
                 )
-                print("Shadow loop connected to Schwab market data.")
+                print(f"Shadow loop connected to {trader.broker_display_name} market data.")
             except Exception as exc:
                 latency_ms = (time.perf_counter() - auth_started) * 1000.0
                 err = f"{type(exc).__name__}:{exc}"
@@ -12600,7 +12957,7 @@ def run_loop(
                     project_root=PROJECT_ROOT,
                     broker=broker,
                     symbol="*",
-                    endpoint="schwab.authenticate",
+                    endpoint=f"{broker}.authenticate",
                     status="error",
                     latency_ms=latency_ms,
                     error=err,
@@ -12615,20 +12972,7 @@ def run_loop(
                         "error": err,
                     },
                 )
-                raise RuntimeError(f"Schwab authentication failed: {err}") from exc
-        else:
-            client = CoinbaseMarketDataClient(timeout_seconds=float(os.getenv("COINBASE_TIMEOUT_SECONDS", "8")))
-            client.set_live_symbols(list(dict.fromkeys(symbols + context_symbols)))
-            _append_jsonl(
-                _event_bus_path(PROJECT_ROOT),
-                {
-                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                    "event": "api_client_initialized",
-                    "broker": broker,
-                    "timeout_seconds": float(os.getenv("COINBASE_TIMEOUT_SECONDS", "8")),
-                },
-            )
-            print("Shadow loop connected to Coinbase public market data.")
+                raise RuntimeError(f"{trader.broker_display_name} authentication failed: {err}") from exc
     else:
         print("Running in simulate mode (no external API calls).")
 
@@ -12726,38 +13070,35 @@ def run_loop(
     slow_bot_rows_cache_max_symbols = max(int(os.getenv("RUNTIME_SLOW_BOT_CACHE_MAX_SYMBOLS", "48")), 0)
     slow_bot_rows_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
-    news_context_enabled = (
-        broker == "schwab"
-        and (not simulate)
-        and os.getenv("SCHWAB_NEWS_CONTEXT_ENABLED", "1").strip() == "1"
-    )
-    news_cache_ttl_seconds = max(float(os.getenv("SCHWAB_NEWS_CACHE_TTL_SECONDS", "180")), 15.0)
-    news_lookback_hours = max(float(os.getenv("SCHWAB_NEWS_LOOKBACK_HOURS", "24")), 1.0)
-    news_max_items = max(int(os.getenv("SCHWAB_NEWS_MAX_ITEMS", "20")), 3)
-    news_cache_max_symbols = max(int(os.getenv("SCHWAB_NEWS_CACHE_MAX_SYMBOLS", "64")), 0)
+    broker_capabilities = getattr(trader, "broker_capabilities", None)
+    native_news_context_supported = bool(getattr(broker_capabilities, "supports_news_context", False))
+    native_calendar_context_supported = bool(getattr(broker_capabilities, "supports_calendar_context", False))
+    native_options_context_supported = bool(getattr(broker_capabilities, "supports_options", False))
+
+    news_context_enabled = (not simulate) and _broker_context_env_flag(broker, "NEWS_CONTEXT_ENABLED", "1")
+    news_cache_ttl_seconds = max(_broker_context_env_float(broker, "NEWS_CACHE_TTL_SECONDS", 180.0), 15.0)
+    news_lookback_hours = max(_broker_context_env_float(broker, "NEWS_LOOKBACK_HOURS", 24.0), 1.0)
+    news_max_items = max(_broker_context_env_int(broker, "NEWS_MAX_ITEMS", 20), 3)
+    news_cache_max_symbols = max(_broker_context_env_int(broker, "NEWS_CACHE_MAX_SYMBOLS", 64), 0)
     news_cache: Dict[str, Tuple[float, Dict[str, float]]] = {}
-    news_method_state: Dict[str, Any] = {"disabled": False, "warned": False, "method": ""}
+    news_method_state: Dict[str, Any] = {"native_disabled": False, "warned": False, "method": "", "source": ""}
 
     options_chain_enabled = (
-        broker == "schwab"
-        and (not simulate)
-        and os.getenv("SCHWAB_OPTIONS_CHAIN_ENABLED", "1").strip() == "1"
+        (not simulate)
+        and native_options_context_supported
+        and _broker_context_env_flag(broker, "OPTIONS_CHAIN_ENABLED", "1")
     )
-    options_chain_cache_ttl_seconds = max(float(os.getenv("SCHWAB_OPTIONS_CHAIN_CACHE_TTL_SECONDS", "150")), 20.0)
-    options_chain_strike_count = max(int(os.getenv("SCHWAB_OPTIONS_CHAIN_STRIKE_COUNT", "30")), 8)
-    options_chain_cache_max_symbols = max(int(os.getenv("SCHWAB_OPTIONS_CHAIN_CACHE_MAX_SYMBOLS", "64")), 0)
+    options_chain_cache_ttl_seconds = max(_broker_context_env_float(broker, "OPTIONS_CHAIN_CACHE_TTL_SECONDS", 150.0), 20.0)
+    options_chain_strike_count = max(_broker_context_env_int(broker, "OPTIONS_CHAIN_STRIKE_COUNT", 30), 8)
+    options_chain_cache_max_symbols = max(_broker_context_env_int(broker, "OPTIONS_CHAIN_CACHE_MAX_SYMBOLS", 64), 0)
     options_chain_cache: Dict[str, Tuple[float, Dict[str, float]]] = {}
     options_chain_method_state: Dict[str, Any] = {"disabled": False, "warned": False, "method": ""}
 
-    calendar_context_enabled = (
-        broker == "schwab"
-        and (not simulate)
-        and os.getenv("SCHWAB_CALENDAR_CONTEXT_ENABLED", "1").strip() == "1"
-    )
-    calendar_cache_ttl_seconds = max(float(os.getenv("SCHWAB_CALENDAR_CACHE_TTL_SECONDS", "300")), 30.0)
-    calendar_days_ahead = max(int(os.getenv("SCHWAB_CALENDAR_DAYS_AHEAD", "7")), 1)
+    calendar_context_enabled = (not simulate) and _broker_context_env_flag(broker, "CALENDAR_CONTEXT_ENABLED", "1")
+    calendar_cache_ttl_seconds = max(_broker_context_env_float(broker, "CALENDAR_CACHE_TTL_SECONDS", 300.0), 30.0)
+    calendar_days_ahead = max(_broker_context_env_int(broker, "CALENDAR_DAYS_AHEAD", 7), 1)
     calendar_cache: Dict[str, Any] = {"ts": 0.0, "features": default_calendar_features()}
-    calendar_method_state: Dict[str, Any] = {"disabled": False, "warned": False, "method": "", "source": ""}
+    calendar_method_state: Dict[str, Any] = {"native_disabled": False, "warned": False, "method": "", "source": ""}
     external_context_cache_ttl_seconds = max(float(os.getenv("EXTERNAL_CONTEXT_CACHE_TTL_SECONDS", "90")), 15.0)
     market_crypto_corr_auto_refresh_enabled = os.getenv("MARKET_CRYPTO_CORRELATION_AUTO_REFRESH_ENABLED", "0").strip() == "1"
     market_crypto_corr_max_stale_seconds = max(
@@ -12800,7 +13141,12 @@ def run_loop(
     te_calendar_importance = os.getenv("TRADINGECONOMICS_CALENDAR_IMPORTANCE", "").strip()
     te_calendar_timeout_seconds = max(float(os.getenv("TRADINGECONOMICS_CALENDAR_TIMEOUT_SECONDS", "8")), 1.0)
     te_calendar_max_items = max(
-        int(os.getenv("TRADINGECONOMICS_CALENDAR_MAX_ITEMS", os.getenv("SCHWAB_CALENDAR_MAX_ITEMS", "600"))),
+        int(
+            os.getenv(
+                "TRADINGECONOMICS_CALENDAR_MAX_ITEMS",
+                _broker_context_env_value(broker, "CALENDAR_MAX_ITEMS", "600"),
+            )
+        ),
         60,
     )
     te_api_key = os.getenv("TRADINGECONOMICS_API_KEY", "").strip()
@@ -12921,6 +13267,12 @@ def run_loop(
     ).strip()
     paper_mirror_options_profiles = _paper_options_profile_allowlist()
     current_profile = (_shadow_profile_name() or "default").strip().lower()
+    profile_is_options_on_futures = current_profile in {"options_on_futures", "options_on_futures_aggressive"}
+    profile_is_exotic_derivative = (
+        is_exotic_derivative_sleeve(current_profile)
+        or _shadow_domain_name(broker=broker) == "exotic_derivatives"
+        or os.getenv("EXOTIC_DERIVATIVE_RESEARCH_ONLY", "0").strip() == "1"
+    )
     paper_profile_ok = (not paper_mirror_profiles) or (current_profile in paper_mirror_profiles)
     paper_options_profile_ok = _paper_options_profile_allowed(current_profile)
     paper_selected_ids: set[str] = set()
@@ -12931,6 +13283,16 @@ def run_loop(
         os.getenv("MASTER_EXECUTION_LANE_ENABLED", "1").strip() == "1"
     )
     inline_paper_execution_enabled = os.getenv("INLINE_PAPER_EXECUTION_ENABLED", "0").strip() == "1"
+    if profile_is_exotic_derivative:
+        paper_mirror_enabled = False
+        paper_mirror_options_enabled = False
+        execution_lane_enabled = False
+        master_execution_lane_enabled = False
+        inline_paper_execution_enabled = False
+        print(
+            f"[ExoticDerivativesGuard] research_only profile={current_profile or 'default'} "
+            "direct_execution=blocked paper_lane=disabled"
+        )
 
     if paper_mirror_enabled and (not paper_profile_ok):
         print(
@@ -12948,7 +13310,12 @@ def run_loop(
     paper_options_requested = paper_mirror_options_enabled and paper_options_profile_ok and (paper_mirror_all_active or paper_mirror_options_top_n > 0)
     paper_futures_requested = paper_mirror_enabled and paper_profile_ok and (paper_mirror_all_active or paper_mirror_top_n > 0)
     if inline_paper_execution_enabled and (paper_core_requested or paper_options_requested or paper_futures_requested):
-        paper_trader = BaseTrader(api_key, secret, redirect, mode="paper")
+        paper_trader = BaseTrader.from_env(
+            mode="paper",
+            broker=paper_execution_broker,
+            role="paper",
+            runtime_config=broker_runtime,
+        )
         paper_trader.execution_enabled = True
         paper_trader.market_data_only = False
         print(
@@ -12957,7 +13324,8 @@ def run_loop(
             f"options_top_n={paper_mirror_options_top_n} "
             f"options_min_acc={paper_mirror_options_min_accuracy:.3f} "
             f"all_active={int(paper_mirror_all_active)} "
-            f"profile={current_profile or 'default'}"
+            f"profile={current_profile or 'default'} "
+            f"paper_broker={paper_execution_broker}"
         )
     elif execution_lane_enabled and (paper_core_requested or paper_options_requested or paper_futures_requested or master_execution_lane_enabled):
         print(
@@ -13790,7 +14158,7 @@ def run_loop(
                     endpoint = "twelve_data.market_snapshot"
                     ingress_source = "external_fx"
                 else:
-                    endpoint = "schwab.market_snapshot" if broker == "schwab" else "coinbase.market_snapshot"
+                    endpoint = f"{broker}.market_snapshot"
                     ingress_source = "api"
 
             started = time.perf_counter()
@@ -13803,8 +14171,10 @@ def run_loop(
                         snap = _market_snapshot_from_twelve_data(sym)
                     elif broker == "schwab":
                         snap = _market_snapshot_from_schwab(client, sym)
-                    else:
+                    elif broker == "coinbase":
                         snap = _market_snapshot_from_coinbase(client, sym)
+                    else:
+                        snap = _market_snapshot_from_broker_quote(trader, sym)
                 latency_ms = (time.perf_counter() - started) * 1000.0
                 snap = dict(snap or {})
                 snap["market_data_latency_ms"] = round(float(latency_ms), 3)
@@ -13868,8 +14238,6 @@ def run_loop(
         def _fetch_symbol_news_features(sym: str) -> Dict[str, float]:
             if not news_context_enabled:
                 return _default_news_features()
-            if news_method_state.get("disabled"):
-                return _default_news_features()
 
             now_s = time.time()
             cached = news_cache.get(sym)
@@ -13877,23 +14245,30 @@ def run_loop(
                 return dict(cached[1])
 
             payload = None
-            for method_name in (
-                "get_news",
-                "get_news_headlines",
-                "get_news_for_symbol",
-                "get_news_headlines_for_symbol",
-                "search_news",
-            ):
-                payload = _try_schwab_news_method(client, method_name, sym, news_max_items)
+            method_name = ""
+            if native_news_context_supported and (not news_method_state.get("native_disabled")):
+                payload, method_name = _try_broker_candidate_payload(
+                    client,
+                    trader.broker_adapter.news_candidates(symbol=sym, limit=news_max_items),
+                )
                 if payload is not None:
                     news_method_state["method"] = method_name
-                    break
+                    news_method_state["source"] = broker
 
             if payload is None:
                 if not news_method_state.get("warned"):
-                    print("[NewsFeed] schwab client has no accessible news endpoint; continuing with price-only features")
+                    if native_news_context_supported:
+                        print(
+                            f"[NewsFeed] no accessible {broker} broker-native news endpoint; "
+                            "relying on external context feeds and price-only fallbacks"
+                        )
+                    else:
+                        print(
+                            f"[NewsFeed] {broker} broker adapter does not expose native news; "
+                            "relying on external context feeds and price-only fallbacks"
+                        )
                     news_method_state["warned"] = True
-                news_method_state["disabled"] = True
+                news_method_state["native_disabled"] = True
                 feats = _default_news_features()
                 _bounded_cache_put(news_cache, sym, (now_s, feats), max_entries=news_cache_max_symbols)
                 return feats
@@ -13921,21 +14296,16 @@ def run_loop(
                 return dict(cached[1])
 
             payload = None
-            for method_name in (
-                "get_option_chain",
-                "get_options_chain",
-                "option_chain",
-                "options_chain",
-                "get_option_chain_for_symbol",
-            ):
-                payload = _try_schwab_option_chain_method(client, method_name, sym, options_chain_strike_count)
-                if payload is not None:
-                    options_chain_method_state["method"] = method_name
-                    break
+            payload, method_name = _try_broker_candidate_payload(
+                client,
+                trader.broker_adapter.option_chain_candidates(symbol=sym, strike_count=options_chain_strike_count),
+            )
+            if payload is not None:
+                options_chain_method_state["method"] = method_name
 
             if payload is None:
                 if not options_chain_method_state.get("warned"):
-                    print("[OptionsChain] no accessible Schwab options chain endpoint; using price-only context")
+                    print(f"[OptionsChain] no accessible {broker} options chain endpoint; using price-only context")
                     options_chain_method_state["warned"] = True
                 options_chain_method_state["disabled"] = True
                 feats = default_options_features()
@@ -13948,10 +14318,10 @@ def run_loop(
                 underlying_price=float(mkt.get("last_price", 0.0) or 0.0),
                 realized_vol=float(mkt.get("vol_30m", 0.0) or 0.0),
                 now_ts=now_s,
-                max_contracts=max(int(os.getenv("SCHWAB_OPTIONS_CHAIN_MAX_CONTRACTS", "900")), 100),
+                max_contracts=max(_broker_context_env_int(broker, "OPTIONS_CHAIN_MAX_CONTRACTS", 900), 100),
             )
 
-            # Some Schwab payloads expose expiries only in keyed maps like YYYY-MM-DD:NN.
+            # Some broker payloads expose expiries only in keyed maps like YYYY-MM-DD:NN.
             if isinstance(payload, dict) and (
                 float(feats.get("options_near_expiry_days", 0.0) or 0.0) <= 0.0
                 or float(feats.get("options_far_expiry_days", 0.0) or 0.0) <= 0.0
@@ -13984,8 +14354,6 @@ def run_loop(
         def _fetch_calendar_features(sym: str) -> Dict[str, float]:
             if not calendar_context_enabled:
                 return default_calendar_features()
-            if calendar_method_state.get("disabled"):
-                return default_calendar_features()
 
             now_s = time.time()
             cached_ts = float(calendar_cache.get("ts", 0.0) or 0.0)
@@ -13997,20 +14365,17 @@ def run_loop(
             calendar_source = ""
             calendar_endpoint = ""
 
-            for method_name in (
-                "get_market_calendar",
-                "get_calendar",
-                "get_events",
-                "get_market_events",
-                "get_economic_calendar",
-            ):
-                payload = _try_schwab_calendar_method(client, method_name, sym, calendar_days_ahead)
+            method_name = ""
+            if native_calendar_context_supported and (not calendar_method_state.get("native_disabled")):
+                payload, method_name = _try_broker_candidate_payload(
+                    client,
+                    trader.broker_adapter.calendar_candidates(symbol=sym, days_ahead=calendar_days_ahead),
+                )
                 if payload is not None:
                     calendar_method_state["method"] = method_name
-                    calendar_method_state["source"] = "schwab"
-                    calendar_source = "schwab"
-                    calendar_endpoint = f"schwab.{method_name}"
-                    break
+                    calendar_method_state["source"] = broker
+                    calendar_source = broker
+                    calendar_endpoint = f"{broker}.{method_name}"
 
             if payload is None and te_calendar_enabled:
                 te_started = time.perf_counter()
@@ -14056,12 +14421,23 @@ def run_loop(
             if payload is None:
                 if not calendar_method_state.get("warned"):
                     if te_calendar_enabled:
-                        print("[CalendarFeed] no accessible Schwab or TradingEconomics calendar endpoint; using zero calendar features")
+                        print(
+                            "[CalendarFeed] no accessible broker-native or TradingEconomics calendar endpoint; "
+                            "using external macro proxy features"
+                        )
                     else:
-                        print("[CalendarFeed] no accessible Schwab calendar endpoint; using zero calendar features")
+                        if native_calendar_context_supported:
+                            print(
+                                f"[CalendarFeed] no accessible {broker} broker-native calendar endpoint; "
+                                "using external macro proxy features"
+                            )
+                        else:
+                            print(
+                                f"[CalendarFeed] {broker} broker adapter does not expose native calendar data; "
+                                "using external macro proxy features"
+                            )
                     calendar_method_state["warned"] = True
-                if not te_calendar_enabled:
-                    calendar_method_state["disabled"] = True
+                calendar_method_state["native_disabled"] = True
                 feats = _external_macro_calendar_proxy_features(PROJECT_ROOT)
                 calendar_cache["ts"] = now_s
                 calendar_cache["features"] = feats
@@ -14070,7 +14446,7 @@ def run_loop(
             feats = summarize_calendar_payload(
                 payload,
                 now_ts=now_s,
-                max_items=max(int(os.getenv("SCHWAB_CALENDAR_MAX_ITEMS", "600")), 60),
+                max_items=max(_broker_context_env_int(broker, "CALENDAR_MAX_ITEMS", 600), 60),
             )
             if calendar_source == "tradingeconomics":
                 feats["calendar_feed_available"] = max(float(feats.get("calendar_feed_available", 0.0) or 0.0), 1.0)
@@ -14261,6 +14637,8 @@ def run_loop(
                         print(f"[Context] symbol={ctx_symbol} market_data_error={exc}")
 
         live_macro_snapshot = _load_external_context_category("live_macro")
+        official_macro_snapshot = _load_external_context_category("official_macro_context")
+        tradingeconomics_snapshot = _load_external_context_category("tradingeconomics")
         sec_edgar_snapshot = _load_external_context_category("sec_edgar")
         extended_quant_snapshot = _load_external_context_category("extended_quant_context")
         tastytrade_snapshot = _load_external_context_category("options_flow_context")
@@ -14268,6 +14646,7 @@ def run_loop(
         market_crypto_correlation_snapshot = _load_external_context_category("market_crypto_correlation")
         fx_market_snapshot = _load_external_context_category("fx_market_context")
         dividend_drip_snapshot = _load_external_context_category("dividend_drip_state")
+        quant_model_control_snapshot = _load_external_context_category("quant_model_control")
 
         if broker == "coinbase":
             coinbase_proxy_symbols = _parse_symbols_optional(
@@ -14530,7 +14909,13 @@ def run_loop(
                     symbol=symbol,
                     now_ts=now_ts,
                 )
-            for extra_snapshot in (sec_edgar_snapshot, extended_quant_snapshot, crypto_market_snapshot):
+            for extra_snapshot in (
+                official_macro_snapshot,
+                tradingeconomics_snapshot,
+                sec_edgar_snapshot,
+                extended_quant_snapshot,
+                crypto_market_snapshot,
+            ):
                 news_features = _merge_external_context_news_features(news_features, extra_snapshot, symbol=symbol)
                 calendar_features = _merge_external_context_calendar_features(calendar_features, extra_snapshot)
 
@@ -14585,16 +14970,57 @@ def run_loop(
             execution_lag_features = dict(default_execution_lag_features())
             execution_lag_features.update(execution_lag_by_symbol.get(symbol, {}))
             external_context_features = {}
+            external_context_features.update(_external_context_feature_set(official_macro_snapshot, symbol=symbol))
+            external_context_features.update(_external_context_feature_set(tradingeconomics_snapshot, symbol=symbol))
             external_context_features.update(_external_context_feature_set(sec_edgar_snapshot, symbol=symbol))
             external_context_features.update(_external_context_feature_set(extended_quant_snapshot, symbol=symbol))
             external_context_features.update(_external_context_feature_set(tastytrade_snapshot, symbol=symbol))
             external_context_features.update(_external_context_feature_set(crypto_market_snapshot, symbol=symbol))
             external_context_features.update(_external_context_feature_set(market_crypto_correlation_snapshot, symbol=symbol))
             external_context_features.update(_external_context_feature_set(fx_market_snapshot, symbol=symbol))
+            external_context_features.update(_external_context_feature_set(quant_model_control_snapshot, symbol=symbol))
             dividend_drip_features = _dividend_drip_feature_set(dividend_drip_snapshot, symbol=symbol)
+            quant_model_features = default_quant_model_features()
+            if os.getenv("QUANT_MODEL_FEATURE_PLUMBING_ENABLED", "1").strip() == "1":
+                quant_model_features = summarize_quant_model_features(
+                    {
+                        **shared_features,
+                        **external_context_features,
+                        **bond_reference_features,
+                        **credit_context_features,
+                    },
+                    external_snapshots={
+                        "official_macro": official_macro_snapshot,
+                        "extended_quant": extended_quant_snapshot,
+                        "options_flow": tastytrade_snapshot,
+                        "market_crypto_correlation": market_crypto_correlation_snapshot,
+                        "quant_model_control": quant_model_control_snapshot,
+                    },
+                )
+            exotic_derivative_features = default_exotic_derivative_features()
+            if profile_is_exotic_derivative and os.getenv("EXOTIC_PROXY_PLUMBING_ENABLED", "1").strip() == "1":
+                exotic_derivative_features = summarize_exotic_derivative_proxy_features(
+                    sleeve=current_profile,
+                    broker=broker,
+                    features={
+                        **shared_features,
+                        **external_context_features,
+                        **bond_reference_features,
+                        **credit_context_features,
+                    },
+                    external_snapshots={
+                        "official_macro": official_macro_snapshot,
+                        "tradingeconomics": tradingeconomics_snapshot,
+                        "sec_edgar": sec_edgar_snapshot,
+                        "bond_reference": _load_external_context_category("bond_reference"),
+                        "options_flow": tastytrade_snapshot,
+                        "market_breadth": _load_external_context_category("market_breadth"),
+                    },
+                )
             shared_features = {
                 **_default_dividend_features(),
                 **shared_features,
+                **default_exotic_derivative_features(),
                 **default_breadth_features(),
                 **default_bond_reference_features(),
                 **default_credit_context_features(),
@@ -14606,6 +15032,8 @@ def run_loop(
                 **external_context_features,
                 **live_macro_gate_features,
                 **dividend_drip_features,
+                **quant_model_features,
+                **exotic_derivative_features,
                 **bond_reference_features,
                 **credit_context_features,
             }
@@ -14652,7 +15080,7 @@ def run_loop(
             symbol_is_futures = _symbol_is_probably_futures(symbol) or (broker == "coinbase")
             options_specialist_bots = (
                 list(options_virtual_bots_template)
-                if derivatives_specialists_enabled and (not symbol_is_futures)
+                if derivatives_specialists_enabled and ((not symbol_is_futures) or profile_is_options_on_futures)
                 else []
             )
             futures_specialist_bots = (
@@ -14831,7 +15259,13 @@ def run_loop(
 
             for row in reused_rows:
                 b_id = str(row.get("bot_id", ""))
+                if not _row_master_vote_eligible(row):
+                    row["weight"] = 0.0
+                    row["direction"] = 0.0
+                    row["eligible_for_master_vote"] = False
                 reasons = list(row.get("reasons", [])) + ["cooldown_reuse"]
+                if not bool(row.get("eligible_for_master_vote", True)):
+                    reasons.append("collection_only_no_master_vote")
                 if _dynamic_storage_flag("LOG_SUB_BOT_DECISIONS", log_sub_bot_decisions):
                     trader.execute_decision(
                         symbol=symbol,
@@ -14848,6 +15282,14 @@ def run_loop(
                 sub_rows.append(row)
 
             for b, action, score, threshold, reasons in batched_rows:
+                row_weight, row_direction, eligible_for_master_vote = _bot_vote_weight_and_direction(
+                    b,
+                    action,
+                    len(active_bots),
+                )
+                row_reasons = list(reasons)
+                if not eligible_for_master_vote:
+                    row_reasons.append("collection_only_no_master_vote")
                 if _dynamic_storage_flag("LOG_SUB_BOT_DECISIONS", log_sub_bot_decisions):
                     trader.execute_decision(
                         symbol=symbol,
@@ -14857,9 +15299,9 @@ def run_loop(
                         threshold=threshold,
                         features=shared_features,
                         gates=gates,
-                        reasons=reasons + [f"bot_id={b.bot_id}", f"bot_role={b.bot_role}"],
+                        reasons=row_reasons + [f"bot_id={b.bot_id}", f"bot_role={b.bot_role}"],
                         strategy=b.bot_id,
-                        metadata={"layer": "sub_bot", "snapshot_id": snapshot_id, "bot_weight": b.weight, "test_accuracy": b.test_accuracy, "bot_role": b.bot_role},
+                        metadata={"layer": "sub_bot", "snapshot_id": snapshot_id, "bot_weight": row_weight, "test_accuracy": b.test_accuracy, "bot_role": b.bot_role, "eligible_for_master_vote": eligible_for_master_vote, "lifecycle_state": b.lifecycle_state, "slot_kind": b.slot_kind},
                     )
 
                 row = {
@@ -14868,9 +15310,13 @@ def run_loop(
                     "action": action,
                     "score": score,
                     "threshold": threshold,
-                    "weight": b.weight if b.weight > 0 else 1.0 / max(len(active_bots), 1),
-                    "direction": 1.0 if action == "BUY" else (-1.0 if action == "SELL" else 0.0),
-                    "reasons": reasons,
+                    "weight": row_weight,
+                    "direction": row_direction,
+                    "eligible_for_master_vote": eligible_for_master_vote,
+                    "lifecycle_state": b.lifecycle_state,
+                    "slot_kind": b.slot_kind,
+                    "training_excluded": bool(b.training_excluded),
+                    "reasons": row_reasons,
                     "test_accuracy": b.test_accuracy,
                     "promoted": bool(b.promoted),
                 }
@@ -14890,6 +15336,11 @@ def run_loop(
                     if row is not None and not any(r.get("bot_id") == b.bot_id for r in sub_rows):
                         reused = dict(row)
                         reused["reused"] = 1
+                        if not _row_master_vote_eligible(reused):
+                            reused["weight"] = 0.0
+                            reused["direction"] = 0.0
+                            reused["eligible_for_master_vote"] = False
+                            reused["reasons"] = list(reused.get("reasons", [])) + ["collection_only_no_master_vote"]
                         sub_rows.append(reused)
 
             if paper_selected_ids:
@@ -14966,15 +15417,27 @@ def run_loop(
                     shared_features,
                     segment="options",
                 ):
+                    row_weight, row_direction, eligible_for_master_vote = _bot_vote_weight_and_direction(
+                        b,
+                        action,
+                        len(options_specialist_bots),
+                    )
+                    row_reasons = list(reasons)
+                    if not eligible_for_master_vote:
+                        row_reasons.append("collection_only_no_master_vote")
                     row = {
                         "bot_id": b.bot_id,
                         "bot_role": b.bot_role,
                         "action": action,
                         "score": score,
                         "threshold": threshold,
-                        "weight": b.weight if b.weight > 0 else 1.0 / max(len(options_specialist_bots), 1),
-                        "direction": 1.0 if action == "BUY" else (-1.0 if action == "SELL" else 0.0),
-                        "reasons": reasons,
+                        "weight": row_weight,
+                        "direction": row_direction,
+                        "eligible_for_master_vote": eligible_for_master_vote,
+                        "lifecycle_state": b.lifecycle_state,
+                        "slot_kind": b.slot_kind,
+                        "training_excluded": bool(b.training_excluded),
+                        "reasons": row_reasons,
                         "test_accuracy": b.test_accuracy,
                         "promoted": bool(b.promoted),
                     }
@@ -15002,7 +15465,7 @@ def run_loop(
                                 threshold=threshold,
                                 features=shared_features,
                                 gates=gates,
-                                reasons=reasons + [
+                                reasons=row_reasons + [
                                     (
                                         "paper_mirror_all_active=1"
                                         if paper_mirror_all_active
@@ -15026,7 +15489,7 @@ def run_loop(
                                     threshold=threshold,
                                     features=shared_features,
                                     gates=gates,
-                                    reasons=reasons + [
+                                    reasons=row_reasons + [
                                         (
                                             "paper_mirror_all_active=1"
                                             if paper_mirror_all_active
@@ -15049,7 +15512,7 @@ def run_loop(
                             threshold=threshold,
                             features=shared_features,
                             gates=gates,
-                            reasons=reasons + [f"bot_id={b.bot_id}", "bot_role=options_sub_bot"],
+                            reasons=row_reasons + [f"bot_id={b.bot_id}", "bot_role=options_sub_bot"],
                             strategy=b.bot_id,
                             metadata={
                                 "layer": "options_sub_bot",
@@ -15066,15 +15529,27 @@ def run_loop(
                     shared_features,
                     segment="futures",
                 ):
+                    row_weight, row_direction, eligible_for_master_vote = _bot_vote_weight_and_direction(
+                        b,
+                        action,
+                        len(futures_specialist_bots),
+                    )
+                    row_reasons = list(reasons)
+                    if not eligible_for_master_vote:
+                        row_reasons.append("collection_only_no_master_vote")
                     row = {
                         "bot_id": b.bot_id,
                         "bot_role": b.bot_role,
                         "action": action,
                         "score": score,
                         "threshold": threshold,
-                        "weight": b.weight if b.weight > 0 else 1.0 / max(len(futures_specialist_bots), 1),
-                        "direction": 1.0 if action == "BUY" else (-1.0 if action == "SELL" else 0.0),
-                        "reasons": reasons,
+                        "weight": row_weight,
+                        "direction": row_direction,
+                        "eligible_for_master_vote": eligible_for_master_vote,
+                        "lifecycle_state": b.lifecycle_state,
+                        "slot_kind": b.slot_kind,
+                        "training_excluded": bool(b.training_excluded),
+                        "reasons": row_reasons,
                         "test_accuracy": b.test_accuracy,
                     }
                     futures_specialist_rows.append(row)
@@ -15101,7 +15576,7 @@ def run_loop(
                                 threshold=threshold,
                                 features=shared_features,
                                 gates=gates,
-                                reasons=reasons + [
+                                reasons=row_reasons + [
                                     (
                                         "paper_mirror_all_active=1"
                                         if paper_mirror_all_active
@@ -15125,7 +15600,7 @@ def run_loop(
                                     threshold=threshold,
                                     features=shared_features,
                                     gates=gates,
-                                    reasons=reasons + [
+                                    reasons=row_reasons + [
                                         (
                                             "paper_mirror_all_active=1"
                                             if paper_mirror_all_active
@@ -15148,7 +15623,7 @@ def run_loop(
                             threshold=threshold,
                             features=shared_features,
                             gates=gates,
-                            reasons=reasons + [f"bot_id={b.bot_id}", "bot_role=futures_sub_bot"],
+                            reasons=row_reasons + [f"bot_id={b.bot_id}", "bot_role=futures_sub_bot"],
                             strategy=b.bot_id,
                             metadata={
                                 "layer": "futures_sub_bot",
@@ -15174,15 +15649,27 @@ def run_loop(
                     infra_signal_features,
                     infra_decision_context,
                 ):
+                    row_weight, row_direction, eligible_for_master_vote = _bot_vote_weight_and_direction(
+                        b,
+                        action,
+                        len(infra_observer_bots),
+                    )
+                    row_reasons = list(reasons)
+                    if not eligible_for_master_vote:
+                        row_reasons.append("collection_only_no_master_vote")
                     row = {
                         "bot_id": b.bot_id,
                         "bot_role": b.bot_role,
                         "action": action,
                         "score": score,
                         "threshold": threshold,
-                        "weight": b.weight if b.weight > 0 else 1.0 / max(len(infra_observer_bots), 1),
-                        "direction": 1.0 if action == "BUY" else (-1.0 if action == "SELL" else 0.0),
-                        "reasons": reasons,
+                        "weight": row_weight,
+                        "direction": row_direction,
+                        "eligible_for_master_vote": eligible_for_master_vote,
+                        "lifecycle_state": b.lifecycle_state,
+                        "slot_kind": b.slot_kind,
+                        "training_excluded": bool(b.training_excluded),
+                        "reasons": row_reasons,
                         "test_accuracy": b.test_accuracy,
                         "observer_meta": observer_meta,
                     }
@@ -15196,7 +15683,7 @@ def run_loop(
                             threshold=threshold,
                             features=infra_signal_features,
                             gates=gates,
-                            reasons=reasons + [f"bot_id={b.bot_id}", "bot_role=infrastructure_sub_bot"],
+                            reasons=row_reasons + [f"bot_id={b.bot_id}", "bot_role=infrastructure_sub_bot"],
                             strategy=b.bot_id,
                             metadata={
                                 "layer": "infrastructure_sub_bot",
@@ -15209,6 +15696,7 @@ def run_loop(
                         )
             infra_aux = _derive_infrastructure_aux_features(infra_observer_rows)
             all_sub_rows = sub_rows + options_specialist_rows + futures_specialist_rows + infra_observer_rows
+            sleeve_family_aux = _derive_sleeve_family_aux_features(all_sub_rows)
             cross_bot_conflict_features = {
                 "cross_bot_conflict_norm": _cross_bot_conflict_norm(all_sub_rows)
             }
@@ -15239,6 +15727,7 @@ def run_loop(
                 **shared_features,
                 **flash_aux,
                 **specialist_aux,
+                **sleeve_family_aux,
                 **infra_aux,
                 **execution_realism_features,
                 **cooldown_memory_features,
@@ -16191,11 +16680,15 @@ def run_loop(
                         symbol,
                         "options_margin_guard",
                         options_margin_ok,
-                        reason=("ok" if options_margin_ok else str(options_margin_meta.get("reason", "margin_guard_block"))),
+                        reason=str(options_margin_meta.get("reason", "ok" if options_margin_ok else "margin_guard_block")),
                         required_margin_proxy=float(options_margin_meta.get("required_margin_proxy", 0.0) or 0.0),
                         available_margin_proxy=float(options_margin_meta.get("available_margin_proxy", 0.0) or 0.0),
                     )
-                    if not options_margin_ok:
+                    options_margin_alert_enabled = bool(options_margin_meta.get("execution_enabled", False)) or _env_flag(
+                        "DERIVATIVES_MARGIN_GUARD_ALERT_IN_SHADOW",
+                        "0",
+                    )
+                    if (not options_margin_ok) and options_margin_alert_enabled:
                         _emit_critical_alert(
                             project_root=PROJECT_ROOT,
                             broker=broker,
@@ -16204,6 +16697,7 @@ def run_loop(
                             details={
                                 "symbol": symbol,
                                 "iter": int(iter_count),
+                                "reason": str(options_margin_meta.get("reason", "margin_guard_block")),
                                 "required_margin_proxy": float(options_margin_meta.get("required_margin_proxy", 0.0) or 0.0),
                                 "available_margin_proxy": float(options_margin_meta.get("available_margin_proxy", 0.0) or 0.0),
                             },
@@ -16351,11 +16845,15 @@ def run_loop(
                     symbol,
                     "futures_margin_guard",
                     futures_margin_ok,
-                    reason=("ok" if futures_margin_ok else str(futures_margin_meta.get("reason", "margin_guard_block"))),
+                    reason=str(futures_margin_meta.get("reason", "ok" if futures_margin_ok else "margin_guard_block")),
                     required_margin_proxy=float(futures_margin_meta.get("required_margin_proxy", 0.0) or 0.0),
                     available_margin_proxy=float(futures_margin_meta.get("available_margin_proxy", 0.0) or 0.0),
                 )
-                if not futures_margin_ok:
+                futures_margin_alert_enabled = bool(futures_margin_meta.get("execution_enabled", False)) or _env_flag(
+                    "DERIVATIVES_MARGIN_GUARD_ALERT_IN_SHADOW",
+                    "0",
+                )
+                if (not futures_margin_ok) and futures_margin_alert_enabled:
                     _emit_critical_alert(
                         project_root=PROJECT_ROOT,
                         broker=broker,
@@ -16364,6 +16862,7 @@ def run_loop(
                         details={
                             "symbol": symbol,
                             "iter": int(iter_count),
+                            "reason": str(futures_margin_meta.get("reason", "margin_guard_block")),
                             "required_margin_proxy": float(futures_margin_meta.get("required_margin_proxy", 0.0) or 0.0),
                             "available_margin_proxy": float(futures_margin_meta.get("available_margin_proxy", 0.0) or 0.0),
                         },
@@ -16599,6 +17098,8 @@ def run_loop(
                 "news_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in _NEWS_FEATURE_KEYS},
                 "options_chain_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in OPTIONS_FEATURE_KEYS},
                 "futures_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in FUTURES_FEATURE_KEYS},
+                "exotic_derivatives_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in EXOTIC_DERIVATIVE_FEATURE_KEYS},
+                "quant_model_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in QUANT_MODEL_FEATURE_KEYS},
                 "calendar_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in CALENDAR_FEATURE_KEYS},
                 "dividend_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in _DIVIDEND_FEATURE_KEYS},
                 "long_term_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in _LONG_TERM_FEATURE_KEYS},
@@ -16953,7 +17454,11 @@ def main() -> None:
         default=os.getenv("SHADOW_DOMAIN", "").strip().lower(),
         help="Optional shadow domain override (equities|crypto).",
     )
-    parser.add_argument("--broker", default=os.getenv("DATA_BROKER", "schwab"), choices=["schwab", "coinbase"])
+    parser.add_argument(
+        "--broker",
+        default=BrokerRuntimeConfig.from_env().broker_for_role("market_data"),
+        choices=list(available_broker_names_for_role("market_data")),
+    )
     parser.add_argument("--interval-seconds", type=int, default=int(os.getenv("SHADOW_LOOP_INTERVAL", "12")))
     parser.add_argument("--max-iterations", type=int, default=int(os.getenv("SHADOW_LOOP_MAX_ITERS", "0")))
     parser.add_argument("--simulate", action="store_true", help="Run without Schwab API calls.")
@@ -17071,6 +17576,21 @@ def main() -> None:
         print(
             "[SchwabTiering] "
             f"profile={current_profile or 'default'} fast={len(volatile_symbols)} slow={len(defensive_symbols)} "
+            f"core_every_n={core_every_n} fast_every_n={volatile_every_n} slow_every_n={defensive_every_n}"
+        )
+    else:
+        symbols = [_normalize_runtime_symbol(args.broker, s) for s in symbols]
+        context_symbols = [_normalize_runtime_symbol(args.broker, s) for s in context_symbols]
+        policy = _schwab_symbol_policy(current_profile, symbols)
+        volatile_symbols = list(policy["fast_symbols"])
+        defensive_symbols = list(policy["slow_symbols"])
+        core_every_n = int(policy["core_every_n"])
+        volatile_every_n = int(policy["fast_every_n"])
+        defensive_every_n = int(policy["slow_every_n"])
+        print(
+            "[BrokerTiering] "
+            f"broker={args.broker} profile={current_profile or 'default'} "
+            f"fast={len(volatile_symbols)} slow={len(defensive_symbols)} "
             f"core_every_n={core_every_n} fast_every_n={volatile_every_n} slow_every_n={defensive_every_n}"
         )
 

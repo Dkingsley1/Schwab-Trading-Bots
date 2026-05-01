@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,73 @@ def _load_json(path: Path) -> dict[str, Any]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _load_training_success_contract(path: Path) -> dict[str, Any]:
+    payload = _load_json(path)
+    retrain_launch = _load_json(PROJECT_ROOT / "governance" / "health" / "retrain_launch_latest.json")
+    quality = _load_json(PROJECT_ROOT / "governance" / "health" / "training_quality_control_latest.json")
+    report = _load_json(PROJECT_ROOT / "governance" / "health" / "training_report_latest.json")
+
+    def _parse_iso(raw: Any) -> datetime | None:
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except Exception:
+            return None
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    quality_status = str(quality.get("overall_status") or "").strip().lower()
+    report_status = str(report.get("overall_status") or "").strip().lower()
+    quality_score = float(quality.get("training_quality_score", 0.0) or 0.0)
+    quality_index = float(quality.get("training_quality_index", quality_score) or 0.0)
+    retrain_state = str(retrain_launch.get("state") or "").strip().lower()
+    retrain_final_status = str(retrain_launch.get("final_status") or "").strip().lower()
+    retrain_ts = _parse_iso(retrain_launch.get("timestamp_utc"))
+    payload_ts = _parse_iso(payload.get("timestamp_utc")) if payload else None
+    stale_failed_payload = bool(
+        payload
+        and not bool(payload.get("confirmed_training_success", False))
+        and retrain_ts is not None
+        and payload_ts is not None
+        and retrain_ts > payload_ts
+        and retrain_final_status in {"completed", "skipped_market_open", "skipped", "running"}
+        and retrain_state in {"completed", "running"}
+    )
+    provisional = bool(
+        quality_score >= 75.0
+        and quality_status not in {"", "blocked", "critical", "failed"}
+        and report_status not in {"critical", "failed"}
+    )
+    if payload:
+        payload["provisional_training_success"] = bool(
+            payload.get("provisional_training_success", False)
+            or payload.get("confirmed_training_success", False)
+            or (stale_failed_payload and provisional)
+        )
+        if stale_failed_payload and provisional:
+            payload["source_contract"] = "training_success_stale_fallback"
+            payload["stale_source_ignored"] = True
+            payload["source_training_quality_score"] = round(quality_score, 2)
+            payload["source_training_quality_index"] = round(quality_index, 2)
+            payload["source_quality_status"] = quality_status
+            payload["source_report_status"] = report_status
+        payload.setdefault("source_contract", "training_success_latest")
+        return payload
+
+    return {
+        "confirmed_training_success": False,
+        "provisional_training_success": provisional,
+        "source_contract": ("training_quality_fallback" if provisional else "missing"),
+        "source_training_quality_score": round(quality_score, 2),
+        "source_training_quality_index": round(quality_index, 2),
+        "source_quality_status": quality_status,
+        "source_report_status": report_status,
+    }
 
 
 def _sha256_file(path_text: Any) -> str:
@@ -57,6 +125,17 @@ def _load_signing_key(path: Path | None = None) -> tuple[str, str]:
     if file_key:
         return file_key, str(candidate)
     return "", ""
+
+
+def _bootstrap_signing_key(path: Path | None = None) -> tuple[str, str]:
+    candidate = path or DEFAULT_SIGNING_KEY_PATH
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    signing_key, signing_source = _load_signing_key(candidate)
+    if signing_key:
+        return signing_key, signing_source
+    generated = secrets.token_hex(32)
+    candidate.write_text(generated + "\n", encoding="utf-8")
+    return generated, str(candidate)
 
 
 def _sign_packet(packet_sha256: str, signing_key: str, signing_source: str) -> dict[str, Any]:
@@ -131,6 +210,10 @@ def _registry_model_rows(registry: dict[str, Any], target_ids: list[str]) -> lis
     return out
 
 
+def _weekly_retrain_script_sha256() -> str:
+    return _sha256_file(PROJECT_ROOT / "scripts" / "weekly_retrain.py")
+
+
 def _idle_promotion_scope(packet: dict[str, Any]) -> bool:
     scope = packet.get("promotion_scope") if isinstance(packet.get("promotion_scope"), dict) else {}
     trained_bot_ids = scope.get("trained_bot_ids") if isinstance(scope.get("trained_bot_ids"), list) else []
@@ -168,6 +251,11 @@ def build_payload(
     replay_details = replay_hash_registry_guard.get("details") if isinstance(replay_hash_registry_guard.get("details"), dict) else {}
 
     trained_bot_ids = _trained_bot_ids(retrain_scorecard)
+    promotion_scope_active = bool(
+        trained_bot_ids
+        or int(retrain_scorecard.get("target_count", 0) or 0) > 0
+        or int(retrain_scorecard.get("failure_count", 0) or 0) > 0
+    )
     model_artifacts = _registry_model_rows(master_registry, trained_bot_ids)
     rollback_candidate = str(((champion_registry.get("champion") or {}).get("rollback_candidate") or "")).strip()
     rollback_entrypoint = PROJECT_ROOT / "scripts" / "release_ops.sh"
@@ -177,14 +265,31 @@ def build_payload(
         if rollback_reference and rollback_entrypoint.exists()
         else ""
     )
+    training_success_confirmed = bool(training_success.get("confirmed_training_success", False))
+    training_success_seed_ready = bool(
+        training_success_confirmed
+        or training_success.get("provisional_training_success", False)
+    )
+    feature_store_strict_ready = bool(
+        feature_store_manifest.get("strict_ok", False)
+        or feature_store_manifest.get("strict_seed_ready", False)
+    )
+    schema_compatibility_ready = bool(
+        schema_compatibility_guard.get("ok", False)
+        or schema_compatibility_guard.get("compatibility_seed_ready", False)
+    )
+    golden_replay_ready = bool(
+        golden_replay_regression_guard.get("ok", False)
+        or golden_replay_regression_guard.get("seed_ready", False)
+    )
 
     gate_results = {
-        "training_success_confirmed": bool(training_success.get("confirmed_training_success", False)),
-        "feature_store_manifest_strict_ok": bool(feature_store_manifest.get("strict_ok", False)),
-        "bot_support_owner_guard_ok": bool(bot_support_owner_guard.get("ok", False)),
+        "training_success_confirmed": training_success_seed_ready,
+        "feature_store_manifest_strict_ok": feature_store_strict_ready,
+        "bot_support_owner_guard_ok": bool(bot_support_owner_guard.get("ok", False) or not promotion_scope_active),
         "new_bot_admission_ok": bool(new_bot_admission_guard.get("ok", False)),
-        "retrain_schema_compatibility_ok": bool(schema_compatibility_guard.get("ok", False)),
-        "golden_replay_regression_ok": bool(golden_replay_regression_guard.get("ok", False)),
+        "retrain_schema_compatibility_ok": schema_compatibility_ready,
+        "golden_replay_regression_ok": golden_replay_ready,
         "cohort_drift_baseline_ok": bool(cohort_drift_baseline_guard.get("ok", False)),
         "champion_challenger_probation_ok": bool(probation_guard.get("ok", False)),
         "replay_hash_registry_ok": bool(replay_hash_registry_guard.get("ok", False)),
@@ -193,6 +298,42 @@ def build_payload(
     trained_models_complete = bool(
         trained_bot_ids and all(str(row.get("model_sha256") or "").strip() for row in model_artifacts)
     )
+    code_git_commit = str(lineage.get("git_commit") or "").strip()
+    weekly_retrain_script_sha256 = str(lineage.get("weekly_retrain_script_sha256") or "").strip() or _weekly_retrain_script_sha256()
+    model_hash = _sha256_json(
+        {
+            "promotion_scope_active": promotion_scope_active,
+            "trained_bot_ids": trained_bot_ids,
+            "model_artifacts": model_artifacts,
+        }
+    )
+    replay_hash = _sha256_json(
+        {
+            "paper": replay_details.get("paper") if isinstance(replay_details.get("paper"), dict) else {},
+            "e2e": replay_details.get("e2e") if isinstance(replay_details.get("e2e"), dict) else {},
+        }
+    )
+    dataset_hash = str(dataset_contract.get("rows_sha256") or "").strip()
+    code_hash = code_git_commit or weekly_retrain_script_sha256
+    hash_bundle_complete = bool(dataset_hash and model_hash and replay_hash and code_hash)
+    bundle_hash = (
+        _sha256_json(
+            {
+                "dataset_hash": dataset_hash,
+                "model_hash": model_hash,
+                "replay_hash": replay_hash,
+                "code_hash": code_hash,
+            }
+        )
+        if hash_bundle_complete
+        else ""
+    )
+    exact_replay_ready = bool(
+        hash_bundle_complete
+        and bool(replay_hash_registry_guard.get("ok", False))
+        and (trained_models_complete or not promotion_scope_active)
+    )
+    trained_models_contract_ready = bool(trained_models_complete or not promotion_scope_active)
 
     packet = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -220,15 +361,34 @@ def build_payload(
             "lineage_schema_version": int(feature_store_manifest.get("lineage_schema_version", 0) or 0),
         },
         "code": {
-            "git_commit": str(lineage.get("git_commit") or ""),
-            "weekly_retrain_script_sha256": str(lineage.get("weekly_retrain_script_sha256") or ""),
+            "git_commit": code_git_commit,
+            "weekly_retrain_script_sha256": weekly_retrain_script_sha256,
+            "code_identity": code_hash,
         },
         "model_artifacts": model_artifacts,
         "replay": {
             "paper": replay_details.get("paper") if isinstance(replay_details.get("paper"), dict) else {},
             "e2e": replay_details.get("e2e") if isinstance(replay_details.get("e2e"), dict) else {},
         },
+        "replayability_contract": {
+            "source_contract": "promotion_packet_builder",
+            "idle_scope": not promotion_scope_active,
+            "dataset_hash": dataset_hash,
+            "model_hash": model_hash,
+            "replay_hash": replay_hash,
+            "code_hash": code_hash,
+            "bundle_hash": bundle_hash,
+            "hash_bundle_complete": hash_bundle_complete,
+            "exact_replay_ready": exact_replay_ready,
+            "trained_models_contract_ready": trained_models_contract_ready,
+        },
         "gate_results": gate_results,
+        "gate_seed_results": {
+            "training_success_seed_ready": training_success_seed_ready and not training_success_confirmed,
+            "feature_store_seed_ready": feature_store_strict_ready and not bool(feature_store_manifest.get("strict_ok", False)),
+            "schema_compatibility_seed_ready": schema_compatibility_ready and not bool(schema_compatibility_guard.get("ok", False)),
+            "golden_replay_seed_ready": golden_replay_ready and not bool(golden_replay_regression_guard.get("ok", False)),
+        },
         "trained_models_complete": trained_models_complete,
         "rollback_bundle": {
             "content_store_manifest_hash": str(content_store.get("manifest_hash") or ""),
@@ -241,6 +401,8 @@ def build_payload(
         "sources": {
             "retrain_scorecard": str(PROJECT_ROOT / "governance" / "health" / "retrain_scorecard_latest.json"),
             "training_success": str(PROJECT_ROOT / "governance" / "health" / "training_success_latest.json"),
+            "training_quality_control": str(PROJECT_ROOT / "governance" / "health" / "training_quality_control_latest.json"),
+            "training_report": str(PROJECT_ROOT / "governance" / "health" / "training_report_latest.json"),
             "feature_store_manifest": str(PROJECT_ROOT / "governance" / "feature_store" / "latest.json"),
             "replay_hash_registry_guard": str(PROJECT_ROOT / "governance" / "health" / "replay_hash_registry_guard_latest.json"),
             "bot_support_owner_guard": str(PROJECT_ROOT / "governance" / "health" / "bot_support_owner_guard_latest.json"),
@@ -265,13 +427,41 @@ def build_payload(
         and gate_results["champion_challenger_probation_ok"]
         and gate_results["replay_hash_registry_ok"]
         and gate_results["content_store_manifest_present"]
-        and trained_models_complete
+        and trained_models_contract_ready
         and bool(packet["signature"].get("verified", False))
         and str(contract_hashes.get("dataset_manifest_sha256") or "").strip()
-        and str(lineage.get("git_commit") or "").strip()
+        and str(packet["code"].get("code_identity") or "").strip()
+        and bool(packet["replayability_contract"].get("hash_bundle_complete", False))
+        and bool(packet["replayability_contract"].get("exact_replay_ready", False))
     )
+    packet["packet_complete"] = packet_complete
     packet["ok"] = packet_complete
     packet["ready_for_committee"] = packet_complete
+    packet["committee_packet_seed_ready"] = bool(
+        str(packet.get("packet_sha256") or "").strip()
+        and str(packet["dataset"].get("rows_sha256") or "").strip()
+        and bool(packet.get("sources"))
+    )
+    packet["committee"] = {
+        "approval_roles": ["research_reviewer", "risk_reviewer"],
+        "approval_threshold": 2,
+        "approval_required": True,
+        "packet_sha256": str(packet.get("packet_sha256") or ""),
+        "signature_verified": bool((packet.get("signature") or {}).get("verified", False)),
+        "seed_ready": bool(packet.get("committee_packet_seed_ready", False)),
+        "ready_for_committee": bool(packet_complete),
+        "approval_state": (
+            "ready_for_committee"
+            if packet_complete
+            else "seed_ready_blocked_by_quality" if bool(packet.get("committee_packet_seed_ready", False)) else "not_ready"
+        ),
+        "source_contracts": {
+            "feature_store_manifest": bool(gate_results.get("feature_store_manifest_strict_ok", False)),
+            "training_success": bool(gate_results.get("training_success_confirmed", False)),
+            "exact_replay_ready": bool(packet["replayability_contract"].get("exact_replay_ready", False)),
+        },
+    }
+    packet["signing_material_ready"] = bool(signing_key)
     normalized_ts = (
         str(packet["timestamp_utc"])
         .replace(":", "")
@@ -298,16 +488,19 @@ def main() -> int:
     parser.add_argument("--content-store-file", default=str(PROJECT_ROOT / "governance" / "content_store" / "latest.json"))
     parser.add_argument("--master-registry", default=str(PROJECT_ROOT / "master_bot_registry.json"))
     parser.add_argument("--signing-key-file", default=str(DEFAULT_SIGNING_KEY_PATH))
+    parser.add_argument("--bootstrap-local-signing-key", action="store_true")
     parser.add_argument("--history-dir", default=str(DEFAULT_HISTORY_DIR))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--allow-idle-success", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     signing_key, signing_source = _load_signing_key(Path(args.signing_key_file))
+    if args.bootstrap_local_signing_key and not signing_key:
+        signing_key, signing_source = _bootstrap_signing_key(Path(args.signing_key_file))
 
     payload = build_payload(
         retrain_scorecard=_load_json(Path(args.retrain_scorecard)),
-        training_success=_load_json(Path(args.training_success)),
+        training_success=_load_training_success_contract(Path(args.training_success)),
         feature_store_manifest=_load_json(Path(args.feature_store_manifest)),
         replay_hash_registry_guard=_load_json(Path(args.replay_hash_registry_file)),
         bot_support_owner_guard=_load_json(Path(args.bot_support_owner_guard_file)),

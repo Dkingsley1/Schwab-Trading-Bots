@@ -1,11 +1,45 @@
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import types
 from pathlib import Path
 
 from scripts.ops import schwab_auth_refresh as sar
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_script_path_execution_bootstraps_project_imports(tmp_path: Path) -> None:
+    token_path = tmp_path / "token.json"
+    out_path = tmp_path / "auth.json"
+    env = os.environ.copy()
+    env.pop("SCHWAB_API_KEY", None)
+    env.pop("SCHWAB_SECRET", None)
+    env.pop("PYTHONPATH", None)
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(PROJECT_ROOT / "scripts" / "ops" / "schwab_auth_refresh.py"),
+            "--token-path",
+            str(token_path),
+            "--out-file",
+            str(out_path),
+            "--json",
+        ],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert proc.returncode == 2
+    assert "ModuleNotFoundError" not in proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["reason"] == "missing_credentials"
 
 
 def test_token_status_reads_nested_epoch_expiry() -> None:
@@ -179,7 +213,61 @@ def test_main_opens_browser_without_extra_prompt_by_default(monkeypatch) -> None
 
     assert seen["interactive"] == "0"
     assert payload["prompt_before_browser"] is False
+    assert payload["requested_browser"] == "chrome"
+    assert payload["requested_browser_resolved"] == "Google Chrome"
     assert install_calls["count"] == 1
+
+
+def test_main_skips_browser_when_token_already_ready(monkeypatch) -> None:
+    fake_module = types.ModuleType("core.base_trader")
+    install_calls = {"count": 0}
+
+    class FakeBaseTrader:
+        def __init__(self, *args, **kwargs) -> None:
+            raise AssertionError("ready token should not open Schwab auth flow")
+
+    fake_module.BaseTrader = FakeBaseTrader
+    monkeypatch.setitem(sys.modules, "core.base_trader", fake_module)
+    monkeypatch.setenv("SCHWAB_API_KEY", "real_key")
+    monkeypatch.setenv("SCHWAB_SECRET", "real_secret")
+    monkeypatch.setattr(sar, "_install_schwab_browser_fallback", lambda: install_calls.__setitem__("count", install_calls["count"] + 1) or True)
+
+    with tempfile.TemporaryDirectory() as td:
+        token_path = Path(td) / "token.json"
+        token_path.write_text(
+            json.dumps(
+                {
+                    "token": {
+                        "access_token": "access-token",
+                        "refresh_token": "refresh-token",
+                        "expires_at": 4102444800,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        out_path = Path(td) / "auth.json"
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "schwab_auth_refresh.py",
+                "--token-path",
+                str(token_path),
+                "--out-file",
+                str(out_path),
+                "--json",
+            ],
+        )
+
+        assert sar.main() == 0
+        payload = json.loads(out_path.read_text(encoding="utf-8"))
+
+    assert payload["ok"] is True
+    assert payload["skipped"] is True
+    assert payload["reason"] == "token_already_ready"
+    assert payload["refresh_needed_before"] is False
+    assert install_calls["count"] == 0
 
 
 def test_main_can_restore_enter_gate_before_browser(monkeypatch) -> None:

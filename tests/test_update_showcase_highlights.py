@@ -29,6 +29,7 @@ def test_showcase_snapshot_surfaces_real_world_readiness(tmp_path, monkeypatch) 
     monkeypatch.setattr(highlights, "README_PATH", readme_path)
     monkeypatch.setattr(highlights, "HIGHLIGHTS_JSON", generated_root / "highlights_latest.json")
     monkeypatch.setattr(highlights, "HIGHLIGHTS_MD", generated_root / "highlights_latest.md")
+    monkeypatch.setattr(highlights, "SPECIAL_FEATURES_HTML", generated_root / "special_features_latest.html")
 
     project_root.mkdir(parents=True, exist_ok=True)
     readme_path.write_text(
@@ -126,7 +127,13 @@ def test_showcase_snapshot_surfaces_real_world_readiness(tmp_path, monkeypatch) 
     _write_json(
         health_root / "portable_brain_contract_latest.json",
         {
-            "host_contract": {"host_profile": "max_throughput", "chip": "Apple M5 Max"},
+            "host_contract": {
+                "host_profile": "max_throughput",
+                "chip": "Apple M5 Max",
+                "memory_architecture": "unified",
+                "shared_cpu_gpu_memory_pool": True,
+                "memory_competitive_advantage": "Apple Silicon unified memory keeps CPU, GPU, and MLX tensors in one pool.",
+            },
             "cross_platform_proof_node": {"status": "ready"},
         },
     )
@@ -136,16 +143,30 @@ def test_showcase_snapshot_surfaces_real_world_readiness(tmp_path, monkeypatch) 
     _write_json(health_root / "incident_review_packet_latest.json", {"review_required": True})
     _write_json(health_root / "chaos_drill_coordinator_latest.json", {"drill_program": {"program_score": 82.0}})
     _write_json(
+        health_root / "macro_event_intelligence_latest.json",
+        {
+            "overall_status": "ready",
+            "source": "C-SPAN",
+            "speaker": "Supreme Court / C-SPAN legal coverage",
+            "transcript_quality": "aligned_transcript",
+            "transcript_quality_score": 0.8645,
+            "cue_match_score": 1.0,
+            "stance": "neutral",
+            "sentiment_hint": -0.1209,
+            "market_relevance": "high",
+        },
+    )
+    _write_json(
         health_root / "architecture_upgrade_scoreboard_latest.json",
         {
             "upgrade_count": 12,
             "ready_count": 8,
             "special_features_map": {
-                "adaptive_apple_silicon_brain": "Adaptive Apple Silicon Brain: host-aware tuning now recognizes `Apple M5 Max` and lands on `max_throughput` before the stack starts.",
+                "adaptive_apple_silicon_brain": "Adaptive Apple Silicon Brain: host-aware tuning now recognizes `Apple M5 Max`, sees memory architecture `unified`, and lands on `max_throughput` before the stack starts.",
                 "three_mode_switchboard": "Three-Mode Switchboard: mission control now tracks shadow/paper/live with `2` active modes and runtime clearance `awaiting_coverage_cycles`.",
                 "event_to_trade_intelligence": "Event-to-Trade Intelligence: the macro lane now surfaces live-detection and media ingest proof as `degraded` with `live_detected=0 media_status=missing`.",
                 "self_healing_ops_plane": "Self-Healing Ops Plane: autonomy currently sits at `78.30/100` with `2` triggered playbooks.",
-                "portable_brain_contract": "Portable Brain Contract: the host contract now recommends `native` mode with proof-node status `ready` and backend `onnx`.",
+                "portable_brain_contract": "Portable Brain Contract: the host contract now recommends `native` mode with proof-node status `ready` and backend `onnx` while keeping the broker/runtime seam portable.",
             },
         },
     )
@@ -164,6 +185,7 @@ def test_showcase_snapshot_surfaces_real_world_readiness(tmp_path, monkeypatch) 
     assert rc == 0
     snapshot = json.loads((generated_root / "highlights_latest.json").read_text(encoding="utf-8"))
     markdown = (generated_root / "highlights_latest.md").read_text(encoding="utf-8")
+    special_features_html = (generated_root / "special_features_latest.html").read_text(encoding="utf-8")
     updated_readme = readme_path.read_text(encoding="utf-8")
 
     assert snapshot["readiness_summary"]["institutional_score"] == 81.25
@@ -176,6 +198,22 @@ def test_showcase_snapshot_surfaces_real_world_readiness(tmp_path, monkeypatch) 
     assert "Autonomy posture: `degraded` at `78.30/100`" in markdown
     assert "Architecture posture: `8/12` proof surfaces ready" in markdown
     assert "Adaptive Apple Silicon Brain: host-aware tuning now recognizes `Apple M5 Max`" in markdown
+    assert "unified-memory-aware runtime tuning on Apple Silicon" in markdown
+    assert "## Special Feature Proof Notes" in markdown
+    assert "### Adaptive Apple Silicon Brain" in markdown
+    assert "Recognized host `Apple M5 Max`" in markdown
+    assert "Memory architecture is `unified`" in markdown
+    assert "Special Features And Highlights" in special_features_html
+    assert "Feature Proof Surface" in special_features_html
+    assert "Executive Feature Report" in special_features_html
+    assert "Why it matters" in special_features_html
+    assert "Interpretation Notes" in special_features_html
+    assert "Recommendations" in special_features_html
+    assert "Adaptive Apple Silicon Brain" in special_features_html
+    assert "Recognized host" in special_features_html
+    assert "Apple Silicon unified memory gives the live stack one shared CPU and GPU pool" in special_features_html
+    assert "broker-specific news, options, and calendar context now sit behind adapter seams" in special_features_html.lower()
+    assert "Latest macro event status is" in special_features_html
     assert "Institutional readiness: `81.25/100` with status `advancing`." in updated_readme
     assert "Autonomy posture: `78.30/100` with status `degraded`" in updated_readme
     assert "Architecture upgrades: `8/12` ready proof surfaces" in updated_readme

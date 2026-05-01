@@ -47,6 +47,42 @@ def test_lane_thaw_controller_marks_low_error_lane_as_candidate(tmp_path: Path) 
     assert payload["lanes"][0]["cooldown_contract"]["state"] == "elapsed"
 
 
+def test_lane_thaw_controller_blocks_lane_when_systemic_guardrails_are_hot(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "data_ingress_latest_intraday_aggressive_equities_schwab_defensive.json",
+        {
+            "loop_state": "paused_anomaly_killswitch",
+            "pause_gate": "anomaly_killswitch",
+            "timestamp_utc": "2026-04-21T12:00:00+00:00",
+            "iter_error_rate": 0.0,
+            "iter_error_count": 0,
+            "total_counts": {"api_error": 25},
+        },
+    )
+    _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {"clearance_plan": {"clearance_state": "coverage_cycles_ready"}},
+    )
+    _write_json(project_root / "governance" / "walk_forward" / "coverage_gap_closer_latest.json", {"autopilot_contract": {"can_launch_now": True}})
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 1, "account_snapshot_failure_count": 1, "queue_depth": 2500})
+    _write_json(health / "global_killswitch_latest.json", {"halt": True})
+    _write_json(health / "incident_timeline_latest.json", {"summary": {"risk_halt_events": 1}})
+
+    payload = thaw_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "blocked"
+    lane = payload["lanes"][0]
+    assert lane["thaw_state"] == "blocked"
+    assert "global_killswitch_active" in lane["reasons"]
+    assert "incident_risk_halt_active" in lane["reasons"]
+    assert "account_snapshot_recovery_pending" in lane["reasons"]
+    assert lane["guardrail_quorum"]["hard_blocked"] is True
+
+
 def test_data_plane_recovery_controller_flags_write_failures_and_snapshot_failures(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -72,6 +108,11 @@ def test_data_plane_recovery_controller_flags_write_failures_and_snapshot_failur
     assert payload["account_snapshot_failure_count"] == 1
     assert payload["recovery_contract"]["backlog_drain_required"] is True
     assert payload["recovery_contract"]["snapshot_probe_required"] is True
+    assert payload["recovery_contract"]["snapshot_probe_command"] == [
+        "./scripts/ops/opsctl.sh",
+        "token-refresh",
+        "--json",
+    ]
 
 
 def test_data_plane_recovery_controller_marks_guarded_recovery_when_writer_handoff_is_active(tmp_path: Path) -> None:

@@ -40,6 +40,23 @@ def test_external_backlog_drain_builds_offhours_plan(tmp_path: Path) -> None:
                     "oldest_pending_age_seconds": 25200.0,
                 }
             ],
+            "top_pending_files": [
+                {
+                    "source_rel": "governance/execution_lanes/execution_results_20260406.jsonl",
+                    "pending_lines": 240000,
+                    "oldest_pending_age_seconds": 6400.0,
+                },
+                {
+                    "source_rel": "governance/execution_lanes/execution_promotions_20260406.jsonl",
+                    "pending_lines": 180000,
+                    "oldest_pending_age_seconds": 6300.0,
+                },
+                {
+                    "source_rel": "governance/execution_lanes/execution_intents_20260406.jsonl",
+                    "pending_lines": 90000,
+                    "oldest_pending_age_seconds": 6200.0,
+                },
+            ],
         },
     )
     _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 14})
@@ -63,7 +80,157 @@ def test_external_backlog_drain_builds_offhours_plan(tmp_path: Path) -> None:
     assert payload["drain_overrides"]["deferred_files_budget"] == 6
     assert payload["drain_overrides"]["sql_interval_seconds"] == 12
     assert payload["drain_overrides"]["hot_batch_size"] == 240000
+    assert payload["drain_overrides"]["preferred_shards"] == ["governance", "health_fast", "support_watchdog"]
+    assert payload["drain_overrides"]["governance_max_files"] == 14
+    assert payload["drain_overrides"]["governance_max_lines_per_file"] == 64000
+    assert payload["drain_overrides"]["governance_path_focus"] == [
+        "governance/execution_lanes/execution_results_20260406.jsonl",
+        "governance/execution_lanes/execution_promotions_20260406.jsonl",
+        "governance/execution_lanes/execution_intents_20260406.jsonl",
+    ]
+    assert payload["core_focus_concentrated"] is True
+    assert payload["core_focus_top3_pending_lines"] == 510000
     assert any("compact or archive" in item for item in payload["top_actions"])
+    assert any("dominant core backlog files" in item for item in payload["top_actions"])
+    assert any("governance shard pinned" in item for item in payload["top_actions"])
+
+
+def test_external_backlog_drain_pins_decision_channels_to_trading_shard(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 66344,
+            "pending_lines_total": 66344,
+            "pending_lines_deferred": 1888,
+            "pending_lines_cold": 0,
+            "top_pending_files": [
+                {
+                    "source_rel": "governance/channels/decision/conservative_equities_schwab/decision_20260430.jsonl",
+                    "pending_lines": 30675,
+                    "oldest_pending_age_seconds": 1200.0,
+                },
+                {
+                    "source_rel": "governance/channels/decision/aggressive_equities_schwab/decision_20260430.jsonl",
+                    "pending_lines": 29664,
+                    "oldest_pending_age_seconds": 1180.0,
+                },
+                {
+                    "source_rel": "governance/channels/decision/intraday_aggressive_equities_schwab/decision_20260430.jsonl",
+                    "pending_lines": 3541,
+                    "oldest_pending_age_seconds": 200.0,
+                },
+                {
+                    "source_rel": "governance/events/premarket_token_guard_20260430.jsonl",
+                    "pending_lines": 1,
+                    "oldest_pending_age_seconds": 9000.0,
+                },
+            ],
+        },
+    )
+    _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 8})
+    _write_json(health / "ingestion_storage_control_latest.json", {"overall_status": "blocked"})
+    _write_json(health / "storage_mount_guard_latest.json", {"external_available": True, "storage_mode": "external"})
+    _write_json(health / "storage_failback_sync_latest.json", {"mode": "external", "split_brain_conflicts": 0})
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    _write_json(health / "sql_link_service_latest.json", {"primary_db": str(project_root / "data" / "jsonl_link.sqlite3")})
+    _write_json(health / "sql_link_service_progress_latest.json", {})
+    _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": True, "storage_pressure": {"retention_debt_gb": 0.4}})
+
+    payload = src.build_payload(
+        project_root,
+        apply=False,
+        now_utc=datetime(2026, 4, 30, 21, 0, tzinfo=timezone.utc),
+    )
+
+    assert payload["core_focus_concentrated"] is True
+    assert payload["drain_overrides"]["preferred_shards"] == ["trading", "health_fast", "support_watchdog"]
+    assert payload["drain_overrides"]["governance_path_focus"] == []
+    assert payload["drain_overrides"]["trading_max_files"] == 16
+    assert payload["drain_overrides"]["trading_max_lines_per_file"] == 64000
+    assert payload["drain_overrides"]["trading_path_focus"] == [
+        "governance/channels/decision/conservative_equities_schwab/decision_20260430.jsonl",
+        "governance/channels/decision/aggressive_equities_schwab/decision_20260430.jsonl",
+    ]
+    assert any("trading shard pinned" in item for item in payload["top_actions"])
+
+
+def test_external_backlog_drain_writes_handoff_when_resource_guard_blocks_focused_core_backlog(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    backpressure_payload = {
+        "pending_lines": 64000,
+        "pending_lines_total": 64000,
+        "pending_lines_deferred": 0,
+        "pending_lines_cold": 0,
+        "top_pending_files": [
+            {
+                "source_rel": "governance/channels/decision/conservative_equities_schwab/decision_20260430.jsonl",
+                "pending_lines": 31000,
+                "oldest_pending_age_seconds": 1800.0,
+            },
+            {
+                "source_rel": "governance/channels/decision/aggressive_equities_schwab/decision_20260430.jsonl",
+                "pending_lines": 30000,
+                "oldest_pending_age_seconds": 1800.0,
+            },
+        ],
+    }
+    _write_json(health / "ingestion_backpressure_latest.json", backpressure_payload)
+    _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 2})
+    _write_json(health / "ingestion_storage_control_latest.json", {"overall_status": "blocked"})
+    _write_json(health / "storage_mount_guard_latest.json", {"external_available": True, "storage_mode": "external"})
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    lock_path = project_root / "governance" / "locks" / "jsonl_sql_writer.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("pid=4321 started=2026-04-30T22:00:00+00:00 cmd=sql_link_shard_manager", encoding="utf-8")
+
+    monkeypatch.setattr(src, "SQL_WRITER_LOCK_PATH", lock_path)
+    monkeypatch.setattr(
+        src.governor_src,
+        "build_payload",
+        lambda *args, **kwargs: {"profile": "critical_backpressure", "env_overrides": {}},
+    )
+
+    def _fake_run(
+        cmd: list[str],
+        *,
+        cwd: Path,
+        payload_path: Path | None = None,
+        env_overrides: dict[str, str] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> dict:
+        joined = " ".join(cmd)
+        if "ingestion_backpressure_guard.py" in joined:
+            payload = backpressure_payload
+        elif "ingestion_priority_queue.py" in joined:
+            payload = {"queue_depth": 2}
+        elif "resource_guard.py" in joined:
+            payload = {"ok": False, "resource_guard_ok": False, "resource_guard_reasons": ["memory_pressure_yellow"]}
+        else:
+            raise AssertionError(f"unexpected command: {cmd}")
+        if payload_path is not None:
+            _write_json(payload_path, payload)
+        return {"cmd": cmd, "rc": 0, "duration_ms": 5.0, "payload": payload, "stdout_tail": "", "stderr_tail": "", "timed_out": False}
+
+    monkeypatch.setattr(src, "_run_json_command", _fake_run)
+
+    payload = src.build_payload(
+        project_root,
+        apply=True,
+        follow_through=True,
+        now_utc=datetime(2026, 4, 30, 22, 5, tzinfo=timezone.utc),
+    )
+
+    assert payload["apply_executed"] is False
+    assert payload["blocked_reasons"] == ["resource_guard_blocked"]
+    assert payload["follow_through"]["status"] == "handoff_requested"
+    assert payload["follow_through"]["progress_state"] == "requested_live_writer_after_resource_guard"
+    assert payload["service_request"]["request_kind"] == "external_backlog_drain"
+    assert payload["service_request"]["reason"].endswith(":resource_guard_handoff")
+    assert payload["service_request"]["env_overrides"]["SQL_LINK_SERVICE_SHARDS"].startswith("trading,")
+    assert "SQL_LINK_SERVICE_SHARD_TRADING_PATH_CONTAINS" in payload["service_request"]["env_overrides"]
 
 
 def test_external_backlog_drain_calls_out_stale_stage_archive_candidates(tmp_path: Path) -> None:
@@ -164,6 +331,23 @@ def test_external_backlog_drain_apply_executes_and_refreshes_backlog(tmp_path: P
             "pending_lines_total": 300000,
             "pending_lines_deferred": 220000,
             "pending_lines_cold": 80000,
+            "top_pending_files": [
+                {
+                    "source_rel": "governance/execution_lanes/execution_results_20260406.jsonl",
+                    "pending_lines": 140000,
+                    "oldest_pending_age_seconds": 6400.0,
+                },
+                {
+                    "source_rel": "governance/execution_lanes/execution_promotions_20260406.jsonl",
+                    "pending_lines": 120000,
+                    "oldest_pending_age_seconds": 6300.0,
+                },
+                {
+                    "source_rel": "governance/execution_lanes/execution_intents_20260406.jsonl",
+                    "pending_lines": 60000,
+                    "oldest_pending_age_seconds": 6200.0,
+                },
+            ],
         },
     )
     _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 12})
@@ -226,6 +410,16 @@ def test_external_backlog_drain_apply_executes_and_refreshes_backlog(tmp_path: P
             assert env_overrides["SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB"] == "0.25"
             assert env_overrides["SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"] == "25"
             assert env_overrides["SQL_LINK_SERVICE_SHARD_RUNTIME_STATE_CHECKPOINT_LINES"] == "1500"
+            assert env_overrides["SQL_LINK_SERVICE_SHARDS"].startswith("governance,")
+            assert env_overrides["SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES"] == "14"
+            assert env_overrides["SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_LINES_PER_FILE"] == "64000"
+            assert env_overrides["SQL_LINK_SERVICE_SHARD_GOVERNANCE_PATH_CONTAINS"] == ",".join(
+                [
+                    "governance/execution_lanes/execution_results_20260406.jsonl",
+                    "governance/execution_lanes/execution_promotions_20260406.jsonl",
+                    "governance/execution_lanes/execution_intents_20260406.jsonl",
+                ]
+            )
             payload = {"ok": True, "reason": "ok"}
         elif "sqlite_performance_maintenance.py" in joined:
             assert timeout_seconds == 20.0

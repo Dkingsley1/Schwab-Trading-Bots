@@ -4,6 +4,10 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$PROJECT_ROOT/scripts/ops/runtime_python.sh"
 PY="$(resolve_runtime_python)"
+HEALTH_DIR="$PROJECT_ROOT/governance/health"
+OPERATOR_STOP_FLAG="$HEALTH_DIR/OPERATOR_STOP.flag"
+GLOBAL_HALT_FLAG="$HEALTH_DIR/GLOBAL_TRADING_HALT.flag"
+PAPER_TRADE_LOCK_FILE="$HEALTH_DIR/PAPER_TRADE_LOCK.flag"
 
 FORCE_RESTART=0
 WITH_COINBASE=1
@@ -14,6 +18,79 @@ COINBASE_PAPER=1
 COINBASE_SIMULATE="${COINBASE_START_SIMULATE:-0}"
 PROFILE="${BOT_RUNTIME_PROFILE:-}"
 ORCHESTRATOR_MODE="${STACK_ORCHESTRATOR_MODE:-watchdog}"
+DRY_RUN=0
+
+flag_reason() {
+  local path="$1"
+  "$PY" - "$path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    payload = {}
+
+reason = str(payload.get("reason") or "").strip()
+timestamp = str(payload.get("timestamp_utc") or "").strip()
+operator = str(payload.get("operator") or "").strip()
+parts = []
+if reason:
+    parts.append(f"reason={reason}")
+if operator:
+    parts.append(f"operator={operator}")
+if timestamp:
+    parts.append(f"timestamp_utc={timestamp}")
+print(" ".join(parts))
+PY
+}
+
+abort_for_safety_flags() {
+  local blocked=0
+
+  if [[ -f "$OPERATOR_STOP_FLAG" ]]; then
+    blocked=1
+    echo "stack_start_blocked=operator_stop"
+    echo "operator_stop_flag=$OPERATOR_STOP_FLAG"
+    echo "operator_stop_detail=$(flag_reason "$OPERATOR_STOP_FLAG")"
+  fi
+
+  if [[ -f "$GLOBAL_HALT_FLAG" ]]; then
+    blocked=1
+    echo "stack_start_blocked=global_halt"
+    echo "global_halt_flag=$GLOBAL_HALT_FLAG"
+    echo "global_halt_detail=$(flag_reason "$GLOBAL_HALT_FLAG")"
+  fi
+
+  if [[ "$blocked" == "1" ]]; then
+    echo "stack_start_status=blocked_by_safety_flags"
+    echo "review_halt_status=./scripts/ops/opsctl.sh global-halt-status --json"
+    echo "refresh_global_halt_blockers=./scripts/ops/opsctl.sh global-halt-refresh --json"
+    echo "release_operator_stop=./scripts/ops/opsctl.sh operator-release --json"
+    echo "attempt_safe_global_halt_clear=./scripts/ops/opsctl.sh global-halt-auto-clear --json"
+    echo "manual_clear_all_halts=./scripts/ops/opsctl.sh clear-all-halts --json"
+    exit 2
+  fi
+}
+
+enable_paper_trade_lock() {
+  mkdir -p "$(dirname "$PAPER_TRADE_LOCK_FILE")"
+  printf 'enabled_at_utc=%s\npolicy=live_data_paper_trade_only\nmanaged_by=start_stack\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$PAPER_TRADE_LOCK_FILE"
+}
+
+paper_trade_lock_env() {
+  enable_paper_trade_lock
+  export PAPER_TRADE_LOCK=1
+  export PAPER_TRADE_LOCK_PATH="$PAPER_TRADE_LOCK_FILE"
+  export MARKET_DATA_ONLY=1
+  export ALLOW_ORDER_EXECUTION=0
+  export TOP_BOT_ENABLE_LIVE_EXECUTION=0
+  export EXECUTION_LANE_LIVE_ENABLED=0
+  export RUN_ALL_SLEEVES_WITH_LIVE_EXECUTOR=0
+  export INLINE_PAPER_EXECUTION_ENABLED=0
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -29,6 +106,7 @@ while [[ $# -gt 0 ]]; do
     --orchestrator-mode) ORCHESTRATOR_MODE="${2:-$ORCHESTRATOR_MODE}"; shift ;;
     --watchdog-only) ORCHESTRATOR_MODE="watchdog" ;;
     --run-all-sleeves) ORCHESTRATOR_MODE="all_sleeves" ;;
+    --dry-run) DRY_RUN=1 ;;
   esac
   shift
 done
@@ -41,6 +119,21 @@ if [[ -z "$PROFILE" ]]; then
   else
     PROFILE="live"
   fi
+fi
+
+abort_for_safety_flags
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "stack_start_dry_run=1"
+  echo "stack_start_status=ready_to_launch"
+  echo "runtime_profile=$PROFILE"
+  echo "orchestrator_mode=$ORCHESTRATOR_MODE"
+  echo "with_coinbase=$WITH_COINBASE"
+  echo "simulate=$SIMULATE"
+  echo "schwab_paper=$SCHWAB_PAPER"
+  echo "coinbase_paper=$COINBASE_PAPER"
+  echo "coinbase_simulate=$COINBASE_SIMULATE"
+  exit 0
 fi
 
 "$PY" "$PROJECT_ROOT/scripts/ops/apple_silicon_profile.py" apply >/dev/null 2>&1 || true
@@ -80,7 +173,9 @@ if [[ "$FORCE_RESTART" == "1" ]]; then
   pkill -f "scripts/run_parallel_shadows.py" || true
   pkill -f "scripts/run_parallel_aggressive_modes.py" || true
   pkill -f "scripts/run_dividend_shadow.py" || true
+  pkill -f "scripts/run_dividend_capture_shadow.py" || true
   pkill -f "scripts/run_bond_shadow.py" || true
+  pkill -f "scripts/run_fx_shadow.py" || true
   pkill -f "scripts/run_shadow_training_loop.py --broker schwab" || true
   kill_coinbase_spot_loops
   pkill -f "scripts/run_shadow_training_loop.py --broker coinbase --profile crypto_futures" || true
@@ -110,6 +205,10 @@ export LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"
 export LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"
 export LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"
 export LOG_FUTURES_MASTER_DECISIONS="${LOG_FUTURES_MASTER_DECISIONS:-1}"
+
+if [[ "$SCHWAB_PAPER" == "1" || "$COINBASE_PAPER" == "1" ]]; then
+  paper_trade_lock_env
+fi
 
 if [[ "$ORCHESTRATOR_MODE" == "watchdog" ]]; then
   WD_MATCH="scripts/shadow_watchdog.py"
@@ -180,7 +279,7 @@ if [[ "$SCHWAB_PAPER" == "1" ]]; then
   SCHWAB_PAPER_PROFILES="${SCHWAB_TOP_BOT_PAPER_TRADING_PROFILES:-${TOP_BOT_PAPER_TRADING_PROFILES:-}}"
   SCHWAB_OPTIONS_PAPER_TOP_N="${SCHWAB_OPTIONS_TOP_BOT_PAPER_TRADING_TOP_N:-${TOP_BOT_PAPER_TRADING_OPTIONS_TOP_N:-2}}"
   SCHWAB_OPTIONS_PAPER_MIN_ACC="${SCHWAB_OPTIONS_TOP_BOT_PAPER_TRADING_MIN_ACC:-${TOP_BOT_PAPER_TRADING_OPTIONS_MIN_ACC:-$SCHWAB_PAPER_MIN_ACC}}"
-  SCHWAB_OPTIONS_PAPER_PROFILES="${SCHWAB_OPTIONS_TOP_BOT_PAPER_TRADING_PROFILES:-${TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES:-default,aggressive,intraday_aggressive,swing_aggressive}}"
+  SCHWAB_OPTIONS_PAPER_PROFILES="${SCHWAB_OPTIONS_TOP_BOT_PAPER_TRADING_PROFILES:-${TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES:-default,aggressive,intraday_aggressive,swing_aggressive,options_on_futures,options_on_futures_aggressive}}"
   echo "schwab_paper=enabled top_n=$SCHWAB_PAPER_TOP_N min_acc=$SCHWAB_PAPER_MIN_ACC profiles=${SCHWAB_PAPER_PROFILES:-all}"
   echo "schwab_options_paper=enabled top_n=$SCHWAB_OPTIONS_PAPER_TOP_N min_acc=$SCHWAB_OPTIONS_PAPER_MIN_ACC profiles=${SCHWAB_OPTIONS_PAPER_PROFILES:-all}"
   TOP_BOT_PAPER_TRADING_ENABLED=1 \

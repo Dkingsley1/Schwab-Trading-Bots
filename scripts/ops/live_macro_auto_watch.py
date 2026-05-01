@@ -60,7 +60,7 @@ _FED_SECTION_HEADERS = {
     "Other",
 }
 _FED_LOCAL_TZ = ZoneInfo("America/New_York") if ZoneInfo is not None else timezone(timedelta(hours=-5))
-LIVE_MACRO_CHANNEL_PRESETS: Dict[str, Dict[str, str]] = {
+LIVE_MACRO_CHANNEL_PRESETS: Dict[str, Dict[str, Any]] = {
     "apple_ir": {
         "youtube_channel_url": "https://www.youtube.com/@Apple",
         "template": "earnings_call",
@@ -102,6 +102,23 @@ LIVE_MACRO_CHANNEL_PRESETS: Dict[str, Dict[str, str]] = {
         "speaker": "Supreme Court / C-SPAN legal coverage",
         "source": "C-SPAN",
         "symbols": "SPY,QQQ,IWM,XLF,KRE,XLV,XLE,XLI,TLT",
+        "replay_full_video_on_stream_end": True,
+    },
+    "cspan_policy": {
+        "youtube_channel_url": "https://www.youtube.com/@CSPAN",
+        "template": "policy_testimony",
+        "speaker": "Jerome Powell",
+        "source": "C-SPAN",
+        "symbols": "SPY,QQQ,TLT,IEF,UUP,GLD,XLF",
+        "replay_full_video_on_stream_end": True,
+    },
+    "cspan_general": {
+        "youtube_channel_url": "https://www.youtube.com/@CSPAN",
+        "template": "generic",
+        "speaker": "C-SPAN coverage",
+        "source": "C-SPAN",
+        "symbols": "SPY,QQQ,IWM,TLT,IEF,UUP,GLD,XLF,KRE,XLV,XLE,XLI,USO",
+        "replay_full_video_on_stream_end": True,
     },
     "fed_policy": {
         "youtube_channel_url": "https://www.youtube.com/@federalreserve",
@@ -170,7 +187,44 @@ def _apply_channel_preset(args: argparse.Namespace) -> argparse.Namespace:
         args.source = str(preset.get("source") or args.source)
     if not str(getattr(args, "symbols", "") or "").strip():
         args.symbols = str(preset.get("symbols") or "")
+    if bool(preset.get("replay_full_video_on_stream_end")) and not bool(getattr(args, "replay_full_video_on_stream_end", False)):
+        args.replay_full_video_on_stream_end = True
     return args
+
+
+def _source_provenance(*, declared_source: str, channel_url: str, resolved_video_url: str, stream_title: str = "") -> Dict[str, Any]:
+    source_text = str(declared_source or "").strip()
+    channel_text = str(channel_url or "").strip()
+    resolved_text = str(resolved_video_url or "").strip()
+    stream_text = str(stream_title or "").strip()
+    merged = " ".join([channel_text, resolved_text, stream_text]).lower()
+    source_key = re.sub(r"[^a-z0-9]+", "", source_text.lower())
+    aliases = {
+        "cspan": ("cspan", "c-span", "@cspan"),
+        "federalreserve": ("federal reserve", "federalreserve", "@federalreserve", "fomc"),
+        "schwabnetwork": ("schwab network", "@schwabnetwork"),
+        "charlesschwab": ("charles schwab", "@charlesschwab"),
+        "ustreasury": ("u.s. treasury", "us treasury", "@ustreasury"),
+    }
+    alias_hits = [token for token in aliases.get(source_key, (source_text.lower(),)) if token and token in merged]
+    channel_match = bool(alias_hits)
+    if not source_text:
+        provenance_status = "missing_declared_source"
+    elif not channel_text and not resolved_text:
+        provenance_status = "missing_capture_url"
+    elif channel_match:
+        provenance_status = "matched"
+    else:
+        provenance_status = "source_channel_mismatch"
+    return {
+        "declared_source": source_text,
+        "capture_channel_url": channel_text,
+        "capture_video_url": resolved_text,
+        "capture_stream_title": stream_text,
+        "source_channel_match": channel_match,
+        "source_provenance_status": provenance_status,
+        "source_match_tokens": alias_hits,
+    }
 
 
 def _append_jsonl(path: Path, row: Dict[str, Any]) -> str:
@@ -941,6 +995,12 @@ def _maybe_trigger_media_ingest(
                 "youtube_channel_url": str(target.get("channel_url") or ""),
                 "speaker": args.speaker,
                 "source": args.source,
+                "source_provenance": _source_provenance(
+                    declared_source=str(args.source or ""),
+                    channel_url=str(target.get("channel_url") or ""),
+                    resolved_video_url=str(youtube_url or ""),
+                    stream_title=str(target.get("stream_title") or target.get("latest_title") or target.get("upcoming_title") or ""),
+                ),
                 "error": error,
             },
             out_file=out_path,
@@ -981,6 +1041,12 @@ def _maybe_trigger_media_ingest(
             "youtube_channel_url": str(target.get("channel_url") or ""),
             "speaker": args.speaker,
             "source": args.source,
+            "source_provenance": _source_provenance(
+                declared_source=str(args.source or ""),
+                channel_url=str(target.get("channel_url") or ""),
+                resolved_video_url=str(youtube_url or ""),
+                stream_title=str(target.get("stream_title") or target.get("latest_title") or target.get("upcoming_title") or ""),
+            ),
             "media_ingest_pid": launch["media_ingest_pid"],
             "media_ingest_log": launch["media_ingest_log"],
         },
@@ -1258,6 +1324,14 @@ def _fed_month_calendar_url(month_dt: datetime) -> str:
     return f"https://www.federalreserve.gov/newsevents/{month_dt.year}-{month_dt.strftime('%B').lower()}.htm"
 
 
+def _fed_month_calendar_urls(month_dt: datetime) -> List[str]:
+    urls = [
+        _fed_month_calendar_url(month_dt),
+        f"https://www.federalreserve.gov/newsevents/{month_dt.year}-{month_dt.month:02d}.htm",
+    ]
+    return list(dict.fromkeys(urls))
+
+
 def _extract_visible_lines_from_html(html_text: str) -> List[str]:
     cleaned = re.sub(r"(?is)<script.*?>.*?</script>", " ", str(html_text or ""))
     cleaned = re.sub(r"(?is)<style.*?>.*?</style>", " ", cleaned)
@@ -1384,13 +1458,14 @@ def _fetch_federal_reserve_calendar_correlation(args: argparse.Namespace, target
     page_rows: List[Dict[str, Any]] = []
     source_urls: List[str] = []
     for month_dt in month_candidates:
-        page_url = _fed_month_calendar_url(month_dt)
-        try:
-            html_text = _fetch_text_url(page_url, timeout_seconds=12.0)
-        except Exception:
-            continue
-        source_urls.append(page_url)
-        page_rows.extend(_parse_federal_reserve_calendar_page(html_text, page_url=page_url, month_dt=month_dt))
+        for page_url in _fed_month_calendar_urls(month_dt):
+            try:
+                html_text = _fetch_text_url(page_url, timeout_seconds=12.0)
+            except Exception:
+                continue
+            source_urls.append(page_url)
+            page_rows.extend(_parse_federal_reserve_calendar_page(html_text, page_url=page_url, month_dt=month_dt))
+            break
 
     if not page_rows:
         return {
@@ -1574,6 +1649,9 @@ def _fetch_schwab_calendar_correlation(args: argparse.Namespace, target: Dict[st
     secret = os.getenv("SCHWAB_SECRET", "").strip()
     redirect = os.getenv("SCHWAB_REDIRECT", "https://127.0.0.1:8182").strip()
     if not api_key or not secret or api_key == "YOUR_KEY_HERE" or secret == "YOUR_SECRET_HERE":
+        fallback = _fetch_federal_reserve_calendar_correlation(args, target)
+        if str(fallback.get("calendar_correlation_reason") or "") != "not_applicable":
+            return fallback
         return {
             "calendar_correlation_enabled": True,
             "calendar_correlation_ok": False,
@@ -1749,6 +1827,12 @@ def _run_once(args: argparse.Namespace, state: Dict[str, Any], out_path: Path) -
     previous_sentiment = float(state.get("last_sentiment_hint", 0.0) or 0.0)
     target = _resolve_stream_target(args)
     stream_state = str(target.get("stream_state") or "")
+    source_provenance = _source_provenance(
+        declared_source=str(args.source or ""),
+        channel_url=str(target.get("channel_url") or ""),
+        resolved_video_url=str(target.get("resolved_video_url") or target.get("latest_video_url") or target.get("upcoming_video_url") or ""),
+        stream_title=str(target.get("stream_title") or target.get("latest_title") or target.get("upcoming_title") or ""),
+    )
     calendar_correlation: Dict[str, Any] = {}
     if args.correlate_with_schwab_calendar and stream_state in {"awaiting_live_stream", "upcoming_detected", "live"}:
         calendar_correlation = _maybe_correlate_schwab_calendar(args, state, target, out_path)
@@ -1772,6 +1856,7 @@ def _run_once(args: argparse.Namespace, state: Dict[str, Any], out_path: Path) -
             "updated_bulletin": False,
             "out_file": str(out_path),
         }
+        status.update(source_provenance)
         for key in (
             "live_probe_url",
             "streams_probe_url",
@@ -1870,6 +1955,9 @@ def _run_once(args: argparse.Namespace, state: Dict[str, Any], out_path: Path) -
         sentiment_hint_override=sentiment_hint,
         shock_hint_override=1.0,
     )
+    payload["source_provenance"] = dict(source_provenance)
+    if payload.get("items"):
+        payload["items"][0]["source_provenance"] = dict(source_provenance)
     if calendar_correlation:
         for key, value in calendar_correlation.items():
             if key == "calendar_features" and isinstance(value, dict):
@@ -1909,6 +1997,7 @@ def _run_once(args: argparse.Namespace, state: Dict[str, Any], out_path: Path) -
             "window_stance_counts": window_stance_counts,
             "cue_archive_file": cue_archive["cue_archive_file"],
             "cue_events_file": cue_archive["cue_events_file"],
+            "source_provenance": dict(source_provenance),
         },
     )
 
@@ -1946,6 +2035,7 @@ def _run_once(args: argparse.Namespace, state: Dict[str, Any], out_path: Path) -
         "text_hash": text_hash,
         "events_file": events_file,
     }
+    status.update(source_provenance)
     status.update(trigger_status)
     status.update(calendar_correlation)
     state.update(

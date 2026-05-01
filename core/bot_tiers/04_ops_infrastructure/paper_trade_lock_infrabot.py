@@ -1,0 +1,1 @@
+../../../scripts/ops/paper_trade_lock_infrabot.py

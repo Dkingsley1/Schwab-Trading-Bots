@@ -168,12 +168,12 @@ def _runtime_sample_filter(sequence, idx, horizon):
     trend_support = _trend_support(obs)
     bias = abs(_direction_bias(obs))
     return (
-        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.84
-        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.22
-        and abs(observation_feature(obs, "spread_bps")) <= 24.0
-        and observation_feature(obs, "queue_depth", 0.0) >= 1.25
-        and trend_support >= 0.26
-        and bias >= 0.0012
+        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.80
+        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.26
+        and abs(observation_feature(obs, "spread_bps")) <= 28.0
+        and observation_feature(obs, "queue_depth", 0.0) >= 0.0
+        and trend_support >= 0.20
+        and bias >= 0.0008
     )
 
 
@@ -199,7 +199,7 @@ def _runtime_trend_label(sequence, idx, horizon):
     obs = sequence[idx]
     support = _trend_support(obs)
     bias = _direction_bias(obs)
-    if support < 0.24 or abs(bias) < 0.0010:
+    if support < 0.20 or abs(bias) < 0.0008:
         return None
 
     expected_up = bias >= 0.0
@@ -207,8 +207,8 @@ def _runtime_trend_label(sequence, idx, horizon):
     realized = future_realized_vol(sequence, idx, horizon)
     drawdown = abs(future_max_drawdown(sequence, idx, horizon))
     signed_ret = fwd_ret if expected_up else -fwd_ret
-    move_threshold = max(0.00085, 0.00195 - (0.00085 * support))
-    if abs(fwd_ret) < move_threshold and realized < 0.018 and drawdown < 0.0105:
+    move_threshold = max(0.00055, 0.00145 - (0.00095 * support))
+    if abs(fwd_ret) < move_threshold and realized < 0.022 and drawdown < 0.0125:
         return None
 
     quote_quality = _clip01(
@@ -223,9 +223,9 @@ def _runtime_trend_label(sequence, idx, horizon):
         - (0.24 * drawdown)
     )
     failure_score = (-signed_ret) + (0.15 * realized) + (0.22 * drawdown)
-    if success_score >= 0.00078:
+    if success_score >= 0.00050:
         return 1.0 if expected_up else 0.0
-    if failure_score >= 0.00105:
+    if failure_score >= 0.00080:
         return 0.0 if expected_up else 1.0
     return None
 
@@ -298,7 +298,7 @@ def train_brain():
         min_long_precision=0.54,
         min_short_precision=0.54,
         require_both_sides_precision=True,
-        min_acted_accuracy=0.57,
+        min_acted_accuracy=0.60,
         min_long_acted_count=5,
         min_short_acted_count=5,
         min_accuracy_lift_over_majority=0.03,

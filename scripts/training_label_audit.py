@@ -14,6 +14,7 @@ DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
 DEFAULT_DIAGNOSTICS_DIR = PROJECT_ROOT / "governance" / "training_diagnostics"
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "governance" / "health" / "training_label_audit_latest.json"
 DEFAULT_MAX_DIAGNOSTIC_AGE_HOURS = 72.0
+DEFAULT_COLLECTION_TRAINING_THRESHOLD = 250
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -50,8 +51,188 @@ def _int(raw: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _label_contract_for_row(registry_row: dict[str, Any]) -> dict[str, Any]:
+    explicit = registry_row.get("label_contract") or registry_row.get("training_label_contract")
+    if isinstance(explicit, dict) and explicit:
+        label_family = str(explicit.get("label_family") or explicit.get("family") or "").strip()
+        primary = str(explicit.get("primary_horizon") or explicit.get("primary_label_horizon") or "").strip()
+        if label_family and primary:
+            return {
+                "label_family": label_family,
+                "primary_horizon": primary,
+                "aux_horizons": list(explicit.get("aux_horizons") or explicit.get("aux_label_horizons") or []),
+                "required_context": list(explicit.get("required_context") or explicit.get("required_label_context") or []),
+                "contract_version": str(explicit.get("contract_version") or registry_row.get("data_label_contract_version") or ""),
+                "source": "registry",
+            }
+    bot_id = str(registry_row.get("bot_id") or "").strip().lower()
+    slot_kind = str(registry_row.get("slot_kind") or "").strip().lower()
+    role = str(registry_row.get("bot_role") or "").strip().lower()
+    sleeve = str(registry_row.get("sleeve_profile") or registry_row.get("sleeve_family") or "").strip().lower()
+    haystack = " ".join([bot_id, slot_kind, role, sleeve])
+    contracts = [
+        (
+            ("monte_carlo", "quasi_monte_carlo", "latin_hypercube", "antithetic", "finite_difference", "fft_pricing", "trinomial", "heston", "merton", "quant_pricing"),
+            "quant_pricing_research",
+            "model_price_error_surface_stability",
+            ["pricing_model_dispersion", "realized_vs_model_error", "tail_scenario_price_error", "variance_reduction_efficiency"],
+            ["listed_option_surface", "realized_vol", "rates_context", "model_price_sensitivity_grid", "variance_reduction_diagnostics"],
+        ),
+        (
+            ("kalman", "particle", "ornstein", "ou_mean", "state_space"),
+            "state_space_filter_research",
+            "hidden_state_signal_followthrough",
+            ["filter_confidence", "regime_transition", "noise_adjusted_return"],
+            ["runtime_feature_history", "market_micro_features", "macro_context", "state_filter_diagnostics"],
+        ),
+        (
+            ("cvar", "copula", "tail_dependency", "tail_cluster", "scenario_loss"),
+            "tail_dependency_research",
+            "tail_loss_exceedance_5d",
+            ["cvar_breach", "copula_tail_dependence", "correlation_break"],
+            ["cross_sleeve_correlation_matrix", "scenario_stress_ladder", "tail_risk_surface"],
+        ),
+        (
+            ("kelly", "genetic", "optimization", "overfit", "allocation_constraint"),
+            "optimization_research",
+            "walk_forward_parameter_stability",
+            ["overfit_penalty", "allocation_stability", "post_cost_edge"],
+            ["walk_forward_requalification", "optimization_search_trace", "execution_cost_context"],
+        ),
+        (
+            ("sentiment", "nlp", "filings_language", "narrative"),
+            "sentiment_nlp_research",
+            "source_weighted_event_followthrough",
+            ["source_confidence", "entity_relevance", "narrative_crowding"],
+            ["news_source_consensus", "sec_filing_context", "macro_event_bulletins"],
+        ),
+        (
+            ("day_trading", "same_session", "flatten"),
+            "same_session",
+            "same_session_close",
+            ["1m", "5m", "15m", "60m", "flatten_before_close"],
+            ["one_minute_bars", "vwap", "relative_volume", "no_overnight_hold"],
+        ),
+        (
+            ("aggressive_intraday", "ultrafast", "opening_range", "vwap"),
+            "intraday_fast",
+            "5m_30m_forward_return",
+            ["1m", "5m", "15m", "60m", "halt_reopen_liquidity"],
+            ["one_minute_bars", "vwap", "spread_quality", "relative_volume"],
+        ),
+        (
+            ("swing", "multi_day"),
+            "multi_day",
+            "2d_5d_forward_return",
+            ["1d", "5d", "10d", "stop_followthrough"],
+            ["daily_bars", "sector_context", "macro_context", "overnight_gap"],
+        ),
+        (
+            ("conservative", "capital_preservation", "cash_parking"),
+            "risk_adjusted_preservation",
+            "drawdown_avoidance_5d",
+            ["vol_adjusted_return", "max_drawdown", "cash_parking"],
+            ["volatility_budget", "credit_stress", "liquidity_state", "defensive_sector_context"],
+        ),
+        (
+            ("dividend", "income", "drip", "payout"),
+            "income_total_return",
+            "20d_total_return_income",
+            ["payout_safety", "dividend_cut_risk", "ex_dividend_window"],
+            ["ex_dividend_calendar", "payout_metrics", "rate_context", "total_return_bars"],
+        ),
+        (
+            ("option", "gamma", "iv_", "0dte"),
+            "options_surface",
+            "iv_realized_1d_5d",
+            ["gamma", "skew", "spread_quality", "event_vol_reset"],
+            ["options_chain", "iv_surface", "open_interest", "bid_ask_spread"],
+        ),
+        (
+            ("future", "/es", "curve", "basis"),
+            "futures_event_session",
+            "session_event_followthrough",
+            ["basis", "curve", "overnight_gap", "macro_event_window"],
+            ["futures_bars", "session_calendar", "basis_context", "macro_calendar"],
+        ),
+        (
+            ("market_neutral", "pairs", "stat_arb"),
+            "spread_convergence",
+            "spread_zscore_reversion_3d",
+            ["beta_neutral_residual", "correlation_break", "pair_drawdown"],
+            ["pair_universe", "correlation_matrix", "factor_residuals", "borrow_liquidity"],
+        ),
+        (
+            ("sector_master", "sector_rotation"),
+            "sector_rotation_master",
+            "sector_relative_strength_3d_10d",
+            ["sector_breadth", "cross_sector_risk_budget"],
+            ["sector_etf_bars", "breadth_context", "macro_context", "correlation_clusters"],
+        ),
+        (
+            ("volatility_regime", "term_structure", "vix"),
+            "volatility_regime",
+            "term_structure_realized_vol_followthrough",
+            ["iv_realized_spread", "vol_of_vol", "tail_hedge_state"],
+            ["vix_term_structure", "options_surface", "realized_vol", "macro_event_window"],
+        ),
+        (
+            ("position_lifecycle", "trim_add_hold", "tax_aware"),
+            "position_management",
+            "trim_add_hold_outcome",
+            ["edge_decay", "risk_budget", "tax_lot_holding_period"],
+            ["position_history", "tax_lots", "risk_budget", "signal_decay"],
+        ),
+        (
+            ("source_rank", "credibility", "guidance_language", "teacher_champion", "correlation_risk", "execution_guard"),
+            "infrastructure_guard",
+            "guard_prevents_bad_runtime_action",
+            ["false_positive_guard", "incident_prevention", "data_quality_delta"],
+            ["source_scores", "incident_log", "runtime_health", "decision_context"],
+        ),
+    ]
+    for tokens, family, primary, aux, context in contracts:
+        if any(token in haystack for token in tokens):
+            return {
+                "label_family": family,
+                "primary_horizon": primary,
+                "aux_horizons": aux,
+                "required_context": context,
+            }
+    return {
+        "label_family": "generic_directional",
+        "primary_horizon": "1d_forward_return",
+        "aux_horizons": ["5d_forward_return", "risk_adjusted_return"],
+        "required_context": ["price_bars", "volume", "market_context"],
+    }
+
+
+def _diagnostic_label_contract(runtime_meta: dict[str, Any]) -> dict[str, Any]:
+    for key in ("label_contract", "training_label_contract"):
+        raw = runtime_meta.get(key)
+        if isinstance(raw, dict):
+            return raw
+    label_audit = runtime_meta.get("label_audit") if isinstance(runtime_meta.get("label_audit"), dict) else {}
+    raw = label_audit.get("label_contract")
+    return raw if isinstance(raw, dict) else {}
+
+
+def _label_contract_complete(expected: dict[str, Any], observed: dict[str, Any]) -> bool:
+    if not observed:
+        return False
+    expected_family = str(expected.get("label_family") or "").strip().lower()
+    observed_family = str(observed.get("label_family") or observed.get("family") or "").strip().lower()
+    observed_primary = str(observed.get("primary_horizon") or observed.get("primary_label_horizon") or "").strip()
+    if expected_family and observed_family and expected_family != observed_family:
+        return False
+    return bool(observed_family and observed_primary)
+
+
 def _recommendation(row: dict[str, Any]) -> str:
+    lifecycle_state = str(row.get("lifecycle_state") or "").strip().lower()
     if not bool(row.get("diagnostic_present", False)):
+        if lifecycle_state == "data_collection_only":
+            return "create_collect_only_diagnostics"
         return "refresh_training_diagnostics"
     if not bool(row.get("diagnostic_fresh", True)):
         return "refresh_training_diagnostics"
@@ -67,6 +248,8 @@ def _recommendation(row: dict[str, Any]) -> str:
     long_precision = _float(row.get("long_precision"), 0.0)
     short_precision = _float(row.get("short_precision"), 0.0)
     label_balance = _float(row.get("label_balance_score"), 0.0)
+    if lifecycle_state == "data_collection_only" and sample_count < DEFAULT_COLLECTION_TRAINING_THRESHOLD:
+        return "keep_collecting_until_threshold"
     if sample_count == 0 and sequence_count == 0:
         return "fix_shared_runtime_input"
     if sample_count == 0 and skipped_filtered > max(skipped_low_confidence, skipped_labels):
@@ -85,6 +268,8 @@ def _recommendation(row: dict[str, Any]) -> str:
         return "tighten_or_relabel_for_quality"
     if long_precision > 0.0 and short_precision > 0.0 and abs(long_precision - short_precision) >= 0.18:
         return "use_side_specific_thresholds"
+    if bool(row.get("label_upgrade_needed", False)):
+        return "upgrade_label_contract"
     return "monitor"
 
 
@@ -95,6 +280,9 @@ def _audit_row(registry_row: dict[str, Any], diag_dir: Path, *, max_diagnostic_a
     metrics = diag.get("metrics") if isinstance(diag.get("metrics"), dict) else {}
     runtime_meta = diag.get("runtime_meta") if isinstance(diag.get("runtime_meta"), dict) else {}
     label_audit = runtime_meta.get("label_audit") if isinstance(runtime_meta.get("label_audit"), dict) else {}
+    label_contract = _label_contract_for_row(registry_row)
+    observed_contract = _diagnostic_label_contract(runtime_meta)
+    contract_complete = _label_contract_complete(label_contract, observed_contract)
     diagnostic_age_hours = None
     if diag_path and diag_path.exists():
         try:
@@ -110,6 +298,10 @@ def _audit_row(registry_row: dict[str, Any], diag_dir: Path, *, max_diagnostic_a
     out = {
         "bot_id": bot_id,
         "bot_role": str(registry_row.get("bot_role") or ""),
+        "slot_kind": str(registry_row.get("slot_kind") or ""),
+        "lifecycle_state": str(registry_row.get("lifecycle_state") or ""),
+        "training_excluded": bool(registry_row.get("training_excluded", False)),
+        "data_collection_active": bool(registry_row.get("data_collection_active", False)),
         "active": bool(registry_row.get("active", False)),
         "status": str(diag.get("status") or "missing_diagnostic"),
         "diagnostic_present": bool(diag_path and diag_path.exists()),
@@ -137,6 +329,15 @@ def _audit_row(registry_row: dict[str, Any], diag_dir: Path, *, max_diagnostic_a
         "acceptance_rate": round((sample_count / attempted), 6) if attempted > 0 else 0.0,
         "attempted_candidate_count": attempted,
         "label_audit": label_audit,
+        "label_contract": label_contract,
+        "observed_label_contract": observed_contract,
+        "label_family": str(label_contract.get("label_family") or ""),
+        "primary_label_horizon": str(label_contract.get("primary_horizon") or ""),
+        "aux_label_horizons": list(label_contract.get("aux_horizons") or []),
+        "required_label_context": list(label_contract.get("required_context") or []),
+        "label_contract_complete": contract_complete,
+        "label_upgrade_needed": bool(diag_path and diag_path.exists()) and not contract_complete,
+        "label_upgrade_reason": "" if contract_complete else "diagnostic_missing_expected_label_contract",
         "diagnostics_path": str(diag_path) if bot_id else "",
     }
     out["recommendation"] = _recommendation(out)
@@ -174,10 +375,16 @@ def build_label_audit_payload(
             row for row in active_rows
             if _float(row.get("label_balance_score"), 1.0) < 0.18 or _float(row.get("positive_rate"), 0.5) <= 0.03 or _float(row.get("positive_rate"), 0.5) >= 0.97
         ][:25],
+        "active_label_contract_upgrades": [
+            row for row in active_rows if bool(row.get("label_upgrade_needed", False))
+        ][:25],
         "top_actions": [],
     }
     top_actions: list[str] = []
     for name in [
+        "create_collect_only_diagnostics",
+        "upgrade_label_contract",
+        "keep_collecting_until_threshold",
         "refresh_training_diagnostics",
         "fix_shared_runtime_input",
         "relax_sample_filter",

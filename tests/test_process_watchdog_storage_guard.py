@@ -63,6 +63,33 @@ class ProcessWatchdogStorageGuardTests(unittest.TestCase):
             finally:
                 self._restore_env(prev)
 
+    def test_probe_storage_mount_uses_existing_candidate_when_primary_mount_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            primary_mount = Path(td) / 'BOT_LOGS'
+            video_mount = Path(td) / 'VIDEO'
+            project_dir = 'schwab_trading_bot'
+            external_root = video_mount / project_dir
+            external_root.mkdir(parents=True, exist_ok=True)
+
+            prev = self._set_env(
+                {
+                    'BOT_LOGS_EXTERNAL_MOUNT': str(primary_mount),
+                    'BOT_LOGS_EXTERNAL_MOUNT_CANDIDATES': f'{primary_mount},{video_mount}',
+                    'BOT_LOGS_EXTERNAL_PROJECT_DIR': project_dir,
+                    'BOT_LOGS_EXTERNAL_PROJECT_ROOT': '',
+                }
+            )
+            try:
+                probe = pw._probe_storage_mount()
+                self.assertTrue(probe['mount_present'])
+                self.assertTrue(probe['external_available'])
+                self.assertEqual(probe['mount_root'], str(video_mount))
+                self.assertEqual(probe['external_root'], str(external_root))
+                self.assertEqual(probe['matched_mount_root'], str(video_mount))
+                self.assertEqual(probe['match_reason'], 'candidate_project_root_exists')
+            finally:
+                self._restore_env(prev)
+
     def test_probe_storage_mount_reports_unavailable_when_mount_missing(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             missing_mount = Path(td) / 'missing_mount'
@@ -77,6 +104,35 @@ class ProcessWatchdogStorageGuardTests(unittest.TestCase):
                 probe = pw._probe_storage_mount()
                 self.assertFalse(probe['mount_present'])
                 self.assertFalse(probe['external_available'])
+            finally:
+                self._restore_env(prev)
+
+    def test_probe_storage_mount_reports_volume_unmounted_when_volume_exists_but_mount_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            missing_mount = Path(td) / 'missing_mount'
+            prev = self._set_env(
+                {
+                    'BOT_LOGS_EXTERNAL_MOUNT': str(missing_mount),
+                    'BOT_LOGS_EXTERNAL_PROJECT_DIR': 'project_b',
+                    'BOT_LOGS_EXTERNAL_PROJECT_ROOT': '',
+                }
+            )
+            try:
+                target_volume = mock.Mock(
+                    device_identifier='disk5s1',
+                    volume_name='BOT_LOGS',
+                    volume_uuid='uuid-1',
+                    mount_point='',
+                    is_mounted=False,
+                )
+                with mock.patch.object(pw, 'find_target_external_volume', return_value=target_volume):
+                    probe = pw._probe_storage_mount()
+                self.assertFalse(probe['mount_present'])
+                self.assertFalse(probe['external_available'])
+                self.assertEqual(probe['external_unavailable_reason'], 'volume_unmounted')
+                self.assertTrue(probe['target_volume_present'])
+                self.assertFalse(probe['target_volume_mounted'])
+                self.assertEqual(probe['target_volume_device_identifier'], 'disk5s1')
             finally:
                 self._restore_env(prev)
 
@@ -153,6 +209,17 @@ class ProcessWatchdogStorageGuardTests(unittest.TestCase):
             'External BOT_LOGS restored. Storage routing back on external root.',
             suppress_seconds=75,
         )
+
+    def test_storage_mode_transition_alert_accepts_external_curated_restore(self) -> None:
+        with mock.patch.object(pw, '_alert', return_value={'attempted': True}) as alert:
+            payload = pw._storage_mode_transition_alert(
+                'local_fallback',
+                'external_curated',
+                suppress_seconds=75,
+            )
+
+        self.assertEqual(payload, {'attempted': True})
+        alert.assert_called_once()
 
 
 if __name__ == '__main__':

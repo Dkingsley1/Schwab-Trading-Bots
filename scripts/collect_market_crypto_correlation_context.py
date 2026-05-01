@@ -8,16 +8,22 @@ import json
 import math
 import os
 import statistics
+import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-EXTERNAL_MIRROR_DEFAULT = Path("/Volumes/BOT_LOGS/schwab_trading_bot")
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.storage_mounts import resolve_external_storage
+
+EXTERNAL_MIRROR_DEFAULT = resolve_external_storage().external_root
 LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "market_crypto_correlation.lock"
+CORRELATION_SCHEMA_VERSION = 2
 
 FEATURE_KEYS = [
     "market_crypto_risk_corr_norm",
@@ -29,12 +35,34 @@ FEATURE_KEYS = [
     "market_crypto_current_alignment_norm",
     "market_crypto_divergence_norm",
     "market_crypto_corr_confidence_norm",
+    "market_crypto_sleeve_coverage_norm",
+    "market_crypto_sleeve_avg_abs_corr_norm",
+    "market_crypto_sleeve_dispersion_norm",
+    "market_crypto_sleeve_confidence_norm",
+    "market_crypto_risk_on_crypto_alignment_norm",
+    "market_crypto_fx_crypto_inverse_corr_norm",
+    "market_crypto_rates_crypto_corr_norm",
+    "market_crypto_energy_crypto_corr_norm",
 ]
 
 _SERIES_METRICS = ("pct_from_close", "mom_5m", "return_1m")
 _STOCK_PROXY_SYMBOLS = ("SPY", "QQQ", "IWM", "HYG", "XLK", "XLF", "XLY")
 _RISK_OFF_PROXY_SYMBOLS = ("TLT", "IEF", "SHY", "GLD", "UUP")
 _CRYPTO_SYMBOLS = ("BTC-USD", "ETH-USD", "SOL-USD", "AVAX-USD", "DOGE-USD", "LINK-USD", "LTC-USD")
+_SLEEVE_BASKETS = {
+    "equity_core": ("SPY", "DIA", "QQQ", "IWM", "MDY", "IJR"),
+    "equity_growth": ("QQQ", "XLK", "SMH", "NVDA", "MSFT", "AAPL", "AMD", "TSLA"),
+    "equity_small_caps": ("IWM", "MDY", "IJR", "KRE", "XBI"),
+    "credit": ("HYG", "LQD", "JNK"),
+    "rates": ("TLT", "IEF", "SHY", "TLH", "TIP", "/ZN"),
+    "dollar_fx": ("UUP", "FXE", "FXY", "FXB", "FXC", "FXA", "CYB", "EUO", "YCS", "UDN"),
+    "metals": ("GLD", "SLV", "/GC"),
+    "energy": ("XLE", "XOP", "USO", "UNG", "/CL"),
+    "defensive_income": ("XLU", "XLP", "XLV", "SCHD", "VIG", "DGRO", "JNJ", "PG", "KO", "PEP", "MO"),
+    "equity_futures": ("/ES", "/NQ", "/YM", "/RTY"),
+    "crypto": _CRYPTO_SYMBOLS,
+    "crypto_majors": ("BTC-USD", "ETH-USD"),
+}
 _US_EASTERN = ZoneInfo("America/New_York")
 
 
@@ -581,6 +609,45 @@ def _aggregate_series(
     return {bucket: sum(values) / len(values) for bucket, values in out.items() if values}
 
 
+def _mean_latest_snapshot(latest: Mapping[str, dict[str, float]], symbols: Iterable[str]) -> dict[str, float]:
+    rows = [latest.get(_norm_symbol(symbol)) for symbol in symbols]
+    usable = [row for row in rows if isinstance(row, Mapping)]
+    if not usable:
+        return {}
+    out = {"ts": max(_safe_float(row.get("ts"), 0.0) for row in usable)}
+    for key in ("last_price", "pct_from_close", "mom_5m", "return_1m"):
+        values = [_safe_float(row.get(key), math.nan) for row in usable]
+        finite = [value for value in values if math.isfinite(value)]
+        if finite:
+            out[key] = sum(finite) / len(finite)
+    return out
+
+
+def _build_sleeve_baskets(
+    series: dict[str, dict[str, dict[int, float]]],
+    latest: Mapping[str, dict[str, float]],
+) -> dict[str, dict[str, Any]]:
+    baskets: dict[str, dict[str, Any]] = {}
+    for name, symbols in _SLEEVE_BASKETS.items():
+        observed = [_norm_symbol(symbol) for symbol in symbols if _norm_symbol(symbol) in series]
+        if not observed:
+            continue
+        by_metric = {
+            metric: _aggregate_series(series, observed, metric)
+            for metric in _SERIES_METRICS
+        }
+        by_metric = {metric: values for metric, values in by_metric.items() if values}
+        if not by_metric:
+            continue
+        baskets[name] = {
+            "symbols": observed,
+            "symbol_count": len(observed),
+            "series": by_metric,
+            "latest": _mean_latest_snapshot(latest, observed),
+        }
+    return baskets
+
+
 def _pearson(xs: list[float], ys: list[float]) -> float | None:
     if len(xs) != len(ys) or len(xs) < 2:
         return None
@@ -711,6 +778,147 @@ def _best_pair_correlation(
     return best
 
 
+def _best_metric_correlation(
+    left: Mapping[str, Mapping[int, float]],
+    right: Mapping[str, Mapping[int, float]],
+    *,
+    min_points: int,
+    max_lag_seconds: int = 72 * 3600,
+) -> dict[str, Any]:
+    best = {"corr": None, "points": 0, "metric": "", "usable": False, "mode": "exact"}
+    for metric in ("return_1m", "mom_5m", "pct_from_close"):
+        corr, points = _series_correlation(dict(left.get(metric, {})), dict(right.get(metric, {})), min_points=min_points)
+        if points > int(best["points"]):
+            best = {
+                "corr": corr,
+                "points": points,
+                "metric": metric,
+                "usable": corr is not None and points >= min_points,
+                "mode": "exact",
+            }
+        elif points == int(best["points"]) and corr is not None and best.get("corr") is None:
+            best = {
+                "corr": corr,
+                "points": points,
+                "metric": metric,
+                "usable": corr is not None and points >= min_points,
+                "mode": "exact",
+            }
+    if best.get("usable"):
+        return best
+    for metric in ("return_1m", "mom_5m", "pct_from_close"):
+        corr, points = _series_correlation_asof(
+            dict(left.get(metric, {})),
+            dict(right.get(metric, {})),
+            min_points=min_points,
+            max_lag_seconds=max_lag_seconds,
+        )
+        if points > int(best["points"]):
+            best = {
+                "corr": corr,
+                "points": points,
+                "metric": metric,
+                "usable": corr is not None and points >= min_points,
+                "mode": "asof",
+            }
+        elif points == int(best["points"]) and corr is not None and best.get("corr") is None:
+            best = {
+                "corr": corr,
+                "points": points,
+                "metric": metric,
+                "usable": corr is not None and points >= min_points,
+                "mode": "asof",
+            }
+    return best
+
+
+def _build_sleeve_pair_rows(
+    baskets: Mapping[str, Mapping[str, Any]],
+    *,
+    min_points: int,
+    max_lag_seconds: int,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    names = sorted(baskets)
+    for idx, left_name in enumerate(names):
+        for right_name in names[idx + 1 :]:
+            left_series = baskets.get(left_name, {}).get("series")
+            right_series = baskets.get(right_name, {}).get("series")
+            if not isinstance(left_series, Mapping) or not isinstance(right_series, Mapping):
+                continue
+            best = _best_metric_correlation(
+                left_series,
+                right_series,
+                min_points=min_points,
+                max_lag_seconds=max_lag_seconds,
+            )
+            rows.append(
+                {
+                    "left": left_name,
+                    "right": right_name,
+                    "corr": best.get("corr"),
+                    "points": best.get("points"),
+                    "metric": best.get("metric"),
+                    "mode": best.get("mode", "exact"),
+                    "confidence_norm": _pair_confidence(best),
+                    "left_symbol_count": int(baskets.get(left_name, {}).get("symbol_count", 0) or 0),
+                    "right_symbol_count": int(baskets.get(right_name, {}).get("symbol_count", 0) or 0),
+                }
+            )
+    return sorted(rows, key=lambda row: (_safe_float(row.get("confidence_norm"), 0.0), int(row.get("points", 0) or 0)), reverse=True)
+
+
+def _corr_for_pair(rows: Iterable[Mapping[str, Any]], left: str, right: str) -> float | None:
+    wanted = {str(left), str(right)}
+    for row in rows:
+        if {str(row.get("left") or ""), str(row.get("right") or "")} != wanted:
+            continue
+        corr = _safe_float(row.get("corr"), math.nan)
+        return corr if math.isfinite(corr) else None
+    return None
+
+
+def _sleeve_matrix(rows: Iterable[Mapping[str, Any]], names: Iterable[str]) -> dict[str, dict[str, float | None]]:
+    matrix: dict[str, dict[str, float | None]] = {name: {other: None for other in names} for name in names}
+    for name in matrix:
+        matrix[name][name] = 1.0
+    for row in rows:
+        left = str(row.get("left") or "")
+        right = str(row.get("right") or "")
+        corr = _safe_float(row.get("corr"), math.nan)
+        value = float(corr) if math.isfinite(corr) else None
+        if left in matrix and right in matrix:
+            matrix[left][right] = value
+            matrix[right][left] = value
+    return matrix
+
+
+def _sleeve_graph_features(
+    *,
+    sleeve_pair_rows: list[dict[str, Any]],
+    sleeve_basket_count: int,
+    min_points: int,
+) -> dict[str, float]:
+    possible_pairs = max((int(sleeve_basket_count) * (int(sleeve_basket_count) - 1)) // 2, 1)
+    usable_rows = [
+        row
+        for row in sleeve_pair_rows
+        if int(row.get("points", 0) or 0) >= min_points and row.get("corr") is not None
+    ]
+    corrs = [_safe_float(row.get("corr"), math.nan) for row in usable_rows]
+    finite_corrs = [corr for corr in corrs if math.isfinite(corr)]
+    confidences = [_pair_confidence(row) for row in usable_rows]
+    avg_abs_corr = statistics.mean([abs(corr) for corr in finite_corrs]) if finite_corrs else 0.0
+    dispersion = statistics.pstdev(finite_corrs) if len(finite_corrs) >= 2 else 0.0
+    confidence = statistics.mean(confidences) if confidences else 0.0
+    return {
+        "market_crypto_sleeve_coverage_norm": _clamp01(len(usable_rows) / possible_pairs),
+        "market_crypto_sleeve_avg_abs_corr_norm": _clamp01(avg_abs_corr),
+        "market_crypto_sleeve_dispersion_norm": _clamp01(dispersion),
+        "market_crypto_sleeve_confidence_norm": _clamp01(confidence),
+    }
+
+
 def _corr_confidence_norm(points: int) -> float:
     if points <= 0:
         return 0.0
@@ -765,8 +973,10 @@ def _render_markdown_report(
     *,
     status: Mapping[str, Any],
     pair_rows: list[dict[str, Any]],
+    sleeve_pair_rows: list[dict[str, Any]] | None = None,
     latest: Mapping[str, dict[str, float]],
 ) -> str:
+    sleeve_pair_rows = sleeve_pair_rows or []
     lines = [
         "# Market/Crypto Correlation",
         "",
@@ -776,6 +986,9 @@ def _render_markdown_report(
         f"- stock_symbols_observed: {int(status.get('stock_symbols_observed', 0) or 0)}",
         f"- crypto_symbols_observed: {int(status.get('crypto_symbols_observed', 0) or 0)}",
         f"- aligned_pairs: {int(status.get('aligned_pairs', 0) or 0)}",
+        f"- sleeve_baskets_observed: {int(status.get('sleeve_baskets_observed', 0) or 0)}",
+        f"- sleeve_aligned_pairs: {int(status.get('sleeve_aligned_pairs', 0) or 0)}",
+        f"- total_aligned_pairs: {int(status.get('total_aligned_pairs', status.get('aligned_pairs', 0)) or 0)}",
         f"- mode: {str(status.get('mode') or 'exact')}",
         "",
         "| Pair | Corr | Points | Metric | Confidence |",
@@ -793,6 +1006,28 @@ def _render_markdown_report(
                 confidence=float(row.get("confidence_norm", 0.0) or 0.0),
             )
         )
+    if sleeve_pair_rows:
+        lines.extend(
+            [
+                "",
+                "## Sleeve Correlation Graph",
+                "",
+                "| Sleeve Pair | Corr | Points | Metric | Confidence |",
+                "| --- | ---: | ---: | --- | ---: |",
+            ]
+        )
+        for row in sleeve_pair_rows[:16]:
+            corr = row.get("corr")
+            lines.append(
+                "| {left} vs {right} | {corr} | {points} | {metric} | {confidence:.3f} |".format(
+                    left=row.get("left"),
+                    right=row.get("right"),
+                    corr=("n/a" if corr is None else f"{float(corr):.4f}"),
+                    points=int(row.get("points", 0) or 0),
+                    metric=str(row.get("metric") or "n/a"),
+                    confidence=float(row.get("confidence_norm", 0.0) or 0.0),
+                )
+            )
     lines.extend(
         [
             "",
@@ -865,6 +1100,7 @@ def collect_market_crypto_correlation_context(
     if market_hours_bias:
         asof_max_lag_seconds = max(effective_bucket_seconds * 2, 15 * 60)
     result_cache_state = {
+        "schema_version": CORRELATION_SCHEMA_VERSION,
         "lookback_days": max(int(lookback_days), 1),
         "bucket_seconds": int(effective_bucket_seconds),
         "min_points": max(int(min_points), 3),
@@ -912,6 +1148,25 @@ def collect_market_crypto_correlation_context(
     stock_risk_symbols = [symbol for symbol in _STOCK_PROXY_SYMBOLS if symbol in observed_symbols]
     risk_off_symbols = [symbol for symbol in _RISK_OFF_PROXY_SYMBOLS if symbol in observed_symbols]
     core_crypto_symbols = [symbol for symbol in _CRYPTO_SYMBOLS if symbol in observed_symbols]
+    sleeve_baskets = _build_sleeve_baskets(series, latest)
+    sleeve_pair_rows = _build_sleeve_pair_rows(
+        sleeve_baskets,
+        min_points=min_points,
+        max_lag_seconds=asof_max_lag_seconds,
+    )
+    sleeve_basket_names = sorted(sleeve_baskets)
+    sleeve_aligned_pairs = sum(
+        1
+        for row in sleeve_pair_rows
+        if int(row.get("points", 0) or 0) >= min_points and row.get("corr") is not None
+    )
+    sleeve_exact_aligned_pairs = sum(
+        1
+        for row in sleeve_pair_rows
+        if int(row.get("points", 0) or 0) >= min_points
+        and row.get("corr") is not None
+        and str(row.get("mode") or "exact") == "exact"
+    )
 
     stock_risk_series = _aggregate_series(series, stock_risk_symbols, "pct_from_close")
     crypto_risk_series = _aggregate_series(series, core_crypto_symbols, "pct_from_close")
@@ -1050,6 +1305,24 @@ def collect_market_crypto_correlation_context(
             )
         ),
     }
+    sleeve_graph_features = _sleeve_graph_features(
+        sleeve_pair_rows=sleeve_pair_rows,
+        sleeve_basket_count=len(sleeve_basket_names),
+        min_points=min_points,
+    )
+    risk_on_crypto_corr = _corr_for_pair(sleeve_pair_rows, "equity_core", "crypto")
+    fx_crypto_corr = _corr_for_pair(sleeve_pair_rows, "dollar_fx", "crypto")
+    rates_crypto_corr = _corr_for_pair(sleeve_pair_rows, "rates", "crypto")
+    energy_crypto_corr = _corr_for_pair(sleeve_pair_rows, "energy", "crypto")
+    global_features.update(
+        {
+            **sleeve_graph_features,
+            "market_crypto_risk_on_crypto_alignment_norm": _corr_to_norm(risk_on_crypto_corr),
+            "market_crypto_fx_crypto_inverse_corr_norm": _inverse_corr_to_norm(fx_crypto_corr),
+            "market_crypto_rates_crypto_corr_norm": _corr_to_norm(rates_crypto_corr),
+            "market_crypto_energy_crypto_corr_norm": _corr_to_norm(energy_crypto_corr),
+        }
+    )
 
     symbol_features: dict[str, dict[str, float]] = {}
     for symbol in core_crypto_symbols:
@@ -1079,6 +1352,19 @@ def collect_market_crypto_correlation_context(
                     ]
                 )
             ),
+            **{
+                key: _safe_float(global_features.get(key), 0.0)
+                for key in (
+                    "market_crypto_sleeve_coverage_norm",
+                    "market_crypto_sleeve_avg_abs_corr_norm",
+                    "market_crypto_sleeve_dispersion_norm",
+                    "market_crypto_sleeve_confidence_norm",
+                    "market_crypto_risk_on_crypto_alignment_norm",
+                    "market_crypto_fx_crypto_inverse_corr_norm",
+                    "market_crypto_rates_crypto_corr_norm",
+                    "market_crypto_energy_crypto_corr_norm",
+                )
+            },
         }
 
     for symbol in ("SPY", "QQQ", "TLT", "UUP", "GLD"):
@@ -1095,6 +1381,19 @@ def collect_market_crypto_correlation_context(
             "market_crypto_current_alignment_norm": _current_alignment_norm(latest.get(symbol, {}), latest_crypto),
             "market_crypto_divergence_norm": _clamp01(abs(_corr_to_norm(btc_pair.get("corr")) - risk_corr_norm) * 2.0),
             "market_crypto_corr_confidence_norm": _pair_confidence(btc_pair),
+            **{
+                key: _safe_float(global_features.get(key), 0.0)
+                for key in (
+                    "market_crypto_sleeve_coverage_norm",
+                    "market_crypto_sleeve_avg_abs_corr_norm",
+                    "market_crypto_sleeve_dispersion_norm",
+                    "market_crypto_sleeve_confidence_norm",
+                    "market_crypto_risk_on_crypto_alignment_norm",
+                    "market_crypto_fx_crypto_inverse_corr_norm",
+                    "market_crypto_rates_crypto_corr_norm",
+                    "market_crypto_energy_crypto_corr_norm",
+                )
+            },
         }
 
     exact_aligned_pairs = sum(
@@ -1174,17 +1473,35 @@ def collect_market_crypto_correlation_context(
         warnings.append("market_hours_exact_overlap_missing")
     if mode == "carry_forward_last_usable":
         warnings.append(f"{mode}:using_cached_overlap")
+    if len(sleeve_basket_names) < 4:
+        warnings.append(f"low_sleeve_basket_coverage:{len(sleeve_basket_names)}<4")
+    if sleeve_basket_names and sleeve_aligned_pairs <= 0:
+        warnings.append("no_sleeve_aligned_pairs")
+
+    for key in FEATURE_KEYS:
+        global_features[key] = _clamp01(_safe_float(global_features.get(key), 0.0))
+    for row in symbol_features.values():
+        if not isinstance(row, dict):
+            continue
+        for key in FEATURE_KEYS:
+            row[key] = _clamp01(_safe_float(row.get(key, global_features.get(key, 0.0)), 0.0))
 
     aligned_pairs = sum(1 for row in pair_rows if int(row.get("points", 0) or 0) >= min_points and row.get("corr") is not None)
     status = {
         "timestamp_utc": now.isoformat(),
         "ok": bool(core_crypto_symbols) and (bool(stock_risk_symbols or risk_off_symbols) or mode != "exact"),
+        "schema_version": CORRELATION_SCHEMA_VERSION,
         "files_scanned": len(jsonl_paths) + len(csv_paths),
         "rows_scanned": int(scan_meta.get("rows_scanned", 0) or 0),
         "stock_symbols_observed": len(stock_symbols),
         "crypto_symbols_observed": len(crypto_symbols),
         "aligned_pairs": aligned_pairs,
         "exact_aligned_pairs": exact_aligned_pairs,
+        "sleeve_baskets_observed": len(sleeve_basket_names),
+        "sleeve_aligned_pairs": sleeve_aligned_pairs,
+        "sleeve_exact_aligned_pairs": sleeve_exact_aligned_pairs,
+        "total_aligned_pairs": aligned_pairs + sleeve_aligned_pairs,
+        "sleeve_graph_density_norm": _safe_float(global_features.get("market_crypto_sleeve_coverage_norm"), 0.0),
         "mode": mode,
         "market_hours_bias": market_hours_bias,
         "asof_max_lag_seconds": int(asof_max_lag_seconds),
@@ -1209,6 +1526,16 @@ def collect_market_crypto_correlation_context(
             "global_features": global_features,
             "symbol_features": symbol_features,
             "pair_metrics": pair_rows,
+            "sleeve_baskets": {
+                name: {
+                    "symbols": list(row.get("symbols") or []),
+                    "symbol_count": int(row.get("symbol_count", 0) or 0),
+                    "latest": row.get("latest") if isinstance(row.get("latest"), Mapping) else {},
+                }
+                for name, row in sleeve_baskets.items()
+            },
+            "sleeve_pair_metrics": sleeve_pair_rows,
+            "sleeve_correlation_matrix": _sleeve_matrix(sleeve_pair_rows, sleeve_basket_names),
             "latest_snapshots": latest,
         },
     }
@@ -1218,6 +1545,14 @@ def collect_market_crypto_correlation_context(
             "timestamp_utc": now.isoformat(),
             "aligned_pairs": aligned_pairs,
             "pair_metrics": exact_pair_rows,
+            "sleeve_pair_metrics": sleeve_pair_rows,
+            "sleeve_baskets": {
+                name: {
+                    "symbols": list(row.get("symbols") or []),
+                    "symbol_count": int(row.get("symbol_count", 0) or 0),
+                }
+                for name, row in sleeve_baskets.items()
+            },
             "global_features": global_features,
             "symbol_features": symbol_features,
         }
@@ -1225,7 +1560,7 @@ def collect_market_crypto_correlation_context(
         cache_path,
         {
             "timestamp_utc": now.isoformat(),
-            "schema_version": 1,
+            "schema_version": CORRELATION_SCHEMA_VERSION,
             "jsonl_file_cache": rebuilt_jsonl_entries,
             "csv_file_cache": rebuilt_csv_entries,
             "last_usable": last_usable_payload,
@@ -1288,6 +1623,7 @@ def main() -> int:
     report = _render_markdown_report(
         status=status,
         pair_rows=list(payload.get("derived", {}).get("pair_metrics", [])),
+        sleeve_pair_rows=list(payload.get("derived", {}).get("sleeve_pair_metrics", [])),
         latest=payload.get("derived", {}).get("latest_snapshots", {}),
     )
     report_path = PROJECT_ROOT / "exports" / "reports" / "market_crypto_correlation_latest.md"

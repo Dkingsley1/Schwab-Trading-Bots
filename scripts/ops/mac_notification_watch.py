@@ -20,16 +20,27 @@ TRIPWIRE_PATH = HEALTH_DIR / "shadow_watchdog_tripwire_latest.json"
 PROCESS_WATCHDOG_PATH = HEALTH_DIR / "process_watchdog_latest.json"
 STORAGE_GUARD_PATH = HEALTH_DIR / "storage_mount_guard_latest.json"
 GLOBAL_HALT_PATH = HEALTH_DIR / "GLOBAL_TRADING_HALT.flag"
+HALT_RECOVERY_PATH = HEALTH_DIR / "shadow_watchdog_halt_recovery_latest.json"
 INCIDENT_AUTO_HALT_PATH = ALERTS_DIR / "incident_auto_halt_latest.json"
 PREFLIGHT_CRITICAL_PATH = ALERTS_DIR / "preflight_critical_latest.json"
+INCIDENT_TIMELINE_PATH = HEALTH_DIR / "incident_timeline_latest.json"
+INCIDENT_REVIEW_PATH = HEALTH_DIR / "incident_review_packet_latest.json"
+GLOBAL_KILLSWITCH_JSON_PATH = HEALTH_DIR / "global_killswitch_latest.json"
+DATA_INGRESS_LATEST_GLOB = "data_ingress_latest_*.json"
 IMESSAGE_ENABLED_ENV = "MAC_NOTIFICATION_WATCH_IMESSAGE_ENABLED"
 IMESSAGE_RECIPIENT_ENV = "MAC_NOTIFICATION_WATCH_IMESSAGE_RECIPIENT"
 MAX_ALERT_AGE_SECONDS_ENV = "MAC_NOTIFICATION_WATCH_MAX_ALERT_AGE_SECONDS"
 IMESSAGE_MIN_SEVERITY_ENV = "MAC_NOTIFICATION_WATCH_IMESSAGE_MIN_SEVERITY"
 IMESSAGE_EVENT_ALLOWLIST_ENV = "MAC_NOTIFICATION_WATCH_IMESSAGE_EVENT_ALLOWLIST"
+MIN_REPEAT_SECONDS_ENV = "MAC_NOTIFICATION_WATCH_MIN_REPEAT_SECONDS"
 DEFAULT_MAX_ALERT_AGE_SECONDS = 900.0
 DEFAULT_IMESSAGE_MIN_SEVERITY = "warn"
 DEFAULT_IMESSAGE_EVENT_ALLOWLIST = ""
+DEFAULT_MIN_REPEAT_SECONDS = 300.0
+TERMINAL_NOTIFIER_CANDIDATES = [
+    "/opt/homebrew/bin/terminal-notifier",
+    "/usr/local/bin/terminal-notifier",
+]
 PMSET_POWER_LOG_TAIL_LINES = 240
 PMSET_POWER_LOG_TIMEOUT_SECONDS = 8.0
 PMSET_LINE_RE = re.compile(
@@ -56,6 +67,8 @@ def _human_event_label(event: str) -> str:
     labels = {
         "lane_kill_switch_engaged": "Lane Kill Switch",
         "options_margin_guard": "Margin Guard",
+        "global_halt_cleared": "Global Halt Cleared",
+        "incident_auto_halt_cleared": "Auto Halt Cleared",
         "critical_alert": "Critical Alert",
     }
     key = str(event or "").strip().lower()
@@ -77,6 +90,10 @@ def _severity_at_least(current: str, minimum: str) -> bool:
 
 def _event_family(key: str) -> str:
     normalized_key = str(key or "").strip().lower()
+    if normalized_key == "global_halt_cleared":
+        return "global_halt"
+    if normalized_key == "incident_auto_halt_cleared":
+        return "incident_auto_halt"
     if normalized_key.startswith("critical_alert:"):
         return "critical_alert"
     if normalized_key.startswith("tripwire:"):
@@ -122,6 +139,8 @@ def _event_severity(key: str, message: str) -> str:
         return "critical"
     if normalized_key.startswith("tripwire:") or normalized_key.startswith("restart_storm:"):
         return "critical"
+    if normalized_key in {"global_halt_cleared", "incident_auto_halt_cleared"}:
+        return "info"
     if normalized_key in {"tripwire", "all_sleeves_down", "global_halt", "incident_auto_halt", "preflight_critical", "storage_mount_missing"}:
         return "critical"
     return "warn"
@@ -147,8 +166,12 @@ def _notification_heading(key: str, message: str) -> Tuple[str, str]:
         return ("Trading Bot Critical", "Sleeves Down")
     if key == "global_halt":
         return ("Trading Bot Critical", "Global Halt")
+    if key == "global_halt_cleared":
+        return ("Trading Bot Incident", "Global Halt Cleared")
     if key == "incident_auto_halt":
         return ("Trading Bot Critical", "Auto Halt")
+    if key == "incident_auto_halt_cleared":
+        return ("Trading Bot Incident", "Auto Halt Cleared")
     if key == "preflight_critical":
         return ("Trading Bot Critical", "Preflight")
     if key == "storage_mount_missing":
@@ -179,8 +202,12 @@ def _notification_action_hint(key: str, message: str) -> str:
         return "Action: inspect process_watchdog before resuming sleeves."
     if normalized_key == "global_halt":
         return "Action: clear the halt only after incident review."
+    if normalized_key == "global_halt_cleared":
+        return "Action: confirm sleeves are healthy before increasing risk."
     if normalized_key == "incident_auto_halt":
         return "Action: resolve the failed checks before resuming."
+    if normalized_key == "incident_auto_halt_cleared":
+        return "Action: confirm the incident checks remain green."
     if normalized_key == "preflight_critical":
         return "Action: clear the listed checks before market open."
     if normalized_key == "storage_mount_missing":
@@ -188,14 +215,62 @@ def _notification_action_hint(key: str, message: str) -> str:
     return ""
 
 
+def _notification_inspect_target(key: str, message: str) -> Path | None:
+    normalized_key = str(key or "").strip().lower()
+    if normalized_key.startswith("power_"):
+        return None
+    if normalized_key.startswith("critical_alert:"):
+        return INCIDENT_REVIEW_PATH if INCIDENT_REVIEW_PATH.exists() else INCIDENT_TIMELINE_PATH
+    if normalized_key == "tripwire" or normalized_key.startswith("tripwire:"):
+        return INCIDENT_TIMELINE_PATH
+    if normalized_key.startswith("restart_storm:") or normalized_key == "all_sleeves_down":
+        return PROCESS_WATCHDOG_PATH
+    if normalized_key == "global_halt":
+        return GLOBAL_KILLSWITCH_JSON_PATH if GLOBAL_KILLSWITCH_JSON_PATH.exists() else GLOBAL_HALT_PATH
+    if normalized_key == "global_halt_cleared":
+        return HALT_RECOVERY_PATH
+    if normalized_key == "incident_auto_halt":
+        return INCIDENT_AUTO_HALT_PATH
+    if normalized_key == "incident_auto_halt_cleared":
+        return INCIDENT_AUTO_HALT_PATH
+    if normalized_key == "preflight_critical":
+        return PREFLIGHT_CRITICAL_PATH
+    if normalized_key == "storage_mount_missing":
+        return STORAGE_GUARD_PATH
+    return INCIDENT_TIMELINE_PATH if INCIDENT_TIMELINE_PATH.exists() else None
+
+
+def _path_to_file_url(path: Path | None) -> str:
+    if path is None:
+        return ""
+    try:
+        return path.resolve().as_uri()
+    except Exception:
+        return ""
+
+
+def _notification_group_key(key: str, message: str) -> str:
+    normalized_key = str(key or "").strip().lower()
+    if normalized_key.startswith("power_"):
+        return normalized_key
+    if normalized_key.startswith("critical_alert:"):
+        first_line = str(message or "").splitlines()[0].strip().lower() if str(message or "").splitlines() else normalized_key
+        compact = re.sub(r"[^a-z0-9]+", "_", first_line).strip("_")
+        return f"critical_alert:{compact or 'default'}"
+    return normalized_key
+
+
 def _notification_body(key: str, message: str) -> str:
     lines = [str(line).strip() for line in str(message or "").splitlines() if str(line).strip()]
     if not lines:
         lines = ["Trading bot alert"]
+    inspect_target = _notification_inspect_target(key, message)
+    if inspect_target is not None:
+        lines.append(f"Inspect: {inspect_target.name}")
     hint = _notification_action_hint(key, message)
     if hint and not any(line.lower().startswith("action:") for line in lines):
         lines.append(hint)
-    return "\n".join(lines[:4])
+    return "\n".join(lines[:5])
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -232,7 +307,29 @@ def _escape_applescript_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _notify_mac(title: str, body: str, subtitle: str = "Trading Bot Alert") -> Dict[str, Any]:
+def _terminal_notifier_path() -> str:
+    for candidate in TERMINAL_NOTIFIER_CANDIDATES:
+        if Path(candidate).exists():
+            return candidate
+    return ""
+
+
+def _notify_mac(title: str, body: str, subtitle: str = "Trading Bot Alert", *, group_key: str = "", open_target: str = "") -> Dict[str, Any]:
+    notifier = _terminal_notifier_path()
+    if notifier:
+        cmd = [notifier, "-title", title, "-subtitle", subtitle, "-message", body]
+        if group_key:
+            cmd.extend(["-group", group_key])
+        if open_target:
+            cmd.extend(["-open", open_target])
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        return {
+            "channel": "mac",
+            "transport": "terminal-notifier",
+            "returncode": int(proc.returncode),
+            "stdout": (proc.stdout or "").strip(),
+            "stderr": (proc.stderr or "").strip(),
+        }
     script = 'display notification "{}" with title "{}" subtitle "{}"'.format(
         _escape_applescript_string(body),
         _escape_applescript_string(title),
@@ -241,6 +338,7 @@ def _notify_mac(title: str, body: str, subtitle: str = "Trading Bot Alert") -> D
     proc = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=False)
     return {
         "channel": "mac",
+        "transport": "osascript",
         "returncode": int(proc.returncode),
         "stdout": (proc.stdout or "").strip(),
         "stderr": (proc.stderr or "").strip(),
@@ -289,12 +387,14 @@ def _notify(
     body: str,
     subtitle: str = "Trading Bot Alert",
     *,
+    group_key: str = "",
+    open_target: str = "",
     imessage_enabled: bool = False,
     imessage_recipient: str = "",
     imessage_min_severity: str = DEFAULT_IMESSAGE_MIN_SEVERITY,
     severity: str = "warn",
 ) -> Dict[str, Any]:
-    mac_result = _notify_mac(title, body, subtitle=subtitle)
+    mac_result = _notify_mac(title, body, subtitle=subtitle, group_key=group_key, open_target=open_target)
     out: Dict[str, Any] = {
         "mac": mac_result,
         "imessage_attempted": False,
@@ -333,13 +433,18 @@ def _parse_pmset_timestamp(raw: str) -> datetime | None:
 
 def _recent_pmset_lines(limit: int = PMSET_POWER_LOG_TAIL_LINES) -> List[str]:
     tail = max(int(limit), 1)
-    proc = subprocess.run(
-        ["/bin/zsh", "-lc", f"/usr/bin/pmset -g log | tail -n {tail}"],
-        capture_output=True,
-        text=True,
-        timeout=PMSET_POWER_LOG_TIMEOUT_SECONDS,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            ["/bin/zsh", "-lc", f"/usr/bin/pmset -g log | tail -n {tail}"],
+            capture_output=True,
+            text=True,
+            timeout=PMSET_POWER_LOG_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return []
+    except Exception:
+        return []
     if proc.returncode != 0:
         return []
     return [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
@@ -398,6 +503,17 @@ def _global_halt_event() -> Tuple[str, str] | None:
     return ("global_halt", "GLOBAL_TRADING_HALT is set")
 
 
+def _global_halt_clear_event(payload: Dict[str, Any], max_age_seconds: float) -> Tuple[str, str] | None:
+    if not payload or not _is_recent(payload, max_age_seconds):
+        return None
+    action = str(payload.get("action", "")).strip().lower()
+    if action not in {"halt_auto_cleared", "halt_force_cleared"}:
+        return None
+    reason = str(payload.get("halt_reason", "")).strip() or "unknown"
+    decision = str(payload.get("decision_reason", "")).strip() or "eligible"
+    return ("global_halt_cleared", f"GLOBAL_TRADING_HALT cleared automatically\nReason: {reason} ({decision})")
+
+
 def _restart_storm_event(payload: Dict[str, Any]) -> Tuple[str, str] | None:
     storms = payload.get("restart_storms", [])
     if not isinstance(storms, list) or not storms:
@@ -406,11 +522,60 @@ def _restart_storm_event(payload: Dict[str, Any]) -> Tuple[str, str] | None:
     return (f"restart_storm:{names}", f"Restart storm on {names}")
 
 
+def _data_ingress_lane_summary() -> Dict[str, Any]:
+    lanes: List[Dict[str, str]] = []
+    for path in sorted(HEALTH_DIR.glob(DATA_INGRESS_LATEST_GLOB)):
+        payload = _read_json(path)
+        if not payload:
+            continue
+        lanes.append(
+            {
+                "name": path.stem.replace("data_ingress_latest_", ""),
+                "loop_state": str(payload.get("loop_state", "")).strip().lower(),
+                "pause_reason": str(payload.get("pause_reason", "")).strip().lower(),
+            }
+        )
+    running = [row for row in lanes if row["loop_state"] == "running"]
+    post_window = [
+        row
+        for row in lanes
+        if row["loop_state"] in {"paused_session_gate", "paused", "stopped"}
+        and row["pause_reason"] == "post_window"
+    ]
+    non_post_window_paused = [
+        row
+        for row in lanes
+        if row["loop_state"] in {"paused_session_gate", "paused", "stopped"}
+        and row["pause_reason"] != "post_window"
+    ]
+    return {
+        "lane_count": len(lanes),
+        "running_count": len(running),
+        "post_window_count": len(post_window),
+        "non_post_window_paused_count": len(non_post_window_paused),
+        "running_examples": [row["name"] for row in running[:3]],
+        "non_post_window_examples": [row["name"] for row in non_post_window_paused[:3]],
+    }
+
+
 def _all_sleeves_down_event(payload: Dict[str, Any]) -> Tuple[str, str] | None:
     for row in payload.get("status", []) if isinstance(payload.get("status"), list) else []:
         if str(row.get("name", "")) == "all_sleeves" and int(row.get("running", 0) or 0) == 0:
             if (not bool(row.get("heartbeat_ok", False))) and int(row.get("alt_running", 0) or 0) == 0:
-                return ("all_sleeves_down", "All sleeves are down and not heartbeating")
+                lane_summary = _data_ingress_lane_summary()
+                lane_count = int(lane_summary.get("lane_count", 0) or 0)
+                post_window_count = int(lane_summary.get("post_window_count", 0) or 0)
+                running_count = int(lane_summary.get("running_count", 0) or 0)
+                non_post_window_count = int(lane_summary.get("non_post_window_paused_count", 0) or 0)
+                if lane_count and post_window_count and non_post_window_count == 0:
+                    return None
+                if lane_count and post_window_count >= max(lane_count - running_count - 1, 1):
+                    return None
+                details = [f"launcher down; active lanes={running_count}/{lane_count}"]
+                examples = lane_summary.get("non_post_window_examples", [])
+                if examples:
+                    details.append("paused: " + ",".join(str(x) for x in examples))
+                return ("all_sleeves_down", "All sleeves launcher is down\n" + "\n".join(details))
     return None
 
 
@@ -445,7 +610,14 @@ def _critical_alert_events(max_age_seconds: float) -> List[Tuple[str, str]]:
 def _incident_auto_halt_event(payload: Dict[str, Any], max_age_seconds: float) -> Tuple[str, str] | None:
     if not payload or not _is_recent(payload, max_age_seconds):
         return None
+    event_name = str(payload.get("event", "")).strip().lower()
+    if event_name in {"halt_cleared", "halt_cleared_execution_not_expected", "halt_force_cleared"}:
+        clear_streak = int(payload.get("clear_streak", 0) or 0)
+        return ("incident_auto_halt_cleared", f"Incident auto-halt cleared itself\nClear streak: {clear_streak}")
     failed_checks = payload.get("failed_checks", []) if isinstance(payload.get("failed_checks"), list) else []
+    detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else {}
+    if bool(detail.get("enforcement_suppressed")) and not bool(payload.get("halt", False)):
+        return None
     halt = bool(payload.get("halt", False))
     ok = bool(payload.get("ok", True))
     if ok and not halt and not failed_checks:
@@ -488,6 +660,7 @@ def _event_candidates(max_age_seconds: float) -> List[Tuple[str, str]]:
     for event in (
         _tripwire_event(_read_json(TRIPWIRE_PATH)),
         _global_halt_event(),
+        _global_halt_clear_event(_read_json(HALT_RECOVERY_PATH), max_age_seconds),
         _restart_storm_event(_read_json(PROCESS_WATCHDOG_PATH)),
         _all_sleeves_down_event(_read_json(PROCESS_WATCHDOG_PATH)),
         _storage_event(_read_json(STORAGE_GUARD_PATH)),
@@ -511,22 +684,40 @@ def _run_watch_loop(
 ) -> int:
     state = _load_state(state_path)
     sent: Dict[str, str] = dict((state.get("sent") or {}))
+    last_sent_at: Dict[str, str] = dict((state.get("last_sent_at") or {}))
     last_delivery = state.get("last_delivery")
     max_age_seconds = _env_float(MAX_ALERT_AGE_SECONDS_ENV, DEFAULT_MAX_ALERT_AGE_SECONDS)
+    min_repeat_seconds = _env_float(MIN_REPEAT_SECONDS_ENV, DEFAULT_MIN_REPEAT_SECONDS)
     normalized_imessage_min_severity = _normalize_severity(imessage_min_severity, DEFAULT_IMESSAGE_MIN_SEVERITY)
     parsed_imessage_event_allowlist = _parse_imessage_event_allowlist(imessage_event_allowlist)
     while True:
         active_keys = set()
         for key, message in _event_candidates(max_age_seconds):
-            active_keys.add(key)
-            if sent.get(key) != message:
+            group_key = _notification_group_key(key, message)
+            active_keys.add(group_key)
+            body = _notification_body(key, message)
+            should_send = sent.get(group_key) != body
+            if not should_send:
+                ts_raw = str(last_sent_at.get(group_key, "")).strip()
+                if ts_raw:
+                    try:
+                        age = (
+                            datetime.now(timezone.utc)
+                            - datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).astimezone(timezone.utc)
+                        ).total_seconds()
+                    except Exception:
+                        age = min_repeat_seconds + 1.0
+                    should_send = age >= min_repeat_seconds
+            if should_send:
                 title, subtitle = _notification_heading(key, message)
                 severity = _event_severity(key, message)
-                body = _notification_body(key, message)
+                open_target = _path_to_file_url(_notification_inspect_target(key, message))
                 delivery = _notify(
                     title,
                     body,
                     subtitle=subtitle,
+                    group_key=group_key,
+                    open_target=open_target,
                     imessage_enabled=bool(imessage_enabled and _imessage_event_allowed(key, parsed_imessage_event_allowlist)),
                     imessage_recipient=imessage_recipient,
                     imessage_min_severity=normalized_imessage_min_severity,
@@ -536,24 +727,30 @@ def _run_watch_loop(
                 print(json.dumps({
                     "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                     "event_key": key,
+                    "group_key": group_key,
                     "message": body,
                     "severity": severity,
+                    "open_target": open_target,
                     "delivery": delivery,
                 }, ensure_ascii=True), flush=True)
-                sent[key] = body
+                sent[group_key] = body
+                last_sent_at[group_key] = datetime.now(timezone.utc).isoformat()
         for key in list(sent.keys()):
             if key not in active_keys:
                 sent.pop(key, None)
+                last_sent_at.pop(key, None)
         _write_json(
             state_path,
             {
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                 "sent": sent,
+                "last_sent_at": last_sent_at,
                 "imessage_enabled": bool(imessage_enabled),
                 "imessage_recipient_configured": bool(imessage_recipient.strip()),
                 "imessage_min_severity": normalized_imessage_min_severity,
                 "imessage_event_allowlist": (["*"] if "*" in parsed_imessage_event_allowlist else sorted(parsed_imessage_event_allowlist)),
                 "max_alert_age_seconds": max_age_seconds,
+                "min_repeat_seconds": min_repeat_seconds,
                 "last_delivery": last_delivery,
             },
         )

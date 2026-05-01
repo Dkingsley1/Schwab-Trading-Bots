@@ -273,23 +273,33 @@ def main() -> int:
     t2 = threading.Thread(target=_stream, args=("aggressive", aggressive.stdout), daemon=True)
     t2.start()
 
-    procs = [conservative, aggressive]
+    procs = {"conservative": conservative, "aggressive": aggressive}
     try:
         while True:
             if _global_trading_halt_enabled():
                 print("GLOBAL_TRADING_HALT=1 detected; stopping both profiles.")
-                _stop_processes(procs)
+                _stop_processes(list(procs.values()))
                 return 0
 
-            exits = [p.poll() for p in procs]
+            exits = [p.poll() for p in procs.values()]
+            clean_exits = [name for name, proc in procs.items() if proc.poll() == 0]
+            if clean_exits:
+                for name in clean_exits:
+                    procs.pop(name, None)
+                print(f"Continuing after already-running profiles exited cleanly: {clean_exits}")
+                if not procs:
+                    print("Both profiles exited cleanly; existing lock owners are carrying those profiles.")
+                    return 0
+                time.sleep(1.0)
+                continue
             if any(code is not None for code in exits):
-                _stop_processes(procs)
+                _stop_processes(list(procs.values()))
                 print(f"Stopped because one profile exited: {exits}")
                 return 1
             time.sleep(1.0)
     except KeyboardInterrupt:
         print("Stopping both profiles...")
-        _stop_processes(procs)
+        _stop_processes(list(procs.values()))
         return 0
 
 

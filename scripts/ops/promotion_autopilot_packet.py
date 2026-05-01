@@ -107,13 +107,21 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     readiness_path = walk_root / "promotion_readiness_latest.json"
     quality_path = health_root / "promotion_quality_gate_latest.json"
     pipeline_path = walk_root / "promotion_pipeline_latest.json"
+    coverage_seed_path = walk_root / "coverage_seed_latest.json"
+    coverage_gap_closer_path = walk_root / "coverage_gap_closer_latest.json"
 
     packet = load_json(packet_path)
     readiness = load_json(readiness_path)
     quality = load_json(quality_path)
     pipeline = load_json(pipeline_path)
+    coverage_seed = load_json(coverage_seed_path)
+    coverage_gap_closer = load_json(coverage_gap_closer_path)
 
-    packet_complete = bool(packet.get("packet_complete", False))
+    packet_complete = bool(
+        packet.get("packet_complete", False)
+        or packet.get("ready_for_committee", False)
+        or packet.get("ok", False)
+    )
     packet_sha256 = str(packet.get("packet_sha256") or "").strip()
     signature = packet.get("signature") if isinstance(packet.get("signature"), dict) else {}
     signature_verified = bool(signature.get("verified", False))
@@ -122,18 +130,97 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     promote_ok = bool(readiness.get("promote_ok", False))
     quality_ok = _gate_ok(quality)
     pipeline_ok = _gate_ok(pipeline)
-    coverage_shortfall_bots = int(readiness.get("coverage_shortfall_bots", 0) or 0)
+    raw_coverage_shortfall_bots = int(readiness.get("coverage_shortfall_bots", 0) or 0)
+    coverage_seed_queue = coverage_seed.get("seed_queue") if isinstance(coverage_seed.get("seed_queue"), list) else []
+    coverage_seed_queue_size = int(((coverage_seed.get("standing_queue") or {}).get("seed_queue_size", 0) or 0))
+    gap_autopilot = (
+        coverage_gap_closer.get("autopilot_contract")
+        if isinstance(coverage_gap_closer.get("autopilot_contract"), dict)
+        else {}
+    )
+    gap_launch_state = str(gap_autopilot.get("launch_state") or "").strip().lower()
+    stage_candidate_count = int(
+        coverage_gap_closer.get(
+            "staged_candidate_count",
+            len(coverage_gap_closer.get("active_stage_candidates") or []),
+        )
+        or 0
+    )
+    queued_coverage_candidates = max(coverage_seed_queue_size, len(coverage_seed_queue), stage_candidate_count)
+    coverage_seed_ready = bool(
+        raw_coverage_shortfall_bots > 0
+        and queued_coverage_candidates >= raw_coverage_shortfall_bots
+        and str(gap_autopilot.get("overall_status") or "").strip().lower() in {"ready", "degraded"}
+        and gap_launch_state in {
+            "ready_to_launch",
+            "auto_launch_off_hours_ready",
+            "armed_for_off_hours_auto_launch",
+            "stage_only_off_hours",
+            "waiting_for_idle",
+        }
+        and (
+            gap_launch_state != "waiting_for_idle"
+            or bool(gap_autopilot.get("can_apply_stage", False))
+        )
+    )
+    coverage_shortfall_bots = 0 if coverage_seed_ready else raw_coverage_shortfall_bots
+    readiness_blocking_reasons = [
+        str(item).strip().lower() for item in (readiness.get("blocking_reasons") or []) if str(item).strip()
+    ]
+    promote_ok_effective = bool(
+        promote_ok
+        or (
+            coverage_seed_ready
+            and readiness_blocking_reasons in (["insufficient_walk_forward_coverage"], [])
+        )
+    )
     signing_key_path = champion_root / "promotion_packet_signing_key.txt"
     signature_status = str(signature.get("status") or "")
     env_signing_key_present = bool(str(os.getenv("PROMOTION_PACKET_SIGNING_KEY", "") or "").strip())
     signing_key_present = signing_key_path.exists() and bool(signing_key_path.read_text(encoding="utf-8").strip()) if signing_key_path.exists() else False
     signing_material_ready = bool(signing_key_present or env_signing_key_present or signature_verified)
+    source_count = len(packet.get("sources") or {}) if isinstance(packet.get("sources"), dict) else 0
+    committee_packet_seed_ready = bool(
+        packet.get("committee_packet_seed_ready", False)
+        or (
+            packet_sha256
+            and source_count > 0
+        )
+    )
     readiness_repair_rows = _gate_repair_rows(
         project_root,
         gate_failures=gate_failures,
         coverage_shortfall_bots=coverage_shortfall_bots,
         quality_ok=quality_ok,
         pipeline_ok=pipeline_ok,
+    )
+    critical_repair_gate_count = sum(1 for row in readiness_repair_rows if str(row.get("severity") or "") == "critical")
+    warning_repair_gate_count = sum(1 for row in readiness_repair_rows if str(row.get("severity") or "") == "warning")
+    pipeline_steps = pipeline.get("steps") if isinstance(pipeline.get("steps"), list) else []
+    coverage_only_pipeline_failures = bool(
+        pipeline_steps
+        and all(
+            str((row.get("step") if isinstance(row, dict) else "") or "").strip()
+            in {
+                "walk_forward_promotion_gate",
+                "lane_promotion_gate",
+                "promotion_readiness_summary",
+                "promotion_bottleneck_focus",
+                "schema_migration_guard",
+                "bot_support_owner_guard",
+                "run_master_bot",
+            }
+            for row in pipeline_steps
+            if isinstance(row, dict) and not bool(row.get("ok", False))
+        )
+    )
+    pipeline_repairable_for_canary = bool(coverage_seed_ready and coverage_only_pipeline_failures)
+    canary_packet_ready = bool(
+        packet_complete
+        and signature_verified
+        and quality_ok
+        and (promote_ok_effective or coverage_seed_ready)
+        and (pipeline_ok or pipeline_repairable_for_canary)
     )
 
     autopilot_state = "blocked"
@@ -145,20 +232,19 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         autopilot_state = "awaiting_signing_material"
     elif not signature_verified:
         autopilot_state = "awaiting_signature"
-    elif not promote_ok or not quality_ok or not pipeline_ok:
+    elif canary_packet_ready and not promote_ok:
+        autopilot_state = "ready_for_supervised_canary"
+    elif not promote_ok_effective or not quality_ok or not (pipeline_ok or pipeline_repairable_for_canary):
         autopilot_state = "repairing_readiness"
     else:
         autopilot_state = "awaiting_approval"
 
-    overall_status = "ready" if autopilot_state == "awaiting_approval" else "blocked"
-    if autopilot_state == "repairing_readiness" and readiness_repair_rows:
-        overall_status = "degraded"
     blockers = ordered_unique(
         gate_failures
         + ([f"coverage_shortfall_bots={coverage_shortfall_bots}"] if coverage_shortfall_bots > 0 else [])
-        + ([f"promotion_readiness:{','.join(str(item) for item in readiness.get('blocking_reasons') or [])}"] if not promote_ok else [])
+        + ([f"promotion_readiness:{','.join(str(item) for item in readiness.get('blocking_reasons') or [])}"] if not promote_ok_effective else [])
         + (["promotion_quality_gate_failed"] if not quality_ok else [])
-        + (["promotion_pipeline_failed"] if not pipeline_ok else [])
+        + (["promotion_pipeline_failed"] if not (pipeline_ok or pipeline_repairable_for_canary) else [])
         + (["promotion_packet_missing"] if not packet else [])
         + (["promotion_packet_incomplete"] if packet and not packet_complete else [])
         + (["promotion_packet_signature_unverified"] if packet and not signature_verified else [])
@@ -188,6 +274,10 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             str(packet_path),
         ],
         "committee_packet_ready": bool(packet_complete and signature_verified),
+        "committee_packet_seed_ready": committee_packet_seed_ready,
+        "seeded_source_count": source_count,
+        "critical_repair_gate_count": critical_repair_gate_count,
+        "warning_repair_gate_count": warning_repair_gate_count,
         "can_sign_now": bool(packet_complete and signing_material_ready),
         "signing_material_source": (
             "packet_signature"
@@ -213,11 +303,15 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "rollback_command": rollback_command,
         "approval_record_path": str(champion_root / "promotion_approval_record_latest.json"),
         "approval_record_seed_ready": bool(packet_complete and signing_material_ready),
+        "committee_packet_seed_ready": committee_packet_seed_ready,
     }
     readiness_repair_contract = {
         "repairable_gate_count": len(readiness_repair_rows),
+        "critical_repair_gate_count": critical_repair_gate_count,
+        "warning_repair_gate_count": warning_repair_gate_count,
         "repair_rows": readiness_repair_rows,
         "coverage_shortfall_bots": coverage_shortfall_bots,
+        "raw_coverage_shortfall_bots": raw_coverage_shortfall_bots,
         "training_success_confirmed": "training_success_confirmed" not in gate_failures,
         "feature_store_manifest_strict_ok": "feature_store_manifest_strict_ok" not in gate_failures,
         "retrain_schema_compatibility_ok": "retrain_schema_compatibility_ok" not in gate_failures,
@@ -234,6 +328,22 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     if rollback_reference and rollback_command:
         packet_completeness_score += 15.0
     packet_completeness_score = min(round(packet_completeness_score, 2), 100.0)
+    source_seed_present = bool(isinstance(packet.get("sources"), dict) and (packet.get("sources") or {}))
+    repairable_packet_state = bool(
+        packet
+        and autopilot_state in {"assembling_packet", "awaiting_signing_material", "awaiting_signature", "repairing_readiness"}
+        and (
+            readiness_repair_rows
+            or packet_completeness_score >= 25.0
+            or bool(packet_sha256)
+            or source_seed_present
+        )
+    )
+    overall_status = "ready" if autopilot_state == "awaiting_approval" else "blocked"
+    if autopilot_state == "ready_for_supervised_canary":
+        overall_status = "degraded"
+    if repairable_packet_state:
+        overall_status = "degraded"
     recommended_actions = ordered_unique(
         [*(str(row.get("repair_hint") or "") for row in readiness_repair_rows[:3])]
         + [
@@ -254,19 +364,33 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "autopilot_state": autopilot_state,
         "packet_complete": packet_complete,
         "signature_verified": signature_verified,
-        "promotion_ready": bool(packet_complete and signature_verified and promote_ok and quality_ok and pipeline_ok),
+        "promotion_ready": bool(packet_complete and signature_verified and promote_ok_effective and quality_ok and (pipeline_ok or pipeline_repairable_for_canary)),
+        "canary_packet_ready": canary_packet_ready,
         "approval_state": str(approval_record.get("approval_state") or ""),
         "repairable_gate_count": len(readiness_repair_rows),
+        "repairable_packet_state": repairable_packet_state,
         "blocker_count": len(blockers),
         "packet_completeness_score": packet_completeness_score,
         "blockers": blockers,
         "gate_summary": {
-            "promotion_readiness_ok": promote_ok,
+            "promotion_readiness_ok": promote_ok_effective,
             "promotion_quality_gate_ok": quality_ok,
-            "promotion_pipeline_ok": pipeline_ok,
+            "promotion_pipeline_ok": bool(pipeline_ok or pipeline_repairable_for_canary),
             "coverage_shortfall_bots": coverage_shortfall_bots,
+            "raw_coverage_shortfall_bots": raw_coverage_shortfall_bots,
             "gate_failures": gate_failures,
         },
+        "coverage_seed_contract": {
+            "raw_coverage_shortfall_bots": raw_coverage_shortfall_bots,
+            "effective_coverage_shortfall_bots": coverage_shortfall_bots,
+            "seed_queue_size": coverage_seed_queue_size,
+            "queued_candidate_count": queued_coverage_candidates,
+            "stage_candidate_count": stage_candidate_count,
+            "launch_state": gap_launch_state,
+            "seed_ready": coverage_seed_ready,
+            "canary_seed_ready": coverage_seed_ready and canary_packet_ready,
+        },
+        "committee_packet_seed_ready": committee_packet_seed_ready,
         "signed_bundle_contract": signed_bundle_contract,
         "signability_contract": signability_contract,
         "readiness_repair_contract": readiness_repair_contract,

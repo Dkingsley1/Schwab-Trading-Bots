@@ -203,13 +203,13 @@ def _paper_feedback_ok(path: Path) -> tuple[bool, str, dict]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train/update master bot policy from sub-bot outcomes")
-    parser.add_argument("--preferred-low", type=float, default=0.55)
-    parser.add_argument("--preferred-high", type=float, default=0.65)
-    parser.add_argument("--deactivate-below", type=float, default=0.50)
-    parser.add_argument("--quality-floor", type=float, default=0.52)
-    parser.add_argument("--promotion-margin", type=float, default=0.005)
+    parser.add_argument("--preferred-low", type=float, default=0.75)
+    parser.add_argument("--preferred-high", type=float, default=0.85)
+    parser.add_argument("--deactivate-below", type=float, default=0.60)
+    parser.add_argument("--quality-floor", type=float, default=0.60)
+    parser.add_argument("--promotion-margin", type=float, default=0.015)
     parser.add_argument("--no-improvement-retire-streak", type=int, default=3)
-    parser.add_argument("--min-active-bots", type=int, default=int(os.getenv("MIN_ACTIVE_BOTS", "50")))
+    parser.add_argument("--min-active-bots", type=int, default=int(os.getenv("MIN_ACTIVE_BOTS", "150")))
     parser.add_argument("--correlation-prune-threshold", type=float, default=float(os.getenv("CORRELATION_PRUNE_THRESHOLD", "0.92")))
 
     parser.add_argument("--require-canary-gate", action="store_true", default=os.getenv("REQUIRE_CANARY_PROMOTION_GATE", "1") == "1")

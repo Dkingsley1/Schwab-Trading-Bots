@@ -204,8 +204,8 @@ def train_brain():
         min_positive_samples=120,
         max_best_val_loss=0.695,
         max_final_val_loss=0.708,
-        min_acted_accuracy=0.57,
-        min_accuracy_lift_over_majority=0.020,
+        min_acted_accuracy=0.60,
+        min_accuracy_lift_over_majority=0.03,
         allow_fallback_on_insufficient_data=False,
         require_both_sides_precision=False,
     )

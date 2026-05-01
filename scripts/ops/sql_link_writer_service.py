@@ -3,11 +3,17 @@ import fcntl
 import json
 import os
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.channel_queue import default_queue_db_path
+
 PY = PROJECT_ROOT / '.venv312' / 'bin' / 'python'
 LINK_SCRIPT = PROJECT_ROOT / 'scripts' / 'link_jsonl_to_sql.py'
 HOT_RETENTION_SCRIPT = PROJECT_ROOT / 'scripts' / 'sql_hot_retention.py'
@@ -20,7 +26,7 @@ QUEUE_DB_PATH = Path(
             'SQL_LINK_SERVICE_QUEUE_DB',
             os.getenv(
                 'BOT_CHANNEL_QUEUE_DB',
-                str(PROJECT_ROOT / 'local_fallback_storage' / 'data' / 'bot_channel_queue.sqlite3'),
+                default_queue_db_path(PROJECT_ROOT),
             ),
         )
     )

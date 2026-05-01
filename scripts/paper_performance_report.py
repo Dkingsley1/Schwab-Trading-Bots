@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import math
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -62,6 +63,7 @@ def _utc_now() -> datetime:
 
 
 def _run(cmd: list[str]) -> tuple[int, str, str]:
+    timeout_seconds = float(os.getenv("PAPER_PERFORMANCE_PDF_TIMEOUT_SECONDS", "20") or 20.0)
     try:
         proc = subprocess.run(
             cmd,
@@ -69,14 +71,17 @@ def _run(cmd: list[str]) -> tuple[int, str, str]:
             capture_output=True,
             text=True,
             check=False,
+            timeout=timeout_seconds,
         )
         return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
+    except subprocess.TimeoutExpired:
+        return 124, "", f"timeout_after_{timeout_seconds:.0f}s"
     except Exception as exc:
         return 1, "", str(exc)
 
 
 def _default_allow_gui_pdf_renderer() -> bool:
-    return any(candidate.exists() for candidate in APP_BROWSER_CANDIDATES)
+    return os.getenv("PAPER_PERFORMANCE_ALLOW_GUI_PDF_RENDERER", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _pdf_renderer_binary(allow_gui_renderer: bool) -> tuple[str, str]:
@@ -603,6 +608,8 @@ def _sleeve_snapshot_points(sleeve_latest: list[dict[str, Any]]) -> list[dict[st
                 "winning_strategy_count": int(row.get("winning_strategy_count", 0) or 0),
                 "losing_strategy_count": int(row.get("losing_strategy_count", 0) or 0),
                 "flat_strategy_count": int(row.get("flat_strategy_count", 0) or 0),
+                "risk_adjusted_metric": str(row.get("risk_adjusted_metric", "") or ""),
+                "risk_adjusted_metric_value": row.get("risk_adjusted_metric_value"),
                 "data_status": str(row.get("data_status", "") or ""),
                 "day_utc": str(row.get("day_utc", "") or ""),
             }
@@ -625,8 +632,61 @@ def _decorate_sleeve_latest_rows(
         latest_day = daily_rows[-1] if daily_rows else {}
         updated["change_vs_previous_day"] = round(float(latest_day.get("change_vs_previous_day", 0.0) or 0.0), 6)
         updated["history_points"] = int(len(daily_rows))
+        updated.update(_sleeve_risk_metric(profile, daily_rows))
         rows.append(updated)
     return rows
+
+
+def _mean(values: list[float]) -> float:
+    return sum(values) / max(len(values), 1)
+
+
+def _sample_stddev(values: list[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    avg = _mean(values)
+    variance = sum((value - avg) ** 2 for value in values) / float(len(values) - 1)
+    return math.sqrt(max(variance, 0.0))
+
+
+def _sleeve_risk_metric(profile: str, daily_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    returns = [
+        float(row.get("change_vs_previous_day", 0.0) or 0.0)
+        for row in daily_rows
+        if isinstance(row, dict)
+    ]
+    returns = [value for value in returns if math.isfinite(value)]
+    normalized_profile = str(profile or "").strip().lower()
+    metric: dict[str, Any] = {
+        "risk_adjusted_metric": "",
+        "risk_adjusted_metric_value": None,
+        "risk_adjusted_metric_basis": "daily_pnl_change",
+        "risk_adjusted_metric_sample_count": int(len(returns)),
+    }
+    if "aggressive" in normalized_profile:
+        downside = [min(value, 0.0) for value in returns]
+        downside_dev = math.sqrt(_mean([value * value for value in downside])) if downside else 0.0
+        sortino = (_mean(returns) / downside_dev) if downside_dev > 0.0 else None
+        metric.update(
+            {
+                "risk_adjusted_metric": "sortino_ratio",
+                "risk_adjusted_metric_value": round(float(sortino), 6) if sortino is not None else None,
+                "sortino_ratio": round(float(sortino), 6) if sortino is not None else None,
+                "sortino_downside_deviation": round(float(downside_dev), 6),
+            }
+        )
+    elif "conservative" in normalized_profile:
+        stddev = _sample_stddev(returns)
+        sharpe = (_mean(returns) / stddev) if stddev > 0.0 else None
+        metric.update(
+            {
+                "risk_adjusted_metric": "sharpe_ratio",
+                "risk_adjusted_metric_value": round(float(sharpe), 6) if sharpe is not None else None,
+                "sharpe_ratio": round(float(sharpe), 6) if sharpe is not None else None,
+                "sharpe_stddev": round(float(stddev), 6),
+            }
+        )
+    return metric
 
 
 def _sleeve_display_rows(sleeve_latest: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -704,6 +764,15 @@ def _format_win_rate(raw: Any) -> str:
         if raw is None:
             return "n/a"
         return f"{float(raw) * 100.0:.1f}%"
+    except Exception:
+        return "n/a"
+
+
+def _format_optional_float(raw: Any, *, digits: int = 6) -> str:
+    if raw is None:
+        return "n/a"
+    try:
+        return f"{float(raw):.{int(digits)}f}"
     except Exception:
         return "n/a"
 
@@ -1480,6 +1549,8 @@ def render_paper_performance_markdown(payload: dict[str, Any]) -> str:
             f"day_change={float(row.get('change_vs_previous_day', 0.0) or 0.0):.6f}, "
             f"end_net={float(row.get('ending_net_pnl_total', 0.0) or 0.0):.6f}, "
             f"win_rate={_format_win_rate(row.get('win_rate'))}, "
+            f"risk_metric={str(row.get('risk_adjusted_metric') or 'n/a')}:"
+            f"{_format_optional_float(row.get('risk_adjusted_metric_value'))}, "
             f"wins/losses/flats="
             f"{int(row.get('winning_strategy_count', 0) or 0)}/"
             f"{int(row.get('losing_strategy_count', 0) or 0)}/"
@@ -1563,6 +1634,8 @@ def render_paper_performance_html(payload: dict[str, Any], *, source_path: Path,
             f"<td>{float(row.get('change_vs_previous_day', 0.0) or 0.0):.6f}</td>"
             f"<td>{int(row.get('executions', 0) or 0)}</td>"
             f"<td>{html.escape(_format_win_rate(row.get('win_rate')))}</td>"
+            f"<td>{html.escape(str(row.get('risk_adjusted_metric') or 'n/a'))}</td>"
+            f"<td>{html.escape(_format_optional_float(row.get('risk_adjusted_metric_value')))}</td>"
             f"<td>"
             f"{int(row.get('winning_strategy_count', 0) or 0)}/"
             f"{int(row.get('losing_strategy_count', 0) or 0)}/"
@@ -1686,6 +1759,8 @@ def render_paper_performance_html(payload: dict[str, Any], *, source_path: Path,
             <th>Day Change</th>
             <th>Executions</th>
             <th>Win Rate</th>
+            <th>Risk Metric</th>
+            <th>Risk Value</th>
             <th>W/L/F</th>
             <th>Top Winners</th>
             <th>Top Losers</th>

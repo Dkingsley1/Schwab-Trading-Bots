@@ -16,6 +16,10 @@ class PortfolioIntent:
     sector: str = "unknown"
     factor_exposure: float = 0.0
     capacity_fraction: float = 1.0
+    venue: str = "primary"
+    clock_bucket: str = "all_day"
+    regime: str = "normal"
+    forward_cost_bps: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,11 @@ class AllocatedIntent:
     factor_exposure: float
     score: float
     volatility_1m: float
+    capacity_fraction: float = 1.0
+    venue: str = "primary"
+    clock_bucket: str = "all_day"
+    regime: str = "normal"
+    forward_cost_bps: float = 0.0
     reasons: tuple[str, ...] = ()
 
 
@@ -119,15 +128,20 @@ def allocate_portfolio_intents(
                     sleeve=str(intent.sleeve or ""),
                     side=str(intent.side or ""),
                     raw_qty=0.0,
-                approved_qty=0.0,
-                weight_scale=0.0,
-                net_symbol_qty=round(net_symbol_qty.get(symbol, 0.0), 6),
-                sector=sector,
-                factor_exposure=float(intent.factor_exposure or 0.0),
-                score=round(float(intent.score or 0.0), 6),
-                volatility_1m=round(float(intent.volatility_1m or 0.0), 6),
-                reasons=("zero_raw_qty",),
-            )
+                    approved_qty=0.0,
+                    weight_scale=0.0,
+                    net_symbol_qty=round(net_symbol_qty.get(symbol, 0.0), 6),
+                    sector=sector,
+                    factor_exposure=float(intent.factor_exposure or 0.0),
+                    score=round(float(intent.score or 0.0), 6),
+                    volatility_1m=round(float(intent.volatility_1m or 0.0), 6),
+                    capacity_fraction=round(float(intent.capacity_fraction or 1.0), 6),
+                    venue=str(intent.venue or "primary"),
+                    clock_bucket=str(intent.clock_bucket or "all_day"),
+                    regime=str(intent.regime or "normal"),
+                    forward_cost_bps=round(float(intent.forward_cost_bps or 0.0), 6),
+                    reasons=("zero_raw_qty",),
+                )
             )
             continue
 
@@ -159,12 +173,17 @@ def allocate_portfolio_intents(
         if factor_scale < 1.0:
             reasons.append("factor_cap")
 
+        forward_cost_bps = max(float(intent.forward_cost_bps or 0.0), 0.0)
+        cost_scale = max(0.25, 1.0 - min(forward_cost_bps, 75.0) / 100.0)
+        if cost_scale < 1.0:
+            reasons.append("forward_cost_curve")
+
         gross_headroom = max(gross_budget - gross_used, 0.0)
         gross_scale = min(1.0, gross_headroom / max(raw_qty, 1e-6)) if gross_headroom > 0.0 else 0.0
         if gross_scale < 1.0:
             reasons.append("gross_budget")
 
-        approved_scale = max(min(weight_scale * net_scale * sector_scale * factor_scale * gross_scale, 1.0), 0.0)
+        approved_scale = max(min(weight_scale * net_scale * sector_scale * factor_scale * gross_scale * cost_scale, 1.0), 0.0)
         approved_qty = round(raw_qty * approved_scale, 6)
         gross_used += approved_qty
         factor_used += abs(float(intent.factor_exposure or 0.0)) * approved_qty
@@ -183,6 +202,11 @@ def allocate_portfolio_intents(
                 factor_exposure=round(float(intent.factor_exposure or 0.0), 6),
                 score=round(float(intent.score or 0.0), 6),
                 volatility_1m=round(float(intent.volatility_1m or 0.0), 6),
+                capacity_fraction=round(float(intent.capacity_fraction or 1.0), 6),
+                venue=str(intent.venue or "primary"),
+                clock_bucket=str(intent.clock_bucket or "all_day"),
+                regime=str(intent.regime or "normal"),
+                forward_cost_bps=round(forward_cost_bps, 6),
                 reasons=tuple(reasons),
             )
         )

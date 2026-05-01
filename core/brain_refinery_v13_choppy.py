@@ -149,15 +149,15 @@ def _runtime_sample_filter(sequence, idx, horizon):
     obs = sequence[idx]
     stretch = abs(_stretch_direction(obs))
     return (
-        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.84
-        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.22
-        and abs(observation_feature(obs, "spread_bps")) <= 24.0
-        and observation_feature(obs, "day_regime_chop_norm") >= 0.28
-        and observation_feature(obs, "day_regime_trend_norm") <= 0.58
-        and observation_feature(obs, "day_regime_alignment_norm") <= 0.54
-        and observation_feature(obs, "market_micro_relative_volume_norm") >= 0.18
-        and abs(observation_feature(obs, "behavior_prior")) <= 0.36
-        and stretch >= 0.22
+        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.80
+        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.26
+        and abs(observation_feature(obs, "spread_bps")) <= 28.0
+        and observation_feature(obs, "day_regime_chop_norm") >= 0.22
+        and observation_feature(obs, "day_regime_trend_norm") <= 0.64
+        and observation_feature(obs, "day_regime_alignment_norm") <= 0.60
+        and observation_feature(obs, "market_micro_relative_volume_norm") >= 0.10
+        and abs(observation_feature(obs, "behavior_prior")) <= 0.45
+        and stretch >= 0.16
     )
 
 
@@ -185,15 +185,15 @@ def _runtime_choppy_label(sequence, idx, horizon):
     chop = _chop_support(obs)
     stretch = _stretch_direction(obs)
     anti_trend = _clip01(1.0 - observation_feature(obs, "day_regime_trend_norm"))
-    if chop < 0.30 or anti_trend < 0.42 or abs(stretch) < 0.24:
+    if chop < 0.24 or anti_trend < 0.34 or abs(stretch) < 0.18:
         return None
 
     expected_up = stretch < 0.0
     fwd_ret = future_return(sequence, idx, horizon)
     realized = future_realized_vol(sequence, idx, horizon)
     signed_ret = fwd_ret if expected_up else -fwd_ret
-    move_threshold = max(0.00035, 0.00095 - (0.00040 * chop))
-    if abs(fwd_ret) < move_threshold and realized < 0.017:
+    move_threshold = max(0.00025, 0.00080 - (0.00045 * chop))
+    if abs(fwd_ret) < move_threshold and realized < 0.020:
         return None
 
     success_score = (
@@ -208,9 +208,9 @@ def _runtime_choppy_label(sequence, idx, horizon):
         + (0.14 * realized)
         + (0.00010 * observation_feature(obs, "breadth_risk_off_norm"))
     )
-    if success_score >= 0.00035:
+    if success_score >= 0.00022:
         return 1.0 if expected_up else 0.0
-    if failure_score >= 0.00050:
+    if failure_score >= 0.00040:
         return 0.0 if expected_up else 1.0
     return None
 
@@ -276,7 +276,7 @@ def train_brain():
         min_long_precision=0.53,
         min_short_precision=0.53,
         require_both_sides_precision=True,
-        min_acted_accuracy=0.55,
+        min_acted_accuracy=0.60,
         min_long_acted_count=3,
         min_short_acted_count=3,
         min_accuracy_lift_over_majority=0.02,

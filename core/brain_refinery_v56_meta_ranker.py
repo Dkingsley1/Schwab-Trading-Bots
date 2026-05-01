@@ -52,8 +52,6 @@ _META_RUNTIME_MODES = [
     "shadow_swing_aggressive_equities",
     "shadow_dividend_equities",
     "shadow_bond_equities",
-    "shadow_crypto",
-    "shadow_crypto_futures_crypto",
 ]
 _META_SYMBOLS = [
     "SPY",
@@ -250,15 +248,15 @@ def _runtime_sample_filter(sequence, idx, horizon):
         abs(observation_feature(obs, "grand_master_vote")),
     )
     return (
-        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.74
-        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.32
-        and observation_feature(obs, "data_quality_missing_feature_ratio_norm", 0.0) <= 0.28
-        and regime_signal >= 0.08
+        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.66
+        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.40
+        and observation_feature(obs, "data_quality_missing_feature_ratio_norm", 0.0) <= 0.42
+        and regime_signal >= 0.03
         and max(
             abs(observation_feature(obs, "behavior_prior")),
             abs(observation_feature(obs, "master_vote")),
             abs(observation_feature(obs, "grand_master_vote")),
-        ) >= 0.05
+        ) >= 0.02
     )
 
 
@@ -330,7 +328,7 @@ def _runtime_meta_label(sequence, idx, horizon):
 
     meta_vote = _meta_vote(obs)
     vote_conviction = abs(meta_vote)
-    if vote_conviction < 0.08:
+    if vote_conviction < 0.04:
         return None
     vote_direction = 1.0 if meta_vote >= 0.0 else 0.0
 
@@ -345,19 +343,19 @@ def _runtime_meta_label(sequence, idx, horizon):
         _clip01(abs(observation_feature(obs, "ctx_VIX_X_pct_from_close")) / 0.03),
     )
     stable_regime = (0.42 * regime_intensity) + (0.24 * quote_quality) + (0.18 * (1.0 - infra_risk)) + (0.16 * crypto_context)
-    if stable_regime < 0.18 or quote_quality < 0.70:
+    if stable_regime < 0.12 or quote_quality < 0.58:
         return None
     realized_edge = (0.74 * future_ret) + (0.26 * realized_feedback)
     directional_edge = abs(realized_edge)
     direction_label = 1.0 if realized_edge >= 0.0 else 0.0
     vote_alignment = 1.0 if abs(realized_edge) > 0.0 and np.sign(meta_vote) == np.sign(realized_edge) else 0.0
-    move_threshold = max(0.00052, 0.00145 - (0.00082 * stable_regime))
+    move_threshold = max(0.00028, 0.00105 - (0.00095 * stable_regime))
     if directional_edge < move_threshold:
         if (
             roles["role_crypto"] > 0.5
             and max(infra_risk, observation_feature(obs, "infra_veto_active")) >= 0.60
             and vote_conviction >= 0.12
-            and realized_edge <= -0.00020
+            and realized_edge <= -0.00010
             and meta_vote <= 0.0
         ):
             return 0.0
@@ -380,12 +378,12 @@ def _runtime_meta_label(sequence, idx, horizon):
         - (0.12 * quote_deviation)
     )
     direction_gate = (
-        0.00098
-        + (0.00040 * max(risk_off - 0.45, 0.0))
-        + (0.00022 * max(infra_risk - 0.55, 0.0))
+        0.00074
+        + (0.00032 * max(risk_off - 0.45, 0.0))
+        + (0.00016 * max(infra_risk - 0.55, 0.0))
         + (0.00008 * roles["role_crypto"])
-        - (0.00018 * max(0.0, crypto_context - 0.60))
-        - (0.00008 * vote_alignment)
+        - (0.00020 * max(0.0, crypto_context - 0.56))
+        - (0.00004 * vote_alignment)
     )
     if directional_score >= direction_gate:
         return vote_direction
@@ -504,16 +502,16 @@ def train_brain():
         symbol_allowlist=_META_SYMBOLS,
         sample_filter=_runtime_sample_filter,
         confidence_builder=_runtime_confidence,
-        min_confidence=0.34,
-        sample_stride=1,
+        min_confidence=0.44,
+        sample_stride=2,
         lookback_days=60,
         window=18,
         horizon=6,
-        min_samples=320,
+        min_samples=1200,
         min_sequences=6,
-        min_positive_samples=48,
-        min_negative_samples=48,
-        acted_prob_threshold=0.58,
+        min_positive_samples=96,
+        min_negative_samples=96,
+        acted_prob_threshold=0.62,
         fallback_trainer=_train_synthetic,
         allow_fallback_on_insufficient_data=False,
         max_best_val_loss=0.6800,
@@ -521,7 +519,7 @@ def train_brain():
         min_long_precision=0.52,
         min_short_precision=0.52,
         require_both_sides_precision=True,
-        min_acted_accuracy=0.54,
+        min_acted_accuracy=0.60,
         min_long_acted_count=6,
         min_short_acted_count=6,
         min_accuracy_lift_over_majority=0.02,

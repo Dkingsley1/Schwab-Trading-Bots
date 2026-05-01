@@ -3,11 +3,14 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 _PAGE_SIZE_BYTES = 16384
 
 
@@ -201,11 +204,38 @@ def _co_running_apps_snapshot() -> dict[str, Any]:
     }
 
 
+def _storage_disk_snapshot(project_root: Path) -> dict[str, Any]:
+    local_disk = shutil.disk_usage(project_root)
+    local_free_gb = local_disk.free / (1024.0 ** 3)
+    probe_path = project_root
+    storage_mode = "local_project"
+    route_error = ""
+    try:
+        from core.storage_router import route_runtime_storage
+
+        routing = route_runtime_storage(project_root)
+        active_root = Path(str(getattr(routing, "active_root", "") or "")).expanduser()
+        if active_root:
+            probe_path = active_root
+        storage_mode = str(getattr(routing, "mode", "") or storage_mode)
+    except Exception as exc:
+        route_error = str(exc)
+
+    storage_disk = shutil.disk_usage(probe_path)
+    storage_free_gb = storage_disk.free / (1024.0 ** 3)
+    return {
+        "disk_probe_path": str(probe_path),
+        "disk_storage_mode": storage_mode,
+        "disk_route_error": route_error,
+        "disk_free_gb": round(storage_free_gb, 2),
+        "local_disk_probe_path": str(project_root),
+        "local_disk_free_gb": round(local_free_gb, 2),
+    }
+
+
 def build_snapshot(project_root: Path) -> dict[str, Any]:
     cpu_count = max(os.cpu_count() or 1, 1)
     l1, l5, l15 = os.getloadavg()
-    disk = shutil.disk_usage(project_root)
-    free_gb = disk.free / (1024.0 ** 3)
 
     payload: dict[str, Any] = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -214,8 +244,8 @@ def build_snapshot(project_root: Path) -> dict[str, Any]:
         "load5": round(l5, 3),
         "load15": round(l15, 3),
         "load1_per_core": round(l1 / cpu_count, 3),
-        "disk_free_gb": round(free_gb, 2),
     }
+    payload.update(_storage_disk_snapshot(project_root))
     payload.update(_parse_memory_pressure())
     payload.update(_parse_swap_usage())
     payload.update(_parse_vm_stat())
@@ -298,7 +328,15 @@ def _memory_pressure_kind(snapshot: dict[str, Any], state: str, reasons: list[st
     return "mixed"
 
 
-def evaluate(snapshot: dict[str, Any], *, max_load_per_core: float, min_disk_gb: float, min_memory_free_pct: float, max_editing_cpu: float) -> tuple[bool, list[str]]:
+def evaluate(
+    snapshot: dict[str, Any],
+    *,
+    max_load_per_core: float,
+    min_disk_gb: float,
+    min_memory_free_pct: float,
+    max_editing_cpu: float,
+    min_local_disk_gb: float | None = None,
+) -> tuple[bool, list[str]]:
     reasons: list[str] = []
     creative_level = str(snapshot.get("creative_session_level") or "none").strip().lower()
     if creative_level in _creative_block_levels("RESOURCE_GUARD_BLOCK_ON_CREATIVE_SESSION_LEVELS", "dual_pro,hot"):
@@ -322,6 +360,13 @@ def evaluate(snapshot: dict[str, Any], *, max_load_per_core: float, min_disk_gb:
         reasons.append(f"load1_per_core_high:{snapshot.get('load1_per_core')}>{load_limit}")
     if float(snapshot.get("disk_free_gb", 0.0)) < min_disk_gb:
         reasons.append(f"disk_free_low:{snapshot.get('disk_free_gb')}<{min_disk_gb}")
+    local_floor = float(
+        min_local_disk_gb
+        if min_local_disk_gb is not None
+        else os.getenv("RESOURCE_GUARD_MIN_LOCAL_DISK_GB", "2")
+    )
+    if float(snapshot.get("local_disk_free_gb", snapshot.get("disk_free_gb", 0.0)) or 0.0) < max(local_floor, 0.1):
+        reasons.append(f"local_disk_free_low:{snapshot.get('local_disk_free_gb')}<{max(local_floor, 0.1)}")
 
     free_pct = snapshot.get("memory_free_pct")
     avail_pct = snapshot.get("memory_available_pct")
@@ -357,12 +402,15 @@ def evaluate_optional_job(snapshot: dict[str, Any]) -> tuple[bool, list[str], di
 
     max_load_per_core = float(os.getenv("RESOURCE_GUARD_OPTIONAL_MAX_LOAD_PER_CORE", "2.4"))
     min_disk_gb = float(os.getenv("RESOURCE_GUARD_OPTIONAL_MIN_DISK_GB", "20"))
+    min_local_disk_gb = float(os.getenv("RESOURCE_GUARD_OPTIONAL_MIN_LOCAL_DISK_GB", "2"))
     max_editing_cpu = float(os.getenv("RESOURCE_GUARD_OPTIONAL_MAX_EDITING_CPU", "300"))
 
     if float(snapshot.get("load1_per_core", 0.0)) > max_load_per_core:
         reasons.append(f"load1_per_core_high:{snapshot.get('load1_per_core')}>{max_load_per_core}")
     if float(snapshot.get("disk_free_gb", 0.0)) < min_disk_gb:
         reasons.append(f"disk_free_low:{snapshot.get('disk_free_gb')}<{min_disk_gb}")
+    if float(snapshot.get("local_disk_free_gb", snapshot.get("disk_free_gb", 0.0)) or 0.0) < max(min_local_disk_gb, 0.1):
+        reasons.append(f"local_disk_free_low:{snapshot.get('local_disk_free_gb')}<{max(min_local_disk_gb, 0.1)}")
     if float(snapshot.get("editing_app_cpu_sum", 0.0)) > max_editing_cpu:
         reasons.append(f"editing_apps_hot:{snapshot.get('editing_app_cpu_sum')}>{max_editing_cpu}")
 
@@ -376,6 +424,7 @@ def evaluate_optional_job(snapshot: dict[str, Any]) -> tuple[bool, list[str], di
             "block_on_creative_session_levels": sorted(creative_block_levels),
             "max_load_per_core": max_load_per_core,
             "min_disk_gb": min_disk_gb,
+            "min_local_disk_gb": min_local_disk_gb,
             "max_editing_cpu": max_editing_cpu,
         },
     }
@@ -402,6 +451,7 @@ def evaluate_refresh_job(snapshot: dict[str, Any]) -> tuple[bool, list[str], dic
         "max_swap_gb": float(os.getenv("RESOURCE_GUARD_REFRESH_MAX_SWAP_GB", "32")),
         "max_load_per_core": float(os.getenv("RESOURCE_GUARD_REFRESH_MAX_LOAD_PER_CORE", "1.2")),
         "min_disk_gb": float(os.getenv("RESOURCE_GUARD_REFRESH_MIN_DISK_GB", "20")),
+        "min_local_disk_gb": float(os.getenv("RESOURCE_GUARD_REFRESH_MIN_LOCAL_DISK_GB", "2")),
         "max_editing_cpu": float(os.getenv("RESOURCE_GUARD_REFRESH_MAX_EDITING_CPU", "220")),
     }
 
@@ -431,6 +481,7 @@ def evaluate_refresh_job(snapshot: dict[str, Any]) -> tuple[bool, list[str], dic
     swap_used_gb = float(snapshot.get("swap_used_gb", 0.0) or 0.0)
     load1_per_core = float(snapshot.get("load1_per_core", 0.0) or 0.0)
     disk_free_gb = float(snapshot.get("disk_free_gb", 0.0) or 0.0)
+    local_disk_free_gb = float(snapshot.get("local_disk_free_gb", disk_free_gb) or 0.0)
     editing_app_cpu_sum = float(snapshot.get("editing_app_cpu_sum", 0.0) or 0.0)
     pages_throttled = float(snapshot.get("pages_throttled", 0.0) or 0.0)
 
@@ -450,6 +501,7 @@ def evaluate_refresh_job(snapshot: dict[str, Any]) -> tuple[bool, list[str], dic
         and swap_used_gb <= thresholds["max_swap_gb"]
         and load1_per_core <= thresholds["max_load_per_core"]
         and disk_free_gb >= thresholds["min_disk_gb"]
+        and local_disk_free_gb >= thresholds["min_local_disk_gb"]
         and editing_app_cpu_sum <= thresholds["max_editing_cpu"]
     )
 
@@ -472,6 +524,7 @@ def main() -> int:
     parser.add_argument("--profile", choices=["default", "optional", "refresh"], default="default")
     parser.add_argument("--max-load-per-core", type=float, default=float(os.getenv("RESOURCE_GUARD_MAX_LOAD_PER_CORE", "1.80")))
     parser.add_argument("--min-disk-gb", type=float, default=float(os.getenv("RESOURCE_GUARD_MIN_DISK_GB", "20")))
+    parser.add_argument("--min-local-disk-gb", type=float, default=float(os.getenv("RESOURCE_GUARD_MIN_LOCAL_DISK_GB", "2")))
     parser.add_argument("--min-memory-free-pct", type=float, default=float(os.getenv("RESOURCE_GUARD_MIN_MEMORY_FREE_PCT", "10")))
     parser.add_argument("--max-editing-cpu", type=float, default=float(os.getenv("RESOURCE_GUARD_MAX_EDITING_CPU", "180")))
     parser.add_argument("--emit-path", default=None)
@@ -499,6 +552,7 @@ def main() -> int:
             snapshot,
             max_load_per_core=args.max_load_per_core,
             min_disk_gb=args.min_disk_gb,
+            min_local_disk_gb=args.min_local_disk_gb,
             min_memory_free_pct=args.min_memory_free_pct,
             max_editing_cpu=args.max_editing_cpu,
         )
@@ -518,6 +572,7 @@ def main() -> int:
             "relaxed_min_available_pct": float(os.getenv("RESOURCE_GUARD_RELAXED_MIN_AVAILABLE_PCT", "35")),
             "relaxed_max_editing_cpu": float(os.getenv("RESOURCE_GUARD_RELAXED_MAX_EDITING_CPU", str(args.max_editing_cpu))),
             "min_disk_gb": args.min_disk_gb,
+            "min_local_disk_gb": args.min_local_disk_gb,
             "min_memory_free_pct": args.min_memory_free_pct,
             "max_editing_cpu": args.max_editing_cpu,
         },

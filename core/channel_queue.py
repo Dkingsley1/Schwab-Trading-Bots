@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -50,6 +51,20 @@ def local_queue_db_path(project_root: str | Path) -> str:
     return str(_local_queue_root(root) / "data" / DEFAULT_QUEUE_DB_NAME)
 
 
+def routed_queue_db_path(project_root: str | Path) -> str:
+    root = Path(project_root) if str(project_root or "").strip() else Path()
+    if not str(root):
+        return ""
+    return str(root / "data" / DEFAULT_QUEUE_DB_NAME)
+
+
+def _queue_prefer_local_override() -> Optional[bool]:
+    raw = str(os.getenv("BOT_CHANNEL_QUEUE_PREFER_LOCAL", "") or "").strip()
+    if not raw:
+        return None
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass
 class ChannelMessage:
     id: int
@@ -67,13 +82,62 @@ class ChannelQueue:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._ensure_schema()
+        if not self._schema_ready():
+            self._ensure_schema()
+
+    def _wal_retry_count(self) -> int:
+        try:
+            return max(int(float(os.getenv("BOT_CHANNEL_QUEUE_WAL_RETRY_COUNT", "6") or 6)), 1)
+        except Exception:
+            return 6
+
+    def _wal_retry_sleep_seconds(self) -> float:
+        try:
+            return max(float(os.getenv("BOT_CHANNEL_QUEUE_WAL_RETRY_SLEEP_SECONDS", "0.25") or 0.25), 0.05)
+        except Exception:
+            return 0.25
+
+    def _schema_ready(self) -> bool:
+        if not self.db_path.exists() or self.db_path.stat().st_size <= 0:
+            return False
+        try:
+            conn = sqlite3.connect(str(self.db_path), timeout=5.0)
+            try:
+                conn.execute("PRAGMA busy_timeout=5000")
+                rows = conn.execute(
+                    """
+                    SELECT name
+                    FROM sqlite_master
+                    WHERE type='table' AND name IN ('channel_messages', 'channel_consumer_state')
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.OperationalError as exc:
+            if "locked" in str(exc).lower():
+                return True
+            return False
+        return {str(row[0] or "") for row in rows} >= {"channel_messages", "channel_consumer_state"}
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=30)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=30000")
+        last_locked_error: sqlite3.OperationalError | None = None
+        for attempt in range(self._wal_retry_count()):
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                last_locked_error = None
+                break
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower():
+                    conn.close()
+                    raise
+                last_locked_error = exc
+                if attempt >= self._wal_retry_count() - 1:
+                    break
+                time.sleep(min(self._wal_retry_sleep_seconds() * (attempt + 1), 2.0))
+        if last_locked_error is None:
+            conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
     def _ensure_schema(self) -> None:
@@ -382,9 +446,14 @@ def default_queue_db_path(project_root: str | Path) -> str:
     override = str(os.getenv("BOT_CHANNEL_QUEUE_DB", "") or "").strip()
     if override:
         return str(Path(override).expanduser())
-    if _env_flag("BOT_CHANNEL_QUEUE_PREFER_LOCAL", "1"):
+    prefer_local = _queue_prefer_local_override()
+    if prefer_local is True:
         return local_queue_db_path(project_root)
-    return str(Path(project_root) / "data" / DEFAULT_QUEUE_DB_NAME)
+    if prefer_local is False:
+        return routed_queue_db_path(project_root)
+    if _env_flag("BOT_LOGS_PREFER_EXTERNAL", "1"):
+        return routed_queue_db_path(project_root)
+    return local_queue_db_path(project_root)
 
 
 def queue_enabled() -> bool:

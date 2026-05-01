@@ -26,11 +26,79 @@ def test_default_queue_db_path_prefers_local_fallback(tmp_path: Path, monkeypatc
     )
 
 
+def test_default_queue_db_path_prefers_routed_storage_when_external_is_preferred(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("BOT_CHANNEL_QUEUE_DB", raising=False)
+    monkeypatch.delenv("BOT_CHANNEL_QUEUE_PREFER_LOCAL", raising=False)
+    monkeypatch.setenv("BOT_LOGS_PREFER_EXTERNAL", "1")
+
+    assert default_queue_db_path(tmp_path) == str(
+        tmp_path / "data" / "bot_channel_queue.sqlite3"
+    )
+
+
 def test_default_queue_db_path_respects_explicit_override(tmp_path: Path, monkeypatch) -> None:
     override = tmp_path / "custom" / "queue.sqlite3"
     monkeypatch.setenv("BOT_CHANNEL_QUEUE_DB", str(override))
 
     assert default_queue_db_path(tmp_path) == str(override)
+
+
+def test_channel_queue_schema_check_skips_locked_existing_db(tmp_path: Path, monkeypatch) -> None:
+    queue_path = tmp_path / "data" / "bot_channel_queue.sqlite3"
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    queue_path.write_text("placeholder", encoding="utf-8")
+
+    class _LockedSchemaConnection:
+        def execute(self, _sql, *_args):
+            raise sqlite3.OperationalError("database is locked")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(sqlite3, "connect", lambda *_args, **_kwargs: _LockedSchemaConnection())
+
+    queue = ChannelQueue(queue_path)
+
+    assert queue.db_path == queue_path
+
+
+def test_channel_queue_connect_tolerates_locked_wal_pragma(tmp_path: Path, monkeypatch) -> None:
+    queue_path = tmp_path / "data" / "bot_channel_queue.sqlite3"
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    queue_path.write_text("placeholder", encoding="utf-8")
+    monkeypatch.setenv("BOT_CHANNEL_QUEUE_WAL_RETRY_COUNT", "1")
+    monkeypatch.setattr(ChannelQueue, "_schema_ready", lambda self: True)
+
+    class _Connection:
+        def __init__(self) -> None:
+            self.commands: list[str] = []
+
+        def execute(self, sql, *_args):
+            text = str(sql)
+            self.commands.append(text)
+            if text == "PRAGMA journal_mode=WAL":
+                raise sqlite3.OperationalError("database is locked")
+            return self
+
+        def close(self) -> None:
+            return None
+
+    holder: dict[str, _Connection] = {}
+
+    def _connect(*_args, **_kwargs):
+        conn = _Connection()
+        holder["conn"] = conn
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", _connect)
+
+    queue = ChannelQueue(queue_path)
+    conn = queue._connect()
+
+    assert conn is holder["conn"]
+    assert "PRAGMA busy_timeout=30000" in holder["conn"].commands
+    assert holder["conn"].commands.count("PRAGMA journal_mode=WAL") == 1
+    assert "PRAGMA synchronous=NORMAL" not in holder["conn"].commands
 
 
 def _write_json(path: Path, payload: dict) -> None:

@@ -19,12 +19,24 @@ except Exception:
     ZoneInfo = None
 from typing import Any, Dict, List, Optional, Tuple
 
-from schwab.auth import easy_client
-
 from core.decision_logger import DecisionLogger
 from core.derivatives_features import _days_to_expiry, _extract_option_rows, _option_row_strike, _option_side
+from core.exotic_derivatives_plumbing import exotic_direct_execution_allowed, is_exotic_derivative_sleeve
 from core.live_execution_controls import LiveExecutionGuard, LiveRiskConfig
 from core.path_registry import auth_events_path, decision_explanations_paths, execution_guard_path, live_softguard_path
+from core.brokers import (
+    BrokerAdapter,
+    BrokerAuthRequest,
+    BrokerCapabilities,
+    BrokerConnectedAccount,
+    BrokerCredentials,
+    BrokerOrderRequest,
+    BrokerOrderResult,
+    BrokerQuoteSnapshot,
+    BrokerRuntimeConfig,
+    build_broker_adapter,
+    normalize_broker_name,
+)
 
 from core.accountability import current_correlation, now_utc_iso, safe_append_jsonl, safe_append_channel_event, safe_write_json_atomic
 from core.halt_flags import write_halt_flag_atomic
@@ -151,10 +163,51 @@ def _dynamic_storage_flag(project_root: str, name: str, default: bool = True) ->
 
 
 class BaseTrader:
-    def __init__(self, api_key: str, app_secret: str, callback_url: str, mode: str = "shadow"):
-        self.api_key = api_key
-        self.app_secret = app_secret
-        self.callback_url = callback_url
+    @classmethod
+    def from_env(
+        cls,
+        *,
+        mode: str = "shadow",
+        broker: Optional[str] = None,
+        role: str = "default",
+        runtime_config: Optional[BrokerRuntimeConfig] = None,
+    ) -> "BaseTrader":
+        brokers = runtime_config or BrokerRuntimeConfig.from_env(default_broker=broker or os.getenv("DATA_BROKER", "schwab"))
+        broker_name = normalize_broker_name(broker or brokers.broker_for_role(role))
+        broker_adapter = build_broker_adapter(broker_name)
+        credentials = broker_adapter.load_credentials_from_env()
+        return cls(
+            credentials.api_key,
+            credentials.app_secret,
+            credentials.callback_url,
+            mode=mode,
+            broker=broker_name,
+            broker_adapter=broker_adapter,
+        )
+
+    def __init__(
+        self,
+        api_key: str,
+        app_secret: str,
+        callback_url: str,
+        mode: str = "shadow",
+        broker: str = "schwab",
+        broker_adapter: Optional[BrokerAdapter] = None,
+    ):
+        self.broker_adapter = broker_adapter or build_broker_adapter(broker)
+        self.broker_name = normalize_broker_name(getattr(self.broker_adapter, "name", broker))
+        self.broker_display_name = str(getattr(self.broker_adapter, "display_name", self.broker_name.title()))
+        self.broker_capabilities = getattr(self.broker_adapter, "capabilities", BrokerCapabilities())
+
+        if not any(str(value or "").strip() for value in (api_key, app_secret, callback_url)):
+            env_credentials = self.broker_adapter.load_credentials_from_env()
+            api_key = env_credentials.api_key
+            app_secret = env_credentials.app_secret
+            callback_url = env_credentials.callback_url
+
+        self.api_key = str(api_key or "").strip()
+        self.app_secret = str(app_secret or "").strip()
+        self.callback_url = str(callback_url or "").strip()
         self.token_path = "token.json"
         self.client = None
 
@@ -179,8 +232,15 @@ class BaseTrader:
 
         self.live_risk_config = LiveRiskConfig.from_env()
         self.live_guard = LiveExecutionGuard(self.live_risk_config)
-        self.live_account_hash = os.getenv("SCHWAB_ACCOUNT_HASH", "").strip()
-        self.live_account_hash_auto_discover = os.getenv("SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER", "1").strip() == "1"
+        account_ref_env = str(getattr(self.broker_adapter, "account_reference_env_var", "") or "").strip()
+        auto_discover_env = str(getattr(self.broker_adapter, "account_reference_auto_discover_env_var", "") or "").strip()
+        self.live_account_hash = (os.getenv(account_ref_env, "").strip() if account_ref_env else "")
+        self.live_account_reference = self.live_account_hash
+        self.live_account_hash_auto_discover = (
+            (os.getenv(auto_discover_env, "1").strip() == "1") if auto_discover_env else False
+        )
+        if not auto_discover_env and self._supports_broker_capability("supports_account_discovery"):
+            self.live_account_hash_auto_discover = True
         self.live_accounts_snapshot_allow_global_fallback = (
             os.getenv("LIVE_ACCOUNTS_SNAPSHOT_ALLOW_GLOBAL_FALLBACK", "0").strip() == "1"
         )
@@ -230,6 +290,15 @@ class BaseTrader:
             int(os.getenv("LIVE_ACCOUNTS_SNAPSHOT_SOFT_FAIL_GRACE", "3")),
             1,
         )
+        self.live_accounts_snapshot_halt_min_failures = max(
+            int(
+                os.getenv(
+                    "LIVE_ACCOUNTS_SNAPSHOT_HALT_MIN_FAILURES",
+                    str(max(self.live_accounts_snapshot_soft_fail_grace + 2, 5)),
+                )
+            ),
+            self.live_accounts_snapshot_soft_fail_grace + 1,
+        )
         self._accounts_snapshot_soft_fail_streak = 0
         retryable_codes = os.getenv("LIVE_API_RETRYABLE_STATUS_CODES", "408,425,429,500,502,503,504").strip()
         parsed_codes: set[int] = set()
@@ -250,12 +319,69 @@ class BaseTrader:
         self.decision_logger = DecisionLogger(self.project_root)
         self.set_mode(mode)
 
+    def _broker_credentials(self) -> BrokerCredentials:
+        return BrokerCredentials(
+            api_key=self.api_key,
+            app_secret=self.app_secret,
+            callback_url=self.callback_url,
+        )
+
+    def credentials_are_placeholder(self) -> bool:
+        return self.broker_adapter.is_placeholder_credentials(self._broker_credentials())
+
+    def _supports_broker_capability(self, capability_name: str) -> bool:
+        return bool(getattr(self.broker_capabilities, capability_name, False))
+
+    def _unsupported_broker_operation(self, operation: str, capability_name: str) -> Dict[str, Any]:
+        return {
+            "ok": False,
+            "operation": operation,
+            "error": f"unsupported_broker_capability:{capability_name}",
+            "broker": self.broker_name,
+            "details": {
+                "broker": self.broker_name,
+                "capability": capability_name,
+            },
+        }
+
+    def _metadata_sleeve_profile(self, metadata: Optional[Dict[str, Any]] = None) -> str:
+        md = metadata if isinstance(metadata, dict) else {}
+        for key in ("source_profile", "sleeve_profile", "profile", "shadow_profile"):
+            raw = str(md.get(key) or "").strip().lower()
+            if raw:
+                return raw
+        return str(self.profile or os.getenv("SHADOW_PROFILE", "")).strip().lower()
+
+    def _metadata_shadow_domain(self, metadata: Optional[Dict[str, Any]] = None) -> str:
+        md = metadata if isinstance(metadata, dict) else {}
+        raw = str(md.get("shadow_domain") or md.get("domain") or self.shadow_domain or os.getenv("SHADOW_DOMAIN", "")).strip().lower()
+        return raw
+
+    def _exotic_derivative_execution_blocked(self, metadata: Optional[Dict[str, Any]] = None) -> tuple[bool, str, Dict[str, Any]]:
+        sleeve = self._metadata_sleeve_profile(metadata)
+        domain = self._metadata_shadow_domain(metadata)
+        research_only = os.getenv("EXOTIC_DERIVATIVE_RESEARCH_ONLY", "0").strip() == "1"
+        direct_override = os.getenv("EXOTIC_DIRECT_EXECUTION_ALLOWED", "0").strip() == "1"
+        is_exotic = is_exotic_derivative_sleeve(sleeve) or domain == "exotic_derivatives" or research_only
+        if not is_exotic:
+            return False, "not_exotic_derivative_sleeve", {}
+        if direct_override and exotic_direct_execution_allowed(sleeve, broker=self.broker_name):
+            return False, "direct_execution_explicitly_allowed", {}
+        details = {
+            "sleeve_profile": sleeve,
+            "shadow_domain": domain,
+            "broker": self.broker_name,
+            "research_only": bool(research_only),
+            "direct_execution_allowed": False,
+        }
+        return True, "exotic_derivative_proxy_only_no_direct_execution", details
+
     def _resolve_shadow_domain(self) -> str:
         raw = os.getenv("SHADOW_DOMAIN", "").strip().lower()
-        if raw in {"equities", "crypto"}:
+        if raw in {"equities", "crypto", "exotic_derivatives"}:
             return raw
 
-        broker = os.getenv("DATA_BROKER", "schwab").strip().lower()
+        broker = str(self.broker_name or os.getenv("DATA_BROKER", "schwab")).strip().lower()
         return "crypto" if broker == "coinbase" else "equities"
 
     def set_mode(self, mode: str) -> None:
@@ -391,26 +517,44 @@ class BaseTrader:
 
         return status
 
+    def _extract_connected_accounts(self, payload: Any) -> List[BrokerConnectedAccount]:
+        return self.broker_adapter.extract_connected_accounts(payload)
+
     def _extract_account_hash_rows(self, payload: Any) -> List[Dict[str, str]]:
-        rows: List[Dict[str, str]] = []
-        if not isinstance(payload, list):
-            return rows
-        for item in payload:
-            if not isinstance(item, dict):
+        return [row.to_dict() for row in self._extract_connected_accounts(payload)]
+
+    def fetch_connected_accounts(self) -> List[BrokerConnectedAccount]:
+        if not self._supports_broker_capability("supports_account_discovery"):
+            return []
+        if self.client is None:
+            return []
+
+        for method_name, args, kwargs in self.broker_adapter.account_numbers_candidates():
+            fn = getattr(self.client, method_name, None)
+            if not callable(fn):
                 continue
-            account_hash = str(item.get("hashValue") or item.get("account_hash") or "").strip()
-            if not account_hash:
+            try:
+                response = fn(*args, **kwargs)
+                status_code = self._as_int(getattr(response, "status_code", 0), 0)
+                if status_code >= 400:
+                    raise RuntimeError(f"http_status_{status_code}")
+                payload = self._coerce_json_obj_or_list(response)
+                rows = self._extract_connected_accounts(payload)
+                if rows:
+                    return rows
+            except TypeError:
                 continue
-            rows.append(
-                {
-                    "account_hash": account_hash,
-                    "account_number": str(item.get("accountNumber") or item.get("account_number") or "").strip(),
-                }
-            )
-        return rows
+            except Exception:
+                continue
+        return []
+
+    def fetch_connected_account_rows(self) -> List[Dict[str, str]]:
+        return [row.to_dict() for row in self.fetch_connected_accounts()]
 
     def _discover_live_account_hash(self, *, force: bool = False) -> str:
         if self.client is None:
+            return str(self.live_account_hash or "").strip()
+        if not self._supports_broker_capability("supports_account_discovery"):
             return str(self.live_account_hash or "").strip()
         if not self.live_account_hash_auto_discover:
             return str(self.live_account_hash or "").strip()
@@ -422,19 +566,11 @@ class BaseTrader:
             return str(self.live_account_hash or "").strip()
         self._live_account_hash_last_refresh_ts = now_ts
 
-        fn = getattr(self.client, "get_account_numbers", None)
-        if not callable(fn):
-            return str(self.live_account_hash or "").strip()
-
         try:
-            response = fn()
-            status_code = self._as_int(getattr(response, "status_code", 0), 0)
-            if status_code >= 400:
-                raise RuntimeError(f"http_status_{status_code}")
-            payload = self._coerce_json_obj_or_list(response)
-            rows = self._extract_account_hash_rows(payload)
+            rows = self.fetch_connected_accounts()
             if rows:
-                self.live_account_hash = str(rows[0].get("account_hash") or "").strip()
+                self.live_account_hash = str(rows[0].account_reference or "").strip()
+                self.live_account_reference = self.live_account_hash
         except Exception:
             pass
 
@@ -453,10 +589,15 @@ class BaseTrader:
             "event": event,
             "status": status,
             "reason": reason,
+            "broker": self.broker_name,
             "mode": self.mode,
             "mode_label": self.mode_label,
             "callback_url": self.callback_url,
-            "requested_browser": os.getenv("SCHWAB_AUTH_REQUESTED_BROWSER", "").strip(),
+            "requested_browser": (
+                os.getenv(self.broker_adapter.requested_browser_env_var, "").strip()
+                if getattr(self.broker_adapter, "requested_browser_env_var", "")
+                else ""
+            ),
             "token_status": self._token_status(),
         }
         corr = current_correlation()
@@ -476,10 +617,13 @@ class BaseTrader:
         )
 
     def authenticate(self):
-        """Performs Schwab OAuth handshake."""
-        print("Starting Handshake with Schwab...")
+        """Performs broker OAuth handshake."""
+        print(f"Starting Handshake with {self.broker_display_name}...")
 
-        max_token_age_raw = os.getenv("SCHWAB_MAX_TOKEN_AGE_SECONDS", "0").strip().lower()
+        max_token_age_env = str(getattr(self.broker_adapter, "max_token_age_env_var", "") or "").strip()
+        max_token_age_raw = (
+            os.getenv(max_token_age_env, "0").strip().lower() if max_token_age_env else "0"
+        )
         if max_token_age_raw in {"", "none", "null"}:
             max_token_age = None
         else:
@@ -488,9 +632,16 @@ class BaseTrader:
             except Exception:
                 max_token_age = 0.0
 
-        interactive = os.getenv("SCHWAB_AUTH_INTERACTIVE", "0").strip() == "1"
-        callback_timeout = float(os.getenv("SCHWAB_AUTH_CALLBACK_TIMEOUT_SECONDS", "300"))
-        requested_browser = os.getenv("SCHWAB_AUTH_REQUESTED_BROWSER", "").strip() or None
+        interactive_env = str(getattr(self.broker_adapter, "interactive_env_var", "") or "").strip()
+        callback_timeout_env = str(getattr(self.broker_adapter, "callback_timeout_env_var", "") or "").strip()
+        requested_browser_env = str(getattr(self.broker_adapter, "requested_browser_env_var", "") or "").strip()
+
+        interactive = (os.getenv(interactive_env, "0").strip() == "1") if interactive_env else False
+        try:
+            callback_timeout = float(os.getenv(callback_timeout_env, "300")) if callback_timeout_env else 300.0
+        except Exception:
+            callback_timeout = 300.0
+        requested_browser = (os.getenv(requested_browser_env, "").strip() or None) if requested_browser_env else None
 
         self._log_auth_event(
             event="auth_start",
@@ -504,15 +655,15 @@ class BaseTrader:
         )
 
         try:
-            self.client = easy_client(
-                api_key=self.api_key,
-                app_secret=self.app_secret,
-                callback_url=self.callback_url,
-                token_path=self.token_path,
-                max_token_age=max_token_age,
-                callback_timeout=callback_timeout,
-                interactive=interactive,
-                requested_browser=requested_browser,
+            self.client = self.broker_adapter.authenticate(
+                BrokerAuthRequest(
+                    credentials=self._broker_credentials(),
+                    token_path=self.token_path,
+                    max_token_age=max_token_age,
+                    callback_timeout=callback_timeout,
+                    interactive=interactive,
+                    requested_browser=requested_browser,
+                )
             )
             if not self.live_account_hash:
                 self._discover_live_account_hash(force=True)
@@ -1015,6 +1166,38 @@ class BaseTrader:
             )
             return {"ok": False, "error": err, "path": self.global_halt_flag_path}
 
+    def _should_auto_halt_for_api_circuit(
+        self,
+        *,
+        operation: str,
+        attempts_made: int = 0,
+        max_attempts: int = 1,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, Dict[str, Any]]:
+        details = dict(context or {})
+        details.update(
+            {
+                "operation": operation,
+                "attempts_made": int(attempts_made or 0),
+                "max_attempts": int(max_attempts or 1),
+            }
+        )
+        if operation != "get_accounts_snapshot":
+            return True, details
+
+        fail_streak = int(self._accounts_snapshot_soft_fail_streak)
+        min_failures = int(self.live_accounts_snapshot_halt_min_failures)
+        details.update(
+            {
+                "soft_fail_streak": fail_streak,
+                "halt_min_failures": min_failures,
+                "account_snapshot_halt_debounced": fail_streak < min_failures,
+            }
+        )
+        if fail_streak < min_failures:
+            return False, details
+        return True, details
+
     def _auto_cancel_open_orders_if_due(self, *, reason: str) -> Dict[str, Any]:
         now_ts = time.time()
         cooldown = float(self.live_softguard_auto_cancel_cooldown_seconds)
@@ -1266,10 +1449,26 @@ class BaseTrader:
                 details={"operation": operation, **(context or {})},
             )
             if self.live_softguard_auto_halt_on_api_circuit:
-                self._engage_global_halt(
-                    reason="softguard_api_circuit_open",
-                    details={"operation": operation, **(context or {})},
+                if operation == "get_accounts_snapshot":
+                    self._accounts_snapshot_soft_fail_streak += 1
+                should_halt, halt_details = self._should_auto_halt_for_api_circuit(
+                    operation=operation,
+                    attempts_made=0,
+                    max_attempts=max(int(self.live_api_retry_attempts), 1),
+                    context=context,
                 )
+                if should_halt:
+                    self._engage_global_halt(
+                        reason="softguard_api_circuit_open",
+                        details=halt_details,
+                    )
+                else:
+                    self._log_softguard_event(
+                        event="global_halt_debounced",
+                        status="blocked",
+                        reason="account_snapshot_soft_fail_grace",
+                        details=halt_details,
+                    )
             return out
 
         signature_errors: List[str] = []
@@ -1512,15 +1711,24 @@ class BaseTrader:
             },
         )
         if opened and self.live_softguard_auto_halt_on_api_circuit:
-            self._engage_global_halt(
-                reason="softguard_api_circuit_opened",
-                details={
-                    "operation": operation,
-                    "attempts_made": attempts_made,
-                    "max_attempts": max_attempts,
-                    **(context or {}),
-                },
+            should_halt, halt_details = self._should_auto_halt_for_api_circuit(
+                operation=operation,
+                attempts_made=attempts_made,
+                max_attempts=max_attempts,
+                context=context,
             )
+            if should_halt:
+                self._engage_global_halt(
+                    reason="softguard_api_circuit_opened",
+                    details=halt_details,
+                )
+            else:
+                self._log_softguard_event(
+                    event="global_halt_debounced",
+                    status="blocked",
+                    reason="account_snapshot_soft_fail_grace",
+                    details=halt_details,
+                )
 
         return {
             "ok": False,
@@ -1555,36 +1763,10 @@ class BaseTrader:
         raise ValueError(f"unsupported_order_action:{side}")
 
     def _quote_client_candidates(self, *, symbol: str) -> List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]]:
-        symbol_value = str(symbol or "").strip().upper()
-        return [
-            ("get_quote", (symbol_value,), {}),
-            ("quote", (symbol_value,), {}),
-            ("get_quotes", ((symbol_value,),), {}),
-            ("get_quotes", ([symbol_value],), {}),
-            ("quotes", ((symbol_value,),), {}),
-            ("quotes", ([symbol_value],), {}),
-        ]
+        return self.broker_adapter.quote_candidates(symbol=symbol)
 
     def _extract_quote_payload(self, raw: Any, symbol: str) -> Dict[str, Any]:
-        if not isinstance(raw, dict):
-            return {}
-        sym = str(symbol or "").strip().upper()
-        if sym in raw and isinstance(raw[sym], dict):
-            return raw[sym]
-
-        normalized = re.sub(r"[^A-Z0-9]", "", sym)
-        for key, value in raw.items():
-            if not isinstance(key, str) or not isinstance(value, dict):
-                continue
-            if key.upper() == sym:
-                return value
-            if re.sub(r"[^A-Z0-9]", "", key.upper()) == normalized:
-                return value
-
-        dict_children = [v for v in raw.values() if isinstance(v, dict)]
-        if len(dict_children) == 1:
-            return dict_children[0]
-        return {}
+        return self.broker_adapter.extract_quote_payload(raw, symbol)
 
     def _quote_field(self, payload: Dict[str, Any], *keys: str) -> Any:
         if not isinstance(payload, dict):
@@ -1602,7 +1784,47 @@ class BaseTrader:
                     return container.get(key)
         return None
 
+    def _quote_snapshot_from_payload(self, *, symbol: str, payload: Any) -> BrokerQuoteSnapshot:
+        return self.broker_adapter.parse_quote_snapshot(symbol, payload)
+
+    def _build_live_order_request(
+        self,
+        *,
+        symbol: str,
+        action: str,
+        quantity: float,
+        order_spec: Dict[str, Any],
+        limit_price: float = 0.0,
+        asset_type: str = "EQUITY",
+    ) -> BrokerOrderRequest:
+        return BrokerOrderRequest(
+            symbol=str(symbol or "").strip().upper(),
+            action=str(action or "").strip().upper(),
+            quantity=float(quantity),
+            order_spec=dict(order_spec),
+            account_reference=str(self.live_account_hash or "").strip(),
+            asset_type=str(asset_type or "EQUITY").strip().upper(),
+            limit_price=float(limit_price or 0.0),
+        )
+
+    def _broker_order_result_from_output(self, out: Dict[str, Any], payload: Optional[Dict[str, Any]] = None) -> BrokerOrderResult:
+        response_payload = payload
+        if response_payload is None:
+            raw_payload = out.get("response_payload")
+            response_payload = raw_payload if isinstance(raw_payload, dict) else {}
+        return BrokerOrderResult(
+            ok=bool(out.get("ok")),
+            order_id=str(out.get("order_id", "") or "").strip(),
+            status_code=int(self._as_int(out.get("status_code", 0), 0)),
+            attempts_made=int(self._as_int(out.get("attempts_made", 1), 1)),
+            max_attempts=int(self._as_int(out.get("max_attempts", 1), 1)),
+            error=str(out.get("error", "") or "").strip(),
+            payload=dict(response_payload or {}),
+        )
+
     def _fetch_live_quote(self, *, symbol: str) -> Dict[str, Any]:
+        if not self._supports_broker_capability("supports_market_data"):
+            return self._unsupported_broker_operation("get_quote", "supports_market_data")
         out = self._invoke_client_candidates(
             operation="get_quote",
             candidates=self._quote_client_candidates(symbol=symbol),
@@ -1620,37 +1842,23 @@ class BaseTrader:
                 "details": {"symbol": str(symbol).upper()},
             }
 
-        quote_payload = self._extract_quote_payload(payload, symbol)
-        out["payload"] = payload
-        out["quote_payload"] = quote_payload
+        snapshot = self._quote_snapshot_from_payload(symbol=symbol, payload=payload)
+        out["payload"] = dict(snapshot.raw_payload)
+        out["quote_payload"] = dict(snapshot.quote_payload)
+        out["quote_snapshot"] = snapshot.to_dict()
         return out
 
     def _option_chain_client_candidates(self, *, symbol: str, strike_count: int) -> List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]]:
-        symbol_value = str(symbol or "").strip().upper()
-        arg_sets = [
-            ((symbol_value,), {"strike_count": strike_count, "include_quotes": True}),
-            ((symbol_value,), {"strike_count": strike_count}),
-            ((symbol_value,), {"include_quotes": True}),
-            ((symbol_value,), {}),
-            ((), {"symbol": symbol_value, "strike_count": strike_count, "include_quotes": True}),
-            ((), {"symbol": symbol_value, "strike_count": strike_count}),
-            ((), {"symbol": symbol_value, "include_quotes": True}),
-            ((), {"symbol": symbol_value}),
-        ]
-        out: List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]] = []
-        for method_name in (
-            "get_option_chain",
-            "get_options_chain",
-            "option_chain",
-            "options_chain",
-            "get_option_chain_for_symbol",
-        ):
-            for args, kwargs in arg_sets:
-                out.append((method_name, args, dict(kwargs)))
-        return out
+        return self.broker_adapter.option_chain_candidates(symbol=symbol, strike_count=strike_count)
 
     def _fetch_live_option_chain(self, *, symbol: str) -> Dict[str, Any]:
-        strike_count = max(int(os.getenv("SCHWAB_OPTIONS_CHAIN_STRIKE_COUNT", "18") or 18), 4)
+        if not self._supports_broker_capability("supports_options"):
+            return self._unsupported_broker_operation("get_option_chain", "supports_options")
+        strike_count_env = str(getattr(self.broker_adapter, "options_chain_strike_count_env_var", "") or "").strip()
+        try:
+            strike_count = max(int(os.getenv(strike_count_env, "18") or 18), 4) if strike_count_env else 18
+        except Exception:
+            strike_count = 18
         out = self._invoke_client_candidates(
             operation="get_option_chain",
             candidates=self._option_chain_client_candidates(symbol=symbol, strike_count=strike_count),
@@ -2432,16 +2640,24 @@ class BaseTrader:
         quantity: float,
         order_spec: Dict[str, Any],
     ) -> Dict[str, Any]:
-        candidates: List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]] = []
-        if self.live_account_hash:
-            candidates.append(("place_order", (self.live_account_hash, order_spec), {}))
-        candidates.append(("place_order", (order_spec,), {}))
-
+        if not self._supports_broker_capability("supports_order_place"):
+            return self._unsupported_broker_operation("place_order", "supports_order_place")
+        order_request = self._build_live_order_request(
+            symbol=symbol,
+            action=action,
+            quantity=quantity,
+            order_spec=order_spec,
+        )
         out = self._invoke_client_candidates(
             operation="place_order",
-            candidates=candidates,
+            candidates=self.broker_adapter.place_order_candidates(
+                account_reference=order_request.account_reference,
+                order_spec=order_request.order_spec,
+            ),
             context={"symbol": str(symbol).upper(), "action": str(action).upper(), "quantity": float(quantity)},
         )
+        out["order_request"] = order_request.to_dict()
+        out["order_result"] = self._broker_order_result_from_output(out).to_dict()
         return out
 
     def modify_live_order(
@@ -2467,6 +2683,8 @@ class BaseTrader:
         oid = str(order_id or "").strip()
         if not oid:
             return {"ok": False, "error": "missing_order_id"}
+        if not self._supports_broker_capability("supports_order_replace"):
+            return self._unsupported_broker_operation("replace_order", "supports_order_replace")
 
         spec = self._build_live_order_spec(
             symbol=symbol,
@@ -2475,17 +2693,26 @@ class BaseTrader:
             limit_price=limit_price,
             asset_type=asset_type,
         )
-
-        candidates: List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]] = []
-        if self.live_account_hash:
-            candidates.append(("replace_order", (self.live_account_hash, oid, spec), {}))
-        candidates.append(("replace_order", (oid, spec), {}))
+        order_request = self._build_live_order_request(
+            symbol=symbol,
+            action=action,
+            quantity=quantity,
+            order_spec=spec,
+            limit_price=limit_price,
+            asset_type=asset_type,
+        )
 
         out = self._invoke_client_candidates(
             operation="replace_order",
-            candidates=candidates,
+            candidates=self.broker_adapter.replace_order_candidates(
+                account_reference=order_request.account_reference,
+                order_id=oid,
+                order_spec=order_request.order_spec,
+            ),
             context={"order_id": oid, "symbol": str(symbol).upper(), "action": str(action).upper(), "quantity": float(quantity)},
         )
+        out["order_request"] = order_request.to_dict()
+        out["order_result"] = self._broker_order_result_from_output(out).to_dict()
         if out.get("ok"):
             self.live_guard.register_open_order(order_id=oid, symbol=symbol, action=action, quantity=quantity)
         return out
@@ -2494,17 +2721,18 @@ class BaseTrader:
         oid = str(order_id or "").strip()
         if not oid:
             return {"ok": False, "error": "missing_order_id"}
-
-        candidates: List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]] = []
-        if self.live_account_hash:
-            candidates.append(("cancel_order", (self.live_account_hash, oid), {}))
-        candidates.append(("cancel_order", (oid,), {}))
+        if not self._supports_broker_capability("supports_order_cancel"):
+            return self._unsupported_broker_operation("cancel_order", "supports_order_cancel")
 
         out = self._invoke_client_candidates(
             operation="cancel_order",
-            candidates=candidates,
+            candidates=self.broker_adapter.cancel_order_candidates(
+                account_reference=self.live_account_hash,
+                order_id=oid,
+            ),
             context={"order_id": oid},
         )
+        out["order_result"] = self._broker_order_result_from_output(out).to_dict()
         if out.get("ok"):
             self.live_guard.close_open_order(oid)
         return out
@@ -2513,15 +2741,15 @@ class BaseTrader:
         oid = str(order_id or "").strip()
         if not oid:
             return {"ok": False, "error": "missing_order_id"}
-
-        candidates: List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]] = []
-        if self.live_account_hash:
-            candidates.append(("get_order", (self.live_account_hash, oid), {}))
-        candidates.append(("get_order", (oid,), {}))
+        if not self._supports_broker_capability("supports_order_fetch"):
+            return self._unsupported_broker_operation("get_order", "supports_order_fetch")
 
         out = self._invoke_client_candidates(
             operation="get_order",
-            candidates=candidates,
+            candidates=self.broker_adapter.fetch_order_candidates(
+                account_reference=self.live_account_hash,
+                order_id=oid,
+            ),
             context={"order_id": oid},
         )
         if not out.get("ok"):
@@ -2529,6 +2757,7 @@ class BaseTrader:
 
         payload = self._coerce_json_payload(out.get("response"))
         out["order_payload"] = payload
+        out["order_result"] = self._broker_order_result_from_output(out, payload).to_dict()
         return out
 
     def _order_status(self, payload: Dict[str, Any]) -> str:
@@ -2717,17 +2946,16 @@ class BaseTrader:
         return sorted(order_ids)
 
     def _live_fetch_accounts_payload(self) -> Dict[str, Any]:
+        if not self._supports_broker_capability("supports_account_snapshot"):
+            return self._unsupported_broker_operation("get_accounts_snapshot", "supports_account_snapshot")
         if not self.live_account_hash:
             self._discover_live_account_hash(force=True)
 
         def _snapshot_candidates() -> List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]]:
-            candidates: List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]] = []
-            if self.live_account_hash:
-                candidates.append(("get_account", (self.live_account_hash,), {}))
-            if (not candidates) or self.live_accounts_snapshot_allow_global_fallback:
-                candidates.append(("get_accounts", tuple(), {}))
-                candidates.append(("get_account", tuple(), {}))
-            return candidates
+            return self.broker_adapter.accounts_snapshot_candidates(
+                account_reference=self.live_account_hash,
+                allow_global_fallback=self.live_accounts_snapshot_allow_global_fallback,
+            )
 
         out = self._invoke_client_candidates(
             operation="get_accounts_snapshot",
@@ -2739,6 +2967,7 @@ class BaseTrader:
             if status_code in {401, 403, 404}:
                 previous_hash = str(self.live_account_hash)
                 self.live_account_hash = ""
+                self.live_account_reference = ""
                 refreshed_hash = self._discover_live_account_hash(force=True)
                 if refreshed_hash and refreshed_hash != previous_hash:
                     out = self._invoke_client_candidates(
@@ -2918,15 +3147,11 @@ class BaseTrader:
         return None
 
     def _live_fetch_broker_position(self, *, symbol: str) -> Dict[str, Any]:
-        candidates: List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]] = []
-        if self.live_account_hash:
-            candidates.append(("get_account", (self.live_account_hash,), {}))
-        candidates.append(("get_account", tuple(), {}))
-        candidates.append(("get_accounts", tuple(), {}))
-
+        if not self._supports_broker_capability("supports_positions"):
+            return self._unsupported_broker_operation("get_positions", "supports_positions")
         out = self._invoke_client_candidates(
             operation="get_positions",
-            candidates=candidates,
+            candidates=self.broker_adapter.position_candidates(account_reference=self.live_account_hash),
             context={"symbol": str(symbol).upper()},
         )
         if not out.get("ok"):
@@ -3130,6 +3355,32 @@ class BaseTrader:
                 "execution_enabled": self.execution_enabled,
             }
             status = "DATA_ONLY_BLOCKED"
+            result = {
+                "status": status,
+                "mode": self.mode,
+                "decision": decision_entry,
+                "safety": safety,
+            }
+        elif self._is_trade_action(action) and self._exotic_derivative_execution_blocked(md)[0]:
+            blocked, reason, details = self._exotic_derivative_execution_blocked(md)
+            safety = {
+                "market_data_only": self.market_data_only,
+                "execution_enabled": self.execution_enabled,
+                "exotic_derivative_execution_blocked": bool(blocked),
+                **details,
+            }
+            status = "EXOTIC_DERIVATIVE_EXECUTION_BLOCKED"
+            self._log_softguard_event(
+                event="exotic_derivative_execution_guard",
+                status="blocked",
+                reason=reason,
+                details={
+                    "symbol": str(symbol).upper(),
+                    "action": str(action).upper(),
+                    "quantity": float(quantity),
+                    **details,
+                },
+            )
             result = {
                 "status": status,
                 "mode": self.mode,

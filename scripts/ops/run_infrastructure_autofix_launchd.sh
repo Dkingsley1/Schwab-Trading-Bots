@@ -14,7 +14,8 @@ fi
 
 export BOT_RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-$PROFILE}"
 
-exec "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/infrastructure_autofix_bot.py" \
+"$PROJECT_ROOT/scripts/ops/run_guarded_maintenance.sh" infrastructure_autofix \
+  "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/infrastructure_autofix_bot.py" \
   --apply \
   --timeout-sec "${INFRASTRUCTURE_AUTOFIX_TIMEOUT_SECONDS:-1200}" \
   --json

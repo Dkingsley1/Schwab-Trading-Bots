@@ -231,8 +231,8 @@ cp "$DAILY_RUNTIME_SUMMARY_JSON" "$PROJECT_ROOT/governance/health/daily_runtime_
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/daily_auto_verify.py" --day "$TODAY_UTC" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/operator_cockpit.py" --json || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/observability_exporter.py"
-"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/report_pdf_bundle.py" --json || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/update_showcase_highlights.py" || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/report_pdf_bundle.py" --allow-gui-pdf-renderer --json || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/event_bus_relay.py" --day "$TODAY_UTC" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/safe_mode_guard.py" --trip-streak "${SAFE_MODE_TRIP_STREAK_REQUIRED:-3}" --clear-streak "${SAFE_MODE_CLEAR_STREAK_REQUIRED:-2}" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/global_risk_killswitch.py" || true

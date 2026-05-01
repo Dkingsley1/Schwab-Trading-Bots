@@ -201,6 +201,16 @@ class _UnauthorizedPlaceOrderClient:
         return _DummyResponse(401, {"error": "invalid_client"})
 
 
+class _UnauthorizedAccountSnapshotClient:
+    def __init__(self):
+        self.get_account_calls = 0
+
+    def get_account(self, *args, **kwargs):
+        _ = (args, kwargs)
+        self.get_account_calls += 1
+        return _DummyResponse(401, {"error": "invalid_client"})
+
+
 class _AccountNumbersClient:
     def __init__(self):
         self.get_account_numbers_calls = 0
@@ -380,6 +390,34 @@ def test_live_place_order_does_not_retry_non_retryable_http(monkeypatch):
     assert trader.client.calls == 1
 
 
+def test_account_snapshot_api_circuit_is_debounced_before_global_halt(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LIVE_API_FAIL_LIMIT", "1")
+    monkeypatch.setenv("LIVE_API_COOLDOWN_SECONDS", "120")
+    monkeypatch.setenv("LIVE_API_RETRY_ATTEMPTS", "1")
+    monkeypatch.setenv("LIVE_ACCOUNTS_SNAPSHOT_SOFT_FAIL_GRACE", "1")
+    monkeypatch.setenv("LIVE_ACCOUNTS_SNAPSHOT_HALT_MIN_FAILURES", "3")
+    monkeypatch.setenv("LIVE_SOFTGUARD_AUTO_HALT_ON_API_CIRCUIT", "1")
+    monkeypatch.setenv("SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER", "0")
+
+    trader = _mk_trader("live")
+    trader.project_root = str(tmp_path)
+    trader.global_halt_flag_path = str(tmp_path / "governance" / "health" / "GLOBAL_TRADING_HALT.flag")
+    trader.live_account_hash = "hash-123"
+    trader.client = _UnauthorizedAccountSnapshotClient()
+
+    first = trader._live_fetch_accounts_payload()
+    second = trader._live_fetch_accounts_payload()
+
+    assert first.get("soft_failure") is True
+    assert second.get("circuit_opened") is True
+    assert not Path(trader.global_halt_flag_path).exists()
+
+    third = trader._live_fetch_accounts_payload()
+
+    assert third.get("error") == "api_circuit_open"
+    assert Path(trader.global_halt_flag_path).exists()
+
+
 def test_build_live_order_spec_supports_multi_leg_options_plan():
     trader = _mk_trader("live")
     trader.client = _OptionsPlaceOrderClient()
@@ -411,12 +449,13 @@ def test_build_live_order_spec_supports_multi_leg_options_plan():
     assert spec["orderLegCollection"][1]["instrument"]["symbol"] == "AAPL_041726C105"
 
 
-def test_live_execute_uses_options_plan_order_spec(monkeypatch):
+def test_live_execute_uses_options_plan_order_spec(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
     monkeypatch.setenv("MARKET_DATA_ONLY", "0")
     monkeypatch.setenv("LIVE_PRETRADE_RECONCILE_REQUIRED", "0")
 
     trader = _mk_trader("live")
+    trader.global_halt_flag_path = str(tmp_path / "GLOBAL_TRADING_HALT.flag")
     trader.execution_enabled = True
     trader.market_data_only = False
     trader.client = _OptionsPlaceOrderClient()
@@ -487,12 +526,13 @@ def test_build_live_order_spec_supports_options_roll_plan():
     assert spec["orderLegCollection"][3]["instrument"]["symbol"] == "AAPL_051526C105"
 
 
-def test_live_execute_uses_futures_plan_order_spec(monkeypatch):
+def test_live_execute_uses_futures_plan_order_spec(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
     monkeypatch.setenv("MARKET_DATA_ONLY", "0")
     monkeypatch.setenv("LIVE_PRETRADE_RECONCILE_REQUIRED", "0")
 
     trader = _mk_trader("live")
+    trader.global_halt_flag_path = str(tmp_path / "GLOBAL_TRADING_HALT.flag")
     trader.execution_enabled = True
     trader.market_data_only = False
     trader.client = _FuturesPlaceOrderClient()
@@ -529,12 +569,13 @@ def test_live_execute_uses_futures_plan_order_spec(monkeypatch):
     assert placed["orderLegCollection"][1]["instrument"]["symbol"] == "/ESU26"
 
 
-def test_live_execute_uses_futures_roll_legs(monkeypatch):
+def test_live_execute_uses_futures_roll_legs(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
     monkeypatch.setenv("MARKET_DATA_ONLY", "0")
     monkeypatch.setenv("LIVE_PRETRADE_RECONCILE_REQUIRED", "0")
 
     trader = _mk_trader("live")
+    trader.global_halt_flag_path = str(tmp_path / "GLOBAL_TRADING_HALT.flag")
     trader.execution_enabled = True
     trader.market_data_only = False
     trader.client = _FuturesPlaceOrderClient()

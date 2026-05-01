@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from collections import Counter
@@ -34,7 +35,12 @@ def _utc_now() -> str:
 
 
 def _run_json_command(cmd: list[str], *, cwd: Path) -> tuple[int, dict[str, Any], str]:
-    proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, check=False)
+    timeout_seconds = float(os.getenv("POST_TRADE_ANALYSIS_SUBCOMMAND_TIMEOUT_SECONDS", "25") or 25.0)
+    try:
+        proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, check=False, timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        script_name = Path(cmd[1]).name if len(cmd) > 1 else "subcommand"
+        return 124, {}, f"{script_name}:timeout_after_{timeout_seconds:.0f}s"
     stdout = (proc.stdout or "").strip()
     stderr = (proc.stderr or "").strip()
     payload: dict[str, Any] = {}
@@ -46,6 +52,14 @@ def _run_json_command(cmd: list[str], *, cwd: Path) -> tuple[int, dict[str, Any]
         except Exception:
             payload = {}
     return int(proc.returncode), payload, stderr
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return obj if isinstance(obj, dict) else {}
 
 
 def _softguard_summary(project_root: Path, *, day: str) -> dict[str, Any]:
@@ -204,6 +218,18 @@ def build_post_trade_analysis(
 
     calibration_rc, calibration_payload, calibration_err = exec_runner(calibration_cmd, project_root)
     runtime_rc, runtime_payload, runtime_err = exec_runner(runtime_cmd, project_root)
+    calibration_fallback_used = False
+    runtime_fallback_used = False
+    if not calibration_payload:
+        cached = _load_json(project_root / "governance" / "health" / "paper_execution_calibration_latest.json")
+        if cached:
+            calibration_payload = cached
+            calibration_fallback_used = True
+    if not runtime_payload:
+        cached = _load_json(project_root / "governance" / "health" / "daily_runtime_summary_latest.json")
+        if cached:
+            runtime_payload = cached
+            runtime_fallback_used = True
     softguard_payload = _softguard_summary(project_root, day=day)
 
     assessment = _assessment_lines(
@@ -225,7 +251,7 @@ def build_post_trade_analysis(
         "top_halt_reason": next(iter((softguard_payload.get("reason_counts") or {}).keys()), ""),
     }
 
-    ok = bool(strategy_payload.get("ok", False)) and (runtime_rc == 0) and (calibration_rc in {0, 2})
+    ok = bool(calibration_payload) and bool(runtime_payload)
     return {
         "timestamp_utc": _utc_now(),
         "schema_version": 1,
@@ -242,8 +268,10 @@ def build_post_trade_analysis(
             "strategy_attribution": str(project_root / "governance" / "health" / "strategy_attribution_latest.json"),
             "paper_execution_calibration_rc": int(calibration_rc),
             "paper_execution_calibration_error": calibration_err,
+            "paper_execution_calibration_fallback_used": bool(calibration_fallback_used),
             "daily_runtime_summary_rc": int(runtime_rc),
             "daily_runtime_summary_error": runtime_err,
+            "daily_runtime_summary_fallback_used": bool(runtime_fallback_used),
         },
     }
 

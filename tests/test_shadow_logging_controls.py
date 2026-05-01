@@ -125,6 +125,8 @@ def test_paper_options_profile_allowlist_defaults_exclude_slow_sleeves(monkeypat
 
     assert loop._paper_options_profile_allowed("default") is True
     assert loop._paper_options_profile_allowed("aggressive") is True
+    assert loop._paper_options_profile_allowed("options_on_futures") is True
+    assert loop._paper_options_profile_allowed("options_on_futures_aggressive") is True
     assert loop._paper_options_profile_allowed("conservative") is False
     assert loop._paper_options_profile_allowed("dividend") is False
     assert loop._paper_options_profile_allowed("schwab_futures") is False

@@ -190,12 +190,12 @@ def _recovered_diagnostic(*, bot_id: str, log_payload: dict, log_path: Path, mod
     acted_accuracy = _safe_float(metrics.get("acted_accuracy"), -1.0)
     accuracy_lift = _safe_float(metrics.get("accuracy_lift_over_majority"), 0.0)
     failures: list[str] = []
-    if acted_accuracy >= 0.0 and acted_accuracy < 0.53:
-        failures.append(f"acted_accuracy={acted_accuracy:.4f} < recovered_min_acted_accuracy=0.5300")
-    if accuracy_lift < 0.0:
+    if acted_accuracy >= 0.0 and acted_accuracy < 0.60:
+        failures.append(f"acted_accuracy={acted_accuracy:.4f} < recovered_min_acted_accuracy=0.6000")
+    if accuracy_lift < 0.02:
         failures.append(
             "accuracy_lift_over_majority="
-            f"{accuracy_lift:.4f} < recovered_min_accuracy_lift_over_majority=0.0000"
+            f"{accuracy_lift:.4f} < recovered_min_accuracy_lift_over_majority=0.0200"
         )
     status = "failed" if failures else "passed"
     diag_timestamp = str(log_payload.get("timestamp") or datetime.now(timezone.utc).isoformat())

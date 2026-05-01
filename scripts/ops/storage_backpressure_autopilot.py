@@ -14,11 +14,13 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
+    from scripts.ops import backpressure_drainer_fleet as drainer_src
     from scripts.ops import backpressure_slo_bot as backpressure_src
     from scripts.ops import retention_debt_sheriff as sheriff_src
     from scripts.ops import writer_cycle_coordinator as coordinator_src
     from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
 else:
+    from . import backpressure_drainer_fleet as drainer_src
     from . import backpressure_slo_bot as backpressure_src
     from . import retention_debt_sheriff as sheriff_src
     from . import writer_cycle_coordinator as coordinator_src
@@ -27,6 +29,7 @@ else:
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "storage_backpressure_autopilot_latest.json"
 DEFAULT_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "storage_backpressure_autopilot.lock"
+DEFAULT_HOST_LOCK_PATH = PROJECT_ROOT / ".runtime_locks" / "storage_backpressure_autopilot.host.lock"
 PYTHON_BIN = Path(sys.executable)
 ACCEPTED_STEP_STATUSES = {
     "already_running",
@@ -35,6 +38,7 @@ ACCEPTED_STEP_STATUSES = {
     "idle",
     "ready",
     "stable",
+    "handoff_requested",
     "waiting_for_writer",
 }
 DEFAULT_MAX_CYCLES = 3
@@ -42,6 +46,9 @@ DEFAULT_TARGET_PENDING_LINES = 20000
 DEFAULT_TARGET_RETENTION_DEBT_GB = 0.25
 MIN_PENDING_PROGRESS_LINES = 250
 MIN_RETENTION_PROGRESS_GB = 0.05
+CORE_FOCUS_MIN_PENDING_LINES = 50_000
+CORE_FOCUS_MIN_TOP3_LINES = 40_000
+CORE_FOCUS_MIN_SHARE = 0.65
 
 
 def _safe_float(raw: Any, default: float = 0.0) -> float:
@@ -96,6 +103,21 @@ def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
     }
 
 
+def _acquire_nonblocking_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    handle.seek(0)
+    handle.truncate(0)
+    handle.write(f"pid={os.getpid()} timestamp_utc={iso_now()}\n")
+    handle.flush()
+    return handle
+
+
 def _status_rank(value: str) -> int:
     return {
         "blocked": 0,
@@ -121,6 +143,49 @@ def _storage_snapshot(storage_control: dict[str, Any]) -> dict[str, Any]:
         "severity": str(storage_control.get("severity") or ""),
         "total_pending_lines": _safe_int(backpressure.get("total_pending_lines"), 0),
         "retention_debt_gb": round(_safe_float(storage.get("retention_debt_gb"), 0.0), 3),
+    }
+
+
+def _core_focus(backpressure_payload: dict[str, Any]) -> dict[str, Any]:
+    top_pending_files = backpressure_payload.get("top_pending_files") if isinstance(backpressure_payload.get("top_pending_files"), list) else []
+    total_pending_lines = max(
+        _safe_int(backpressure_payload.get("pending_lines_total"), 0),
+        _safe_int(backpressure_payload.get("pending_lines"), 0),
+        0,
+    )
+    top_rows: list[dict[str, Any]] = []
+    for raw in top_pending_files[:5]:
+        if not isinstance(raw, dict):
+            continue
+        source_rel = str(raw.get("source_rel") or "").strip()
+        pending_lines = max(_safe_int(raw.get("pending_lines"), 0), 0)
+        if not source_rel or pending_lines <= 0:
+            continue
+        top_rows.append(
+            {
+                "source_rel": source_rel,
+                "pending_lines": pending_lines,
+                "oldest_pending_age_seconds": round(_safe_float(raw.get("oldest_pending_age_seconds"), 0.0), 3),
+            }
+        )
+    top3_pending_lines = sum(int(row.get("pending_lines", 0) or 0) for row in top_rows[:3])
+    top1_pending_lines = int((top_rows[0] if top_rows else {}).get("pending_lines", 0) or 0)
+    top3_share = round((top3_pending_lines / max(total_pending_lines, 1)) if total_pending_lines > 0 else 0.0, 6)
+    top1_share = round((top1_pending_lines / max(total_pending_lines, 1)) if total_pending_lines > 0 else 0.0, 6)
+    concentrated_core_backlog = bool(
+        total_pending_lines >= CORE_FOCUS_MIN_PENDING_LINES
+        and top3_pending_lines >= CORE_FOCUS_MIN_TOP3_LINES
+        and top3_share >= CORE_FOCUS_MIN_SHARE
+    )
+    return {
+        "total_pending_lines": total_pending_lines,
+        "top_file_count": len(top_rows),
+        "top3_pending_lines": top3_pending_lines,
+        "top3_share": top3_share,
+        "top1_pending_lines": top1_pending_lines,
+        "top1_share": top1_share,
+        "concentrated_core_backlog": concentrated_core_backlog,
+        "top_rows": top_rows,
     }
 
 
@@ -193,6 +258,18 @@ def _lane_cmd(
             ],
             max(int(backpressure_command_timeout_seconds), 1) + 60,
         )
+    if lane == "backpressure_drainer_fleet":
+        return (
+            [
+                str(PYTHON_BIN),
+                str(project_root / "scripts" / "ops" / "backpressure_drainer_fleet.py"),
+                "--apply",
+                "--ttl-seconds",
+                str(max(int(wait_timeout_seconds), 900)),
+                "--json",
+            ],
+            120,
+        )
     if lane == "writer_cycle_coordinator":
         cmd = [
             str(PYTHON_BIN),
@@ -233,7 +310,9 @@ def _lane_cmd(
 def _repair_plan(
     *,
     storage_control: dict[str, Any],
+    backpressure_payload: dict[str, Any],
     backpressure_preview: dict[str, Any],
+    drainer_preview: dict[str, Any],
     coordinator_preview: dict[str, Any],
     sheriff_preview: dict[str, Any],
     project_root: Path,
@@ -259,7 +338,18 @@ def _repair_plan(
     focus_shards = [str(row) for row in list(focus.get("focus_shards") or []) if str(row or "").strip()]
     severe_focus = bool(focus.get("severe_focus", False))
     coordinator_maintenance_ready = bool(coordinator_preview.get("maintenance_ready", False))
-    maintenance_force = bool(severe_focus or targeted_retention_debt_gb >= 5.0)
+    core_focus = _core_focus(backpressure_payload)
+    active_drainer = drainer_preview.get("active_drainer") if isinstance(drainer_preview.get("active_drainer"), dict) else {}
+    active_drainer_name = str(active_drainer.get("name") or "").strip()
+    drainer_ready = bool(
+        active_drainer_name
+        and str(drainer_preview.get("overall_status") or "") in {"ready", "handoff_requested"}
+    )
+    maintenance_force = bool(
+        severe_focus
+        or targeted_retention_debt_gb >= 5.0
+        or core_focus.get("concentrated_core_backlog", False)
+    )
     sheriff_force = bool(severe_focus or targeted_retention_debt_gb >= 5.0)
 
     plan: list[dict[str, Any]] = []
@@ -282,6 +372,24 @@ def _repair_plan(
             }
         )
 
+    if drainer_ready:
+        cmd, timeout = _lane_cmd(
+            "backpressure_drainer_fleet",
+            project_root=project_root,
+            poll_seconds=poll_seconds,
+            wait_timeout_seconds=wait_timeout_seconds,
+            command_timeout_seconds=command_timeout_seconds,
+            backpressure_command_timeout_seconds=backpressure_command_timeout_seconds,
+        )
+        plan.append(
+            {
+                "name": "backpressure_drainer_fleet",
+                "reason": f"active_drainer={active_drainer_name}",
+                "cmd": cmd,
+                "timeout_sec": timeout,
+            }
+        )
+
     coordinator_reasons = ordered_unique(
         [
             "coordinator_actionable" if bool(coordinator_preview.get("actionable", False)) else "",
@@ -292,6 +400,7 @@ def _repair_plan(
             "sql_invalid_lines_present" if sql_invalid_lines > 0 else "",
             "backlog_above_threshold" if total_pending_lines >= max(pending_threshold * 3, 30000) else "",
             "drain_time_high" if total_drain_minutes >= 60.0 else "",
+            "concentrated_core_backlog" if bool(core_focus.get("concentrated_core_backlog", False)) else "",
         ]
     )
     if coordinator_reasons:
@@ -355,10 +464,16 @@ def _preview_bundle(
     command_timeout_seconds: int,
     backpressure_command_timeout_seconds: int,
 ) -> dict[str, Any]:
+    health_root = project_root / "governance" / "health"
+    backpressure_payload = load_json(health_root / "ingestion_backpressure_latest.json")
     backpressure_preview = backpressure_src.build_payload(
         project_root,
         apply=False,
         command_timeout_seconds=max(int(backpressure_command_timeout_seconds), 1),
+    )
+    drainer_preview = drainer_src.build_payload(
+        project_root,
+        apply=False,
     )
     coordinator_preview = coordinator_src.build_payload(
         project_root,
@@ -377,7 +492,9 @@ def _preview_bundle(
 
     repair_plan = _repair_plan(
         storage_control=storage_control,
+        backpressure_payload=backpressure_payload,
         backpressure_preview=backpressure_preview,
+        drainer_preview=drainer_preview,
         coordinator_preview=coordinator_preview,
         sheriff_preview=sheriff_preview,
         project_root=project_root,
@@ -387,7 +504,9 @@ def _preview_bundle(
         backpressure_command_timeout_seconds=backpressure_command_timeout_seconds,
     )
     return {
+        "backpressure_payload": backpressure_payload,
         "backpressure_preview": backpressure_preview,
+        "drainer_preview": drainer_preview,
         "coordinator_preview": coordinator_preview,
         "sheriff_preview": sheriff_preview,
         "repair_plan": repair_plan,
@@ -467,6 +586,8 @@ def build_payload(
         backpressure_command_timeout_seconds=backpressure_command_timeout_seconds,
     )
     backpressure_preview = preview_bundle["backpressure_preview"]
+    backpressure_payload = preview_bundle["backpressure_payload"]
+    drainer_preview = preview_bundle["drainer_preview"]
     coordinator_preview = preview_bundle["coordinator_preview"]
     sheriff_preview = preview_bundle["sheriff_preview"]
     repair_plan = preview_bundle["repair_plan"]
@@ -568,6 +689,8 @@ def build_payload(
             backpressure_command_timeout_seconds=backpressure_command_timeout_seconds,
         )
         backpressure_preview = final_bundle["backpressure_preview"]
+        backpressure_payload = final_bundle["backpressure_payload"]
+        drainer_preview = final_bundle["drainer_preview"]
         coordinator_preview = final_bundle["coordinator_preview"]
         sheriff_preview = final_bundle["sheriff_preview"]
         repair_plan = final_bundle["repair_plan"]
@@ -599,6 +722,7 @@ def build_payload(
 
     operator_followups = ordered_unique(
         list(backpressure_preview.get("recommended_actions") or [])[:2]
+        + list(drainer_preview.get("recommended_actions") or [])[:2]
         + list(coordinator_preview.get("recommended_actions") or [])[:2]
         + list(sheriff_preview.get("recommended_actions") or [])[:2]
         + [
@@ -608,6 +732,16 @@ def build_payload(
             for action in list(payload.get("recommended_actions") or [])[:2]
         ]
     )[:8]
+    core_focus = _core_focus(backpressure_payload)
+    if bool(core_focus.get("concentrated_core_backlog", False)):
+        top_sources = [str(row.get("source_rel") or "") for row in list(core_focus.get("top_rows") or [])[:3] if str(row.get("source_rel") or "").strip()]
+        operator_followups = ordered_unique(
+            [
+                "keep the writer cycle pinned on the dominant core backlog files before broadening deferred backlog work",
+                f"dominant_core_sources={','.join(top_sources)}" if top_sources else "",
+            ]
+            + operator_followups
+        )[:8]
 
     summary_focus = sheriff_preview.get("focus") if isinstance(sheriff_preview.get("focus"), dict) else {}
     payload = {
@@ -639,6 +773,15 @@ def build_payload(
                 "drain_ready": bool(coordinator_preview.get("drain_ready", False)),
                 "maintenance_ready": bool(coordinator_preview.get("maintenance_ready", False)),
             },
+            "backpressure_drainer_fleet": {
+                "overall_status": str(drainer_preview.get("overall_status") or ""),
+                "ready_drainer_count": _safe_int(drainer_preview.get("ready_drainer_count"), 0),
+                "active_drainer": (
+                    str((drainer_preview.get("active_drainer") or {}).get("name") or "")
+                    if isinstance(drainer_preview.get("active_drainer"), dict)
+                    else ""
+                ),
+            },
             "retention_debt_sheriff": {
                 "overall_status": str(sheriff_preview.get("overall_status") or ""),
                 "actionable": bool(sheriff_preview.get("actionable", False)),
@@ -654,14 +797,18 @@ def build_payload(
                 "let the autopilot spend multiple repair cycles in one maintenance window so severe backlog and explanation debt are burned down instead of merely nudged",
                 "leave the specialist storage bots available for manual use, but let the autopilot own the recurring lane",
                 "treat explanation shard debt as a separate signal from broad backlog so retention work stays targeted",
+                "when most of the backlog sits in a few core files, keep the writer focused there until concentration comes down instead of pretending the whole plane is equally stuck",
+                "use the backpressure drainer fleet as a request router; keep SQLite concurrency at one writer",
             ]
             + operator_followups[:3]
         )[:8],
+        "core_focus": core_focus,
         "metrics": {
             "repair_step_count": len(repair_plan),
             "attempted_step_count": len(attempts),
             "cycle_count": len(cycle_records),
             "backpressure_actionable": bool(backpressure_preview.get("actionable", False)),
+            "drainer_ready_count": _safe_int(drainer_preview.get("ready_drainer_count"), 0),
             "coordinator_actionable": bool(coordinator_preview.get("actionable", False)),
             "sheriff_actionable": bool(sheriff_preview.get("actionable", False)),
             "backpressure_quality_score": _safe_float(((storage_control.get("steady_state") or {}).get("quality_score")), 0.0),
@@ -671,6 +818,8 @@ def build_payload(
             "storage_total_pending_lines": _safe_int(((storage_control.get("backpressure") or {}).get("total_pending_lines")), 0),
             "storage_total_drain_minutes": _safe_float(((storage_control.get("backpressure") or {}).get("estimated_total_drain_minutes")), 0.0),
             "retention_debt_gb": _safe_float(((storage_control.get("storage") or {}).get("retention_debt_gb")), 0.0),
+            "core_focus_top3_share": _safe_float(core_focus.get("top3_share"), 0.0),
+            "core_focus_concentrated": bool(core_focus.get("concentrated_core_backlog", False)),
         },
     }
     return payload
@@ -681,6 +830,7 @@ def main() -> int:
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--lock-file", default=str(DEFAULT_LOCK_PATH))
+    parser.add_argument("--host-lock-file", default=str(DEFAULT_HOST_LOCK_PATH))
     parser.add_argument("--apply", action="store_true")
     parser.add_argument(
         "--poll-seconds",
@@ -723,7 +873,7 @@ def main() -> int:
     project_root = Path(args.project_root).resolve()
     out_file = Path(args.out_file).expanduser()
     lock_file = Path(args.lock_file).expanduser()
-    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    host_lock_file = Path(args.host_lock_file).expanduser()
 
     payload: dict[str, Any] = {
         "timestamp_utc": iso_now(),
@@ -731,11 +881,35 @@ def main() -> int:
         "ok": True,
         "overall_status": "pending",
     }
-    with lock_file.open("a+", encoding="utf-8") as handle:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+    host_handle = _acquire_nonblocking_lock(host_lock_file)
+    if host_handle is None:
+        payload.update(
+            {
+                "overall_status": "already_running",
+                "busy": True,
+                "lock_scope": "host",
+                "host_lock_file": str(host_lock_file),
+                "route_lock_file": str(lock_file),
+            }
+        )
+        write_payload(out_file, payload)
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=True))
+        else:
+            print("storage_backpressure_autopilot overall_status=already_running")
+        return 0
+
+    with host_handle:
+        route_handle = _acquire_nonblocking_lock(lock_file)
+        if route_handle is None:
             payload.update({"overall_status": "already_running", "busy": True})
+            payload.update(
+                {
+                    "lock_scope": "route",
+                    "host_lock_file": str(host_lock_file),
+                    "route_lock_file": str(lock_file),
+                }
+            )
             write_payload(out_file, payload)
             if args.json:
                 print(json.dumps(payload, ensure_ascii=True))
@@ -743,34 +917,34 @@ def main() -> int:
                 print("storage_backpressure_autopilot overall_status=already_running")
             return 0
 
-        preview_payload = build_payload(
-            project_root,
-            apply=False,
-            poll_seconds=float(args.poll_seconds),
-            wait_timeout_seconds=float(args.wait_timeout_seconds),
-            command_timeout_seconds=int(args.command_timeout_seconds),
-            backpressure_command_timeout_seconds=int(args.backpressure_command_timeout_seconds),
-            max_cycles=int(args.max_cycles),
-            target_pending_lines=int(args.target_pending_lines),
-            target_retention_debt_gb=float(args.target_retention_debt_gb),
-        )
-        if not bool(args.apply):
-            payload = preview_payload
-            write_payload(out_file, payload)
-        else:
-            running_payload = dict(preview_payload)
-            running_payload.update(
+        with route_handle:
+            pass
+
+        route_handle = _acquire_nonblocking_lock(lock_file)
+        if route_handle is None:
+            payload.update(
                 {
-                    "ok": True,
-                    "overall_status": "running",
+                    "overall_status": "already_running",
                     "busy": True,
-                    "apply_requested": True,
+                    "lock_scope": "route",
+                    "host_lock_file": str(host_lock_file),
+                    "route_lock_file": str(lock_file),
                 }
             )
-            write_payload(out_file, running_payload)
-            payload = build_payload(
+            write_payload(out_file, payload)
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=True))
+            else:
+                print("storage_backpressure_autopilot overall_status=already_running")
+            return 0
+
+        with route_handle:
+            payload["host_lock_file"] = str(host_lock_file)
+            payload["route_lock_file"] = str(lock_file)
+
+            preview_payload = build_payload(
                 project_root,
-                apply=True,
+                apply=False,
                 poll_seconds=float(args.poll_seconds),
                 wait_timeout_seconds=float(args.wait_timeout_seconds),
                 command_timeout_seconds=int(args.command_timeout_seconds),
@@ -779,7 +953,36 @@ def main() -> int:
                 target_pending_lines=int(args.target_pending_lines),
                 target_retention_debt_gb=float(args.target_retention_debt_gb),
             )
-            write_payload(out_file, payload)
+            preview_payload["host_lock_file"] = str(host_lock_file)
+            preview_payload["route_lock_file"] = str(lock_file)
+            if not bool(args.apply):
+                payload = preview_payload
+                write_payload(out_file, payload)
+            else:
+                running_payload = dict(preview_payload)
+                running_payload.update(
+                    {
+                        "ok": True,
+                        "overall_status": "running",
+                        "busy": True,
+                        "apply_requested": True,
+                    }
+                )
+                write_payload(out_file, running_payload)
+                payload = build_payload(
+                    project_root,
+                    apply=True,
+                    poll_seconds=float(args.poll_seconds),
+                    wait_timeout_seconds=float(args.wait_timeout_seconds),
+                    command_timeout_seconds=int(args.command_timeout_seconds),
+                    backpressure_command_timeout_seconds=int(args.backpressure_command_timeout_seconds),
+                    max_cycles=int(args.max_cycles),
+                    target_pending_lines=int(args.target_pending_lines),
+                    target_retention_debt_gb=float(args.target_retention_debt_gb),
+                )
+                payload["host_lock_file"] = str(host_lock_file)
+                payload["route_lock_file"] = str(lock_file)
+                write_payload(out_file, payload)
 
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))

@@ -57,6 +57,22 @@ OPTIONS_FEATURE_KEYS = [
     "options_zero_dte_regime_norm",
     "options_vol_of_vol_change_norm",
     "options_spread_execution_risk_norm",
+    "options_vanna_mean_norm",
+    "options_charm_abs_mean_norm",
+    "options_vomma_mean_norm",
+    "options_speed_abs_mean_norm",
+    "options_color_abs_mean_norm",
+    "options_zomma_abs_mean_norm",
+    "options_ultima_abs_mean_norm",
+    "options_higher_order_greek_pressure_norm",
+    "options_barrier_touch_risk_norm",
+    "options_lookback_path_dependency_norm",
+    "options_variance_swap_proxy_norm",
+    "options_volatility_swap_proxy_norm",
+    "options_gamma_scalping_pressure_norm",
+    "options_vanna_volga_hedge_pressure_norm",
+    "options_dispersion_trade_proxy_norm",
+    "options_volatility_arbitrage_proxy_norm",
 ]
 
 FUTURES_FEATURE_KEYS = [
@@ -410,6 +426,13 @@ def summarize_option_chain(
     gamma_vals: List[float] = []
     theta_abs_vals: List[float] = []
     vega_vals: List[float] = []
+    vanna_vals: List[float] = []
+    charm_abs_vals: List[float] = []
+    vomma_vals: List[float] = []
+    speed_abs_vals: List[float] = []
+    color_abs_vals: List[float] = []
+    zomma_abs_vals: List[float] = []
+    ultima_abs_vals: List[float] = []
     unusual_flow_ratios: List[float] = []
     strike_open_interest: Dict[float, float] = {}
     call_wall_oi: Dict[float, float] = {}
@@ -557,6 +580,42 @@ def summarize_option_chain(
             if v_val <= 20.0:
                 vega_vals.append(v_val)
 
+        vanna = _dict_get_ci(row, "vanna")
+        if vanna is not None:
+            vanna_val = abs(_to_float(vanna, 0.0))
+            if vanna_val <= 20.0:
+                vanna_vals.append(vanna_val)
+        charm = _dict_get_ci(row, "charm", "deltaDecay", "delta_decay")
+        if charm is not None:
+            charm_val = abs(_to_float(charm, 0.0))
+            if charm_val <= 20.0:
+                charm_abs_vals.append(charm_val)
+        vomma = _dict_get_ci(row, "vomma", "volga")
+        if vomma is not None:
+            vomma_val = abs(_to_float(vomma, 0.0))
+            if vomma_val <= 50.0:
+                vomma_vals.append(vomma_val)
+        speed = _dict_get_ci(row, "speed")
+        if speed is not None:
+            speed_val = abs(_to_float(speed, 0.0))
+            if speed_val <= 50.0:
+                speed_abs_vals.append(speed_val)
+        color = _dict_get_ci(row, "color", "gammaDecay", "gamma_decay")
+        if color is not None:
+            color_val = abs(_to_float(color, 0.0))
+            if color_val <= 50.0:
+                color_abs_vals.append(color_val)
+        zomma = _dict_get_ci(row, "zomma")
+        if zomma is not None:
+            zomma_val = abs(_to_float(zomma, 0.0))
+            if zomma_val <= 50.0:
+                zomma_abs_vals.append(zomma_val)
+        ultima = _dict_get_ci(row, "ultima")
+        if ultima is not None:
+            ultima_val = abs(_to_float(ultima, 0.0))
+            if ultima_val <= 100.0:
+                ultima_abs_vals.append(ultima_val)
+
         bid = _to_float(row.get("bid"), 0.0)
         ask = _to_float(row.get("ask"), 0.0)
         if bid > 0.0 and ask > bid:
@@ -697,6 +756,118 @@ def summarize_option_chain(
         + (0.10 * _clamp01(abs(_safe_mean(mark_mid_bias)) * 10.0))
         + (0.08 * _clamp01(abs(iv_term) / 0.20))
     )
+    vanna_proxy = _clamp01(
+        (0.45 * _clamp01(abs(iv_skew) / 0.20))
+        + (0.30 * _clamp01(_safe_mean(delta_abs_vals)))
+        + (0.25 * _clamp01(strike_dispersion / 0.35))
+    )
+    charm_proxy = _clamp01(
+        (0.40 * _clamp01(_safe_mean(theta_abs_vals) / 2.0))
+        + (0.35 * _clamp01(gamma_front_share))
+        + (0.25 * _clamp01(max(14.0 - near_exp, 0.0) / 14.0))
+    )
+    vomma_proxy = _clamp01(
+        (0.42 * _clamp01(_safe_mean(vega_vals) / 2.0))
+        + (0.33 * _clamp01(abs(iv_term) / 0.20))
+        + (0.25 * vol_of_vol_change)
+    )
+    speed_proxy = _clamp01(
+        (0.42 * _clamp01(_safe_mean(gamma_vals) / 0.25))
+        + (0.32 * _clamp01(strike_dispersion / 0.20))
+        + (0.26 * zero_dte_regime)
+    )
+    color_proxy = _clamp01(
+        (0.42 * _clamp01(_safe_mean(gamma_vals) / 0.25))
+        + (0.34 * _clamp01(max(10.0 - near_exp, 0.0) / 10.0))
+        + (0.24 * _clamp01(abs(gamma_expiry_skew)))
+    )
+    zomma_proxy = _clamp01(
+        (0.40 * _clamp01(_safe_mean(gamma_vals) / 0.25))
+        + (0.34 * vol_of_vol_change)
+        + (0.26 * _clamp01(abs(iv_skew) / 0.18))
+    )
+    ultima_proxy = _clamp01(
+        (0.45 * vomma_proxy)
+        + (0.30 * vol_of_vol_change)
+        + (0.25 * _clamp01(abs(iv_term) / 0.18))
+    )
+    vanna_norm = _clamp01(_safe_mean(vanna_vals) / 2.0) if vanna_vals else vanna_proxy
+    charm_norm = _clamp01(_safe_mean(charm_abs_vals) / 2.0) if charm_abs_vals else charm_proxy
+    vomma_norm = _clamp01(_safe_mean(vomma_vals) / 5.0) if vomma_vals else vomma_proxy
+    speed_norm = _clamp01(_safe_mean(speed_abs_vals) / 3.0) if speed_abs_vals else speed_proxy
+    color_norm = _clamp01(_safe_mean(color_abs_vals) / 3.0) if color_abs_vals else color_proxy
+    zomma_norm = _clamp01(_safe_mean(zomma_abs_vals) / 3.0) if zomma_abs_vals else zomma_proxy
+    ultima_norm = _clamp01(_safe_mean(ultima_abs_vals) / 8.0) if ultima_abs_vals else ultima_proxy
+    higher_order_greek_pressure = _clamp01(
+        (0.16 * vanna_norm)
+        + (0.14 * charm_norm)
+        + (0.16 * vomma_norm)
+        + (0.14 * speed_norm)
+        + (0.14 * color_norm)
+        + (0.13 * zomma_norm)
+        + (0.13 * ultima_norm)
+    )
+    nearest_wall_distance = min(
+        call_wall_distance if call_wall_distance > 0.0 else 1.0,
+        put_wall_distance if put_wall_distance > 0.0 else 1.0,
+    )
+    barrier_touch_risk = _clamp01(
+        (0.32 * _clamp01(1.0 - (nearest_wall_distance / 0.20)))
+        + (0.22 * strike_expiry_concentration)
+        + (0.18 * zero_dte_regime)
+        + (0.16 * _clamp01(abs(gamma_expiry_skew)))
+        + (0.12 * spread_execution_risk)
+    )
+    lookback_path_dependency = _clamp01(
+        (0.30 * surface_change)
+        + (0.24 * _clamp01(strike_dispersion / 0.25))
+        + (0.20 * vol_of_vol_change)
+        + (0.14 * _clamp01(_safe_mean(unusual_flow_ratios) / 4.0))
+        + (0.12 * vwap_bias)
+    )
+    variance_swap_proxy = _clamp01(
+        (0.34 * iv_realized_spread)
+        + (0.28 * vol_of_vol_change)
+        + (0.22 * surface_change)
+        + (0.16 * _clamp01(abs(iv_skew) / 0.18))
+    )
+    volatility_swap_proxy = _clamp01(
+        (0.36 * vol_expect)
+        + (0.24 * _clamp01(iv_percentile))
+        + (0.20 * surface_change)
+        + (0.12 * spread_execution_risk)
+        + (0.08 * _clamp01(abs(iv_term) / 0.20))
+    )
+    gamma_scalping_pressure = _clamp01(
+        (0.26 * _clamp01(_safe_mean(gamma_vals) / 0.25))
+        + (0.22 * gamma_front_share)
+        + (0.18 * zero_dte_regime)
+        + (0.14 * _clamp01(abs(gamma_expiry_skew)))
+        + (0.10 * _clamp01(1.0 - spread_execution_risk))
+        + (0.10 * vwap_bias)
+    )
+    vanna_volga_hedge_pressure = _clamp01(
+        (0.24 * vanna_norm)
+        + (0.24 * vomma_norm)
+        + (0.18 * vol_of_vol_change)
+        + (0.16 * _clamp01(abs(iv_skew) / 0.18))
+        + (0.10 * _clamp01(abs(iv_term) / 0.20))
+        + (0.08 * _clamp01(_safe_mean(vega_vals) / 2.0))
+    )
+    dispersion_trade_proxy = _clamp01(
+        (0.28 * _clamp01(abs(atm_iv - iv_mean) / 0.20))
+        + (0.22 * _clamp01(abs(iv_skew) / 0.18))
+        + (0.18 * _clamp01(strike_dispersion / 0.25))
+        + (0.16 * vol_of_vol_change)
+        + (0.16 * higher_order_greek_pressure)
+    )
+    volatility_arbitrage_proxy = _clamp01(
+        (0.30 * iv_realized_spread)
+        + (0.24 * variance_swap_proxy)
+        + (0.18 * volatility_swap_proxy)
+        + (0.14 * _clamp01(1.0 - spread_execution_risk))
+        + (0.14 * vol_of_vol_change)
+    )
 
     out.update(
         {
@@ -752,6 +923,22 @@ def summarize_option_chain(
             "options_zero_dte_regime_norm": zero_dte_regime,
             "options_vol_of_vol_change_norm": vol_of_vol_change,
             "options_spread_execution_risk_norm": spread_execution_risk,
+            "options_vanna_mean_norm": vanna_norm,
+            "options_charm_abs_mean_norm": charm_norm,
+            "options_vomma_mean_norm": vomma_norm,
+            "options_speed_abs_mean_norm": speed_norm,
+            "options_color_abs_mean_norm": color_norm,
+            "options_zomma_abs_mean_norm": zomma_norm,
+            "options_ultima_abs_mean_norm": ultima_norm,
+            "options_higher_order_greek_pressure_norm": higher_order_greek_pressure,
+            "options_barrier_touch_risk_norm": barrier_touch_risk,
+            "options_lookback_path_dependency_norm": lookback_path_dependency,
+            "options_variance_swap_proxy_norm": variance_swap_proxy,
+            "options_volatility_swap_proxy_norm": volatility_swap_proxy,
+            "options_gamma_scalping_pressure_norm": gamma_scalping_pressure,
+            "options_vanna_volga_hedge_pressure_norm": vanna_volga_hedge_pressure,
+            "options_dispersion_trade_proxy_norm": dispersion_trade_proxy,
+            "options_volatility_arbitrage_proxy_norm": volatility_arbitrage_proxy,
         }
     )
     return out

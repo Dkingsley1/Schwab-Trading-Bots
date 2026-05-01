@@ -112,9 +112,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "snapshot_cache_ready": snapshot_cache_ready,
             "snapshot_probe_command": [
                 "./scripts/ops/opsctl.sh",
-                "feed-refresh",
-                "--source",
-                "schwab",
+                "token-refresh",
+                "--json",
             ],
         },
         "backlog_recovery_contract": {

@@ -14,7 +14,8 @@ fi
 
 export BOT_RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-$PROFILE}"
 
-exec "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/storage_backpressure_autopilot.py" \
+"$PROJECT_ROOT/scripts/ops/run_guarded_maintenance.sh" storage_backpressure_autopilot \
+  "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/storage_backpressure_autopilot.py" \
   --apply \
   --poll-seconds "${STORAGE_BACKPRESSURE_AUTOPILOT_POLL_SECONDS:-20}" \
   --wait-timeout-seconds "${STORAGE_BACKPRESSURE_AUTOPILOT_WAIT_TIMEOUT_SECONDS:-900}" \

@@ -35,6 +35,111 @@ def _safe_float(raw: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _queue_watermarks(
+    *,
+    core_pending_lines: int,
+    deferred_pending_lines: int,
+    cold_pending_lines: int,
+    support_pending_lines: int,
+    stale_stage_pending_lines: int,
+) -> dict[str, Any]:
+    rows = {
+        "core": {
+            "pending_lines": int(core_pending_lines),
+            "target": 5000,
+            "elevated_threshold": 15000,
+            "hard_threshold": 50000,
+        },
+        "deferred": {
+            "pending_lines": int(deferred_pending_lines),
+            "target": 25000,
+            "elevated_threshold": 100000,
+            "hard_threshold": 250000,
+        },
+        "cold": {
+            "pending_lines": int(cold_pending_lines),
+            "target": 5000,
+            "elevated_threshold": 10000,
+            "hard_threshold": 100000,
+        },
+        "support_telemetry": {
+            "pending_lines": int(support_pending_lines),
+            "target": 5000,
+            "elevated_threshold": 50000,
+            "hard_threshold": 150000,
+        },
+        "stale_stage": {
+            "pending_lines": int(stale_stage_pending_lines),
+            "target": 0,
+            "elevated_threshold": 10000,
+            "hard_threshold": 100000,
+        },
+    }
+    breached = {"hard": [], "elevated": [], "target": []}
+    for lane, row in rows.items():
+        pending = int(row["pending_lines"])
+        target = int(row["target"])
+        elevated_threshold = int(row["elevated_threshold"])
+        hard_threshold = int(row["hard_threshold"])
+        row["target_breached"] = pending > target
+        row["elevated_breached"] = pending >= elevated_threshold
+        row["hard_breached"] = pending >= hard_threshold
+        row["distance_to_target"] = max(pending - target, 0)
+        if row["hard_breached"]:
+            breached["hard"].append(lane)
+        if row["elevated_breached"]:
+            breached["elevated"].append(lane)
+        if row["target_breached"]:
+            breached["target"].append(lane)
+    overall = "ready"
+    if breached["hard"]:
+        overall = "blocked"
+    elif breached["elevated"]:
+        overall = "degraded"
+    elif breached["target"]:
+        overall = "watch"
+    return {
+        "overall_status": overall,
+        "lanes": rows,
+        "breaches": breached,
+    }
+
+
+def _writer_shedding_contract(
+    *,
+    profile_name: str,
+    route_drift: bool,
+    queue_watermarks: dict[str, Any],
+) -> dict[str, Any]:
+    hard_breaches = list(((queue_watermarks.get("breaches") or {}).get("hard") or []))
+    elevated_breaches = list(((queue_watermarks.get("breaches") or {}).get("elevated") or []))
+    level = "normal"
+    if profile_name == "critical_backpressure":
+        level = "protect_core"
+    elif profile_name == "elevated_backpressure":
+        level = "trim_background"
+    active = level != "normal" or bool(route_drift)
+    notes = []
+    if route_drift:
+        notes.append("writer route drift keeps live writes pinned to the routed repo DB path until storage alignment is restored")
+    if "support_telemetry" in hard_breaches or "support_telemetry" in elevated_breaches:
+        notes.append("support telemetry should stay shard-isolated so watchdog chatter cannot crowd the core writer")
+    if "stale_stage" in hard_breaches or "stale_stage" in elevated_breaches:
+        notes.append("stale-stage backlog should be reaped or archived instead of treated as hot-path ingestion")
+    return {
+        "active": active,
+        "level": level,
+        "freeze_cold_lanes": profile_name == "critical_backpressure",
+        "throttle_deferred_lanes": profile_name in {"critical_backpressure", "elevated_backpressure"},
+        "shed_support_telemetry": "support_telemetry" in hard_breaches or "support_telemetry" in elevated_breaches,
+        "suppress_verbose_decision_logs": profile_name in {"critical_backpressure", "elevated_backpressure"},
+        "route_drift_override": bool(route_drift),
+        "hard_breaches": hard_breaches,
+        "elevated_breaches": elevated_breaches,
+        "notes": notes,
+    }
+
+
 def _override_lines(profile_name: str, env_overrides: dict[str, str]) -> list[str]:
     lines = [
         "# Auto-managed by scripts/ops/ingestion_storage_governor.py",
@@ -305,7 +410,8 @@ def build_payload(
         _safe_int(failback.get("split_brain_conflicts"), 0),
         _safe_int(((split_brain.get("summary") or {}).get("unresolved_conflicts")), 0),
     )
-    storage_external = bool(mount.get("external_available", False)) and str(mount.get("storage_mode") or failback.get("mode") or "") == "external"
+    storage_mode = str(mount.get("storage_mode") or failback.get("certified_mode") or failback.get("mode") or "")
+    storage_external = bool(mount.get("external_available", False)) and storage_mode in {"external", "external_curated"}
     route_drift = bool(
         storage_external
         and split_brain_conflicts == 0
@@ -332,6 +438,18 @@ def build_payload(
         deferred_pending_lines=deferred_pending_lines,
         route_drift=route_drift,
     )
+    queue_watermarks = _queue_watermarks(
+        core_pending_lines=core_pending_lines,
+        deferred_pending_lines=deferred_pending_lines,
+        cold_pending_lines=cold_pending_lines,
+        support_pending_lines=support_pending_lines,
+        stale_stage_pending_lines=stale_stage_pending_lines,
+    )
+    writer_shedding = _writer_shedding_contract(
+        profile_name=profile_name,
+        route_drift=route_drift,
+        queue_watermarks=queue_watermarks,
+    )
     top_actions: list[str] = []
     if route_drift:
         top_actions.append("normalize SQL linker back to the routed primary DB path and restart the writer service")
@@ -347,6 +465,10 @@ def build_payload(
         top_actions.append("run aggressive explanation and attribution shard hot retention until retention debt is near zero")
     if hard_gate:
         top_actions.append("treat storage pressure as maintenance priority over new training and research work")
+    if bool(writer_shedding.get("shed_support_telemetry", False)):
+        top_actions.append("shed support telemetry into shard-isolated writes until support backlog drops under its elevated watermark")
+    if bool(writer_shedding.get("freeze_cold_lanes", False)):
+        top_actions.append("keep cold-lane ingestion frozen while the core queue remains under active protection")
 
     notes = [
         "the governor writes a dedicated storage-pressure override so manual storage route switches can still live in config/.env.storage_override",
@@ -384,12 +506,14 @@ def build_payload(
             "stale_stage_pending_lines": int(stale_stage_pending_lines),
             "retention_debt_gb": round(float(retention_debt_gb), 3),
         },
+        "queue_watermarks": queue_watermarks,
         "sql_primary_db": {
             "current_path": current_primary_db,
             "current_realpath": current_primary_db_realpath,
             "target_path": str(project_root / "data" / "jsonl_link.sqlite3"),
             "route_drift": bool(route_drift),
         },
+        "writer_shedding": writer_shedding,
         "throttle_controls": {
             "deferred_files_budget": _safe_int(env_overrides.get("INGEST_MAX_DEFERRED_FILES"), 0),
             "cold_files_budget": _safe_int(env_overrides.get("JSONL_SQL_MAX_COLD_LANE_FILES"), 0),

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,11 +15,38 @@ DEFAULT_MARKDOWN_PATH = PROJECT_ROOT / "exports" / "reports" / "operator" / "ope
 
 
 def _load_json(path: Path) -> dict[str, Any]:
+    candidates = [path]
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        rel_path = path.relative_to(PROJECT_ROOT)
     except Exception:
-        return {}
-    return payload if isinstance(payload, dict) else {}
+        rel_path = None
+    if rel_path is not None and rel_path.parts and rel_path.parts[0] in {"data", "decisions", "decision_explanations", "exports", "governance", "logs", "models"}:
+        candidates.append(PROJECT_ROOT / "local_fallback_storage" / rel_path)
+        external_root = Path(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "/Volumes/BOT_LOGS/schwab_trading_bot")).expanduser()
+        candidates.append(external_root / rel_path)
+
+    best_payload: dict[str, Any] = {}
+    best_mtime = -1.0
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        try:
+            mtime = candidate.stat().st_mtime
+        except Exception:
+            mtime = 0.0
+        if mtime >= best_mtime:
+            best_payload = payload
+            best_mtime = mtime
+    return best_payload
 
 
 def _ordered_unique(items: list[str]) -> list[str]:
@@ -45,6 +73,23 @@ def _render_markdown(payload: dict[str, Any]) -> str:
     ]
     for item in payload.get("recommended_actions") or []:
         lines.append(f"- {item}")
+    scores = payload.get("maturity_scores") if isinstance(payload.get("maturity_scores"), dict) else {}
+    if scores:
+        lines.extend(["", "## Maturity Scores", ""])
+        for key in (
+            "feature_sophistication",
+            "data_collection_breadth",
+            "infrastructure_control_plane",
+            "operational_cleanliness",
+            "unattended_autonomy",
+        ):
+            if key in scores:
+                lines.append(f"- `{key}`: `{scores.get(key)}`")
+    hardening = payload.get("hardening_scorecard") if isinstance(payload.get("hardening_scorecard"), dict) else {}
+    if hardening:
+        lines.extend(["", "## Hardening Scorecard", ""])
+        for key, value in hardening.items():
+            lines.append(f"- `{key}`: `{int(bool(value))}`")
     lines.extend(["", "## Upgrade Lanes", ""])
     for key, row in (payload.get("upgrade_lanes") or {}).items():
         if not isinstance(row, dict):
@@ -109,6 +154,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     roster_expansion = _load_json(health_root / "roster_expansion_slots_latest.json")
     roster_resilience = _load_json(health_root / "roster_resilience_planner_latest.json")
     chaos_drills = _load_json(health_root / "chaos_drill_coordinator_latest.json")
+    master_infra = _load_json(health_root / "master_infrastructure_supervisor_latest.json")
 
     attention = runtime.get("overall", {}).get("attention") if isinstance(runtime.get("overall"), dict) else []
     recommended_actions = _ordered_unique(
@@ -146,6 +192,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         + list((release_freeze.get("recommended_actions") or [])[:2])
         + list((roster_resilience.get("recommended_actions") or [])[:2])
         + list((chaos_drills.get("recommended_actions") or [])[:2])
+        + list((master_infra.get("operator_followups") or [])[:3])
     )[:14]
 
     overall_status = "ready"
@@ -189,6 +236,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         status = str((row or {}).get("overall_status") or "")
         if status in {"blocked", "degraded"}:
             overall_status = "degraded"
+    if str(master_infra.get("overall_status") or "") in {"blocked", "degraded"}:
+        overall_status = "degraded"
 
     upgrade_lanes = {
         "storage_split": {
@@ -271,6 +320,15 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "operator_cockpit": {
             "status": overall_status,
             "summary": "unified control plane",
+        },
+        "master_infrastructure_supervisor": {
+            "status": str(master_infra.get("overall_status") or "missing"),
+            "summary": (
+                f"posture={str(((master_infra.get('platform_posture') or {}).get('operating_posture') or 'unknown'))} "
+                f"operational_cleanliness={float(((master_infra.get('maturity_scores') or {}).get('operational_cleanliness', 0.0) or 0.0)):.2f}"
+                if master_infra
+                else ""
+            ),
         },
     }
     service_upgrade_lanes = service_control_plane.get("upgrade_lanes") if isinstance(service_control_plane.get("upgrade_lanes"), dict) else {}
@@ -437,7 +495,22 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "calibration_abstention_control": {"status": str(calibration.get("overall_status") or "")},
             "paper_execution_calibration": {"status": str(paper_calibration.get("overall_status") or "missing") if paper_calibration else "missing"},
             "daily_verify_auto_remediation_bot": {"status": str(remediation.get("overall_status") or "")},
+            "master_infrastructure_supervisor": {"status": str(master_infra.get("overall_status") or "missing") if master_infra else "missing"},
+            "process_lane_ownership": {
+                "status": next(
+                    (
+                        str(row.get("status") or "")
+                        for row in (master_infra.get("checks") or [])
+                        if isinstance(row, dict) and row.get("name") == "process_lane_ownership"
+                    ),
+                    "missing",
+                )
+                if master_infra
+                else "missing"
+            },
         },
+        "maturity_scores": master_infra.get("maturity_scores") if isinstance(master_infra.get("maturity_scores"), dict) else {},
+        "hardening_scorecard": master_infra.get("hardening_scorecard") if isinstance(master_infra.get("hardening_scorecard"), dict) else {},
     }
     return payload
 

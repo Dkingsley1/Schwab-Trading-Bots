@@ -15,9 +15,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.runtime_python import resolve_runtime_python
+from core.runtime_python import resolve_training_python
 
-VENV_PY = resolve_runtime_python(PROJECT_ROOT)
+VENV_PY = resolve_training_python(PROJECT_ROOT)
 
 
 def _now_utc() -> str:

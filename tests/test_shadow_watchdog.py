@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from scripts.shadow_watchdog import (
     Target,
+    _build_default_schwab_cmd,
     _can_restart,
     _decode_start_cmd,
     _evaluate_halt_auto_clear,
@@ -147,6 +148,14 @@ def test_decode_start_cmd_accepts_json_argv() -> None:
     ]
 
 
+def test_build_default_schwab_cmd_uses_all_sleeves_parent() -> None:
+    cmd = _build_default_schwab_cmd(simulate=False)
+
+    assert "run_all_sleeves.py" in cmd
+    assert "--with-aggressive-modes" in cmd
+    assert "run_parallel_shadows.py" not in cmd
+
+
 def test_decode_start_cmd_recovers_legacy_unquoted_space_path() -> None:
     raw = (
         "/tmp/New project/.venv312/bin/python "
@@ -277,3 +286,40 @@ def test_aggressive_modes_target_is_not_allowed_to_be_processless() -> None:
     )
 
     assert target.allow_processless_heartbeat_live is False
+
+
+def test_tripwire_suppresses_parent_live_heartbeat_loss(tmp_path, monkeypatch) -> None:
+    from scripts import shadow_watchdog
+
+    events = tmp_path / "tripwire_events.jsonl"
+    latest = tmp_path / "tripwire_latest.json"
+    monkeypatch.setattr(shadow_watchdog, "TRIPWIRE_EVENTS", events)
+    monkeypatch.setattr(shadow_watchdog, "TRIPWIRE_LATEST", latest)
+
+    target = Target(
+        name="schwab_parallel",
+        match="scripts/run_all_sleeves.py",
+        start_cmd="echo hi",
+        heartbeat_glob=str(tmp_path / "missing_*.json"),
+        heartbeat_stale_seconds=180,
+        suppress_tripwire_when_parent_live=True,
+    )
+
+    payload = shadow_watchdog._tripwire_payload(
+        [target],
+        [
+            {
+                "name": "schwab_parallel",
+                "process_live": True,
+                "heartbeat_lost": True,
+                "match_count": 1,
+                "action": "none",
+                "note": "process_live,heartbeat_ok=False",
+            }
+        ],
+        enabled=True,
+        streak_threshold=1,
+    )
+
+    assert payload["active"] is False
+    assert target.tripwire_open is False

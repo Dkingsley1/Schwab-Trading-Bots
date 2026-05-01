@@ -202,3 +202,42 @@ def test_build_manifest_marks_stale_event_store_as_not_ready(tmp_path: Path) -> 
     assert payload["ok"] is True
     assert payload["strict_ok"] is False
     assert payload["point_in_time_contract"]["event_store_fresh"] is False
+
+
+def test_build_manifest_exposes_seed_ready_when_snapshot_contract_is_strong_but_event_store_is_missing(tmp_path: Path) -> None:
+    fresh_ts = datetime.now(timezone.utc).isoformat()
+    _write_json(
+        tmp_path / "governance" / "health" / "runtime_training_snapshot_latest.json",
+        {
+            "timestamp_utc": fresh_ts,
+            "row_count": 500,
+            "sequence_count": 10,
+            "rows_path": str(tmp_path / "exports" / "training" / "runtime.jsonl"),
+            "rows_sha256": "rows-hash",
+            "coverage": {"top_modes": [{"mode": "shadow_intraday_aggressive_equities", "row_count": 500}]},
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "feature_versions" / "latest.json",
+        {
+            "file_hashes": {"runtime_training_rows": "abc"},
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "snapshot_coverage_latest.json",
+        {
+            "coverage_ratio": 1.0,
+            "min_coverage_ratio": 0.75,
+            "rows_with_snapshot_id": 500,
+            "unique_snapshot_ids": 500,
+        },
+    )
+
+    payload = src.build_manifest(tmp_path)
+
+    assert payload["ok"] is True
+    assert payload["strict_ok"] is False
+    assert payload["strict_seed_ready"] is True
+    assert payload["strict_status"] == "degraded"
+    assert payload["point_in_time_contract"]["seed_ready"] is True
+    assert payload["label_contract"]["seed_ready"] is True

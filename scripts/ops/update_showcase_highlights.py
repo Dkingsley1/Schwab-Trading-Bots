@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import html
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,7 @@ GENERATED_ROOT = DOCS_ROOT / "generated"
 README_PATH = PROJECT_ROOT / "README.md"
 HIGHLIGHTS_JSON = GENERATED_ROOT / "highlights_latest.json"
 HIGHLIGHTS_MD = GENERATED_ROOT / "highlights_latest.md"
+SPECIAL_FEATURES_HTML = GENERATED_ROOT / "special_features_latest.html"
 README_START = "<!-- SHOWCASE_HIGHLIGHTS_START -->"
 README_END = "<!-- SHOWCASE_HIGHLIGHTS_END -->"
 
@@ -176,6 +178,7 @@ def _artifact_snapshot() -> dict[str, Any]:
     chaos_drills = _safe_load_json(health_dir / "chaos_drill_coordinator_latest.json", default={})
     promotion_autopilot = _safe_load_json(champion_dir / "promotion_autopilot_packet_latest.json", default={})
     daily_ops = _safe_load_json(reports_dir / "daily_ops_report_latest.json", default={})
+    macro_event = _safe_load_json(health_dir / "macro_event_intelligence_latest.json", default={})
     return {
         "crypto_context": crypto_ctx if isinstance(crypto_ctx, Mapping) else {},
         "divergence": divergence if isinstance(divergence, Mapping) else {},
@@ -198,6 +201,7 @@ def _artifact_snapshot() -> dict[str, Any]:
         "chaos_drills": chaos_drills if isinstance(chaos_drills, Mapping) else {},
         "promotion_autopilot": promotion_autopilot if isinstance(promotion_autopilot, Mapping) else {},
         "daily_ops": daily_ops if isinstance(daily_ops, Mapping) else {},
+        "macro_event": macro_event if isinstance(macro_event, Mapping) else {},
     }
 
 
@@ -215,11 +219,119 @@ def _special_features_map(artifacts: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
+def _special_feature_details(artifacts: Mapping[str, Any], special_features: Mapping[str, str]) -> dict[str, dict[str, Any]]:
+    portable_brain = artifacts.get("portable_brain") if isinstance(artifacts.get("portable_brain"), Mapping) else {}
+    switchboard = artifacts.get("switchboard") if isinstance(artifacts.get("switchboard"), Mapping) else {}
+    autonomy_control = artifacts.get("autonomy_control") if isinstance(artifacts.get("autonomy_control"), Mapping) else {}
+    process_watchdog = artifacts.get("process_watchdog") if isinstance(artifacts.get("process_watchdog"), Mapping) else {}
+    notifications = artifacts.get("notifications") if isinstance(artifacts.get("notifications"), Mapping) else {}
+    incident_review = artifacts.get("incident_review") if isinstance(artifacts.get("incident_review"), Mapping) else {}
+    chaos_drills = artifacts.get("chaos_drills") if isinstance(artifacts.get("chaos_drills"), Mapping) else {}
+    macro_event = artifacts.get("macro_event") if isinstance(artifacts.get("macro_event"), Mapping) else {}
+
+    host_contract = portable_brain.get("host_contract") if isinstance(portable_brain.get("host_contract"), Mapping) else {}
+    adaptation_contract = portable_brain.get("adaptation_contract") if isinstance(portable_brain.get("adaptation_contract"), Mapping) else {}
+    native_contract = portable_brain.get("native_contract") if isinstance(portable_brain.get("native_contract"), Mapping) else {}
+    portable_contract = portable_brain.get("portable_contract") if isinstance(portable_brain.get("portable_contract"), Mapping) else {}
+    cross_platform_proof = portable_brain.get("cross_platform_proof_node") if isinstance(portable_brain.get("cross_platform_proof_node"), Mapping) else {}
+    nightly_proof = portable_brain.get("nightly_proof_contract") if isinstance(portable_brain.get("nightly_proof_contract"), Mapping) else {}
+
+    switchboard_modes = switchboard.get("modes") if isinstance(switchboard.get("modes"), list) else []
+    switchboard_counts = switchboard.get("mode_counts") if isinstance(switchboard.get("mode_counts"), Mapping) else {}
+    control_surface = switchboard.get("control_surface") if isinstance(switchboard.get("control_surface"), Mapping) else {}
+    active_modes = [str(row.get("mode") or "") for row in switchboard_modes if isinstance(row, Mapping) and bool(row.get("active"))]
+    ready_modes = [str(row.get("mode") or "") for row in switchboard_modes if isinstance(row, Mapping) and bool(row.get("ready"))]
+
+    component_statuses = autonomy_control.get("component_statuses") if isinstance(autonomy_control.get("component_statuses"), Mapping) else {}
+    lane_recovery = autonomy_control.get("lane_recovery_playbooks") if isinstance(autonomy_control.get("lane_recovery_playbooks"), Mapping) else {}
+    drill_program = chaos_drills.get("drill_program") if isinstance(chaos_drills.get("drill_program"), Mapping) else {}
+
+    restart_storms = process_watchdog.get("restart_storms") if isinstance(process_watchdog.get("restart_storms"), list) else []
+    watchdog_status = process_watchdog.get("status") if isinstance(process_watchdog.get("status"), list) else []
+    watchdog_healthy = sum(
+        1
+        for row in watchdog_status
+        if isinstance(row, Mapping) and (int(_safe_float(row.get("running"), 0.0)) + int(_safe_float(row.get("alt_running"), 0.0)) > 0) and bool(row.get("heartbeat_ok", False))
+    )
+
+    feature_labels = {
+        "adaptive_apple_silicon_brain": "Adaptive Apple Silicon Brain",
+        "three_mode_switchboard": "Three-Mode Switchboard",
+        "event_to_trade_intelligence": "Event-to-Trade Intelligence",
+        "self_healing_ops_plane": "Self-Healing Ops Plane",
+        "portable_brain_contract": "Portable Brain Contract",
+    }
+
+    details = {
+        "adaptive_apple_silicon_brain": {
+            "label": feature_labels["adaptive_apple_silicon_brain"],
+            "summary": str(special_features.get("adaptive_apple_silicon_brain") or ""),
+            "why_it_matters": "This matters because Apple Silicon unified memory gives the live stack one shared CPU and GPU pool for feature windows, broker-context caches, and MLX inference, so the same code can stay responsive on a MacBook Air and then scale up hard on Max-class machines without copy-heavy rewrites.",
+            "current_watch_item": f"Portable posture is still strongest on native Apple Silicon; non-Mac proof is `{cross_platform_proof.get('status', 'unknown')}` and still about replay parity rather than full live parity.",
+            "proof_points": [
+                f"Recognized host `{host_contract.get('chip', 'unknown chip')}` on `{host_contract.get('system', 'unknown os')}` with profile `{host_contract.get('host_profile', 'unknown')}`.",
+                f"Memory architecture is `{host_contract.get('memory_architecture', 'unknown')}` with shared CPU/GPU pool `{host_contract.get('shared_cpu_gpu_memory_pool', False)}`.",
+                str(host_contract.get("memory_competitive_advantage") or "Apple Silicon memory advantage details are not yet published in the host contract."),
+                f"Recommended runtime posture is `{portable_brain.get('recommended_runtime_mode', 'unknown')}` with backend `{native_contract.get('effective_backend', portable_brain.get('recommended_backend', 'unknown'))}`.",
+                f"Host override file is `{('present' if bool(adaptation_contract.get('override_exists', False)) else 'missing')}` at `{adaptation_contract.get('override_path', 'unknown')}`.",
+            ],
+        },
+        "three_mode_switchboard": {
+            "label": feature_labels["three_mode_switchboard"],
+            "summary": str(special_features.get("three_mode_switchboard") or ""),
+            "why_it_matters": "This is the control surface that keeps the same trading brain coherent across shadow, paper, and live instead of forcing three separate systems to drift apart over time.",
+            "current_watch_item": f"Runtime clearance is still `{control_surface.get('clearance_state', 'unknown')}`, which means the switchboard is operationally honest about when live should stay read-only.",
+            "proof_points": [
+                f"Switchboard currently tracks `{_safe_int(switchboard_counts.get('active'), 0)}` active modes and `{_safe_int(switchboard_counts.get('ready'), 0)}` ready modes.",
+                f"Active modes: `{', '.join(active_modes) or 'none'}`; ready modes: `{', '.join(ready_modes) or 'none'}`.",
+                f"Control surface clearance is `{control_surface.get('clearance_state', 'unknown')}` with live read-only `{control_surface.get('live_lane_should_be_read_only', False)}`.",
+            ],
+        },
+        "event_to_trade_intelligence": {
+            "label": feature_labels["event_to_trade_intelligence"],
+            "summary": str(special_features.get("event_to_trade_intelligence") or ""),
+            "why_it_matters": "It gives the platform a route from macro hearings, policy streams, and transcripts into market-aware stance, relevance, and bulletin surfaces that the rest of the brain can actually use.",
+            "current_watch_item": f"Current transcript pipeline is `{macro_event.get('transcript_quality', 'unknown')}` and should keep moving toward fully clean replay-grade transcripts for every event.",
+            "proof_points": [
+                f"Latest macro event status is `{macro_event.get('overall_status', 'missing')}` from `{macro_event.get('source', 'unknown source')}` with speaker `{macro_event.get('speaker', 'unknown speaker')}`.",
+                f"Transcript quality is `{macro_event.get('transcript_quality', 'unknown')}` at `{_safe_float(macro_event.get('transcript_quality_score'), 0.0):.4f}`, cue match `{_safe_float(macro_event.get('cue_match_score'), 0.0):.4f}`.",
+                f"Market read is `{macro_event.get('stance', 'unknown')}` with sentiment `{_safe_float(macro_event.get('sentiment_hint'), 0.0):.4f}` and relevance `{macro_event.get('market_relevance', 'unknown')}`.",
+            ],
+        },
+        "self_healing_ops_plane": {
+            "label": feature_labels["self_healing_ops_plane"],
+            "summary": str(special_features.get("self_healing_ops_plane") or ""),
+            "why_it_matters": "It is the difference between a platform that merely runs and one that can diagnose pressure, throttle itself, freeze bad lanes, and preserve operator trust while the rest of the stack keeps moving.",
+            "current_watch_item": f"Incident review is currently `{incident_review.get('overall_status', 'unknown') or ('review_required' if incident_review.get('review_required') else 'ready')}`, so the self-healing story is strong but still not fully frictionless.",
+            "proof_points": [
+                f"Autonomy score is `{_safe_float(autonomy_control.get('autonomy_score'), 0.0):.2f}/100` with `{_safe_int(autonomy_control.get('autonomous_repair_path_count'), 0)}` autonomous repair paths.",
+                f"Triggered playbooks: `{_safe_int(lane_recovery.get('triggered_playbook_count'), 0)}`; notification ladder `{notifications.get('overall_status', 'unknown')}`; incident review `{incident_review.get('overall_status', 'unknown') or ('review_required' if incident_review.get('review_required') else 'ready')}`.",
+                f"Process watchdog shows `{watchdog_healthy}/{len(watchdog_status)}` healthy targets and `{len(restart_storms)}` restart storms; chaos drill score `{_safe_float(drill_program.get('program_score'), 0.0):.2f}`.",
+            ],
+        },
+        "portable_brain_contract": {
+            "label": feature_labels["portable_brain_contract"],
+            "summary": str(special_features.get("portable_brain_contract") or ""),
+            "why_it_matters": "This is the selling point that keeps the platform from being a dead-end Mac-only build: Apple Silicon stays first-class for the live brain, but the runtime now has an explicit broker-agnostic contract for replay, research, and proof on Linux and Windows.",
+            "current_watch_item": f"Next portability milestone is `{portable_brain.get('next_step', 'unknown')}`, which is still the bridge between strong design and undeniable parity proof.",
+            "proof_points": [
+                f"Native contract is `{native_contract.get('mode', 'unknown')}` on backend `{native_contract.get('effective_backend', 'unknown')}`, portable contract is `{portable_contract.get('mode', 'unknown')}` on `{portable_contract.get('effective_backend', 'unknown')}`.",
+                "Broker-specific news, options, and calendar context now sit behind adapter seams instead of being hardwired to one brokerage client.",
+                f"Apple Silicon keeps a live-trading edge through `{host_contract.get('memory_architecture', 'unknown')}` memory architecture while the proof node preserves Linux and Windows replay portability.",
+                f"Cross-platform proof node is `{cross_platform_proof.get('status', 'unknown')}` and nightly parity support is `{nightly_proof.get('ready', False)}`.",
+                f"Linux and Windows deployment matrix entries are present, with next step `{portable_brain.get('next_step', 'unknown')}`.",
+            ],
+        },
+    }
+    return details
+
+
 def _build_snapshot() -> dict[str, Any]:
     bot_summary = _active_bot_summary()
     lane_summary = _live_lane_summary()
     artifacts = _artifact_snapshot()
     special_features = _special_features_map(artifacts)
+    special_feature_details = _special_feature_details(artifacts, special_features)
     crypto_ctx = artifacts["crypto_context"]
     divergence = artifacts["divergence"]
     correlation = artifacts["correlation"]
@@ -412,6 +524,7 @@ def _build_snapshot() -> dict[str, Any]:
         "autonomy_summary": autonomy_summary,
         "architecture_summary": architecture_summary,
         "special_features": special_features,
+        "special_feature_details": special_feature_details,
         "highlights": highlights,
     }
 
@@ -421,6 +534,7 @@ def _render_highlights_markdown(snapshot: Mapping[str, Any]) -> str:
     lane_summary = snapshot["lane_summary"]
     artifacts = snapshot["artifacts"]
     special_features = snapshot.get("special_features", {})
+    special_feature_details = snapshot.get("special_feature_details", {}) if isinstance(snapshot.get("special_feature_details"), Mapping) else {}
     readiness_summary = snapshot.get("readiness_summary", {}) if isinstance(snapshot.get("readiness_summary"), Mapping) else {}
     training_summary = snapshot.get("training_summary", {}) if isinstance(snapshot.get("training_summary"), Mapping) else {}
     pytorch_summary = snapshot.get("pytorch_summary", {}) if isinstance(snapshot.get("pytorch_summary"), Mapping) else {}
@@ -460,6 +574,12 @@ def _render_highlights_markdown(snapshot: Mapping[str, Any]) -> str:
     lines.extend(
         [
             "",
+            "## Executive Summary",
+            "",
+            "- These features matter because they describe the platform’s real differentiators: unified-memory-aware runtime tuning on Apple Silicon, one control surface across shadow/paper/live, event-to-trade intelligence, self-healing operational control, and a broker-agnostic portability contract.",
+            "- The proof is intended to be operational rather than promotional. If a feature is still blocked, replay-only, or waiting on better parity proof, the document says so directly.",
+            "- Read the feature proof notes as both a strength map and a watch list: they show what is already impressive and what still needs to mature to make the feature impossible to hand-wave away.",
+            "",
             "## Real-World Readiness",
             "",
             f"- Institutional posture: `{readiness_summary.get('institutional_status', 'unknown')}` at `{readiness_summary.get('institutional_score', 0.0):.2f}/100`.",
@@ -476,6 +596,35 @@ def _render_highlights_markdown(snapshot: Mapping[str, Any]) -> str:
         lines.extend(f"- {detail}" for detail in special_features.values())
     else:
         lines.append("- No special feature snapshot is currently available.")
+    if isinstance(special_feature_details, Mapping) and special_feature_details:
+        lines.extend(["", "## Special Feature Proof Notes", ""])
+        for feature in special_feature_details.values():
+            if not isinstance(feature, Mapping):
+                continue
+            lines.append(f"### {feature.get('label', 'Feature')}")
+            summary = str(feature.get("summary") or "").strip()
+            if summary:
+                lines.append(f"- {summary}")
+            why_it_matters = str(feature.get("why_it_matters") or "").strip()
+            if why_it_matters:
+                lines.append(f"- Why it matters: {why_it_matters}")
+            for point in feature.get("proof_points", []) if isinstance(feature.get("proof_points"), list) else []:
+                lines.append(f"- {point}")
+            current_watch_item = str(feature.get("current_watch_item") or "").strip()
+            if current_watch_item:
+                lines.append(f"- Current watch item: {current_watch_item}")
+            lines.append("")
+    lines.extend(
+        [
+            "## Next Proof Targets",
+            "",
+            "- Reduce the data-plane drag so autonomy and runtime-separation proofs are not still competing with queue pressure.",
+            "- Keep pushing portability from strong design into undeniable parity by running more non-Mac replay and parity checks.",
+            "- Tighten transcript quality and event replay quality so Event-to-Trade Intelligence stays convincing on both live and replay paths.",
+            "- Turn the current proof surfaces into a stronger portfolio of stable, repeatable reports rather than one-off wins.",
+            "",
+        ]
+    )
     lines.extend(["", "## Current Active Lineup", ""])
     if top_bots:
         lines.extend(
@@ -511,6 +660,290 @@ def _render_highlights_markdown(snapshot: Mapping[str, Any]) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def _render_special_features_html(snapshot: Mapping[str, Any]) -> str:
+    bot_summary = snapshot["bot_summary"]
+    lane_summary = snapshot["lane_summary"]
+    readiness_summary = snapshot.get("readiness_summary", {}) if isinstance(snapshot.get("readiness_summary"), Mapping) else {}
+    training_summary = snapshot.get("training_summary", {}) if isinstance(snapshot.get("training_summary"), Mapping) else {}
+    pytorch_summary = snapshot.get("pytorch_summary", {}) if isinstance(snapshot.get("pytorch_summary"), Mapping) else {}
+    autonomy_summary = snapshot.get("autonomy_summary", {}) if isinstance(snapshot.get("autonomy_summary"), Mapping) else {}
+    architecture_summary = snapshot.get("architecture_summary", {}) if isinstance(snapshot.get("architecture_summary"), Mapping) else {}
+    special_features = snapshot.get("special_features", {}) if isinstance(snapshot.get("special_features"), Mapping) else {}
+    special_feature_details = snapshot.get("special_feature_details", {}) if isinstance(snapshot.get("special_feature_details"), Mapping) else {}
+    highlights = snapshot.get("highlights", []) if isinstance(snapshot.get("highlights"), list) else []
+    top_bots = bot_summary.get("top_active_bots", []) if isinstance(bot_summary.get("top_active_bots"), list) else []
+
+    feature_styles = ["teal", "blue", "gold", "purple", "green", "red"]
+    feature_labels = {
+        "adaptive_apple_silicon_brain": "Adaptive Apple Silicon Brain",
+        "three_mode_switchboard": "Three-Mode Switchboard",
+        "event_to_trade_intelligence": "Event-to-Trade Intelligence",
+        "self_healing_ops_plane": "Self-Healing Ops Plane",
+        "portable_brain_contract": "Portable Brain Contract",
+    }
+    feature_cards: list[str] = []
+    for idx, (key, detail) in enumerate(special_features.items()):
+        label = feature_labels.get(str(key), str(key).replace("_", " ").title())
+        style = feature_styles[idx % len(feature_styles)]
+        feature_detail = special_feature_details.get(str(key)) if isinstance(special_feature_details.get(str(key)), Mapping) else {}
+        proof_points = feature_detail.get("proof_points") if isinstance(feature_detail.get("proof_points"), list) else []
+        why_it_matters = str(feature_detail.get("why_it_matters") or "").strip()
+        current_watch_item = str(feature_detail.get("current_watch_item") or "").strip()
+        proof_html = ""
+        if proof_points:
+            proof_html = "<ul class='feature-points'>{}</ul>".format(
+                "".join(f"<li>{html.escape(str(point))}</li>" for point in proof_points[:4])
+            )
+        why_html = ""
+        if why_it_matters:
+            why_html = (
+                "<div class='feature-callout'>"
+                "<strong>Why it matters</strong>"
+                f"<p>{html.escape(why_it_matters)}</p>"
+                "</div>"
+            )
+        watch_html = ""
+        if current_watch_item:
+            watch_html = (
+                "<div class='feature-watch'>"
+                "<strong>Current watch item</strong>"
+                f"<p>{html.escape(current_watch_item)}</p>"
+                "</div>"
+            )
+        feature_cards.append(
+            "<section class='box {style}'>"
+            "<h3>{label}</h3>"
+            "<p>{detail}</p>"
+            "{why_html}"
+            "{proof_html}"
+            "{watch_html}"
+            "</section>".format(
+                style=style,
+                label=html.escape(label),
+                detail=html.escape(str(detail)),
+                why_html=why_html,
+                proof_html=proof_html,
+                watch_html=watch_html,
+            )
+        )
+
+    proof_rows = [
+        ("Live Readiness", f"{readiness_summary.get('live_score', 0.0):.2f}/100", readiness_summary.get("live_status", "unknown")),
+        ("Institutional Readiness", f"{readiness_summary.get('institutional_score', 0.0):.2f}/100", readiness_summary.get("institutional_status", "unknown")),
+        ("Autonomy Control", f"{autonomy_summary.get('autonomy_score', 0.0):.2f}/100", autonomy_summary.get("overall_status", "unknown")),
+        (
+            "Architecture Upgrades",
+            f"{_safe_int(architecture_summary.get('ready_count'), 0)}/{_safe_int(architecture_summary.get('upgrade_count'), 0)}",
+            f"host {architecture_summary.get('portable_host_profile', 'unknown')}",
+        ),
+        ("Active Bots", str(bot_summary.get("active_count", 0)), f"of {bot_summary.get('total_registered', 0)} registered"),
+        ("Running Lanes", str(lane_summary.get("running_count", 0)), f"of {lane_summary.get('lane_count', 0)} tracked"),
+        ("Training Lane", f"{training_summary.get('trained_count', 0)} trained / {training_summary.get('failure_count', 0)} failed", _fmt_age_hours(training_summary.get("age_hours"))),
+        ("PyTorch Sidecar", str(_safe_int(pytorch_summary.get("assist_candidate_count"), 0)), f"{_safe_int(pytorch_summary.get('runs_tracked'), 0)} tracked runs"),
+    ]
+    proof_cards = []
+    for idx, (label, value, detail) in enumerate(proof_rows):
+        style = feature_styles[idx % len(feature_styles)]
+        proof_cards.append(
+            "<section class='mini-box {style}'>"
+            "<h3>{label}</h3>"
+            "<div class='metric'>{value}</div>"
+            "<p>{detail}</p>"
+            "</section>".format(
+                style=style,
+                label=html.escape(str(label)),
+                value=html.escape(str(value)),
+                detail=html.escape(str(detail)),
+            )
+        )
+
+    executive_cards = [
+        (
+            "Why These Features Matter",
+            "The point is not that the platform has clever modules. The point is that the feature layer explains why the system is differentiated operationally: unified-memory-aware Apple Silicon tuning, one switchboard across modes, event-to-trade intelligence, self-healing ops, and a real broker-portable runtime contract.",
+        ),
+        (
+            "What Makes The Proof Worthy",
+            "Each feature is anchored to a live artifact, current score, or runtime contract. That keeps the report honest: if a surface is blocked, degraded, or still only proven in replay, the packet says so instead of pretending the feature is fully complete.",
+        ),
+        (
+            "How To Read This Packet",
+            "The proof strip gives current posture, the feature cards explain practical value, and the watch items tell you where the next quality bar still sits. That is what turns a feature list into an actual report.",
+        ),
+    ]
+    executive_html = "".join(
+        "<section class='brief-card'><h3>{}</h3><p>{}</p></section>".format(html.escape(title), html.escape(body))
+        for title, body in executive_cards
+    )
+    interpretation_cards = [
+        (
+            "Differentiation",
+            "The strongest features are the ones that combine architecture with lived proof: host-aware runtime tuning, a real multi-mode switchboard, and event ingestion that actually reaches market-relevant stance and relevance surfaces.",
+        ),
+        (
+            "Operational Honesty",
+            "The packet intentionally leaves the rough edges visible. If autonomy is still blocked or a portability surface is only replay-proven, that honesty makes the feature story more credible, not less.",
+        ),
+        (
+            "What Still Raises The Bar",
+            "The next level comes from steadier control-plane freedom, deeper portability proof, and better training/promotion health so the features read as durable operating strengths rather than ambitious modules.",
+        ),
+    ]
+    interpretation_html = "".join(
+        "<section class='brief-card'><h3>{}</h3><p>{}</p></section>".format(html.escape(title), html.escape(body))
+        for title, body in interpretation_cards
+    )
+    recommendations = [
+        (
+            "Make Portability Hard To Dismiss",
+            "Keep the Apple Silicon story, but add more frequent replay and parity evidence on non-Mac nodes so the portable-brain contract reads as a proven pathway rather than a smart intention.",
+        ),
+        (
+            "Reduce Operational Friction",
+            "Drive the autonomy blockers and incident-review drag down so the self-healing ops story is as strong in practice as it is in architecture.",
+        ),
+        (
+            "Make Macro Intelligence Cleaner",
+            "Push transcript cleanup and replay quality further so event-to-trade intelligence can hold up under scrutiny when live captions are messy or speaker flow changes quickly.",
+        ),
+    ]
+    recommendation_html = "".join(
+        "<section class='brief-card'><h3>{}</h3><p>{}</p></section>".format(html.escape(title), html.escape(body))
+        for title, body in recommendations
+    )
+    highlight_items = "".join(f"<li>{html.escape(str(item))}</li>" for item in highlights[:8]) or "<li>No highlight snapshot is currently available.</li>"
+    lineup_rows = []
+    for row in top_bots[:5]:
+        lineup_rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(row.get('bot_id', '')))}</td>"
+            f"<td>{html.escape(str(row.get('bot_role', '')))}</td>"
+            f"<td>{html.escape(_fmt_pct(_safe_float(row.get('test_accuracy'), 0.0)))}</td>"
+            f"<td>{html.escape(f'{_safe_float(row.get('quality_score'), 0.0):.3f}')}</td>"
+            "</tr>"
+        )
+    lineup_html = (
+        "<table><thead><tr><th>Bot</th><th>Role</th><th>Test Accuracy</th><th>Quality Score</th></tr></thead><tbody>"
+        + "".join(lineup_rows)
+        + "</tbody></table>"
+    ) if lineup_rows else "<p>No active lineup snapshot is currently available.</p>"
+
+    generated = _fmt_compact_timestamp(snapshot.get("generated_at_utc"))
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Special Features And Highlights</title>
+  <style>
+    :root {{
+      --bg: #eef2f3;
+      --card: #ffffff;
+      --ink: #1f2937;
+      --muted: #5b6471;
+      --line: #d7e0e6;
+      --teal: #2ca6a4;
+      --blue: #7fa8d1;
+      --gold: #d8a93a;
+      --red: #c65a5a;
+      --green: #1e8e5a;
+      --purple: #6b5bd2;
+      --shadow: 0 18px 40px rgba(21, 33, 52, 0.08);
+      --hero: linear-gradient(145deg, rgba(27, 146, 146, 0.12), rgba(107, 91, 210, 0.08) 55%, rgba(216, 169, 58, 0.12));
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; background: radial-gradient(circle at top left, #f8fbfc 0, var(--bg) 40%, #e8eeef 100%); color: var(--ink); font: 15px/1.6 "Avenir Next", "Segoe UI", sans-serif; }}
+    .page {{ padding: 28px 30px 36px; }}
+    .hero {{ background: var(--hero), var(--card); border: 1px solid rgba(128, 151, 166, 0.22); border-radius: 24px; padding: 24px 26px; box-shadow: var(--shadow); }}
+    h1, h2, h3 {{ margin: 0; }}
+    h1 {{ font: 700 31px/1.12 "Iowan Old Style", "Georgia", serif; letter-spacing: -0.02em; }}
+    h2 {{ font: 700 22px/1.18 "Iowan Old Style", "Georgia", serif; margin-bottom: 12px; }}
+    h3 {{ font-size: 18px; margin-bottom: 10px; }}
+    .eyebrow {{ display: inline-block; margin-bottom: 10px; color: var(--purple); font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }}
+    .sub {{ margin-top: 8px; color: var(--muted); max-width: 920px; }}
+    .section-card {{ margin-top: 18px; background: var(--card); border: 1px solid rgba(128, 151, 166, 0.2); border-radius: 22px; padding: 18px; box-shadow: var(--shadow); }}
+    .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }}
+    .feature-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }}
+    .brief-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }}
+    .brief-card {{ background: linear-gradient(180deg, #ffffff 0%, #fafcfd 100%); border-radius: 18px; border: 1px solid rgba(128, 151, 166, 0.18); padding: 18px; }}
+    .brief-card p {{ margin: 0; color: var(--muted); }}
+    .section-lead {{ color: var(--muted); margin-bottom: 12px; }}
+    .box, .mini-box {{ background: linear-gradient(180deg, #ffffff 0%, #fbfcfd 100%); border-radius: 18px; border: 2px solid var(--line); padding: 14px; }}
+    .box p, .mini-box p {{ margin: 0; color: var(--muted); }}
+    .mini-box .metric {{ font-size: 22px; font-weight: 700; margin-bottom: 8px; }}
+    .teal {{ border-color: var(--teal); }}
+    .blue {{ border-color: var(--blue); }}
+    .gold {{ border-color: var(--gold); }}
+    .purple {{ border-color: var(--purple); }}
+    .green {{ border-color: var(--green); }}
+    .red {{ border-color: var(--red); }}
+    ul {{ margin: 0; padding-left: 20px; }}
+    li {{ margin: 8px 0; }}
+    .feature-points {{ margin-top: 12px; padding-left: 18px; color: var(--ink); }}
+    .feature-points li {{ margin: 6px 0; color: var(--ink); }}
+    .feature-callout, .feature-watch {{ margin-top: 12px; padding: 12px 13px; border-radius: 14px; }}
+    .feature-callout {{ background: rgba(44, 166, 164, 0.08); }}
+    .feature-watch {{ background: rgba(198, 90, 90, 0.08); }}
+    .feature-callout strong, .feature-watch strong {{ display: block; margin-bottom: 6px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }}
+    .feature-callout p, .feature-watch p {{ color: var(--ink); }}
+    table {{ width: 100%; border-collapse: collapse; }}
+    th, td {{ border-bottom: 1px solid var(--line); padding: 10px 8px; text-align: left; vertical-align: top; }}
+    th {{ font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }}
+  </style>
+</head>
+<body>
+  <div class="page">
+    <section class="hero">
+      <div class="eyebrow">Executive Feature Report</div>
+      <h1>Special Features And Highlights</h1>
+      <p class="sub">Generated {html.escape(generated)}. This packet treats special features as operating capabilities, not marketing bullets. Each section explains why the feature matters, what evidence proves it is real today, and what still needs attention before the capability is fully mature.</p>
+      <p class="sub">The goal is to make the feature story worthy of the platform itself: differentiated where the architecture is actually uncommon, honest where the proofs are still incomplete, and useful to an operator who wants to understand why the system deserves trust.</p>
+    </section>
+    <section class="section-card">
+      <h2>Executive Summary</h2>
+      <div class="brief-grid">
+        {executive_html}
+      </div>
+    </section>
+    <section class="section-card">
+      <h2>Feature Proof Surface</h2>
+      <div class="feature-grid">
+        {''.join(feature_cards)}
+      </div>
+    </section>
+    <section class="section-card">
+      <h2>Platform Proof Snapshot</h2>
+      <div class="grid">
+        {''.join(proof_cards)}
+      </div>
+    </section>
+    <section class="section-card">
+      <h2>Interpretation Notes</h2>
+      <div class="section-lead">These notes explain how to read the feature set as a real capability stack rather than a list of isolated modules.</div>
+      <div class="brief-grid">
+        {interpretation_html}
+      </div>
+    </section>
+    <section class="section-card">
+      <h2>Current Highlights</h2>
+      <ul>{highlight_items}</ul>
+    </section>
+    <section class="section-card">
+      <h2>Current Active Lineup</h2>
+      {lineup_html}
+    </section>
+    <section class="section-card">
+      <h2>Recommendations</h2>
+      <div class="section-lead">These are the next upgrades most likely to make the feature story feel undeniable from top to bottom.</div>
+      <div class="brief-grid">
+        {recommendation_html}
+      </div>
+    </section>
+  </div>
+</body>
+</html>
+"""
 
 
 def _render_readme_snippet(snapshot: Mapping[str, Any]) -> str:
@@ -564,6 +997,7 @@ def main() -> int:
     GENERATED_ROOT.mkdir(parents=True, exist_ok=True)
     HIGHLIGHTS_JSON.write_text(json.dumps(snapshot, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
     HIGHLIGHTS_MD.write_text(_render_highlights_markdown(snapshot) + "\n", encoding="utf-8")
+    SPECIAL_FEATURES_HTML.write_text(_render_special_features_html(snapshot) + "\n", encoding="utf-8")
     _update_readme(_render_readme_snippet(snapshot))
     print(json.dumps({"ok": True, "generated_at_utc": snapshot["generated_at_utc"], "output": str(HIGHLIGHTS_MD)}, ensure_ascii=True))
     return 0

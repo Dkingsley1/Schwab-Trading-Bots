@@ -39,3 +39,38 @@ def test_schema_compatibility_allows_lineage_schema_population_from_zero_baselin
     assert payload["ok"] is True
     assert payload["failed_checks"] == []
     assert payload["drifted_fields"] == []
+
+
+def test_schema_compatibility_accepts_seed_ready_feature_store_when_no_drift_exists() -> None:
+    payload = src.build_payload(
+        feature_store_manifest={
+            "strict_ok": False,
+            "strict_seed_ready": True,
+            "lineage_schema_version": 0,
+            "point_in_time_contract": {
+                "complete": False,
+                "seed_ready": True,
+                "dataset_join_keys": ["snapshot_id", "symbol", "mode", "timestamp_utc"],
+                "event_join_keys": ["join_key", "category", "timestamp_utc"],
+            },
+            "label_contract": {
+                "feature_schema_version": "",
+                "horizons": {"primary_seconds": 0, "aux_seconds": 0},
+            },
+        },
+        promotion_packet={
+            "dataset": {
+                "dataset_join_keys": ["snapshot_id", "symbol", "mode", "timestamp_utc"],
+                "event_join_keys": ["join_key", "category", "timestamp_utc"],
+                "feature_schema_version": "",
+                "label_horizons": {"primary_seconds": 0, "aux_seconds": 0},
+                "lineage_schema_version": 0,
+            }
+        },
+        schema_migration_guard={"ok": False},
+    )
+
+    assert payload["ok"] is True
+    assert payload["overall_status"] == "degraded"
+    assert payload["compatibility_seed_ready"] is True
+    assert payload["failed_checks"] == []

@@ -16,6 +16,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.brokers.schwab.common import (
+    build_schwab_trader,
+    fetch_account_rows,
+    fetch_transactions_for_account,
+)
+
 
 DIVIDEND_DRIP_FEATURE_KEYS = [
     "dividend_drip_active_norm",
@@ -172,67 +178,11 @@ def _classify_dividend_transaction(row: Mapping[str, Any]) -> Optional[dict[str,
 
 
 def _fetch_accounts(client: Any) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    if not hasattr(client, "get_account_numbers"):
-        return rows
-    try:
-        response = client.get_account_numbers()
-        payload = response.json() if hasattr(response, "json") else response
-    except Exception:
-        payload = None
-    if not isinstance(payload, list):
-        return rows
-    for item in payload:
-        if not isinstance(item, Mapping):
-            continue
-        account_number = str(item.get("accountNumber") or "").strip()
-        account_hash = str(item.get("hashValue") or "").strip()
-        if account_hash:
-            rows.append({"account_number": account_number, "account_hash": account_hash})
-    return rows
+    return fetch_account_rows(client)
 
 
 def _fetch_transactions_for_account(client: Any, account_hash: str, start_dt: datetime, end_dt: datetime) -> list[dict[str, Any]]:
-    if not hasattr(client, "get_transactions"):
-        return []
-
-    rows: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str]] = set()
-    cursor = start_dt
-    window_days = 59
-
-    while cursor <= end_dt:
-        window_end = min(cursor + timedelta(days=window_days), end_dt)
-        attempts = [
-            {"account_hash": account_hash, "start_date": cursor, "end_date": window_end},
-            {"account_hash": account_hash, "startDate": cursor.isoformat(), "endDate": window_end.isoformat()},
-            {"account_hash": account_hash, "start_datetime": cursor, "end_datetime": window_end},
-        ]
-        payload = None
-        for kwargs in attempts:
-            try:
-                response = client.get_transactions(**kwargs)
-                obj = response.json() if hasattr(response, "json") else response
-                if isinstance(obj, list):
-                    payload = obj
-                    break
-            except Exception:
-                continue
-        if isinstance(payload, list):
-            for row in payload:
-                if not isinstance(row, Mapping):
-                    continue
-                tx_id = str(row.get("transactionId") or row.get("activityId") or "").strip()
-                tx_ts = str(row.get("transactionDate") or row.get("tradeDate") or row.get("settlementDate") or "").strip()
-                tx_type = str(row.get("type") or row.get("transactionSubType") or "").strip()
-                desc = str(row.get("description") or "").strip()
-                key = (tx_id, tx_ts, tx_type, desc)
-                if key in seen:
-                    continue
-                seen.add(key)
-                rows.append(dict(row))
-        cursor = window_end + timedelta(seconds=1)
-    return rows
+    return fetch_transactions_for_account(client, account_hash, start_dt, end_dt)
 
 
 def _load_transactions_from_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -462,16 +412,11 @@ def collect_dividend_drip_state(
         default_input = PROJECT_ROOT / "data" / "trade_history" / "trades_normalized.jsonl"
         transactions.extend(_load_transactions_from_jsonl(default_input))
     else:
-        from core.base_trader import BaseTrader
-
-        api_key = os.getenv("SCHWAB_API_KEY", "YOUR_KEY_HERE")
-        secret = os.getenv("SCHWAB_SECRET", "YOUR_SECRET_HERE")
-        redirect = os.getenv("SCHWAB_REDIRECT", "https://127.0.0.1:8182")
-        if api_key == "YOUR_KEY_HERE" or secret == "YOUR_SECRET_HERE":
-            raise RuntimeError("SCHWAB_API_KEY and SCHWAB_SECRET are required for DRIP sync")
-
-        trader = BaseTrader(api_key, secret, redirect, mode="shadow")
-        trader.token_path = str(PROJECT_ROOT / "token.json")
+        trader = build_schwab_trader(
+            PROJECT_ROOT,
+            mode="shadow",
+            missing_credentials_message="SCHWAB_API_KEY and SCHWAB_SECRET are required for DRIP sync",
+        )
         client = trader.authenticate()
         accounts = _fetch_accounts(client)
         end_dt = now_utc

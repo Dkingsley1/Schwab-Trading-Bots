@@ -15,6 +15,7 @@ IMESSAGE_ENABLED="${MAC_NOTIFICATION_WATCH_IMESSAGE_ENABLED:-0}"
 IMESSAGE_RECIPIENT="${MAC_NOTIFICATION_WATCH_IMESSAGE_RECIPIENT:-}"
 IMESSAGE_MIN_SEVERITY="${MAC_NOTIFICATION_WATCH_IMESSAGE_MIN_SEVERITY:-warn}"
 IMESSAGE_EVENT_ALLOWLIST="${MAC_NOTIFICATION_WATCH_IMESSAGE_EVENT_ALLOWLIST:-}"
+MIN_REPEAT_SECONDS="${MAC_NOTIFICATION_WATCH_MIN_REPEAT_SECONDS:-300}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -39,6 +40,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --imessage-event-allowlist)
       IMESSAGE_EVENT_ALLOWLIST="${2:-$IMESSAGE_EVENT_ALLOWLIST}"
+      shift
+      ;;
+    --min-repeat-seconds)
+      MIN_REPEAT_SECONDS="${2:-$MIN_REPEAT_SECONDS}"
       shift
       ;;
     *)
@@ -73,6 +78,7 @@ cat > "$PLIST_PATH" <<PLIST
     <key>MAC_NOTIFICATION_WATCH_IMESSAGE_RECIPIENT</key><string>$IMESSAGE_RECIPIENT</string>
     <key>MAC_NOTIFICATION_WATCH_IMESSAGE_MIN_SEVERITY</key><string>$IMESSAGE_MIN_SEVERITY</string>
     <key>MAC_NOTIFICATION_WATCH_IMESSAGE_EVENT_ALLOWLIST</key><string>$IMESSAGE_EVENT_ALLOWLIST</string>
+    <key>MAC_NOTIFICATION_WATCH_MIN_REPEAT_SECONDS</key><string>$MIN_REPEAT_SECONDS</string>
   </dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -95,4 +101,5 @@ echo "iMessage enabled: $IMESSAGE_ENABLED"
 echo "iMessage recipient configured: $([[ -n "$IMESSAGE_RECIPIENT" ]] && echo yes || echo no)"
 echo "iMessage min severity: $IMESSAGE_MIN_SEVERITY"
 echo "iMessage event allowlist: ${IMESSAGE_EVENT_ALLOWLIST:-ALL}"
+echo "Min repeat seconds: $MIN_REPEAT_SECONDS"
 echo "Logs: $OUT_LOG and $ERR_LOG"

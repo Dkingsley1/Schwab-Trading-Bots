@@ -17,6 +17,19 @@ fi
 
 export BOT_RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-$PROFILE}"
 
+set +e
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/maintenance_slot_guard.py" --slot one_numbers_refresh --begin
+guard_rc=$?
+set -e
+if [[ "$guard_rc" == "0" ]]; then
+  trap '"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/maintenance_slot_guard.py" --slot one_numbers_refresh --end >/dev/null 2>&1 || true' EXIT INT TERM
+else
+  if [[ "$guard_rc" == "${MAINTENANCE_SLOT_SKIP_EXIT_CODE:-75}" ]]; then
+    exit 0
+  fi
+  exit "$guard_rc"
+fi
+
 SESSION_TZ="${ONE_NUMBERS_SESSION_TIMEZONE:-${ONE_NUMBERS_REPORT_TIMEZONE:-America/New_York}}"
 SESSION_START="${ONE_NUMBERS_SESSION_START:-09:30}"
 SESSION_END="${ONE_NUMBERS_SESSION_END:-16:00}"
@@ -78,15 +91,13 @@ if (( summary_age_seconds >= ${target_interval:-300} )); then
   if ps -axo command | grep -q "[b]uild_one_numbers_report.py"; then
     echo "one_numbers_refresh skip refresh_already_running session_open=$session_open"
   else
-    if (( session_open == 1 )); then
-      "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_one_numbers_report.py" --lightweight --no-sql-write
-    else
-      "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_one_numbers_report.py"
-    fi
+    "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_one_numbers_report.py"
   fi
 else
   echo "one_numbers_refresh skip age_seconds=$summary_age_seconds target_interval=$target_interval session_open=$session_open"
 fi
+
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/one_numbers_regression_guard.py" --apply --json || true
 
 backpressure_age_seconds="$(age_seconds_for "$BACKPRESSURE_PATH")"
 if (( backpressure_age_seconds >= ${INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS:-300} )); then

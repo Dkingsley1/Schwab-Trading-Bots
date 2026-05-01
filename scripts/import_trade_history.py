@@ -10,6 +10,12 @@ if str(PROJECT_ROOT) not in os.sys.path:
     os.sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.base_trader import BaseTrader
+from scripts.brokers.schwab.common import (
+    build_schwab_trader,
+    fetch_account_rows,
+    fetch_transactions_for_account,
+    resp_json,
+)
 
 
 def _load_json(path: Path, default: Any) -> Any:
@@ -22,14 +28,7 @@ def _load_json(path: Path, default: Any) -> Any:
 
 
 def _resp_json(resp: Any) -> Any:
-    if resp is None:
-        return None
-    if hasattr(resp, "json"):
-        try:
-            return resp.json()
-        except Exception:
-            return None
-    return resp
+    return resp_json(resp)
 
 
 def _account_role_from_number(acct_num: str) -> str:
@@ -43,86 +42,12 @@ def _account_role_from_number(acct_num: str) -> str:
 
 
 def _fetch_accounts(client: Any) -> List[Dict[str, str]]:
-    rows: List[Dict[str, str]] = []
-
-    if hasattr(client, "get_account_numbers"):
-        data = _resp_json(client.get_account_numbers())
-        if isinstance(data, list):
-            for r in data:
-                if not isinstance(r, dict):
-                    continue
-                rows.append(
-                    {
-                        "account_number": str(r.get("accountNumber") or ""),
-                        "account_hash": str(r.get("hashValue") or ""),
-                    }
-                )
-
-    return [r for r in rows if r.get("account_hash")]
+    return fetch_account_rows(client)
 
 
 def _fetch_transactions_for_account(client: Any, account_hash: str, start_dt: datetime, end_dt: datetime) -> List[Dict[str, Any]]:
     """Fetch transactions using rolling <=60-day windows (Schwab API constraint)."""
-    if not hasattr(client, "get_transactions"):
-        return []
-
-    window_days = 59
-    cursor = start_dt
-    rows: List[Dict[str, Any]] = []
-    seen = set()
-
-    while cursor <= end_dt:
-        window_end = min(cursor + timedelta(days=window_days), end_dt)
-
-        attempts = [
-            {
-                "account_hash": account_hash,
-                "start_date": cursor,
-                "end_date": window_end,
-            },
-            {
-                "account_hash": account_hash,
-                "startDate": cursor.isoformat(),
-                "endDate": window_end.isoformat(),
-            },
-            {
-                "account_hash": account_hash,
-                "start_datetime": cursor,
-                "end_datetime": window_end,
-            },
-        ]
-
-        data = None
-        for kwargs in attempts:
-            try:
-                resp = client.get_transactions(**kwargs)
-                obj = _resp_json(resp)
-                if isinstance(obj, list):
-                    data = obj
-                    break
-            except Exception:
-                continue
-
-        if data:
-            for tx in data:
-                if not isinstance(tx, dict):
-                    continue
-                tx_id = str(tx.get("transactionId") or tx.get("activityId") or "")
-                tx_ts = str(tx.get("transactionDate") or tx.get("tradeDate") or tx.get("settlementDate") or "")
-                key = (
-                    tx_id,
-                    tx_ts,
-                    str(tx.get("type") or tx.get("transactionSubType") or ""),
-                    str(tx.get("description") or ""),
-                )
-                if key in seen:
-                    continue
-                seen.add(key)
-                rows.append(tx)
-
-        cursor = window_end + timedelta(seconds=1)
-
-    return rows
+    return fetch_transactions_for_account(client, account_hash, start_dt, end_dt)
 
 
 def _to_float(v: Any, default: float = 0.0) -> float:
@@ -221,18 +146,14 @@ def main() -> int:
 
     policy = _load_json(Path(args.policy), {})
 
-    api_key = os.getenv("SCHWAB_API_KEY", "YOUR_KEY_HERE")
-    secret = os.getenv("SCHWAB_SECRET", "YOUR_SECRET_HERE")
-    redirect = os.getenv("SCHWAB_REDIRECT", "https://127.0.0.1:8182")
-
     normalized: List[Dict[str, Any]] = []
 
     if not args.skip_auth:
-        if api_key == "YOUR_KEY_HERE" or secret == "YOUR_SECRET_HERE":
-            raise RuntimeError("Real SCHWAB_API_KEY and SCHWAB_SECRET are required for live import")
-
-        trader = BaseTrader(api_key, secret, redirect, mode="shadow")
-        trader.token_path = str(PROJECT_ROOT / "token.json")
+        trader = build_schwab_trader(
+            PROJECT_ROOT,
+            mode="shadow",
+            missing_credentials_message="Real SCHWAB_API_KEY and SCHWAB_SECRET are required for live import",
+        )
         client = trader.authenticate()
 
         accounts = _fetch_accounts(client)

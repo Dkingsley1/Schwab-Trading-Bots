@@ -49,6 +49,11 @@ COLD_BACKPRESSURE_CONTAINS = (
 COLD_BACKPRESSURE_PREFIXES = (
     "data/stale_stage/",
 )
+JOURNAL_GLOB = "jsonl_ingest_batch_journal_*_latest.jsonl"
+JOURNAL_RECONCILE_EVENTS = {
+    "file_checkpoint",
+    "file_complete",
+}
 
 
 def _safe_count_lines(path: Path) -> int:
@@ -138,6 +143,68 @@ def _load_sqlite_progress(path: Path) -> dict[str, dict]:
     return sqlite_state if isinstance(sqlite_state, dict) else {}
 
 
+def _parse_iso_utc(raw: object) -> datetime | None:
+    text = str(raw or "").strip().replace("Z", "+00:00")
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _load_journal_progress(project_root: Path) -> tuple[dict[str, dict], list[str]]:
+    health_root = project_root / "governance" / "health"
+    journal_files = sorted(p for p in health_root.glob(JOURNAL_GLOB) if p.is_file())
+    merged: dict[str, dict] = {}
+    sources: list[str] = []
+    for path in journal_files:
+        sources.append(str(path))
+        try:
+            handle = path.open(encoding="utf-8")
+        except Exception:
+            continue
+        with handle:
+            for raw in handle:
+                line = str(raw or "").strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                if str(payload.get("event") or "") not in JOURNAL_RECONCILE_EVENTS:
+                    continue
+                rel = str(payload.get("source_rel") or "").strip()
+                if not rel:
+                    continue
+                last_line = int(float(payload.get("last_line", 0) or 0))
+                last_offset = int(float(payload.get("last_offset_bytes", 0) or 0))
+                if last_line <= 0:
+                    continue
+                current = merged.get(rel, {})
+                current_line = int(float(current.get("last_line", 0) or 0)) if isinstance(current, dict) else 0
+                current_offset = int(float(current.get("last_offset_bytes", 0) or 0)) if isinstance(current, dict) else 0
+                if last_line < current_line:
+                    continue
+                if last_line == current_line and last_offset <= current_offset:
+                    continue
+                ts = _parse_iso_utc(payload.get("timestamp_utc"))
+                merged[rel] = {
+                    "last_line": last_line,
+                    "last_offset_bytes": last_offset,
+                    "journal_timestamp_utc": str(payload.get("timestamp_utc") or ""),
+                    "journal_timestamp_epoch": ts.timestamp() if ts is not None else 0.0,
+                    "journal_source": str(path),
+                }
+    return merged, sources
+
+
 def _resolve_sqlite_state(project_root: Path, state_file: str | None) -> tuple[dict[str, dict], list[str], str]:
     if state_file:
         state_path = Path(state_file).resolve()
@@ -161,6 +228,26 @@ def _resolve_sqlite_state(project_root: Path, state_file: str | None) -> tuple[d
 
     mode = "sharded_merged" if shard_files else "legacy"
     return merged, [str(path) for path in state_files], mode
+
+
+def _journal_reconciled_last_line(
+    *,
+    stat,
+    state_last_line: int,
+    journal_progress: dict | None,
+) -> tuple[int, bool]:
+    if not isinstance(journal_progress, dict):
+        return max(int(state_last_line), 0), False
+    journal_last_line = int(float(journal_progress.get("last_line", 0) or 0))
+    journal_last_offset = int(float(journal_progress.get("last_offset_bytes", 0) or 0))
+    journal_ts = float(journal_progress.get("journal_timestamp_epoch", 0.0) or 0.0)
+    if journal_last_line <= max(int(state_last_line), 0):
+        return max(int(state_last_line), 0), False
+    if journal_last_offset <= 0 or journal_last_offset > int(stat.st_size):
+        return max(int(state_last_line), 0), False
+    if journal_ts > 0.0 and float(stat.st_mtime) + 300.0 < journal_ts:
+        return max(int(state_last_line), 0), False
+    return journal_last_line, True
 
 
 def _record_top_pending(rows: list[dict], *, rel: str, pending: int, age_seconds: float, total: int, last_line: int, top_n: int) -> None:
@@ -261,6 +348,7 @@ def main() -> int:
 
     project_root = Path(args.project_root).resolve()
     sqlite_state, state_files, state_mode = _resolve_sqlite_state(project_root, args.state_file)
+    journal_progress, journal_sources = _load_journal_progress(project_root)
 
     files = discover_jsonl_files(project_root)
     if args.max_files > 0:
@@ -286,6 +374,9 @@ def main() -> int:
     file_count_stale_stage = 0
     oldest_pending_age_seconds_stale_stage = 0.0
     top_pending_files_stale_stage: list[dict] = []
+    journal_reconciled_files = 0
+    journal_reconciled_lines = 0
+    journal_reconciled_top_files: list[dict] = []
 
     now_ts = datetime.now(timezone.utc).timestamp()
     for p in files:
@@ -300,6 +391,11 @@ def main() -> int:
 
         progress = sqlite_state.get(rel, {}) if isinstance(sqlite_state.get(rel, {}), dict) else {}
         last_line = _last_line_for_state(rel, st, progress)
+        last_line, journal_reconciled = _journal_reconciled_last_line(
+            stat=st,
+            state_last_line=last_line,
+            journal_progress=journal_progress.get(rel),
+        )
         total = _estimated_total_lines(
             p,
             st,
@@ -310,6 +406,23 @@ def main() -> int:
         pending_lines = max(int(total) - int(last_line), 0)
         if pending_lines <= 0:
             continue
+        if journal_reconciled:
+            reconciled_delta = max(
+                int(float((journal_progress.get(rel) or {}).get("last_line", 0) or 0))
+                - int(float(progress.get("last_line", 0) or 0)),
+                0,
+            )
+            journal_reconciled_files += 1
+            journal_reconciled_lines += reconciled_delta
+            _record_top_pending(
+                journal_reconciled_top_files,
+                rel=rel,
+                pending=reconciled_delta,
+                age_seconds=max(float(now_ts) - float(st.st_mtime), 0.0),
+                total=total,
+                last_line=last_line,
+                top_n=max(int(args.top_pending_files), 1),
+            )
 
         age_seconds = max(float(now_ts) - float(st.st_mtime), 0.0)
         if _is_deferred_backpressure_file(rel):
@@ -431,6 +544,7 @@ def main() -> int:
         "state_file": state_files[0] if state_files else "",
         "state_files": list(state_files),
         "state_mode": state_mode,
+        "journal_sources": list(journal_sources),
         "pending_lines": int(pending_core),
         "pending_files": int(file_count_core),
         "pending_lines_total": int(pending_core + pending_deferred),
@@ -487,6 +601,11 @@ def main() -> int:
         "top_cold_pending_files": top_pending_files_cold,
         "top_support_telemetry_pending_files": top_pending_files_support,
         "top_stale_stage_pending_files": top_pending_files_stale_stage,
+        "journal_reconciliation": {
+            "reconciled_files": int(journal_reconciled_files),
+            "reconciled_lines": int(journal_reconciled_lines),
+            "top_reconciled_files": journal_reconciled_top_files,
+        },
         "cold_lane_recommendation": (
             "offload_shadow_pnl_attribution"
             if int(pending_cold) >= max(int(args.pending_lines_threshold), 1000)

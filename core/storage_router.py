@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from core.storage_mounts import resolve_external_storage_paths
 
 DEFAULT_EXTERNAL_MOUNT = "/Volumes/BOT_LOGS"
 DEFAULT_EXTERNAL_PROJECT = "schwab_trading_bot"
@@ -59,12 +60,8 @@ def _is_writable_directory(path: Path) -> bool:
 
 
 def _external_project_root() -> Path:
-    configured = os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    mount_root = Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", DEFAULT_EXTERNAL_MOUNT)).expanduser()
-    project_dir = os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", DEFAULT_EXTERNAL_PROJECT).strip() or DEFAULT_EXTERNAL_PROJECT
-    return mount_root / project_dir
+    _, external_root = resolve_external_storage_paths()
+    return external_root
 
 
 def _env_flag(name: str, default: str = "0") -> bool:

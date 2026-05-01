@@ -16,10 +16,12 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from core.runtime_python import resolve_runtime_python
+    from core.storage_mounts import resolve_external_storage
     from scripts.ops import writer_cycle_coordinator as writer_src
 else:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     from core.runtime_python import resolve_runtime_python
+    from core.storage_mounts import resolve_external_storage
     from scripts.ops import writer_cycle_coordinator as writer_src
 
 
@@ -118,7 +120,7 @@ def _mode_matches_target(actual_mode: str, target_mode: str) -> bool:
     target = str(target_mode or "").strip()
     if target == "local":
         return actual in {"local_fallback", "local_fallback_split_brain"}
-    return actual == "external"
+    return actual in {"external", "external_curated"}
 
 
 def _write_storage_override(mode: str, override_path: Path) -> dict[str, Any]:
@@ -166,7 +168,8 @@ def build_payload(
     if eject and target_mode != "local":
         raise ValueError("eject is only supported when target_mode=local")
 
-    mount_root = str(mount_root or os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")).strip() or "/Volumes/BOT_LOGS"
+    resolved_mount_root = resolve_external_storage().mount_root
+    mount_root = str(mount_root or resolved_mount_root).strip() or str(resolved_mount_root)
     opsctl = project_root / "scripts" / "ops" / "opsctl.sh"
     health_root = project_root / "governance" / "health"
     should_stop = bool(restart or quiesce_only)
@@ -204,7 +207,8 @@ def build_payload(
     )
     steps["storage_failback_sync"] = _step_record(failback)
     failback_payload = failback.get("payload") if isinstance(failback.get("payload"), dict) else {}
-    achieved_target_mode = _mode_matches_target(str(failback_payload.get("mode") or ""), target_mode)
+    applied_mode = str(failback_payload.get("certified_mode") or failback_payload.get("mode") or "")
+    achieved_target_mode = _mode_matches_target(applied_mode, target_mode)
 
     if target_mode == "external":
         reconcile = _run_command(
@@ -290,7 +294,7 @@ def build_payload(
         "writer_state_after_wait": writer_after_wait,
         "writer_state_after": writer_after,
         "achieved_target_mode": achieved_target_mode,
-        "applied_mode": str(failback_payload.get("mode") or ""),
+        "applied_mode": applied_mode,
         "active_root": str(failback_payload.get("active_root") or ""),
         "steps": steps,
         "storage_failback_sync": failback_payload,
@@ -307,7 +311,7 @@ def main() -> int:
     parser.add_argument("--target-mode", choices=("local", "external"), required=True)
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--override-file", default=str(DEFAULT_OVERRIDE_PATH))
-    parser.add_argument("--mount-root", default=os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS"))
+    parser.add_argument("--mount-root", default=str(resolve_external_storage().mount_root))
     parser.add_argument("--no-restart", action="store_true")
     parser.add_argument("--quiesce-only", action="store_true")
     parser.add_argument("--eject", action="store_true")

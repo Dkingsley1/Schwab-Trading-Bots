@@ -146,6 +146,12 @@ def test_weekly_retrain_explicit_include_allows_deleted_targets(tmp_path) -> Non
         weekly_retrain.REGISTRY_PATH = original_registry_path
 
 
+def test_weekly_retrain_force_all_targets_allows_deleted_targets() -> None:
+    args = weekly_retrain.argparse.Namespace(include_deleted=False, force_all_targets=True)
+
+    assert weekly_retrain._should_include_deleted_targets(args, explicit_include_requested=False) is True
+
+
 def test_weekly_retrain_resolves_bond_divergence_scope() -> None:
     path, scope = weekly_retrain._resolve_data_divergence_file("bond", "/tmp/fallback.json")
     assert scope == "bond_profile"
@@ -178,6 +184,17 @@ def test_weekly_retrain_operator_notes_can_drive_regime_focus(tmp_path) -> None:
     )
 
     assert weekly_retrain._derive_regime_focus_from_operator_notes(str(note_path), top_n=3) == "shock,mean_revert,liquidity"
+
+
+def test_weekly_retrain_parses_json_from_noisy_runtime_snapshot_output() -> None:
+    payload = weekly_retrain._parse_json_output(
+        "Runtime training snapshot: starting\n"
+        '{"ok": true, "sequence_count": 4, "row_count": 512}\n'
+    )
+
+    assert payload["ok"] is True
+    assert payload["sequence_count"] == 4
+    assert payload["row_count"] == 512
 
 
 def test_weekly_retrain_targeted_queue_preserves_explicit_targets_without_auto_reshaping() -> None:
@@ -314,11 +331,33 @@ def test_weekly_retrain_efficiency_filter_skips_low_readiness_restores(tmp_path)
             min_model_age_hours=0.0,
             skip_low_readiness=True,
         )
+        force_all_filtered, force_all_stats = weekly_retrain._filter_targets_for_efficiency(
+            [
+                "/tmp/core/brain_refinery_v44_intraday_scalp_1m_5m.py",
+                "/tmp/core/brain_refinery_v69_cost_aware_execution_filter.py",
+                "/tmp/core/brain_refinery_v35_dmi_state_machine.py",
+                "/tmp/core/brain_refinery_v12_news_shocks.py",
+                "/tmp/core/brain_refinery_v27_term_structure_vol.py",
+            ],
+            active_only=False,
+            max_targets=0,
+            min_model_age_hours=0.0,
+            skip_low_readiness=False,
+        )
     finally:
         weekly_retrain.REGISTRY_PATH = original_registry_path
 
     assert filtered == ["/tmp/core/brain_refinery_v35_dmi_state_machine.py"]
     assert stats["low_readiness_skipped"] == 4
+    assert set(force_all_filtered) == {
+        "/tmp/core/brain_refinery_v44_intraday_scalp_1m_5m.py",
+        "/tmp/core/brain_refinery_v69_cost_aware_execution_filter.py",
+        "/tmp/core/brain_refinery_v35_dmi_state_machine.py",
+        "/tmp/core/brain_refinery_v12_news_shocks.py",
+        "/tmp/core/brain_refinery_v27_term_structure_vol.py",
+    }
+    assert force_all_stats["post"] == 5
+    assert force_all_stats["low_readiness_skipped"] == 0
 
 
 def test_weekly_retrain_retry_pack_priority_biases_queue(tmp_path) -> None:

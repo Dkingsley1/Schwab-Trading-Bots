@@ -6,14 +6,26 @@ import json
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+import sys
 from typing import Any
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.training_quality_thresholds import (
+    STAGED_SUPPORT_RECOVERY_TEST_ACCURACY_FLOOR,
+    STRONG_TEST_ACCURACY_FLOOR,
+    TARGET_QUALITY_SCORE_FLOOR,
+)
+
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
 DEFAULT_DIAGNOSTICS_DIR = PROJECT_ROOT / "governance" / "training_diagnostics"
 DEFAULT_SNAPSHOT_HEALTH = PROJECT_ROOT / "governance" / "health" / "runtime_training_snapshot_latest.json"
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "governance" / "health" / "training_registry_audit_latest.json"
+
+STRONG_QUALITY_SCORE_FLOOR = 0.20
+STAGED_SUPPORT_RECOVERY_QUALITY_FLOOR = 0.15
 
 
 def _safe_json_load(path: Path) -> dict[str, Any]:
@@ -41,9 +53,52 @@ def _age_hours(path: Path) -> float | None:
         return None
 
 
+def _parse_iso_utc(raw: Any) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    text = text.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _top_failure_excerpt(diag: dict[str, Any]) -> list[str]:
     failures = diag.get("quality_failures") if isinstance(diag.get("quality_failures"), list) else []
     return [str(x) for x in failures[:3]]
+
+
+def _best_score(*values: Any) -> float:
+    best = 0.0
+    for raw in values:
+        try:
+            value = float(raw)
+        except Exception:
+            continue
+        best = max(best, value)
+    return best
+
+
+def _support_recovery_reason(row: dict[str, Any]) -> bool:
+    reason_bits = " ".join(
+        [
+            str(row.get("registry_reason") or "").strip().lower(),
+            str(row.get("promotion_reason") or "").strip().lower(),
+        ]
+    )
+    return any(
+        token in reason_bits
+        for token in (
+            "supportable_recovery",
+            "role_floor_",
+            "manual_canary_restore",
+            "manual_collection_restore",
+        )
+    )
 
 
 def _infer_cause(diag: dict[str, Any], registry_row: dict[str, Any]) -> str:
@@ -99,17 +154,34 @@ def _tier_for_row(row: dict[str, Any]) -> str:
     return "inactive_backlog"
 
 
-def _supportability_for_row(row: dict[str, Any]) -> str:
+def _supportability_for_row(row: dict[str, Any], *, snapshot_ready: bool = False) -> str:
     if not bool(row.get("active")):
         return "inactive"
+    best_quality_score = _best_score(row.get("registry_quality_score"), row.get("candidate_quality_score"))
+    best_test_accuracy = _best_score(row.get("registry_test_accuracy"), row.get("candidate_test_accuracy"))
     if not bool(row.get("diagnostic_fresh", False)):
         if (
             bool(row.get("model_artifact_exists", False))
-            and float(row.get("registry_quality_score", 0.0) or 0.0) >= 0.55
-            and float(row.get("registry_test_accuracy", 0.0) or 0.0) >= 0.55
+            and best_quality_score >= TARGET_QUALITY_SCORE_FLOOR
+            and best_test_accuracy >= STRONG_TEST_ACCURACY_FLOOR
             and str(row.get("inferred_cause") or "") not in {"shared_runtime_input_gap", "sequence_depth_gap", "quality_guard_failure"}
         ):
             return "artifact_backed_active"
+        if (
+            snapshot_ready
+            and _support_recovery_reason(row)
+            and best_quality_score >= STAGED_SUPPORT_RECOVERY_QUALITY_FLOOR
+            and best_test_accuracy >= STAGED_SUPPORT_RECOVERY_TEST_ACCURACY_FLOOR
+            and str(row.get("inferred_cause") or "") not in {"shared_runtime_input_gap", "sequence_depth_gap", "quality_guard_failure"}
+        ):
+            return "staged_support_recovery"
+        if (
+            snapshot_ready
+            and best_quality_score >= STRONG_QUALITY_SCORE_FLOOR
+            and best_test_accuracy >= STRONG_TEST_ACCURACY_FLOOR
+            and str(row.get("inferred_cause") or "") not in {"shared_runtime_input_gap", "sequence_depth_gap", "quality_guard_failure"}
+        ):
+            return "registry_seeded_active"
         return "unsupported_stale_diagnostics"
     cause = str(row.get("inferred_cause") or "")
     if cause in {"shared_runtime_input_gap", "sequence_depth_gap"}:
@@ -158,7 +230,11 @@ def _audit_row(registry_row: dict[str, Any], diagnostics_dir: Path) -> dict[str,
         "log_artifact_exists": bool(log_path and log_path.exists()),
         "registry_quality_score": float(registry_row.get("quality_score", 0.0) or 0.0),
         "registry_test_accuracy": float(registry_row.get("test_accuracy", 0.0) or 0.0),
+        "candidate_quality_score": float(registry_row.get("candidate_quality_score", 0.0) or 0.0),
+        "candidate_test_accuracy": float(registry_row.get("candidate_test_accuracy", 0.0) or 0.0),
     }
+    out["best_quality_score"] = _best_score(out.get("registry_quality_score"), out.get("candidate_quality_score"))
+    out["best_test_accuracy"] = _best_score(out.get("registry_test_accuracy"), out.get("candidate_test_accuracy"))
     out["inferred_cause"] = _infer_cause(diag, registry_row)
     return out
 
@@ -194,23 +270,36 @@ def build_audit_payload(
 ) -> dict[str, Any]:
     rows = _load_registry_rows(registry_path)
     audits = [_audit_row(row, diagnostics_dir) for row in rows if str(row.get("bot_id") or "").strip()]
+    snapshot = _safe_json_load(snapshot_health_path)
+    snapshot_ts = _parse_iso_utc(snapshot.get("timestamp_utc"))
+    snapshot_age_hours = (
+        max((datetime.now(timezone.utc) - snapshot_ts).total_seconds() / 3600.0, 0.0)
+        if snapshot_ts is not None
+        else None
+    )
+    snapshot_ready = bool(
+        int(snapshot.get("row_count", 0) or 0) > 0
+        and snapshot_age_hours is not None
+        and snapshot_age_hours <= 36.0
+    )
     for row in audits:
         age = row.get("diagnostic_age_hours")
         row["diagnostic_fresh"] = bool(age is not None and float(age) <= max(float(max_diagnostic_age_hours), 0.0))
         row["tier"] = _tier_for_row(row)
-        row["supportability_status"] = _supportability_for_row(row)
+        row["supportability_status"] = _supportability_for_row(row, snapshot_ready=snapshot_ready)
     status_counts = Counter(str(row.get("status") or "") for row in audits)
     cause_counts = Counter(str(row.get("inferred_cause") or "") for row in audits)
     tier_counts = Counter(str(row.get("tier") or "") for row in audits)
     supportability_counts = Counter(str(row.get("supportability_status") or "") for row in audits)
     active_rows = [row for row in audits if bool(row.get("active"))]
-    snapshot = _safe_json_load(snapshot_health_path)
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "registry_path": str(registry_path),
         "diagnostics_dir": str(diagnostics_dir),
         "snapshot_health_path": str(snapshot_health_path) if snapshot_health_path.exists() else "",
         "max_diagnostic_age_hours": float(max_diagnostic_age_hours),
+        "runtime_snapshot_ready": snapshot_ready,
+        "runtime_snapshot_age_hours": round(float(snapshot_age_hours), 3) if snapshot_age_hours is not None else None,
         "registry_total_bots": len(audits),
         "registry_active_bots": sum(1 for row in audits if bool(row.get("active"))),
         "status_counts": dict(sorted(status_counts.items())),
@@ -226,6 +315,12 @@ def build_audit_payload(
         ][:25],
         "active_stale_diagnostics": [
             row for row in active_rows if not bool(row.get("diagnostic_fresh", False))
+        ][:25],
+        "active_registry_seeded": [
+            row for row in active_rows if str(row.get("supportability_status") or "") == "registry_seeded_active"
+        ][:25],
+        "active_staged_support_recovery": [
+            row for row in active_rows if str(row.get("supportability_status") or "") == "staged_support_recovery"
         ][:25],
         "tiers": {
             "active_production": [row for row in audits if str(row.get("tier")) == "active_production"][:25],

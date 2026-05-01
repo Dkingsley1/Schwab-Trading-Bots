@@ -13,6 +13,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.runtime_python import resolve_runtime_python
+from scripts.brokers.schwab.common import (
+    credentials_ready,
+    schwab_credentials_from_env,
+    token_needs_refresh as common_token_needs_refresh,
+    token_status as common_token_status,
+)
 
 DEFAULT_TOKEN_PATH = PROJECT_ROOT / 'token.json'
 DEFAULT_OUT_PATH = PROJECT_ROOT / 'governance' / 'health' / 'premarket_token_guard_latest.json'
@@ -118,63 +124,7 @@ def _probe_network(hostport: str, timeout_seconds: float) -> Dict[str, Any]:
 
 
 def _token_status(path: Path) -> Dict[str, Any]:
-    status: Dict[str, Any] = {
-        'token_path': str(path),
-        'exists': path.exists(),
-        'size_bytes': 0,
-        'age_seconds': None,
-        'expires_at': '',
-        'expires_in_seconds': None,
-    }
-    if not path.exists():
-        return status
-
-    try:
-        st = path.stat()
-        status['size_bytes'] = int(st.st_size)
-        status['age_seconds'] = max(datetime.now(timezone.utc).timestamp() - st.st_mtime, 0.0)
-    except Exception:
-        pass
-
-    try:
-        payload = json.loads(path.read_text(encoding='utf-8'))
-    except Exception:
-        payload = {}
-
-    if isinstance(payload, dict):
-        expiry_sources = [payload]
-        nested = payload.get('token')
-        if isinstance(nested, dict):
-            expiry_sources.insert(0, nested)
-
-        exp_value: Any = ''
-        for source in expiry_sources:
-            for key in ('expires_at', 'expiresAt', 'expires', 'expires_time'):
-                raw = source.get(key)
-                if raw not in (None, ''):
-                    exp_value = raw
-                    break
-            if exp_value not in (None, ''):
-                break
-
-        if exp_value not in (None, ''):
-            status['expires_at'] = str(exp_value)
-
-    expires_at = str(status.get('expires_at') or '').strip()
-    if expires_at:
-        try:
-            if expires_at.replace('.', '', 1).isdigit():
-                exp_ts = float(expires_at)
-            else:
-                dt = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                exp_ts = dt.astimezone(timezone.utc).timestamp()
-            status['expires_in_seconds'] = exp_ts - datetime.now(timezone.utc).timestamp()
-        except Exception:
-            pass
-
-    return status
+    return common_token_status(path)
 
 
 
@@ -183,23 +133,12 @@ def _token_needs_refresh(
     max_age_seconds: float,
     min_expires_seconds: float,
 ) -> tuple[bool, str]:
-    if not bool(status.get('exists')):
-        return True, 'missing_token'
-
-    size = int(status.get('size_bytes') or 0)
-    if size < 64:
-        return True, 'token_too_small'
-
-    age = status.get('age_seconds')
-    if age is not None and float(age) > max(float(max_age_seconds), 0.0):
-        return True, f'token_age_high:{float(age):.1f}'
-
-    expires_floor = max(float(min_expires_seconds), 0.0)
-    expires_in = status.get('expires_in_seconds')
-    if expires_in is not None and float(expires_in) <= expires_floor:
-        return True, f'token_expiring_soon:{float(expires_in):.1f}'
-
-    return False, 'token_fresh'
+    return common_token_needs_refresh(
+        status,
+        min_expires_seconds=min_expires_seconds,
+        max_age_seconds=max_age_seconds,
+        ready_reason='token_fresh',
+    )
 
 
 def _token_warning_level(age_seconds: float | None, *, max_age_seconds: float) -> str:
@@ -226,8 +165,7 @@ def _auth_attempt(token_path: Path, callback_timeout_seconds: float, validate_ac
         or 'https://127.0.0.1:8182'
     )
 
-    invalid = {'', 'YOUR_KEY_HERE', 'YOUR_SECRET_HERE', 'YOUR_REAL_KEY', 'YOUR_REAL_SECRET', '<real_key>', '<real_secret>'}
-    if api_key in invalid or app_secret in invalid:
+    if not credentials_ready(schwab_credentials_from_env()):
         return {
             'attempted': False,
             'ok': False,

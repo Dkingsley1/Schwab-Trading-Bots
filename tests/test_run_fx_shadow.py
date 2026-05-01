@@ -24,6 +24,22 @@ def test_realtime_interval_seconds_counts_unique_realtime_and_context_symbols() 
     assert expanded_context_interval == 48
 
 
+def test_budgeted_realtime_symbols_prefers_context_pairs_and_defers_excess() -> None:
+    symbols, budget = src._budgeted_realtime_symbols(
+        {
+            "FX_TWELVE_DATA_MAX_CREDITS_PER_MINUTE": "4",
+            "FX_TWELVE_DATA_CREDIT_RESERVE": "2",
+            "FX_TWELVE_DATA_MAX_PAIRS_PER_RUN": "6",
+        },
+        realtime_symbols="EURUSD,USDJPY,GBPUSD,USDCHF",
+        realtime_context_symbols="USDJPY,EURUSD",
+    )
+
+    assert symbols == "USDJPY,EURUSD"
+    assert budget["selected_symbols"] == ["USDJPY", "EURUSD"]
+    assert budget["deferred_symbols"] == ["GBPUSD", "USDCHF"]
+
+
 def test_fx_supervisor_mode_falls_back_to_context_only_during_provider_cooldown() -> None:
     mode = src._fx_supervisor_mode(
         proxy_session_open=False,

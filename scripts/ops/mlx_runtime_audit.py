@@ -20,6 +20,10 @@ DEFAULT_PACKAGES = (
     "mlx-data",
     "mlx-vlm",
     "mlx-whisper",
+    "mlx-audio",
+    "mlx-embeddings",
+    "mlx-embedding-models",
+    "parakeet-mlx",
     "transformers",
     "huggingface-hub",
     "scipy",
@@ -263,6 +267,10 @@ def main() -> int:
         _step("mlx_data_import", [str(python_bin), "-c", "import mlx.data as mxdata; print(mxdata.__file__)"]),
         _step("mlx_vlm_import", [str(python_bin), "-c", "import mlx_vlm; print(mlx_vlm.__file__)"]),
         _step("mlx_whisper_import", [str(python_bin), "-c", "import mlx_whisper; print(mlx_whisper.__name__)"]),
+        _step("mlx_audio_import", [str(python_bin), "-c", "import mlx_audio; print(mlx_audio.__name__)"], accepted_rc={0, 1}),
+        _step("mlx_embeddings_import", [str(python_bin), "-c", "import mlx_embeddings; print(mlx_embeddings.__name__)"], accepted_rc={0, 1}),
+        _step("mlx_embedding_models_import", [str(python_bin), "-c", "import mlx_embedding_models; print(mlx_embedding_models.__name__)"], accepted_rc={0, 1}),
+        _step("parakeet_mlx_import", [str(python_bin), "-c", "import parakeet_mlx; print(parakeet_mlx.__name__)"], accepted_rc={0, 1}),
         _step(
             "indicator_bot_common_import",
             [

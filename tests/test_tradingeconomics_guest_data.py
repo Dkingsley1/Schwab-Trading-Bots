@@ -257,3 +257,56 @@ def test_external_macro_calendar_proxy_features_merges_tradingeconomics_calendar
     assert out["calendar_feed_available"] > 0.0
     assert out["calendar_high_impact_24h_norm"] > 0.0
     assert out["calendar_fomc_event_norm"] > 0.0
+
+
+def test_broker_context_env_helpers_prefer_generic_over_broker_specific(monkeypatch) -> None:
+    monkeypatch.setenv("SCHWAB_NEWS_CACHE_TTL_SECONDS", "180")
+    assert loop._broker_context_env_float("schwab", "NEWS_CACHE_TTL_SECONDS", 90.0) == 180.0
+
+    monkeypatch.setenv("BROKER_NEWS_CACHE_TTL_SECONDS", "75")
+    assert loop._broker_context_env_float("schwab", "NEWS_CACHE_TTL_SECONDS", 90.0) == 75.0
+
+    monkeypatch.delenv("BROKER_NEWS_CACHE_TTL_SECONDS")
+    monkeypatch.setenv("COINBASE_CALENDAR_CONTEXT_ENABLED", "1")
+    assert loop._broker_context_env_flag("coinbase", "CALENDAR_CONTEXT_ENABLED", "0") is True
+
+
+def test_external_context_merges_accept_official_macro_and_tradingeconomics_payloads() -> None:
+    news_base = loop._default_news_features()
+    calendar_base = loop.default_calendar_features()
+
+    official_macro_snapshot = {
+        "derived": {
+            "news_features": {
+                "news_available": 1.0,
+                "news_source_quality_norm": 0.9,
+            },
+            "calendar_features": {
+                "calendar_high_impact_24h_norm": 0.8,
+                "calendar_macro_event_norm": 0.7,
+            },
+        }
+    }
+    tradingeconomics_snapshot = {
+        "derived": {
+            "news_features": {
+                "news_items_24h": 0.6,
+            },
+            "calendar_features": {
+                "calendar_feed_available": 1.0,
+                "calendar_macro_abs_surprise_norm": 0.55,
+            },
+        }
+    }
+
+    merged_news = loop._merge_external_context_news_features(news_base, official_macro_snapshot, symbol="SPY")
+    merged_news = loop._merge_external_context_news_features(merged_news, tradingeconomics_snapshot, symbol="SPY")
+    merged_calendar = loop._merge_external_context_calendar_features(calendar_base, official_macro_snapshot)
+    merged_calendar = loop._merge_external_context_calendar_features(merged_calendar, tradingeconomics_snapshot)
+
+    assert merged_news["news_available"] == 1.0
+    assert merged_news["news_source_quality_norm"] == 0.9
+    assert merged_news["news_items_24h"] == 0.6
+    assert merged_calendar["calendar_high_impact_24h_norm"] == 0.8
+    assert merged_calendar["calendar_macro_event_norm"] == 0.7
+    assert merged_calendar["calendar_feed_available"] == 1.0

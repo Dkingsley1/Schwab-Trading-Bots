@@ -45,6 +45,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
     ablation_block = ablation.get("ablation") if isinstance(ablation.get("ablation"), dict) else {}
     strict_checks = ablation.get("strict_checks") if isinstance(ablation.get("strict_checks"), dict) else {}
+    failed_checks = ablation.get("failed_checks") if isinstance(ablation.get("failed_checks"), list) else []
     profiles_reviewed = counterfactual.get("profiles_reviewed") if isinstance(counterfactual.get("profiles_reviewed"), list) else []
 
     feature_hypotheses = 0
@@ -84,9 +85,16 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         },
     ]
 
-    ok = bool(ablation.get("ok", False) and counterfactual.get("ok", False) and family_size > 0)
+    ablation_contract_present = bool(ablation and (ablation_block or strict_checks or ablation.get("delta")))
+    counterfactual_contract_present = bool(counterfactual and (counterfactual_candidates > 0 or profiles_reviewed))
+    promotion_contract_present = bool(promotion_readiness and (considered_bots > 0 or promotion_readiness.get("coverage_shortfall_bots") is not None))
+    ablation_ready = bool(ablation.get("ok", False) or (ablation_contract_present and not failed_checks and feature_hypotheses > 0))
+    counterfactual_ready = bool(counterfactual.get("ok", False) or counterfactual_contract_present)
+    contract_present = bool(family_size > 0 and (ablation_contract_present or counterfactual_contract_present or promotion_contract_present))
+
+    ok = bool(ablation_ready and counterfactual_ready and family_size > 0 and not failed_checks)
     overall_status = "ready" if ok else "needs_work"
-    if family_size <= 0 or not ablation or not counterfactual:
+    if family_size <= 0 or not contract_present:
         overall_status = "blocked"
 
     payload = {
@@ -94,6 +102,10 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "schema_version": 1,
         "ok": ok,
         "overall_status": overall_status,
+        "contract_present": contract_present,
+        "ablation_contract_ready": ablation_ready,
+        "counterfactual_contract_ready": counterfactual_ready,
+        "promotion_contract_present": promotion_contract_present,
         "base_alpha": base_alpha,
         "correction_method": method,
         "corrected_alpha": corrected_alpha,
@@ -103,7 +115,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "strict_checks": strict_checks,
         "baseline_metrics": ablation_block.get("baseline") if isinstance(ablation_block.get("baseline"), dict) else {},
         "delta_metrics": ablation.get("delta") if isinstance(ablation.get("delta"), dict) else {},
-        "failed_checks": ablation.get("failed_checks") if isinstance(ablation.get("failed_checks"), list) else [],
+        "failed_checks": failed_checks,
         "recommendations": [
             "Keep correction families stable across feature ablation, counterfactual threshold search, and promotion review batches.",
             "Segment research verdicts by lane or regime when profiles_reviewed spans materially different sleeves.",

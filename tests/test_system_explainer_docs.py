@@ -86,6 +86,10 @@ def test_build_docs_writes_expected_outputs(tmp_path):
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
 
     assert 'Framework Map v2' in framework_text
+    assert 'Operational Architecture Report' in framework_text
+    assert 'Executive Summary' in framework_text
+    assert 'How To Read This Report' in framework_text
+    assert 'Architecture Recommendations' in framework_text
     assert 'Runtime Hierarchy' in runtime_text
     assert 'dividend_capture' in framework_text
     assert 'Backpressure score' in framework_text

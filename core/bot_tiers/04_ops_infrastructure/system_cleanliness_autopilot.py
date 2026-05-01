@@ -1,0 +1,1 @@
+../../../scripts/ops/system_cleanliness_autopilot.py

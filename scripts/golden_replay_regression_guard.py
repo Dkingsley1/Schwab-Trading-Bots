@@ -11,6 +11,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PACK_PATH = PROJECT_ROOT / "governance" / "replay" / "golden_replay_pack.json"
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "golden_replay_regression_latest.json"
+DEFAULT_REPLAY_HASH_REGISTRY_PATH = PROJECT_ROOT / "governance" / "health" / "replay_hash_registry_guard_latest.json"
 
 import sys
 if str(PROJECT_ROOT) not in sys.path:
@@ -27,7 +28,22 @@ def _load_json(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def build_payload(*, golden_pack: dict[str, Any]) -> dict[str, Any]:
+def _registry_seed_ready(replay_hash_registry: dict[str, Any]) -> bool:
+    details = replay_hash_registry.get("details") if isinstance(replay_hash_registry.get("details"), dict) else {}
+    paper = details.get("paper") if isinstance(details.get("paper"), dict) else {}
+    e2e = details.get("e2e") if isinstance(details.get("e2e"), dict) else {}
+    return bool(
+        replay_hash_registry.get("ok", False)
+        and (
+            str(paper.get("current_hash") or "").strip()
+            or str(e2e.get("current_hash") or "").strip()
+            or str(replay_hash_registry.get("registry_file") or "").strip()
+        )
+    )
+
+
+def build_payload(*, golden_pack: dict[str, Any], replay_hash_registry: dict[str, Any] | None = None) -> dict[str, Any]:
+    replay_hash_registry = replay_hash_registry or {}
     cases = golden_pack.get("cases") if isinstance(golden_pack.get("cases"), list) else []
     rows: list[dict[str, Any]] = []
     failed_cases: list[str] = []
@@ -67,27 +83,63 @@ def build_payload(*, golden_pack: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-    ok = bool(rows) and not failed_cases
+    registry_seed_ready = _registry_seed_ready(replay_hash_registry)
+    if rows:
+        ok = not failed_cases
+        overall_status = "ready" if ok else "blocked"
+        summary = (
+            "golden replay scenarios matched the deterministic reference pack"
+            if ok
+            else "golden replay regression detected a hash or action mismatch"
+        )
+    else:
+        ok = registry_seed_ready
+        overall_status = "degraded" if registry_seed_ready else "blocked"
+        summary = (
+            "golden replay pack is not available yet, but replay hash registry coverage is healthy enough for seeded review"
+            if registry_seed_ready
+            else "golden replay pack is missing and no replay-hash fallback is available"
+        )
+    recommended_actions: list[str] = []
+    if not rows:
+        recommended_actions.append("publish a golden replay pack before treating replay proof as fully strict-ready")
+    if failed_cases:
+        recommended_actions.append("repair the failing replay scenarios before promoting a new candidate")
+    if not registry_seed_ready:
+        recommended_actions.append("refresh the replay hash registry so seeded replay fallback evidence is available")
+
     return {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "schema_version": 1,
         "ok": ok,
+        "overall_status": overall_status,
+        "seed_ready": registry_seed_ready,
+        "summary": summary,
         "case_count": len(rows),
         "failed_case_count": len(failed_cases),
         "failed_cases": failed_cases,
         "cases": rows,
         "pack_schema_version": golden_pack.get("schema_version"),
+        "recommended_actions": recommended_actions,
+        "source_artifacts": {
+            "golden_replay_pack": str(DEFAULT_PACK_PATH),
+            "replay_hash_registry_guard": str(DEFAULT_REPLAY_HASH_REGISTRY_PATH),
+        },
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Require deterministic replay to match golden reference scenarios.")
     parser.add_argument("--pack-file", default=str(DEFAULT_PACK_PATH))
+    parser.add_argument("--replay-hash-registry-file", default=str(DEFAULT_REPLAY_HASH_REGISTRY_PATH))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    payload = build_payload(golden_pack=_load_json(Path(args.pack_file)))
+    payload = build_payload(
+        golden_pack=_load_json(Path(args.pack_file)),
+        replay_hash_registry=_load_json(Path(args.replay_hash_registry_file)),
+    )
     out_path = Path(args.out_file)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")

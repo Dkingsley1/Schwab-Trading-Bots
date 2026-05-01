@@ -88,12 +88,21 @@ def _parse_card(path: Path) -> dict[str, Any] | None:
 
 
 def build_payload(project_root: Path = PROJECT_ROOT, *, limit: int = 8) -> dict[str, Any]:
-    root = project_root / "decision_explanations"
+    roots = [
+        project_root / "decision_explanations",
+        project_root / "local_fallback_storage" / "decision_explanations",
+    ]
     cards = []
-    for path in sorted(root.glob("shadow*/latest_decisions.log")):
-        card = _parse_card(path)
-        if card is not None:
-            cards.append(card)
+    seen_paths: set[Path] = set()
+    for root in roots:
+        for path in sorted(root.glob("shadow*/latest_decisions.log")):
+            resolved = path.resolve()
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            card = _parse_card(path)
+            if card is not None:
+                cards.append(card)
     cards.sort(key=lambda row: abs(_safe_float(row.get("edge"), 0.0)), reverse=True)
     cards = cards[: max(int(limit), 1)]
 

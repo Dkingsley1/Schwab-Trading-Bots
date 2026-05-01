@@ -340,6 +340,55 @@ def test_paper_performance_report_includes_win_rate_by_non_flat_strategy(tmp_pat
     assert sleeve["top_losing_strategies"][0]["strategy"] == "paper_mirror::beta"
 
 
+def test_paper_performance_report_uses_sleeve_specific_risk_metrics(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    log_dir = project_root / "exports" / "paper_broker_bridge" / "paper"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    rows = []
+    for day, aggressive_net, conservative_net in (
+        ("20260329", 1.0, 0.5),
+        ("20260330", -1.0, 1.0),
+        ("20260331", 3.0, 0.75),
+    ):
+        rows.extend(
+            [
+                {
+                    "timestamp_utc": f"{day[:4]}-{day[4:6]}-{day[6:]}T20:00:00+00:00",
+                    "symbol": "SPY",
+                    "action": "BUY",
+                    "strategy": "paper_mirror::alpha",
+                    "metadata": {"source_profile": "intraday_aggressive"},
+                    "realized_pnl_total": aggressive_net,
+                    "unrealized_pnl_total": 0.0,
+                },
+                {
+                    "timestamp_utc": f"{day[:4]}-{day[4:6]}-{day[6:]}T20:01:00+00:00",
+                    "symbol": "TLT",
+                    "action": "BUY",
+                    "strategy": "paper_mirror::bond",
+                    "metadata": {"source_profile": "conservative"},
+                    "realized_pnl_total": conservative_net,
+                    "unrealized_pnl_total": 0.0,
+                },
+            ]
+        )
+    (log_dir / "paper_bridge_orders_20260331.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(report, "PROJECT_ROOT", project_root)
+    payload = report.build_paper_performance_report(project_root, day="20260331", week_days=7)
+
+    aggressive = next(row for row in payload["sleeve_latest"] if row["profile"] == "intraday_aggressive")
+    conservative = next(row for row in payload["sleeve_latest"] if row["profile"] == "conservative")
+    assert aggressive["risk_adjusted_metric"] == "sortino_ratio"
+    assert aggressive["sortino_ratio"] is not None
+    assert conservative["risk_adjusted_metric"] == "sharpe_ratio"
+    assert conservative["sharpe_ratio"] is not None
+
+
 def test_paper_performance_report_builds_loss_causes_and_tca_summary(tmp_path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     log_dir = project_root / "exports" / "paper_broker_bridge" / "paper"

@@ -150,6 +150,7 @@ def detect_host_hardware() -> dict[str, Any]:
     elif str(os.getenv("ROCR_VISIBLE_DEVICES", "")).strip() not in {"", "-1", "none"}:
         accelerator_hint = "rocm"
     recognized_host_and_chip = bool(system_name and machine and chip)
+    memory_architecture = "unified" if is_apple_silicon else ("split_accelerator" if accelerator_hint in {"cuda", "rocm"} else "system_memory")
     return {
         "system": system_name,
         "release": platform.release(),
@@ -160,6 +161,13 @@ def detect_host_hardware() -> dict[str, Any]:
         "cpu_count": cpu_count,
         "is_apple_silicon": is_apple_silicon,
         "accelerator_hint": accelerator_hint,
+        "memory_architecture": memory_architecture,
+        "shared_cpu_gpu_memory_pool": bool(is_apple_silicon),
+        "memory_competitive_advantage": (
+            "Apple Silicon unified memory keeps CPU, GPU, and MLX tensors in one pool, which cuts copy overhead for large feature windows, broker context caches, and multi-model inference."
+            if is_apple_silicon
+            else "Portable hosts stay viable through backend portability, but they usually pay extra copy and synchronization overhead across CPU and accelerator memory domains."
+        ),
         "recognized_host_and_chip": recognized_host_and_chip,
     }
 
@@ -315,6 +323,20 @@ def build_payload(
     if bool(hardware.get("recognized_host_and_chip")):
         portability_score += 5.0
     portability_score = min(round(portability_score, 2), 100.0)
+    memory_gb = float(hardware.get("memory_gb", 0.0) or 0.0)
+    shared_pool = bool(hardware.get("shared_cpu_gpu_memory_pool", False) or hardware.get("is_apple_silicon", False))
+    unified_memory_telemetry = {
+        "memory_architecture": str(hardware.get("memory_architecture") or ("unified" if shared_pool else "unknown")),
+        "shared_cpu_gpu_memory_pool": shared_pool,
+        "estimated_feature_cache_budget_gb": round(memory_gb * (0.18 if shared_pool else 0.08), 3),
+        "estimated_live_inference_budget_gb": round(memory_gb * (0.12 if shared_pool else 0.05), 3),
+        "broker_context_window_multiplier": (2.0 if shared_pool and runtime_mode == "native" else 1.25 if shared_pool else 1.0),
+        "competitive_advantage": (
+            "apple_silicon_unified_memory"
+            if shared_pool
+            else "portable_runtime_contract"
+        ),
+    }
 
     overall_status = "ready"
     if runtime_mode == "portable" and not bool(portable_contract.get("shadow_replay_supported", False)):
@@ -323,6 +345,8 @@ def build_payload(
     notes = [
         "the host contract now detects the operating system, chip family, memory envelope, and accelerator hint before choosing a runtime posture",
         "Apple Silicon stays MLX-native while Linux and Windows are steered toward the portable replay and sidecar contract",
+        "Apple Silicon unified memory is a practical edge here because shared CPU and GPU memory keeps richer broker-neutral context, larger feature caches, and MLX inference on one low-copy path",
+        "the same portability contract now supports a broker-agnostic runtime seam, so broker swaps do not require rethinking host-tuning assumptions",
         "the host-profile override file is safe to move between systems because it only carries local tuning hints and not broker secrets",
         "start_stack can auto-refresh this contract so transferred installs do not keep stale host assumptions",
     ]
@@ -341,7 +365,10 @@ def build_payload(
             "host_profile": profile,
             "recommended_runtime_access_mode": runtime_mode,
             "recommended_ml_backend": ml_backend,
+            "estimated_feature_cache_budget_gb": unified_memory_telemetry["estimated_feature_cache_budget_gb"],
+            "estimated_live_inference_budget_gb": unified_memory_telemetry["estimated_live_inference_budget_gb"],
         },
+        "unified_memory_telemetry": unified_memory_telemetry,
         "adaptation_contract": {
             "profile_source": (
                 "apple_silicon_profile" if bool(hardware.get("is_apple_silicon")) else "portable_host_profile"
@@ -397,6 +424,7 @@ def build_payload(
         "portability_score": portability_score,
         "recommended_actions": [
             "keep Apple Silicon on the native MLX lane when you want the full live-trading brain",
+            "treat unified memory as a throughput advantage on Macs: it is what lets larger feature windows, context overlays, and inference share one memory pool without extra copies",
             "use portable mode plus the proof-node contract for Linux and Windows transfers before attempting any promotion claims",
             "refresh the host profile whenever the project moves to a different machine class so stale cache and worker ceilings do not follow it",
         ],

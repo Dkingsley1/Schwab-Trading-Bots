@@ -16,6 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.storage_mounts import resolve_external_storage
 from core.training_guard import check_confirmed_training_success
 from sql_hot_retention import _prune_archive_storage
 from snapshot_health_sql import debug_snapshot_ingest_coverage, sync_raw_debug_snapshots_to_sqlite
@@ -515,16 +516,11 @@ def _purge_old_stale_stage(
 
 
 def _resolve_external_project_root() -> Path:
-    configured = os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    mount_root = Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", DEFAULT_EXTERNAL_MOUNT)).expanduser()
-    project_dir = os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", DEFAULT_EXTERNAL_PROJECT).strip() or DEFAULT_EXTERNAL_PROJECT
-    return mount_root / project_dir
+    return resolve_external_storage().external_root
 
 
 def _external_mount_root() -> Path:
-    return Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", DEFAULT_EXTERNAL_MOUNT)).expanduser()
+    return resolve_external_storage().mount_root
 
 
 def _same_path(a: Path, b: Path) -> bool:
@@ -742,7 +738,7 @@ def _collect_external_live_sqlite_pressure_rows(
         details["skipped_reason"] = "external_not_low_space"
         return [], details
     external_mode_override = bool(
-        allow_external_mode and str(storage_mode or "").strip() == "external"
+        allow_external_mode and str(storage_mode or "").strip() in {"external", "external_curated"}
     )
     if require_local_fallback and storage_mode not in LOCAL_FALLBACK_STORAGE_MODES and not external_mode_override:
         details["skipped_reason"] = "storage_mode_not_local_fallback"

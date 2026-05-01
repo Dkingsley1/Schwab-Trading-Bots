@@ -21,6 +21,13 @@ def test_summarize_option_chain_emits_bias_roll_vwap_term_and_vol_expectation() 
                 "gamma": 0.08,
                 "theta": -0.04,
                 "vega": 0.12,
+                "vanna": 0.21,
+                "charm": -0.03,
+                "vomma": 0.42,
+                "speed": -0.08,
+                "color": -0.05,
+                "zomma": 0.09,
+                "ultima": 0.18,
                 "bid": 4.8,
                 "ask": 5.2,
                 "mark": 5.1,
@@ -37,6 +44,13 @@ def test_summarize_option_chain_emits_bias_roll_vwap_term_and_vol_expectation() 
                 "gamma": 0.09,
                 "theta": -0.05,
                 "vega": 0.14,
+                "vanna": -0.18,
+                "charm": -0.04,
+                "volga": 0.38,
+                "speed": -0.07,
+                "color": -0.04,
+                "zomma": 0.07,
+                "ultima": 0.15,
                 "bid": 5.4,
                 "ask": 5.9,
                 "mark": 5.7,
@@ -104,6 +118,22 @@ def test_summarize_option_chain_emits_bias_roll_vwap_term_and_vol_expectation() 
     assert 0.0 <= out["options_zero_dte_regime_norm"] <= 1.0
     assert 0.0 <= out["options_vol_of_vol_change_norm"] <= 1.0
     assert 0.0 <= out["options_spread_execution_risk_norm"] <= 1.0
+    assert 0.0 <= out["options_vanna_mean_norm"] <= 1.0
+    assert 0.0 <= out["options_charm_abs_mean_norm"] <= 1.0
+    assert 0.0 <= out["options_vomma_mean_norm"] <= 1.0
+    assert 0.0 <= out["options_speed_abs_mean_norm"] <= 1.0
+    assert 0.0 <= out["options_color_abs_mean_norm"] <= 1.0
+    assert 0.0 <= out["options_zomma_abs_mean_norm"] <= 1.0
+    assert 0.0 <= out["options_ultima_abs_mean_norm"] <= 1.0
+    assert 0.0 <= out["options_higher_order_greek_pressure_norm"] <= 1.0
+    assert 0.0 <= out["options_barrier_touch_risk_norm"] <= 1.0
+    assert 0.0 <= out["options_lookback_path_dependency_norm"] <= 1.0
+    assert 0.0 <= out["options_variance_swap_proxy_norm"] <= 1.0
+    assert 0.0 <= out["options_volatility_swap_proxy_norm"] <= 1.0
+    assert 0.0 <= out["options_gamma_scalping_pressure_norm"] <= 1.0
+    assert 0.0 <= out["options_vanna_volga_hedge_pressure_norm"] <= 1.0
+    assert 0.0 <= out["options_dispersion_trade_proxy_norm"] <= 1.0
+    assert 0.0 <= out["options_volatility_arbitrage_proxy_norm"] <= 1.0
     assert "options_iv_term_structure" in out
 
 

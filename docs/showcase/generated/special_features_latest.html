@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Special Features And Highlights</title>
+  <style>
+    :root {
+      --bg: #eef2f3;
+      --card: #ffffff;
+      --ink: #1f2937;
+      --muted: #5b6471;
+      --line: #d7e0e6;
+      --teal: #2ca6a4;
+      --blue: #7fa8d1;
+      --gold: #d8a93a;
+      --red: #c65a5a;
+      --green: #1e8e5a;
+      --purple: #6b5bd2;
+      --shadow: 0 18px 40px rgba(21, 33, 52, 0.08);
+      --hero: linear-gradient(145deg, rgba(27, 146, 146, 0.12), rgba(107, 91, 210, 0.08) 55%, rgba(216, 169, 58, 0.12));
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: radial-gradient(circle at top left, #f8fbfc 0, var(--bg) 40%, #e8eeef 100%); color: var(--ink); font: 15px/1.6 "Avenir Next", "Segoe UI", sans-serif; }
+    .page { padding: 28px 30px 36px; }
+    .hero { background: var(--hero), var(--card); border: 1px solid rgba(128, 151, 166, 0.22); border-radius: 24px; padding: 24px 26px; box-shadow: var(--shadow); }
+    h1, h2, h3 { margin: 0; }
+    h1 { font: 700 31px/1.12 "Iowan Old Style", "Georgia", serif; letter-spacing: -0.02em; }
+    h2 { font: 700 22px/1.18 "Iowan Old Style", "Georgia", serif; margin-bottom: 12px; }
+    h3 { font-size: 18px; margin-bottom: 10px; }
+    .eyebrow { display: inline-block; margin-bottom: 10px; color: var(--purple); font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+    .sub { margin-top: 8px; color: var(--muted); max-width: 920px; }
+    .section-card { margin-top: 18px; background: var(--card); border: 1px solid rgba(128, 151, 166, 0.2); border-radius: 22px; padding: 18px; box-shadow: var(--shadow); }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+    .feature-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .brief-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .brief-card { background: linear-gradient(180deg, #ffffff 0%, #fafcfd 100%); border-radius: 18px; border: 1px solid rgba(128, 151, 166, 0.18); padding: 18px; }
+    .brief-card p { margin: 0; color: var(--muted); }
+    .section-lead { color: var(--muted); margin-bottom: 12px; }
+    .box, .mini-box { background: linear-gradient(180deg, #ffffff 0%, #fbfcfd 100%); border-radius: 18px; border: 2px solid var(--line); padding: 14px; }
+    .box p, .mini-box p { margin: 0; color: var(--muted); }
+    .mini-box .metric { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
+    .teal { border-color: var(--teal); }
+    .blue { border-color: var(--blue); }
+    .gold { border-color: var(--gold); }
+    .purple { border-color: var(--purple); }
+    .green { border-color: var(--green); }
+    .red { border-color: var(--red); }
+    ul { margin: 0; padding-left: 20px; }
+    li { margin: 8px 0; }
+    .feature-points { margin-top: 12px; padding-left: 18px; color: var(--ink); }
+    .feature-points li { margin: 6px 0; color: var(--ink); }
+    .feature-callout, .feature-watch { margin-top: 12px; padding: 12px 13px; border-radius: 14px; }
+    .feature-callout { background: rgba(44, 166, 164, 0.08); }
+    .feature-watch { background: rgba(198, 90, 90, 0.08); }
+    .feature-callout strong, .feature-watch strong { display: block; margin-bottom: 6px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+    .feature-callout p, .feature-watch p { color: var(--ink); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid var(--line); padding: 10px 8px; text-align: left; vertical-align: top; }
+    th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <section class="hero">
+      <div class="eyebrow">Executive Feature Report</div>
+      <h1>Special Features And Highlights</h1>
+      <p class="sub">Generated 2026-05-01 17:02 UTC. This packet treats special features as operating capabilities, not marketing bullets. Each section explains why the feature matters, what evidence proves it is real today, and what still needs attention before the capability is fully mature.</p>
+      <p class="sub">The goal is to make the feature story worthy of the platform itself: differentiated where the architecture is actually uncommon, honest where the proofs are still incomplete, and useful to an operator who wants to understand why the system deserves trust.</p>
+    </section>
+    <section class="section-card">
+      <h2>Executive Summary</h2>
+      <div class="brief-grid">
+        <section class='brief-card'><h3>Why These Features Matter</h3><p>The point is not that the platform has clever modules. The point is that the feature layer explains why the system is differentiated operationally: unified-memory-aware Apple Silicon tuning, one switchboard across modes, event-to-trade intelligence, self-healing ops, and a real broker-portable runtime contract.</p></section><section class='brief-card'><h3>What Makes The Proof Worthy</h3><p>Each feature is anchored to a live artifact, current score, or runtime contract. That keeps the report honest: if a surface is blocked, degraded, or still only proven in replay, the packet says so instead of pretending the feature is fully complete.</p></section><section class='brief-card'><h3>How To Read This Packet</h3><p>The proof strip gives current posture, the feature cards explain practical value, and the watch items tell you where the next quality bar still sits. That is what turns a feature list into an actual report.</p></section>
+      </div>
+    </section>
+    <section class="section-card">
+      <h2>Feature Proof Surface</h2>
+      <div class="feature-grid">
+        <section class='box teal'><h3>Adaptive Apple Silicon Brain</h3><p>Adaptive Apple Silicon Brain: host-aware tuning now recognizes `unknown`, sees memory architecture `unknown`, and lands on `unknown` before the stack starts.</p><div class='feature-callout'><strong>Why it matters</strong><p>This matters because Apple Silicon unified memory gives the live stack one shared CPU and GPU pool for feature windows, broker-context caches, and MLX inference, so the same code can stay responsive on a MacBook Air and then scale up hard on Max-class machines without copy-heavy rewrites.</p></div><ul class='feature-points'><li>Recognized host `unknown chip` on `unknown os` with profile `unknown`.</li><li>Memory architecture is `unknown` with shared CPU/GPU pool `False`.</li><li>Apple Silicon memory advantage details are not yet published in the host contract.</li><li>Recommended runtime posture is `unknown` with backend `unknown`.</li></ul><div class='feature-watch'><strong>Current watch item</strong><p>Portable posture is still strongest on native Apple Silicon; non-Mac proof is `unknown` and still about replay parity rather than full live parity.</p></div></section><section class='box blue'><h3>Three-Mode Switchboard</h3><p>Three-Mode Switchboard: mission control now tracks shadow/paper/live with `2` active modes and runtime clearance `awaiting_cold_lane`.</p><div class='feature-callout'><strong>Why it matters</strong><p>This is the control surface that keeps the same trading brain coherent across shadow, paper, and live instead of forcing three separate systems to drift apart over time.</p></div><ul class='feature-points'><li>Switchboard currently tracks `2` active modes and `2` ready modes.</li><li>Active modes: `shadow, paper`; ready modes: `shadow, paper`.</li><li>Control surface clearance is `awaiting_cold_lane` with live read-only `False`.</li></ul><div class='feature-watch'><strong>Current watch item</strong><p>Runtime clearance is still `awaiting_cold_lane`, which means the switchboard is operationally honest about when live should stay read-only.</p></div></section><section class='box gold'><h3>Event-to-Trade Intelligence</h3><p>Event-to-Trade Intelligence: the macro lane now surfaces live-detection and media ingest proof as `degraded` with `live_detected=0 media_status=missing`.</p><div class='feature-callout'><strong>Why it matters</strong><p>It gives the platform a route from macro hearings, policy streams, and transcripts into market-aware stance, relevance, and bulletin surfaces that the rest of the brain can actually use.</p></div><ul class='feature-points'><li>Latest macro event status is `missing` from `unknown source` with speaker `unknown speaker`.</li><li>Transcript quality is `unknown` at `0.0000`, cue match `0.0000`.</li><li>Market read is `unknown` with sentiment `0.0000` and relevance `unknown`.</li></ul><div class='feature-watch'><strong>Current watch item</strong><p>Current transcript pipeline is `unknown` and should keep moving toward fully clean replay-grade transcripts for every event.</p></div></section><section class='box purple'><h3>Self-Healing Ops Plane</h3><p>Self-Healing Ops Plane: autonomy currently sits at `41.10/100` with `3` triggered playbooks.</p><div class='feature-callout'><strong>Why it matters</strong><p>It is the difference between a platform that merely runs and one that can diagnose pressure, throttle itself, freeze bad lanes, and preserve operator trust while the rest of the stack keeps moving.</p></div><ul class='feature-points'><li>Autonomy score is `41.10/100` with `3` autonomous repair paths.</li><li>Triggered playbooks: `3`; notification ladder `degraded`; incident review `blocked`.</li><li>Process watchdog shows `3/3` healthy targets and `0` restart storms; chaos drill score `100.00`.</li></ul><div class='feature-watch'><strong>Current watch item</strong><p>Incident review is currently `blocked`, so the self-healing story is strong but still not fully frictionless.</p></div></section><section class='box green'><h3>Portable Brain Contract</h3><p>Portable Brain Contract: the host contract now recommends `unknown` mode with proof-node status `unknown`, backend `unknown`, and parity focus `unknown` while keeping the broker/runtime seam portable.</p><div class='feature-callout'><strong>Why it matters</strong><p>This is the selling point that keeps the platform from being a dead-end Mac-only build: Apple Silicon stays first-class for the live brain, but the runtime now has an explicit broker-agnostic contract for replay, research, and proof on Linux and Windows.</p></div><ul class='feature-points'><li>Native contract is `unknown` on backend `unknown`, portable contract is `unknown` on `unknown`.</li><li>Broker-specific news, options, and calendar context now sit behind adapter seams instead of being hardwired to one brokerage client.</li><li>Apple Silicon keeps a live-trading edge through `unknown` memory architecture while the proof node preserves Linux and Windows replay portability.</li><li>Cross-platform proof node is `unknown` and nightly parity support is `False`.</li></ul><div class='feature-watch'><strong>Current watch item</strong><p>Next portability milestone is `unknown`, which is still the bridge between strong design and undeniable parity proof.</p></div></section>
+      </div>
+    </section>
+    <section class="section-card">
+      <h2>Platform Proof Snapshot</h2>
+      <div class="grid">
+        <section class='mini-box teal'><h3>Live Readiness</h3><div class='metric'>65.00/100</div><p>blocked</p></section><section class='mini-box blue'><h3>Institutional Readiness</h3><div class='metric'>93.72/100</div><p>industry_leaning</p></section><section class='mini-box gold'><h3>Autonomy Control</h3><div class='metric'>41.10/100</div><p>blocked</p></section><section class='mini-box purple'><h3>Architecture Upgrades</h3><div class='metric'>4/12</div><p>host </p></section><section class='mini-box green'><h3>Active Bots</h3><div class='metric'>428</div><p>of 492 registered</p></section><section class='mini-box red'><h3>Running Lanes</h3><div class='metric'>3</div><p>of 75 tracked</p></section><section class='mini-box teal'><h3>Training Lane</h3><div class='metric'>0 trained / 0 failed</div><p>unknown age</p></section><section class='mini-box blue'><h3>PyTorch Sidecar</h3><div class='metric'>0</div><p>0 tracked runs</p></section>
+      </div>
+    </section>
+    <section class="section-card">
+      <h2>Interpretation Notes</h2>
+      <div class="section-lead">These notes explain how to read the feature set as a real capability stack rather than a list of isolated modules.</div>
+      <div class="brief-grid">
+        <section class='brief-card'><h3>Differentiation</h3><p>The strongest features are the ones that combine architecture with lived proof: host-aware runtime tuning, a real multi-mode switchboard, and event ingestion that actually reaches market-relevant stance and relevance surfaces.</p></section><section class='brief-card'><h3>Operational Honesty</h3><p>The packet intentionally leaves the rough edges visible. If autonomy is still blocked or a portability surface is only replay-proven, that honesty makes the feature story more credible, not less.</p></section><section class='brief-card'><h3>What Still Raises The Bar</h3><p>The next level comes from steadier control-plane freedom, deeper portability proof, and better training/promotion health so the features read as durable operating strengths rather than ambitious modules.</p></section>
+      </div>
+    </section>
+    <section class="section-card">
+      <h2>Current Highlights</h2>
+      <ul><li>Registry currently tracks 492 bots with 428 active across crypto_sub_bot, futures_sub_bot, infrastructure_bot, infrastructure_sub_bot, macro_sub_bot, options_sub_bot, signal_sub_bot lanes.</li><li>Live ingestion is wired across 75 lane artifacts with 3 currently reporting `running`.</li><li>Institutional-readiness score is `93.72/100` with status `industry_leaning` across 12 governance domains.</li><li>Live readiness is `blocked` at `65.00/100`, with broker/session ready=`True/False` and watchdog healthy=`False`.</li><li>Runtime separation is `blocked` with contention score `4` and live-read-only=`False`.</li><li>Autonomy control plane is `blocked` at `41.10/100`, with `3` triggered playbooks, `2` open incidents, and promotion state `assembling_packet`.</li><li>Architecture upgrade scoreboard tracks `4` ready proof surfaces out of `12`, with host profile `unknown` and portable proof `unknown`.</li><li>Crypto context is aggregating 14/14 healthy sources and 7/7 healthy crypto news feeds.</li></ul>
+    </section>
+    <section class="section-card">
+      <h2>Current Active Lineup</h2>
+      <table><thead><tr><th>Bot</th><th>Role</th><th>Test Accuracy</th><th>Quality Score</th></tr></thead><tbody><tr><td>brain_refinery_v95_rates_regime_bond_bot</td><td>signal_sub_bot</td><td>100.0%</td><td>0.230</td></tr><tr><td>brain_refinery_v99_defensive_dividend_concentration</td><td>options_sub_bot</td><td>100.0%</td><td>0.923</td></tr><tr><td>brain_refinery_v10_seasonal</td><td>signal_sub_bot</td><td>93.8%</td><td>0.992</td></tr><tr><td>brain_refinery_v96_credit_spread_rotation_bot</td><td>signal_sub_bot</td><td>89.5%</td><td>0.229</td></tr><tr><td>brain_refinery_v21_flash_crash</td><td>signal_sub_bot</td><td>72.2%</td><td>0.649</td></tr></tbody></table>
+    </section>
+    <section class="section-card">
+      <h2>Recommendations</h2>
+      <div class="section-lead">These are the next upgrades most likely to make the feature story feel undeniable from top to bottom.</div>
+      <div class="brief-grid">
+        <section class='brief-card'><h3>Make Portability Hard To Dismiss</h3><p>Keep the Apple Silicon story, but add more frequent replay and parity evidence on non-Mac nodes so the portable-brain contract reads as a proven pathway rather than a smart intention.</p></section><section class='brief-card'><h3>Reduce Operational Friction</h3><p>Drive the autonomy blockers and incident-review drag down so the self-healing ops story is as strong in practice as it is in architecture.</p></section><section class='brief-card'><h3>Make Macro Intelligence Cleaner</h3><p>Push transcript cleanup and replay quality further so event-to-trade intelligence can hold up under scrutiny when live captions are messy or speaker flow changes quickly.</p></section>
+      </div>
+    </section>
+  </div>
+</body>
+</html>

@@ -15,7 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from core.runtime_python import resolve_runtime_python
 
-os.environ.setdefault("BOT_RUNTIME_LANE", os.getenv("BOT_SHADOW_RUNTIME_LANE", "shadow314"))
+os.environ.setdefault("BOT_RUNTIME_LANE", os.getenv("BOT_SHADOW_RUNTIME_LANE", "shadow"))
 RUNTIME_PY = resolve_runtime_python(PROJECT_ROOT)
 LOG_PATH = PROJECT_ROOT / 'governance' / 'watchdog' / 'failover_events.jsonl'
 FALLBACK_LOG_PATH = Path('/tmp/failover_events.jsonl')

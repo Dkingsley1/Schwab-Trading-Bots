@@ -41,6 +41,11 @@ try:
 except Exception:
     summarize_calendar_payload = None
 
+try:
+    from advanced_quant_models import QUANT_MODEL_FEATURE_KEYS
+except Exception:
+    QUANT_MODEL_FEATURE_KEYS = ()
+
 
 RuntimeObservation = Dict[str, Any]
 RuntimeSequenceMap = Dict[Tuple[str, str], List[RuntimeObservation]]
@@ -235,6 +240,22 @@ _RUNTIME_TASTYTRADE_KEYS = {
     "options_zero_dte_regime_norm",
     "options_vol_of_vol_change_norm",
     "options_spread_execution_risk_norm",
+    "options_vanna_mean_norm",
+    "options_charm_abs_mean_norm",
+    "options_vomma_mean_norm",
+    "options_speed_abs_mean_norm",
+    "options_color_abs_mean_norm",
+    "options_zomma_abs_mean_norm",
+    "options_ultima_abs_mean_norm",
+    "options_higher_order_greek_pressure_norm",
+    "options_barrier_touch_risk_norm",
+    "options_lookback_path_dependency_norm",
+    "options_variance_swap_proxy_norm",
+    "options_volatility_swap_proxy_norm",
+    "options_gamma_scalping_pressure_norm",
+    "options_vanna_volga_hedge_pressure_norm",
+    "options_dispersion_trade_proxy_norm",
+    "options_volatility_arbitrage_proxy_norm",
 }
 
 _RUNTIME_CRYPTO_MARKET_KEYS = {
@@ -267,6 +288,14 @@ _RUNTIME_MARKET_CRYPTO_CORRELATION_KEYS = {
     "market_crypto_current_alignment_norm",
     "market_crypto_divergence_norm",
     "market_crypto_corr_confidence_norm",
+    "market_crypto_sleeve_coverage_norm",
+    "market_crypto_sleeve_avg_abs_corr_norm",
+    "market_crypto_sleeve_dispersion_norm",
+    "market_crypto_sleeve_confidence_norm",
+    "market_crypto_risk_on_crypto_alignment_norm",
+    "market_crypto_fx_crypto_inverse_corr_norm",
+    "market_crypto_rates_crypto_corr_norm",
+    "market_crypto_energy_crypto_corr_norm",
 }
 
 _RUNTIME_FX_MARKET_KEYS = {
@@ -301,6 +330,8 @@ _RUNTIME_DIVIDEND_DRIP_KEYS = {
     "dividend_drip_confidence_norm",
 }
 
+_RUNTIME_QUANT_MODEL_KEYS = set(QUANT_MODEL_FEATURE_KEYS)
+
 _RUNTIME_SCHWAB_EDUCATION_KEYS = {
     "schwab_education_item_density_norm",
     "schwab_education_recent_activity_norm",
@@ -313,7 +344,7 @@ _RUNTIME_SCHWAB_EDUCATION_KEYS = {
     "schwab_education_symbol_stream_share_norm",
 }
 
-_RUNTIME_GAP_FILL_KEYS = set(BREADTH_FEATURE_KEYS) | set(BOND_REFERENCE_FEATURE_KEYS) | set(CREDIT_CONTEXT_FEATURE_KEYS) | set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS | _RUNTIME_CALENDAR_EVENT_KEYS | _RUNTIME_MARKET_MICRO_KEYS | _RUNTIME_SEC_EDGAR_KEYS | _RUNTIME_EXTENDED_QUANT_KEYS | _RUNTIME_TASTYTRADE_KEYS | _RUNTIME_CRYPTO_MARKET_KEYS | _RUNTIME_MARKET_CRYPTO_CORRELATION_KEYS | _RUNTIME_FX_MARKET_KEYS | _RUNTIME_DIVIDEND_DRIP_KEYS | _RUNTIME_SCHWAB_EDUCATION_KEYS
+_RUNTIME_GAP_FILL_KEYS = set(BREADTH_FEATURE_KEYS) | set(BOND_REFERENCE_FEATURE_KEYS) | set(CREDIT_CONTEXT_FEATURE_KEYS) | set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS | _RUNTIME_CALENDAR_EVENT_KEYS | _RUNTIME_MARKET_MICRO_KEYS | _RUNTIME_SEC_EDGAR_KEYS | _RUNTIME_EXTENDED_QUANT_KEYS | _RUNTIME_TASTYTRADE_KEYS | _RUNTIME_CRYPTO_MARKET_KEYS | _RUNTIME_MARKET_CRYPTO_CORRELATION_KEYS | _RUNTIME_FX_MARKET_KEYS | _RUNTIME_DIVIDEND_DRIP_KEYS | _RUNTIME_SCHWAB_EDUCATION_KEYS | _RUNTIME_QUANT_MODEL_KEYS
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -464,6 +495,7 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     market_crypto_correlation = load_latest_external_context(project_root, "market_crypto_correlation")
     fx_market_context = load_latest_external_context(project_root, "fx_market_context")
     dividend_drip_state = load_latest_external_context(project_root, "dividend_drip_state")
+    quant_model_control = load_latest_external_context(project_root, "quant_model_control")
 
     te_derived = tradingeconomics.get("derived") if isinstance(tradingeconomics.get("derived"), Mapping) else {}
     official_derived = official_macro.get("derived") if isinstance(official_macro.get("derived"), Mapping) else {}
@@ -475,6 +507,7 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     market_crypto_corr_derived = market_crypto_correlation.get("derived") if isinstance(market_crypto_correlation.get("derived"), Mapping) else {}
     fx_market_derived = fx_market_context.get("derived") if isinstance(fx_market_context.get("derived"), Mapping) else {}
     dividend_drip_derived = dividend_drip_state.get("derived") if isinstance(dividend_drip_state.get("derived"), Mapping) else {}
+    quant_model_derived = quant_model_control.get("derived") if isinstance(quant_model_control.get("derived"), Mapping) else {}
     te_calendar = te_derived.get("calendar_features") if isinstance(te_derived.get("calendar_features"), Mapping) else {}
     te_news = te_derived.get("news_features") if isinstance(te_derived.get("news_features"), Mapping) else {}
     te_calendar_rows = te_derived.get("calendar_rows") if isinstance(te_derived.get("calendar_rows"), list) else []
@@ -505,6 +538,8 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     fx_market_symbol = fx_market_derived.get("symbol_features") if isinstance(fx_market_derived.get("symbol_features"), Mapping) else {}
     dividend_drip_global = dividend_drip_derived.get("global_features") if isinstance(dividend_drip_derived.get("global_features"), Mapping) else {}
     dividend_drip_symbol = dividend_drip_derived.get("symbol_features") if isinstance(dividend_drip_derived.get("symbol_features"), Mapping) else {}
+    quant_model_global = quant_model_derived.get("global_features") if isinstance(quant_model_derived.get("global_features"), Mapping) else {}
+    quant_model_symbol = quant_model_derived.get("symbol_features") if isinstance(quant_model_derived.get("symbol_features"), Mapping) else {}
 
     calendar_features = _feature_subset(te_calendar, _RUNTIME_CALENDAR_EVENT_KEYS)
     if te_calendar_rows and callable(summarize_calendar_payload):
@@ -586,6 +621,7 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     external_global_features.update(_feature_subset(market_crypto_corr_global, _RUNTIME_MARKET_CRYPTO_CORRELATION_KEYS))
     external_global_features.update(_feature_subset(fx_market_global, _RUNTIME_FX_MARKET_KEYS))
     external_global_features.update(_feature_subset(dividend_drip_global, _RUNTIME_DIVIDEND_DRIP_KEYS))
+    external_global_features.update(_feature_subset(quant_model_global, _RUNTIME_QUANT_MODEL_KEYS))
     external_symbol_features = _symbol_feature_subset(sec_symbol, _RUNTIME_SEC_EDGAR_KEYS)
     for symbol, subset in _symbol_feature_subset(
         schwab_symbol,
@@ -612,6 +648,9 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
         current = external_symbol_features.setdefault(symbol, {})
         current.update(subset)
     for symbol, subset in _symbol_feature_subset(dividend_drip_symbol, _RUNTIME_DIVIDEND_DRIP_KEYS).items():
+        current = external_symbol_features.setdefault(symbol, {})
+        current.update(subset)
+    for symbol, subset in _symbol_feature_subset(quant_model_symbol, _RUNTIME_QUANT_MODEL_KEYS).items():
         current = external_symbol_features.setdefault(symbol, {})
         current.update(subset)
 

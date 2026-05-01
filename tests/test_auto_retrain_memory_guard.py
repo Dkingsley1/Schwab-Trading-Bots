@@ -77,7 +77,7 @@ def test_spawn_auto_retrain_labels_source_and_persists_log(monkeypatch, tmp_path
         captured["stderr"] = stderr
         return _FakeProc()
 
-    monkeypatch.setattr(loop, "resolve_runtime_python", lambda project_root: Path("/tmp/fake-python"))
+    monkeypatch.setattr(loop, "resolve_training_python", lambda project_root: Path("/tmp/fake-python"))
     monkeypatch.setattr(loop, "_shadow_profile_name", lambda: "aggressive")
     monkeypatch.setattr(loop.subprocess, "Popen", _fake_popen)
 

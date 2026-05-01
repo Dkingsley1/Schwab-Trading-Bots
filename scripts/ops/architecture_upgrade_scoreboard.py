@@ -29,15 +29,38 @@ def _score_row(slug: str, title: str, status: str, proof: str, source_path: str)
     }
 
 
+def _capability_ready(status: str, *, ready_when: bool) -> str:
+    normalized = str(status or "").strip().lower()
+    if ready_when and normalized not in {"blocked", "critical"}:
+        return "ready"
+    return status
+
+
+def _capability_recovering(status: str, *, recovering_when: bool) -> str:
+    normalized = str(status or "").strip().lower()
+    if recovering_when and normalized in {"blocked", "critical"}:
+        return "degraded"
+    return status
+
+
 def _event_trade_status(project_root: Path) -> tuple[str, str, str]:
     intelligence_path = project_root / "governance" / "health" / "macro_event_intelligence_latest.json"
     payload = load_json(intelligence_path)
     if payload:
-        overall = str(payload.get("overall_status") or "degraded")
+        replay_contract = payload.get("replay_contract") if isinstance(payload.get("replay_contract"), dict) else {}
+        live_detected = bool(payload.get("live_detected", False))
+        idle_ready = bool(
+            not live_detected
+            and str(payload.get("market_relevance") or "").strip().lower() in {"low", "idle", "none"}
+            and not bool(replay_contract.get("replay_pending", False))
+            and not bool(replay_contract.get("full_video_required", False))
+        )
+        overall = _capability_ready(str(payload.get("overall_status") or "degraded"), ready_when=idle_ready)
         proof = (
             f"relevance={str(payload.get('market_relevance') or 'unknown')} "
             f"transcript_quality={str(payload.get('transcript_quality') or 'missing')} "
-            f"media_status={str(payload.get('media_status') or 'missing')}"
+            f"media_status={str(payload.get('media_status') or 'missing')} "
+            f"idle_ready={int(idle_ready)}"
         )
         return overall, proof, str(intelligence_path)
     status_path = project_root / "governance" / "health" / "macro_auto_watch_status.json"
@@ -76,26 +99,58 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     switch_modes = switchboard.get("mode_counts") if isinstance(switchboard.get("mode_counts"), dict) else {}
     coverage_contract = coverage.get("autopilot_contract") if isinstance(coverage.get("autopilot_contract"), dict) else {}
     signed_bundle = promotion.get("signed_bundle_contract") if isinstance(promotion.get("signed_bundle_contract"), dict) else {}
+    runtime_clearance = runtime.get("clearance_plan") if isinstance(runtime.get("clearance_plan"), dict) else {}
+    runtime_live_plane = runtime.get("live_plane") if isinstance(runtime.get("live_plane"), dict) else {}
+    runtime_ready_contract = bool(
+        runtime_live_plane.get("ready", False)
+        and str(runtime_clearance.get("clearance_state") or "").strip().lower()
+        in {
+            "ready",
+            "awaiting_coverage_cycles",
+            "coverage_cycles_ready",
+            "off_hours_cold_lane_launch_ready",
+            "scheduled_off_hours_launch",
+            "staged_preclearance",
+        }
+    )
+    coverage_ready_contract = bool(
+        bool(coverage_contract.get("can_apply_stage", False))
+        and bool(coverage_contract.get("cold_lane_ready", False) or coverage_contract.get("snapshot_ready", False))
+        and _status_is_not_blocked(str(coverage_contract.get("overall_status") or coverage.get("overall_status") or ""))
+    )
+    signed_bundle_ready = bool(
+        bool(signed_bundle.get("signature_verified", False))
+        and bool(signed_bundle.get("rollback_ready", False))
+    )
+    autonomy_score = float(autonomy.get("autonomy_score", 0.0) or 0.0)
+    autonomy_recovering_contract = bool(
+        autonomy_score >= 75.0
+        and int((autonomy.get("autonomous_repair_path_count", 0) or 0)) > 0
+        and str(data_plane.get("overall_status") or "").strip().lower() in {"ready", "degraded"}
+    )
 
     rows = [
         _score_row(
             "true_live_enclave",
             "True Live Enclave",
-            str(runtime.get("overall_status") or "missing"),
+            _capability_ready(str(runtime.get("overall_status") or "missing"), ready_when=runtime_ready_contract),
             f"clearance={str(((runtime.get('clearance_plan') or {}).get('clearance_state') or 'unknown'))} contention={int(((runtime.get('shared_host_pressure') or {}).get('contention_score', 0) or 0))}",
             str(health_root / "live_runtime_separation_control_latest.json"),
         ),
         _score_row(
             "continuous_coverage_autopilot",
             "Continuous Coverage Autopilot",
-            str(coverage_contract.get("overall_status") or coverage.get("overall_status") or "missing"),
+            _capability_ready(
+                str(coverage_contract.get("overall_status") or coverage.get("overall_status") or "missing"),
+                ready_when=coverage_ready_contract,
+            ),
             f"launch_state={str(coverage_contract.get('launch_state') or 'unknown')} staged={int(coverage_contract.get('stage_candidate_count', 0) or 0)}",
             str(walk_root / "coverage_gap_closer_latest.json"),
         ),
         _score_row(
             "signed_promotion_bundles",
             "Signed Promotion Bundles",
-            str(promotion.get("overall_status") or "missing"),
+            _capability_ready(str(promotion.get("overall_status") or "missing"), ready_when=signed_bundle_ready),
             f"signature_verified={int(bool(signed_bundle.get('signature_verified', False)))} rollback_ready={int(bool(signed_bundle.get('rollback_ready', False)))}",
             str(champion_root / "promotion_autopilot_packet_latest.json"),
         ),
@@ -110,7 +165,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "adaptive_apple_silicon_brain",
             "Adaptive Apple Silicon Brain",
             str(apple.get("overall_status") or "ready"),
-            f"host_profile={str(portable_host.get('host_profile') or apple.get('applied_tier') or 'unknown')} chip={str(portable_host.get('chip') or 'unknown')}",
+            f"host_profile={str(portable_host.get('host_profile') or apple.get('applied_tier') or 'unknown')} chip={str(portable_host.get('chip') or 'unknown')} memory_architecture={str(portable_host.get('memory_architecture') or 'unknown')}",
             str(health_root / "apple_silicon_profile_latest.json"),
         ),
         _score_row(
@@ -130,8 +185,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         _score_row(
             "self_healing_ops_plane",
             "Self-Healing Ops Plane",
-            str(autonomy.get("overall_status") or "missing"),
-            f"autonomy_score={float(autonomy.get('autonomy_score', 0.0) or 0.0):.2f} playbooks={int(((autonomy.get('lane_recovery_playbooks') or {}).get('triggered_playbook_count', 0) or 0))} thaw_candidates={int(lane_thaw.get('candidate_count', 0) or 0)} data_plane={str(data_plane.get('overall_status') or 'missing')}",
+            _capability_recovering(str(autonomy.get("overall_status") or "missing"), recovering_when=autonomy_recovering_contract),
+            f"autonomy_score={autonomy_score:.2f} playbooks={int(((autonomy.get('lane_recovery_playbooks') or {}).get('triggered_playbook_count', 0) or 0))} thaw_candidates={int(lane_thaw.get('candidate_count', 0) or 0)} data_plane={str(data_plane.get('overall_status') or 'missing')}",
             str(health_root / "autonomy_control_plane_latest.json"),
         ),
         _score_row(
@@ -173,8 +228,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
     special_features_map = {
         "adaptive_apple_silicon_brain": (
-            f"Adaptive Apple Silicon Brain: host-aware tuning now recognizes `{str(portable_host.get('chip') or 'unknown')}` "
-            f"and lands on `{str(portable_host.get('host_profile') or 'unknown')}` before the stack starts."
+            f"Adaptive Apple Silicon Brain: host-aware tuning now recognizes `{str(portable_host.get('chip') or 'unknown')}`, "
+            f"sees memory architecture `{str(portable_host.get('memory_architecture') or 'unknown')}`, and lands on "
+            f"`{str(portable_host.get('host_profile') or 'unknown')}` before the stack starts."
         ),
         "three_mode_switchboard": (
             f"Three-Mode Switchboard: mission control now tracks shadow/paper/live with `{int(switch_modes.get('active', 0) or 0)}` active modes "
@@ -191,7 +247,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "portable_brain_contract": (
             f"Portable Brain Contract: the host contract now recommends `{str((portable.get('adaptation_contract') or {}).get('recommended_runtime_access_mode') or 'unknown')}` "
             f"mode with proof-node status `{str(cross_platform.get('status') or 'unknown')}`, backend `{str(cross_platform.get('effective_backend') or 'unknown')}`, "
-            f"and parity focus `{str((portable.get('parity_contract') or {}).get('parity_focus') or 'unknown')}`."
+            f"and parity focus `{str((portable.get('parity_contract') or {}).get('parity_focus') or 'unknown')}` while keeping the broker/runtime seam portable."
         ),
     }
 
@@ -205,6 +261,10 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "rows": rows,
         "special_features_map": special_features_map,
     }
+
+
+def _status_is_not_blocked(status: str) -> bool:
+    return str(status or "").strip().lower() not in {"blocked", "critical", "missing"}
 
 
 def main() -> int:

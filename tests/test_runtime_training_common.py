@@ -354,6 +354,8 @@ def test_runtime_feature_registries_include_new_trading_context_keys() -> None:
         "market_micro_gap_fade_risk_norm",
         "options_iv_crush_risk_norm",
         "options_spread_execution_risk_norm",
+        "options_higher_order_greek_pressure_norm",
+        "options_volatility_arbitrage_proxy_norm",
         "fx_session_london_norm",
         "fx_dxy_yield_confirmation_norm",
         "schwab_education_item_density_norm",

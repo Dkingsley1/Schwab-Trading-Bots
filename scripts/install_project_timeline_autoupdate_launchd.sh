@@ -3,7 +3,7 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON_BIN="$PROJECT_ROOT/.venv312/bin/python"
-RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/project_timeline_report.py"
+RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_project_timeline_autoupdate_launchd.sh"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.dankingsley.project_timeline_autoupdate.plist"
 PRUNE_DAYS="${PROJECT_TIMELINE_PRUNE_OLDER_DAYS:-7}"
 PRUNE_KEEP_RUNS="${PROJECT_TIMELINE_PRUNE_KEEP_RUNS:-20}"
@@ -17,6 +17,7 @@ OUT_LOG="$LOG_DIR/project_timeline_autoupdate.out.log"
 ERR_LOG="$LOG_DIR/project_timeline_autoupdate.err.log"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
+chmod +x "$RUN_SCRIPT"
 
 cat > "$PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -28,7 +29,6 @@ cat > "$PLIST_PATH" <<PLIST
 
   <key>ProgramArguments</key>
   <array>
-    <string>$PYTHON_BIN</string>
     <string>$RUN_SCRIPT</string>
     <string>--auto</string>
     <string>--json</string>

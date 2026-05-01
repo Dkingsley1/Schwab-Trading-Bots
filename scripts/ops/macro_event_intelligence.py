@@ -11,13 +11,15 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
+    from core.storage_mounts import resolve_external_storage
     from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
 else:
+    from core.storage_mounts import resolve_external_storage
     from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "macro_event_intelligence_latest.json"
-DEFAULT_LIVE_MACRO_PATH = Path("/Volumes/BOT_LOGS/schwab_trading_bot/data/external_context/live_macro_latest.json")
+DEFAULT_LIVE_MACRO_PATH = resolve_external_storage().external_root / "data" / "external_context" / "live_macro_latest.json"
 DEFAULT_MEDIA_LATEST_PATH = DEFAULT_LIVE_MACRO_PATH.parent / "live_macro_media" / "latest.json"
 
 

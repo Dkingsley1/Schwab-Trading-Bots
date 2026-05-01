@@ -6,7 +6,7 @@ from pathlib import Path
 from scripts.ops import process_watchdog as pw
 
 
-def test_refresh_runtime_reports_uses_lightweight_commands(tmp_path, monkeypatch) -> None:
+def test_refresh_runtime_reports_uses_full_one_numbers_command(tmp_path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     one_numbers = project_root / "exports" / "one_numbers" / "one_numbers_summary.json"
     one_numbers.parent.mkdir(parents=True, exist_ok=True)
@@ -56,8 +56,8 @@ def test_refresh_runtime_reports_uses_lightweight_commands(tmp_path, monkeypatch
     assert out["data_source_divergence"]["refreshed"] is True
     assert any(
         "build_one_numbers_report.py" in " ".join(cmd)
-        and "--lightweight" in cmd
-        and "--no-sql-write" in cmd
+        and "--lightweight" not in cmd
+        and "--no-sql-write" not in cmd
         for cmd in calls
     )
     assert any("paper_performance_report.py" in " ".join(cmd) and "--json-only" in cmd for cmd in calls)
@@ -167,6 +167,22 @@ def test_build_execution_lane_target_uses_paper_health_file(tmp_path, monkeypatc
     assert target["heartbeat_max_age_seconds"] == 240
 
 
+def test_default_require_paper_executor_disabled_when_all_sleeves_owns_it(monkeypatch) -> None:
+    monkeypatch.delenv("OPS_WATCHDOG_REQUIRE_PAPER_EXECUTOR", raising=False)
+    monkeypatch.setenv("OPS_WATCHDOG_REQUIRE_ALL_SLEEVES", "1")
+    monkeypatch.setenv("RUN_ALL_SLEEVES_WITH_PAPER_EXECUTOR", "1")
+
+    assert pw._default_require_paper_executor() is False
+
+
+def test_default_require_paper_executor_honors_explicit_override(monkeypatch) -> None:
+    monkeypatch.setenv("OPS_WATCHDOG_REQUIRE_PAPER_EXECUTOR", "1")
+    monkeypatch.setenv("OPS_WATCHDOG_REQUIRE_ALL_SLEEVES", "1")
+    monkeypatch.setenv("RUN_ALL_SLEEVES_WITH_PAPER_EXECUTOR", "1")
+
+    assert pw._default_require_paper_executor() is True
+
+
 def test_resolved_restart_storms_drop_healthy_settled_services() -> None:
     active, recent = pw._resolved_restart_storms(
         events=[
@@ -215,3 +231,31 @@ def test_resolved_restart_storms_respect_target_specific_settle_window() -> None
     assert active == []
     assert recent[0]["settle_seconds"] == 120
     assert recent[0]["resolved"] is True
+
+
+def test_resolved_restart_storms_resolve_when_target_is_paused_by_safety_flags() -> None:
+    active, recent = pw._resolved_restart_storms(
+        events=[
+            {"event": "restart", "name": "all_sleeves", "ts_epoch": 100.0},
+            {"event": "restart", "name": "all_sleeves", "ts_epoch": 200.0},
+            {"event": "restart", "name": "all_sleeves", "ts_epoch": 300.0},
+            {"event": "restart", "name": "all_sleeves", "ts_epoch": 400.0},
+        ],
+        status_rows=[
+            {
+                "name": "all_sleeves",
+                "running": 0,
+                "heartbeat_ok": False,
+                "paused_by_safety_flags": True,
+                "safety_pause_reason": "operator_stop_active",
+            }
+        ],
+        restart_window_seconds=3600,
+        restart_storm_threshold=4,
+        settle_seconds=900,
+        now_epoch=450.0,
+    )
+
+    assert active == []
+    assert recent[0]["resolved"] is True
+    assert recent[0]["resolution_reason"] == "operator_stop_active"

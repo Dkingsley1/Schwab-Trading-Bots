@@ -11,6 +11,17 @@ from typing import Dict, List
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TOKEN_PATH = PROJECT_ROOT / "token.json"
 
+if str(PROJECT_ROOT) not in os.sys.path:
+    os.sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.brokers import (
+    BrokerRuntimeConfig,
+    available_broker_names_for_role,
+    build_broker_adapter,
+    normalize_broker_name,
+)
+from core.storage_mounts import resolve_external_storage
+
 
 def _is_writable_directory(path: Path) -> bool:
     try:
@@ -54,13 +65,8 @@ def _check_disk(min_free_gb: float) -> Dict[str, object]:
 
 
 def _check_storage_route() -> Dict[str, object]:
-    external_mount = os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS").strip() or "/Volumes/BOT_LOGS"
-    external_dir = os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot").strip() or "schwab_trading_bot"
-    external_root_cfg = os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "").strip()
-    if external_root_cfg:
-        external_root = Path(external_root_cfg).expanduser()
-    else:
-        external_root = Path(external_mount).expanduser() / external_dir
+    resolution = resolve_external_storage()
+    external_root = resolution.external_root
 
     local_root = Path(
         os.getenv("BOT_LOGS_LOCAL_FALLBACK_ROOT", str(PROJECT_ROOT / "local_fallback_storage"))
@@ -76,7 +82,8 @@ def _check_storage_route() -> Dict[str, object]:
         "ok": external_ok or local_ok,
         "details": (
             f"mode={mode} external_ok={int(external_ok)} local_ok={int(local_ok)} "
-            f"external_root={external_root} local_root={local_root}"
+            f"external_root={external_root} local_root={local_root} "
+            f"match_reason={resolution.match_reason}"
         ),
     }
 
@@ -99,8 +106,13 @@ def _check_safety_env() -> List[Dict[str, object]]:
 
 
 def main() -> int:
+    broker_runtime = BrokerRuntimeConfig.from_env()
     parser = argparse.ArgumentParser(description="Preflight checks before starting shadow runtimes.")
-    parser.add_argument("--broker", choices=["schwab", "coinbase"], default=os.getenv("DATA_BROKER", "schwab"))
+    parser.add_argument(
+        "--broker",
+        choices=list(available_broker_names_for_role("market_data")),
+        default=broker_runtime.broker_for_role("market_data"),
+    )
     parser.add_argument("--simulate", action="store_true")
     parser.add_argument("--symbols-core", default=os.getenv("SHADOW_SYMBOLS_CORE", ""))
     parser.add_argument("--symbols-volatile", default=os.getenv("SHADOW_SYMBOLS_VOLATILE", ""))
@@ -110,6 +122,8 @@ def main() -> int:
     parser.add_argument("--allow-running", action="store_true", help="Do not fail if matching runtime process is already active.")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    broker = normalize_broker_name(args.broker)
+    broker_adapter = build_broker_adapter(broker)
 
     checks: List[Dict[str, object]] = []
 
@@ -139,23 +153,16 @@ def main() -> int:
 
     checks.append(_check_disk(max(args.min_free_gb, 0.1)))
 
-    if args.broker == "schwab" and not args.simulate:
-        key = os.getenv("SCHWAB_API_KEY", "").strip()
-        secret = os.getenv("SCHWAB_SECRET", "").strip()
-        invalid = {
-            "",
-            "YOUR_KEY_HERE",
-            "YOUR_SECRET_HERE",
-            "YOUR_REAL_KEY",
-            "YOUR_REAL_SECRET",
-            "<real_key>",
-            "<real_secret>",
-        }
+    if broker_adapter.capabilities.requires_auth and not args.simulate:
+        credentials = broker_adapter.load_credentials_from_env()
         checks.append(
             {
-                "name": "schwab_credentials_present",
-                "ok": key not in invalid and secret not in invalid,
-                "details": "SCHWAB_API_KEY/SCHWAB_SECRET placeholders not allowed for non-simulate mode",
+                "name": f"{broker}_credentials_present",
+                "ok": not broker_adapter.is_placeholder_credentials(credentials),
+                "details": (
+                    f"{broker_adapter.display_name} credentials must be configured and non-placeholder "
+                    "for non-simulate mode"
+                ),
             }
         )
         checks.append(
@@ -166,7 +173,7 @@ def main() -> int:
             }
         )
 
-    if args.broker == "schwab":
+    if broker == "schwab":
         running = _proc_running(
             "scripts/run_parallel_shadows.py",
             exclude=[
@@ -182,7 +189,7 @@ def main() -> int:
                 "details": f"running={running}",
             }
         )
-    else:
+    elif broker == "coinbase":
         running = _proc_running(
             "scripts/run_shadow_training_loop.py --broker coinbase",
             exclude=[
@@ -198,12 +205,27 @@ def main() -> int:
                 "details": f"running={running}",
             }
         )
+    else:
+        running = _proc_running(
+            f"scripts/run_shadow_training_loop.py --broker {broker}",
+            exclude=[
+                "scripts/ops/preflight_autofix.py",
+                "scripts/shadow_preflight.py",
+            ],
+        )
+        checks.append(
+            {
+                "name": f"no_duplicate_{broker}_loop",
+                "ok": args.allow_running or running == 0,
+                "details": f"running={running}",
+            }
+        )
 
     ok = all(bool(c.get("ok")) for c in checks)
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "ok": ok,
-        "broker": args.broker,
+        "broker": broker,
         "simulate": bool(args.simulate),
         "checks": checks,
     }
@@ -212,7 +234,7 @@ def main() -> int:
         print(json.dumps(payload, ensure_ascii=True, indent=2))
     else:
         status = "PASS" if ok else "FAIL"
-        print(f"PREFLIGHT {status} broker={args.broker} simulate={int(bool(args.simulate))}")
+        print(f"PREFLIGHT {status} broker={broker} simulate={int(bool(args.simulate))}")
         for c in checks:
             tag = "PASS" if c.get("ok") else "FAIL"
             print(f" - {tag} {c.get('name')}: {c.get('details')}")

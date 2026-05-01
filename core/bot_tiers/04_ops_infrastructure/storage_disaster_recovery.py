@@ -1,0 +1,1 @@
+../../../scripts/ops/storage_disaster_recovery.py

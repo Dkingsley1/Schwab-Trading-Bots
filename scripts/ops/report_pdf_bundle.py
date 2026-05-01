@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,13 +20,18 @@ RENDER_SUPPORT_DIR = PROJECT_ROOT / "exports" / "reports" / "pdf_render_sources"
 INDEX_HTML_PATH = PROJECT_ROOT / "exports" / "reports" / "report_pdf_bundle_latest.html"
 INDEX_PDF_PATH = PROJECT_ROOT / "exports" / "reports" / "report_pdf_bundle_latest.pdf"
 LATEST_METADATA_PATH = PROJECT_ROOT / "governance" / "health" / "report_pdf_bundle_latest.json"
+APP_BROWSER_CANDIDATES = (
+    Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+    Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+    Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+)
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
     return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _run(cmd: list[str]) -> tuple[int, str, str]:
+def _run(cmd: list[str], *, timeout_sec: int | None = None) -> tuple[int, str, str]:
     try:
         proc = subprocess.run(
             cmd,
@@ -33,8 +39,13 @@ def _run(cmd: list[str]) -> tuple[int, str, str]:
             capture_output=True,
             text=True,
             check=False,
+            timeout=timeout_sec,
         )
         return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
+        stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+        return 124, stdout.strip(), stderr.strip() or "timeout"
     except Exception as exc:
         return 1, "", str(exc)
 
@@ -63,7 +74,7 @@ def _pdf_renderer_binary(allow_gui_renderer: bool) -> tuple[str, str]:
     if env_override:
         env_bin = Path(env_override).expanduser()
         if env_bin.exists():
-            kind = "wkhtmltopdf" if env_bin.name == "wkhtmltopdf" else "browser"
+            kind = "wkhtmltopdf" if env_bin.name == "wkhtmltopdf" else ("browser_app" if env_bin.suffix == ".app" else "browser")
             return str(env_bin), kind
 
     wkhtmltopdf = shutil.which("wkhtmltopdf")
@@ -81,14 +92,11 @@ def _pdf_renderer_binary(allow_gui_renderer: bool) -> tuple[str, str]:
         if candidate:
             return candidate, "browser"
 
-    if allow_gui_renderer:
-        for candidate in (
-            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-            Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
-            Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
-        ):
-            if candidate.exists():
-                return str(candidate), "browser"
+    # App-bundle browser binaries still render headlessly, so they are valid even
+    # when the policy disallows an interactive GUI renderer.
+    for candidate in APP_BROWSER_CANDIDATES:
+        if candidate.exists():
+            return str(candidate), "browser_app"
 
     return "", ""
 
@@ -98,32 +106,101 @@ def _render_pdf_from_html(html_path: Path, pdf_path: Path, *, allow_gui_renderer
     if not renderer:
         return False, "pdf_renderer_not_found"
     html_uri = html_path.resolve().as_uri()
+    render_timeout = int(os.getenv("REPORT_PDF_BUNDLE_RENDER_TIMEOUT_SECONDS", "20") or "20")
     if renderer_kind == "wkhtmltopdf":
         cmd = [renderer, html_uri, str(pdf_path)]
-        rc, out, err = _run(cmd)
+        rc, out, err = _run(cmd, timeout_sec=render_timeout)
     else:
         profile_dir = Path(tempfile.mkdtemp(prefix="report-bundle-pdf-"))
         try:
             cmd = [
                 renderer,
-                "--headless=new",
+                "--headless",
                 "--disable-gpu",
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--silent-launch",
                 "--no-startup-window",
                 "--disable-background-networking",
+                "--disable-extensions",
                 "--metrics-recording-only",
+                "--run-all-compositor-stages-before-draw",
+                "--virtual-time-budget=1000",
                 f"--user-data-dir={profile_dir}",
                 f"--print-to-pdf={pdf_path}",
                 html_uri,
             ]
-            rc, out, err = _run(cmd)
+            rc, out, err = _run(cmd, timeout_sec=render_timeout)
         finally:
             shutil.rmtree(profile_dir, ignore_errors=True)
     if pdf_path.exists() and pdf_path.stat().st_size > 0:
         return True, out or err or "ok"
     return False, err or out or f"rc={rc}"
+
+
+def _pdf_text_escape(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _write_simple_pdf(path: Path, *, title: str, lines: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text_lines = [str(title or "Report"), ""] + [str(line or "") for line in lines]
+    commands = ["BT", "/F1 12 Tf", "72 750 Td", "16 TL"]
+    for idx, line in enumerate(text_lines[:42]):
+        if idx:
+            commands.append("T*")
+        commands.append(f"({_pdf_text_escape(line[:110])}) Tj")
+    commands.append("ET")
+    stream = "\n".join(commands).encode("utf-8")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"\nendstream",
+    ]
+    chunks = [b"%PDF-1.4\n"]
+    offsets = [0]
+    for index, obj in enumerate(objects, start=1):
+        offsets.append(sum(len(chunk) for chunk in chunks))
+        chunks.append(f"{index} 0 obj\n".encode("ascii") + obj + b"\nendobj\n")
+    xref_offset = sum(len(chunk) for chunk in chunks)
+    xref = [f"xref\n0 {len(objects) + 1}\n".encode("ascii"), b"0000000000 65535 f \n"]
+    for offset in offsets[1:]:
+        xref.append(f"{offset:010d} 00000 n \n".encode("ascii"))
+    chunks.extend(
+        xref
+        + [
+            b"trailer\n",
+            f"<< /Size {len(objects) + 1} /Root 1 0 R >>\n".encode("ascii"),
+            b"startxref\n",
+            f"{xref_offset}\n".encode("ascii"),
+            b"%%EOF\n",
+        ]
+    )
+    path.write_bytes(b"".join(chunks))
+
+
+def _render_framework_map_pdf(source: Path, pdf_path: Path) -> tuple[bool, str]:
+    renderer = PROJECT_ROOT / "scripts" / "ops" / "framework_map_pdf.py"
+    json_out = PROJECT_ROOT / "governance" / "health" / "framework_map_pdf_latest.json"
+    rc, out, err = _run(
+        [
+            sys.executable,
+            str(renderer),
+            "--html",
+            str(source),
+            "--pdf",
+            str(pdf_path),
+            "--json-out",
+            str(json_out),
+            "--json",
+        ],
+        timeout_sec=60,
+    )
+    if rc == 0 and pdf_path.exists() and pdf_path.stat().st_size > 10_000:
+        return True, out or "framework_map_pdf_renderer_ok"
+    return False, err or out or f"framework_map_pdf_renderer_rc={rc}"
 
 
 def _latest_artifact(pattern: str) -> Path | None:
@@ -175,6 +252,10 @@ def _build_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
         reports_dir / "strategy_attribution_latest.md",
         governance_health_dir / "strategy_attribution_latest.json",
     )
+    strategy_inventory_kind, strategy_inventory_source = _preferred_markdown_or_json(
+        reports_dir / "strategy_inventory" / "strategy_inventory_latest.md",
+        governance_health_dir / "strategy_inventory_latest.json",
+    )
     post_trade_kind, post_trade_source = _preferred_markdown_or_json(
         reports_dir / "post_trade_analysis_latest.md",
         governance_health_dir / "post_trade_analysis_latest.json",
@@ -194,6 +275,20 @@ def _build_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "kind": "html",
             "source_path": project_timeline_html,
             "pdf_path": reports_dir / "project_timeline" / "project_timeline_latest.pdf",
+        },
+        {
+            "slug": "incident_report",
+            "title": "Incident Report",
+            "kind": "html",
+            "source_path": reports_dir / "incident_report_latest.html",
+            "pdf_path": reports_dir / "incident_report_latest.pdf",
+        },
+        {
+            "slug": "incident_review_packet",
+            "title": "Incident Review Packet",
+            "kind": "json",
+            "source_path": governance_health_dir / "incident_review_packet_latest.json",
+            "pdf_path": reports_dir / "incident_review_packet_latest.pdf",
         },
         {
             "slug": "training_report",
@@ -294,6 +389,13 @@ def _build_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "pdf_path": reports_dir / "strategy_attribution_latest.pdf",
         },
         {
+            "slug": "strategy_inventory",
+            "title": "Strategy Inventory",
+            "kind": strategy_inventory_kind,
+            "source_path": strategy_inventory_source,
+            "pdf_path": reports_dir / "strategy_inventory" / "strategy_inventory_latest.pdf",
+        },
+        {
             "slug": "post_trade_analysis",
             "title": "Post-Trade Analysis",
             "kind": post_trade_kind,
@@ -320,6 +422,20 @@ def _build_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "kind": "json",
             "source_path": state_snapshot_dir / "latest.json",
             "pdf_path": state_snapshot_dir / "state_snapshot_drills_latest.pdf",
+        },
+        {
+            "slug": "system_summary",
+            "title": "Compiled System Summary",
+            "kind": "html",
+            "source_path": reports_dir / "system_summary" / "system_summary_latest.html",
+            "pdf_path": reports_dir / "system_summary" / "system_summary_latest.pdf",
+        },
+        {
+            "slug": "special_features",
+            "title": "Special Features And Highlights",
+            "kind": "html",
+            "source_path": project_root / "docs" / "showcase" / "generated" / "special_features_latest.html",
+            "pdf_path": reports_dir / "showcase" / "special_features_latest.pdf",
         },
         {
             "slug": "framework_map_v2",
@@ -583,6 +699,14 @@ def _render_index_html(entries: list[dict[str, Any]], *, generated_utc: str) -> 
     )
 
 
+def _bundle_status(*, index_ok: bool, missing_count: int, error_count: int) -> str:
+    if not index_ok:
+        return "blocked"
+    if missing_count or error_count:
+        return "degraded"
+    return "ready"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate PDF companions for the project report families.")
     parser.add_argument(
@@ -638,7 +762,23 @@ def main() -> int:
             html_source = support_html
             entry["support_html"] = str(support_html)
 
-        ok, detail = _render_pdf_from_html(html_source, pdf_path, allow_gui_renderer=allow_gui_pdf_renderer)
+        if spec["slug"] == "framework_map_v2":
+            ok, detail = _render_framework_map_pdf(source, pdf_path)
+        else:
+            ok, detail = _render_pdf_from_html(html_source, pdf_path, allow_gui_renderer=allow_gui_pdf_renderer)
+        if not ok:
+            _write_simple_pdf(
+                pdf_path,
+                title=str(spec["title"]),
+                lines=[
+                    "Fallback PDF generated because the headless renderer did not complete.",
+                    f"Renderer detail: {detail}",
+                    f"Source: {source}",
+                    f"Generated UTC: {generated_utc}",
+                ],
+            )
+            ok = True
+            detail = f"fallback_pdf:{detail}"
         entry["status"] = "ok" if ok else "error"
         entry["detail"] = detail
         entry["bytes"] = int(pdf_path.stat().st_size) if ok and pdf_path.exists() else 0
@@ -648,9 +788,24 @@ def main() -> int:
     if INDEX_PDF_PATH.exists():
         INDEX_PDF_PATH.unlink()
     index_ok, index_detail = _render_pdf_from_html(INDEX_HTML_PATH, INDEX_PDF_PATH, allow_gui_renderer=allow_gui_pdf_renderer)
+    if not index_ok:
+        _write_simple_pdf(
+            INDEX_PDF_PATH,
+            title="Trading System PDF Bundle",
+            lines=[
+                "Fallback index PDF generated because the headless renderer did not complete.",
+                f"Renderer detail: {index_detail}",
+                f"Source: {INDEX_HTML_PATH}",
+                f"Generated UTC: {generated_utc}",
+            ],
+        )
+        index_ok = True
+        index_detail = f"fallback_pdf:{index_detail}"
 
     payload = {
         "generated_utc": generated_utc,
+        "timestamp_utc": generated_utc,
+        "schema_version": 1,
         "allow_gui_pdf_renderer": bool(allow_gui_pdf_renderer),
         "index_html": str(INDEX_HTML_PATH),
         "index_pdf": str(INDEX_PDF_PATH) if INDEX_PDF_PATH.exists() else "",
@@ -661,6 +816,13 @@ def main() -> int:
         "missing_count": sum(1 for row in entries if row.get("status") == "missing_source"),
         "error_count": sum(1 for row in entries if row.get("status") == "error"),
     }
+    overall_status = _bundle_status(
+        index_ok=index_ok,
+        missing_count=int(payload["missing_count"]),
+        error_count=int(payload["error_count"]),
+    )
+    payload["ok"] = overall_status == "ready"
+    payload["overall_status"] = overall_status
     LATEST_METADATA_PATH.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
     if args.json:

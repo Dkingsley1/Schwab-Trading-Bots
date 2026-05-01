@@ -1,0 +1,1 @@
+../../../scripts/ops/remote_alert_control.py

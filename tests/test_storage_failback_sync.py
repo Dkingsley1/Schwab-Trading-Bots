@@ -58,6 +58,7 @@ def test_maybe_autoprune_external_low_space(monkeypatch, tmp_path):
     (local_shards / 'jsonl_link_trading.sqlite3').write_text('x', encoding='utf-8')
 
     monkeypatch.setenv('BOT_LOGS_EXTERNAL_PROJECT_ROOT', str(external_root))
+    monkeypatch.setenv('BOT_LOGS_EXTERNAL_MOUNT', str(tmp_path))
     monkeypatch.setenv('BOT_LOGS_EXTERNAL_MIN_FREE_BYTES', '100')
     monkeypatch.setenv('BOT_LOGS_LOW_SPACE_AUTOPRUNE_ENABLED', '1')
     monkeypatch.setenv('RETENTION_EXTERNAL_LIVE_SQLITE_REQUIRE_LOCAL_FALLBACK', '1')
@@ -127,5 +128,102 @@ def test_build_sqlite_skip_report_classifies_active_queue_and_warm_standby(monke
     assert by_rel['data/bot_channel_queue.sqlite3']['classification'] == 'active_local_queue'
     assert by_rel['data/jsonl_link.sqlite3']['classification'] == 'warm_standby_retained'
     assert by_rel['data/snapshot_context.sqlite3']['classification'] == 'warm_standby_retained'
+    assert by_rel['data/jsonl_link.sqlite3']['route_verification']['state'] == 'verified'
     assert payload['summary']['active_local_count'] == 1
     assert payload['summary']['warm_standby_count'] == 2
+    assert payload['summary']['verification_state'] == 'ready'
+    assert payload['route_verification']['ready_count'] == 3
+
+
+def test_build_sqlite_skip_report_certifies_curated_external_mode(monkeypatch, tmp_path):
+    project_root = tmp_path / 'project'
+    local_root = project_root / 'local_fallback_storage'
+    external_root = tmp_path / 'external'
+    (local_root / 'data').mkdir(parents=True, exist_ok=True)
+    (external_root / 'data').mkdir(parents=True, exist_ok=True)
+
+    (local_root / 'data' / 'jsonl_link.sqlite3').write_text('local-primary', encoding='utf-8')
+    (local_root / 'data' / 'bot_channel_queue.sqlite3').write_text('queue-local', encoding='utf-8')
+    (local_root / 'data' / 'snapshot_context.sqlite3').write_text('snapshot-local', encoding='utf-8')
+
+    monkeypatch.setenv('BOT_LOGS_LOCAL_FALLBACK_ROOT', str(local_root))
+    monkeypatch.setenv('BOT_CHANNEL_QUEUE_DB', str(local_root / 'data' / 'bot_channel_queue.sqlite3'))
+
+    payload = storage_failback_sync._build_sqlite_skip_report(
+        project_root,
+        external_root,
+        mode='external',
+        active_root=external_root,
+    )
+
+    assert payload['certified_mode'] == 'external_curated'
+    assert payload['summary']['verification_state'] == 'curated_ready'
+    assert payload['summary']['curated_standby_count'] == 3
+    assert payload['route_verification']['certified_mode'] == 'external_curated'
+    assert payload['route_verification']['ready_count'] == 3
+
+
+def test_build_sqlite_skip_report_treats_smaller_standby_copy_as_curated(monkeypatch, tmp_path):
+    project_root = tmp_path / 'project'
+    local_root = project_root / 'local_fallback_storage'
+    external_root = tmp_path / 'external'
+    (local_root / 'data').mkdir(parents=True, exist_ok=True)
+    (external_root / 'data').mkdir(parents=True, exist_ok=True)
+
+    (local_root / 'data' / 'jsonl_link.sqlite3').write_text('local-primary-is-bigger-than-external', encoding='utf-8')
+    (external_root / 'data' / 'jsonl_link.sqlite3').write_text('small', encoding='utf-8')
+    (local_root / 'data' / 'bot_channel_queue.sqlite3').write_text('queue-local', encoding='utf-8')
+    (external_root / 'data' / 'bot_channel_queue.sqlite3').write_text('queue-local-verified', encoding='utf-8')
+    (local_root / 'data' / 'snapshot_context.sqlite3').write_text('snapshot-local', encoding='utf-8')
+    (external_root / 'data' / 'snapshot_context.sqlite3').write_text('snapshot-local', encoding='utf-8')
+
+    monkeypatch.setenv('BOT_LOGS_LOCAL_FALLBACK_ROOT', str(local_root))
+    monkeypatch.setenv('BOT_CHANNEL_QUEUE_DB', str(local_root / 'data' / 'bot_channel_queue.sqlite3'))
+
+    payload = storage_failback_sync._build_sqlite_skip_report(
+        project_root,
+        external_root,
+        mode='external',
+        active_root=external_root,
+    )
+
+    by_rel = {row['relative_path']: row for row in payload['entries']}
+    assert by_rel['data/jsonl_link.sqlite3']['route_verification']['state'] == 'curated_standby'
+    assert payload['summary']['verification_state'] == 'curated_ready'
+    assert payload['certified_mode'] == 'external_curated'
+
+
+def test_build_sqlite_skip_report_treats_routed_queue_db_as_external(monkeypatch, tmp_path):
+    project_root = tmp_path / 'project'
+    local_root = project_root / 'local_fallback_storage'
+    external_root = tmp_path / 'external'
+    local_data = local_root / 'data'
+    external_data = external_root / 'data'
+    local_data.mkdir(parents=True, exist_ok=True)
+    external_data.mkdir(parents=True, exist_ok=True)
+    project_root.mkdir(parents=True, exist_ok=True)
+    (project_root / 'data').symlink_to(external_data, target_is_directory=True)
+
+    (local_data / 'jsonl_link.sqlite3').write_text('local-primary', encoding='utf-8')
+    (external_data / 'jsonl_link.sqlite3').write_text('external-primary', encoding='utf-8')
+    (local_data / 'bot_channel_queue.sqlite3').write_text('queue-local', encoding='utf-8')
+    (external_data / 'bot_channel_queue.sqlite3').write_text('queue-external', encoding='utf-8')
+    (local_data / 'snapshot_context.sqlite3').write_text('snapshot-local', encoding='utf-8')
+    (external_data / 'snapshot_context.sqlite3').write_text('snapshot-external', encoding='utf-8')
+
+    monkeypatch.setenv('BOT_LOGS_LOCAL_FALLBACK_ROOT', str(local_root))
+    monkeypatch.setenv('BOT_LOGS_PREFER_EXTERNAL', '1')
+    monkeypatch.delenv('BOT_CHANNEL_QUEUE_DB', raising=False)
+    monkeypatch.delenv('BOT_CHANNEL_QUEUE_PREFER_LOCAL', raising=False)
+
+    payload = storage_failback_sync._build_sqlite_skip_report(
+        project_root,
+        external_root,
+        mode='external',
+        active_root=external_root,
+    )
+
+    by_rel = {row['relative_path']: row for row in payload['entries']}
+    assert payload['queue_db_path'] == str(project_root / 'data' / 'bot_channel_queue.sqlite3')
+    assert by_rel['data/bot_channel_queue.sqlite3']['route_verification']['state'] == 'verified'
+    assert by_rel['data/bot_channel_queue.sqlite3']['classification'] != 'active_local_queue'

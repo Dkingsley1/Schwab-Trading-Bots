@@ -69,6 +69,9 @@ memory-profiler==0.61.0
 miniaudio==1.61
 ml_dtypes==0.5.4
 mlx-data==0.2.0
+mlx-audio==0.4.2
+mlx-embedding-models==0.0.11
+mlx-embeddings==0.1.0
 mlx-lm==0.31.1
 mlx-metal==0.31.1
 mlx-vlm==0.4.4
@@ -80,6 +83,7 @@ msgspec==0.20.0
 multidict==6.7.1
 multiprocess==0.70.19
 multitasking==0.0.12
+parakeet-mlx==0.5.1
 narwhals==2.17.0
 networkx==3.6.1
 numba==0.61.2

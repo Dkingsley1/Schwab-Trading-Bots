@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from datetime import datetime, timezone
@@ -38,6 +39,14 @@ def _approved_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [row for row in rows if isinstance(row, dict)]
 
 
+def _sha_json_file(path: Path) -> str:
+    try:
+        blob = path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
 def build_payload(
     project_root: Path = PROJECT_ROOT,
     *,
@@ -52,6 +61,9 @@ def build_payload(
     portfolio_risk = _load_json(portfolio_risk_path)
     execution_budget = _load_json(execution_budget_path)
     engine = RiskEngine.from_env()
+    live_reconciliation_path = project_root / "governance" / "health" / "live_reconciliation_slo_latest.json"
+    paper_reconciliation_path = project_root / "governance" / "health" / "paper_reconciliation_slo_latest.json"
+    kill_switch_path = project_root / "scripts" / "global_risk_killswitch.py"
 
     exposure_state: dict[str, int] = {}
     pre_trade: list[dict[str, Any]] = []
@@ -83,32 +95,71 @@ def build_payload(
             }
         )
 
+    policy_hashes = {
+        "allocator": _sha_json_file(allocator_path),
+        "portfolio_risk": _sha_json_file(portfolio_risk_path),
+        "execution_budget": _sha_json_file(execution_budget_path),
+    }
+    service_contracts = {
+        "pre_trade_service": {
+            "contract_version": 2,
+            "endpoint_slug": "risk.pre_trade.approval",
+            "input_surface": "portfolio_allocator_service approved intents",
+            "evaluated_orders": len(pre_trade),
+            "rejections": sum(1 for row in pre_trade if not bool(row.get("risk_limit_ok", False))),
+            "policy_hashes": [policy_hashes["allocator"], policy_hashes["portfolio_risk"], policy_hashes["execution_budget"]],
+        },
+        "execution_budget_service": {
+            "contract_version": 2,
+            "endpoint_slug": "risk.execution_budget.enforcement",
+            "budget_path": str(execution_budget_path),
+            "policy_hashes": [policy_hashes["execution_budget"]],
+        },
+        "post_trade_reconciliation_service": {
+            "contract_version": 2,
+            "endpoint_slug": "risk.post_trade.reconciliation",
+            "live_reconciliation_path": str(live_reconciliation_path),
+            "paper_reconciliation_path": str(paper_reconciliation_path),
+        },
+        "kill_switch_service": {
+            "contract_version": 2,
+            "endpoint_slug": "risk.kill_switch",
+            "path": str(kill_switch_path),
+        },
+        "exception_workflow": {
+            "contract_version": 2,
+            "endpoint_slug": "risk.exception.review",
+            "requires_operator_review": True,
+            "source_files": [str(allocator_path), str(portfolio_risk_path), str(execution_budget_path)],
+        },
+    }
+    independent_boundary = {
+        "contract_version": 2,
+        "service_count": len(service_contracts),
+        "policy_hash_count": len([value for value in policy_hashes.values() if str(value or "").strip()]),
+        "deploy_surface_count": 4,
+        "service_isolation_ready": bool(
+            len([value for value in policy_hashes.values() if str(value or "").strip()]) >= 3
+            and live_reconciliation_path.exists()
+            and paper_reconciliation_path.exists()
+        ),
+    }
+    overall_status = (
+        "ready"
+        if bool(independent_boundary.get("service_isolation_ready", False))
+        and int(independent_boundary.get("service_count", 0) or 0) >= 5
+        and int(independent_boundary.get("policy_hash_count", 0) or 0) >= 3
+        else "degraded"
+    )
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "schema_version": 1,
         "ok": True,
-        "services": {
-            "pre_trade_service": {
-                "contract_version": 1,
-                "input_surface": "portfolio_allocator_service approved intents",
-                "evaluated_orders": len(pre_trade),
-                "rejections": sum(1 for row in pre_trade if not bool(row.get("risk_limit_ok", False))),
-            },
-            "post_trade_reconciliation_service": {
-                "contract_version": 1,
-                "live_reconciliation_path": str(project_root / "governance" / "health" / "live_reconciliation_slo_latest.json"),
-                "paper_reconciliation_path": str(project_root / "governance" / "health" / "paper_reconciliation_slo_latest.json"),
-            },
-            "kill_switch_service": {
-                "contract_version": 1,
-                "path": str(project_root / "scripts" / "global_risk_killswitch.py"),
-            },
-            "exception_workflow": {
-                "contract_version": 1,
-                "requires_operator_review": True,
-                "source_files": [str(allocator_path), str(portfolio_risk_path), str(execution_budget_path)],
-            },
-        },
+        "overall_status": overall_status,
+        "services": service_contracts,
+        "service_contracts": service_contracts,
+        "policy_hashes": policy_hashes,
+        "independent_service_boundary": independent_boundary,
         "pre_trade_decisions": pre_trade,
         "execution_budget": execution_budget,
         "portfolio_risk": portfolio_risk,

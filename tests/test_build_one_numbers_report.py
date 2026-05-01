@@ -223,70 +223,61 @@ def test_lightweight_metrics_ignore_preopen_stale_windows(tmp_path: Path, monkey
     assert metrics["data_quality_score"] == 100.0
 
 
-def test_lightweight_main_uses_daily_summary_without_sqlite(tmp_path: Path, monkeypatch) -> None:
+def test_lightweight_flag_runs_full_sqlite_backed_report(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(one_numbers, "PROJECT_ROOT", tmp_path)
     out_dir = tmp_path / "exports" / "one_numbers"
+    db_path = tmp_path / "data" / "jsonl_link.sqlite3"
     out_dir.mkdir(parents=True, exist_ok=True)
     (tmp_path / "governance" / "health").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "exports" / "sql_reports").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
-
-    (tmp_path / "governance" / "health" / "daily_runtime_summary_latest.json").write_text(
-        json.dumps(
-            {
-                "day": "20260331",
-                "watchdog": {"restarts": 1, "throttled": 0, "restart_errors": 0},
-                "decision": {
-                    "rows": 100,
-                    "observe_only_data_blocked": 20,
-                    "status_counts": {"DATA_ONLY_BLOCKED": 20, "BLOCKED": 5},
-                    "stale_windows": 1,
-                    "files": ["/tmp/decision_a.jsonl", "/tmp/decision_b.jsonl"],
-                },
-                "governance": {
-                    "rows": 10,
-                    "stale_windows": 2,
-                    "files": ["/tmp/gov_a.jsonl"],
-                },
-            }
-        ),
-        encoding="utf-8",
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = one_numbers.sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE jsonl_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_file TEXT NOT NULL,
+            source_rel TEXT NOT NULL,
+            line_no INTEGER NOT NULL,
+            ingested_at TEXT NOT NULL,
+            payload_sha1 TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        )
+        """
     )
-    (tmp_path / "exports" / "sql_reports" / "daily_runtime_summary_20260330.json").write_text(
-        json.dumps(
-            {
-                "day": "20260330",
-                "watchdog": {"restarts": 0, "throttled": 0, "restart_errors": 0},
-                "decision": {
-                    "rows": 50,
-                    "observe_only_data_blocked": 10,
-                    "status_counts": {"DATA_ONLY_BLOCKED": 10, "BLOCKED": 2},
-                    "stale_windows": 0,
-                    "files": ["/tmp/decision_prev.jsonl"],
-                },
-                "governance": {"rows": 5, "stale_windows": 0, "files": ["/tmp/gov_prev.jsonl"]},
-            }
-        ),
-        encoding="utf-8",
-    )
-    (tmp_path / "governance" / "health" / "paper_performance_latest.json").write_text(
-        json.dumps(
-            {
-                "history_daily_series": [
+    conn.executemany(
+        """
+        INSERT INTO jsonl_records (source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                "decision_explanations_20260331.jsonl",
+                "decision_explanations/shadow_default/decision_explanations_20260331.jsonl",
+                1,
+                "2026-03-31T15:00:00+00:00",
+                "sha1-a",
+                json.dumps(
                     {
-                        "day_utc": "20260331",
-                        "executions": 77,
-                        "ending_net_pnl_total": 12.34,
+                        "timestamp_utc": "2026-03-31T15:00:00+00:00",
+                        "action": "BUY",
+                        "status": "PAPER_EXECUTED",
+                        "symbol": "SPY",
+                        "bot_id": "brain_refinery_v1",
                     }
-                ]
-            }
-        ),
-        encoding="utf-8",
+                ),
+            ),
+            (
+                "master_control_20260331.jsonl",
+                "governance/shadow_default/master_control_20260331.jsonl",
+                1,
+                "2026-03-31T15:00:01+00:00",
+                "sha1-b",
+                json.dumps({"timestamp_utc": "2026-03-31T15:00:01+00:00", "master_action": "BUY"}),
+            ),
+        ],
     )
-    (tmp_path / "governance" / "health" / "one_numbers_latest.json").write_text(
-        json.dumps({"stocks_top_symbol_1": "SPY:10"}),
-        encoding="utf-8",
-    )
+    conn.commit()
+    conn.close()
     (tmp_path / "governance" / "health" / "ingestion_storage_control_latest.json").write_text(
         json.dumps(
             {
@@ -309,11 +300,6 @@ def test_lightweight_main_uses_daily_summary_without_sqlite(tmp_path: Path, monk
         ),
         encoding="utf-8",
     )
-
-    def _fail_connect(*_args, **_kwargs):
-        raise AssertionError("sqlite should not be opened in lightweight mode")
-
-    monkeypatch.setattr(one_numbers.sqlite3, "connect", _fail_connect)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -323,6 +309,8 @@ def test_lightweight_main_uses_daily_summary_without_sqlite(tmp_path: Path, monk
             "20260331",
             "--out-dir",
             str(out_dir),
+            "--db",
+            str(db_path),
             "--lightweight",
             "--no-sql-write",
         ],
@@ -333,12 +321,11 @@ def test_lightweight_main_uses_daily_summary_without_sqlite(tmp_path: Path, monk
 
     assert rc == 0
     assert payload["day_utc"] == "20260331"
-    assert payload["combined_decision_total_rows"] == "100"
+    assert payload["report_mode"] == "full"
+    assert payload["combined_decision_total_rows"] == "1"
     assert payload["data_blocked_total"] == "0"
-    assert payload["risk_blocked_total"] == "5"
-    assert payload["paper_executed_total"] == "77"
-    assert payload["combined_pnl_proxy"] == "12.340000"
-    assert payload["report_mode"] == "lightweight_cached"
+    assert payload["risk_blocked_total"] == "0"
+    assert payload["paper_executed_total"] == "1"
     assert payload["backpressure_quality_score"] == "97.40"
     assert payload["pressure_index"] == "0.042"
     assert payload["core_pending_lines"] == "605"
@@ -356,20 +343,106 @@ def test_lightweight_main_uses_daily_summary_without_sqlite(tmp_path: Path, monk
     assert "label,value" in latest_csv_text
     assert "Report Metadata," in latest_csv_text
     assert "Report Day (UTC),20260331" in latest_csv_text
+    assert "Report Mode,full" in latest_csv_text
+    assert "Combined Decision Total Rows,1" in latest_csv_text
     assert "Month To Date," in latest_csv_text
-    assert "Month To Date Days Covered,2" in latest_csv_text
     assert "Backpressure Scorecard," in latest_csv_text
     assert "Backpressure Quality Score,97.40" in latest_csv_text
     assert "section,label,value,metric" in latest_metrics_csv_text
     assert "Backpressure Scorecard,Backpressure Quality Score,97.40,backpressure_quality_score" in latest_metrics_csv_text
-    assert "## Current Day" in latest_md_text
+    assert "## Combined" in latest_md_text
     assert "## Backpressure Scorecard" in latest_md_text
     assert "- Backpressure quality score: 97.40/100" in latest_md_text
-    assert "- Days covered: 2" in latest_md_text
-    assert "Report mode: lightweight_cached" in latest_md_text
+    assert "Report mode: lightweight" not in latest_md_text
 
 
-def test_resolve_report_day_prefers_latest_day_with_decisions_over_governance_only_today() -> None:
+def test_full_main_reports_trade_decision_day_when_explanations_lag(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(one_numbers, "PROJECT_ROOT", tmp_path)
+    out_dir = tmp_path / "exports" / "one_numbers"
+    db_path = tmp_path / "data" / "jsonl_link.sqlite3"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "governance" / "health").mkdir(parents=True, exist_ok=True)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = one_numbers.sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE jsonl_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_file TEXT NOT NULL,
+            source_rel TEXT NOT NULL,
+            line_no INTEGER NOT NULL,
+            ingested_at TEXT NOT NULL,
+            payload_sha1 TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO jsonl_records (source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                "decision_explanations_20260330.jsonl",
+                "decision_explanations/shadow_default/decision_explanations_20260330.jsonl",
+                1,
+                "2026-03-30T15:00:00+00:00",
+                "sha1-a",
+                json.dumps({"timestamp_utc": "2026-03-30T15:00:00+00:00", "action": "HOLD", "status": "SHADOW_ONLY", "symbol": "SPY"}),
+            ),
+            (
+                "trade_decisions_20260331.jsonl",
+                "decisions/shadow_default/trade_decisions_20260331.jsonl",
+                1,
+                "2026-03-31T15:00:00+00:00",
+                "sha1-b",
+                json.dumps({"timestamp_utc": "2026-03-31T15:00:00+00:00", "action": "BUY", "decision": "EXECUTE", "symbol": "QQQ"}),
+            ),
+            (
+                "master_control_20260331.jsonl",
+                "governance/shadow_default/master_control_20260331.jsonl",
+                1,
+                "2026-03-31T15:00:01+00:00",
+                "sha1-c",
+                json.dumps({"timestamp_utc": "2026-03-31T15:00:01+00:00", "master_action": "BUY"}),
+            ),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    (tmp_path / "governance" / "health" / "ingestion_storage_control_latest.json").write_text(
+        json.dumps({"pressure_index": 0.1, "backpressure": {}, "steady_state": {"quality_score": 99.0, "quality_label": "excellent", "target_status": {}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build_one_numbers_report.py",
+            "--day",
+            "20260331",
+            "--out-dir",
+            str(out_dir),
+            "--db",
+            str(db_path),
+            "--no-sql-write",
+        ],
+    )
+
+    rc = one_numbers.main()
+    payload = json.loads((tmp_path / "governance" / "health" / "one_numbers_latest.json").read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert payload["requested_day"] == "20260331"
+    assert payload["resolved_day"] == "20260331"
+    assert payload["day_fallback_applied"] == "false"
+    assert payload["combined_decision_total_rows"] == "1"
+    assert payload["detail_source"] == "trade_decision_fallback"
+    assert payload["stocks_decision_rows"] == "1"
+
+
+def test_resolve_report_day_prefers_latest_decision_day_over_governance_only_today() -> None:
     sqlite_state = {
         "decision_explanations/shadow_default/decision_explanations_20260330.jsonl": {},
         "governance/shadow_default/master_control_20260331.jsonl": {},
@@ -381,7 +454,21 @@ def test_resolve_report_day_prefers_latest_day_with_decisions_over_governance_on
     assert sources["decision"] == ["decision_explanations/shadow_default/decision_explanations_20260330.jsonl"]
 
 
-def test_resolve_lightweight_report_day_prefers_latest_day_with_decisions_over_governance_only_today() -> None:
+def test_resolve_report_day_uses_trade_decisions_when_explanations_lag() -> None:
+    sqlite_state = {
+        "decision_explanations/shadow_default/decision_explanations_20260330.jsonl": {},
+        "decisions/shadow_default/trade_decisions_20260331.jsonl": {},
+        "governance/shadow_default/master_control_20260331.jsonl": {},
+    }
+
+    day, sources = one_numbers._resolve_report_day("20260331", sqlite_state)
+
+    assert day == "20260331"
+    assert sources["decision"] == []
+    assert sources["decision_trade"] == ["decisions/shadow_default/trade_decisions_20260331.jsonl"]
+
+
+def test_resolve_lightweight_report_day_prefers_latest_decision_day() -> None:
     history = {
         "20260330": {"decision": {"rows": 125}, "governance": {"rows": 18}},
         "20260331": {"decision": {"rows": 0}, "governance": {"rows": 20}},
@@ -392,7 +479,7 @@ def test_resolve_lightweight_report_day_prefers_latest_day_with_decisions_over_g
     assert day == "20260330"
 
 
-def test_latest_report_day_from_db_prefers_decision_day_over_governance_only_today(tmp_path: Path) -> None:
+def test_latest_report_day_from_db_prefers_latest_decision_day(tmp_path: Path) -> None:
     db_path = tmp_path / "jsonl_link.sqlite3"
     conn = one_numbers.sqlite3.connect(str(db_path))
     conn.execute(
@@ -444,6 +531,108 @@ def test_latest_report_day_from_db_prefers_decision_day_over_governance_only_tod
     assert day == "20260330"
 
 
+def test_latest_report_day_from_db_uses_trade_decisions_when_explanations_lag(tmp_path: Path) -> None:
+    db_path = tmp_path / "jsonl_link.sqlite3"
+    conn = one_numbers.sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE jsonl_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_file TEXT NOT NULL,
+            source_rel TEXT NOT NULL,
+            line_no INTEGER NOT NULL,
+            ingested_at TEXT NOT NULL,
+            payload_sha1 TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO jsonl_records (source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "decision_explanations_20260330.jsonl",
+            "decision_explanations/shadow_default/decision_explanations_20260330.jsonl",
+            1,
+            "2026-03-30T15:00:00+00:00",
+            "sha1-a",
+            "{}",
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO jsonl_records (source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "trade_decisions_20260331.jsonl",
+            "decisions/shadow_default/trade_decisions_20260331.jsonl",
+            1,
+            "2026-03-31T15:00:00+00:00",
+            "sha1-b",
+            "{}",
+        ),
+    )
+    conn.commit()
+
+    day = one_numbers._latest_report_day_from_db(conn, "20260331")
+
+    conn.close()
+    assert day == "20260331"
+
+
+def test_prefer_db_report_day_repairs_stale_shard_fallback() -> None:
+    selected = one_numbers._prefer_db_report_day(
+        "20260423",
+        "20260422",
+        "20260423",
+    )
+
+    assert selected == "20260423"
+
+
+def test_one_numbers_coverage_metadata_marks_unpinned_history_incomplete(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("ONE_NUMBERS_ORIGINAL_START_DAY", raising=False)
+    monkeypatch.delenv("ONE_NUMBERS_EXPECTED_START_DAY", raising=False)
+    monkeypatch.delenv("INFRA_SUPERVISOR_ONE_NUMBERS_START_DAY", raising=False)
+    decision_root = tmp_path / "decision_explanations" / "shadow_default"
+    decision_root.mkdir(parents=True, exist_ok=True)
+    (decision_root / "decision_explanations_20260422.jsonl").write_text("{}\n", encoding="utf-8")
+    (decision_root / "decision_explanations_20260423.jsonl").write_text("{}\n", encoding="utf-8")
+    history = {
+        "20260422": {"metrics": {"combined_decision_total_rows": 10}},
+    }
+
+    metadata = one_numbers._one_numbers_coverage_metadata(tmp_path, history)
+
+    assert metadata["historical_coverage_status"] == "degraded"
+    assert metadata["all_time_coverage_complete"] == "false"
+    assert metadata["source_days_discovered"] == "2"
+    assert metadata["source_days_missing_from_rollup_count"] == "1"
+    assert "original start day is not pinned" in metadata["historical_coverage_detail"]
+
+
+def test_one_numbers_coverage_metadata_ready_when_start_and_sources_are_covered(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ONE_NUMBERS_ORIGINAL_START_DAY", "20260422")
+    decision_root = tmp_path / "decision_explanations" / "shadow_default"
+    decision_root.mkdir(parents=True, exist_ok=True)
+    (decision_root / "decision_explanations_20260422.jsonl").write_text("{}\n", encoding="utf-8")
+    (decision_root / "decision_explanations_20260423.jsonl").write_text("{}\n", encoding="utf-8")
+    history = {
+        "20260422": {"metrics": {"combined_decision_total_rows": 10}},
+        "20260423": {"metrics": {"combined_decision_total_rows": 20}},
+    }
+
+    metadata = one_numbers._one_numbers_coverage_metadata(tmp_path, history)
+
+    assert metadata["historical_coverage_status"] == "ready"
+    assert metadata["all_time_coverage_complete"] == "true"
+    assert metadata["earliest_rollup_day"] == "20260422"
+    assert metadata["latest_rollup_day"] == "20260423"
+
+
 def test_model_drift_snapshot_requires_minimum_actionable_activity(monkeypatch) -> None:
     monkeypatch.setenv("ONE_NUMBERS_MODEL_DRIFT_MIN_ROWS_1H", "120")
     monkeypatch.setenv("ONE_NUMBERS_MODEL_DRIFT_MIN_ROWS_4H", "480")
@@ -478,3 +667,222 @@ def test_model_drift_snapshot_flags_large_action_mix_shift(monkeypatch) -> None:
     assert snapshot["action_mix_drift_abs"] > 0.20
     assert snapshot["model_drift_flag"] is True
     assert snapshot["model_drift_reason"] == "action_mix_shift"
+
+
+def test_build_lightweight_summary_payload_prefers_durable_rollup_history(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(one_numbers, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "governance" / "health").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "exports" / "sql_reports").mkdir(parents=True, exist_ok=True)
+
+    (tmp_path / "governance" / "health" / "one_numbers_rollup_history.json").write_text(
+        json.dumps(
+            {
+                "history_by_day": {
+                    "20260330": {
+                        "day_utc": "20260330",
+                        "generated_utc": "2026-03-30T21:00:00+00:00",
+                        "report_mode": "lightweight_cached",
+                        "metrics": {
+                            "combined_decision_total_rows": "90",
+                            "combined_governance_total_rows": "12",
+                            "combined_blocked_total": "8",
+                            "data_blocked_total": "3",
+                            "risk_blocked_total": "5",
+                            "paper_executed_total": "44",
+                            "watchdog_restarts": "0",
+                            "data_quality_score": "97.0",
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "governance" / "health" / "daily_runtime_summary_latest.json").write_text(
+        json.dumps(
+            {
+                "day": "20260331",
+                "watchdog": {"restarts": 0, "throttled": 0, "restart_errors": 0},
+                "decision": {
+                    "rows": 100,
+                    "observe_only_data_blocked": 0,
+                    "status_counts": {"BLOCKED": 5},
+                    "stale_windows": 0,
+                    "files": [],
+                },
+                "governance": {"rows": 10, "stale_windows": 0, "files": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "governance" / "health" / "paper_performance_latest.json").write_text(
+        json.dumps({"history_daily_series": []}),
+        encoding="utf-8",
+    )
+
+    payload, _entries = one_numbers._build_lightweight_summary_payload(
+        project_root=tmp_path,
+        requested_day="20260331",
+        db_path=tmp_path / "data" / "jsonl_link.sqlite3",
+    )
+
+    assert payload["rollup_history_source"] == "durable_history"
+    assert payload["month_to_date_days_covered"] == "2"
+    assert payload["all_time_days_covered"] == "2"
+    assert payload["month_to_date_decision_total_rows"] == "190"
+    assert payload["all_time_decision_total_rows"] == "190"
+
+
+def test_full_main_persists_rollup_history_from_sqlite_day(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(one_numbers, "PROJECT_ROOT", tmp_path)
+    out_dir = tmp_path / "exports" / "one_numbers"
+    db_path = tmp_path / "data" / "jsonl_link.sqlite3"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "governance" / "health").mkdir(parents=True, exist_ok=True)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "governance" / "health" / "one_numbers_rollup_history.json").write_text(
+        json.dumps(
+            {
+                "history_by_day": {
+                    "20260330": {
+                        "day_utc": "20260330",
+                        "metrics": {
+                            "combined_decision_total_rows": "50",
+                            "combined_governance_total_rows": "5",
+                            "combined_blocked_total": "2",
+                            "data_blocked_total": "0",
+                            "risk_blocked_total": "2",
+                            "paper_executed_total": "0",
+                            "watchdog_restarts": "0",
+                            "data_quality_score": "90.0",
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    conn = one_numbers.sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE jsonl_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_file TEXT NOT NULL,
+            source_rel TEXT NOT NULL,
+            line_no INTEGER NOT NULL,
+            ingested_at TEXT NOT NULL,
+            payload_sha1 TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO jsonl_records (source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                "decision_explanations_20260331.jsonl",
+                "decision_explanations/shadow_default/decision_explanations_20260331.jsonl",
+                1,
+                "2026-03-31T15:00:00+00:00",
+                "sha1-a",
+                json.dumps({"timestamp_utc": "2026-03-31T15:00:00+00:00", "action": "HOLD", "status": "SHADOW_ONLY", "symbol": "SPY"}),
+            ),
+            (
+                "master_control_20260331.jsonl",
+                "governance/shadow_default/master_control_20260331.jsonl",
+                1,
+                "2026-03-31T15:00:01+00:00",
+                "sha1-b",
+                json.dumps({"timestamp_utc": "2026-03-31T15:00:01+00:00", "master_action": "HOLD"}),
+            ),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    (tmp_path / "governance" / "health" / "ingestion_storage_control_latest.json").write_text(
+        json.dumps({"pressure_index": 0.1, "backpressure": {}, "steady_state": {"quality_score": 99.0, "quality_label": "excellent", "target_status": {}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build_one_numbers_report.py",
+            "--day",
+            "20260331",
+            "--out-dir",
+            str(out_dir),
+            "--db",
+            str(db_path),
+            "--no-sql-write",
+        ],
+    )
+
+    rc = one_numbers.main()
+    history_payload = json.loads((tmp_path / "governance" / "health" / "one_numbers_rollup_history.json").read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert sorted(history_payload["history_by_day"]) == ["20260330", "20260331"]
+
+
+def test_persist_rollup_history_writes_trimmed_latest_days(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(one_numbers, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setenv("ONE_NUMBERS_ROLLUP_HISTORY_MAX_DAYS", "2")
+    (tmp_path / "governance" / "health").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "governance" / "health" / "one_numbers_rollup_history.json").write_text(
+        json.dumps(
+            {
+                "history_by_day": {
+                    "20260329": {
+                        "day_utc": "20260329",
+                        "metrics": {
+                            "combined_decision_total_rows": "10",
+                            "combined_governance_total_rows": "1",
+                            "combined_blocked_total": "1",
+                            "data_blocked_total": "0",
+                            "risk_blocked_total": "1",
+                            "paper_executed_total": "2",
+                            "watchdog_restarts": "0",
+                            "data_quality_score": "95.0",
+                        },
+                    },
+                    "20260330": {
+                        "day_utc": "20260330",
+                        "metrics": {
+                            "combined_decision_total_rows": "20",
+                            "combined_governance_total_rows": "2",
+                            "combined_blocked_total": "2",
+                            "data_blocked_total": "1",
+                            "risk_blocked_total": "1",
+                            "paper_executed_total": "3",
+                            "watchdog_restarts": "0",
+                            "data_quality_score": "96.0",
+                        },
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    history = one_numbers._persist_rollup_history(
+        tmp_path,
+        {
+            "day_utc": "20260331",
+            "generated_utc": "2026-03-31T21:00:00+00:00",
+            "report_mode": "lightweight_cached",
+            "combined_decision_total_rows": "30",
+            "combined_governance_total_rows": "3",
+            "combined_blocked_total": "3",
+            "data_blocked_total": "1",
+            "risk_blocked_total": "2",
+            "paper_executed_total": "4",
+            "watchdog_restarts": "0",
+            "data_quality_score": "97.0",
+        },
+    )
+
+    assert sorted(history) == ["20260330", "20260331"]

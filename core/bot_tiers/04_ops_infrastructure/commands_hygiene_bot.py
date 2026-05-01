@@ -1,0 +1,1 @@
+../../../scripts/ops/commands_hygiene_bot.py

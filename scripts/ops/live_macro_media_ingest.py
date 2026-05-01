@@ -1025,6 +1025,49 @@ def _clamp01(value: float) -> float:
     return max(0.0, min(float(value), 1.0))
 
 
+def _source_provenance_profile(
+    *,
+    declared_source: str,
+    youtube_url: str,
+    metadata: Dict[str, Any],
+) -> Dict[str, Any]:
+    source_text = str(declared_source or "").strip()
+    channel_url = str(metadata.get("channel_url") or metadata.get("uploader_url") or "").strip()
+    channel_name = str(metadata.get("channel") or metadata.get("uploader") or "").strip()
+    title = str(metadata.get("title") or metadata.get("fulltitle") or "").strip()
+    webpage_url = str(metadata.get("webpage_url") or youtube_url or "").strip()
+    merged = " ".join([channel_url, channel_name, title, webpage_url, str(youtube_url or "")]).lower()
+    source_key = re.sub(r"[^a-z0-9]+", "", source_text.lower())
+    aliases = {
+        "cspan": ("cspan", "c-span", "@cspan"),
+        "federalreserve": ("federal reserve", "federalreserve", "@federalreserve", "fomc"),
+        "schwabnetwork": ("schwab network", "@schwabnetwork"),
+        "charlesschwab": ("charles schwab", "@charlesschwab"),
+        "ustreasury": ("u.s. treasury", "us treasury", "@ustreasury"),
+        "whitehouse": ("white house", "whitehouse", "@whitehouse"),
+    }
+    match_tokens = [token for token in aliases.get(source_key, (source_text.lower(),)) if token and token in merged]
+    channel_match = bool(match_tokens)
+    if not source_text:
+        status = "missing_declared_source"
+    elif not channel_url and not channel_name and not webpage_url:
+        status = "missing_capture_metadata"
+    elif channel_match:
+        status = "matched"
+    else:
+        status = "source_channel_mismatch"
+    return {
+        "declared_source": source_text,
+        "capture_channel_url": channel_url,
+        "capture_channel_name": channel_name,
+        "capture_video_url": webpage_url,
+        "capture_title": title,
+        "source_channel_match": channel_match,
+        "source_provenance_status": status,
+        "source_match_tokens": match_tokens,
+    }
+
+
 def _source_priority_profile(
     *,
     template: str,
@@ -1661,6 +1704,11 @@ def run_ingest(args: argparse.Namespace) -> Dict[str, Any]:
         source=args.source,
         youtube_url=args.youtube_url,
     )
+    source_provenance = _source_provenance_profile(
+        declared_source=args.source,
+        youtube_url=args.youtube_url,
+        metadata=metadata,
+    )
     official_source_candidates = _official_source_candidates(
         template=args.template,
         source=args.source,
@@ -1716,6 +1764,7 @@ def run_ingest(args: argparse.Namespace) -> Dict[str, Any]:
         "title": title,
         "speaker": args.speaker,
         "source": args.source,
+        "source_provenance": source_provenance,
         "audio_file": str(audio_path),
         "asr_backend": transcript.get("backend"),
         "asr_model": transcript.get("model"),
@@ -1737,6 +1786,7 @@ def run_ingest(args: argparse.Namespace) -> Dict[str, Any]:
         "video_id": video_id,
         "speaker": args.speaker,
         "source": args.source,
+        "source_provenance": source_provenance,
         "cue_archive_file": cue_payload.get("cue_archive_file"),
         "cue_count": int(cue_payload.get("cue_count", 0) or 0),
         "cue_archive_matched_video": bool(cue_payload.get("matched_video")),
@@ -1752,6 +1802,7 @@ def run_ingest(args: argparse.Namespace) -> Dict[str, Any]:
         "title": title,
         "speaker": args.speaker,
         "source": args.source,
+        "source_provenance": source_provenance,
         "source_profile": source_profile,
         "official_source_candidates": official_source_candidates,
         "transcript_quality": transcript_quality,
@@ -1804,12 +1855,14 @@ def run_ingest(args: argparse.Namespace) -> Dict[str, Any]:
         bulletin_payload["signal_types"] = list(market_analysis.get("signal_types") or [])
         bulletin_payload["derived"] = derived_context
         bulletin_payload["source_profile"] = source_profile
+        bulletin_payload["source_provenance"] = source_provenance
         bulletin_payload["transcript_quality"] = transcript_quality
         bulletin_payload["official_source_candidates"] = official_source_candidates
         bulletin_payload["event_resolution_join"] = event_resolution_join
         if isinstance(bulletin_payload.get("items"), list) and bulletin_payload["items"]:
             bulletin_payload["items"][0]["signal_types"] = list(market_analysis.get("signal_types") or [])
             bulletin_payload["items"][0]["actionable_score"] = float(market_analysis.get("actionable_score", 0.0) or 0.0)
+            bulletin_payload["items"][0]["source_provenance"] = source_provenance
         _write_json(out_path, bulletin_payload)
         bulletin_events_file = append_live_macro_event(
             event_type="publish_from_media_ingest",
@@ -1832,6 +1885,7 @@ def run_ingest(args: argparse.Namespace) -> Dict[str, Any]:
         "title": title,
         "speaker": args.speaker,
         "source": args.source,
+        "source_provenance": source_provenance,
         "audio_file": str(audio_path) if retained else "",
         "audio_bytes": int(audio_path.stat().st_size) if audio_path.exists() else 0,
         "audio_ext": audio_path.suffix.lower(),
@@ -1882,6 +1936,8 @@ def run_ingest(args: argparse.Namespace) -> Dict[str, Any]:
         "source_priority_norm": float(source_profile.get("priority_norm", 0.0) or 0.0),
         "official_source_norm": float(source_profile.get("official_source_norm", 0.0) or 0.0),
         "official_source_candidates": official_source_candidates,
+        "source_channel_match": bool(source_provenance.get("source_channel_match")),
+        "source_provenance_status": str(source_provenance.get("source_provenance_status") or ""),
         "transcript_quality_norm": float(transcript_quality.get("quality_norm", 0.0) or 0.0),
         "transcript_cue_match_norm": float(transcript_quality.get("cue_match_ratio", 0.0) or 0.0),
         "transcript_duplicate_cluster_norm": float(transcript_quality.get("duplicate_cluster_norm", 0.0) or 0.0),
@@ -1903,6 +1959,7 @@ def run_ingest(args: argparse.Namespace) -> Dict[str, Any]:
         "video_id": video_id,
         "speaker": args.speaker,
         "source": args.source,
+        "source_provenance": source_provenance,
         "audio_file": str(audio_path) if retained else "",
         "transcript_file": str(artifact_paths["transcript_file"]) if retained else "",
         "alignment_file": str(artifact_paths["alignment_file"]) if retained else "",
@@ -1937,6 +1994,8 @@ def run_ingest(args: argparse.Namespace) -> Dict[str, Any]:
         "source_priority_tier": str(source_profile.get("tier") or "secondary"),
         "source_priority_norm": float(source_profile.get("priority_norm", 0.0) or 0.0),
         "official_source_norm": float(source_profile.get("official_source_norm", 0.0) or 0.0),
+        "source_channel_match": bool(source_provenance.get("source_channel_match")),
+        "source_provenance_status": str(source_provenance.get("source_provenance_status") or ""),
         "transcript_quality_norm": float(transcript_quality.get("quality_norm", 0.0) or 0.0),
         "speaker_turn_count": int(speaker_summary.get("speaker_turn_count", len(speaker_turns)) or 0),
         "speakers_detected": list(speaker_summary.get("speakers_detected") or []),

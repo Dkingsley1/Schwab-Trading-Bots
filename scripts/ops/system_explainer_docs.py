@@ -39,6 +39,7 @@ def _fmt_num(value: Any, digits: int = 3) -> str:
 
 
 def _system_state(health_dir: Path, feature_store_path: Path) -> dict[str, Any]:
+    champion_dir = health_dir.parent / "champion_challenger"
     collectors = _load_json(health_dir / "collector_contracts_latest.json")
     verification = _load_json(health_dir / "source_verification_latest.json")
     ingestion = _load_json(health_dir / "ingestion_storage_control_latest.json")
@@ -46,6 +47,14 @@ def _system_state(health_dir: Path, feature_store_path: Path) -> dict[str, Any]:
     sql_link = _load_json(health_dir / "sql_link_service_latest.json")
     paper_performance = _load_json(health_dir / "paper_performance_latest.json")
     feature_store = _load_json(feature_store_path)
+    live_readiness = _load_json(health_dir / "live_readiness_smoke_latest.json")
+    autonomy_control = _load_json(health_dir / "autonomy_control_plane_latest.json")
+    data_plane_recovery = _load_json(health_dir / "data_plane_recovery_controller_latest.json")
+    process_watchdog = _load_json(health_dir / "process_watchdog_latest.json")
+    roster_resilience = _load_json(health_dir / "roster_resilience_planner_latest.json")
+    portable_brain = _load_json(health_dir / "portable_brain_contract_latest.json")
+    macro_event = _load_json(health_dir / "macro_event_intelligence_latest.json")
+    promotion_autopilot = _load_json(champion_dir / "promotion_autopilot_packet_latest.json")
     return {
         "collectors": collectors,
         "verification": verification,
@@ -54,6 +63,14 @@ def _system_state(health_dir: Path, feature_store_path: Path) -> dict[str, Any]:
         "sql_link": sql_link,
         "paper_performance": paper_performance,
         "feature_store": feature_store,
+        "live_readiness": live_readiness,
+        "autonomy_control": autonomy_control,
+        "data_plane_recovery": data_plane_recovery,
+        "process_watchdog": process_watchdog,
+        "roster_resilience": roster_resilience,
+        "portable_brain": portable_brain,
+        "macro_event": macro_event,
+        "promotion_autopilot": promotion_autopilot,
     }
 
 
@@ -65,6 +82,14 @@ def _framework_html(generated_utc: str, state: dict[str, Any]) -> str:
     sql_link = state["sql_link"]
     paper_performance = state["paper_performance"]
     feature_store = state["feature_store"]
+    live_readiness = state["live_readiness"]
+    autonomy_control = state["autonomy_control"]
+    data_plane_recovery = state["data_plane_recovery"]
+    process_watchdog = state["process_watchdog"]
+    roster_resilience = state["roster_resilience"]
+    portable_brain = state["portable_brain"]
+    macro_event = state["macro_event"]
+    promotion_autopilot = state["promotion_autopilot"]
     overall = verification.get("overall") if isinstance(verification.get("overall"), dict) else {}
     point_in_time = feature_store.get("point_in_time_contract") if isinstance(feature_store.get("point_in_time_contract"), dict) else {}
     steady_state = ingestion.get("steady_state") if isinstance(ingestion.get("steady_state"), dict) else {}
@@ -76,6 +101,20 @@ def _framework_html(generated_utc: str, state: dict[str, Any]) -> str:
         for item in active_paper
         if isinstance(item, dict) and str(item.get("profile") or "").strip()
     ) or "n/a"
+    host_contract = portable_brain.get("host_contract") if isinstance(portable_brain.get("host_contract"), dict) else {}
+    cross_platform = portable_brain.get("cross_platform_proof_node") if isinstance(portable_brain.get("cross_platform_proof_node"), dict) else {}
+    restart_storms = process_watchdog.get("restart_storms") if isinstance(process_watchdog.get("restart_storms"), list) else []
+    supportable = int(roster_resilience.get("active_supportable_bots", 0) or 0)
+    queue_depth = int(data_plane_recovery.get("queue_depth", 0) or 0)
+    write_failures = int(data_plane_recovery.get("write_failure_count", 0) or 0)
+    snapshot_failures = int(data_plane_recovery.get("account_snapshot_failure_count", 0) or 0)
+    blocker_count = int(promotion_autopilot.get("blocker_count", 0) or 0)
+    live_score = _fmt_num(live_readiness.get("readiness_score", 0.0), 2)
+    autonomy_score = _fmt_num(autonomy_control.get("autonomy_score", 0.0), 2)
+    collector_quality = _fmt_num(collectors.get("average_quality_score", 0.0), 3)
+    host_label = str(host_contract.get("chip") or host_contract.get("host_profile") or "unknown host")
+    macro_source = str(macro_event.get("source") or "unknown source")
+    macro_status = str(macro_event.get("overall_status") or "unknown")
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -83,7 +122,7 @@ def _framework_html(generated_utc: str, state: dict[str, Any]) -> str:
   <title>Framework Map v2</title>
   <style>
     :root {{
-      --bg: #f4f7f8;
+      --bg: #eef2f3;
       --card: #ffffff;
       --ink: #1f2937;
       --muted: #5b6471;
@@ -94,16 +133,38 @@ def _framework_html(generated_utc: str, state: dict[str, Any]) -> str:
       --red: #c65a5a;
       --green: #1e8e5a;
       --purple: #6b5bd2;
+      --shadow: 0 18px 40px rgba(21, 33, 52, 0.08);
+      --hero: linear-gradient(145deg, rgba(27, 146, 146, 0.12), rgba(107, 91, 210, 0.08) 55%, rgba(216, 169, 58, 0.12));
     }}
     * {{ box-sizing: border-box; }}
-    body {{ margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+    body {{ margin: 0; background: radial-gradient(circle at top left, #f8fbfc 0, var(--bg) 40%, #e8eeef 100%); color: var(--ink); font: 15px/1.6 "Avenir Next", "Segoe UI", sans-serif; }}
     .page {{ padding: 28px 30px 36px; }}
-    .hero {{ background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 20px 22px; }}
+    .hero {{ background: var(--hero), var(--card); border: 1px solid rgba(128, 151, 166, 0.22); border-radius: 24px; padding: 26px 28px; box-shadow: var(--shadow); }}
     h1, h2, h3 {{ margin: 0; }}
-    h1 {{ font-size: 28px; }}
-    .sub {{ margin-top: 8px; color: var(--muted); }}
+    h1 {{ font: 700 31px/1.12 "Iowan Old Style", "Georgia", serif; letter-spacing: -0.02em; }}
+    h2 {{ font: 700 22px/1.18 "Iowan Old Style", "Georgia", serif; }}
+    h3 {{ font-size: 18px; margin-bottom: 10px; }}
+    .eyebrow {{ display: inline-block; margin-bottom: 10px; color: var(--purple); font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }}
+    .sub {{ margin-top: 10px; color: var(--muted); max-width: 940px; }}
+    .hero-grid {{ display: grid; grid-template-columns: 1.55fr 1fr; gap: 20px; align-items: start; }}
+    .hero-notes {{ display: grid; gap: 12px; }}
+    .hero-callout {{ background: rgba(255, 255, 255, 0.75); border: 1px solid rgba(128, 151, 166, 0.2); border-radius: 16px; padding: 14px 16px; }}
+    .hero-callout strong {{ display: block; font-size: 13px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }}
+    .metrics-grid {{ display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }}
+    .metric-card {{ background: rgba(255, 255, 255, 0.9); border: 1px solid rgba(128, 151, 166, 0.18); border-radius: 18px; padding: 14px 16px; box-shadow: var(--shadow); }}
+    .metric-card .label {{ color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }}
+    .metric-card .value {{ margin-top: 6px; font-size: 23px; font-weight: 700; line-height: 1.1; }}
+    .metric-card .detail {{ margin-top: 6px; color: var(--muted); font-size: 13px; }}
+    .report-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 18px; }}
+    .toc-grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 18px; }}
+    .brief-card {{ background: rgba(255, 255, 255, 0.94); border: 1px solid rgba(128, 151, 166, 0.2); border-radius: 18px; padding: 18px; box-shadow: var(--shadow); }}
+    .brief-card p {{ margin: 0; color: var(--muted); }}
+    .brief-card ul {{ margin: 10px 0 0; padding-left: 18px; }}
+    .toc-card {{ background: linear-gradient(180deg, #ffffff 0%, #fafcfd 100%); border-radius: 18px; border: 1px solid rgba(128, 151, 166, 0.18); padding: 18px; box-shadow: var(--shadow); }}
+    .toc-card h3 {{ margin-bottom: 8px; }}
+    .toc-card p {{ margin: 0; color: var(--muted); }}
     .grid {{ display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; margin-top: 20px; }}
-    .box {{ background: var(--card); border-radius: 16px; border: 2px solid var(--line); padding: 14px; min-height: 154px; }}
+    .box {{ background: linear-gradient(180deg, #ffffff 0%, #fbfcfd 100%); border-radius: 18px; border: 2px solid var(--line); padding: 14px; min-height: 154px; }}
     .box h3 {{ font-size: 18px; margin-bottom: 10px; }}
     .box ul {{ margin: 0; padding-left: 18px; }}
     .box.teal {{ border-color: var(--teal); }}
@@ -112,8 +173,9 @@ def _framework_html(generated_utc: str, state: dict[str, Any]) -> str:
     .box.purple {{ border-color: var(--purple); }}
     .box.green {{ border-color: var(--green); }}
     .box.red {{ border-color: var(--red); }}
-    .flow-wrap {{ margin-top: 20px; background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 18px 18px 8px; }}
-    .flow-title {{ font-size: 18px; font-weight: 700; margin-bottom: 14px; }}
+    .flow-wrap {{ margin-top: 20px; background: var(--card); border: 1px solid rgba(128, 151, 166, 0.2); border-radius: 22px; padding: 18px 18px 8px; box-shadow: var(--shadow); }}
+    .flow-title {{ font-size: 18px; font-weight: 700; margin-bottom: 6px; }}
+    .flow-sub {{ color: var(--muted); margin-bottom: 14px; }}
     .flow {{ display: flex; align-items: stretch; gap: 8px; }}
     .flow .box {{ flex: 1 1 0; min-height: 150px; }}
     .arrow-col {{ width: 34px; display: flex; align-items: center; justify-content: center; position: relative; }}
@@ -129,14 +191,15 @@ def _framework_html(generated_utc: str, state: dict[str, Any]) -> str:
     }}
     .arrow-label {{ position: absolute; top: -18px; left: 0; width: 100%; text-align: center; font-size: 10px; color: var(--muted); }}
     .row {{ display: grid; grid-template-columns: 1.4fr 1.2fr 1.4fr; gap: 14px; margin-top: 18px; }}
-    .note {{ background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px; }}
+    .note {{ background: linear-gradient(180deg, #ffffff 0%, #fafcfd 100%); border: 1px solid rgba(128, 151, 166, 0.2); border-radius: 18px; padding: 16px 18px; box-shadow: var(--shadow); }}
     .note ul {{ margin: 8px 0 0; padding-left: 18px; }}
-    .section-card {{ margin-top: 18px; background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 18px; }}
+    .section-card {{ margin-top: 18px; background: var(--card); border: 1px solid rgba(128, 151, 166, 0.2); border-radius: 22px; padding: 18px; box-shadow: var(--shadow); }}
     .section-card h2 {{ margin-bottom: 12px; font-size: 20px; }}
+    .section-lead {{ color: var(--muted); margin-bottom: 12px; }}
     .mini-map {{ margin-top: 10px; }}
     .mini-row {{ display: grid; grid-template-columns: 1fr 48px 1fr 48px 1fr; gap: 8px; align-items: stretch; }}
     .mini-row.four {{ grid-template-columns: 1fr 48px 1fr 48px 1fr 48px 1fr; }}
-    .mini-box {{ background: #fbfcfd; border-radius: 14px; border: 2px solid var(--line); padding: 12px; min-height: 114px; }}
+    .mini-box {{ background: #fbfcfd; border-radius: 16px; border: 2px solid var(--line); padding: 12px; min-height: 114px; }}
     .mini-box h3 {{ font-size: 16px; margin-bottom: 8px; }}
     .mini-box p {{ margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; }}
     .mini-box.teal {{ border-color: var(--teal); }}
@@ -148,18 +211,94 @@ def _framework_html(generated_utc: str, state: dict[str, Any]) -> str:
     .mini-arrow {{ display: flex; align-items: center; justify-content: center; position: relative; }}
     .mini-arrow .arrow-line {{ height: 2px; }}
     .mini-note {{ margin-top: 10px; color: var(--muted); font-size: 13px; }}
+    .pill {{ display: inline-block; padding: 4px 10px; border-radius: 999px; background: rgba(44, 166, 164, 0.08); color: var(--teal); font-size: 12px; font-weight: 700; }}
+    .closing-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }}
+    .closing-card {{ background: linear-gradient(180deg, #ffffff 0%, #fafcfd 100%); border-radius: 18px; border: 1px solid rgba(128, 151, 166, 0.18); padding: 18px; }}
+    .closing-card p {{ margin: 0; color: var(--muted); }}
+    .closing-card ul {{ margin: 10px 0 0; padding-left: 18px; }}
     .meta {{ margin-top: 18px; color: var(--muted); font-size: 12px; }}
   </style>
 </head>
 <body>
   <div class="page">
     <section class="hero">
-      <h1>Schwab Trading Bot Framework Map v2</h1>
-      <div class="sub">Generated {generated_utc}. This version shows the real planes that matter in practice: runtime sleeves, cross-sleeve allocation, ingestion/storage, and health-gate feedback.</div>
+      <div class="hero-grid">
+        <div>
+          <div class="eyebrow">Operational Architecture Report</div>
+          <h1>Schwab Trading Bot Framework Map v2</h1>
+          <div class="sub">Generated {generated_utc}. This report is the operating blueprint for how the platform turns multi-source inputs into sleeve decisions, portfolio intents, and controlled execution while still preserving point-in-time evidence, routing durability, and rollback discipline.</div>
+          <div class="sub">The important point is not just that the stack has many modules. It is that collection, storage, runtime, and learning are separated on purpose so the system can keep broker truth, fail small under pressure, and explain what it knew when a decision was made.</div>
+        </div>
+        <div class="hero-notes">
+          <div class="hero-callout">
+            <strong>Why This Map Matters</strong>
+            It shows where the runtime can move independently, where it must wait for hard evidence, and which layers are allowed to halt or constrain the system before risk leaks into live execution.
+          </div>
+          <div class="hero-callout">
+            <strong>Current Operational Story</strong>
+            Live readiness is `{live_readiness.get("overall_status", "unknown")}` at `{live_score}/100`, autonomy is `{autonomy_control.get("overall_status", "unknown")}` at `{autonomy_score}/100`, and the data plane is carrying queue depth `{queue_depth}` with `{write_failures}` write failures / `{snapshot_failures}` snapshot failures.
+          </div>
+        </div>
+      </div>
+      <div class="metrics-grid">
+        <div class="metric-card"><div class="label">Live Readiness</div><div class="value">{live_score}/100</div><div class="detail">{live_readiness.get("overall_status", "unknown")}</div></div>
+        <div class="metric-card"><div class="label">Autonomy</div><div class="value">{autonomy_score}/100</div><div class="detail">{autonomy_control.get("overall_status", "unknown")}</div></div>
+        <div class="metric-card"><div class="label">Collector Quality</div><div class="value">{collector_quality}</div><div class="detail">{int(collectors.get("collector_count", 0) or 0)} collectors tracked</div></div>
+        <div class="metric-card"><div class="label">Supportable Active Bots</div><div class="value">{supportable}</div><div class="detail">paper lane roster today: {active_paper_labels}</div></div>
+        <div class="metric-card"><div class="label">Queue Depth</div><div class="value">{queue_depth}</div><div class="detail">write {write_failures} / snapshot {snapshot_failures} failures</div></div>
+        <div class="metric-card"><div class="label">Portable Host</div><div class="value">{host_label}</div><div class="detail">proof node `{cross_platform.get("status", "unknown")}`</div></div>
+      </div>
+    </section>
+
+    <section class="section-card">
+      <h2>How To Read This Report</h2>
+      <div class="section-lead">The document is laid out like an operating brief: first the thesis, then the control surfaces, then the subsystem maps, and finally the upgrades that matter most from here.</div>
+      <div class="toc-grid">
+        <div class="toc-card">
+          <h3>1. Thesis And Proof</h3>
+          <p>Read the cover and proof strip first. That tells you whether the architecture is merely well designed or actually carrying its operational weight right now.</p>
+        </div>
+        <div class="toc-card">
+          <h3>2. Control Posture</h3>
+          <p>The control sections explain where the system can self-govern, where it needs stronger data-plane health, and which gates still block promotion or live freedom.</p>
+        </div>
+        <div class="toc-card">
+          <h3>3. Deep-Dive Maps</h3>
+          <p>The folded maps show the mechanics behind the claims: sleeve hierarchy, shards, storage routing, broker truth, and training/promotion discipline.</p>
+        </div>
+        <div class="toc-card">
+          <h3>4. Recommendations</h3>
+          <p>The closing recommendations interpret the maps into action so the report can be used for operating decisions, not just architecture admiration.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="report-grid">
+      <div class="brief-card">
+        <h2>Executive Summary</h2>
+        <p>This architecture is strongest where it treats evidence, risk, and execution as separate responsibilities. The framework is designed to let sleeves think independently, let cross-sleeve controls net or veto intent, and let operational controls override all of that if broker truth or storage health is questionable.</p>
+      </div>
+      <div class="brief-card">
+        <h2>What Makes It Worthy</h2>
+        <ul>
+          <li>Point-in-time event categories tracked: `{int(point_in_time.get("event_category_count", 0) or 0)}`.</li>
+          <li>Portable runtime contract currently recommends `{portable_brain.get("recommended_runtime_mode", "unknown")}` on `{portable_brain.get("recommended_backend", "unknown")}`.</li>
+          <li>Latest macro intelligence surface is `{macro_status}` from `{macro_source}`.</li>
+        </ul>
+      </div>
+      <div class="brief-card">
+        <h2>Current Watch Items</h2>
+        <ul>
+          <li>Promotion state is `{promotion_autopilot.get("autopilot_state", "unknown")}` with `{blocker_count}` blockers.</li>
+          <li>Restart storms currently tracked: `{len(restart_storms)}`.</li>
+          <li>All verified sources: `{_fmt_bool(overall.get("all_verified", False))}`.</li>
+        </ul>
+      </div>
     </section>
 
     <section class="flow-wrap">
       <div class="flow-title">Top-Level System Flow</div>
+      <div class="flow-sub">This is the actual control sequence: acquire truth, stamp provenance, route durable writes, build sleeve decisions, then let downstream governance decide whether those intents are allowed to survive.</div>
       <div class="flow">
         <div class="box teal">
           <h3>Sources</h3>
@@ -175,7 +314,7 @@ def _framework_html(generated_utc: str, state: dict[str, Any]) -> str:
           <ul>
             <li>Cached collectors and sync artifacts</li>
             <li>Required failures: {int(collectors.get("required_failure_count", 0) or 0)}</li>
-            <li>Average quality: {_fmt_num(collectors.get("average_quality_score", 0.0))}</li>
+            <li>Average quality: {collector_quality}</li>
           </ul>
         </div>
         <div class="arrow-col"><div class="arrow-label">write</div><div class="arrow-line"></div></div>
@@ -219,7 +358,7 @@ def _framework_html(generated_utc: str, state: dict[str, Any]) -> str:
 
     <section class="row">
       <div class="note">
-        <h2>Accuracy Note</h2>
+        <h2>Why The Layering Matters</h2>
         <ul>
           <li>A sleeve is a runtime lane or container, not a passive label.</li>
           <li>Specialists feed sleeve-level master outputs, and grand-master routing sits inside that sleeve path.</li>
@@ -236,7 +375,7 @@ def _framework_html(generated_utc: str, state: dict[str, Any]) -> str:
         </ul>
       </div>
       <div class="note">
-        <h2>Missing From Simpler Maps</h2>
+        <h2>What Simpler Maps Miss</h2>
         <ul>
           <li>Storage routing between BOT_LOGS and local fallback</li>
           <li>Shard-pressure and backlog control</li>
@@ -247,8 +386,49 @@ def _framework_html(generated_utc: str, state: dict[str, Any]) -> str:
     </section>
 
     <section class="section-card">
+      <h2>Operational Proof And Control Posture</h2>
+      <div class="section-lead">This is the report layer that tells an operator why the architecture matters right now, not just what modules exist.</div>
+      <div class="report-grid">
+        <div class="brief-card">
+          <span class="pill">Runtime</span>
+          <h3>Execution Integrity</h3>
+          <p>The runtime is only trustworthy if live readiness, broker/session readiness, and restart discipline stay aligned. Current posture is live `{live_readiness.get("overall_status", "unknown")}` with readiness `{live_score}/100` and restart storms `{len(restart_storms)}`.</p>
+        </div>
+        <div class="brief-card">
+          <span class="pill">Data Plane</span>
+          <h3>Storage And Backpressure</h3>
+          <p>Ingestion is `{ingestion.get("overall_status", "unknown")}` with recommended mode `{ingestion.get("recommended_operating_mode", "unknown")}`. Queue depth `{queue_depth}` tells you how much operational drag still sits between collection and clean analytical access.</p>
+        </div>
+        <div class="brief-card">
+          <span class="pill">Governance</span>
+          <h3>Promotion And Learning</h3>
+          <p>Feature store strictness is `{_fmt_bool(feature_store.get("strict_ok", False))}` and promotion is `{promotion_autopilot.get("autopilot_state", "unknown")}`. That is the layer that decides whether new intelligence is allowed to become production behavior.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-card">
+      <h2>Interpretation Notes</h2>
+      <div class="section-lead">These notes connect the raw metrics to what they mean operationally.</div>
+      <div class="report-grid">
+        <div class="brief-card">
+          <h3>Why Live Readiness Is Not Enough</h3>
+          <p>A `100/100` live surface is important, but it is not the whole story. Queue pressure `{queue_depth}` and autonomy `{autonomy_score}/100` show whether the control plane can sustain that readiness without leaning on operator intervention.</p>
+        </div>
+        <div class="brief-card">
+          <h3>Why Point-In-Time Evidence Matters</h3>
+          <p>`{int(point_in_time.get("event_category_count", 0) or 0)}` tracked event categories means the learning stack can reconstruct what the system knew when it acted. That is one of the main differences between a research toy and a defensible trading platform.</p>
+        </div>
+        <div class="brief-card">
+          <h3>Why Portability Changes The Story</h3>
+          <p>Recognizing `{host_label}` cleanly is good; proving the same architecture can travel to non-Mac replay and research nodes is better. That is how the platform avoids becoming an impressive but isolated local build.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-card">
       <h2>Folded-In Deep-Dive Maps</h2>
-      <div class="mini-note">These are the missing maps folded into the same file so the framework PDF reads like one packet instead of a pile of separate summaries.</div>
+      <div class="mini-note">These deeper maps are folded into the same packet so the report moves from high-level architecture into the concrete subsystems that make durability, broker truth, and promotion discipline possible.</div>
 
       <div class="mini-map">
         <h3>Runtime Hierarchy</h3>
@@ -394,6 +574,40 @@ def _framework_html(generated_utc: str, state: dict[str, Any]) -> str:
             <h3>Promotion Gates</h3>
             <p>Promotion quality, canaries, and rollout controls decide whether retrained outputs can feed runtime again.</p>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-card">
+      <h2>Architecture Recommendations</h2>
+      <div class="section-lead">This closing section translates the current architecture and proofs into the next moves that would improve trust the most.</div>
+      <div class="closing-grid">
+        <div class="closing-card">
+          <h3>Clear The Data Plane First</h3>
+          <p>The biggest operational drag is still the write path and queue pressure.</p>
+          <ul>
+            <li>Queue depth is currently `{queue_depth}`.</li>
+            <li>Write failures / snapshot failures are `{write_failures}` / `{snapshot_failures}`.</li>
+            <li>Until those numbers calm down, every other proof surface has to carry more strain.</li>
+          </ul>
+        </div>
+        <div class="closing-card">
+          <h3>Turn Promotion Into Proof</h3>
+          <p>The architecture already separates training from runtime; the remaining gap is promotion confidence.</p>
+          <ul>
+            <li>Promotion state is `{promotion_autopilot.get("autopilot_state", "unknown")}`.</li>
+            <li>Current blocker count is `{blocker_count}`.</li>
+            <li>Finishing those gates is what turns the learning layer from promising into production-grade.</li>
+          </ul>
+        </div>
+        <div class="closing-card">
+          <h3>Keep Building Portability And Bench Depth</h3>
+          <p>The biggest strategic upside is making the platform stronger without making it more fragile.</p>
+          <ul>
+            <li>Supportable active bots currently sit at `{supportable}`.</li>
+            <li>Portable proof node status is `{cross_platform.get("status", "unknown")}`.</li>
+            <li>More supportable depth plus stronger non-Mac proof would make the architecture much harder to dismiss.</li>
+          </ul>
         </div>
       </div>
     </section>

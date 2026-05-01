@@ -20,8 +20,6 @@ _DRIFT_MODES = [
     "shadow_aggressive_equities",
     "shadow_intraday_aggressive_equities",
     "shadow_swing_aggressive_equities",
-    "shadow_crypto",
-    "shadow_crypto_futures_crypto",
 ]
 
 
@@ -157,6 +155,9 @@ def _runtime_feature_vector(sequence, idx):
 
 def _runtime_sample_filter(sequence, idx, horizon):
     obs = sequence[idx]
+    tradeability = _drift_tradeability(obs)
+    if _directional_drift_conviction(obs) >= 0.24 and tradeability < 0.44:
+        return False
     return (
         observation_feature(obs, "active_sub_bots") >= 6.0
         and observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.82
@@ -164,7 +165,7 @@ def _runtime_sample_filter(sequence, idx, horizon):
         and observation_feature(obs, "market_micro_relative_volume_norm") >= 0.18
         and _drift_signal(obs) >= 0.10
         and _directional_drift_conviction(obs) >= 0.12
-        and _drift_tradeability(obs) >= 0.28
+        and tradeability >= 0.28
     )
 
 
@@ -271,14 +272,14 @@ def train_brain():
         mode_allowlist=_DRIFT_MODES,
         sample_filter=_runtime_sample_filter,
         confidence_builder=_runtime_confidence,
-        min_confidence=0.38,
+        min_confidence=0.50,
         sample_stride=4,
         lookback_days=60,
         window=18,
         horizon=6,
-        min_samples=128,
+        min_samples=224,
         min_sequences=4,
-        acted_prob_threshold=0.62,
+        acted_prob_threshold=0.66,
         fallback_trainer=_train_synthetic,
         allow_fallback_on_insufficient_data=False,
         max_best_val_loss=0.6925,
@@ -286,12 +287,12 @@ def train_brain():
         min_long_precision=0.54,
         min_short_precision=0.54,
         require_both_sides_precision=True,
-        min_acted_accuracy=0.55,
+        min_acted_accuracy=0.60,
         min_long_acted_count=5,
         min_short_acted_count=5,
         min_accuracy_lift_over_majority=0.02,
         min_precision_balance_score=0.30,
-        max_acted_coverage=0.28,
+        max_acted_coverage=0.22,
     )
 
 

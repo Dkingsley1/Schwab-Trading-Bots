@@ -83,6 +83,22 @@ def build_payload(
     now = datetime.now(timezone.utc).isoformat()
     current_signature = _signature_payload(feature_store_manifest)
     baseline_signature = _baseline_signature(promotion_packet)
+    point_in_time = (
+        feature_store_manifest.get("point_in_time_contract")
+        if isinstance(feature_store_manifest.get("point_in_time_contract"), dict)
+        else {}
+    )
+    feature_store_strict_ok = bool(feature_store_manifest.get("strict_ok", False))
+    feature_store_seed_ready = bool(
+        feature_store_strict_ok
+        or feature_store_manifest.get("strict_seed_ready", False)
+    )
+    point_in_time_complete = bool(point_in_time.get("complete", False))
+    point_in_time_seed_ready = bool(
+        point_in_time_complete
+        or point_in_time.get("seed_ready", False)
+    )
+    schema_migration_ok = bool(schema_migration_guard.get("ok", False))
     baseline_ready = any(
         bool(value)
         for value in [
@@ -101,30 +117,84 @@ def build_payload(
         if current_signature.get(key) != baseline_signature.get(key):
             drifted_fields.append(key)
 
-    point_in_time = feature_store_manifest.get("point_in_time_contract") if isinstance(feature_store_manifest.get("point_in_time_contract"), dict) else {}
     failed_checks: list[str] = []
-    if not bool(feature_store_manifest.get("strict_ok", False)):
+    if not feature_store_seed_ready:
         failed_checks.append("feature_store_manifest_not_strict_ready")
-    if not bool(point_in_time.get("complete", False)):
+    if not point_in_time_seed_ready:
         failed_checks.append("point_in_time_contract_incomplete")
-    if schema_migration_guard and not bool(schema_migration_guard.get("ok", False)):
+    migration_required = bool(drifted_fields)
+    if migration_required and schema_migration_guard and not schema_migration_ok:
         failed_checks.append("schema_migration_guard_not_ready")
     if baseline_ready and drifted_fields:
         failed_checks.append("schema_signature_drift")
 
+    compatibility_seed_ready = bool(
+        baseline_ready
+        and feature_store_seed_ready
+        and point_in_time_seed_ready
+        and not drifted_fields
+    )
     if not baseline_ready:
         overall_status = "warmup"
+    elif not failed_checks and compatibility_seed_ready and not (
+        feature_store_strict_ok and point_in_time_complete and (schema_migration_ok or not migration_required)
+    ):
+        overall_status = "degraded"
     else:
         overall_status = "ready" if not failed_checks else "blocked"
+
+    compatibility_score = 0.0
+    if baseline_ready:
+        compatibility_score += 25.0
+    if feature_store_seed_ready:
+        compatibility_score += 20.0
+    if point_in_time_seed_ready:
+        compatibility_score += 20.0
+    if not drifted_fields:
+        compatibility_score += 20.0
+    if schema_migration_ok or not migration_required:
+        compatibility_score += 15.0
+    compatibility_score = min(round(compatibility_score, 2), 100.0)
+
+    summary = (
+        "schema-compatible with seeded lineage evidence; migration manifest can stay advisory until drift appears"
+        if compatibility_seed_ready and overall_status == "degraded"
+        else (
+            "schema signatures are aligned and retrain contract is ready"
+            if not failed_checks and baseline_ready
+            else (
+                "waiting for a promotion baseline before schema-sensitive retrains can be evaluated"
+                if not baseline_ready
+                else "schema-sensitive retrains remain blocked until lineage or migration evidence is repaired"
+            )
+        )
+    )
+    recommended_actions: list[str] = []
+    if not feature_store_seed_ready:
+        recommended_actions.append("refresh the feature-store manifest so dataset and point-in-time lineage evidence is available")
+    if not point_in_time_seed_ready:
+        recommended_actions.append("repair the point-in-time contract before allowing schema-sensitive retrains")
+    if migration_required and not schema_migration_ok:
+        recommended_actions.append("refresh the schema migration manifest before promoting a signature drift")
+    if drifted_fields:
+        recommended_actions.append("rebuild the promotion baseline after the schema change is approved")
+    elif compatibility_seed_ready and overall_status == "degraded":
+        recommended_actions.append("promote the seeded lineage evidence to a fully strict-ready contract when the event-backed point-in-time store returns")
 
     return {
         "timestamp_utc": now,
         "schema_version": 1,
-        "ok": not failed_checks,
+        "ok": bool(baseline_ready and not failed_checks),
         "overall_status": overall_status,
         "baseline_ready": baseline_ready,
         "failed_checks": failed_checks,
         "drifted_fields": drifted_fields,
+        "migration_required": migration_required,
+        "feature_store_seed_ready": feature_store_seed_ready,
+        "point_in_time_seed_ready": point_in_time_seed_ready,
+        "compatibility_seed_ready": compatibility_seed_ready,
+        "compatibility_score": compatibility_score,
+        "summary": summary,
         "current_signature": {
             **current_signature,
             "schema_signature_sha256": _signature_hash(current_signature),
@@ -133,11 +203,13 @@ def build_payload(
             **baseline_signature,
             "schema_signature_sha256": _signature_hash(baseline_signature) if baseline_ready else "",
         },
-        "top_actions": (
-            ["refresh the migration manifest and promotion baseline before allowing schema-sensitive retrains"]
-            if failed_checks
-            else []
-        ),
+        "top_actions": recommended_actions,
+        "recommended_actions": recommended_actions,
+        "source_artifacts": {
+            "feature_store_manifest": str(PROJECT_ROOT / "governance" / "feature_store" / "latest.json"),
+            "promotion_packet": str(PROJECT_ROOT / "governance" / "champion_challenger" / "promotion_packet_latest.json"),
+            "schema_migration_guard": str(PROJECT_ROOT / "governance" / "migrations" / "latest.json"),
+        },
     }
 
 

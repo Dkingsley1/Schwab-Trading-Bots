@@ -103,6 +103,18 @@ def _sha256_file(path_text: Any) -> str:
     return digest.hexdigest()
 
 
+def _ordered_unique(items: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in items:
+        text = str(raw or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
 def _mode_to_lane(mode: str) -> str:
     text = str(mode or "").strip().lower()
     if "crypto_futures" in text:
@@ -306,6 +318,15 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "event_store_fresh": bool(event_store_freshness["fresh"]),
         "event_store_age_hours": event_store_freshness["age_hours"],
     }
+    point_in_time_seed_ready = bool(
+        row_count > 0
+        and rows_sha256
+        and bool(point_in_time_contract["dataset_join_keys"])
+        and bool(point_in_time_contract["event_join_keys"])
+        and coverage_ratio >= min_coverage_ratio
+        and bool(snapshot_freshness["fresh"])
+        and bool(tracked_file_hashes)
+    )
     event_contract_ready = bool(
         event_count > 0
         and bool(event_categories)
@@ -323,6 +344,12 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         and bool(tracked_file_hashes)
     )
     point_in_time_contract["complete"] = point_in_time_complete
+    point_in_time_contract["seed_ready"] = point_in_time_seed_ready
+    point_in_time_contract["seed_mode"] = (
+        "event_backed"
+        if point_in_time_complete
+        else ("snapshot_contract_only" if point_in_time_seed_ready else "unready")
+    )
 
     dataset_payload_sha256 = str(
         dataset_lineage.get("output_payload_sha256")
@@ -383,6 +410,21 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             int(label_contract["horizons"]["primary_seconds"]) > 0
             or label_lineage_complete
         )
+    )
+    label_seed_ready = bool(
+        label_contract["complete"]
+        or (
+            row_count > 0
+            and rows_sha256
+            and bool(tracked_file_hashes)
+            and str(rows_path).strip()
+        )
+    )
+    label_contract["seed_ready"] = label_seed_ready
+    label_contract["seed_mode"] = (
+        "fully_labeled"
+        if label_contract["complete"]
+        else ("dataset_snapshot_seed" if label_seed_ready else "unready")
     )
     env_payload = feature_versions.get("env") if isinstance(feature_versions.get("env"), dict) else {}
     if not env_payload:
@@ -449,20 +491,52 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         and coverage_ratio >= min_coverage_ratio
         and bool(snapshot_freshness["fresh"])
     )
+    strict_seed_ready = bool(ok and point_in_time_seed_ready and label_seed_ready)
     strict_ok = bool(ok and point_in_time_complete and bool(label_contract.get("complete", False)))
     overall_status = "ready" if ok else "needs_work"
     if row_count <= 0 or not rows_sha256:
         overall_status = "blocked"
+    strict_status = (
+        "ready"
+        if strict_ok
+        else ("degraded" if strict_seed_ready else ("blocked" if overall_status == "blocked" else "needs_work"))
+    )
+    recommended_actions = _ordered_unique(
+        [
+            "restore the point-in-time event store so strict event-backed lineage is available"
+            if not point_in_time_complete and point_in_time_seed_ready
+            else "",
+            "publish the trade behavior dataset metadata so the label contract is explicit"
+            if not bool(label_contract.get("complete", False)) and label_seed_ready
+            else "",
+            "refresh the runtime snapshot and tracked file hashes before using the feature store for promotion review"
+            if not ok
+            else "",
+            "do not treat the feature store as strict-ready until both the point-in-time contract and label contract are fully complete"
+            if strict_status == "needs_work"
+            else "",
+        ]
+    )
+    summary = {
+        "runtime_dataset_ready": ok,
+        "point_in_time_complete": point_in_time_complete,
+        "point_in_time_seed_ready": point_in_time_seed_ready,
+        "label_contract_complete": bool(label_contract.get("complete", False)),
+        "label_contract_seed_ready": label_seed_ready,
+        "strict_seed_ready": strict_seed_ready,
+    }
 
     payload = {
         "timestamp_utc": now.isoformat(),
         "schema_version": 1,
         "ok": ok,
         "overall_status": overall_status,
-        "strict_status": "ready" if strict_ok else ("blocked" if overall_status == "blocked" else "needs_work"),
+        "strict_status": strict_status,
         "manifest_version": 1,
         "lineage_schema_version": _safe_int(lineage.get("lineage_schema_version"), 0),
         "strict_ok": strict_ok,
+        "strict_seed_ready": strict_seed_ready,
+        "summary": summary,
         "dataset_contract": dataset_contract,
         "point_in_time_contract": point_in_time_contract,
         "feature_contract": feature_contract,
@@ -479,6 +553,7 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "trade_behavior_dataset": trade_behavior_dataset_path_text,
         },
         "auto_source_hashes": auto_file_hashes,
+        "recommended_actions": recommended_actions,
     }
     return payload
 

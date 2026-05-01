@@ -25,12 +25,14 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from core.runtime_python import resolve_runtime_python
+from core.training_quality_thresholds import TARGET_TEST_ACCURACY_FLOOR
+
+from core.runtime_python import resolve_runtime_python, resolve_training_python
 from scripts import retrain_lane_scheduler as retrain_lane_scheduler_src
 
 CORE_DIR = os.path.join(PROJECT_ROOT, "core")
 REGISTRY_PATH = os.path.join(PROJECT_ROOT, "master_bot_registry.json")
-VENV_PY = str(resolve_runtime_python(PROJECT_ROOT))
+VENV_PY = str(resolve_training_python(PROJECT_ROOT))
 MASTER_RUNNER = os.path.join(PROJECT_ROOT, "scripts", "run_master_bot.py")
 TRADE_DATASET_BUILDER = os.path.join(PROJECT_ROOT, "scripts", "build_behavior_dataset_from_decisions.py")
 TRADE_DATASET_BUILDER_LEGACY = os.path.join(PROJECT_ROOT, "scripts", "build_trade_learning_dataset.py")
@@ -163,6 +165,37 @@ def _safe_json_load(path: str) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _parse_json_output(text: str) -> dict[str, Any]:
+    raw = str(text or "").strip()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        pass
+
+    for line in reversed(raw.splitlines()):
+        candidate = line.strip()
+        if not (candidate.startswith("{") and candidate.endswith("}")):
+            continue
+        try:
+            payload = json.loads(candidate)
+        except Exception:
+            continue
+        return payload if isinstance(payload, dict) else {}
+
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            payload = json.loads(raw[start : end + 1])
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+    return {}
+
+
 def _retrain_launch_artifact_dir() -> str:
     return os.path.join(PROJECT_ROOT, "governance", "training_diagnostics", "retrain_launches")
 
@@ -284,6 +317,8 @@ def _build_retrain_launch_record(args: argparse.Namespace, retrain_profile: str)
             "exclude_bot_ids": exclude_bot_ids,
             "regime_focus": regime_focus,
             "active_only": bool(getattr(args, "active_only", False)),
+            "include_deleted": bool(getattr(args, "include_deleted", False)),
+            "force_all_targets": bool(getattr(args, "force_all_targets", False)),
             "max_targets": int(getattr(args, "max_targets", 0) or 0),
             "min_model_age_hours": float(getattr(args, "min_model_age_hours", 0.0) or 0.0),
             "skip_master_update": bool(getattr(args, "skip_master_update", False)),
@@ -505,7 +540,7 @@ def _apply_included_bot_ids(targets: list[str], included_bot_ids: str) -> list[s
 
 
 def _should_include_deleted_targets(args: argparse.Namespace, explicit_include_requested: bool) -> bool:
-    return bool(args.include_deleted or explicit_include_requested)
+    return bool(getattr(args, "force_all_targets", False) or args.include_deleted or explicit_include_requested)
 
 
 def _dedupe_targets_preserve_order(targets: list[str]) -> list[str]:
@@ -2227,7 +2262,7 @@ def _should_rollback_registry(prev: dict[str, float], curr: dict[str, float]) ->
     curr_deleted = curr.get("deleted_from_rotation", 0.0)
     curr_top_quality = curr.get("top_quality", 0.0)
 
-    min_active = float(os.getenv("ROLLBACK_MIN_ACTIVE_BOTS", os.getenv("MIN_ACTIVE_BOTS", "50")))
+    min_active = float(os.getenv("ROLLBACK_MIN_ACTIVE_BOTS", os.getenv("MIN_ACTIVE_BOTS", "150")))
     max_active_drop_pct = float(os.getenv("ROLLBACK_MAX_ACTIVE_DROP_PCT", "0.55"))
     max_deleted_jump = float(os.getenv("ROLLBACK_MAX_DELETED_JUMP", "20"))
     min_top_quality = float(os.getenv("ROLLBACK_MIN_TOP_QUALITY", "0.28"))
@@ -2300,11 +2335,11 @@ def _low_readiness_retrain_reason(row: dict | None) -> str:
     streak = int(row.get("no_improvement_streak", 0) or 0)
     if reason_text.startswith("manual_canary_restore") and (quality < 0.42 or streak >= 3):
         return "manual_canary_restore_low_readiness"
-    if reason.startswith("min_active_floor_override_") and (quality < 0.50 or test_accuracy < 0.55):
+    if reason.startswith("min_active_floor_override_") and (quality < 0.50 or test_accuracy < TARGET_TEST_ACCURACY_FLOOR):
         return "min_active_floor_low_readiness"
-    if reason.startswith("protected_collection_floor_") and (quality < 0.30 or test_accuracy <= 0.50 or streak >= 2):
+    if reason.startswith("protected_collection_floor_") and (quality < 0.30 or test_accuracy < TARGET_TEST_ACCURACY_FLOOR or streak >= 2):
         return "protected_collection_floor_low_readiness"
-    if reason.startswith("bucket_diversity_") and (quality < 0.25 and test_accuracy < 0.50):
+    if reason.startswith("bucket_diversity_") and (quality < 0.25 and test_accuracy < TARGET_TEST_ACCURACY_FLOOR):
         return "bucket_diversity_low_readiness"
     return ""
 
@@ -2509,6 +2544,12 @@ def main() -> int:
         "--include-deleted",
         action="store_true",
         help="Also retrain bots marked deleted_from_rotation in registry.",
+    )
+    parser.add_argument(
+        "--force-all-targets",
+        action="store_true",
+        default=os.getenv("RETRAIN_FORCE_ALL_TARGETS", "0").strip() == "1",
+        help="Retrain the complete target roster and bypass target caps/readiness narrowing.",
     )
     parser.add_argument(
         "--active-only",
@@ -3022,6 +3063,12 @@ def main() -> int:
     )
     args = parser.parse_args()
     effective_retrain_profile = _apply_retrain_profile_defaults(args)
+    if args.force_all_targets:
+        args.include_deleted = True
+        args.active_only = False
+        args.max_targets = 0
+        args.min_model_age_hours = 0.0
+        args.promotion_bottleneck_priority = False
     launch_record = _persist_retrain_launch_record(
         _build_retrain_launch_record(args, effective_retrain_profile),
         dry_run=args.dry_run,
@@ -3196,7 +3243,7 @@ def main() -> int:
 
     base_targets = list(targets)
     lane_schedule_summary: dict[str, Any] = {}
-    if not explicit_include_requested and base_targets:
+    if not explicit_include_requested and not args.force_all_targets and base_targets:
         lane_schedule_summary = retrain_lane_scheduler_src.build_payload(
             registry=_load_json_file(REGISTRY_PATH),
             walk_forward=_load_json_file(str(args.walk_forward_file)),
@@ -3232,8 +3279,11 @@ def main() -> int:
         print("Include-bot-ids override: bypassing active_only filter.")
 
     min_age = max(float(args.min_model_age_hours), 0.0)
-    effective_max_targets = 0 if explicit_include_requested else max(int(args.max_targets), 0)
-    effective_min_model_age_hours = 0.0 if explicit_include_requested else min_age
+    force_all_targets = bool(args.force_all_targets)
+    if force_all_targets:
+        print("Force-all-targets override: bypassing active_only, target caps, readiness skips, and queue narrowing.")
+    effective_max_targets = 0 if (explicit_include_requested or force_all_targets) else max(int(args.max_targets), 0)
+    effective_min_model_age_hours = 0.0 if (explicit_include_requested or force_all_targets) else min_age
     if explicit_include_requested:
         print("Include-bot-ids override: bypassing max_targets/min_model_age_hours and preserving explicit target set.")
 
@@ -3242,7 +3292,7 @@ def main() -> int:
         active_only=effective_active_only,
         max_targets=effective_max_targets,
         min_model_age_hours=effective_min_model_age_hours,
-        skip_low_readiness=not explicit_include_requested,
+        skip_low_readiness=not (explicit_include_requested or force_all_targets),
     )
     if not targets and min_age > 0:
         print("WARN: age filter selected zero targets; retrying with min_model_age_hours=0")
@@ -3251,7 +3301,7 @@ def main() -> int:
             active_only=effective_active_only,
             max_targets=effective_max_targets,
             min_model_age_hours=0.0,
-            skip_low_readiness=not explicit_include_requested,
+            skip_low_readiness=not (explicit_include_requested or force_all_targets),
         )
     if not targets:
         print("WARN: efficiency filter selected zero targets; falling back to full target set")
@@ -3271,7 +3321,7 @@ def main() -> int:
     distill_assign_map = _distillation_assignment_map(distill_plan)
     targets, canary_priority_selected, distill_selected = _reshape_target_queue(
         targets,
-        allow_auto_queue_reshaping=not explicit_include_requested,
+        allow_auto_queue_reshaping=not (explicit_include_requested or force_all_targets),
         regime_focus=str(effective_regime_focus or ""),
         regime_balance=bool(args.regime_balance),
         exclude_bot_ids=str(args.exclude_bot_ids or ""),

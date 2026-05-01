@@ -582,6 +582,17 @@ def main() -> int:
                 return 0
 
             exits = [p.poll() for p in procs.values()]
+            clean_exits = [name for name, proc in procs.items() if proc.poll() == 0]
+            if clean_exits:
+                for name in clean_exits:
+                    procs.pop(name, None)
+                _write_aggregated_ingress_states(workers, args.broker)
+                print(f"Continuing after already-running aggressive workers exited cleanly: {clean_exits}")
+                if not procs:
+                    print("All aggressive workers exited cleanly; existing lock owners are carrying those shards.")
+                    return 0
+                time.sleep(1.0)
+                continue
             if any(code is not None for code in exits):
                 _stop_processes(list(procs.values()))
                 _write_aggregated_ingress_states(workers, args.broker)

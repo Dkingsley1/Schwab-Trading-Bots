@@ -4,21 +4,47 @@ import DiskArbitration
 import Foundation
 
 final class StorageEjectGuard {
+    struct TargetVolume {
+        let deviceIdentifier: String
+        let volumeName: String
+        let volumeUUID: String
+        let mountPoint: String?
+
+        var isMounted: Bool {
+            guard let mountPoint else { return false }
+            return !mountPoint.isEmpty
+        }
+    }
+
     let projectRoot: URL
-    let mountRoot: String
-    let volumeName: String
+    let configuredMountRoot: String
+    let candidateMountRoots: [String]
+    let candidateVolumeNames: Set<String>
+    let expectedProjectDir: String
+    let targetVolumeName: String
+    let targetVolumeUUIDHint: String
+    let targetDiskIdentifierHint: String
     let logPath: URL
     let overridePath: URL
     let serial = DispatchQueue(label: "com.dankingsley.storage_eject_guard")
+    var mountRoot: String
     var targetVolumeBSDName: String?
     var targetWholeBSDName: String?
     var lastEjectHandledAt = Date.distantPast
     var lastRestoreHandledAt = Date.distantPast
+    var lastMountAttemptAt = Date.distantPast
+    var mountPollTimer: DispatchSourceTimer?
 
     init(projectRoot: URL, mountRoot: String) {
         self.projectRoot = projectRoot
+        self.configuredMountRoot = mountRoot
+        self.expectedProjectDir = ProcessInfo.processInfo.environment["BOT_LOGS_EXTERNAL_PROJECT_DIR"] ?? "schwab_trading_bot"
+        self.candidateMountRoots = StorageEjectGuard.resolveCandidateMountRoots(primary: mountRoot)
+        self.candidateVolumeNames = Set(self.candidateMountRoots.map { URL(fileURLWithPath: $0).lastPathComponent })
+        self.targetVolumeName = ProcessInfo.processInfo.environment["BOT_LOGS_EXTERNAL_VOLUME_NAME"] ?? URL(fileURLWithPath: mountRoot).lastPathComponent
+        self.targetVolumeUUIDHint = ProcessInfo.processInfo.environment["BOT_LOGS_EXTERNAL_VOLUME_UUID"] ?? ""
+        self.targetDiskIdentifierHint = ProcessInfo.processInfo.environment["BOT_LOGS_EXTERNAL_DISK_IDENTIFIER"] ?? ""
         self.mountRoot = mountRoot
-        self.volumeName = URL(fileURLWithPath: mountRoot).lastPathComponent
         let home = FileManager.default.homeDirectoryForCurrentUser
         let logDir = home.appendingPathComponent("Library/Logs/schwab_trading_bot", isDirectory: true)
         try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
@@ -27,7 +53,7 @@ final class StorageEjectGuard {
     }
 
     func run() {
-        log("starting mountRoot=\(mountRoot) projectRoot=\(projectRoot.path)")
+        log("starting configuredMountRoot=\(configuredMountRoot) targetVolumeName=\(targetVolumeName) candidateMountRoots=\(candidateMountRoots.joined(separator: ",")) projectRoot=\(projectRoot.path)")
         guard let session = DASessionCreate(kCFAllocatorDefault) else {
             log("failed to create DiskArbitration session")
             return
@@ -38,14 +64,21 @@ final class StorageEjectGuard {
         DARegisterDiskUnmountApprovalCallback(session, nil, diskUnmountApprovalCallback, nil)
         DARegisterDiskEjectApprovalCallback(session, nil, diskEjectApprovalCallback, nil)
         DASessionSetDispatchQueue(session, DispatchQueue.main)
+        startMountPollTimer()
+        serial.async {
+            self.maybeMountTargetVolume(reason: "startup")
+        }
         dispatchMain()
     }
 
     func refreshTargetIdentity(session: DASession) {
-        let url = URL(fileURLWithPath: mountRoot) as CFURL
+        let resolvedMountRoot = candidateMountRoots.first { FileManager.default.fileExists(atPath: $0) } ?? configuredMountRoot
+        mountRoot = resolvedMountRoot
+        let url = URL(fileURLWithPath: resolvedMountRoot) as CFURL
         guard let disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, session, url) else {
             targetVolumeBSDName = nil
             targetWholeBSDName = nil
+            log("target identity unavailable for mountRoot=\(resolvedMountRoot)")
             return
         }
         targetVolumeBSDName = StorageEjectGuard.bsdName(for: disk)
@@ -54,21 +87,24 @@ final class StorageEjectGuard {
         } else {
             targetWholeBSDName = targetVolumeBSDName
         }
-        log("refreshed target volumeBSD=\(targetVolumeBSDName ?? "none") wholeBSD=\(targetWholeBSDName ?? "none")")
+        log("refreshed target mountRoot=\(mountRoot) volumeBSD=\(targetVolumeBSDName ?? "none") wholeBSD=\(targetWholeBSDName ?? "none")")
     }
 
     func handleAppeared(_ disk: DADisk) {
         guard matchesMountPath(disk) else { return }
         serial.sync {
+            if let volumeURL = StorageEjectGuard.volumeURL(for: disk) {
+                mountRoot = volumeURL.path
+            }
             targetVolumeBSDName = StorageEjectGuard.bsdName(for: disk)
             if let whole = DADiskCopyWholeDisk(disk) {
                 targetWholeBSDName = StorageEjectGuard.bsdName(for: whole)
             } else {
                 targetWholeBSDName = targetVolumeBSDName
             }
-            log("disk appeared volumeBSD=\(targetVolumeBSDName ?? "none") wholeBSD=\(targetWholeBSDName ?? "none")")
+            log("disk appeared mountRoot=\(mountRoot) volumeBSD=\(targetVolumeBSDName ?? "none") wholeBSD=\(targetWholeBSDName ?? "none") mode=\(currentStorageMode())")
 
-            guard localOverrideActive() else {
+            guard shouldRestoreExternalOnAppear() else {
                 return
             }
 
@@ -82,13 +118,24 @@ final class StorageEjectGuard {
         }
     }
 
+    func handleObservedDiskAppeared(_ disk: DADisk) {
+        if matchesMountPath(disk) {
+            handleAppeared(disk)
+            return
+        }
+        serial.async {
+            self.maybeMountTargetVolume(reason: "disk_appeared")
+        }
+    }
+
     func handleDisappeared(_ disk: DADisk) {
         guard matchesTargetDisk(disk) else { return }
         let shouldRestartLocal = serial.sync { () -> Bool in
-            log("disk disappeared volumeBSD=\(targetVolumeBSDName ?? "none") wholeBSD=\(targetWholeBSDName ?? "none")")
+            let mode = currentStorageMode()
+            log("disk disappeared mountRoot=\(mountRoot) volumeBSD=\(targetVolumeBSDName ?? "none") wholeBSD=\(targetWholeBSDName ?? "none") mode=\(mode)")
             targetVolumeBSDName = nil
             targetWholeBSDName = nil
-            return localOverrideActive()
+            return shouldRestartLocalOnDisappear(mode: mode)
         }
         if shouldRestartLocal {
             serial.async {
@@ -148,6 +195,15 @@ final class StorageEjectGuard {
     func restartLocalCollectionAfterEject() {
         let opsctl = projectRoot.appendingPathComponent("scripts/ops/opsctl.sh").path
         log("restarting local collection after eject for mountRoot=\(mountRoot)")
+        let switchRC = run(
+            launchPath: "/bin/zsh",
+            arguments: [
+                "-lc",
+                "\(shellQuote(opsctl)) storage-switch-local --no-refresh",
+            ],
+            timeout: 120
+        )
+        log("opsctl storage-switch-local --no-refresh local-after-eject rc=\(switchRC)")
         let refreshRC = run(
             launchPath: "/bin/zsh",
             arguments: [
@@ -166,12 +222,60 @@ final class StorageEjectGuard {
             timeout: 120
         )
         log("opsctl storage-transition-coordinator local-after-eject rc=\(coordinatorRC)")
+        runPostTransitionRecovery(opsctl: opsctl, mode: "local-after-eject")
     }
 
     func restoreExternalCollection() {
         log("restoring external collection for mountRoot=\(mountRoot)")
-        let switchRC = switchStorage(mode: "external")
-        log("storage-switch-external rc=\(switchRC)")
+        let opsctl = projectRoot.appendingPathComponent("scripts/ops/opsctl.sh").path
+        let switchRC = run(
+            launchPath: "/bin/zsh",
+            arguments: [
+                "-lc",
+                "\(shellQuote(opsctl)) storage-switch-external --no-refresh",
+            ],
+            timeout: 120
+        )
+        log("opsctl storage-switch-external --no-refresh rc=\(switchRC)")
+        let refreshRC = run(
+            launchPath: "/bin/zsh",
+            arguments: [
+                "-lc",
+                "\(shellQuote(opsctl)) feed-refresh --source all",
+            ],
+            timeout: 180
+        )
+        log("opsctl feed-refresh external-restore rc=\(refreshRC)")
+        let coordinatorRC = run(
+            launchPath: "/bin/zsh",
+            arguments: [
+                "-lc",
+                "\(shellQuote(opsctl)) storage-transition-coordinator --transition-mode external --apply --json >/dev/null 2>&1 || true",
+            ],
+            timeout: 180
+        )
+        log("opsctl storage-transition-coordinator external-restore rc=\(coordinatorRC)")
+        runPostTransitionRecovery(opsctl: opsctl, mode: "external-restore")
+    }
+
+    func runPostTransitionRecovery(opsctl: String, mode: String) {
+        let commands: [(String, String, TimeInterval)] = [
+            ("split-brain-reconcile", "\(shellQuote(opsctl)) split-brain-reconcile --force-failback-if-hashes-match --json >/dev/null 2>&1 || true", 120),
+            ("external-backlog-drain", "\(shellQuote(opsctl)) external-backlog-drain --apply --follow-through --poll-seconds 5 --wait-timeout-seconds 45 --json >/dev/null 2>&1 || true", 120),
+            ("storage-pressure-clearance", "\(shellQuote(opsctl)) storage-pressure-clearance --apply --max-cycles 2 --poll-seconds 5 --wait-timeout-seconds 45 --json >/dev/null 2>&1 || true", 300),
+            ("global-halt-refresh", "\(shellQuote(opsctl)) global-halt-refresh --json >/dev/null 2>&1 || true", 60),
+            ("global-halt-auto-clear", "\(shellQuote(opsctl)) global-halt-auto-clear --json >/dev/null 2>&1 || true", 60),
+            ("operator-cockpit", "\(shellQuote(opsctl)) operator-cockpit --json >/dev/null 2>&1 || true", 60),
+            ("storage-reconnect-regression-guard", "\(shellQuote(opsctl)) storage-reconnect-regression-guard --json >/dev/null 2>&1 || true", 60),
+        ]
+        for (name, command, timeout) in commands {
+            let rc = run(
+                launchPath: "/bin/zsh",
+                arguments: ["-lc", command],
+                timeout: timeout
+            )
+            log("opsctl post-transition \(name) mode=\(mode) rc=\(rc)")
+        }
     }
 
     func waitForExternalWritersToExit(timeout: TimeInterval) -> Bool {
@@ -301,6 +405,162 @@ final class StorageEjectGuard {
         return body.contains("BOT_LOGS_PREFER_EXTERNAL=0")
     }
 
+    func currentStorageMode() -> String {
+        let healthPaths = [
+            projectRoot.appendingPathComponent("governance/health/storage_failback_sync_latest.json"),
+            projectRoot.appendingPathComponent("governance/health/storage_mount_guard_latest.json"),
+            projectRoot.appendingPathComponent("governance/health/process_watchdog_latest.json"),
+        ]
+        for path in healthPaths {
+            guard let data = try? Data(contentsOf: path) else { continue }
+            guard let obj = try? JSONSerialization.jsonObject(with: data, options: []),
+                  let dict = obj as? [String: Any] else { continue }
+            if let mode = dict["mode"] as? String, !mode.isEmpty {
+                return mode
+            }
+            if let mode = dict["storage_mode"] as? String, !mode.isEmpty {
+                return mode
+            }
+        }
+        return localOverrideActive() ? "local_fallback" : "unknown"
+    }
+
+    func shouldRestoreExternalOnAppear() -> Bool {
+        let mode = currentStorageMode()
+        return mode.hasPrefix("local_fallback") || localOverrideActive()
+    }
+
+    func shouldRestartLocalOnDisappear(mode: String) -> Bool {
+        if mode == "external" {
+            return true
+        }
+        return localOverrideActive()
+    }
+
+    func externalPreferredByConfig() -> Bool {
+        let raw = ProcessInfo.processInfo.environment["BOT_LOGS_PREFER_EXTERNAL"] ?? "1"
+        return !["0", "false", "no", "off"].contains(raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
+    func startMountPollTimer() {
+        let timer = DispatchSource.makeTimerSource(queue: serial)
+        timer.schedule(deadline: .now() + 10.0, repeating: 20.0)
+        timer.setEventHandler { [weak self] in
+            self?.maybeMountTargetVolume(reason: "poll")
+        }
+        timer.resume()
+        mountPollTimer = timer
+    }
+
+    func maybeMountTargetVolume(reason: String) {
+        guard externalPreferredByConfig() else { return }
+        guard !FileManager.default.fileExists(atPath: configuredMountRoot) else { return }
+
+        let now = Date()
+        if now.timeIntervalSince(lastMountAttemptAt) < 8.0 {
+            return
+        }
+        lastMountAttemptAt = now
+
+        guard let target = discoverTargetVolume() else {
+            log("auto-mount skipped reason=\(reason) target_volume_not_found volumeName=\(targetVolumeName)")
+            return
+        }
+
+        if target.isMounted {
+            if let mountPoint = target.mountPoint, !mountPoint.isEmpty {
+                mountRoot = mountPoint
+            }
+            log("auto-mount skipped reason=\(reason) identifier=\(target.deviceIdentifier) already_mounted=\(target.mountPoint ?? "unknown")")
+            return
+        }
+
+        let mountRC = run(
+            launchPath: "/usr/sbin/diskutil",
+            arguments: [
+                "mount",
+                target.deviceIdentifier,
+            ],
+            timeout: 90
+        )
+        log("diskutil mount reason=\(reason) identifier=\(target.deviceIdentifier) volumeName=\(target.volumeName) rc=\(mountRC)")
+    }
+
+    func discoverTargetVolume() -> TargetVolume? {
+        let plist = diskutilListPlist()
+        let rows = plist["AllDisksAndPartitions"] as? [[String: Any]] ?? []
+        var bestScore = Int.min
+        var bestMatch: TargetVolume?
+
+        func consider(_ row: [String: Any]) {
+            guard let identifier = row["DeviceIdentifier"] as? String, !identifier.isEmpty else {
+                return
+            }
+            let volumeName = (row["VolumeName"] as? String) ?? ""
+            let volumeUUID = (row["VolumeUUID"] as? String) ?? ((row["DiskUUID"] as? String) ?? "")
+            let mountPoint = row["MountPoint"] as? String
+
+            var score = 0
+            if !targetDiskIdentifierHint.isEmpty && identifier == targetDiskIdentifierHint {
+                score += 100
+            }
+            if !targetVolumeUUIDHint.isEmpty && volumeUUID.caseInsensitiveCompare(targetVolumeUUIDHint) == .orderedSame {
+                score += 80
+            }
+            if volumeName == targetVolumeName {
+                score += 40
+            }
+            guard score > 0 else {
+                return
+            }
+            if score <= bestScore {
+                return
+            }
+            bestScore = score
+            bestMatch = TargetVolume(
+                deviceIdentifier: identifier,
+                volumeName: volumeName,
+                volumeUUID: volumeUUID,
+                mountPoint: mountPoint
+            )
+        }
+
+        for row in rows {
+            consider(row)
+            for key in ["Partitions", "APFSVolumes"] {
+                guard let children = row[key] as? [[String: Any]] else {
+                    continue
+                }
+                for child in children {
+                    consider(child)
+                }
+            }
+        }
+        return bestMatch
+    }
+
+    func diskutilListPlist() -> [String: Any] {
+        let result = runCapture(
+            launchPath: "/usr/sbin/diskutil",
+            arguments: [
+                "list",
+                "-plist",
+                "external",
+            ],
+            timeout: 45
+        )
+        guard result.rc == 0 else {
+            log("diskutil list -plist external rc=\(result.rc)")
+            return [:]
+        }
+        guard let plist = try? PropertyListSerialization.propertyList(from: result.stdout, options: [], format: nil),
+              let dict = plist as? [String: Any] else {
+            log("diskutil list -plist external parse_failed")
+            return [:]
+        }
+        return dict
+    }
+
     func switchStorage(mode: String) -> Int32 {
         let opsctl = projectRoot.appendingPathComponent("scripts/ops/opsctl.sh").path
         let subcommand = (mode == "local") ? "storage-switch-local" : "storage-switch-external"
@@ -319,10 +579,15 @@ final class StorageEjectGuard {
             return false
         }
         if let url = description[kDADiskDescriptionVolumePathKey as String] as? URL {
-            return url.path == mountRoot
+            if candidateMountRoots.contains(url.path) {
+                return true
+            }
+            if StorageEjectGuard.projectRootExists(on: url, projectDir: expectedProjectDir) {
+                return true
+            }
         }
         if let name = description[kDADiskDescriptionVolumeNameKey as String] as? String {
-            return name == volumeName
+            return candidateVolumeNames.contains(name)
         }
         return false
     }
@@ -370,18 +635,24 @@ final class StorageEjectGuard {
     }
 
     func run(launchPath: String, arguments: [String], timeout: TimeInterval) -> Int32 {
+        return runCapture(launchPath: launchPath, arguments: arguments, timeout: timeout).rc
+    }
+
+    func runCapture(launchPath: String, arguments: [String], timeout: TimeInterval) -> (rc: Int32, stdout: Data, stderr: Data) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchPath)
         process.arguments = arguments
         process.currentDirectoryURL = projectRoot
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
 
         do {
             try process.run()
         } catch {
             log("failed to run \(launchPath): \(error)")
-            return -1
+            return (-1, Data(), Data())
         }
 
         let deadline = Date().addingTimeInterval(timeout)
@@ -391,10 +662,12 @@ final class StorageEjectGuard {
 
         if process.isRunning {
             process.terminate()
-            return -2
+            return (-2, Data(), Data())
         }
 
-        return process.terminationStatus
+        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        return (process.terminationStatus, stdoutData, stderrData)
     }
 
     static func bsdName(for disk: DADisk) -> String? {
@@ -402,6 +675,42 @@ final class StorageEjectGuard {
             return nil
         }
         return String(cString: ptr)
+    }
+
+    static func volumeURL(for disk: DADisk) -> URL? {
+        guard let description = DADiskCopyDescription(disk) as? [String: Any] else {
+            return nil
+        }
+        return description[kDADiskDescriptionVolumePathKey as String] as? URL
+    }
+
+    static func projectRootExists(on volumeURL: URL, projectDir: String) -> Bool {
+        let candidate = volumeURL.appendingPathComponent(projectDir, isDirectory: true)
+        var isDirectory = ObjCBool(false)
+        guard FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory) else {
+            return false
+        }
+        return isDirectory.boolValue
+    }
+
+    static func resolveCandidateMountRoots(primary: String) -> [String] {
+        let envRaw = ProcessInfo.processInfo.environment["BOT_LOGS_EXTERNAL_MOUNT_CANDIDATES"] ?? ""
+        var out: [String] = []
+        var seen = Set<String>()
+
+        func appendUnique(_ value: String) {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            guard !seen.contains(trimmed) else { return }
+            seen.insert(trimmed)
+            out.append(trimmed)
+        }
+
+        appendUnique(primary)
+        for token in envRaw.split(separator: ",") {
+            appendUnique(String(token))
+        }
+        return out
     }
 
     static func iso8601Now() -> String {
@@ -422,7 +731,7 @@ private let guardInstance = StorageEjectGuard(
 )
 
 private func diskAppearedCallback(disk: DADisk, context: UnsafeMutableRawPointer?) {
-    guardInstance.handleAppeared(disk)
+    guardInstance.handleObservedDiskAppeared(disk)
 }
 
 private func diskDisappearedCallback(disk: DADisk, context: UnsafeMutableRawPointer?) {

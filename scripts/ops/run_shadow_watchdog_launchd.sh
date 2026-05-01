@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-export BOT_RUNTIME_LANE="${BOT_RUNTIME_LANE:-${BOT_SHADOW_RUNTIME_LANE:-shadow314}}"
+export BOT_RUNTIME_LANE="${BOT_RUNTIME_LANE:-${BOT_SHADOW_RUNTIME_LANE:-shadow}}"
 source "$PROJECT_ROOT/scripts/ops/runtime_python.sh"
 PROFILE="${BOT_RUNTIME_PROFILE:-live}"
 
@@ -17,6 +17,14 @@ export BOT_RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-$PROFILE}"
 PYTHON_BIN="$(resolve_runtime_python)"
 export MARKET_DATA_ONLY="${MARKET_DATA_ONLY:-1}"
 export ALLOW_ORDER_EXECUTION="${ALLOW_ORDER_EXECUTION:-0}"
+export PAPER_TRADE_LOCK_PATH="${PAPER_TRADE_LOCK_PATH:-$PROJECT_ROOT/governance/health/PAPER_TRADE_LOCK.flag}"
+mkdir -p "$(dirname "$PAPER_TRADE_LOCK_PATH")"
+printf 'enabled_at_utc=%s\npolicy=live_data_paper_trade_only\nmanaged_by=run_shadow_watchdog_launchd\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$PAPER_TRADE_LOCK_PATH"
+export PAPER_TRADE_LOCK="${PAPER_TRADE_LOCK:-1}"
+export TOP_BOT_ENABLE_LIVE_EXECUTION="${TOP_BOT_ENABLE_LIVE_EXECUTION:-0}"
+export EXECUTION_LANE_LIVE_ENABLED="${EXECUTION_LANE_LIVE_ENABLED:-0}"
+export RUN_ALL_SLEEVES_WITH_LIVE_EXECUTOR="${RUN_ALL_SLEEVES_WITH_LIVE_EXECUTOR:-0}"
+export INLINE_PAPER_EXECUTION_ENABLED="${INLINE_PAPER_EXECUTION_ENABLED:-0}"
 export MARKET_SESSION_START_HOUR="${MARKET_SESSION_START_HOUR:-4}"
 export TOP_BOT_PAPER_TRADING_ENABLED="${TOP_BOT_PAPER_TRADING_ENABLED:-1}"
 export TOP_BOT_PAPER_TRADING_TOP_N="${TOP_BOT_PAPER_TRADING_TOP_N:-5}"
@@ -25,7 +33,7 @@ export TOP_BOT_PAPER_TRADING_PROFILES="${TOP_BOT_PAPER_TRADING_PROFILES:-default
 export TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED="${TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED:-1}"
 export TOP_BOT_PAPER_TRADING_OPTIONS_TOP_N="${TOP_BOT_PAPER_TRADING_OPTIONS_TOP_N:-2}"
 export TOP_BOT_PAPER_TRADING_OPTIONS_MIN_ACC="${TOP_BOT_PAPER_TRADING_OPTIONS_MIN_ACC:-0.55}"
-export TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES="${TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES:-default,aggressive,intraday_aggressive,swing_aggressive}"
+export TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES="${TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES:-default,aggressive,intraday_aggressive,swing_aggressive,options_on_futures,options_on_futures_aggressive}"
 export SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_TOP_N="${SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_TOP_N:-10}"
 export SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_MIN_ACC="${SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_MIN_ACC:-0.53}"
 export SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_PROFILES="${SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_PROFILES:-schwab_futures}"
@@ -87,7 +95,7 @@ coinbase_watchdog_args() {
   printf '%s\n' "${args[@]}"
 }
 
-SCHWAB_START_CMD="$(json_argv "$PYTHON_BIN" "$PROJECT_ROOT/scripts/run_parallel_shadows.py")"
+SCHWAB_START_CMD="$(json_argv "$PYTHON_BIN" "$PROJECT_ROOT/scripts/run_all_sleeves.py" --with-aggressive-modes)"
 AGGRESSIVE_START_CMD="$(json_argv "$PYTHON_BIN" "$PROJECT_ROOT/scripts/run_parallel_aggressive_modes.py")"
 DIVIDEND_START_CMD="$(json_argv "$PYTHON_BIN" "$PROJECT_ROOT/scripts/run_dividend_shadow.py" --interval-seconds 60)"
 DIVIDEND_CAPTURE_START_CMD="$(json_argv "$PYTHON_BIN" "$PROJECT_ROOT/scripts/run_dividend_capture_shadow.py" --interval-seconds 60)"
@@ -101,14 +109,18 @@ WATCH_ARGS=(
   --watch-schwab-futures
   --watch-coinbase
   --watch-coinbase-futures
-  --watch-aggressive-modes
-  --watch-dividend
-  --watch-bond
-  --watch-fx
 )
 
-if [[ "$DIVIDEND_CAPTURE_SHADOW_ENABLED" == "1" ]]; then
-  WATCH_ARGS+=(--watch-dividend-capture)
+if [[ "${SHADOW_WATCHDOG_DIRECT_CHILD_SLEEVES:-0}" == "1" ]]; then
+  WATCH_ARGS+=(
+    --watch-aggressive-modes
+    --watch-dividend
+    --watch-bond
+    --watch-fx
+  )
+  if [[ "$DIVIDEND_CAPTURE_SHADOW_ENABLED" == "1" ]]; then
+    WATCH_ARGS+=(--watch-dividend-capture)
+  fi
 fi
 
 exec "$PYTHON_BIN" "$PROJECT_ROOT/scripts/shadow_watchdog.py" \

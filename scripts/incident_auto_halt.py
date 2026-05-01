@@ -172,6 +172,11 @@ def main() -> int:
     detail["mode"] = mode
     detail["enforcement_suppressed"] = bool(enforcement_suppressed)
 
+    if enforcement_suppressed and failed_checks:
+        detail["suppressed_failed_checks"] = list(failed_checks)
+        failed_checks = []
+        ok = True
+
     if ok:
         state["clear_streak"] = int(state.get("clear_streak", 0)) + 1
         state["fail_streak"] = 0

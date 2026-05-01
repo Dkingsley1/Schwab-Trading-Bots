@@ -1,6 +1,7 @@
 import argparse
 import csv
 import fcntl
+import gzip
 import json
 import os
 import re
@@ -8,7 +9,7 @@ import sqlite3
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
 
@@ -16,7 +17,25 @@ from zoneinfo import ZoneInfo
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = PROJECT_ROOT / "data" / "jsonl_link.sqlite3"
 DEFAULT_REPORT_TIMEZONE = "America/New_York"
+DEFAULT_ROLLUP_HISTORY_PATH = PROJECT_ROOT / "governance" / "health" / "one_numbers_rollup_history.json"
+DEFAULT_ROLLUP_HISTORY_MAX_DAYS = 400
 DAY_SUFFIX_RE = re.compile(r"_(\d{8})\.jsonl$")
+RAW_JSONL_DAY_RE = re.compile(r"_(\d{8})\.jsonl(?:\.gz)?$")
+ONE_NUMBERS_START_DAY_ENV_NAMES = (
+    "ONE_NUMBERS_ORIGINAL_START_DAY",
+    "ONE_NUMBERS_EXPECTED_START_DAY",
+    "INFRA_SUPERVISOR_ONE_NUMBERS_START_DAY",
+)
+ROLLUP_HISTORY_METRIC_KEYS = (
+    "combined_decision_total_rows",
+    "combined_governance_total_rows",
+    "combined_blocked_total",
+    "data_blocked_total",
+    "risk_blocked_total",
+    "paper_executed_total",
+    "watchdog_restarts",
+    "data_quality_score",
+)
 
 
 def _emit_progress(message: str) -> None:
@@ -59,6 +78,18 @@ def _rows_from_summary_payload(payload: dict[str, object]) -> list[tuple[str, st
         "requested_day",
         "resolved_day",
         "day_fallback_applied",
+        "historical_coverage_status",
+        "all_time_coverage_complete",
+        "original_start_day",
+        "original_start_source",
+        "rollup_history_days_available",
+        "earliest_rollup_day",
+        "latest_rollup_day",
+        "source_days_discovered",
+        "earliest_source_day",
+        "latest_source_day",
+        "source_days_missing_from_rollup_count",
+        "historical_coverage_detail",
         "generated_utc",
         "db_path",
         "report_section_02",
@@ -213,6 +244,15 @@ def _write_one_numbers_markdown(path: Path, rows: list[tuple[str, str]], *, csv_
             f"- Governance stale windows (4h): {_row_int('governance_stale_windows_4h')}",
             f"- Storage mode: {row_map.get('ops_storage_mode', 'unknown')}",
             f"- Logs target: {row_map.get('ops_storage_logs_target', 'unknown')}",
+            (
+                "- Historical coverage: "
+                f"{row_map.get('historical_coverage_status', 'unknown')} "
+                f"(complete={row_map.get('all_time_coverage_complete', 'false')}, "
+                f"start={row_map.get('original_start_day', 'unconfigured') or 'unconfigured'}, "
+                f"rollup_days={row_map.get('rollup_history_days_available', '0')}, "
+                f"source_days={row_map.get('source_days_discovered', '0')})"
+            ),
+            f"- Historical coverage detail: {row_map.get('historical_coverage_detail', 'n/a') or 'n/a'}",
             "",
             "## Alerts",
             f"- ALERT_WATCHDOG_RESTARTS: {str(_row_bool('ALERT_WATCHDOG_RESTARTS')).lower()}",
@@ -233,9 +273,9 @@ def _refresh_latest_artifact_aliases(*, out_dir: Path, csv_path: Path, md_path: 
     for alias_path in (latest_csv, latest_md, latest_xlsx):
         if alias_path.exists() or alias_path.is_symlink():
             alias_path.unlink()
-    latest_csv.symlink_to(csv_path)
-    latest_md.symlink_to(md_path)
-    latest_xlsx.symlink_to(xlsx_path)
+    latest_csv.symlink_to(csv_path.name)
+    latest_md.symlink_to(md_path.name)
+    latest_xlsx.symlink_to(xlsx_path.name)
     return latest_csv, latest_md, latest_xlsx
 
 
@@ -243,7 +283,7 @@ def _refresh_latest_metrics_alias(*, out_dir: Path, metrics_csv_path: Path) -> P
     latest_metrics_csv = out_dir / "latest_metrics.csv"
     if latest_metrics_csv.exists() or latest_metrics_csv.is_symlink():
         latest_metrics_csv.unlink()
-    latest_metrics_csv.symlink_to(metrics_csv_path)
+    latest_metrics_csv.symlink_to(metrics_csv_path.name)
     return latest_metrics_csv
 
 
@@ -290,6 +330,18 @@ def _one_numbers_metric_label(metric: str) -> str:
         "requested_day": "Requested Day",
         "resolved_day": "Resolved Day",
         "day_fallback_applied": "Day Fallback Applied",
+        "historical_coverage_status": "Historical Coverage Status",
+        "all_time_coverage_complete": "All Time Coverage Complete",
+        "original_start_day": "Original Start Day",
+        "original_start_source": "Original Start Source",
+        "rollup_history_days_available": "Rollup History Days Available",
+        "earliest_rollup_day": "Earliest Rollup Day",
+        "latest_rollup_day": "Latest Rollup Day",
+        "source_days_discovered": "Source Days Discovered",
+        "earliest_source_day": "Earliest Source Day",
+        "latest_source_day": "Latest Source Day",
+        "source_days_missing_from_rollup_count": "Source Days Missing From Rollup Count",
+        "historical_coverage_detail": "Historical Coverage Detail",
         "db_path": "Database Path",
         "report_mode": "Report Mode",
         "lightweight_detail_fields_partial": "Lightweight Detail Fields Partial",
@@ -305,6 +357,18 @@ def _one_numbers_display_rows(rows: list[tuple[str, str]]) -> list[tuple[str, st
         "requested_day",
         "resolved_day",
         "day_fallback_applied",
+        "historical_coverage_status",
+        "all_time_coverage_complete",
+        "original_start_day",
+        "original_start_source",
+        "rollup_history_days_available",
+        "earliest_rollup_day",
+        "latest_rollup_day",
+        "source_days_discovered",
+        "earliest_source_day",
+        "latest_source_day",
+        "source_days_missing_from_rollup_count",
+        "historical_coverage_detail",
         "report_mode",
         "lightweight_detail_fields_partial",
         "db_path",
@@ -539,6 +603,514 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
+def _sqlite_is_locked(exc: Exception) -> bool:
+    return "locked" in str(exc).lower()
+
+
+def _raw_jsonl_paths(project_root: Path, day: str, bucket: str) -> list[Path]:
+    if bucket == "decision":
+        candidates: list[Path] = []
+        for root in _one_numbers_source_scan_roots(project_root):
+            explanations_root = root / "decision_explanations"
+            if explanations_root.exists():
+                candidates.extend(
+                    path
+                    for path in explanations_root.glob(f"*/decision_explanations_{day}.jsonl*")
+                    if path.name.endswith(".jsonl") or path.name.endswith(".jsonl.gz")
+                )
+        if candidates:
+            return sorted(candidates)
+        trade_candidates: list[Path] = []
+        for root in _one_numbers_source_scan_roots(project_root):
+            decisions_root = root / "decisions"
+            if decisions_root.exists():
+                trade_candidates.extend(
+                    path
+                    for path in decisions_root.glob(f"*/trade_decisions_{day}.jsonl*")
+                    if path.name.endswith(".jsonl") or path.name.endswith(".jsonl.gz")
+                )
+        return sorted(trade_candidates)
+    elif bucket == "governance":
+        root = project_root / "governance"
+        pattern = f"shadow*/master_control_{day}.jsonl*"
+    elif bucket == "watchdog":
+        root = project_root / "governance" / "watchdog"
+        pattern = f"watchdog_events_{day}.jsonl*"
+    else:
+        return []
+    if not root.exists():
+        return []
+    return sorted(path for path in root.glob(pattern) if path.name.endswith(".jsonl") or path.name.endswith(".jsonl.gz"))
+
+
+def _raw_jsonl_days(project_root: Path, bucket: str) -> dict[str, list[Path]]:
+    if bucket == "decision":
+        out: dict[str, list[Path]] = {}
+        for root in _one_numbers_source_scan_roots(project_root):
+            for child_root, pattern in (
+                (root / "decision_explanations", "*/decision_explanations_*.jsonl*"),
+                (root / "decisions", "*/trade_decisions_*.jsonl*"),
+            ):
+                if not child_root.exists():
+                    continue
+                for path in child_root.glob(pattern):
+                    if not (path.name.endswith(".jsonl") or path.name.endswith(".jsonl.gz")):
+                        continue
+                    match = RAW_JSONL_DAY_RE.search(path.name)
+                    if not match:
+                        continue
+                    out.setdefault(match.group(1), []).append(path)
+        return {day: sorted(paths) for day, paths in out.items()}
+    elif bucket == "governance":
+        root = project_root / "governance"
+        pattern = "shadow*/master_control_*.jsonl*"
+    else:
+        return {}
+    if not root.exists():
+        return {}
+    out: dict[str, list[Path]] = {}
+    for path in root.glob(pattern):
+        if not (path.name.endswith(".jsonl") or path.name.endswith(".jsonl.gz")):
+            continue
+        match = RAW_JSONL_DAY_RE.search(path.name)
+        if not match:
+            continue
+        out.setdefault(match.group(1), []).append(path)
+    return {day: sorted(paths) for day, paths in out.items()}
+
+
+def _normalize_coverage_day(raw: object) -> str:
+    text = str(raw or "").strip().replace("-", "")
+    if not re.fullmatch(r"20\d{6}", text):
+        return ""
+    try:
+        datetime.strptime(text, "%Y%m%d")
+    except Exception:
+        return ""
+    return text
+
+
+def _expected_one_numbers_start_day(project_root: Path) -> tuple[str, str]:
+    for env_name in ONE_NUMBERS_START_DAY_ENV_NAMES:
+        day = _normalize_coverage_day(os.getenv(env_name))
+        if day:
+            return day, f"env:{env_name}"
+    config_path = project_root / "config" / "one_numbers_start_day.txt"
+    try:
+        for raw_line in config_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.split("#", 1)[0].strip()
+            day = _normalize_coverage_day(line)
+            if day:
+                return day, str(config_path)
+    except Exception:
+        pass
+    return "", ""
+
+
+def _active_storage_project_root(project_root: Path) -> Path | None:
+    route_status = _read_json(project_root / "governance" / "health" / "storage_route_status_latest.json")
+    raw_root = str(route_status.get("active_root") or "").strip()
+    if not raw_root:
+        return None
+    root = Path(raw_root).expanduser()
+    return root if root.exists() else None
+
+
+def _one_numbers_source_scan_roots(project_root: Path) -> list[Path]:
+    raw_roots = [project_root, project_root / "local_fallback_storage"]
+    active_root = _active_storage_project_root(project_root)
+    if active_root is not None:
+        raw_roots.append(active_root)
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for root in raw_roots:
+        if not root.exists():
+            continue
+        try:
+            key = str(root.resolve())
+        except Exception:
+            key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(root)
+    return roots
+
+
+def _one_numbers_source_day_set(project_root: Path) -> set[str]:
+    limit = max(_safe_int(os.getenv("ONE_NUMBERS_SOURCE_SCAN_FILE_LIMIT"), 50000), 1)
+    patterns = (
+        "decision_explanations/**/decision_explanations_*.jsonl*",
+        "decisions/**/trade_decisions_*.jsonl*",
+        "governance/**/master_control_*.jsonl*",
+    )
+    days: set[str] = set()
+    scanned = 0
+    for root in _one_numbers_source_scan_roots(project_root):
+        for pattern in patterns:
+            try:
+                iterator = root.glob(pattern)
+            except Exception:
+                continue
+            for path in iterator:
+                if scanned >= limit:
+                    return days
+                try:
+                    if not path.is_file():
+                        continue
+                except Exception:
+                    continue
+                scanned += 1
+                match = RAW_JSONL_DAY_RE.search(path.name)
+                if not match:
+                    continue
+                day = _normalize_coverage_day(match.group(1))
+                if day:
+                    days.add(day)
+    return days
+
+
+def _one_numbers_coverage_metadata(project_root: Path, history: dict[str, dict[str, object]]) -> dict[str, str]:
+    history_days = sorted(day for day in (_normalize_coverage_day(day) for day in history.keys()) if day)
+    history_day_set = set(history_days)
+    source_days = sorted(_one_numbers_source_day_set(project_root))
+    source_day_set = set(source_days)
+    expected_start_day, expected_start_source = _expected_one_numbers_start_day(project_root)
+    earliest_history_day = history_days[0] if history_days else ""
+    latest_history_day = history_days[-1] if history_days else ""
+    earliest_source_day = source_days[0] if source_days else ""
+    latest_source_day = source_days[-1] if source_days else ""
+    source_days_missing_from_history = sorted(source_day_set - history_day_set)
+    missing_since_start = (
+        [day for day in source_days_missing_from_history if day >= expected_start_day]
+        if expected_start_day
+        else source_days_missing_from_history
+    )
+
+    status = "ready"
+    detail = "durable rollup covers the configured original start and discovered source days"
+    if not history_days:
+        status = "blocked"
+        detail = "durable rollup history is missing"
+    elif not expected_start_day:
+        status = "degraded"
+        detail = "original start day is not pinned, so all-time coverage cannot be proven"
+    elif earliest_history_day and earliest_history_day > expected_start_day:
+        status = "degraded"
+        detail = f"rollup history starts at {earliest_history_day}, after configured original start {expected_start_day}"
+    elif missing_since_start:
+        status = "degraded"
+        detail = "discovered source days are missing from durable rollup history"
+
+    coverage_complete = bool(
+        status == "ready"
+        and expected_start_day
+        and earliest_history_day
+        and earliest_history_day <= expected_start_day
+        and not missing_since_start
+    )
+    return {
+        "historical_coverage_status": status,
+        "all_time_coverage_complete": str(coverage_complete).lower(),
+        "original_start_day": expected_start_day,
+        "original_start_source": expected_start_source,
+        "rollup_history_days_available": str(len(history_days)),
+        "earliest_rollup_day": earliest_history_day,
+        "latest_rollup_day": latest_history_day,
+        "source_days_discovered": str(len(source_days)),
+        "earliest_source_day": earliest_source_day,
+        "latest_source_day": latest_source_day,
+        "source_days_missing_from_rollup_count": str(len(source_days_missing_from_history)),
+        "source_days_missing_from_rollup_sample": ",".join(source_days_missing_from_history[:12]),
+        "historical_coverage_detail": detail,
+    }
+
+
+def _resolve_raw_jsonl_report_day(project_root: Path, requested_day: str) -> str:
+    requested = str(requested_day or "").strip() or _default_report_day()
+    decision_days = sorted(_raw_jsonl_days(project_root, "decision"))
+    if requested in decision_days:
+        return requested
+    prior_decision_days = [day for day in decision_days if day <= requested]
+    if prior_decision_days:
+        return prior_decision_days[-1]
+    if decision_days:
+        return decision_days[-1]
+    governance_days = sorted(_raw_jsonl_days(project_root, "governance"))
+    if requested in governance_days:
+        return requested
+    prior_governance_days = [day for day in governance_days if day <= requested]
+    if prior_governance_days:
+        return prior_governance_days[-1]
+    return governance_days[-1] if governance_days else requested
+
+
+def _iter_raw_jsonl_rows(path: Path):
+    opener = gzip.open if path.name.endswith(".gz") else open
+    try:
+        with opener(path, "rt", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(row, dict):
+                    yield row
+    except Exception:
+        return
+
+
+def _raw_bucket_for_decision(row: dict, source_rel: str) -> str:
+    symbol = str(row.get("symbol") or "").strip()
+    mode = str(row.get("mode") or "").lower()
+    source = str(source_rel or "").lower()
+    if "futures" in source or "futures" in mode or _is_futures_symbol(symbol):
+        return "futures"
+    if _is_crypto_symbol(symbol):
+        return "crypto"
+    return "stocks"
+
+
+def _raw_report_payload_from_jsonl(
+    *,
+    project_root: Path,
+    requested_day: str,
+    db_path: Path,
+    stale_seconds: int,
+) -> tuple[dict[str, object], list[tuple[str, str]]]:
+    day = _resolve_raw_jsonl_report_day(project_root, requested_day)
+    now_utc = datetime.now(timezone.utc)
+    decision_paths = _raw_jsonl_paths(project_root, day, "decision")
+    governance_paths = _raw_jsonl_paths(project_root, day, "governance")
+    watchdog_paths = _raw_jsonl_paths(project_root, day, "watchdog")
+
+    status_counts: dict[str, int] = {}
+    action_counts: dict[str, int] = {}
+    split_counts = {"stocks": 0, "crypto": 0, "futures": 0}
+    split_actions = {
+        "stocks": {"BUY": 0, "SELL": 0, "HOLD": 0},
+        "crypto": {"BUY": 0, "SELL": 0, "HOLD": 0},
+        "futures": {"BUY": 0, "SELL": 0, "HOLD": 0},
+    }
+    top_symbols: dict[str, int] = {}
+    decision_stamps: list[tuple[str]] = []
+    observe_only_data_blocked_total = 0
+    decision_total_rows = 0
+    for path in decision_paths:
+        rel = str(path.relative_to(project_root)) if path.is_relative_to(project_root) else str(path)
+        for row in _iter_raw_jsonl_rows(path):
+            decision_total_rows += 1
+            status = str(row.get("status") or "UNKNOWN")
+            action = str(row.get("action") or "UNKNOWN")
+            symbol = str(row.get("symbol") or "UNKNOWN")
+            bucket = _raw_bucket_for_decision(row, rel)
+            status_counts[status] = status_counts.get(status, 0) + 1
+            action_counts[action] = action_counts.get(action, 0) + 1
+            split_counts[bucket] = split_counts.get(bucket, 0) + 1
+            if action in split_actions[bucket]:
+                split_actions[bucket][action] += 1
+            top_symbols[symbol] = top_symbols.get(symbol, 0) + 1
+            raw_ts = str(row.get("timestamp_utc") or "").strip()
+            if raw_ts:
+                decision_stamps.append((raw_ts,))
+            safety = row.get("safety") if isinstance(row.get("safety"), dict) else {}
+            if status == "DATA_ONLY_BLOCKED" and bool(safety.get("market_data_only")) and not bool(safety.get("execution_enabled")):
+                observe_only_data_blocked_total += 1
+
+    governance_total_rows = 0
+    governance_stamps: list[tuple[str]] = []
+    for path in governance_paths:
+        for row in _iter_raw_jsonl_rows(path):
+            governance_total_rows += 1
+            raw_ts = str(row.get("timestamp_utc") or "").strip()
+            if raw_ts:
+                governance_stamps.append((raw_ts,))
+
+    watchdog_restarts = 0
+    watchdog_throttled = 0
+    watchdog_restart_errors = 0
+    for path in watchdog_paths:
+        for row in _iter_raw_jsonl_rows(path):
+            actions = {str((target or {}).get("action") or "none") for target in list(row.get("targets") or [])}
+            if "restart" in actions:
+                watchdog_restarts += 1
+            if "throttled" in actions:
+                watchdog_throttled += 1
+            if "error" in actions:
+                watchdog_restart_errors += 1
+
+    blocked_metrics = _blocked_metrics(
+        status_counts,
+        decision_total_rows,
+        observe_only_data_blocked_total=observe_only_data_blocked_total,
+    )
+    paper_history = _paper_history_by_day(_read_json(project_root / "governance" / "health" / "paper_performance_latest.json"))
+    paper_daily = paper_history.get(day, {})
+    paper_executed_total = _safe_int(paper_daily.get("executions"), _safe_int(status_counts.get("PAPER_EXECUTED"), 0))
+    decision_stale_windows = _stale_windows(decision_stamps, stale_seconds)
+    governance_stale_windows = _stale_windows(governance_stamps, stale_seconds)
+    data_quality_score = _lightweight_data_quality_score(
+        decision_total_rows=decision_total_rows,
+        governance_total_rows=governance_total_rows,
+        decision_stale_windows=decision_stale_windows,
+        governance_stale_windows=governance_stale_windows,
+        watchdog_restarts=watchdog_restarts,
+        watchdog_throttled=watchdog_throttled,
+        watchdog_restart_errors=watchdog_restart_errors,
+    )
+    backpressure = _backpressure_scorecard_metrics(project_root)
+    current_rollup_metrics = {
+        "combined_decision_total_rows": decision_total_rows,
+        "combined_governance_total_rows": governance_total_rows,
+        "combined_blocked_total": _safe_int(blocked_metrics["combined_blocked_total"], 0),
+        "data_blocked_total": _safe_int(blocked_metrics["data_blocked_total"], 0),
+        "risk_blocked_total": _safe_int(blocked_metrics["risk_blocked_total"], 0),
+        "paper_executed_total": paper_executed_total,
+        "watchdog_restarts": watchdog_restarts,
+        "data_quality_score": data_quality_score,
+    }
+    entries = dict(_load_rollup_history(project_root))
+    entries[day] = {
+        "day_utc": day,
+        "generated_utc": now_utc.isoformat(),
+        "report_mode": "full",
+        "metrics": current_rollup_metrics,
+    }
+    month_rollup = _aggregate_rollup([entry for entry_day, entry in entries.items() if str(entry_day).startswith(day[:6])])
+    all_time_rollup = _aggregate_rollup(list(entries.values()))
+    persisted_history = _persist_rollup_history_entries(project_root, entries)
+    coverage_metadata = _one_numbers_coverage_metadata(project_root, persisted_history)
+    top_symbol_rows = sorted(top_symbols.items(), key=lambda item: (-item[1], item[0]))
+    payload: dict[str, object] = {
+        "generated_utc": now_utc.isoformat(),
+        "day_utc": day,
+        "requested_day": requested_day,
+        "resolved_day": day,
+        "day_fallback_applied": str(requested_day != day).lower(),
+        "rollup_history_days_available": str(len(persisted_history)),
+        "rollup_history_source": "durable_history",
+        **coverage_metadata,
+        "report_section_01": "Report Metadata",
+        "db_path": str(db_path),
+        "report_mode": "full",
+        "db_read_status": "locked_raw_jsonl_fallback",
+        "report_section_02": "Current Day",
+        "combined_decision_total_rows": str(decision_total_rows),
+        "combined_governance_total_rows": str(governance_total_rows),
+        "combined_blocked_total": str(_safe_int(blocked_metrics["combined_blocked_total"], 0)),
+        "combined_blocked_rate": f"{_safe_float(blocked_metrics['combined_blocked_rate'], 0.0):.6f}",
+        "raw_data_blocked_total": str(_safe_int(blocked_metrics["raw_data_blocked_total"], 0)),
+        "raw_data_blocked_rate": f"{_safe_float(blocked_metrics['raw_data_blocked_rate'], 0.0):.6f}",
+        "observe_only_data_blocked_total": str(observe_only_data_blocked_total),
+        "observe_only_data_blocked_rate": f"{_safe_float(blocked_metrics['observe_only_data_blocked_rate'], 0.0):.6f}",
+        "data_blocked_total": str(_safe_int(blocked_metrics["data_blocked_total"], 0)),
+        "data_blocked_rate": f"{_safe_float(blocked_metrics['data_blocked_rate'], 0.0):.6f}",
+        "risk_blocked_total": str(_safe_int(blocked_metrics["risk_blocked_total"], 0)),
+        "risk_blocked_rate": f"{_safe_float(blocked_metrics['risk_blocked_rate'], 0.0):.6f}",
+        "effective_blocked_rate": f"{_safe_float(blocked_metrics['effective_blocked_rate'], 0.0):.6f}",
+        "data_quality_score": f"{data_quality_score:.2f}",
+        "paper_executed_total": str(paper_executed_total),
+        "watchdog_restarts": str(watchdog_restarts),
+        "report_section_02b": "Backpressure Scorecard",
+        **backpressure,
+        "report_section_03": "Month To Date",
+        "month_to_date_days_covered": month_rollup["days_covered"],
+        "month_to_date_decision_total_rows": month_rollup["decision_total_rows"],
+        "month_to_date_governance_total_rows": month_rollup["governance_total_rows"],
+        "month_to_date_blocked_total": month_rollup["blocked_total"],
+        "month_to_date_data_blocked_total": month_rollup["data_blocked_total"],
+        "month_to_date_risk_blocked_total": month_rollup["risk_blocked_total"],
+        "month_to_date_paper_executed_total": month_rollup["paper_executed_total"],
+        "month_to_date_watchdog_restarts": month_rollup["watchdog_restarts"],
+        "month_to_date_avg_data_quality_score": month_rollup["avg_data_quality_score"],
+        "report_section_04": "All Time",
+        "all_time_days_covered": all_time_rollup["days_covered"],
+        "all_time_decision_total_rows": all_time_rollup["decision_total_rows"],
+        "all_time_governance_total_rows": all_time_rollup["governance_total_rows"],
+        "all_time_blocked_total": all_time_rollup["blocked_total"],
+        "all_time_data_blocked_total": all_time_rollup["data_blocked_total"],
+        "all_time_risk_blocked_total": all_time_rollup["risk_blocked_total"],
+        "all_time_paper_executed_total": all_time_rollup["paper_executed_total"],
+        "all_time_watchdog_restarts": all_time_rollup["watchdog_restarts"],
+        "all_time_avg_data_quality_score": all_time_rollup["avg_data_quality_score"],
+        "report_section_05": "Detailed Metrics",
+        "linked_source_files_total": str(len(decision_paths) + len(governance_paths) + len(watchdog_paths)),
+        "decision_source_files": str(len(decision_paths)),
+        "governance_source_files": str(len(governance_paths)),
+        "combined_action_buy": str(action_counts.get("BUY", 0)),
+        "combined_action_sell": str(action_counts.get("SELL", 0)),
+        "combined_action_hold": str(action_counts.get("HOLD", 0)),
+        "stocks_decision_rows": str(split_counts.get("stocks", 0)),
+        "stocks_action_buy": str(split_actions["stocks"].get("BUY", 0)),
+        "stocks_action_sell": str(split_actions["stocks"].get("SELL", 0)),
+        "stocks_action_hold": str(split_actions["stocks"].get("HOLD", 0)),
+        "crypto_decision_rows": str(split_counts.get("crypto", 0)),
+        "crypto_action_buy": str(split_actions["crypto"].get("BUY", 0)),
+        "crypto_action_sell": str(split_actions["crypto"].get("SELL", 0)),
+        "crypto_action_hold": str(split_actions["crypto"].get("HOLD", 0)),
+        "futures_decision_rows": str(split_counts.get("futures", 0)),
+        "futures_action_buy": str(split_actions["futures"].get("BUY", 0)),
+        "futures_action_sell": str(split_actions["futures"].get("SELL", 0)),
+        "futures_action_hold": str(split_actions["futures"].get("HOLD", 0)),
+        "decision_stale_windows_4h": str(decision_stale_windows),
+        "governance_stale_windows_4h": str(governance_stale_windows),
+        "watchdog_throttled": str(watchdog_throttled),
+        "watchdog_restart_errors": str(watchdog_restart_errors),
+        "ALERT_WATCHDOG_RESTARTS": str(watchdog_restarts > 0).lower(),
+        "ALERT_STALE_WINDOWS": str((decision_stale_windows + governance_stale_windows) > 0).lower(),
+        "ALERT_BLOCKED_RATE": str(_safe_float(blocked_metrics["effective_blocked_rate"], 0.0) > 0.25).lower(),
+        "ALERT_DATA_QUALITY": str(data_quality_score < 80.0).lower(),
+    }
+    for index, (symbol, count) in enumerate(top_symbol_rows[:5], start=1):
+        payload[f"top_symbol_{index}"] = f"{symbol}:{count}"
+    rows = _rows_from_summary_payload(payload)
+    return payload, rows
+
+
+def _write_one_numbers_artifact_set(out_dir: Path, payload: dict[str, object], rows: list[tuple[str, str]]) -> tuple[Path, Path, Path, Path, Path]:
+    stamp_day = str(payload.get("resolved_day") or payload.get("day_utc") or _default_report_day())
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    csv_path = out_dir / f"one_numbers_{stamp_day}_{stamp}.csv"
+    metrics_csv_path = out_dir / f"one_numbers_{stamp_day}_{stamp}_metrics.csv"
+    md_path = out_dir / f"one_numbers_{stamp_day}_{stamp}.md"
+    xlsx_path = out_dir / f"one_numbers_{stamp_day}_{stamp}.xlsx"
+    _write_one_numbers_csv(csv_path, rows)
+    _write_one_numbers_metrics_csv(metrics_csv_path, rows)
+    _write_one_numbers_markdown(md_path, rows, csv_reference=out_dir / "latest.csv")
+    _write_one_numbers_xlsx(xlsx_path, rows)
+
+    legacy_latest_dir = out_dir / "latest"
+    legacy_latest_dir.mkdir(parents=True, exist_ok=True)
+    legacy_latest_json = legacy_latest_dir / "one_numbers_summary.json"
+    legacy_latest_csv = legacy_latest_dir / "one_numbers_latest.csv"
+    legacy_latest_metrics_csv = legacy_latest_dir / "one_numbers_latest_metrics.csv"
+    legacy_latest_md = legacy_latest_dir / "one_numbers_latest.md"
+    legacy_latest_xlsx = legacy_latest_dir / "one_numbers_latest.xlsx"
+    payload_text = json.dumps(payload, ensure_ascii=True, indent=2)
+    legacy_latest_json.write_text(payload_text, encoding="utf-8")
+    _write_one_numbers_csv(legacy_latest_csv, rows)
+    _write_one_numbers_metrics_csv(legacy_latest_metrics_csv, rows)
+    _write_one_numbers_markdown(legacy_latest_md, rows, csv_reference=out_dir / "latest.csv")
+    _write_one_numbers_xlsx(legacy_latest_xlsx, rows)
+
+    latest_csv, latest_md, latest_xlsx = _refresh_latest_artifact_aliases(
+        out_dir=out_dir,
+        csv_path=csv_path,
+        md_path=md_path,
+        xlsx_path=xlsx_path,
+    )
+    latest_metrics_csv = _refresh_latest_metrics_alias(out_dir=out_dir, metrics_csv_path=metrics_csv_path)
+    latest_json = out_dir / "one_numbers_summary.json"
+    latest_json.write_text(payload_text, encoding="utf-8")
+    health_latest_json = PROJECT_ROOT / "governance" / "health" / "one_numbers_latest.json"
+    health_latest_json.parent.mkdir(parents=True, exist_ok=True)
+    health_latest_json.write_text(payload_text, encoding="utf-8")
+    return latest_csv, latest_md, latest_xlsx, latest_metrics_csv, latest_json
+
+
 def _backpressure_scorecard_metrics(project_root: Path) -> dict[str, str]:
     storage_control = _read_json(project_root / "governance" / "health" / "ingestion_storage_control_latest.json")
     steady_state = storage_control.get("steady_state") if isinstance(storage_control.get("steady_state"), dict) else {}
@@ -767,6 +1339,7 @@ def _staleness_penalty(age_seconds: int, grace_seconds: int, divisor_seconds: fl
 def _empty_day_sources() -> dict[str, list[str]]:
     return {
         "decision": [],
+        "decision_trade": [],
         "governance": [],
         "pnl": [],
         "watchdog": [],
@@ -785,6 +1358,8 @@ def _sqlite_state_sources_by_day(sqlite_state: dict) -> dict[str, dict[str, list
         bucket = ""
         if source_rel.startswith("decision_explanations/") and "/decision_explanations_" in source_rel:
             bucket = "decision"
+        elif source_rel.startswith("decisions/") and "/trade_decisions_" in source_rel:
+            bucket = "decision_trade"
         elif source_rel.startswith("governance/") and "/master_control_" in source_rel:
             bucket = "governance"
         elif source_rel.startswith("governance/") and "/shadow_pnl_attribution_" in source_rel:
@@ -808,23 +1383,26 @@ def _resolve_report_day(requested_day: str, sqlite_state: dict) -> tuple[str, di
     day_sources = _sqlite_state_sources_by_day(sqlite_state)
     requested = str(requested_day or "").strip() or _default_report_day()
     selected = day_sources.get(requested, _empty_day_sources())
-    if selected["decision"]:
+    if selected["decision"] or selected["decision_trade"]:
         return requested, selected
 
     decision_candidates = sorted(
         day
         for day, entry in day_sources.items()
-        if entry["decision"]
+        if entry["decision"] or entry["decision_trade"]
     )
     if decision_candidates:
         prior_or_equal = [day for day in decision_candidates if day <= requested]
         resolved_day = prior_or_equal[-1] if prior_or_equal else decision_candidates[-1]
         return resolved_day, day_sources.get(resolved_day, _empty_day_sources())
 
+    if selected["governance"]:
+        return requested, selected
+
     candidates = sorted(
         day
         for day, entry in day_sources.items()
-        if entry["decision"] or entry["governance"]
+        if entry["decision"] or entry["decision_trade"] or entry["governance"]
     )
     if not candidates:
         return requested, selected
@@ -836,11 +1414,30 @@ def _resolve_report_day(requested_day: str, sqlite_state: dict) -> tuple[str, di
 
 def _latest_report_day_from_db(conn: sqlite3.Connection, requested_day: str) -> str:
     requested = str(requested_day or "").strip() or _default_report_day()
+    requested_decision_row = conn.execute(
+        """
+        SELECT 1
+        FROM main.jsonl_records
+        WHERE substr(source_rel, -14, 8) = ?
+          AND (
+            source_rel LIKE 'decision_explanations/%/decision_explanations_%.jsonl'
+            OR source_rel LIKE 'decisions/%/trade_decisions_%.jsonl'
+          )
+        LIMIT 1
+        """,
+        (requested,),
+    ).fetchone()
+    if requested_decision_row:
+        return requested
+
     decision_row = conn.execute(
         """
         SELECT MAX(substr(source_rel, -14, 8))
         FROM main.jsonl_records
-        WHERE source_rel LIKE 'decision_explanations/%/decision_explanations_%.jsonl'
+        WHERE (
+            source_rel LIKE 'decision_explanations/%/decision_explanations_%.jsonl'
+            OR source_rel LIKE 'decisions/%/trade_decisions_%.jsonl'
+          )
           AND substr(source_rel, -14, 8) <= ?
         """,
         (requested,),
@@ -848,6 +1445,19 @@ def _latest_report_day_from_db(conn: sqlite3.Connection, requested_day: str) -> 
     decision_day = str((decision_row or [None])[0] or "").strip()
     if decision_day:
         return decision_day
+
+    requested_governance_row = conn.execute(
+        """
+        SELECT 1
+        FROM main.jsonl_records
+        WHERE substr(source_rel, -14, 8) = ?
+          AND source_rel LIKE 'governance/%/master_control_%.jsonl'
+        LIMIT 1
+        """,
+        (requested,),
+    ).fetchone()
+    if requested_governance_row:
+        return requested
 
     governance_row = conn.execute(
         """
@@ -860,6 +1470,34 @@ def _latest_report_day_from_db(conn: sqlite3.Connection, requested_day: str) -> 
     ).fetchone()
     governance_day = str((governance_row or [None])[0] or "").strip()
     return governance_day or requested
+
+
+def _prefer_db_report_day(requested_day: str, state_day: str, db_day: str) -> str:
+    requested = str(requested_day or "").strip() or _default_report_day()
+    state = str(state_day or "").strip()
+    db = str(db_day or "").strip()
+    if not db:
+        return state or requested
+    if db == requested:
+        return db
+    if not state:
+        return db
+    if state <= requested and db <= requested and db > state:
+        return db
+    return state
+
+
+def _sqlite_has_source_like(conn: sqlite3.Connection, pattern: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM main.jsonl_records
+        WHERE source_rel LIKE ?
+        LIMIT 1
+        """,
+        (pattern,),
+    ).fetchone()
+    return bool(row)
 
 
 def _chunked(items: list[str], size: int) -> list[list[str]]:
@@ -1238,6 +1876,91 @@ def _aggregate_rollup(entries: list[dict]) -> dict[str, str]:
     }
 
 
+def _history_entry_from_summary_payload(payload: dict[str, object]) -> dict[str, object] | None:
+    day_utc = str(payload.get("day_utc") or payload.get("resolved_day") or "").strip()
+    if not day_utc:
+        return None
+    metrics: dict[str, object] = {}
+    for key in ROLLUP_HISTORY_METRIC_KEYS:
+        if key in payload:
+            metrics[key] = payload.get(key)
+    if not metrics:
+        return None
+    return {
+        "day_utc": day_utc,
+        "generated_utc": str(payload.get("generated_utc") or ""),
+        "report_mode": str(payload.get("report_mode") or ""),
+        "metrics": metrics,
+    }
+
+
+def _normalize_rollup_history_entry(day_utc: str, raw: object) -> dict[str, object] | None:
+    if not isinstance(raw, dict):
+        return None
+    metrics_raw = raw.get("metrics") if isinstance(raw.get("metrics"), dict) else raw
+    metrics: dict[str, object] = {}
+    for key in ROLLUP_HISTORY_METRIC_KEYS:
+        if isinstance(metrics_raw, dict) and key in metrics_raw:
+            metrics[key] = metrics_raw.get(key)
+    if not metrics:
+        return None
+    return {
+        "day_utc": str(day_utc or raw.get("day_utc") or "").strip(),
+        "generated_utc": str(raw.get("generated_utc") or ""),
+        "report_mode": str(raw.get("report_mode") or ""),
+        "metrics": metrics,
+    }
+
+
+def _load_rollup_history(project_root: Path) -> dict[str, dict[str, object]]:
+    payload = _read_json(project_root / "governance" / "health" / "one_numbers_rollup_history.json")
+    history_raw = payload.get("history_by_day") if isinstance(payload.get("history_by_day"), dict) else payload
+    if not isinstance(history_raw, dict):
+        return {}
+    out: dict[str, dict[str, object]] = {}
+    for day_utc, raw in history_raw.items():
+        day = str(day_utc or "").strip()
+        if not day:
+            continue
+        normalized = _normalize_rollup_history_entry(day, raw)
+        if normalized is not None:
+            out[day] = normalized
+    return out
+
+
+def _persist_rollup_history_entries(project_root: Path, history: dict[str, dict[str, object]]) -> dict[str, dict[str, object]]:
+    max_days = max(
+        _safe_int(os.getenv("ONE_NUMBERS_ROLLUP_HISTORY_MAX_DAYS", DEFAULT_ROLLUP_HISTORY_MAX_DAYS), DEFAULT_ROLLUP_HISTORY_MAX_DAYS),
+        1,
+    )
+    trimmed_days = sorted(history.keys())[-max_days:]
+    trimmed = {day: history[day] for day in trimmed_days}
+    out_path = project_root / "governance" / "health" / "one_numbers_rollup_history.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "schema_version": 1,
+                "history_by_day": trimmed,
+            },
+            ensure_ascii=True,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return trimmed
+
+
+def _persist_rollup_history(project_root: Path, summary_payload: dict[str, object]) -> dict[str, dict[str, object]]:
+    history = _load_rollup_history(project_root)
+    entry = _history_entry_from_summary_payload(summary_payload)
+    if entry is None:
+        return history
+    history[str(entry["day_utc"])] = entry
+    return _persist_rollup_history_entries(project_root, history)
+
+
 def _paper_history_by_day(paper_performance: dict) -> dict[str, dict]:
     out: dict[str, dict] = {}
     rows = paper_performance.get("history_daily_series") if isinstance(paper_performance.get("history_daily_series"), list) else []
@@ -1369,10 +2092,9 @@ def _load_daily_runtime_summary_history(project_root: Path) -> dict[str, dict]:
 def _resolve_lightweight_report_day(requested_day: str, history: dict[str, dict]) -> str:
     requested = str(requested_day or "").strip() or _default_report_day()
     current = history.get(requested, {})
-    if isinstance(current, dict):
-        decision_rows = _safe_int(((current.get("decision") or {}) if isinstance(current.get("decision"), dict) else {}).get("rows"), 0)
-        if decision_rows > 0:
-            return requested
+    current_decision_rows = _safe_int(((current.get("decision") or {}) if isinstance(current.get("decision"), dict) else {}).get("rows"), 0)
+    if isinstance(current, dict) and current and current_decision_rows > 0:
+        return requested
 
     decision_candidates = sorted(
         day
@@ -1401,7 +2123,12 @@ def _resolve_lightweight_report_day(requested_day: str, history: dict[str, dict]
     return candidates[-1] if candidates else requested
 
 
-def _build_lightweight_summary_payload(*, project_root: Path, requested_day: str, db_path: Path) -> dict[str, object]:
+def _build_lightweight_summary_payload(
+    *,
+    project_root: Path,
+    requested_day: str,
+    db_path: Path,
+) -> tuple[dict[str, object], dict[str, dict[str, object]]]:
     previous_payload = _read_json(project_root / "governance" / "health" / "one_numbers_latest.json")
     paper_performance = _read_json(project_root / "governance" / "health" / "paper_performance_latest.json")
     paper_history = _paper_history_by_day(paper_performance)
@@ -1415,22 +2142,28 @@ def _build_lightweight_summary_payload(*, project_root: Path, requested_day: str
         paper_history.get(resolved_day, {}),
         now_utc=now_utc if resolved_day == current_report_day else None,
     )
-    entries: dict[str, dict] = {}
+    persisted_history = _load_rollup_history(project_root)
+    entries: dict[str, dict] = dict(persisted_history)
     for day_utc, payload in history.items():
+        if day_utc in entries:
+            continue
         entries[day_utc] = {
             "day_utc": day_utc,
             "generated_utc": str(payload.get("generated_utc") or payload.get("timestamp_utc") or ""),
+            "report_mode": "daily_runtime_summary_fallback",
             "metrics": _lightweight_metrics_from_daily_summary(payload, paper_history.get(day_utc, {})),
         }
     entries[resolved_day] = {
         "day_utc": resolved_day,
         "generated_utc": str(summary.get("generated_utc") or summary.get("timestamp_utc") or ""),
+        "report_mode": "lightweight_cached",
         "metrics": metrics,
     }
     month_rollup = _aggregate_rollup(
         [entry for day_utc, entry in entries.items() if str(day_utc).startswith(str(resolved_day)[:6])]
     )
     all_time_rollup = _aggregate_rollup(list(entries.values()))
+    coverage_metadata = _one_numbers_coverage_metadata(project_root, entries)
     dq_policy = _data_quality_session_policy(now_utc)
     logs_root = project_root / "logs"
     try:
@@ -1447,6 +2180,7 @@ def _build_lightweight_summary_payload(*, project_root: Path, requested_day: str
             "requested_day": requested_day,
             "resolved_day": resolved_day,
             "day_fallback_applied": str(requested_day != resolved_day).lower(),
+            **coverage_metadata,
             "report_section_01": "Report Metadata",
             "report_section_02": "Current Day",
             "report_section_02b": "Backpressure Scorecard",
@@ -1518,9 +2252,11 @@ def _build_lightweight_summary_payload(*, project_root: Path, requested_day: str
             "report_mode": "lightweight_cached",
             "lightweight_mode": True,
             "lightweight_detail_fields_partial": True,
+            "rollup_history_days_available": str(len(entries)),
+            "rollup_history_source": "durable_history" if persisted_history else "daily_runtime_summary_fallback",
         }
     )
-    return payload
+    return payload, entries
 
 
 def _observe_only_data_blocked_total(conn: sqlite3.Connection, decision_like: str) -> int:
@@ -1541,6 +2277,230 @@ def _observe_only_data_blocked_total(conn: sqlite3.Connection, decision_like: st
     )
 
 
+def _trade_decision_summary_payload_from_sqlite(
+    *,
+    conn: sqlite3.Connection,
+    project_root: Path,
+    requested_day: str,
+    day: str,
+    db_path: Path,
+    decision_like: str,
+    governance_like: str,
+    decision_sources: list[str],
+    governance_sources: list[str],
+    decision_source_files: int,
+    governance_source_files: int,
+    no_sql_write: bool,
+) -> tuple[dict[str, object], list[tuple[str, str]]]:
+    now_utc = datetime.now(timezone.utc)
+    status_expr = "COALESCE(json_extract(payload_json, '$.status'), json_extract(payload_json, '$.decision'), 'UNKNOWN')"
+    bucket_case = """
+    CASE
+      WHEN LOWER(COALESCE(source_rel, '')) LIKE '%futures%'
+        OR LOWER(COALESCE(json_extract(payload_json, '$.mode'), '')) LIKE '%futures%'
+        OR COALESCE(json_extract(payload_json, '$.symbol'), '') LIKE '/%'
+        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%=F'
+        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%1!'
+      THEN 'futures'
+      WHEN UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USD'
+        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USDC'
+        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USDT'
+      THEN 'crypto'
+      ELSE 'stocks'
+    END
+    """
+
+    def _source_filter(sources: list[str], pattern: str) -> tuple[str, tuple[str, ...]]:
+        exact = tuple(sorted({str(source) for source in sources if str(source).strip()}))
+        if exact:
+            return f"source_rel IN ({','.join('?' for _ in exact)})", exact
+        return "source_rel LIKE ?", (pattern,)
+
+    decision_filter, decision_params = _source_filter(decision_sources, decision_like)
+    governance_filter, governance_params = _source_filter(governance_sources, governance_like)
+
+    decision_total_rows = _safe_int(_q1(conn, f"SELECT COUNT(*) FROM main.jsonl_records WHERE {decision_filter}", decision_params), 0)
+    governance_total_rows = _safe_int(_q1(conn, f"SELECT COUNT(*) FROM main.jsonl_records WHERE {governance_filter}", governance_params), 0)
+    _emit_progress(f"one_numbers trade_fallback counts decision_rows={decision_total_rows} governance_rows={governance_total_rows}")
+    if decision_source_files == 0:
+        decision_source_files = _safe_int(
+            _q1(conn, f"SELECT COUNT(DISTINCT source_rel) FROM main.jsonl_records WHERE {decision_filter}", decision_params),
+            0,
+        )
+    if governance_source_files == 0:
+        governance_source_files = _safe_int(
+            _q1(conn, f"SELECT COUNT(DISTINCT source_rel) FROM main.jsonl_records WHERE {governance_filter}", governance_params),
+            0,
+        )
+    status_counts: dict[str, int] = {}
+    _emit_progress("one_numbers trade_fallback status_groups=skipped")
+    source_count_rows = _qall(
+        conn,
+        f"""
+        SELECT source_rel, COUNT(*)
+        FROM main.jsonl_records
+        WHERE {decision_filter}
+        GROUP BY source_rel
+        """,
+        decision_params,
+    )
+    action_counts: dict[str, int] = {}
+    split_counts = {"stocks": 0, "crypto": 0, "futures": 0}
+    split_actions = {
+        "stocks": {"BUY": 0, "SELL": 0, "HOLD": 0},
+        "crypto": {"BUY": 0, "SELL": 0, "HOLD": 0},
+        "futures": {"BUY": 0, "SELL": 0, "HOLD": 0},
+    }
+    for source_rel, count in source_count_rows:
+        source_text = str(source_rel or "").lower()
+        if "futures" in source_text:
+            split_counts["futures"] += _safe_int(count)
+        elif "crypto" in source_text:
+            split_counts["crypto"] += _safe_int(count)
+        else:
+            split_counts["stocks"] += _safe_int(count)
+    _emit_progress(f"one_numbers trade_fallback source_groups={len(source_count_rows)}")
+
+    blocked_metrics = _blocked_metrics(status_counts, decision_total_rows, observe_only_data_blocked_total=0)
+    paper_executed_total = _safe_int(status_counts.get("PAPER_EXECUTED"), 0)
+    data_quality_score = 100.0 if decision_total_rows > 0 else 25.0
+    backpressure = _backpressure_scorecard_metrics(project_root)
+    _emit_progress("one_numbers trade_fallback backpressure_loaded")
+    current_rollup_metrics = {
+        "combined_decision_total_rows": decision_total_rows,
+        "combined_governance_total_rows": governance_total_rows,
+        "combined_blocked_total": _safe_int(blocked_metrics["combined_blocked_total"], 0),
+        "data_blocked_total": _safe_int(blocked_metrics["data_blocked_total"], 0),
+        "risk_blocked_total": _safe_int(blocked_metrics["risk_blocked_total"], 0),
+        "paper_executed_total": paper_executed_total,
+        "watchdog_restarts": 0,
+        "data_quality_score": data_quality_score,
+    }
+    entries = dict(_load_rollup_history(project_root))
+    entries.update(_latest_daily_snapshots(conn))
+    entries[day] = {
+        "day_utc": day,
+        "generated_utc": now_utc.isoformat(),
+        "report_mode": "full_trade_decision_fallback",
+        "metrics": current_rollup_metrics,
+    }
+    persisted_history = _persist_rollup_history_entries(project_root, entries)
+    month_rollup = _aggregate_rollup([entry for entry_day, entry in persisted_history.items() if str(entry_day).startswith(day[:6])])
+    all_time_rollup = _aggregate_rollup(list(persisted_history.values()))
+    coverage_metadata = _one_numbers_coverage_metadata(project_root, persisted_history)
+    _emit_progress("one_numbers trade_fallback rollups_ready")
+
+    last_decision_ts = ""
+    last_governance_ts = ""
+    _emit_progress("one_numbers trade_fallback freshness_skipped")
+
+    def _age_seconds(ts_raw: str) -> int:
+        if not ts_raw:
+            return 10**9
+        try:
+            return max(int((now_utc - datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).astimezone(timezone.utc)).total_seconds()), 0)
+        except Exception:
+            return 10**9
+
+    payload: dict[str, object] = {
+        "generated_utc": now_utc.isoformat(),
+        "day_utc": day,
+        "requested_day": requested_day,
+        "resolved_day": day,
+        "day_fallback_applied": str(requested_day != day).lower(),
+        **coverage_metadata,
+        "report_section_01": "Report Metadata",
+        "report_mode": "full",
+        "decision_source_kind": "trade_decisions",
+        "detail_source": "trade_decision_fallback",
+        "db_path": str(db_path),
+        "report_section_02": "Current Day",
+        "combined_decision_total_rows": str(decision_total_rows),
+        "combined_governance_total_rows": str(governance_total_rows),
+        "combined_blocked_total": str(_safe_int(blocked_metrics["combined_blocked_total"], 0)),
+        "combined_blocked_rate": f"{_safe_float(blocked_metrics['combined_blocked_rate'], 0.0):.6f}",
+        "raw_data_blocked_total": str(_safe_int(blocked_metrics["raw_data_blocked_total"], 0)),
+        "raw_data_blocked_rate": f"{_safe_float(blocked_metrics['raw_data_blocked_rate'], 0.0):.6f}",
+        "observe_only_data_blocked_total": "0",
+        "observe_only_data_blocked_rate": "0.000000",
+        "data_blocked_total": str(_safe_int(blocked_metrics["data_blocked_total"], 0)),
+        "data_blocked_rate": f"{_safe_float(blocked_metrics['data_blocked_rate'], 0.0):.6f}",
+        "risk_blocked_total": str(_safe_int(blocked_metrics["risk_blocked_total"], 0)),
+        "risk_blocked_rate": f"{_safe_float(blocked_metrics['risk_blocked_rate'], 0.0):.6f}",
+        "effective_blocked_rate": f"{_safe_float(blocked_metrics['effective_blocked_rate'], 0.0):.6f}",
+        "data_quality_score": f"{data_quality_score:.2f}",
+        "paper_executed_total": str(paper_executed_total),
+        "watchdog_restarts": "0",
+        "report_section_02b": "Backpressure Scorecard",
+        **backpressure,
+        "report_section_03": "Month To Date",
+        "month_to_date_days_covered": month_rollup["days_covered"],
+        "month_to_date_decision_total_rows": month_rollup["decision_total_rows"],
+        "month_to_date_governance_total_rows": month_rollup["governance_total_rows"],
+        "month_to_date_blocked_total": month_rollup["blocked_total"],
+        "month_to_date_data_blocked_total": month_rollup["data_blocked_total"],
+        "month_to_date_risk_blocked_total": month_rollup["risk_blocked_total"],
+        "month_to_date_paper_executed_total": month_rollup["paper_executed_total"],
+        "month_to_date_watchdog_restarts": month_rollup["watchdog_restarts"],
+        "month_to_date_avg_data_quality_score": month_rollup["avg_data_quality_score"],
+        "report_section_04": "All Time",
+        "all_time_days_covered": all_time_rollup["days_covered"],
+        "all_time_decision_total_rows": all_time_rollup["decision_total_rows"],
+        "all_time_governance_total_rows": all_time_rollup["governance_total_rows"],
+        "all_time_blocked_total": all_time_rollup["blocked_total"],
+        "all_time_data_blocked_total": all_time_rollup["data_blocked_total"],
+        "all_time_risk_blocked_total": all_time_rollup["risk_blocked_total"],
+        "all_time_paper_executed_total": all_time_rollup["paper_executed_total"],
+        "all_time_watchdog_restarts": all_time_rollup["watchdog_restarts"],
+        "all_time_avg_data_quality_score": all_time_rollup["avg_data_quality_score"],
+        "report_section_05": "Detailed Metrics",
+        "linked_source_files_total": str(decision_source_files + governance_source_files),
+        "decision_source_files": str(decision_source_files),
+        "governance_source_files": str(governance_source_files),
+        "combined_action_buy": str(_safe_int(action_counts.get("BUY"), 0)),
+        "combined_action_sell": str(_safe_int(action_counts.get("SELL"), 0)),
+        "combined_action_hold": str(_safe_int(action_counts.get("HOLD"), 0)),
+        "stocks_decision_rows": str(_safe_int(split_counts.get("stocks"), 0)),
+        "stocks_action_buy": str(split_actions["stocks"]["BUY"]),
+        "stocks_action_sell": str(split_actions["stocks"]["SELL"]),
+        "stocks_action_hold": str(split_actions["stocks"]["HOLD"]),
+        "crypto_decision_rows": str(_safe_int(split_counts.get("crypto"), 0)),
+        "crypto_action_buy": str(split_actions["crypto"]["BUY"]),
+        "crypto_action_sell": str(split_actions["crypto"]["SELL"]),
+        "crypto_action_hold": str(split_actions["crypto"]["HOLD"]),
+        "futures_decision_rows": str(_safe_int(split_counts.get("futures"), 0)),
+        "futures_action_buy": str(split_actions["futures"]["BUY"]),
+        "futures_action_sell": str(split_actions["futures"]["SELL"]),
+        "futures_action_hold": str(split_actions["futures"]["HOLD"]),
+        "decision_stale_windows_4h": "0",
+        "governance_stale_windows_4h": "0",
+        "watchdog_throttled": "0",
+        "watchdog_restart_errors": "0",
+        "decision_last_age_sec": str(_age_seconds(last_decision_ts)),
+        "governance_last_age_sec": str(_age_seconds(last_governance_ts)),
+        "decision_stale_penalty": "0.000000",
+        "governance_stale_penalty": "0.000000",
+        "data_quality_mode": _data_quality_session_policy(now_utc)["mode"],
+        "data_quality_session_aware": str(_data_quality_session_policy(now_utc)["session_aware"]).lower(),
+    }
+    rows = _rows_from_summary_payload(payload)
+    if not no_sql_write:
+        metric_map = {str(k): str(v) for k, v in rows}
+        _register_sql_snapshot(
+            conn,
+            generated_utc=str(payload["generated_utc"]),
+            day=day,
+            decision_total_rows=decision_total_rows,
+            stocks_decision_rows=_safe_int(split_counts.get("stocks"), 0),
+            crypto_decision_rows=_safe_int(split_counts.get("crypto"), 0),
+            watchdog_restarts=0,
+            data_quality_score=data_quality_score,
+            alerts=[],
+            metric_map=metric_map,
+        )
+    return payload, rows
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build one concise numbers file from SQL logs (stocks + crypto + futures + options + alerts).")
     parser.add_argument("--day", default="", help="Preferred session day in YYYYMMDD. Defaults to the report timezone day and can fall back to the latest linked day with data.")
@@ -1551,7 +2511,7 @@ def main() -> int:
     parser.add_argument(
         "--lightweight",
         action="store_true",
-        help="Write latest JSON health snapshots only and skip CSV/XLSX/markdown bundle generation.",
+        help="Deprecated compatibility flag. One Numbers always performs a full data-backed rebuild.",
     )
     parser.add_argument("--sqlite-timeout-seconds", type=float, default=15.0)
     args = parser.parse_args()
@@ -1575,54 +2535,8 @@ def main() -> int:
     )
 
     if args.lightweight:
-        summary_payload = _build_lightweight_summary_payload(
-            project_root=PROJECT_ROOT,
-            requested_day=requested_day,
-            db_path=db_path,
-        )
-        summary_payload.update(_backpressure_scorecard_metrics(PROJECT_ROOT))
-        rows = _rows_from_summary_payload(summary_payload)
-        payload_text = json.dumps(summary_payload, ensure_ascii=True, indent=2)
-        latest_json = out_dir / "one_numbers_summary.json"
-        health_latest_json = PROJECT_ROOT / "governance" / "health" / "one_numbers_latest.json"
-        legacy_latest_dir = out_dir / "latest"
-        legacy_latest_json = legacy_latest_dir / "one_numbers_summary.json"
-        legacy_latest_csv = legacy_latest_dir / "one_numbers_latest.csv"
-        legacy_latest_metrics_csv = legacy_latest_dir / "one_numbers_latest_metrics.csv"
-        legacy_latest_md = legacy_latest_dir / "one_numbers_latest.md"
-        legacy_latest_xlsx = legacy_latest_dir / "one_numbers_latest.xlsx"
-        latest_json.write_text(payload_text, encoding="utf-8")
-        health_latest_json.parent.mkdir(parents=True, exist_ok=True)
-        health_latest_json.write_text(payload_text, encoding="utf-8")
-        legacy_latest_dir.mkdir(parents=True, exist_ok=True)
-        legacy_latest_json.write_text(payload_text, encoding="utf-8")
-        _write_one_numbers_csv(legacy_latest_csv, rows)
-        _write_one_numbers_metrics_csv(legacy_latest_metrics_csv, rows)
-        _write_one_numbers_markdown(legacy_latest_md, rows, csv_reference=out_dir / "latest.csv")
-        _write_one_numbers_xlsx(legacy_latest_xlsx, rows)
-        latest_csv, latest_md, latest_xlsx = _refresh_latest_artifact_aliases(
-            out_dir=out_dir,
-            csv_path=legacy_latest_csv,
-            md_path=legacy_latest_md,
-            xlsx_path=legacy_latest_xlsx,
-        )
-        latest_metrics_csv = _refresh_latest_metrics_alias(
-            out_dir=out_dir,
-            metrics_csv_path=legacy_latest_metrics_csv,
-        )
-        print("One Numbers lightweight mode enabled: used cached daily summary inputs and refreshed latest CSV/XLSX/markdown aliases.")
-        print(f"Latest CSV: {latest_csv}")
-        print(f"Latest MD: {latest_md}")
-        print(f"Latest XLSX: {latest_xlsx}")
-        print(f"Latest metrics CSV: {latest_metrics_csv}")
-        print(f"Latest JSON: {latest_json}")
-        try:
-            if lock_fh is not None:
-                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
-                lock_fh.close()
-        except Exception:
-            pass
-        return 0
+        _emit_progress("one_numbers lightweight flag ignored: running full data-backed rebuild.")
+        args.lightweight = False
 
     if not db_path.exists():
         try:
@@ -1635,6 +2549,32 @@ def main() -> int:
 
     conn = sqlite3.connect(str(db_path), timeout=max(float(args.sqlite_timeout_seconds), 1.0))
     conn.execute(f"PRAGMA busy_timeout={int(max(float(args.sqlite_timeout_seconds), 1.0) * 1000)}")
+    try:
+        conn.execute("SELECT 1 FROM main.jsonl_records LIMIT 1").fetchone()
+    except sqlite3.OperationalError as exc:
+        if not _sqlite_is_locked(exc):
+            raise
+        conn.close()
+        _emit_progress("one_numbers sqlite locked: reading raw JSONL files for full report artifacts.")
+        summary_payload, rows = _raw_report_payload_from_jsonl(
+            project_root=PROJECT_ROOT,
+            requested_day=requested_day,
+            db_path=db_path,
+            stale_seconds=max(int(args.stale_seconds), 1),
+        )
+        latest_csv, latest_md, latest_xlsx, latest_metrics_csv, latest_json = _write_one_numbers_artifact_set(out_dir, summary_payload, rows)
+        print(f"Latest CSV: {latest_csv}")
+        print(f"Latest MD: {latest_md}")
+        print(f"Latest XLSX: {latest_xlsx}")
+        print(f"Latest metrics CSV: {latest_metrics_csv}")
+        print(f"Latest JSON: {latest_json}")
+        try:
+            if lock_fh is not None:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+                lock_fh.close()
+        except Exception:
+            pass
+        return 0
 
     day = requested_day
     decision_bucket_case = """
@@ -1666,26 +2606,40 @@ def main() -> int:
       ELSE 'stocks'
     END
     """
+    decision_status_expr = "COALESCE(json_extract(payload_json, '$.status'), json_extract(payload_json, '$.decision'), 'UNKNOWN')"
 
     sqlite_state = _resolve_sqlite_state(PROJECT_ROOT)
     day, day_sources = _resolve_report_day(requested_day, sqlite_state)
-    if not day_sources["decision"]:
-        db_day = _latest_report_day_from_db(conn, requested_day)
-        if db_day and db_day != day:
-            day = db_day
-            day_sources = _sqlite_state_sources_by_day(sqlite_state).get(day, _empty_day_sources())
+    db_day = _latest_report_day_from_db(conn, requested_day)
+    preferred_day = _prefer_db_report_day(requested_day, day, db_day)
+    if preferred_day != day:
+        day = preferred_day
+        day_sources = _sqlite_state_sources_by_day(sqlite_state).get(day, _empty_day_sources())
     decision_sources_day = day_sources["decision"]
+    decision_source_kind = "decision_explanations"
+    if not decision_sources_day and day_sources.get("decision_trade"):
+        decision_sources_day = day_sources["decision_trade"]
+        decision_source_kind = "trade_decisions"
+    elif not decision_sources_day:
+        explanation_like_for_day = f"decision_explanations/%/decision_explanations_{day}.jsonl"
+        trade_like_for_day = f"decisions/%/trade_decisions_{day}.jsonl"
+        if _sqlite_has_source_like(conn, trade_like_for_day) and not _sqlite_has_source_like(conn, explanation_like_for_day):
+            decision_source_kind = "trade_decisions"
     governance_sources_day = day_sources["governance"]
     pnl_sources_day = day_sources["pnl"]
     watchdog_sources_day = day_sources["watchdog"]
 
     _emit_progress(
         f"one_numbers resolved_day={day} "
+        f"decision_source_kind={decision_source_kind} "
         f"decision_sources={len(decision_sources_day)} governance_sources={len(governance_sources_day)} "
         f"pnl_sources={len(pnl_sources_day)} watchdog_sources={len(watchdog_sources_day)}"
     )
 
-    decision_like = f"decision_explanations/%/decision_explanations_{day}.jsonl"
+    if decision_source_kind == "trade_decisions":
+        decision_like = f"decisions/%/trade_decisions_{day}.jsonl"
+    else:
+        decision_like = f"decision_explanations/%/decision_explanations_{day}.jsonl"
     governance_like = f"governance/%/master_control_{day}.jsonl"
     pnl_like = f"governance/%/shadow_pnl_attribution_{day}.jsonl"
     watchdog_like = f"governance/watchdog/watchdog_events_{day}.jsonl"
@@ -1693,6 +2647,40 @@ def main() -> int:
     linked_source_files_total = len(sqlite_state) if sqlite_state else 0
     decision_source_files = len(decision_sources_day)
     governance_source_files = len(governance_sources_day)
+
+    if decision_source_kind == "trade_decisions" and not _env_flag("ONE_NUMBERS_FORCE_EXPLANATION_DETAIL", "0"):
+        _emit_progress("one_numbers trade_decision_fallback=enabled")
+        summary_payload, rows = _trade_decision_summary_payload_from_sqlite(
+            conn=conn,
+            project_root=PROJECT_ROOT,
+            requested_day=requested_day,
+            day=day,
+            db_path=db_path,
+            decision_like=decision_like,
+            governance_like=governance_like,
+            decision_sources=decision_sources_day,
+            governance_sources=governance_sources_day,
+            decision_source_files=decision_source_files,
+            governance_source_files=governance_source_files,
+            no_sql_write=bool(args.no_sql_write),
+        )
+        latest_csv, latest_md, latest_xlsx, latest_metrics_csv, latest_json = _write_one_numbers_artifact_set(out_dir, summary_payload, rows)
+        print(f"Wrote: {latest_csv.resolve()}")
+        print(f"Wrote: {latest_md.resolve()}")
+        print(f"Wrote: {latest_xlsx.resolve()}")
+        print(f"Latest CSV: {latest_csv}")
+        print(f"Latest MD: {latest_md}")
+        print(f"Latest XLSX: {latest_xlsx}")
+        print(f"Latest metrics CSV: {latest_metrics_csv}")
+        print(f"Latest JSON: {latest_json}")
+        conn.close()
+        try:
+            if lock_fh is not None:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+                lock_fh.close()
+        except Exception:
+            pass
+        return 0
 
     working_subset_rows = _materialize_working_subset(
         conn,
@@ -1722,8 +2710,8 @@ def main() -> int:
 
     status_rows = _qall(
         conn,
-        """
-        SELECT COALESCE(json_extract(payload_json, '$.status'), 'UNKNOWN') AS status, COUNT(*)
+        f"""
+        SELECT {decision_status_expr} AS status, COUNT(*)
         FROM jsonl_records
         WHERE source_rel LIKE ?
         GROUP BY status
@@ -1754,7 +2742,7 @@ def main() -> int:
           {decision_bucket_case} AS bucket,
           COALESCE(json_extract(payload_json, '$.symbol'), 'UNKNOWN') AS symbol,
           COALESCE(json_extract(payload_json, '$.action'), 'UNKNOWN') AS action,
-          COALESCE(json_extract(payload_json, '$.status'), 'UNKNOWN') AS status
+          {decision_status_expr} AS status
         FROM jsonl_records
         WHERE source_rel LIKE ?
         """,
@@ -2411,15 +3399,19 @@ def main() -> int:
         "watchdog_restarts": watchdog_restarts,
         "data_quality_score": data_quality_score,
     }
-    latest_snapshots = _latest_daily_snapshots(conn)
+    persisted_rollup_history = _load_rollup_history(PROJECT_ROOT)
+    latest_snapshots = dict(persisted_rollup_history)
+    latest_snapshots.update(_latest_daily_snapshots(conn))
     latest_snapshots[day] = {
         "day_utc": day,
         "generated_utc": now_utc.isoformat(),
+        "report_mode": "full",
         "metrics": current_rollup_metrics,
     }
     month_prefix = day[:6]
     month_rollup = _aggregate_rollup([entry for entry_day, entry in latest_snapshots.items() if str(entry_day).startswith(month_prefix)])
     all_time_rollup = _aggregate_rollup(list(latest_snapshots.values()))
+    coverage_metadata = _one_numbers_coverage_metadata(PROJECT_ROOT, latest_snapshots)
 
     # Build output rows
     generated_utc = now_utc.isoformat()
@@ -2429,7 +3421,20 @@ def main() -> int:
         ("requested_day", requested_day),
         ("resolved_day", day),
         ("day_fallback_applied", str(requested_day != day).lower()),
+        ("historical_coverage_status", coverage_metadata["historical_coverage_status"]),
+        ("all_time_coverage_complete", coverage_metadata["all_time_coverage_complete"]),
+        ("original_start_day", coverage_metadata["original_start_day"]),
+        ("original_start_source", coverage_metadata["original_start_source"]),
+        ("rollup_history_days_available", coverage_metadata["rollup_history_days_available"]),
+        ("earliest_rollup_day", coverage_metadata["earliest_rollup_day"]),
+        ("latest_rollup_day", coverage_metadata["latest_rollup_day"]),
+        ("source_days_discovered", coverage_metadata["source_days_discovered"]),
+        ("earliest_source_day", coverage_metadata["earliest_source_day"]),
+        ("latest_source_day", coverage_metadata["latest_source_day"]),
+        ("source_days_missing_from_rollup_count", coverage_metadata["source_days_missing_from_rollup_count"]),
+        ("historical_coverage_detail", coverage_metadata["historical_coverage_detail"]),
         ("generated_utc", generated_utc),
+        ("report_mode", "full"),
         ("db_path", str(db_path)),
     ]
     summary_rows: list[tuple[str, str]] = [
@@ -2745,6 +3750,15 @@ def main() -> int:
             f"- SQL link service: ok={str(sql_link_ok).lower()} rc={sql_link_rc} db_size_gb={sql_link_db_size_gb:.3f}",
             f"- Hot retention: ran={str(hot_retention_ran).lower()} rc={hot_retention_rc} db_after_gb={hot_retention_db_after:.3f}",
             f"- Canary state: enabled={str(canary_enabled).lower()} weight={canary_weight:.4f}",
+            (
+                "- Historical coverage: "
+                f"{coverage_metadata['historical_coverage_status']} "
+                f"(complete={coverage_metadata['all_time_coverage_complete']}, "
+                f"start={coverage_metadata['original_start_day'] or 'unconfigured'}, "
+                f"rollup_days={coverage_metadata['rollup_history_days_available']}, "
+                f"source_days={coverage_metadata['source_days_discovered']})"
+            ),
+            f"- Historical coverage detail: {coverage_metadata['historical_coverage_detail']}",
             "",
             "## Alerts",
         ]
@@ -2761,6 +3775,10 @@ def main() -> int:
     health_latest_json = PROJECT_ROOT / "governance" / "health" / "one_numbers_latest.json"
     legacy_latest_dir = out_dir / "latest"
     legacy_latest_json = legacy_latest_dir / "one_numbers_summary.json"
+    legacy_latest_csv = legacy_latest_dir / "one_numbers_latest.csv"
+    legacy_latest_metrics_csv = legacy_latest_dir / "one_numbers_latest_metrics.csv"
+    legacy_latest_md = legacy_latest_dir / "one_numbers_latest.md"
+    legacy_latest_xlsx = legacy_latest_dir / "one_numbers_latest.xlsx"
 
     metric_map = {k: v for k, v in rows}
     summary_payload = {
@@ -2769,8 +3787,13 @@ def main() -> int:
         "requested_day": requested_day,
         "resolved_day": day,
         "day_fallback_applied": requested_day != day,
+        "rollup_history_days_available": str(len(latest_snapshots)),
+        "rollup_history_source": "durable_history" if persisted_rollup_history else "sqlite_snapshots",
         **metric_map,
     }
+    persisted_history = _persist_rollup_history_entries(PROJECT_ROOT, latest_snapshots)
+    summary_payload["rollup_history_days_available"] = str(len(persisted_history))
+    summary_payload["rollup_history_source"] = "durable_history" if persisted_history else "sqlite_snapshots"
     payload_text = json.dumps(summary_payload, ensure_ascii=True, indent=2)
     latest_json.write_text(payload_text, encoding="utf-8")
 
@@ -2779,6 +3802,10 @@ def main() -> int:
 
     legacy_latest_dir.mkdir(parents=True, exist_ok=True)
     legacy_latest_json.write_text(payload_text, encoding="utf-8")
+    _write_one_numbers_csv(legacy_latest_csv, rows)
+    _write_one_numbers_metrics_csv(legacy_latest_metrics_csv, rows)
+    _write_one_numbers_markdown(legacy_latest_md, rows, csv_reference=out_dir / "latest.csv")
+    _write_one_numbers_xlsx(legacy_latest_xlsx, rows)
 
     if not args.lightweight:
         latest_csv, latest_md, latest_xlsx = _refresh_latest_artifact_aliases(

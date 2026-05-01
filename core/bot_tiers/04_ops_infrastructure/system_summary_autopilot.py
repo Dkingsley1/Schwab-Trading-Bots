@@ -1,0 +1,1 @@
+../../../scripts/ops/system_summary_autopilot.py

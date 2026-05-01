@@ -48,6 +48,10 @@ def build_payload(
     token_guard = load_json(token_guard_path)
     process_watchdog_path = health_root / "process_watchdog_latest.json"
     process_watchdog = load_json(process_watchdog_path)
+    backup_restore_events = sorted(project_root.glob("governance/watchdog/backup_restore_events.jsonl*"))
+    weekly_drill_installer = project_root / "scripts" / "install_weekly_dr_drill_launchd.sh"
+    snapshot_drill_script = project_root / "scripts" / "daily_state_snapshot_drill.py"
+    backup_restore_script = project_root / "scripts" / "backup_restore_verify.py"
 
     default_sources = {
         "snapshot_restore": snapshot_drill.get("timestamp_utc"),
@@ -90,9 +94,28 @@ def build_payload(
         [
             "record the next storage failover and black-start rehearsal in the chaos drill state file" if overdue else "",
             "exercise auth-expiry, SQL writer stall, and backlog surge scenarios weekly during the long-run window" if len(overdue) >= 1 else "",
+            "keep the weekly restore drill installer and snapshot/restore scripts present so resilience stays a scheduled discipline"
+            if not weekly_drill_installer.exists()
+            else "",
         ]
     )
+    restore_discipline = {
+        "snapshot_restore_present": bool(snapshot_drill),
+        "storage_resilience_present": bool(storage_resilience),
+        "backup_restore_event_log_count": len(backup_restore_events),
+        "restore_proof_ready": bool(snapshot_drill) and bool(storage_resilience) and bool(backup_restore_events),
+    }
+    schedule_contract = {
+        "weekly_drill_installer_present": weekly_drill_installer.exists(),
+        "snapshot_drill_script_present": snapshot_drill_script.exists(),
+        "backup_restore_script_present": backup_restore_script.exists(),
+        "discipline_ready": weekly_drill_installer.exists() and snapshot_drill_script.exists() and backup_restore_script.exists(),
+    }
     program_score = max(0.0, round(100.0 - (18.0 * len(overdue)), 2))
+    if restore_discipline["restore_proof_ready"]:
+        program_score = min(program_score + 8.0, 100.0)
+    if schedule_contract["discipline_ready"]:
+        program_score = min(program_score + 6.0, 100.0)
     next_priority_drill = str((overdue[0] or {}).get("drill") or "") if overdue else ""
 
     return {
@@ -109,6 +132,8 @@ def build_payload(
             "weekly_cadence_target_days": cutoff_days,
             "automation_ready": True,
         },
+        "restore_discipline": restore_discipline,
+        "schedule_contract": schedule_contract,
         "state_path": str(state_path),
         "infra_bots": ["chaos_drill_coordinator", "daily_state_snapshot_drill", "reboot_resilience_guard", "process_watchdog"],
         "recommended_actions": recommended_actions,

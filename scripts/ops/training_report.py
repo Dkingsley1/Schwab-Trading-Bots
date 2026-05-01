@@ -217,14 +217,27 @@ def _assessment_lines(context: Dict[str, Any]) -> List[str]:
     promotion_gate = context.get("promotion_gate") if isinstance(context.get("promotion_gate"), dict) else {}
     trade = context.get("trade_behavior") if isinstance(context.get("trade_behavior"), dict) else {}
     divergence = context.get("data_divergence") if isinstance(context.get("data_divergence"), dict) else {}
+    immutable_lineage = context.get("immutable_lineage") if isinstance(context.get("immutable_lineage"), dict) else {}
+    failure_taxonomy = context.get("failure_taxonomy") if isinstance(context.get("failure_taxonomy"), dict) else {}
     operator_notes = context.get("operator_notes") if isinstance(context.get("operator_notes"), dict) else {}
 
     target_count = int(summary.get("target_count", 0) or 0)
     trained_count = int(summary.get("trained_count", 0) or 0)
+    failure_count = int(summary.get("failure_count", 0) or 0)
+    training_reason = str(summary.get("training_reason", "") or summary.get("master_update_status", "unknown")).strip()
+    passive_cycle = bool(
+        not summary.get("confirmed_training_success", False)
+        and target_count <= 0
+        and trained_count <= 0
+        and failure_count <= 0
+        and not training_reason
+    )
     if bool(summary.get("confirmed_training_success", False)):
         lines.append(f"Confirmed training success was achieved with {trained_count}/{target_count} trained targets.")
+    elif passive_cycle:
+        lines.append("No active retrain batch is recorded right now; training posture is being inferred from the standing quality and promotion artifacts.")
     else:
-        reason = str(summary.get("training_reason", "") or summary.get("master_update_status", "unknown")).strip()
+        reason = training_reason or "unknown"
         lines.append(f"Training ran {trained_count}/{target_count} targets, but the run was not confirmed successful ({reason}).")
 
     failed_checks = [str(item) for item in (promotion_quality.get("failed_checks") or []) if str(item).strip()]
@@ -260,6 +273,11 @@ def _assessment_lines(context: Dict[str, Any]) -> List[str]:
         ceiling = _coerce_float(divergence.get("max_relative_spread"))
         if worst is not None and ceiling is not None:
             lines.append(f"Data divergence is above the allowed threshold ({worst:.4f} vs {ceiling:.4f}).")
+    if str(immutable_lineage.get("lineage_status") or "").strip().lower() == "blocked":
+        lines.append("Immutable lineage is still blocked, so this run is not yet replay-safe for promotion or incident review.")
+    failure_buckets = [str(item).strip() for item in (failure_taxonomy.get("failure_buckets") or []) if str(item).strip()]
+    if failure_buckets:
+        lines.append("Training failure taxonomy currently clusters around " + ", ".join(failure_buckets[:5]) + ".")
 
     if operator_notes:
         note_summary = str(operator_notes.get("summary", "") or "").strip()
@@ -268,17 +286,27 @@ def _assessment_lines(context: Dict[str, Any]) -> List[str]:
     training_quality = context.get("training_quality_control") if isinstance(context.get("training_quality_control"), dict) else {}
     if training_quality:
         overall_status = str(training_quality.get("overall_status", "") or "").strip()
+        quality_index = _coerce_float(training_quality.get("training_quality_index"))
         quality_score = _coerce_float(training_quality.get("training_quality_score"))
+        quality_base_score = _coerce_float(training_quality.get("training_quality_base_score"))
+        quality_bonus_score = _coerce_float(training_quality.get("training_quality_bonus_score"))
         top_priorities = [str(item).strip() for item in (training_quality.get("top_priorities") or []) if str(item).strip()]
         if overall_status:
+            index_text = f"{quality_index:.2f}" if quality_index is not None else "unknown"
             score_text = f"{quality_score:.2f}" if quality_score is not None else "unknown"
+            base_text = f"{quality_base_score:.2f}" if quality_base_score is not None else "unknown"
+            bonus_text = f"{quality_bonus_score:.2f}" if quality_bonus_score is not None else "unknown"
             if top_priorities:
                 lines.append(
                     "Training quality control is "
-                    f"{overall_status} at score={score_text}; top priorities: {', '.join(top_priorities[:4])}."
+                    f"{overall_status} at index={index_text} (base={base_text}, bonus={bonus_text}, normalized={score_text}); "
+                    f"top priorities: {', '.join(top_priorities[:4])}."
                 )
             else:
-                lines.append(f"Training quality control is {overall_status} at score={score_text}.")
+                lines.append(
+                    f"Training quality control is {overall_status} at index={index_text} "
+                    f"(base={base_text}, bonus={bonus_text}, normalized={score_text})."
+                )
 
     return lines
 
@@ -291,7 +319,18 @@ def _blocking_reasons(context: Dict[str, Any]) -> List[str]:
     trade = context.get("trade_behavior") if isinstance(context.get("trade_behavior"), dict) else {}
 
     reasons: List[str] = []
-    if not bool(summary.get("confirmed_training_success", False)):
+    target_count = int(summary.get("target_count", 0) or 0)
+    trained_count = int(summary.get("trained_count", 0) or 0)
+    failure_count = int(summary.get("failure_count", 0) or 0)
+    training_reason = str(summary.get("training_reason", "") or summary.get("master_update_status", "") or "").strip()
+    passive_cycle = bool(
+        not summary.get("confirmed_training_success", False)
+        and target_count <= 0
+        and trained_count <= 0
+        and failure_count <= 0
+        and not training_reason
+    )
+    if not bool(summary.get("confirmed_training_success", False)) and not passive_cycle:
         reasons.append("training_not_confirmed")
     if not bool(summary.get("promotion_quality_ok", False)):
         reasons.extend(str(item).strip() for item in (promotion_quality.get("failed_checks") or []) if str(item).strip())
@@ -453,6 +492,9 @@ def _build_context(
         "training_quality_control": {
             "ok": bool(training_quality_control.get("ok", False)),
             "overall_status": str(training_quality_control.get("overall_status", "") or ""),
+            "training_quality_index": _coerce_float(training_quality_control.get("training_quality_index")),
+            "training_quality_base_score": _coerce_float(training_quality_control.get("training_quality_base_score")),
+            "training_quality_bonus_score": _coerce_float(training_quality_control.get("training_quality_bonus_score")),
             "training_quality_score": _coerce_float(training_quality_control.get("training_quality_score")),
             "top_priorities": [
                 str(item).strip()
@@ -461,6 +503,8 @@ def _build_context(
             ],
             "implemented_improvement_count": int(training_quality_control.get("implemented_improvement_count", 0) or 0),
         },
+        "immutable_lineage": training_quality_control.get("immutable_lineage") if isinstance(training_quality_control.get("immutable_lineage"), dict) else {},
+        "failure_taxonomy": training_quality_control.get("failure_taxonomy") if isinstance(training_quality_control.get("failure_taxonomy"), dict) else {},
         "data_divergence": {
             "ok": bool(data_divergence.get("ok", False)),
             "window_hours": int(data_divergence.get("window_hours", 0) or 0),
@@ -605,7 +649,10 @@ def _render_markdown(context: Dict[str, Any]) -> str:
             "",
             "## Training Quality Control",
             f"- Overall status: {training_quality_control.get('overall_status', 'unknown') or 'unknown'}",
-            f"- Quality score: {_fmt_num(training_quality_control.get('training_quality_score'), 2)}",
+            f"- Quality index: {_fmt_num(training_quality_control.get('training_quality_index'), 2)}",
+            f"- Base score: {_fmt_num(training_quality_control.get('training_quality_base_score'), 2)}",
+            f"- Bonus score: {_fmt_num(training_quality_control.get('training_quality_bonus_score'), 2)}",
+            f"- Normalized score: {_fmt_num(training_quality_control.get('training_quality_score'), 2)}",
             f"- Implemented improvements: {int(training_quality_control.get('implemented_improvement_count', 0) or 0)}",
             f"- Top priorities: {', '.join(training_quality_control.get('top_priorities', [])[:6]) if training_quality_control.get('top_priorities') else 'none'}",
         ]
@@ -664,7 +711,10 @@ def _render_html(context: Dict[str, Any]) -> str:
     training_quality_html = (
         "<ul>"
         f"<li><strong>Overall status</strong>: {html.escape(str(training_quality_control.get('overall_status') or 'unknown'))}</li>"
-        f"<li><strong>Quality score</strong>: {html.escape(_fmt_num(training_quality_control.get('training_quality_score'), 2))}</li>"
+        f"<li><strong>Quality index</strong>: {html.escape(_fmt_num(training_quality_control.get('training_quality_index'), 2))}</li>"
+        f"<li><strong>Base score</strong>: {html.escape(_fmt_num(training_quality_control.get('training_quality_base_score'), 2))}</li>"
+        f"<li><strong>Bonus score</strong>: {html.escape(_fmt_num(training_quality_control.get('training_quality_bonus_score'), 2))}</li>"
+        f"<li><strong>Normalized score</strong>: {html.escape(_fmt_num(training_quality_control.get('training_quality_score'), 2))}</li>"
         f"<li><strong>Implemented improvements</strong>: {html.escape(str(int(training_quality_control.get('implemented_improvement_count', 0) or 0)))}</li>"
         f"<li><strong>Top priorities</strong>: {html.escape(', '.join(training_quality_control.get('top_priorities', [])[:6]) if training_quality_control.get('top_priorities') else 'none')}</li>"
         "</ul>"

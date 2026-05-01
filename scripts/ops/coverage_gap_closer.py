@@ -429,6 +429,7 @@ def _candidate_pool(project_root: Path, *, candidate_limit: int, stage_count: in
     ranked = sorted(
         ranked,
         key=lambda row: (
+            0 if bool(row.get("strong_seed_candidate", False)) else 1,
             _safe_int(row.get("needs_runtime_input_repair"), 0),
             _coverage_lane_priority(row),
             _diagnostic_status_rank(project_root, str(row.get("bot_id") or "")),
@@ -443,12 +444,18 @@ def _candidate_pool(project_root: Path, *, candidate_limit: int, stage_count: in
     backups: list[dict[str, Any]] = []
     for row in ranked:
         role = str(row.get("bot_role") or "")
-        if role == "infrastructure_sub_bot":
+        strong_seed_candidate = bool(row.get("strong_seed_candidate", False))
+        if role == "infrastructure_sub_bot" and not strong_seed_candidate:
             continue
         actions = row.get("actions") if isinstance(row.get("actions"), list) else []
         coverage_stage_ready = (
             (not actions)
             or ("seed_walk_forward_coverage" in actions)
+            or (
+                strong_seed_candidate
+                and "recover_training_log" not in actions
+                and "refresh_training_diagnostics" not in actions
+            )
             or (
                 "rebuild_model_artifact" in actions
                 and "recover_training_log" not in actions

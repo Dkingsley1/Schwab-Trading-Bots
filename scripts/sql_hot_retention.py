@@ -122,6 +122,16 @@ def _unlink_sqlite_artifact(path: Path) -> None:
             continue
 
 
+def _delete_jsonl_record_ids(conn: sqlite3.Connection, ids: list[int], *, chunk_size: int = 500) -> None:
+    size = max(int(chunk_size), 1)
+    for start in range(0, len(ids), size):
+        chunk = ids[start : start + size]
+        if not chunk:
+            continue
+        id_marks = ",".join("?" for _ in chunk)
+        conn.execute(f"DELETE FROM jsonl_records WHERE id IN ({id_marks})", chunk)
+
+
 def _sqlite_column_specs(conn: sqlite3.Connection, table: str) -> list[tuple[str, str]]:
     return [
         (str(row[1]), str(row[2] or "TEXT"))
@@ -432,8 +442,7 @@ def main() -> int:
                 archive_rows_by_db[str(archive_path)] = archive_rows_by_db.get(str(archive_path), 0) + len(group_rows)
 
             ids = [int(r["id"]) for r in rows]
-            id_marks = ",".join("?" for _ in ids)
-            src.execute(f"DELETE FROM jsonl_records WHERE id IN ({id_marks})", ids)
+            _delete_jsonl_record_ids(src, ids)
             src.commit()
             total_moved += len(rows)
 

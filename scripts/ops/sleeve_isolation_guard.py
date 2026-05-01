@@ -75,11 +75,44 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_quarantine_events: i
     blast_radius_score = round((running_lane_count / total_lane_count) * 100.0, 2)
     thaw_candidates = lane_thaw.get("candidates") if isinstance(lane_thaw.get("candidates"), list) else []
     thaw_blocked = lane_thaw.get("blocked") if isinstance(lane_thaw.get("blocked"), list) else []
+    thaw_rows = lane_thaw.get("lanes") if isinstance(lane_thaw.get("lanes"), list) else []
+    systemic_guardrails = lane_thaw.get("systemic_guardrails") if isinstance(lane_thaw.get("systemic_guardrails"), dict) else {}
+    release_ready_candidates = [
+        row
+        for row in thaw_rows
+        if isinstance(row, dict)
+        and str(row.get("thaw_state") or "").strip().lower() == "candidate"
+        and bool(((row.get("thaw_contract") or {}).get("release_ready")))
+    ]
+    supervised_candidates = [
+        row
+        for row in release_ready_candidates
+        if str(((row.get("thaw_contract") or {}).get("stage") or "")).strip().lower() == "supervised_canary"
+    ]
+    micro_probe_candidates = [
+        row
+        for row in release_ready_candidates
+        if str(((row.get("thaw_contract") or {}).get("stage") or "")).strip().lower() == "micro_probe"
+    ]
+    operator_review_rows = [
+        row
+        for row in thaw_rows
+        if str(((row.get("thaw_contract") or {}).get("stage") or "")).strip().lower() == "operator_review"
+    ]
+    systemic_halt_active = bool(systemic_guardrails.get("global_killswitch_active", False))
+    systemic_risk_halts = int(systemic_guardrails.get("risk_halt_events", 0) or 0)
+    systemic_snapshot_failures = int(systemic_guardrails.get("account_snapshot_failure_count", 0) or 0)
+    systemic_write_failures = int(systemic_guardrails.get("write_failure_count", 0) or 0)
+    systemic_queue_depth = int(systemic_guardrails.get("queue_depth", 0) or 0)
     repeatable_thaw_ready = bool(
         isolated_lane_count > 0
-        and len(thaw_candidates) > 0
+        and len(release_ready_candidates) > 0
         and not unresolved_checks
-        and all(str(row.get("decision") or "").strip().lower() in {"allow", "ready"} for row in thaw_candidates)
+        and not systemic_halt_active
+        and systemic_risk_halts <= 0
+        and systemic_snapshot_failures <= 0
+        and systemic_write_failures <= 0
+        and systemic_queue_depth < 10000
     )
 
     recommended_actions = ordered_unique(
@@ -88,7 +121,10 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_quarantine_events: i
             "route investigation to the paused sleeves instead of draining the entire runtime" if len(isolated_lanes) >= 1 else "",
             "reduce quarantine churn before expanding sleeve count again" if quarantine_events > int(max_quarantine_events) else "",
             "clear unresolved daily verify blockers before reenabling isolated sleeves" if unresolved_checks else "",
-            "only thaw isolated sleeves through the repeatable thaw contract once feed, broker, and cooldown checks are green" if isolated_lanes else "",
+            "run supervised single-lane canaries before widening thaw scope for repeat or high-caution sleeves" if supervised_candidates else "",
+            "only allow micro-probe thaw on isolated sleeves when the runtime-level halt, data-plane, and cooldown guardrails are green" if micro_probe_candidates else "",
+            "keep operator-review sleeves quarantined until their chronic or repeat-trip incident review is closed" if operator_review_rows else "",
+            "do not thaw isolated sleeves while the global halt, incident risk halt, or data-plane recovery pressure is still active" if systemic_halt_active or systemic_risk_halts > 0 or systemic_snapshot_failures > 0 or systemic_write_failures > 0 or systemic_queue_depth >= 10000 else "",
         ]
     )
 
@@ -115,10 +151,20 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_quarantine_events: i
         },
         "repeatable_thaw_contract": {
             "ready": repeatable_thaw_ready,
-            "candidate_count": len(thaw_candidates),
+            "candidate_count": len(release_ready_candidates),
+            "supervised_candidate_count": len(supervised_candidates),
+            "micro_probe_candidate_count": len(micro_probe_candidates),
+            "operator_review_count": len(operator_review_rows),
             "blocked_count": len(thaw_blocked),
-            "candidate_examples": thaw_candidates[:4],
+            "candidate_examples": release_ready_candidates[:4],
             "blocked_examples": thaw_blocked[:4],
+        },
+        "systemic_guardrails": {
+            "global_killswitch_active": systemic_halt_active,
+            "risk_halt_events": systemic_risk_halts,
+            "account_snapshot_failure_count": systemic_snapshot_failures,
+            "write_failure_count": systemic_write_failures,
+            "queue_depth": systemic_queue_depth,
         },
         "infra_bots": ["sleeve_isolation_guard", "quarantine_pressure_bot", "data_ingress_latest_*"],
         "recommended_actions": recommended_actions,

@@ -5,10 +5,18 @@ import argparse
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+import sys
 from typing import Any
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.training_quality_thresholds import (
+    TARGET_QUALITY_SCORE_FLOOR,
+    TARGET_TEST_ACCURACY_FLOOR,
+)
+
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "walk_forward" / "coverage_seed_latest.json"
 DEFAULT_QUEUE_PATH = PROJECT_ROOT / "governance" / "walk_forward" / "coverage_seed_queue.jsonl"
 DEFAULT_WALK_FORWARD_PATH = PROJECT_ROOT / "governance" / "walk_forward" / "walk_forward_latest.json"
@@ -105,6 +113,13 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, limit: int = 8) -> dict[
         actions = [str(raw or "").strip() for raw in list(row.get("actions") or []) if str(raw or "").strip()]
         needs_repair = "repair_runtime_inputs" in actions or "refresh_training_diagnostics" in actions
         priority = _safe_float(row.get("priority"), 0.0)
+        quality_score = _safe_float(row.get("quality_score"), 0.0)
+        test_accuracy = _safe_float(row.get("test_accuracy"), 0.0)
+        strong_seed_candidate = bool(
+            test_accuracy >= TARGET_TEST_ACCURACY_FLOOR
+            and quality_score >= TARGET_QUALITY_SCORE_FLOOR
+        )
+        seed_priority = priority + (12.0 if strong_seed_candidate else 0.0)
         walk_forward_row = walk_forward_rows.get(bot_id, {})
         current_runs = _safe_int(row.get("walk_forward_runs"), _safe_int(walk_forward_row.get("runs"), 0))
         runs_remaining = max(int(min_runs_per_bot) - current_runs, 0)
@@ -116,11 +131,15 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, limit: int = 8) -> dict[
                 "bot_id": bot_id,
                 "bot_role": bot_role,
                 "queue_bucket": queue_bucket,
-                "priority": priority,
-                "coverage_pressure": round(priority * max(float(coverage_shortfall_bots), 1.0), 3),
+                "priority": round(seed_priority, 6),
+                "base_priority": round(priority, 6),
+                "coverage_pressure": round(seed_priority * max(float(coverage_shortfall_bots), 1.0), 3),
                 "current_runs": int(current_runs),
                 "runs_remaining": int(runs_remaining),
                 "recommended_runs": int(recommended_runs),
+                "quality_score": round(quality_score, 6),
+                "test_accuracy": round(test_accuracy, 6),
+                "strong_seed_candidate": strong_seed_candidate,
                 "needs_runtime_input_repair": needs_repair,
                 "actions": _ordered_unique(
                     actions

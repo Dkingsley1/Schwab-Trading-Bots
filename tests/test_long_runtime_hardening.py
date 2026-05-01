@@ -70,7 +70,7 @@ def test_long_runtime_runtime_controls_surface_pressure(tmp_path: Path) -> None:
     _write_json(
         health / "premarket_token_guard_latest.json",
         {
-            "timestamp_utc": "2026-04-09T16:55:00+00:00",
+            "timestamp_utc": auth_src.iso_now(),
             "ok": True,
             "network": {"ok": True},
             "auth": {"ok": True},
@@ -130,11 +130,56 @@ def test_blackstart_treats_warning_lease_as_operable_when_broker_is_ready(tmp_pa
     assert blackstart["overall_status"] in {"ready", "degraded"}
 
 
+def test_auth_lease_default_accepts_fresh_schwab_half_hour_token(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "premarket_token_guard_latest.json",
+        {
+            "timestamp_utc": auth_src.iso_now(),
+            "ok": True,
+            "network": {"ok": True},
+            "auth": {"ok": True},
+            "token_before": {"exists": True, "expires_in_seconds": 1790},
+            "token_after": {"exists": True, "expires_in_seconds": 1790},
+        },
+    )
+    _write_json(health / "broker_readiness_latest.json", {"ready_for_open": True})
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+
+    auth = auth_src.build_payload(project_root)
+
+    assert auth["overall_status"] == "ready"
+    assert auth["lease_state"] == "healthy"
+    assert auth["lease_budget"]["min_lease_seconds"] == 1200
+
+
 def test_long_runtime_storage_and_freshness_controls(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     _write_json(health / "quarantine_pressure_latest.json", {"quarantine_events": 200, "top_symbols": [{"symbol": "SPY", "count": 7}]})
     _write_json(health / "daily_auto_verify_latest.json", {"failed_checks": ["promotion_quality_gate"]})
+    _write_json(
+        health / "lane_thaw_controller_latest.json",
+        {
+            "overall_status": "blocked",
+            "systemic_guardrails": {
+                "global_killswitch_active": True,
+                "risk_halt_events": 1,
+                "account_snapshot_failure_count": 1,
+                "write_failure_count": 0,
+                "queue_depth": 15000,
+            },
+            "lanes": [
+                {
+                    "lane": "aggressive_equities_schwab",
+                    "thaw_state": "candidate",
+                    "thaw_contract": {"stage": "supervised_canary", "release_ready": True},
+                }
+            ],
+            "blocked": [{"lane": "aggressive_equities_schwab", "decision": "hold"}],
+        },
+    )
     _write_json(
         health / "data_ingress_latest_aggressive_equities_schwab.json",
         {"profile": "aggressive", "domain": "equities", "broker": "schwab", "loop_state": "paused_anomaly_killswitch", "pause_reason": "anomaly"},
@@ -174,6 +219,8 @@ def test_long_runtime_storage_and_freshness_controls(tmp_path: Path) -> None:
     assert isolation["overall_status"] == "blocked"
     assert isolation["blast_radius_score"] < 100.0
     assert isolation["repeatable_thaw_contract"]["ready"] is False
+    assert isolation["repeatable_thaw_contract"]["supervised_candidate_count"] == 1
+    assert isolation["systemic_guardrails"]["global_killswitch_active"] is True
     assert isolation["gates"]["unresolved_daily_verify_checks"] == []
     assert freshness["overall_status"] == "blocked"
     assert snapshot_cache["overall_status"] == "blocked"
@@ -218,6 +265,11 @@ def test_alert_freeze_roster_and_chaos_controls(tmp_path: Path) -> None:
     _write_json(health / "storage_resilience_control_latest.json", {"timestamp_utc": "2026-03-20T00:00:00+00:00"})
     _write_json(health / "premarket_token_guard_latest.json", {"timestamp_utc": "2026-03-20T00:00:00+00:00"})
     _write_json(health / "process_watchdog_latest.json", {"timestamp_utc": "2026-03-20T00:00:00+00:00"})
+    scripts_dir = project_root / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    (scripts_dir / "install_weekly_dr_drill_launchd.sh").write_text("#!/bin/zsh\n", encoding="utf-8")
+    (scripts_dir / "daily_state_snapshot_drill.py").write_text("print('ok')\n", encoding="utf-8")
+    (scripts_dir / "backup_restore_verify.py").write_text("print('ok')\n", encoding="utf-8")
 
     alerts = alert_src.build_payload(project_root, ack_state_path=ack_state)
     freeze = freeze_src.build_payload(project_root, window_path=window_path)
@@ -228,6 +280,8 @@ def test_alert_freeze_roster_and_chaos_controls(tmp_path: Path) -> None:
     assert freeze["window"]["active"] is True
     assert roster["overall_status"] == "blocked"
     assert chaos["overall_status"] == "blocked"
+    assert chaos["restore_discipline"]["snapshot_restore_present"] is True
+    assert chaos["schedule_contract"]["weekly_drill_installer_present"] is True
 
 
 def test_operator_cockpit_and_dashboard_include_long_runtime_lanes(tmp_path: Path) -> None:

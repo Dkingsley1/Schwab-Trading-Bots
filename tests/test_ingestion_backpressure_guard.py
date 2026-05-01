@@ -231,6 +231,67 @@ class IngestionBackpressureGuardTests(unittest.TestCase):
 
             self.assertGreater(total, 0)
 
+    def test_load_journal_progress_tracks_highest_checkpoint(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            project_root = Path(td)
+            health_root = project_root / "governance" / "health"
+            health_root.mkdir(parents=True)
+            rel = "governance/execution_lanes/execution_results_20260422.jsonl"
+            journal = health_root / "jsonl_ingest_batch_journal_governance_latest.jsonl"
+            journal.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "event": "file_checkpoint",
+                                "source_rel": rel,
+                                "last_line": 1200,
+                                "last_offset_bytes": 120000,
+                                "timestamp_utc": "2026-04-22T23:58:00+00:00",
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "event": "file_complete",
+                                "source_rel": rel,
+                                "last_line": 1600,
+                                "last_offset_bytes": 200000,
+                                "timestamp_utc": "2026-04-22T23:59:00+00:00",
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            progress, sources = module._load_journal_progress(project_root)
+
+            self.assertEqual(progress[rel]["last_line"], 1600)
+            self.assertEqual(progress[rel]["last_offset_bytes"], 200000)
+            self.assertEqual(len(sources), 1)
+
+    def test_journal_reconciliation_recovers_missing_state_progress(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "execution_results_20260422.jsonl"
+            path.write_text(("row\n" * 5000), encoding="utf-8")
+            st = path.stat()
+
+            reconciled_last_line, used = module._journal_reconciled_last_line(
+                stat=st,
+                state_last_line=0,
+                journal_progress={
+                    "last_line": 3200,
+                    "last_offset_bytes": 6400,
+                    "journal_timestamp_epoch": float(st.st_mtime) - 30.0,
+                },
+            )
+
+            self.assertTrue(used)
+            self.assertEqual(reconciled_last_line, 3200)
+
     def test_resolve_sqlite_state_prefers_newer_inode_progress_over_stale_higher_line_count(self) -> None:
         module = _load_module()
         with tempfile.TemporaryDirectory() as td:

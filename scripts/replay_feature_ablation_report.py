@@ -25,6 +25,28 @@ def _load_json(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _write_failure_payload(args: argparse.Namespace, reason: str) -> dict[str, Any]:
+    out = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "ok": False,
+        "overall_status": "degraded",
+        "failed_checks": [str(reason)],
+        "model_path": str(args.model or ""),
+        "dataset_path": str(Path(args.dataset)),
+        "rows": 0,
+        "feature_dim": 0,
+        "ablation": {},
+        "delta": {},
+    }
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    out_path = Path(args.out_file) if args.out_file else (OUT_DIR / f"replay_feature_ablation_{ts}.json")
+    out_path.write_text(json.dumps(out, ensure_ascii=True, indent=2), encoding="utf-8")
+    LATEST_HEALTH.parent.mkdir(parents=True, exist_ok=True)
+    LATEST_HEALTH.write_text(json.dumps(out, ensure_ascii=True, indent=2), encoding="utf-8")
+    return out
+
+
 def _latest_model() -> Path | None:
     rows = sorted(glob.glob(str(MODELS_DIR / "trade_behavior_policy_*.npz")))
     return Path(rows[-1]) if rows else None
@@ -185,12 +207,14 @@ def main() -> int:
     if not rows:
         rows = ds.get("examples") if isinstance(ds.get("examples"), list) else []
     if not rows:
-        print("missing_examples")
+        out = _write_failure_payload(args, "missing_examples")
+        print(json.dumps(out, ensure_ascii=True) if args.json else "missing_examples")
         return 2
 
     feature_names = [str(x) for x in (ds.get("feature_names") or []) if str(x)]
     if not feature_names:
-        print("missing_feature_names")
+        out = _write_failure_payload(args, "missing_feature_names")
+        print(json.dumps(out, ensure_ascii=True) if args.json else "missing_feature_names")
         return 2
 
     X = []
@@ -208,7 +232,8 @@ def main() -> int:
         y.append(LABEL_TO_ID[label])
 
     if not X:
-        print("no_valid_rows")
+        out = _write_failure_payload(args, "no_valid_rows")
+        print(json.dumps(out, ensure_ascii=True) if args.json else "no_valid_rows")
         return 2
 
     X = np.asarray(X, dtype=np.float64)
@@ -216,7 +241,8 @@ def main() -> int:
 
     model_path = Path(args.model) if args.model else _latest_model()
     if model_path is None or (not model_path.exists()):
-        print("missing_model")
+        out = _write_failure_payload(args, "missing_model")
+        print(json.dumps(out, ensure_ascii=True) if args.json else "missing_model")
         return 2
 
     arr = np.load(model_path, allow_pickle=False)
@@ -241,7 +267,8 @@ def main() -> int:
             model_feature_names=model_feature_names,
         )
     except Exception as exc:
-        print(f"feature_alignment_failed:{exc}")
+        out = _write_failure_payload(args, f"feature_alignment_failed:{exc}")
+        print(json.dumps(out, ensure_ascii=True) if args.json else f"feature_alignment_failed:{exc}")
         return 2
 
     Xn = (X_aligned - mu_aligned.reshape(1, -1)) / np.where(
@@ -282,6 +309,7 @@ def main() -> int:
     out = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "ok": len(strict_failed) == 0,
+        "overall_status": "ready" if len(strict_failed) == 0 else "degraded",
         "model_path": str(model_path),
         "dataset_path": str(Path(args.dataset)),
         "rows": int(Xn.shape[0]),

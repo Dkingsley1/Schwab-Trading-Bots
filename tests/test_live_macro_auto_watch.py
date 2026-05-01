@@ -284,6 +284,54 @@ def test_apply_channel_preset_supports_cspan_legal() -> None:
     assert out.template == "legal_policy"
     assert out.source == "C-SPAN"
     assert "XLF" in out.symbols
+    assert out.replay_full_video_on_stream_end is True
+
+
+def test_apply_channel_preset_supports_cspan_policy_with_replay_guard() -> None:
+    args = _args(channel_preset="cspan_policy")
+
+    out = live_macro_auto_watch._apply_channel_preset(args)
+
+    assert out.youtube_channel_url == "https://www.youtube.com/@CSPAN"
+    assert out.template == "policy_testimony"
+    assert out.speaker == "Jerome Powell"
+    assert out.source == "C-SPAN"
+    assert "TLT" in out.symbols
+    assert out.replay_full_video_on_stream_end is True
+
+
+def test_apply_channel_preset_supports_cspan_general_with_replay_guard() -> None:
+    args = _args(channel_preset="cspan_general")
+
+    out = live_macro_auto_watch._apply_channel_preset(args)
+
+    assert out.youtube_channel_url == "https://www.youtube.com/@CSPAN"
+    assert out.template == "generic"
+    assert out.speaker == "C-SPAN coverage"
+    assert out.source == "C-SPAN"
+    assert "USO" in out.symbols
+    assert "KRE" in out.symbols
+    assert out.replay_full_video_on_stream_end is True
+
+
+def test_source_provenance_flags_cspan_mismatch() -> None:
+    matched = live_macro_auto_watch._source_provenance(
+        declared_source="C-SPAN",
+        channel_url="https://www.youtube.com/@CSPAN",
+        resolved_video_url="https://www.youtube.com/watch?v=cspan123",
+        stream_title="Jerome Powell Testifies",
+    )
+    mismatched = live_macro_auto_watch._source_provenance(
+        declared_source="C-SPAN",
+        channel_url="https://www.youtube.com/@federalreserve",
+        resolved_video_url="https://www.youtube.com/watch?v=fed123",
+        stream_title="FOMC Press Conference",
+    )
+
+    assert matched["source_channel_match"] is True
+    assert matched["source_provenance_status"] == "matched"
+    assert mismatched["source_channel_match"] is False
+    assert mismatched["source_provenance_status"] == "source_channel_mismatch"
 
 
 def test_apply_channel_preset_supports_schwab_network() -> None:
@@ -584,6 +632,46 @@ def test_run_once_upcoming_channel_arms_media_ingest_inside_calendar_window(monk
     assert status["media_ingest_trigger_mode"] == "prelive"
     assert status["media_ingest_reason"] == "armed_from_calendar_prelive_window"
     assert status["calendar_event_title"] == "FOMC Press Conference"
+
+
+def test_run_once_cspan_policy_status_carries_source_provenance(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        live_macro_auto_watch,
+        "_resolve_stream_target",
+        lambda args: {
+            "mode": "channel",
+            "stream_state": "awaiting_live_stream",
+            "channel_url": "https://www.youtube.com/@CSPAN",
+            "live_probe_url": "https://www.youtube.com/@CSPAN/live",
+            "streams_probe_url": "https://www.youtube.com/@CSPAN/streams",
+            "latest_title": "Jerome Powell Testifies Before Congress",
+            "latest_video_url": "https://www.youtube.com/watch?v=cspanpowell",
+            "latest_live_status": "was_live",
+        },
+    )
+    monkeypatch.setattr(
+        live_macro_auto_watch,
+        "append_live_macro_event",
+        lambda **kwargs: "/tmp/live_macro_events.jsonl",
+    )
+    monkeypatch.setattr(
+        live_macro_auto_watch,
+        "_run_full_video_replay",
+        lambda args, *, youtube_url, out_path: {
+            "ok": True,
+            "analysis_mode": "full_video_replay",
+            "caption_excerpt": "Full C-SPAN replay summary",
+        },
+    )
+
+    args = live_macro_auto_watch._apply_channel_preset(_args(channel_preset="cspan_policy"))
+    state = {"last_stream_state": "live", "last_live_video_url": "https://www.youtube.com/watch?v=cspanpowell"}
+    status = live_macro_auto_watch._run_once(args, state, tmp_path / "live_macro_latest.json")
+
+    assert status["source_channel_match"] is True
+    assert status["source_provenance_status"] == "matched"
+    assert status["post_live_replay_triggered"] is True
+    assert status["post_live_replay_analysis_mode"] == "full_video_replay"
 
 
 def test_run_once_waiting_channel_can_arm_from_live_probe_url(monkeypatch, tmp_path):

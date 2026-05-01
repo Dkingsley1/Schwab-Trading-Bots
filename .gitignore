@@ -23,6 +23,7 @@ token.json
 !config/.env.example
 
 # Runtime outputs (large / generated)
+.runtime_locks/
 logs/
 models/
 decisions/

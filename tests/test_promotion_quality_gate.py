@@ -88,6 +88,68 @@ def test_promotion_quality_gate_requires_feature_manifest_packet_and_probation_g
     assert details["promotion_packet_ok"] is True
 
 
+def test_promotion_quality_gate_accepts_seed_ready_feature_store_contract() -> None:
+    ok, failed_checks, details = promotion_quality_gate.evaluate_quality(
+        {"promote_ok": True, "considered_bots": 5, "fail_share": 0.0},
+        {"ok": True, "failed_checks": []},
+        {"ok": True},
+        {"ok": True},
+        {"ok": True},
+        {"ok": True},
+        {"ok": True},
+        feature_store_manifest={
+            "ok": True,
+            "strict_ok": False,
+            "strict_seed_ready": True,
+            "point_in_time_contract": {"complete": False, "seed_ready": True},
+            "contract_hashes": {"dataset_manifest_sha256": "a" * 64},
+        },
+        new_bot_admission_guard={"ok": True},
+        champion_challenger_probation_guard={"ok": True},
+        promotion_packet={"ok": True},
+        max_fail_share=0.25,
+        min_considered_bots=4,
+        require_replay=True,
+        require_reconciliation_slo=False,
+    )
+
+    assert ok is True
+    assert failed_checks == []
+    assert details["feature_store_manifest_ready"] is True
+
+
+def test_promotion_quality_gate_treats_owner_replay_and_reconciliation_as_advisory_when_scope_is_idle() -> None:
+    ok, failed_checks, details = promotion_quality_gate.evaluate_quality(
+        promotion_gate={"promote_ok": False, "considered_bots": 0, "fail_share": 0.0},
+        daily_verify={"ok": False, "failed_checks": ["promotion_quality_gate"]},
+        graduation_gate={"ok": True, "graduation_scope_active_count": 0},
+        leak_overfit={"ok": True},
+        replay_gate={"ok": False},
+        replay_hash_registry_gate={"ok": True},
+        reconciliation_slo={"ok": False},
+        feature_store_manifest={
+            "ok": True,
+            "strict_ok": False,
+            "strict_seed_ready": True,
+            "point_in_time_contract": {"complete": False, "seed_ready": True},
+            "contract_hashes": {"dataset_manifest_sha256": "a" * 64},
+        },
+        bot_support_owner_guard={"ok": False},
+        golden_replay_regression_guard={"ok": False},
+        new_bot_admission_guard={"ok": True},
+        champion_challenger_probation_guard={"ok": False},
+        promotion_packet={"ok": False},
+        max_fail_share=0.25,
+        min_considered_bots=4,
+        require_replay=True,
+        require_reconciliation_slo=True,
+    )
+
+    assert ok is True
+    assert failed_checks == []
+    assert details["promotion"]["promotion_scope_active"] is False
+
+
 def test_promotion_quality_gate_resolves_new_daily_verify_failures_when_artifacts_recover() -> None:
     ok, failed_checks, details = promotion_quality_gate.evaluate_quality(
         {"promote_ok": True, "considered_bots": 5, "fail_share": 0.0},

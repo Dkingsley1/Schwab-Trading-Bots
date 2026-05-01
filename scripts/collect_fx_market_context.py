@@ -99,6 +99,47 @@ def _safe_load_json(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _safe_int_env(name: str, default: int) -> int:
+    try:
+        return int(str(os.getenv(name, str(default)) or str(default)))
+    except Exception:
+        return int(default)
+
+
+def _split_pair_symbols(raw: Any) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in str(raw or "").split(","):
+        pair = _normalize_pair_symbol(token)
+        if pair and pair not in seen:
+            seen.add(pair)
+            out.append(pair)
+    return out
+
+
+def _configured_twelve_data_pairs() -> tuple[list[str], dict[str, Any]]:
+    realtime_pairs = _split_pair_symbols(os.getenv("FX_REALTIME_SYMBOLS", ",".join(PAIR_SYMBOLS))) or list(PAIR_SYMBOLS)
+    context_pairs = _split_pair_symbols(os.getenv("FX_REALTIME_CONTEXT_SYMBOLS", "EURUSD,USDJPY"))
+    requested_pairs = context_pairs or realtime_pairs
+    max_credits_per_minute = max(_safe_int_env("FX_TWELVE_DATA_MAX_CREDITS_PER_MINUTE", 8), 0)
+    credit_reserve = max(_safe_int_env("FX_TWELVE_DATA_CREDIT_RESERVE", 3), 0)
+    usable_budget = max(max_credits_per_minute - credit_reserve, 0)
+    default_pairs_per_run = min(max(usable_budget, 1), len(requested_pairs)) if max_credits_per_minute > 0 else len(requested_pairs)
+    pairs_per_run = max(_safe_int_env("FX_TWELVE_DATA_MAX_PAIRS_PER_RUN", default_pairs_per_run), 0)
+    credit_budget_per_run = min(pairs_per_run, usable_budget) if max_credits_per_minute > 0 else pairs_per_run
+    selected_pairs = requested_pairs[: max(credit_budget_per_run, 0)]
+    deferred_pairs = requested_pairs[len(selected_pairs) :]
+    return selected_pairs, {
+        "requested_pairs": requested_pairs,
+        "selected_pairs": selected_pairs,
+        "deferred_pairs": deferred_pairs,
+        "max_credits_per_minute": max_credits_per_minute,
+        "credit_reserve": credit_reserve,
+        "credit_budget_per_run": credit_budget_per_run,
+        "pairs_per_run": pairs_per_run,
+    }
+
+
 def _to_float(value: Any, default: float = 0.0) -> float:
     try:
         out = float(value)
@@ -733,14 +774,7 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
     warnings: list[str] = []
     twelve_data_enabled = str(os.getenv("FX_MARKET_CONTEXT_TWELVE_DATA_ENABLED", "1")).strip().lower() in {"1", "true", "yes", "on"}
     twelve_data_api_key = str(os.getenv("TWELVE_DATA_API_KEY", "")).strip()
-    twelve_data_pairs = [
-        pair
-        for pair in (
-            _normalize_pair_symbol(token)
-            for token in str(os.getenv("FX_REALTIME_SYMBOLS", ",".join(PAIR_SYMBOLS))).split(",")
-        )
-        if pair
-    ] or list(PAIR_SYMBOLS)
+    twelve_data_pairs, twelve_data_budget = _configured_twelve_data_pairs()
     twelve_data_interval = str(os.getenv("FX_TWELVE_DATA_INTERVAL", "5min") or "5min").strip() or "5min"
     twelve_data_outputsize = max(int(str(os.getenv("FX_TWELVE_DATA_OUTPUTSIZE", "72") or "72")), 4)
     alpha_vantage_enabled = str(os.getenv("FX_MARKET_CONTEXT_ALPHA_VANTAGE_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"}
@@ -755,10 +789,18 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
         source_status["twelve_data"] = {
             "ok": False,
             "configured": bool(twelve_data_api_key),
-            "pairs_requested": list(twelve_data_pairs),
+            "pairs_requested": list(twelve_data_budget["requested_pairs"]),
+            "pairs_selected": list(twelve_data_budget["selected_pairs"]),
+            "pairs_deferred": list(twelve_data_budget["deferred_pairs"]),
             "pairs_ok": 0,
             "interval": twelve_data_interval,
             "outputsize": twelve_data_outputsize,
+            "throttle_prevention": {
+                "max_credits_per_minute": int(twelve_data_budget["max_credits_per_minute"]),
+                "credit_reserve": int(twelve_data_budget["credit_reserve"]),
+                "credit_budget_per_run": int(twelve_data_budget["credit_budget_per_run"]),
+                "pairs_per_run": int(twelve_data_budget["pairs_per_run"]),
+            },
             "error": None,
             **_source_contract("twelve_data"),
             "freshness_norm": 0.0,
@@ -834,7 +876,7 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
     elif alpha_vantage_enabled:
         source_status["alpha_vantage"]["error"] = "api_key_missing"
 
-    if twelve_data_enabled and twelve_data_api_key:
+    if twelve_data_enabled and twelve_data_api_key and twelve_data_pairs:
         twelve_data_errors: list[str] = []
         for pair in twelve_data_pairs:
             result = _twelve_data_time_series(
@@ -856,6 +898,8 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
         source_status["twelve_data"]["pairs_ok"] = ok_pairs
         source_status["twelve_data"]["error"] = None if ok_pairs > 0 else (";".join(twelve_data_errors[:3]) or "no_pairs_ok")
         source_status["twelve_data"]["freshness_norm"] = 1.0 if ok_pairs > 0 else 0.0
+    elif twelve_data_enabled and twelve_data_api_key:
+        source_status["twelve_data"]["error"] = "credit_budget_reserved"
     elif twelve_data_enabled:
         source_status["twelve_data"]["error"] = "api_key_missing"
 
@@ -921,7 +965,8 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
     if not source_status["fed_h10"]["ok"]:
         warnings.append("fed_h10_fx_feed_unavailable")
     if twelve_data_enabled and source_status["twelve_data"]["configured"] and not source_status["twelve_data"]["ok"]:
-        warnings.append("twelve_data_fx_intraday_unavailable")
+        td_error = str(source_status["twelve_data"].get("error") or "")
+        warnings.append("twelve_data_credit_budget_reserved" if td_error == "credit_budget_reserved" else "twelve_data_fx_intraday_unavailable")
     if alpha_vantage_enabled and source_status["alpha_vantage"]["configured"] and not source_status["alpha_vantage"]["ok"]:
         warnings.append("alpha_vantage_fx_intraday_unavailable")
     if not source_status["market_proxy"]["ok"]:
@@ -1031,7 +1076,9 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
                     {
                         "ok": bool(source_status.get("twelve_data", {}).get("ok")),
                         "pairs_ok": int(source_status.get("twelve_data", {}).get("pairs_ok", 0) or 0),
-                        "pairs_requested": list(twelve_data_pairs),
+                        "pairs_requested": list(twelve_data_budget["requested_pairs"]),
+                        "pairs_selected": list(twelve_data_pairs),
+                        "pairs_deferred": list(twelve_data_budget["deferred_pairs"]),
                         "interval": twelve_data_interval,
                     }
                     if twelve_data_enabled

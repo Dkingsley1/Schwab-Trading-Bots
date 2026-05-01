@@ -21,6 +21,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LIVE_FEED_SCRIPT = PROJECT_ROOT / "scripts" / "ops" / "live_feed_tail.sh"
 RUNTIME_DASHBOARD = PROJECT_ROOT / "governance" / "health" / "runtime_gate_dashboard_latest.json"
 HEALTH_GATES = PROJECT_ROOT / "governance" / "health" / "health_gates_latest.json"
+QUANT_MODEL_CONTROL = PROJECT_ROOT / "governance" / "health" / "quant_model_control_latest.json"
+MEMORY_EFFICIENCY = PROJECT_ROOT / "governance" / "health" / "memory_efficiency_control_latest.json"
+GLOBAL_KILLSWITCH = PROJECT_ROOT / "governance" / "health" / "global_killswitch_latest.json"
 
 
 HTML_PAGE = """<!doctype html>
@@ -116,6 +119,7 @@ HTML_PAGE = """<!doctype html>
         <div class="title">All Sleeves Live Feed Mirror</div>
         <div class="meta" id="meta">Connecting...</div>
         <div class="statusline" id="statusline"></div>
+        <div class="statusline" id="systemline"></div>
       </div>
       <div class="toolbar">
         <button id="refreshBtn" type="button">Reconnect</button>
@@ -134,6 +138,7 @@ HTML_PAGE = """<!doctype html>
     const terminalEl = document.getElementById("terminal");
     const metaEl = document.getElementById("meta");
     const statusEl = document.getElementById("statusline");
+    const systemEl = document.getElementById("systemline");
     const tokenEl = document.getElementById("tokenline");
     const refreshBtn = document.getElementById("refreshBtn");
     const tokenInput = document.getElementById("tokenInput");
@@ -249,6 +254,15 @@ HTML_PAGE = """<!doctype html>
       window.history.replaceState({}, "", nextUrl);
     }
 
+    function authParams(extra = {}) {
+      const params = new URLSearchParams(window.location.search);
+      if (token && !params.get("token")) {
+        params.set("token", token);
+      }
+      Object.entries(extra).forEach(([key, value]) => params.set(key, String(value)));
+      return params;
+    }
+
     function setTokenMessage(message, level = "warn") {
       tokenEl.className = `statusline ${level}`;
       tokenEl.textContent = message;
@@ -284,7 +298,7 @@ HTML_PAGE = """<!doctype html>
       }
       statusFlight = true;
       try {
-        const params = new URLSearchParams(window.location.search);
+        const params = authParams();
         const resp = await fetch(`/api/status?${params.toString()}`, {
           headers: token ? { "X-Live-Feed-Token": token } : {},
           cache: "no-store",
@@ -310,6 +324,10 @@ HTML_PAGE = """<!doctype html>
         statusEl.textContent =
           `stream=${payload.stream_connected ? "live" : "idle"} ` +
           `source=${payload.source} lines=${payload.lines} include_decisions=${payload.include_decisions ? "1" : "0"} pid=${payload.server_pid}`;
+        systemEl.textContent =
+          `halt=${payload.halt_state || "unknown"} mode=${payload.operating_mode || "unknown"} ` +
+          `quant=${payload.quant_status || "unknown"} q_pressure=${payload.quant_resource_pressure || 0} ` +
+          `memory=${payload.memory_profile || "unknown"}`;
       } catch (err) {
         statusEl.textContent = `status refresh failed: ${err}`;
       } finally {
@@ -328,7 +346,7 @@ HTML_PAGE = """<!doctype html>
       }
       snapshotFlight = true;
       try {
-        const params = new URLSearchParams(window.location.search);
+        const params = authParams();
         const resp = await fetch(`/api/feed?${params.toString()}`, {
           headers: token ? { "X-Live-Feed-Token": token } : {},
           cache: "no-store",
@@ -379,8 +397,7 @@ HTML_PAGE = """<!doctype html>
         return;
       }
       markStreamActivity();
-      const params = new URLSearchParams(window.location.search);
-      params.set("stream_nonce", String(Date.now()));
+      const params = authParams({ stream_nonce: String(Date.now()) });
       eventSource = new EventSource(`/api/feed/stream?${params.toString()}`);
       eventSource.addEventListener("meta", (event) => {
         try {
@@ -695,12 +712,23 @@ def _feed_snapshot(*, source: str, lines: int, symbol: str, include_decisions: b
 def _status_summary() -> dict[str, Any]:
     runtime = _load_json(RUNTIME_DASHBOARD)
     health = _load_json(HEALTH_GATES)
+    quant = _load_json(QUANT_MODEL_CONTROL)
+    memory = _load_json(MEMORY_EFFICIENCY)
+    killswitch = _load_json(GLOBAL_KILLSWITCH)
     overall = runtime.get("overall") if isinstance(runtime.get("overall"), dict) else {}
+    quant_features = quant.get("features") if isinstance(quant.get("features"), dict) else {}
     return {
         "dashboard_status": str(overall.get("status", "unknown") or "unknown"),
         "dashboard_attention": overall.get("attention") if isinstance(overall.get("attention"), list) else [],
         "data_quality_score": float(health.get("data_quality_score", 0.0) or 0.0),
         "hard_gate_triggered": bool(health.get("hard_gate_triggered", False)),
+        "halt_state": str(killswitch.get("halt_state") or "unknown"),
+        "operating_mode": str(killswitch.get("operating_mode") or "unknown"),
+        "expansion_pressure_score": float(killswitch.get("expansion_pressure_score", 0.0) or 0.0),
+        "quant_status": str(quant.get("overall_status") or "unknown"),
+        "quant_resource_pressure": round(float(quant_features.get("quant_model_resource_pressure_norm", 0.0) or 0.0), 3),
+        "memory_profile": str(memory.get("recommended_profile") or "unknown"),
+        "phone_mirror_profile": "expanded_system_safe",
     }
 
 

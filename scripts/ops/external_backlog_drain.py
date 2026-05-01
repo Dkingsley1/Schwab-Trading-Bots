@@ -28,6 +28,24 @@ LOCAL_TZ = ZoneInfo("America/New_York")
 OFF_HOURS_START = time(16, 15)
 OFF_HOURS_END = time(9, 20)
 SQL_WRITER_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "jsonl_sql_writer.lock"
+DEFAULT_DRAIN_SHARDS = [
+    "health_fast",
+    "trading_fast",
+    "crypto_trading_fast",
+    "runtime",
+    "crypto_runtime",
+    "aggressive_trading",
+    "trading",
+    "governance",
+    "support_watchdog",
+    "crypto_governance",
+    "data",
+    "shadow_attribution",
+    "crypto_shadow_attribution",
+]
+CORE_FOCUS_MIN_PENDING_LINES = 50_000
+CORE_FOCUS_MIN_TOP3_LINES = 40_000
+CORE_FOCUS_MIN_SHARE = 0.65
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -186,10 +204,159 @@ def _step_record(result: dict[str, Any], *, nonfatal_reasons: set[str] | None = 
     }
 
 
-def _drain_env(base_env: dict[str, str], *, critical: bool, off_hours_active: bool) -> tuple[str, dict[str, str]]:
+def _prioritized_shards_for_core_focus(core_focus: dict[str, Any] | None) -> list[str]:
+    shards = list(DEFAULT_DRAIN_SHARDS)
+    if not isinstance(core_focus, dict) or not bool(core_focus.get("concentrated", False)):
+        return shards
+
+    top_rows = list(core_focus.get("hotspots") or [])
+    top3_pending_lines = max(_safe_int(core_focus.get("top3_pending_lines"), 0), 0)
+    material_pending_floor = max(1000, int(top3_pending_lines * 0.03))
+
+    def _pending_for(predicate) -> int:
+        pending = 0
+        for row in top_rows[:5]:
+            if not isinstance(row, dict):
+                continue
+            source = str(row.get("source_rel") or "").strip()
+            if source and predicate(source):
+                pending += max(_safe_int(row.get("pending_lines"), 0), 0)
+        return pending
+
+    governance_pending = _pending_for(
+        lambda source: (
+            source.startswith("governance/execution_lanes/")
+            or source.startswith("governance/shadow_")
+            or source.startswith("governance/events/")
+            or source.startswith("governance/alerts/")
+            or source.startswith("governance/distillation/")
+        )
+    )
+    aggressive_pending = _pending_for(
+        lambda source: (
+            source.startswith("decisions/shadow_aggressive_")
+            or source.startswith("decisions/shadow_intraday_aggressive_")
+            or source.startswith("decisions/shadow_swing_aggressive_")
+        )
+    )
+    trading_pending = _pending_for(
+        lambda source: (
+            source.startswith("governance/channels/decision/")
+            or source.startswith("decisions/")
+        )
+    )
+    runtime_pending = _pending_for(lambda source: source.startswith("governance/channels/runtime/"))
+    top3_share = _safe_float(core_focus.get("top3_share"), 0.0)
+    severe_focus = bool(top3_share >= 0.9)
+
+    if severe_focus:
+        focus_only = [
+            shard
+            for shard, pending in sorted(
+                [
+                    ("governance", governance_pending),
+                    ("trading", trading_pending),
+                    ("aggressive_trading", aggressive_pending),
+                    ("runtime", runtime_pending),
+                ],
+                key=lambda item: item[1],
+                reverse=True,
+            )
+            if pending >= material_pending_floor
+        ]
+        focus_only.extend(["health_fast", "support_watchdog"])
+        ordered_focus: list[str] = []
+        for shard in focus_only:
+            if shard in DEFAULT_DRAIN_SHARDS and shard not in ordered_focus:
+                ordered_focus.append(shard)
+        return ordered_focus or ["trading", "health_fast", "support_watchdog"]
+
+    priority: list[str] = []
+    if governance_pending >= material_pending_floor:
+        priority.append("governance")
+    if aggressive_pending >= material_pending_floor:
+        priority.append("aggressive_trading")
+    if trading_pending >= material_pending_floor:
+        priority.append("trading")
+    if runtime_pending >= material_pending_floor:
+        priority.append("runtime")
+    priority.extend(["health_fast", "trading_fast", "support_watchdog"])
+
+    ordered: list[str] = []
+    for shard in priority + shards:
+        if shard not in ordered:
+            ordered.append(shard)
+    return ordered
+
+
+def _governance_focus_paths(core_focus: dict[str, Any] | None) -> list[str]:
+    if not isinstance(core_focus, dict) or not bool(core_focus.get("concentrated", False)):
+        return []
+
+    hotspots = list(core_focus.get("hotspots") or [])
+    focus_paths: list[str] = []
+    for row in hotspots[:5]:
+        if not isinstance(row, dict):
+            continue
+        source_rel = str(row.get("source_rel") or "").strip()
+        if not source_rel.startswith("governance/execution_lanes/"):
+            continue
+        pending_lines = max(_safe_int(row.get("pending_lines"), 0), 0)
+        age_seconds = max(_safe_float(row.get("age_seconds"), 0.0), 0.0)
+        if pending_lines < 25000 and age_seconds < 15 * 60:
+            continue
+        if source_rel not in focus_paths:
+            focus_paths.append(source_rel)
+    return focus_paths
+
+
+def _trading_focus_paths(core_focus: dict[str, Any] | None) -> list[str]:
+    if not isinstance(core_focus, dict) or not bool(core_focus.get("concentrated", False)):
+        return []
+
+    hotspots = list(core_focus.get("hotspots") or [])
+    focus_paths: list[str] = []
+    for row in hotspots[:5]:
+        if not isinstance(row, dict):
+            continue
+        source_rel = str(row.get("source_rel") or "").strip()
+        if not (
+            source_rel.startswith("governance/channels/decision/")
+            or source_rel.startswith("decisions/")
+        ):
+            continue
+        pending_lines = max(_safe_int(row.get("pending_lines"), 0), 0)
+        age_seconds = max(_safe_float(row.get("age_seconds"), 0.0), 0.0)
+        if pending_lines < 25000 and age_seconds < 15 * 60:
+            continue
+        if source_rel not in focus_paths:
+            focus_paths.append(source_rel)
+    return focus_paths
+
+
+def _drain_env(
+    base_env: dict[str, str],
+    *,
+    critical: bool,
+    off_hours_active: bool,
+    core_focus: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, str]]:
     env = {str(key): str(value) for key, value in base_env.items() if str(key).strip()}
     if not off_hours_active:
         return "standard_guard", env
+
+    prioritized_shards = _prioritized_shards_for_core_focus(core_focus)
+    governance_focus_paths = _governance_focus_paths(core_focus)
+    trading_focus_paths = _trading_focus_paths(core_focus)
+    governance_first = bool(prioritized_shards and prioritized_shards[0] == "governance")
+    governance_max_files = "14" if governance_first and critical else ("10" if governance_first else ("8" if critical else "6"))
+    governance_max_lines = "64000" if governance_focus_paths else (
+        "24000" if governance_first and critical else ("16000" if governance_first else ("4000" if critical else "6000"))
+    )
+    trading_focused = bool(trading_focus_paths)
+    trading_first = bool(prioritized_shards and prioritized_shards[0] == "trading")
+    trading_max_files = "16" if trading_focused and critical else ("14" if critical or trading_first else "12")
+    trading_max_lines = "64000" if trading_focused else ("20000" if critical or trading_first else "14000")
 
     env.update(
         {
@@ -200,11 +367,7 @@ def _drain_env(base_env: dict[str, str], *, critical: bool, off_hours_active: bo
             "LOG_LOOP_STATE": "0",
             "LOG_SHADOW_PNL_ATTRIBUTION": "0",
             "SQL_LINK_SERVICE_INTERVAL_SECONDS": "12" if critical else "15",
-            "SQL_LINK_SERVICE_SHARDS": (
-                "health_fast,trading_fast,crypto_trading_fast,runtime,crypto_runtime,"
-                "aggressive_trading,trading,governance,support_watchdog,crypto_governance,data,"
-                "shadow_attribution,crypto_shadow_attribution"
-            ),
+            "SQL_LINK_SERVICE_SHARDS": ",".join(prioritized_shards),
             "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "25" if critical else "45",
             "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS": "30",
             "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "240000" if critical else "200000",
@@ -213,9 +376,9 @@ def _drain_env(base_env: dict[str, str], *, critical: bool, off_hours_active: bo
             "SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_GROWTH_GB": "0.25" if critical else "0.5",
             "SQL_LINK_SERVICE_SHARD_RUNTIME_MAX_FILES": "14" if critical else "12",
             "SQL_LINK_SERVICE_SHARD_CRYPTO_RUNTIME_MAX_FILES": "10" if critical else "8",
-            "SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES": "8" if critical else "6",
+            "SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES": governance_max_files,
             "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_FILES": "14" if critical else "12",
-            "SQL_LINK_SERVICE_SHARD_TRADING_MAX_FILES": "14" if critical else "12",
+            "SQL_LINK_SERVICE_SHARD_TRADING_MAX_FILES": trading_max_files,
             "SQL_LINK_SERVICE_SHARD_RUNTIME_STATE_CHECKPOINT_LINES": "1500",
             "SQL_LINK_SERVICE_SHARD_CRYPTO_RUNTIME_STATE_CHECKPOINT_LINES": "1500",
             "SQL_LINK_SERVICE_SHARD_GOVERNANCE_STATE_CHECKPOINT_LINES": "1500",
@@ -223,11 +386,13 @@ def _drain_env(base_env: dict[str, str], *, critical: bool, off_hours_active: bo
             "SQL_LINK_SERVICE_SHARD_TRADING_STATE_CHECKPOINT_LINES": "1500",
             "SQL_LINK_SERVICE_SHARD_RUNTIME_MAX_LINES_PER_FILE": "16000",
             "SQL_LINK_SERVICE_SHARD_CRYPTO_RUNTIME_MAX_LINES_PER_FILE": "16000",
-            "SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_LINES_PER_FILE": "4000" if critical else "6000",
+            "SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_LINES_PER_FILE": governance_max_lines,
+            "SQL_LINK_SERVICE_SHARD_GOVERNANCE_PATH_CONTAINS": ",".join(governance_focus_paths),
+            "SQL_LINK_SERVICE_SHARD_TRADING_PATH_CONTAINS": ",".join(trading_focus_paths),
             "SQL_LINK_SERVICE_SHARD_SUPPORT_WATCHDOG_MAX_LINES_PER_FILE": "96000" if critical else "64000",
             "SQL_LINK_SERVICE_SHARD_SUPPORT_WATCHDOG_STATE_CHECKPOINT_LINES": "4000",
             "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_LINES_PER_FILE": "16000" if critical else "14000",
-            "SQL_LINK_SERVICE_SHARD_TRADING_MAX_LINES_PER_FILE": "16000" if critical else "14000",
+            "SQL_LINK_SERVICE_SHARD_TRADING_MAX_LINES_PER_FILE": trading_max_lines,
             "SQL_LINK_SERVICE_SHARD_EXPLANATIONS_MAX_FILES": "6" if critical else "5",
             "SQL_LINK_SERVICE_SHARD_CRYPTO_EXPLANATIONS_MAX_FILES": "6" if critical else "5",
             "SQL_LINK_SERVICE_SHARD_SHADOW_ATTRIBUTION_MAX_FILES": "3" if critical else "2",
@@ -338,6 +503,41 @@ def _hotspots(backpressure: dict[str, Any]) -> list[dict[str, Any]]:
         reverse=True,
     )
     return rows[:10]
+
+
+def _core_hotspots(backpressure: dict[str, Any]) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    total_pending_lines = max(
+        _safe_int(backpressure.get("pending_lines_total"), 0),
+        _safe_int(backpressure.get("pending_lines"), 0),
+        0,
+    )
+    top_pending_files = backpressure.get("top_pending_files") if isinstance(backpressure.get("top_pending_files"), list) else []
+    for raw in top_pending_files[:5]:
+        if not isinstance(raw, dict):
+            continue
+        source_rel = str(raw.get("source_rel") or "").strip()
+        pending_lines = max(_safe_int(raw.get("pending_lines"), 0), 0)
+        if not source_rel or pending_lines <= 0:
+            continue
+        rows.append(
+            {
+                "source_rel": source_rel,
+                "pending_lines": pending_lines,
+                "age_seconds": round(max(_safe_float(raw.get("oldest_pending_age_seconds"), 0.0), 0.0), 3),
+            }
+        )
+    top3_pending_lines = sum(int(row.get("pending_lines", 0) or 0) for row in rows[:3])
+    return {
+        "hotspots": rows,
+        "top3_pending_lines": top3_pending_lines,
+        "top3_share": round((top3_pending_lines / max(total_pending_lines, 1)) if total_pending_lines > 0 else 0.0, 6),
+        "concentrated": bool(
+            total_pending_lines >= CORE_FOCUS_MIN_PENDING_LINES
+            and top3_pending_lines >= CORE_FOCUS_MIN_TOP3_LINES
+            and (top3_pending_lines / max(total_pending_lines, 1)) >= CORE_FOCUS_MIN_SHARE
+        ),
+    }
 
 
 def _follow_through_progress_signature(payload: dict[str, Any]) -> dict[str, Any]:
@@ -453,10 +653,12 @@ def build_payload(
     external_available = bool(mount.get("external_available", False))
     storage_mode = str(mount.get("storage_mode") or "")
     critical = str(governor_payload.get("profile") or "") == "critical_backpressure"
+    core_focus_before = _core_hotspots(backpressure_before)
     drain_profile, drain_env = _drain_env(
         governor_payload.get("env_overrides") if isinstance(governor_payload.get("env_overrides"), dict) else {},
         critical=critical,
         off_hours_active=bool(window.get("active", False) or force_live_window),
+        core_focus=core_focus_before,
     )
 
     blocked_reasons: list[str] = []
@@ -605,6 +807,38 @@ def build_payload(
                 steps["data_retention_policy"] = _step_record(retention, nonfatal_reasons={"lock_busy"})
             else:
                 blocked_reasons.append("resource_guard_blocked")
+                if bool(core_focus_before.get("concentrated", False)) and _lock_owner_pid(SQL_WRITER_LOCK_PATH):
+                    service_request_path = health_root / "sql_link_service_request_latest.json"
+                    service_request_payload = _write_service_request(
+                        path=service_request_path,
+                        drain_profile=f"{drain_profile}:resource_guard_handoff",
+                        drain_env=drain_env,
+                        wait_timeout_seconds=wait_timeout_seconds,
+                        now_utc=now,
+                    )
+                    steps["sql_link_service_request"] = {
+                        "status": "ok",
+                        "rc": 0,
+                        "duration_ms": 0.0,
+                        "timed_out": False,
+                        "cmd": ["write", str(service_request_path)],
+                        "stdout_tail": json.dumps(service_request_payload, ensure_ascii=True),
+                        "stderr_tail": "",
+                    }
+                    if follow_through:
+                        follow_through_summary = {
+                            **follow_through_summary,
+                            "completed": True,
+                            "timed_out": False,
+                            "attempts": 1,
+                            "waited_seconds": 0.0,
+                            "observed_writer_pid": _lock_owner_pid(SQL_WRITER_LOCK_PATH),
+                            "progress_observed": False,
+                            "progress_events": 0,
+                            "progress_state": "requested_live_writer_after_resource_guard",
+                            "last_progress_signature": {},
+                            "status": "handoff_requested",
+                        }
 
         if apply_executed:
             steps["ingestion_backpressure_after"] = _step_record(
@@ -631,6 +865,7 @@ def build_payload(
     before_snapshot = _backpressure_snapshot(backpressure_before)
     after_snapshot = _backpressure_snapshot(backpressure_after)
     hotspots = _hotspots(backpressure_after if apply_executed else backpressure_before)
+    core_focus = _core_hotspots(backpressure_after if apply_executed else backpressure_before)
     aged_candidates = [
         row
         for row in hotspots
@@ -661,6 +896,14 @@ def build_payload(
         top_actions.append("reap or archive staged stale artifacts after the active drain pass so cold backlog stops recycling")
     if support_watchdog_candidates:
         top_actions.append("let the watchdog support shard drain failover and pager logs off the main governance path")
+    if bool(core_focus.get("concentrated", False)):
+        top_actions.append("keep the writer focused on the dominant core backlog files before widening deferred or cold drain budgets")
+    governance_focus_paths = [part for part in str(drain_env.get("SQL_LINK_SERVICE_SHARD_GOVERNANCE_PATH_CONTAINS") or "").split(",") if part]
+    trading_focus_paths = [part for part in str(drain_env.get("SQL_LINK_SERVICE_SHARD_TRADING_PATH_CONTAINS") or "").split(",") if part]
+    if governance_focus_paths:
+        top_actions.append("keep the governance shard pinned to the stale execution-lane backlog files until those dominant queue anchors step down")
+    if trading_focus_paths:
+        top_actions.append("keep the trading shard pinned to the dominant decision-channel files until the core queue falls below the halt threshold")
     if follow_through and follow_through_summary["status"] == "timed_out":
         if str(follow_through_summary.get("progress_state") or "") == "progressing":
             top_actions.append("the automatic follow-through timed out, but the SQL writer was still advancing shard or merge work, so let the current maintenance window run or extend the timeout next pass")
@@ -705,6 +948,10 @@ def build_payload(
             for key in ("core_pending_lines", "deferred_pending_lines", "cold_pending_lines", "total_pending_lines")
         },
         "hotspots": hotspots,
+        "core_hotspots": core_focus.get("hotspots") or [],
+        "core_focus_top3_pending_lines": _safe_int(core_focus.get("top3_pending_lines"), 0),
+        "core_focus_top3_share": _safe_float(core_focus.get("top3_share"), 0.0),
+        "core_focus_concentrated": bool(core_focus.get("concentrated", False)),
         "aged_candidate_files": len(aged_candidates),
         "aged_candidate_pending_lines": sum(int(row.get("pending_lines", 0) or 0) for row in aged_candidates),
         "stale_stage_candidate_files": len(stale_stage_candidates),
@@ -718,6 +965,13 @@ def build_payload(
             "cold_files_budget": _safe_int(drain_env.get("JSONL_SQL_MAX_COLD_LANE_FILES"), 0),
             "sql_interval_seconds": _safe_int(drain_env.get("SQL_LINK_SERVICE_INTERVAL_SECONDS"), 0),
             "hot_batch_size": _safe_int(drain_env.get("SQL_LINK_SERVICE_HOT_BATCH_SIZE"), 0),
+            "preferred_shards": [part for part in str(drain_env.get("SQL_LINK_SERVICE_SHARDS") or "").split(",") if part],
+            "governance_max_files": _safe_int(drain_env.get("SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES"), 0),
+            "governance_max_lines_per_file": _safe_int(drain_env.get("SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_LINES_PER_FILE"), 0),
+            "governance_path_focus": governance_focus_paths,
+            "trading_max_files": _safe_int(drain_env.get("SQL_LINK_SERVICE_SHARD_TRADING_MAX_FILES"), 0),
+            "trading_max_lines_per_file": _safe_int(drain_env.get("SQL_LINK_SERVICE_SHARD_TRADING_MAX_LINES_PER_FILE"), 0),
+            "trading_path_focus": trading_focus_paths,
         },
         "steps": steps,
         "top_actions": top_actions[:8],

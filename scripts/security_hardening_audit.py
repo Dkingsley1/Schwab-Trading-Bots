@@ -29,10 +29,18 @@ def _parse_iso_utc(raw: Any) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
+def _first_existing(paths: list[Path]) -> Path:
+    for path in paths:
+        if path.exists():
+            return path
+    return paths[0]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Security/production hygiene audit.")
     parser.add_argument("--out", default=str(PROJECT_ROOT / "governance" / "health" / "security_audit_latest.json"))
     parser.add_argument("--secret-scan-max-age-hours", type=float, default=36.0)
+    parser.add_argument("--audit-journal-max-age-hours", type=float, default=168.0)
     args = parser.parse_args()
 
     now = datetime.now(timezone.utc)
@@ -60,7 +68,12 @@ def main() -> int:
     backup_dir = PROJECT_ROOT / "exports" / "env_snapshots"
     checks.append({"name": "backup_snapshot_exists", "ok": backup_dir.exists() and any(backup_dir.iterdir())})
 
-    rbac_path = PROJECT_ROOT / "governance" / "security" / "rbac_roles.json"
+    rbac_path = _first_existing(
+        [
+            PROJECT_ROOT / "config" / "security" / "rbac_roles.json",
+            PROJECT_ROOT / "governance" / "security" / "rbac_roles.json",
+        ]
+    )
     rbac = _load_json(rbac_path)
     role_rows = rbac.get("roles") if isinstance(rbac.get("roles"), list) else []
     separation = rbac.get("separation_of_duties") if isinstance(rbac.get("separation_of_duties"), dict) else {}
@@ -82,6 +95,23 @@ def main() -> int:
     checks.append({"name": "rbac_required_roles_present", "ok": required_roles.issubset(role_names)})
     checks.append({"name": "separation_of_duties_defined", "ok": separation_ok})
 
+    key_rotation_path = _first_existing(
+        [
+            PROJECT_ROOT / "config" / "security" / "key_rotation_policy.json",
+            PROJECT_ROOT / "governance" / "security" / "key_rotation_policy.json",
+        ]
+    )
+    key_rotation = _load_json(key_rotation_path)
+    rotation = key_rotation.get("rotation") if isinstance(key_rotation.get("rotation"), dict) else {}
+    key_rotation_ok = bool(
+        rotation
+        and int(rotation.get("api_keys_days", 0) or 0) > 0
+        and int(rotation.get("broker_tokens_days", 0) or 0) > 0
+        and int(rotation.get("signing_keys_days", 0) or 0) > 0
+    )
+    checks.append({"name": "key_rotation_policy_exists", "ok": bool(key_rotation)})
+    checks.append({"name": "key_rotation_schedule_defined", "ok": key_rotation_ok})
+
     secret_scan_path = PROJECT_ROOT / "governance" / "health" / "secret_scan_latest.json"
     secret_scan = _load_json(secret_scan_path)
     secret_scan_ts = _parse_iso_utc(secret_scan.get("timestamp_utc"))
@@ -99,6 +129,23 @@ def main() -> int:
     )
     checks.append({"name": "secret_scan_clear", "ok": int(secret_scan.get("findings_count", 0) or 0) == 0})
 
+    mutation_latest_path = PROJECT_ROOT / "governance" / "audits" / "registry_mutation_latest.json"
+    mutation_latest = _load_json(mutation_latest_path)
+    mutation_latest_ts = _parse_iso_utc(mutation_latest.get("timestamp_utc"))
+    if mutation_latest_ts is None and mutation_latest_path.exists():
+        mutation_latest_ts = datetime.fromtimestamp(mutation_latest_path.stat().st_mtime, tz=timezone.utc)
+    mutation_latest_age_hours = (
+        max((now - mutation_latest_ts).total_seconds() / 3600.0, 0.0)
+        if mutation_latest_ts is not None
+        else None
+    )
+    checks.append({"name": "mutation_latest_present", "ok": bool(mutation_latest) or mutation_latest_path.exists()})
+    checks.append(
+        {
+            "name": "mutation_latest_fresh",
+            "ok": mutation_latest_age_hours is not None and mutation_latest_age_hours <= float(args.audit_journal_max_age_hours),
+        }
+    )
     mutation_journal_matches = sorted(PROJECT_ROOT.glob("governance/audits/registry_mutation_journal_*.jsonl*"))
     checks.append({"name": "mutation_journal_present", "ok": bool(mutation_journal_matches)})
 
@@ -117,11 +164,16 @@ def main() -> int:
             "secret_scan_age_hours": round(secret_scan_age_hours, 3) if secret_scan_age_hours is not None else None,
             "secret_scan_findings_count": int(secret_scan.get("findings_count", 0) or 0),
             "rbac_role_count": len(role_names),
+            "rbac_manifest_path": str(rbac_path),
+            "key_rotation_policy_path": str(key_rotation_path),
+            "key_rotation_schedule_defined": key_rotation_ok,
+            "mutation_latest_age_hours": round(mutation_latest_age_hours, 3) if mutation_latest_age_hours is not None else None,
             "mutation_journal_files": len(mutation_journal_matches),
         },
         "recommendations": [
             "Keep secret-scan artifacts fresh and zero-finding before promotion or live enablement.",
             "Require RBAC, separation-of-duties policy, and paper/live preflight checks before expanding live permissions.",
+            "Keep registry mutation journals fresh and define key-rotation cadences so governance evidence does not go stale between incidents.",
         ],
     }
 

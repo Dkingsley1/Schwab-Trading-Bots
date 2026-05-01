@@ -1,0 +1,1 @@
+../../../scripts/ops/materialize_core_bot_modules.py

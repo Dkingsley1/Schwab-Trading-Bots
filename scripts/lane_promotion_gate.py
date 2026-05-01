@@ -182,9 +182,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Lane-aware promotion gate from walk-forward metrics.")
     parser.add_argument("--in-file", default=str(DEFAULT_IN_FILE))
     parser.add_argument("--registry-file", default=str(DEFAULT_REGISTRY_FILE))
-    parser.add_argument("--min-forward-mean", type=float, default=float(os.getenv("LANE_PROMOTION_MIN_FORWARD_MEAN", "0.53")))
-    parser.add_argument("--min-delta", type=float, default=float(os.getenv("LANE_PROMOTION_MIN_DELTA", "-0.01")))
-    parser.add_argument("--min-trading-quality-score", type=float, default=float(os.getenv("LANE_PROMOTION_MIN_TRADING_QUALITY_SCORE", "0.52")))
+    parser.add_argument("--min-forward-mean", type=float, default=float(os.getenv("LANE_PROMOTION_MIN_FORWARD_MEAN", "0.58")))
+    parser.add_argument("--min-delta", type=float, default=float(os.getenv("LANE_PROMOTION_MIN_DELTA", "0.00")))
+    parser.add_argument("--min-trading-quality-score", type=float, default=float(os.getenv("LANE_PROMOTION_MIN_TRADING_QUALITY_SCORE", "0.60")))
     parser.add_argument("--max-overfit-gap", type=float, default=float(os.getenv("LANE_PROMOTION_MAX_OVERFIT_GAP", "0.10")))
     parser.add_argument(
         "--max-fail-share-by-lane",

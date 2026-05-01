@@ -45,6 +45,13 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
 def _discover_event_files(project_root: Path, *, limit_per_pattern: int) -> list[Path]:
     candidates: list[Path] = []
     patterns = (
@@ -136,21 +143,27 @@ def _recent_incidents(project_root: Path, *, files_per_pattern: int, rows_per_fi
     return incidents
 
 
-def _open_surface_incidents(project_root: Path) -> list[dict[str, Any]]:
+def _open_surface_incidents(project_root: Path) -> dict[str, list[dict[str, Any]]]:
     health_root = project_root / "governance" / "health"
+    walk_root = project_root / "governance" / "walk_forward"
     live_readiness_path = health_root / "live_readiness_smoke_latest.json"
     runtime_path = health_root / "live_runtime_separation_control_latest.json"
     auth_path = health_root / "auth_lease_manager_latest.json"
-    coverage_path = project_root / "governance" / "walk_forward" / "coverage_seed_latest.json"
+    coverage_path = walk_root / "coverage_seed_latest.json"
+    coverage_gap_closer_path = walk_root / "coverage_gap_closer_latest.json"
     watchdog_path = health_root / "process_watchdog_latest.json"
+    storage_path = health_root / "ingestion_storage_control_latest.json"
 
     live_readiness = load_json(live_readiness_path)
     runtime = load_json(runtime_path)
     auth = load_json(auth_path)
     coverage = load_json(coverage_path)
+    coverage_gap_closer = load_json(coverage_gap_closer_path)
     watchdog = load_json(watchdog_path)
+    storage = load_json(storage_path)
 
     incidents: list[dict[str, Any]] = []
+    watch_surfaces: list[dict[str, Any]] = []
     surfaces = (
         ("live_readiness", live_readiness, live_readiness_path, "execution"),
         ("runtime_separation", runtime, runtime_path, "operations"),
@@ -161,31 +174,155 @@ def _open_surface_incidents(project_root: Path) -> list[dict[str, Any]]:
         status = str(payload.get("overall_status") or "").strip().lower()
         if status not in {"blocked", "critical", "degraded", "needs_coverage", "warning"}:
             continue
-        incidents.append(
-            {
-                "surface": surface,
-                "status": status,
-                "category": category,
-                "severity": "critical" if status in {"blocked", "critical"} else "warning",
-                "summary": str(payload.get("reason") or status or surface),
-                "age_minutes": round(float(payload_age_minutes(payload, path) or 0.0), 3),
-            }
-        )
+        row = {
+            "surface": surface,
+            "status": status,
+            "category": category,
+            "severity": "critical" if status in {"blocked", "critical"} else "warning",
+            "summary": str(payload.get("reason") or status or surface),
+            "age_minutes": round(float(payload_age_minutes(payload, path) or 0.0), 3),
+            "thread_id": surface,
+        }
+        watch_reason = ""
+        if surface == "runtime_separation":
+            clearance_state = str(((payload.get("clearance_plan") or {}).get("clearance_state") or "")).strip().lower()
+            if status in {"degraded", "warning", "needs_attention"} and clearance_state in {
+                "awaiting_cold_lane",
+                "awaiting_coverage_cycles",
+                "staged_preclearance",
+                "coverage_cycles_ready",
+                "off_hours_cold_lane_launch_ready",
+                "scheduled_off_hours_launch",
+            }:
+                row["summary"] = f"runtime preclearance: {clearance_state}"
+                row["thread_id"] = "runtime_preclearance"
+                watch_reason = "planned_runtime_release_window"
+        elif surface == "coverage_seed":
+            shortfall = _safe_int(payload.get("coverage_shortfall_bots"), 0)
+            seed_queue_size = len(payload.get("seed_queue") if isinstance(payload.get("seed_queue"), list) else [])
+            gap_status = str(coverage_gap_closer.get("overall_status") or "").strip().lower()
+            if status == "needs_coverage" and shortfall > 0 and (seed_queue_size > 0 or gap_status in {"needs_cycles", "ready", "degraded"}):
+                row["summary"] = f"coverage preclearance: shortfall_bots={shortfall}"
+                row["thread_id"] = "coverage_preclearance"
+                watch_reason = "planned_walk_forward_seed_gap"
+        elif surface == "auth_lease":
+            lease_state = str(payload.get("lease_state") or "").strip().lower()
+            lease_budget = payload.get("lease_budget") if isinstance(payload.get("lease_budget"), dict) else {}
+            expires_in_seconds = _safe_float(lease_budget.get("expires_in_seconds"), 0.0)
+            critical_lease_seconds = _safe_float(lease_budget.get("critical_lease_seconds"), 0.0)
+            if (
+                status in {"degraded", "warning"}
+                and lease_state == "warning"
+                and expires_in_seconds > critical_lease_seconds > 0.0
+            ):
+                row["summary"] = f"auth refresh watch: expires_in_seconds={round(expires_in_seconds, 3)}"
+                row["thread_id"] = "auth_refresh_watch"
+                watch_reason = "bounded_auth_refresh_window"
+        if watch_reason:
+            row["watch_reason"] = watch_reason
+            watch_surfaces.append(row)
+        elif surface == "live_readiness" and bool(payload.get("canary_control", {}).get("bounded_runtime_preclearance", False)):
+            row["summary"] = "live release window is precleared but still waiting on the bounded canary/runtime handoff"
+            row["thread_id"] = "live_release_window"
+            row["watch_reason"] = "bounded_release_window"
+            watch_surfaces.append(row)
+        elif surface == "live_readiness" and bool(payload.get("process_watchdog", {}).get("bounded_paper_lane_watchdog", False)):
+            row["summary"] = "live readiness is waiting on bounded paper-lane watchdog pressure under active storage recovery"
+            row["thread_id"] = "live_release_window"
+            row["watch_reason"] = "bounded_release_window"
+            watch_surfaces.append(row)
+        else:
+            incidents.append(row)
 
     restart_storms = watchdog.get("restart_storms") if isinstance(watchdog.get("restart_storms"), list) else []
     alerts = watchdog.get("alerts") if isinstance(watchdog.get("alerts"), list) else []
+    storage_status = str(storage.get("overall_status") or "").strip().lower()
+    storage_recovery_state = str(storage.get("recovery_state") or "").strip().lower()
+    storage_pressure_index = _safe_float(storage.get("pressure_index"), 0.0)
+    storage_bounded_recovery = (
+        storage.get("bounded_recovery_contract")
+        if isinstance(storage.get("bounded_recovery_contract"), dict)
+        else {}
+    )
+    storage_drain_follow_status = str(storage_bounded_recovery.get("drain_follow_through_status") or "").strip().lower()
+    storage_drain_contract_active = bool(
+        storage_bounded_recovery.get("active", False)
+        or storage_bounded_recovery.get("quality_ready", False)
+        or storage_bounded_recovery.get("active_drain_progress", False)
+        or storage_drain_follow_status
+        in {"handoff_requested", "drain_active", "writer_handoff_active", "requested_live_writer"}
+    )
+    derived_paper_lane_watchdog = bool(
+        (restart_storms or alerts)
+        and storage_status in {"blocked", "degraded"}
+        and storage_recovery_state in {"blocked_backpressure", "recovering_under_guard", "stabilized_recovery"}
+        and (storage_pressure_index <= 6.5 or storage_drain_contract_active)
+        and all(str((row or {}).get("name") or "").strip().lower() == "execution_lane_paper" for row in restart_storms if isinstance(row, dict))
+        and all(str((row or {}).get("name") or "").strip().lower() == "execution_lane_paper" for row in alerts if isinstance(row, dict))
+    )
     if restart_storms or alerts:
-        incidents.append(
+        row = {
+            "surface": "process_watchdog",
+            "status": "degraded",
+            "category": "operations",
+            "severity": "warning",
+            "summary": f"restart_storms={len(restart_storms)} alerts={len(alerts)}",
+            "age_minutes": round(float(payload_age_minutes(watchdog, watchdog_path) or 0.0), 3),
+            "thread_id": "process_watchdog",
+        }
+        if derived_paper_lane_watchdog:
+            row["summary"] = "paper execution lane watchdog pressure is being absorbed inside bounded storage recovery"
+            row["watch_reason"] = "derived_storage_backpressure"
+            watch_surfaces.append(row)
+        else:
+            incidents.append(row)
+    return {
+        "open_surfaces": incidents,
+        "watch_surfaces": watch_surfaces,
+    }
+
+
+def _stitched_threads(recent_incidents: list[dict[str, Any]], open_surfaces: list[dict[str, Any]], watch_surfaces: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[str, dict[str, Any]] = {}
+
+    def touch(thread_id: str, *, category: str, severity: str, recent: int = 0, open_count: int = 0, watch_count: int = 0) -> None:
+        row = buckets.setdefault(
+            thread_id,
             {
-                "surface": "process_watchdog",
-                "status": "degraded",
-                "category": "operations",
-                "severity": "warning",
-                "summary": f"restart_storms={len(restart_storms)} alerts={len(alerts)}",
-                "age_minutes": round(float(payload_age_minutes(watchdog, watchdog_path) or 0.0), 3),
-            }
+                "thread_id": thread_id,
+                "category": category,
+                "severity": severity,
+                "recent_event_count": 0,
+                "open_surface_count": 0,
+                "watch_surface_count": 0,
+            },
         )
-    return incidents
+        row["recent_event_count"] += recent
+        row["open_surface_count"] += open_count
+        row["watch_surface_count"] += watch_count
+        if severity == "critical" or row["severity"] != "critical":
+            row["severity"] = severity
+
+    for row in recent_incidents:
+        category = str(row.get("category") or "operations")
+        touch(f"recent:{category}", category=category, severity=str(row.get("severity") or "info"), recent=1)
+    for row in open_surfaces:
+        thread_id = str(row.get("thread_id") or row.get("surface") or "operations")
+        touch(thread_id, category=str(row.get("category") or "operations"), severity=str(row.get("severity") or "warning"), open_count=1)
+    for row in watch_surfaces:
+        thread_id = str(row.get("thread_id") or row.get("surface") or "operations")
+        touch(thread_id, category=str(row.get("category") or "operations"), severity=str(row.get("severity") or "warning"), watch_count=1)
+
+    stitched = sorted(
+        buckets.values(),
+        key=lambda row: (
+            0 if str(row.get("severity") or "") == "critical" else 1,
+            -(int(row.get("open_surface_count") or 0)),
+            -(int(row.get("watch_surface_count") or 0)),
+            str(row.get("thread_id") or ""),
+        ),
+    )
+    return stitched
 
 
 def build_payload(
@@ -200,7 +337,10 @@ def build_payload(
         files_per_pattern=max(int(files_per_pattern), 1),
         rows_per_file=max(int(rows_per_file), 1),
     )[: max(int(recent_limit), 1)]
-    open_surfaces = _open_surface_incidents(project_root)
+    surface_rollup = _open_surface_incidents(project_root)
+    open_surfaces = list(surface_rollup.get("open_surfaces") or [])
+    watch_surfaces = list(surface_rollup.get("watch_surfaces") or [])
+    stitched_threads = _stitched_threads(recent_incidents, open_surfaces, watch_surfaces)
 
     severity_counts = Counter(str(row.get("severity") or "info") for row in recent_incidents)
     category_counts = Counter(str(row.get("category") or "operations") for row in recent_incidents)
@@ -209,15 +349,16 @@ def build_payload(
     overall_status = "ready"
     if open_severity_counts.get("critical", 0) > 0:
         overall_status = "blocked"
-    elif open_surfaces or severity_counts.get("warning", 0) > 0 or severity_counts.get("critical", 0) > 0:
+    elif open_surfaces or watch_surfaces or severity_counts.get("warning", 0) > 0 or severity_counts.get("critical", 0) > 0:
         overall_status = "degraded"
 
-    closure_ready = len(open_surfaces) == 0 and len(recent_incidents) > 0 and overall_status != "blocked"
+    review_required = len(open_surfaces) > 0
+    closure_ready = len(open_surfaces) == 0
     auto_close_contract = {
         "closure_ready": closure_ready,
         "candidate_count": (1 if closure_ready else 0),
-        "review_required": len(open_surfaces) > 0,
-        "closure_reason": ("all_open_surfaces_cleared" if closure_ready else "open_surfaces_present_or_no_recent_incidents"),
+        "review_required": review_required,
+        "closure_reason": ("watch_only_or_open_surfaces_cleared" if closure_ready else "open_surfaces_present"),
     }
 
     recommended_actions = ordered_unique(
@@ -225,6 +366,7 @@ def build_payload(
             "pause risky or write-heavy lanes until the auth lease and runtime separation surfaces clear" if any(str(row.get("category") or "") == "auth_lease" for row in open_surfaces) else "",
             "treat live softguard or killswitch incidents as freeze events first, then repair feeds or coverage debt before resuming" if any(str(row.get("category") or "") == "risk_halt" for row in recent_incidents) else "",
             "use the incident timeline as the single review surface for watchdog, auth, and failover interventions" if recent_incidents else "",
+            "treat bounded runtime, auth, and coverage preclearance states as watch items instead of active incidents" if watch_surfaces else "",
             "auto-close this incident packet once the open surfaces stay clear and the review hash is archived" if closure_ready else "",
         ]
     )
@@ -236,6 +378,8 @@ def build_payload(
         "overall_status": overall_status,
         "recent_incident_count": len(recent_incidents),
         "open_incident_count": len(open_surfaces),
+        "watch_surface_count": len(watch_surfaces),
+        "review_required": review_required,
         "incident_counts": {
             "by_severity": dict(severity_counts),
             "by_category": dict(category_counts),
@@ -249,6 +393,8 @@ def build_payload(
         },
         "auto_close_contract": auto_close_contract,
         "open_surfaces": open_surfaces,
+        "watch_surfaces": watch_surfaces,
+        "stitched_threads": stitched_threads,
         "recent_incidents": recent_incidents,
         "recommended_actions": recommended_actions,
     }

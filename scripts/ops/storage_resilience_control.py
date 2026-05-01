@@ -4,16 +4,29 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from core.sqlite_runtime import sqlite_integrity_summary
+if __package__ in {None, ""}:
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from core.sqlite_runtime import sqlite_integrity_summary
+else:
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    from core.sqlite_runtime import sqlite_integrity_summary
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "storage_resilience_control_latest.json"
 CHECKSUM_PATH = PROJECT_ROOT / "governance" / "storage" / "checksum_scrub_latest.json"
+
+
+def _safe_float(raw: Any, default: float = 0.0) -> float:
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -45,7 +58,39 @@ def _sha(path: Path) -> str:
     return h.hexdigest()
 
 
-def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
+def _integrity_summary(
+    path: Path,
+    *,
+    project_root: Path,
+    fast: bool,
+    max_quick_check_db_gb: float,
+) -> dict[str, Any]:
+    if path.exists() and fast and max_quick_check_db_gb > 0.0:
+        size_gb = float(path.stat().st_size) / float(1024**3)
+        if size_gb > max_quick_check_db_gb:
+            wal_path = Path(f"{path}-wal")
+            shm_path = Path(f"{path}-shm")
+            return {
+                "db_path": str(path),
+                "present": True,
+                "ok": True,
+                "quick_check": "skipped_fast_mode_large_db",
+                "check_mode": "fast_skip_large_db",
+                "db_size_bytes": int(path.stat().st_size),
+                "wal_size_bytes": int(wal_path.stat().st_size) if wal_path.exists() else 0,
+                "shm_size_bytes": int(shm_path.stat().st_size) if shm_path.exists() else 0,
+            }
+    payload = sqlite_integrity_summary(path, project_root=project_root)
+    payload["check_mode"] = "full"
+    return payload
+
+
+def build_payload(
+    project_root: Path = PROJECT_ROOT,
+    *,
+    fast: bool = False,
+    max_quick_check_db_gb: float = 4.0,
+) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     mount_guard = _load_json(health_root / "storage_mount_guard_latest.json")
     failback = _load_json(health_root / "storage_failback_sync_latest.json")
@@ -75,7 +120,12 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     }
     CHECKSUM_PATH.write_text(json.dumps(checksum_payload, ensure_ascii=True, indent=2), encoding="utf-8")
     database_integrity_checks = [
-        sqlite_integrity_summary(path, project_root=project_root)
+        _integrity_summary(
+            path,
+            project_root=project_root,
+            fast=fast,
+            max_quick_check_db_gb=max_quick_check_db_gb,
+        )
         for path in sqlite_targets
     ]
     wal_health_checks = [
@@ -122,6 +172,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "unresolved_split_brain_conflicts": unresolved_split_brain,
         "backup_restore_event_files": len(backup_restore_event_files),
         "checksum_scrub": checksum_payload,
+        "integrity_mode": ("fast" if fast else "full"),
+        "max_quick_check_db_gb": round(float(max_quick_check_db_gb), 3),
         "database_integrity_checks": database_integrity_checks,
         "wal_health_checks": wal_health_checks,
         "mount_guard": mount_guard,
@@ -140,10 +192,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Publish storage resilience controls for BOT_LOGS failover, checksums, and restore freshness.")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
+    parser.add_argument("--fast", action="store_true")
+    parser.add_argument("--max-quick-check-db-gb", type=float, default=4.0)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    payload = build_payload(Path(args.project_root).resolve())
+    payload = build_payload(
+        Path(args.project_root).resolve(),
+        fast=bool(args.fast),
+        max_quick_check_db_gb=max(_safe_float(args.max_quick_check_db_gb, 4.0), 0.0),
+    )
     out_path = Path(args.out_file).expanduser()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")

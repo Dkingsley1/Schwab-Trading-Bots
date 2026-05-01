@@ -23,12 +23,42 @@ def _write(path: Path, text: str) -> None:
 
 
 def test_command_validity_bot_accepts_repo_commands_surface() -> None:
-    payload = validity_src.build_payload(PROJECT_ROOT, apply=False, timeout_sec=30)
+    payload = validity_src.build_payload(PROJECT_ROOT, apply=False, timeout_sec=60)
 
     assert payload["overall_status"] in {"ready", "degraded"}
     stop_row = next(row for row in payload["command_rows"] if row["title"] == "Stop the stack")
     assert stop_row["validation_status"] == "operator_gated"
     assert payload["metrics"]["blocked_entry_count"] == 0
+    assert payload["metrics"]["contract_hash_mismatch_count"] == 0
+    assert payload["metrics"]["contract_dispatch_smoke_failure_count"] == 0
+    assert payload["metrics"]["unprobed_operator_gated_count"] == 0
+    assert payload["unprobed_operator_gated_subcommands"] == []
+
+
+def test_opsctl_mutating_routes_keep_safe_probe_paths() -> None:
+    probes = [
+        ("feed-refresh", "--dry-run", "feed_refresh_dry_run=1"),
+        ("livefeed-refresh", "--dry-run", "feed_refresh_dry_run=1"),
+        ("storage-switch-local", "--dry-run", "storage_switch_dry_run=1"),
+        ("storage-switch-external", "--dry-run", "storage_switch_dry_run=1"),
+        ("storage-safe-eject", "--dry-run", "storage_switch_dry_run=1"),
+        ("macro-auto-start", "--dry-run", "macro_auto_start_dry_run=1"),
+        ("showcase-refresh", "--help", "Usage: opsctl.sh showcase-refresh"),
+        ("system-explainers", "--help", "Usage: opsctl.sh system-explainers"),
+    ]
+
+    for subcommand, probe_arg, expected in probes:
+        proc = subprocess.run(
+            ["zsh", str(PROJECT_ROOT / "scripts" / "ops" / "opsctl.sh"), subcommand, probe_arg],
+            cwd=PROJECT_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        assert proc.returncode == 0, (subcommand, proc.stdout, proc.stderr)
+        assert expected in proc.stdout
 
 
 def test_command_validity_bot_flags_missing_opsctl_alias(tmp_path: Path) -> None:
@@ -72,6 +102,93 @@ esac
     row = payload["command_rows"][0]
     assert "opsctl_dispatch_missing:missing-cmd" in row["issues"]
     assert "opsctl_help_missing:missing-cmd" in row["issues"]
+
+
+def test_command_validity_bot_flags_missing_open_target(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    missing_pdf = project_root / "exports" / "reports" / "missing.pdf"
+    _write(
+        project_root / "COMMANDS.md",
+        f"""# Commands (Canonical)
+
+## Reports
+
+### Broken open
+```bash
+cd {project_root}
+open {missing_pdf}
+```
+""",
+    )
+    _write(
+        project_root / "scripts" / "ops" / "opsctl.sh",
+        """#!/bin/zsh
+cmd="${1:-help}"
+case "$cmd" in
+  help|*)
+    echo 'Usage: opsctl.sh <command>'
+    ;;
+esac
+""",
+    )
+    _write(project_root / "scripts" / "runbook.sh", "#!/bin/zsh\necho ok\n")
+
+    payload = validity_src.build_payload(project_root, apply=False, timeout_sec=15)
+
+    assert payload["overall_status"] == "blocked"
+    assert payload["metrics"]["blocked_entry_count"] == 1
+    assert f"open_target_missing:{missing_pdf}" in payload["command_rows"][0]["issues"]
+
+
+def test_command_validity_bot_blocks_failed_operator_route_probe(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write(
+        project_root / "COMMANDS.md",
+        """# Commands (Canonical)
+
+## Schwab Auth
+
+### Interactive Schwab authorization re-consent
+```bash
+cd /tmp
+./scripts/ops/opsctl.sh token-refresh-interactive
+```
+""",
+    )
+    _write(
+        project_root / "scripts" / "ops" / "opsctl.sh",
+        """#!/bin/zsh
+cmd="${1:-help}"
+case "$cmd" in
+  token-refresh-interactive)
+    echo "ModuleNotFoundError: No module named 'scripts'" >&2
+    exit 1
+    ;;
+  help|*)
+    cat <<'EOF'
+Usage: opsctl.sh <command>
+  token-refresh-interactive [--json]
+EOF
+    ;;
+esac
+""",
+    )
+    _write(project_root / "scripts" / "runbook.sh", "#!/bin/zsh\necho ok\n")
+
+    payload = validity_src.build_payload(project_root, apply=False, timeout_sec=15)
+
+    assert payload["overall_status"] == "blocked"
+    assert payload["metrics"]["blocked_entry_count"] == 0
+    assert payload["metrics"]["contract_dispatch_smoke_failure_count"] == 1
+    failed = [row for row in payload["contract_dispatch_smoke"] if not row["ok"]]
+    assert failed[0]["subcommand"] == "token-refresh-interactive"
+    assert "ModuleNotFoundError" in failed[0]["stderr_tail"]
+
+
+def test_command_validity_bot_gates_mutating_operator_commands() -> None:
+    assert validity_src._line_safety("./scripts/ops/opsctl.sh livefeed-refresh") == "operator_gated"
+    assert validity_src._line_safety("./scripts/ops/opsctl.sh token-refresh --always-auth") == "operator_gated"
+    assert validity_src._line_safety("./scripts/ops/opsctl.sh feed --source all --heavy") == "operator_gated"
 
 
 def test_command_validity_bot_accepts_bare_help_alias_lines() -> None:

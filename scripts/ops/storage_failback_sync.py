@@ -2,11 +2,17 @@ import argparse
 import fcntl
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.channel_queue import default_queue_db_path
+from core.storage_mounts import find_target_external_volume, resolve_external_storage
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -14,12 +20,7 @@ def _env_flag(name: str, default: str = "0") -> bool:
 
 
 def _external_project_root() -> Path:
-    configured = os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    mount_root = Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")).expanduser()
-    project_dir = os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot").strip() or "schwab_trading_bot"
-    return mount_root / project_dir
+    return resolve_external_storage().external_root
 
 
 def _external_min_free_bytes() -> int:
@@ -66,7 +67,9 @@ def _disk_free_bytes(path: Path) -> int | None:
 
 
 def _probe_external_storage(external_root: Path) -> dict[str, object]:
-    mount_root = Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")).expanduser()
+    resolution = resolve_external_storage()
+    mount_root = resolution.mount_root
+    target_volume = find_target_external_volume()
     mount_present = bool(mount_root.exists() and mount_root.is_dir())
     external_root_exists = bool(external_root.exists() and external_root.is_dir())
     external_root_writable = bool(external_root_exists and os.access(external_root, os.W_OK))
@@ -83,6 +86,17 @@ def _probe_external_storage(external_root: Path) -> dict[str, object]:
     return {
         "mount_root": str(mount_root),
         "external_root": str(external_root),
+        "configured_mount_root": str(resolution.configured_mount_root),
+        "configured_project_root": str(resolution.configured_project_root) if resolution.configured_project_root else "",
+        "candidate_mount_roots": [str(path) for path in resolution.candidate_mount_roots],
+        "matched_mount_root": str(resolution.matched_mount_root) if resolution.matched_mount_root else "",
+        "match_reason": str(resolution.match_reason),
+        "target_volume_device_identifier": str(target_volume.device_identifier) if target_volume else "",
+        "target_volume_name": str(target_volume.volume_name) if target_volume else "",
+        "target_volume_uuid": str(target_volume.volume_uuid) if target_volume else "",
+        "target_volume_mount_point": str(target_volume.mount_point) if target_volume else "",
+        "target_volume_present": bool(target_volume is not None),
+        "target_volume_mounted": bool(target_volume.is_mounted) if target_volume else False,
         "mount_present": mount_present,
         "external_root_exists": external_root_exists,
         "external_root_writable": external_root_writable,
@@ -187,6 +201,52 @@ def _path_metadata(path: Path) -> dict[str, object]:
     return out
 
 
+def _sync_bot_logs_finder_shortcuts(project_root: Path) -> dict[str, object]:
+    helper = project_root / "scripts" / "ops" / "bot_logs_finder_sync.py"
+    if not helper.exists():
+        return {
+            "attempted": False,
+            "ok": False,
+            "error": "helper_missing",
+        }
+
+    create_desktop_shortcut = os.getenv("BOT_LOGS_FINDER_DESKTOP_SHORTCUTS", "1").strip().lower() in {"1", "true", "yes", "on"}
+    cmd = [sys.executable, str(helper), "--json"]
+    if not create_desktop_shortcut:
+        cmd.append("--no-desktop-shortcut")
+    proc = subprocess.run(
+        cmd,
+        cwd=str(project_root),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload: dict[str, object] = {}
+    for raw in reversed([line.strip() for line in str(proc.stdout or "").splitlines() if line.strip()]):
+        try:
+            decoded = json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(decoded, dict):
+            payload = decoded
+            break
+    if not payload:
+        out_file = project_root / "governance" / "health" / "bot_logs_finder_sync_latest.json"
+        try:
+            decoded = json.loads(out_file.read_text(encoding="utf-8"))
+        except Exception:
+            decoded = {}
+        payload = decoded if isinstance(decoded, dict) else {}
+    return {
+        "attempted": True,
+        "ok": int(proc.returncode) == 0 and bool(payload.get("ok", False)),
+        "rc": int(proc.returncode),
+        "desktop_shortcut_enabled": create_desktop_shortcut,
+        "payload": payload,
+        "stderr_tail": "\n".join((proc.stderr or "").splitlines()[-8:]),
+    }
+
+
 def _sqlite_sidecars(path: Path) -> list[str]:
     out: list[str] = []
     for suffix in ("-wal", "-shm"):
@@ -197,13 +257,8 @@ def _sqlite_sidecars(path: Path) -> list[str]:
 
 
 def _default_local_queue_db(project_root: Path, local_root: Path) -> Path:
-    override = str(os.getenv("BOT_CHANNEL_QUEUE_DB", "") or "").strip()
-    if override:
-        return Path(override).expanduser()
-    local_override = str(os.getenv("BOT_CHANNEL_QUEUE_LOCAL_ROOT", "") or "").strip()
-    if local_override:
-        return Path(local_override).expanduser() / "data" / "bot_channel_queue.sqlite3"
-    return local_root / "data" / "bot_channel_queue.sqlite3"
+    del local_root
+    return Path(default_queue_db_path(project_root)).expanduser()
 
 
 def _build_sqlite_skip_report(
@@ -235,6 +290,10 @@ def _build_sqlite_skip_report(
     active_local_count = 0
     warm_standby_count = 0
     local_present_count = 0
+    external_ready_count = 0
+    verified_count = 0
+    curated_standby_count = 0
+    verification_mismatches: list[str] = []
 
     for rel in tracked:
         local_path = local_root / rel
@@ -282,6 +341,31 @@ def _build_sqlite_skip_report(
             active_path = str(local_path)
             active_local_count += 1
 
+        verification_state = "missing_external_copy"
+        verification_reason = "The external route does not currently have a verified SQLite copy for this tracked path."
+        if str(mode or "") == "external" and classification in {"warm_standby_retained", "active_local_queue"} and (
+            not external_exists or external_bytes <= 0 or (local_exists and external_bytes < local_bytes)
+        ):
+            verification_state = "curated_standby"
+            verification_reason = (
+                "This SQLite path is intentionally retained as a local warm standby while the rebuilt external BOT_LOGS route "
+                "is certified from curated artifacts instead of a full live SQLite copy-back."
+            )
+            external_ready_count += 1
+            curated_standby_count += 1
+        elif external_exists and external_bytes > 0:
+            if not local_exists or external_bytes >= local_bytes:
+                verification_state = "verified"
+                verification_reason = "The external route carries a present SQLite copy that is at least as large as the retained local copy."
+                external_ready_count += 1
+                verified_count += 1
+            else:
+                verification_state = "lagging_external_copy"
+                verification_reason = "The external route copy is present but smaller than the retained local fallback copy."
+                verification_mismatches.append(rel)
+        else:
+            verification_mismatches.append(rel)
+
         entries.append(
             {
                 "relative_path": rel,
@@ -289,6 +373,10 @@ def _build_sqlite_skip_report(
                 "reason": reason,
                 "prune_eligible": False,
                 "active_path": active_path,
+                "route_verification": {
+                    "state": verification_state,
+                    "reason": verification_reason,
+                },
                 "local": {
                     **local_meta,
                     "sidecars": local_sidecars,
@@ -301,8 +389,19 @@ def _build_sqlite_skip_report(
             }
         )
 
+    verification_state = "ready"
+    if verification_mismatches:
+        verification_state = "warning" if external_ready_count > 0 else "blocked"
+    elif curated_standby_count > 0:
+        verification_state = "curated_ready"
+
+    certified_mode = str(mode or "")
+    if str(mode or "") == "external" and verification_state == "curated_ready":
+        certified_mode = "external_curated"
+
     return {
         "mode": str(mode or ""),
+        "certified_mode": certified_mode,
         "active_root": str(active_root),
         "queue_db_path": str(queue_db_path),
         "summary": {
@@ -310,8 +409,23 @@ def _build_sqlite_skip_report(
             "local_present_count": int(local_present_count),
             "active_local_count": int(active_local_count),
             "warm_standby_count": int(warm_standby_count),
+            "external_ready_count": int(external_ready_count),
+            "verified_count": int(verified_count),
+            "curated_standby_count": int(curated_standby_count),
+            "verification_mismatch_count": len(verification_mismatches),
+            "verification_state": verification_state,
             "prune_eligible_count": 0,
             "local_bytes_total": int(local_bytes_total),
+        },
+        "route_verification": {
+            "verification_state": verification_state,
+            "certified_mode": certified_mode,
+            "ready_count": int(external_ready_count),
+            "verified_count": int(verified_count),
+            "curated_standby_count": int(curated_standby_count),
+            "tracked_count": len(entries),
+            "coverage_ratio": round(external_ready_count / max(len(entries), 1), 6),
+            "mismatches": verification_mismatches,
         },
         "entries": entries,
     }
@@ -365,6 +479,7 @@ def main() -> int:
         payload = {
             'timestamp_utc': datetime.now(timezone.utc).isoformat(),
             'mode': routing.mode,
+            'certified_mode': routing.mode,
             'active_root': str(routing.active_root),
             'switched_links': list(routing.switched_links),
             'passthrough_paths': list(routing.passthrough_paths),
@@ -382,8 +497,12 @@ def main() -> int:
                 mode=routing.mode,
                 active_root=routing.active_root,
             ),
+            'finder_sync': _sync_bot_logs_finder_shortcuts(PROJECT_ROOT),
             'lock_path': str(lock_path),
         }
+        sqlite_skip_report = payload.get('sqlite_skip_report') if isinstance(payload.get('sqlite_skip_report'), dict) else {}
+        payload['certified_mode'] = str(sqlite_skip_report.get('certified_mode') or payload.get('certified_mode') or payload.get('mode') or "")
+        payload['route_verification'] = sqlite_skip_report.get('route_verification') if isinstance(sqlite_skip_report.get('route_verification'), dict) else {}
 
         encoded = json.dumps(payload, ensure_ascii=True, indent=2)
         out.write_text(encoded, encoding='utf-8')

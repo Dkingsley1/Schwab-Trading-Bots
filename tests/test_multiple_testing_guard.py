@@ -49,3 +49,24 @@ def test_multiple_testing_guard_builds_hypothesis_family(tmp_path: Path) -> None
     assert payload["correction_method"] == "benjamini_hochberg_fdr"
     assert sorted(payload["regime_segments"]) == ["default", "intraday_aggressive"]
 
+
+def test_multiple_testing_guard_uses_partial_contract_when_ablation_artifact_is_missing(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "governance" / "health" / "counterfactual_replay_latest.json",
+        {
+            "ok": True,
+            "candidate_count": 11,
+            "profiles_reviewed": ["default", "intraday_aggressive"],
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "walk_forward" / "promotion_readiness_latest.json",
+        {"considered_bots": 0, "coverage_shortfall_bots": 4},
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["ok"] is False
+    assert payload["overall_status"] == "needs_work"
+    assert payload["contract_present"] is True
+    assert payload["counterfactual_contract_ready"] is True

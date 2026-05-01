@@ -5,10 +5,15 @@ import argparse
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+import sys
 from typing import Any
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.training_quality_thresholds import TARGET_QUALITY_SCORE_FLOOR, TARGET_TEST_ACCURACY_FLOOR
+
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "training_requalification_latest.json"
 DEFAULT_QUEUE_PATH = PROJECT_ROOT / "governance" / "training_diagnostics" / "requalification_queue_latest.jsonl"
 DEFAULT_REPAIR_OUT_PATH = PROJECT_ROOT / "governance" / "training_diagnostics" / "requalification_repairs_latest.json"
@@ -136,6 +141,37 @@ def _is_bootstrap_runtime_candidate(row: dict[str, Any]) -> bool:
     return bool(reasons & {"new_runtime_candidate", "planned_roster_expansion_slot"})
 
 
+def _data_collection_threshold(row: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    started_text = str(row.get("data_collection_started_utc") or "").strip()
+    started_age_days: float | None = None
+    if started_text:
+        try:
+            parsed = datetime.fromisoformat(started_text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            started_age_days = max((datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() / 86400.0, 0.0)
+        except Exception:
+            started_age_days = None
+    observations = max(
+        _safe_int(row.get("data_collection_observations"), 0),
+        _safe_int(row.get("collected_observation_count"), 0),
+        _safe_int(row.get("observation_count"), 0),
+    )
+    min_observations = max(_safe_int(row.get("minimum_training_observations"), 0), 0)
+    min_days = max(_safe_int(row.get("minimum_data_collection_days"), 0), 0)
+    observations_ready = bool(min_observations <= 0 or observations >= min_observations)
+    days_ready = bool(min_days <= 0 or (started_age_days is not None and started_age_days >= float(min_days)))
+    ready = bool(observations_ready and days_ready)
+    return ready, {
+        "observations": observations,
+        "minimum_training_observations": min_observations,
+        "observations_ready": observations_ready,
+        "collection_age_days": round(float(started_age_days), 3) if started_age_days is not None else None,
+        "minimum_data_collection_days": min_days,
+        "days_ready": days_ready,
+    }
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
@@ -168,12 +204,12 @@ def _recovered_diagnostic(
     acted_accuracy = _safe_float(metrics.get("acted_accuracy"), -1.0)
     accuracy_lift = _safe_float(metrics.get("accuracy_lift_over_majority"), 0.0)
     failures: list[str] = []
-    if acted_accuracy >= 0.0 and acted_accuracy < 0.53:
-        failures.append(f"acted_accuracy={acted_accuracy:.4f} < recovered_min_acted_accuracy=0.5300")
-    if accuracy_lift < 0.0:
+    if acted_accuracy >= 0.0 and acted_accuracy < 0.60:
+        failures.append(f"acted_accuracy={acted_accuracy:.4f} < recovered_min_acted_accuracy=0.6000")
+    if accuracy_lift < 0.02:
         failures.append(
             "accuracy_lift_over_majority="
-            f"{accuracy_lift:.4f} < recovered_min_accuracy_lift_over_majority=0.0000"
+            f"{accuracy_lift:.4f} < recovered_min_accuracy_lift_over_majority=0.0200"
         )
     status = "failed" if failures else "passed"
     diag_timestamp = str(log_payload.get("timestamp") or datetime.now(timezone.utc).isoformat())
@@ -359,13 +395,25 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     rows = _load_registry_rows(registry_path)
     live_regime, regime_priority_index = _current_regime_priority_index(roster_resilience)
     candidates: list[dict[str, Any]] = []
+    excluded_rows: list[dict[str, Any]] = []
     for row in rows:
-        if bool(row.get("active", False)):
+        bot_id = str(row.get("bot_id") or "").strip().lower() if isinstance(row, dict) else ""
+        threshold_ready, threshold_meta = _data_collection_threshold(row)
+        if bool(row.get("training_excluded", False)) and not threshold_ready:
+            excluded_rows.append(
+                {
+                    "bot_id": bot_id,
+                    "reason": str(row.get("training_exclusion_reason") or "training_excluded"),
+                    "until": str(row.get("training_exclusion_until") or ""),
+                    **threshold_meta,
+                }
+            )
+            continue
+        if bool(row.get("active", False)) and not (bool(row.get("data_collection_active", False)) and threshold_ready):
             continue
         lifecycle_state = str(row.get("lifecycle_state") or "").strip().lower()
         if lifecycle_state in {"retired", "deleted", "deactivated"} or bool(row.get("deleted_from_rotation", False)):
             continue
-        bot_id = str(row.get("bot_id") or "").strip().lower()
         if not bot_id:
             continue
         diag_path = diagnostics_dir / f"{bot_id}_latest.json"
@@ -396,14 +444,14 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         if inferred_status == "deferred_sample_starved" or sample_count == 0:
             actions.append("repair_runtime_inputs")
         has_repair_pressure = "repair_runtime_inputs" in actions
-        coverage_ready = quality_score >= 0.55 and bool(model_path) and (bool(log_path) or bootstrap_candidate)
+        coverage_ready = quality_score >= TARGET_QUALITY_SCORE_FLOOR and bool(model_path) and (bool(log_path) or bootstrap_candidate)
         bootstrap_stage_candidate = bootstrap_candidate and current_regime_priority and str(row.get("bot_role") or "") != "infrastructure_sub_bot"
         coverage_stage_candidate = bootstrap_stage_candidate or (coverage_ready and (
-            not has_repair_pressure or quality_score >= 0.80 or test_accuracy >= 0.57
+            not has_repair_pressure or quality_score >= 0.80 or test_accuracy >= TARGET_TEST_ACCURACY_FLOOR
         ))
         if coverage_stage_candidate:
             actions.append("seed_walk_forward_coverage")
-        elif quality_score >= 0.50 and "repair_runtime_inputs" not in actions:
+        elif quality_score >= TARGET_QUALITY_SCORE_FLOOR and "repair_runtime_inputs" not in actions:
             actions.append("targeted_retrain")
         priority = round(
             (quality_score * 100.0)
@@ -442,6 +490,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "current_regime_priority": current_regime_priority,
                 "regime_fit_score": regime_fit_score,
                 "live_regime": live_regime,
+                "data_collection_threshold": threshold_meta if bool(row.get("data_collection_active", False)) else {},
             }
         )
     candidates.sort(key=lambda row: (-float(row.get("priority", 0.0) or 0.0), str(row.get("bot_id") or "")))
@@ -452,6 +501,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "ok": True,
         "registry_path": str(registry_path),
         "candidate_count": len(candidates),
+        "training_excluded_count": len(excluded_rows),
+        "training_excluded": excluded_rows[:80],
         "reactivation_ready_count": len(ready_candidates),
         "top_candidates": candidates[:20],
         "top_reactivation_ready": ready_candidates[:10],

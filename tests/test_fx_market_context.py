@@ -8,6 +8,7 @@ from scripts.collect_fx_market_context import (
     _fx_session_state_norms,
     _alpha_vantage_intraday,
     _canonical_pair_reconciliation,
+    _configured_twelve_data_pairs,
     _parse_fed_h10_current,
     _latest_pair_history,
     _normalize_pair_symbol,
@@ -219,6 +220,21 @@ def test_twelve_data_time_series_marks_daily_quota_cooldown(monkeypatch):
     assert result["ok"] is False
     assert result["cooldown"]["active"] is True
     assert result["cooldown"]["kind"] == "daily_quota"
+
+
+def test_configured_twelve_data_pairs_prefers_context_pairs_and_respects_credit_budget(monkeypatch):
+    monkeypatch.setenv("FX_REALTIME_SYMBOLS", "EURUSD,USDJPY,GBPUSD,USDCHF,USDCAD,AUDUSD")
+    monkeypatch.setenv("FX_REALTIME_CONTEXT_SYMBOLS", "EURUSD,USDJPY,GBPUSD")
+    monkeypatch.setenv("FX_TWELVE_DATA_MAX_CREDITS_PER_MINUTE", "4")
+    monkeypatch.setenv("FX_TWELVE_DATA_CREDIT_RESERVE", "2")
+    monkeypatch.setenv("FX_TWELVE_DATA_MAX_PAIRS_PER_RUN", "6")
+
+    pairs, budget = _configured_twelve_data_pairs()
+
+    assert pairs == ["EURUSD", "USDJPY"]
+    assert budget["requested_pairs"] == ["EURUSD", "USDJPY", "GBPUSD"]
+    assert budget["deferred_pairs"] == ["GBPUSD"]
+    assert budget["credit_budget_per_run"] == 2
 
 
 def test_normalize_pair_symbol():

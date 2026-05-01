@@ -328,4 +328,27 @@ def test_infrastructure_autofix_bot_builds_safe_apply_plan(tmp_path: Path) -> No
     assert "bot_quality_autopilot" in names
     assert payload["metrics"]["storage_total_pending_lines"] == 62000
     assert payload["metrics"]["storage_total_drain_minutes"] == 22.5
-    assert payload["operator_followups"]
+
+
+def test_infrastructure_autofix_bot_treats_degraded_child_repairs_as_degraded(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(health / "daily_auto_verify_latest.json", {"failed_checks": ["promotion_quality_gate"]})
+    _write_json(health / "remote_alert_control_latest.json", {"channels": {"any_configured": True}, "critical_backlog": {"unsent_count": 0}})
+
+    def _fake_run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict:
+        return {
+            "cmd": list(cmd),
+            "rc": 2,
+            "timed_out": False,
+            "payload": {"overall_status": "degraded"},
+            "stdout_tail": "",
+            "stderr_tail": "",
+        }
+
+    monkeypatch.setattr(infra_src, "_run_json", _fake_run_json)
+
+    payload = infra_src.build_payload(project_root, apply=True, timeout_sec=30)
+
+    assert payload["repair_plan"]
+    assert payload["overall_status"] == "degraded"

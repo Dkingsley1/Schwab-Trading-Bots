@@ -218,6 +218,63 @@ class OpsQualityIncidentTests(unittest.TestCase):
             self.assertEqual(fourth.returncode, 0)
             self.assertFalse(halt_flag.exists())
 
+    def test_incident_auto_halt_suppresses_failures_when_execution_not_expected(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            script = PROJECT_ROOT / "scripts" / "incident_auto_halt.py"
+
+            daily_file = td_path / "daily.json"
+            quality_file = td_path / "quality.json"
+            recon_file = td_path / "recon.json"
+            mode_file = td_path / "mode.json"
+            state_file = td_path / "state.json"
+            event_log = td_path / "events.jsonl"
+            latest_alert = td_path / "latest.json"
+            halt_flag = td_path / "GLOBAL_TRADING_HALT.flag"
+
+            daily_file.write_text(json.dumps({"ok": False}), encoding="utf-8")
+            quality_file.write_text(json.dumps({"ok": False}), encoding="utf-8")
+            recon_file.write_text(json.dumps({"ok": True}), encoding="utf-8")
+            mode_file.write_text(json.dumps({"market_data_only": True, "allow_order_execution": False}), encoding="utf-8")
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--daily-verify-file",
+                    str(daily_file),
+                    "--quality-gate-file",
+                    str(quality_file),
+                    "--reconciliation-file",
+                    str(recon_file),
+                    "--mode-file",
+                    str(mode_file),
+                    "--state-file",
+                    str(state_file),
+                    "--event-log",
+                    str(event_log),
+                    "--latest-alert-file",
+                    str(latest_alert),
+                    "--halt-flag",
+                    str(halt_flag),
+                    "--trip-streak",
+                    "1",
+                    "--json",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(proc.returncode, 0)
+            payload = json.loads(latest_alert.read_text(encoding="utf-8"))
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["failed_checks"], [])
+            self.assertFalse(payload["halt"])
+            self.assertEqual(
+                payload["detail"]["suppressed_failed_checks"],
+                ["daily_verify_not_ok", "promotion_quality_gate_not_ok"],
+            )
 
     def test_paper_reconciliation_slo_guard_breaches_on_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as td:

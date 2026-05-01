@@ -15,6 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.channel_queue import default_queue_db_path
 from scripts import ops_data_plane
 
 PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
@@ -29,7 +30,7 @@ QUEUE_DB_PATH = Path(
             "SQL_LINK_SERVICE_QUEUE_DB",
             os.getenv(
                 "BOT_CHANNEL_QUEUE_DB",
-                str(PROJECT_ROOT / "local_fallback_storage" / "data" / "bot_channel_queue.sqlite3"),
+                default_queue_db_path(PROJECT_ROOT),
             ),
         )
     )
@@ -748,6 +749,10 @@ def _effective_cycle_args(args: argparse.Namespace, overrides: dict[str, str]) -
     values["merge_max_seconds_per_cycle"] = max(
         _dynamic_env_float(overrides, "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE", float(args.merge_max_seconds_per_cycle)),
         0.0,
+    )
+    values["shard_link_timeout_seconds"] = max(
+        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS", int(args.shard_link_timeout_seconds)),
+        1,
     )
     values["auto_wal_checkpoint"] = _dynamic_env_flag(overrides, "SQL_LINK_SERVICE_AUTO_WAL_CHECKPOINT", bool(args.auto_wal_checkpoint))
     values["wal_checkpoint_threshold_gb"] = max(
@@ -1597,6 +1602,7 @@ def _run_shard_links(
     sqlite_timeout_seconds: int,
     sqlite_lock_retries: int,
     sqlite_lock_retry_delay_seconds: float,
+    shard_link_timeout_seconds: int,
     progress_callback=None,
 ) -> list[dict[str, object]]:
     recoveries: dict[str, dict[str, object]] = {}
@@ -1652,16 +1658,25 @@ def _run_shard_links(
             cmd.extend(["--sqlite-state-checkpoint-lines", str(int(shard["state_checkpoint_lines"]))])
         if bool(shard.get("skip_json_files")):
             cmd.append("--skip-json-files")
-        proc = subprocess.run(
-            cmd,
-            cwd=str(PROJECT_ROOT),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
+        timed_out = False
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=str(PROJECT_ROOT),
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=max(int(shard_link_timeout_seconds), 1),
+            )
+            stdout = proc.stdout or ""
+            stderr = proc.stderr or ""
+            returncode = int(proc.returncode)
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
+            stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+            returncode = 124
         health = {}
         health_path = Path(str(shard["health_file"]))
         if health_path.exists():
@@ -1686,7 +1701,9 @@ def _run_shard_links(
                     "skip_json_files": bool(shard.get("skip_json_files")),
                 },
                 "recovery": recoveries.get(str(shard["name"]), {}),
-                "rc": int(proc.returncode),
+                "rc": returncode,
+                "timed_out": timed_out,
+                "timeout_seconds": int(shard_link_timeout_seconds),
                 "stdout_tail": "\n".join((stdout or "").splitlines()[-20:]),
                 "stderr_tail": "\n".join((stderr or "").splitlines()[-20:]),
                 "health": health,
@@ -1706,6 +1723,7 @@ def main() -> int:
     parser.add_argument("--sqlite-timeout-seconds", type=int, default=int(os.getenv("SQL_LINK_SERVICE_SQLITE_TIMEOUT", "300")))
     parser.add_argument("--sqlite-lock-retries", type=int, default=int(os.getenv("SQL_LINK_SERVICE_LOCK_RETRIES", "200")))
     parser.add_argument("--sqlite-lock-retry-delay-seconds", type=float, default=float(os.getenv("SQL_LINK_SERVICE_LOCK_RETRY_DELAY_SECONDS", "0.5")))
+    parser.add_argument("--shard-link-timeout-seconds", type=int, default=int(os.getenv("SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS", "180")))
     parser.add_argument("--link-mode", choices=("sqlite", "both"), default=os.getenv("SQL_LINK_SERVICE_LINK_MODE", "sqlite"))
     parser.add_argument("--lock-path", default=str(PROJECT_ROOT / "governance" / "locks" / "jsonl_sql_writer.lock"))
     parser.add_argument("--primary-db", default=os.getenv("SQL_LINK_SERVICE_PRIMARY_DB", str(PRIMARY_DB_PATH)))
@@ -1842,6 +1860,7 @@ def main() -> int:
                 sqlite_timeout_seconds=int(cycle_args.sqlite_timeout_seconds),
                 sqlite_lock_retries=int(cycle_args.sqlite_lock_retries),
                 sqlite_lock_retry_delay_seconds=float(cycle_args.sqlite_lock_retry_delay_seconds),
+                shard_link_timeout_seconds=int(cycle_args.shard_link_timeout_seconds),
                 progress_callback=lambda rows: _write_service_progress(
                     cycle_started_utc=ts,
                     current_step="shard_linking",

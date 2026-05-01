@@ -155,7 +155,11 @@ def test_assessment_lines_call_out_failed_run_and_rollback():
 def test_blocking_reasons_and_overall_status_capture_regression_and_divergence():
     context = {
         'summary': {
+            'target_count': 1,
+            'trained_count': 0,
+            'failure_count': 1,
             'confirmed_training_success': False,
+            'training_reason': 'precheck_failed',
             'promotion_quality_ok': False,
             'daily_verify_ok': False,
         },
@@ -211,9 +215,14 @@ def test_build_context_includes_training_quality_control(tmp_path):
         {
             'ok': False,
             'overall_status': 'blocked',
+            'training_quality_index': 67.5,
+            'training_quality_base_score': 61.5,
+            'training_quality_bonus_score': 6.0,
             'training_quality_score': 61.5,
             'top_priorities': ['runtime_input_coverage', 'stale_active_diagnostics'],
             'implemented_improvement_count': 17,
+            'immutable_lineage': {'lineage_status': 'blocked'},
+            'failure_taxonomy': {'failure_buckets': ['runtime_input_gap', 'storage_backpressure']},
         },
     )
 
@@ -230,5 +239,33 @@ def test_build_context_includes_training_quality_control(tmp_path):
     )
 
     assert context['training_quality_control']['overall_status'] == 'blocked'
+    assert context['training_quality_control']['training_quality_index'] == 67.5
     assert context['training_quality_control']['implemented_improvement_count'] == 17
+    assert context['immutable_lineage']['lineage_status'] == 'blocked'
     assert any('Training quality control is blocked' in line for line in context['assessment'])
+    assert any('Immutable lineage is still blocked' in line for line in context['assessment'])
+
+
+def test_passive_cycle_is_not_treated_as_training_not_confirmed():
+    context = {
+        'summary': {
+            'target_count': 0,
+            'trained_count': 0,
+            'failure_count': 0,
+            'confirmed_training_success': False,
+            'training_reason': '',
+            'master_update_status': '',
+            'promotion_quality_ok': False,
+            'daily_verify_ok': False,
+        },
+        'promotion_quality': {'failed_checks': ['promotion_gate_blocked']},
+        'promotion_gate': {'promote_ok': False, 'coverage_ok': False, 'considered_bots': 0, 'thresholds': {'min_considered_bots': 4}},
+        'trade_behavior': {'score_delta': None, 'promoted': False, 'deployed_from_previous': False},
+        'data_divergence': {'ok': True},
+    }
+
+    lines = training_report._assessment_lines(context)
+    reasons = training_report._blocking_reasons(context)
+
+    assert any('No active retrain batch is recorded right now' in line for line in lines)
+    assert 'training_not_confirmed' not in reasons

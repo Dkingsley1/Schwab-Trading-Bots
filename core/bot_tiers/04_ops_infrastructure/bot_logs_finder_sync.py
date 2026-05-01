@@ -1,0 +1,1 @@
+../../../scripts/ops/bot_logs_finder_sync.py

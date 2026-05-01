@@ -57,6 +57,10 @@ def _safe_bool(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -74,9 +78,30 @@ def _write_latest(project_root: str, name: str, payload: Dict[str, Any]) -> None
     )
 
 
+def execution_lane_root(project_root: str | Path) -> Path:
+    root = Path(project_root)
+    override = os.getenv("EXECUTION_LANE_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser()
+
+    prefer_default = os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1")
+    if _env_flag("EXECUTION_LANE_PREFER_EXTERNAL", prefer_default):
+        external_project = os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "").strip()
+        if external_project:
+            external_root = Path(external_project).expanduser()
+        else:
+            mount = Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")).expanduser()
+            project_dir = os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot").strip() or "schwab_trading_bot"
+            external_root = mount / project_dir
+        if external_root.exists() or _env_flag("EXECUTION_LANE_CREATE_EXTERNAL_ROOT", "1"):
+            return external_root / "governance" / "execution_lanes"
+
+    return root / "governance" / "execution_lanes"
+
+
 def execution_lane_daily_path(project_root: str | Path, stem: str, *, day: str = "") -> str:
     stamp = str(day or datetime.now(timezone.utc).strftime("%Y%m%d"))
-    base = Path(project_root) / "governance" / "execution_lanes"
+    base = execution_lane_root(project_root)
     return str(base / f"{stem}_{stamp}.jsonl")
 
 
