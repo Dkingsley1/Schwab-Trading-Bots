@@ -170,6 +170,8 @@ def _storage_profile(
     stale_stage_pending_lines: int,
     retention_debt_gb: float,
     route_drift: bool,
+    pressure_index: float = 0.0,
+    storage_severity: str = "",
 ) -> str:
     effective_deferred_pending_lines = max(
         int(deferred_pending_lines) - int(stale_stage_pending_lines) - int(support_pending_lines),
@@ -178,6 +180,8 @@ def _storage_profile(
     effective_cold_pending_lines = max(int(cold_pending_lines) - int(stale_stage_pending_lines), 0)
     if (
         hard_gate
+        or pressure_index >= 1.0
+        or (str(storage_severity).strip().lower() in {"high", "critical", "blocked"} and core_pending_lines >= 15000)
         or core_pending_lines >= 50000
         or effective_deferred_pending_lines >= 250000
         or effective_cold_pending_lines >= 100000
@@ -221,6 +225,22 @@ def _profile_env(
         "SQL_LINK_SERVICE_PRIMARY_DB": routed_primary_db,
         "BOT_CHANNEL_QUEUE_DB": routed_queue_db,
         "SQL_LINK_SERVICE_QUEUE_DB": routed_queue_db,
+        "SQL_LINK_SERVICE_QUEUE_PRUNE_ORPHANS": "1",
+        "SQL_LINK_SERVICE_QUEUE_ORPHAN_DAYS": "14",
+        "SQL_LINK_SERVICE_AUTO_LOCAL_FALLBACK_PRUNE": "1",
+        "SQL_LINK_SERVICE_LOCAL_FALLBACK_PRUNE_OLDER_THAN_SECONDS": "21600",
+        "SQL_LINK_SERVICE_LOCAL_FALLBACK_PRUNE_MAX_FILES": "400",
+        "SQL_LINK_SERVICE_QUEUE_MAX_DB_GB": "12",
+        "SQL_LINK_SERVICE_QUEUE_MAX_ROWS": "240000",
+        "RETENTION_STALE_STAGE_ENABLED": "1",
+        "RETENTION_STALE_PURGE_ENABLED": "1",
+        "RETENTION_STALE_PURGE_DAYS": "30",
+        "RETENTION_STALE_PURGE_LOW_VALUE_DAYS": "7",
+        "RETENTION_STALE_PURGE_MEDIUM_VALUE_DAYS": "21",
+        "RETENTION_STALE_PURGE_HIGH_VALUE_DAYS": "45",
+        "RETENTION_STALE_PURGE_CRITICAL_VALUE_DAYS": "90",
+        "RETENTION_STALE_PURGE_MAX_FILES": "5000",
+        "RETENTION_STALE_PURGE_MAX_GB": "10",
     }
     if profile_name == "critical_backpressure":
         deferred_budget = _critical_deferred_budget(
@@ -254,6 +274,16 @@ def _profile_env(
                 "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "180000",
                 "SQL_LINK_SERVICE_HOT_MAX_ROWS": "1800000",
                 "SQL_LINK_SERVICE_HOT_DAYS": "3",
+                "SQL_LINK_SERVICE_QUEUE_MAX_DB_GB": "8",
+                "SQL_LINK_SERVICE_QUEUE_MAX_ROWS": "180000",
+                "SQL_LINK_SERVICE_QUEUE_ORPHAN_DAYS": "7",
+                "SQL_LINK_SERVICE_LOCAL_FALLBACK_PRUNE_MAX_FILES": "800",
+                "RETENTION_STALE_PURGE_LOW_VALUE_DAYS": "3",
+                "RETENTION_STALE_PURGE_MEDIUM_VALUE_DAYS": "14",
+                "RETENTION_STALE_PURGE_HIGH_VALUE_DAYS": "30",
+                "RETENTION_STALE_PURGE_CRITICAL_VALUE_DAYS": "90",
+                "RETENTION_STALE_PURGE_MAX_FILES": "8000",
+                "RETENTION_STALE_PURGE_MAX_GB": "20",
                 "SQL_LINK_SERVICE_SHARD_EXPLANATIONS_MAX_FILES": explanation_max_files,
                 "SQL_LINK_SERVICE_SHARD_CRYPTO_EXPLANATIONS_MAX_FILES": explanation_max_files,
                 "SQL_LINK_SERVICE_SHARD_SUPPORT_WATCHDOG_MAX_LINES_PER_FILE": "96000",
@@ -312,6 +342,15 @@ def _profile_env(
                 "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "140000",
                 "SQL_LINK_SERVICE_HOT_MAX_ROWS": "1200000",
                 "SQL_LINK_SERVICE_HOT_DAYS": "4",
+                "SQL_LINK_SERVICE_QUEUE_MAX_DB_GB": "10",
+                "SQL_LINK_SERVICE_QUEUE_MAX_ROWS": "220000",
+                "SQL_LINK_SERVICE_QUEUE_ORPHAN_DAYS": "10",
+                "RETENTION_STALE_PURGE_LOW_VALUE_DAYS": "5",
+                "RETENTION_STALE_PURGE_MEDIUM_VALUE_DAYS": "21",
+                "RETENTION_STALE_PURGE_HIGH_VALUE_DAYS": "45",
+                "RETENTION_STALE_PURGE_CRITICAL_VALUE_DAYS": "90",
+                "RETENTION_STALE_PURGE_MAX_FILES": "6500",
+                "RETENTION_STALE_PURGE_MAX_GB": "12",
                 "SQL_LINK_SERVICE_SHARD_EXPLANATIONS_MAX_FILES": "4",
                 "SQL_LINK_SERVICE_SHARD_CRYPTO_EXPLANATIONS_MAX_FILES": "4",
                 "SQL_LINK_SERVICE_SHARD_SUPPORT_WATCHDOG_MAX_LINES_PER_FILE": "96000",
@@ -357,6 +396,7 @@ def _profile_env(
             "LOG_SHADOW_PNL_ATTRIBUTION": "1",
             "SQL_LINK_SERVICE_INTERVAL_SECONDS": "45",
             "SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB": "2",
+            "RETENTION_STALE_PURGE_MAX_GB": "8",
         }
     )
     return base
@@ -386,6 +426,8 @@ def build_payload(
     support_pending_lines = _safe_int(backpressure.get("pending_lines_support_telemetry"), 0)
     stale_stage_pending_lines = _safe_int(backpressure.get("pending_lines_stale_stage"), 0)
     retention_debt_gb = _safe_float(((storage_control.get("storage") or {}).get("retention_debt_gb")), _safe_float(((health_gates.get("storage_pressure") or {}).get("retention_debt_gb")), 0.0))
+    pressure_index = _safe_float(storage_control.get("pressure_index"), 0.0)
+    storage_severity = str(storage_control.get("severity") or "")
     hard_gate_flags = health_gates.get("hard_gates") if isinstance(health_gates.get("hard_gates"), dict) else {}
     storage_hard_gate = any(
         bool(hard_gate_flags.get(key, False))
@@ -430,6 +472,8 @@ def build_payload(
         stale_stage_pending_lines=stale_stage_pending_lines,
         retention_debt_gb=retention_debt_gb,
         route_drift=route_drift,
+        pressure_index=pressure_index,
+        storage_severity=storage_severity,
     )
     env_overrides = _profile_env(
         profile_name,
@@ -505,6 +549,8 @@ def build_payload(
             "support_pending_lines": int(support_pending_lines),
             "stale_stage_pending_lines": int(stale_stage_pending_lines),
             "retention_debt_gb": round(float(retention_debt_gb), 3),
+            "pressure_index": round(float(pressure_index), 3),
+            "storage_severity": storage_severity,
         },
         "queue_watermarks": queue_watermarks,
         "sql_primary_db": {
@@ -517,6 +563,20 @@ def build_payload(
         "throttle_controls": {
             "deferred_files_budget": _safe_int(env_overrides.get("INGEST_MAX_DEFERRED_FILES"), 0),
             "cold_files_budget": _safe_int(env_overrides.get("JSONL_SQL_MAX_COLD_LANE_FILES"), 0),
+            "queue_prune_orphans": env_overrides.get("SQL_LINK_SERVICE_QUEUE_PRUNE_ORPHANS"),
+            "queue_orphan_days": _safe_int(env_overrides.get("SQL_LINK_SERVICE_QUEUE_ORPHAN_DAYS"), 0),
+            "queue_max_db_gb": _safe_float(env_overrides.get("SQL_LINK_SERVICE_QUEUE_MAX_DB_GB"), 0.0),
+            "queue_max_rows": _safe_int(env_overrides.get("SQL_LINK_SERVICE_QUEUE_MAX_ROWS"), 0),
+            "local_fallback_prune_enabled": env_overrides.get("SQL_LINK_SERVICE_AUTO_LOCAL_FALLBACK_PRUNE"),
+            "local_fallback_prune_max_files": _safe_int(env_overrides.get("SQL_LINK_SERVICE_LOCAL_FALLBACK_PRUNE_MAX_FILES"), 0),
+            "stale_stage_enabled": env_overrides.get("RETENTION_STALE_STAGE_ENABLED"),
+            "stale_purge_enabled": env_overrides.get("RETENTION_STALE_PURGE_ENABLED"),
+            "stale_purge_low_value_days": _safe_int(env_overrides.get("RETENTION_STALE_PURGE_LOW_VALUE_DAYS"), 0),
+            "stale_purge_medium_value_days": _safe_int(env_overrides.get("RETENTION_STALE_PURGE_MEDIUM_VALUE_DAYS"), 0),
+            "stale_purge_high_value_days": _safe_int(env_overrides.get("RETENTION_STALE_PURGE_HIGH_VALUE_DAYS"), 0),
+            "stale_purge_critical_value_days": _safe_int(env_overrides.get("RETENTION_STALE_PURGE_CRITICAL_VALUE_DAYS"), 0),
+            "stale_purge_max_files": _safe_int(env_overrides.get("RETENTION_STALE_PURGE_MAX_FILES"), 0),
+            "stale_purge_max_gb": _safe_float(env_overrides.get("RETENTION_STALE_PURGE_MAX_GB"), 0.0),
             "log_api_calls": env_overrides.get("LOG_API_CALLS"),
             "log_loop_state": env_overrides.get("LOG_LOOP_STATE"),
             "log_data_ingress": env_overrides.get("LOG_DATA_INGRESS"),

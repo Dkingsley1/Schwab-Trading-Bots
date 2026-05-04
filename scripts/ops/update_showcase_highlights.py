@@ -405,13 +405,15 @@ def _build_snapshot() -> dict[str, Any]:
         "likely_environment_mismatch": "No module named 'mlx'" in training_failure_reason,
     }
 
+    pytorch_disabled = bool(pytorch_replay.get("disabled", False)) or str(pytorch_replay.get("mode") or "").startswith("disabled")
     pytorch_summary = {
+        "disabled": pytorch_disabled,
         "status": str(pytorch_assist.get("status") or ""),
-        "assist_candidate_count": len(pytorch_candidates),
-        "assist_candidate_profiles": [str((row or {}).get("source_profile") or "") for row in pytorch_candidates if isinstance(row, Mapping)],
-        "runs_tracked": _safe_int(pytorch_scoreboard.get("runs_tracked"), 0),
-        "positive_calibrated_runs": _safe_int(pytorch_scoreboard.get("positive_calibrated_runs"), 0),
-        "active_assist_candidate_runs": _safe_int(pytorch_scoreboard.get("active_assist_candidate_runs"), 0),
+        "assist_candidate_count": 0 if pytorch_disabled else len(pytorch_candidates),
+        "assist_candidate_profiles": [] if pytorch_disabled else [str((row or {}).get("source_profile") or "") for row in pytorch_candidates if isinstance(row, Mapping)],
+        "runs_tracked": 0 if pytorch_disabled else _safe_int(pytorch_scoreboard.get("runs_tracked"), 0),
+        "positive_calibrated_runs": 0 if pytorch_disabled else _safe_int(pytorch_scoreboard.get("positive_calibrated_runs"), 0),
+        "active_assist_candidate_runs": 0 if pytorch_disabled else _safe_int(pytorch_scoreboard.get("active_assist_candidate_runs"), 0),
         "recommendations": pytorch_replay.get("recommendations") if isinstance(pytorch_replay.get("recommendations"), list) else [],
     }
     autonomy_summary = {
@@ -563,7 +565,7 @@ def _render_highlights_markdown(snapshot: Mapping[str, Any]) -> str:
         f"- Crypto news coverage: `{int(_safe_float(crypto_ctx.get('news_ok_source_count'), 0.0))}/{int(_safe_float(crypto_ctx.get('news_source_count'), 0.0))}`",
         f"- Correlation mode: `{str(correlation.get('mode') or 'exact')}`",
         f"- Last training result: `{int(_safe_float(training.get('trained_count'), 0.0))} trained / {int(_safe_float(training.get('failure_count'), 0.0))} failed`",
-        f"- PyTorch shadow-assist candidates: `{_safe_int(pytorch_summary.get('assist_candidate_count'), 0)}`",
+        f"- PyTorch shadow-assist: `disabled` (MLX-primary live runtime)" if pytorch_summary.get("disabled") else f"- PyTorch shadow-assist candidates: `{_safe_int(pytorch_summary.get('assist_candidate_count'), 0)}`",
         f"- Autonomy control plane: `{autonomy_summary.get('autonomy_score', 0.0):.2f}/100` (`{autonomy_summary.get('overall_status', '')}`)",
         f"- Architecture upgrades: `{_safe_int(architecture_summary.get('ready_count'), 0)}/{_safe_int(architecture_summary.get('upgrade_count'), 0)}` ready proof surfaces",
         "",
@@ -586,7 +588,9 @@ def _render_highlights_markdown(snapshot: Mapping[str, Any]) -> str:
             f"- Live operating posture: `{readiness_summary.get('live_status', 'unknown')}` at `{readiness_summary.get('live_score', 0.0):.2f}/100` with runtime separation `{readiness_summary.get('runtime_status', 'unknown')}`.",
             f"- Watchdog coverage: `{_safe_int(readiness_summary.get('watchdog_healthy_targets'), 0)}/{_safe_int(readiness_summary.get('watchdog_target_count'), 0)}` healthy targets, restart storms `{_safe_int(readiness_summary.get('watchdog_restart_storms'), 0)}`, alerts `{_safe_int(readiness_summary.get('watchdog_alerts'), 0)}`.",
             f"- Training lane: `{training_summary.get('trained_count', 0)}` trained / `{training_summary.get('failure_count', 0)}` failed, artifact `{_fmt_age_hours(training_summary.get('age_hours'))}`.",
-            f"- PyTorch research lane: `{_safe_int(pytorch_summary.get('assist_candidate_count'), 0)}` assist candidates over `{_safe_int(pytorch_summary.get('runs_tracked'), 0)}` tracked runs.",
+            "- PyTorch research lane: `disabled` during MLX-primary live collection."
+            if pytorch_summary.get("disabled")
+            else f"- PyTorch research lane: `{_safe_int(pytorch_summary.get('assist_candidate_count'), 0)}` assist candidates over `{_safe_int(pytorch_summary.get('runs_tracked'), 0)}` tracked runs.",
             f"- Autonomy posture: `{autonomy_summary.get('overall_status', 'unknown')}` at `{autonomy_summary.get('autonomy_score', 0.0):.2f}/100`, triggered playbooks `{_safe_int(autonomy_summary.get('playbook_count'), 0)}`, open incidents `{_safe_int(autonomy_summary.get('open_incident_count'), 0)}`.",
             f"- Architecture posture: `{_safe_int(architecture_summary.get('ready_count'), 0)}/{_safe_int(architecture_summary.get('upgrade_count'), 0)}` proof surfaces ready, host profile `{architecture_summary.get('portable_host_profile', 'unknown')}`, portable proof `{architecture_summary.get('portable_proof_status', 'unknown')}`.",
         ]
@@ -741,7 +745,11 @@ def _render_special_features_html(snapshot: Mapping[str, Any]) -> str:
         ("Active Bots", str(bot_summary.get("active_count", 0)), f"of {bot_summary.get('total_registered', 0)} registered"),
         ("Running Lanes", str(lane_summary.get("running_count", 0)), f"of {lane_summary.get('lane_count', 0)} tracked"),
         ("Training Lane", f"{training_summary.get('trained_count', 0)} trained / {training_summary.get('failure_count', 0)} failed", _fmt_age_hours(training_summary.get("age_hours"))),
-        ("PyTorch Sidecar", str(_safe_int(pytorch_summary.get("assist_candidate_count"), 0)), f"{_safe_int(pytorch_summary.get('runs_tracked'), 0)} tracked runs"),
+        (
+            "PyTorch Sidecar",
+            "disabled" if pytorch_summary.get("disabled") else str(_safe_int(pytorch_summary.get("assist_candidate_count"), 0)),
+            "MLX-primary" if pytorch_summary.get("disabled") else f"{_safe_int(pytorch_summary.get('runs_tracked'), 0)} tracked runs",
+        ),
     ]
     proof_cards = []
     for idx, (label, value, detail) in enumerate(proof_rows):
@@ -968,7 +976,9 @@ def _render_readme_snippet(snapshot: Mapping[str, Any]) -> str:
         f"- Architecture upgrades: `{_safe_int(architecture_summary.get('ready_count'), 0)}/{_safe_int(architecture_summary.get('upgrade_count'), 0)}` ready proof surfaces, host profile `{architecture_summary.get('portable_host_profile', 'unknown')}`, portable proof `{architecture_summary.get('portable_proof_status', 'unknown')}`.",
         f"- Crypto context: `{int(_safe_float(crypto_ctx.get('ok_source_count'), 0.0))}/{int(_safe_float(crypto_ctx.get('source_count'), 0.0))}` healthy sources and `{int(_safe_float(crypto_ctx.get('news_ok_source_count'), 0.0))}/{int(_safe_float(crypto_ctx.get('news_source_count'), 0.0))}` healthy news feeds.",
         f"- Correlation overlay: mode `{str(correlation.get('mode') or 'exact')}`, aligned pairs `{int(_safe_float(correlation.get('aligned_pairs'), 0.0))}`.",
-        f"- PyTorch sidecar: `{_safe_int(pytorch_summary.get('assist_candidate_count'), 0)}` active assist candidates across `{_safe_int(pytorch_summary.get('runs_tracked'), 0)}` tracked runs.",
+        "- PyTorch sidecar: `disabled` so live collection stays MLX-primary."
+        if pytorch_summary.get("disabled")
+        else f"- PyTorch sidecar: `{_safe_int(pytorch_summary.get('assist_candidate_count'), 0)}` active assist candidates across `{_safe_int(pytorch_summary.get('runs_tracked'), 0)}` tracked runs.",
     ]
     if top_bots:
         formatted = ", ".join(f"`{row['bot_id']}` ({_fmt_pct(_safe_float(row['test_accuracy'], 0.0))})" for row in top_bots)

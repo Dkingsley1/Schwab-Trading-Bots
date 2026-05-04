@@ -88,6 +88,46 @@ def test_paper_trade_lock_disables_live_executor(monkeypatch) -> None:
     assert args.with_live_executor is False
 
 
+def test_run_all_sleeves_breaker_respects_data_quality_warmup() -> None:
+    args = argparse.Namespace(
+        broker="schwab",
+        breaker_min_data_quality=75.0,
+        breaker_max_blocked_rate=0.35,
+        breaker_min_pnl_proxy=-0.02,
+        breaker_data_quality_grace_seconds=900,
+    )
+    metrics = {
+        "data_quality_score": "25.00",
+        "combined_blocked_rate": "0.000000",
+        "stocks_pnl_proxy": "0.000000",
+    }
+
+    reasons, domain = run_all_sleeves._breaker_reasons(metrics, args, runtime_seconds=120.0)
+
+    assert domain == "stocks"
+    assert reasons == []
+
+
+def test_run_all_sleeves_breaker_enforces_data_quality_after_warmup() -> None:
+    args = argparse.Namespace(
+        broker="schwab",
+        breaker_min_data_quality=75.0,
+        breaker_max_blocked_rate=0.35,
+        breaker_min_pnl_proxy=-0.02,
+        breaker_data_quality_grace_seconds=900,
+    )
+    metrics = {
+        "data_quality_score": "25.00",
+        "combined_blocked_rate": "0.000000",
+        "stocks_pnl_proxy": "0.000000",
+    }
+
+    reasons, domain = run_all_sleeves._breaker_reasons(metrics, args, runtime_seconds=901.0)
+
+    assert domain == "stocks"
+    assert reasons == ["data_quality_low:25.00"]
+
+
 def test_run_all_sleeves_heartbeat_watch_respects_startup_grace(tmp_path) -> None:
     heartbeat = tmp_path / "execution_lane_paper_latest.json"
     spec = run_all_sleeves.JobSpec(
@@ -252,6 +292,8 @@ def test_livefeed_refresh_starts_fx_when_all_source_requested() -> None:
     assert 'if [[ "$SOURCE" == "fx" || "$SOURCE" == "all" ]]; then' in text
     assert '"$PROJECT_ROOT/scripts/ops/opsctl.sh" fx-start --paper --force-restart --live-data' in text
     assert 'if [[ "$SOURCE" == "fx" || "$SOURCE" == "schwab" || "$SOURCE" == "all" ]]; then' not in text
+    assert "livefeed-refresh|live-feed-refresh [paper default] [--dry-run]" in text
+    assert "livefeed_refresh_completed source=$SOURCE" in text
 
 
 def test_opsctl_exposes_commands_hygiene() -> None:
@@ -286,6 +328,12 @@ def test_opsctl_exposes_commands_hygiene() -> None:
     assert "collector-contracts" in text
     assert "scripts/collector_contracts.py" in text
     assert "runtime-throttle" in text
+    assert "post-restart-settle" in text
+    assert "post_restart_settlement.py" in text
+    assert "alpha-intelligence-evolution|alpha-advancement" in text
+    assert "alpha_intelligence_evolution_expansion.py" in text
+    assert "intelligence-layer-advancement|intelligence-layer-v2" in text
+    assert "intelligence_layer_advancement_expansion.py" in text
 
 
 def test_macro_context_sync_does_not_pass_json_to_bls_helper() -> None:
@@ -425,6 +473,39 @@ def test_options_paper_profile_defaults_are_narrowed() -> None:
     assert expected in opsctl
 
 
+def test_paper_mirror_all_active_defaults_to_calm_mode() -> None:
+    opsctl = _read(OPSCTL_PATH)
+    runtime_env = _read(PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh")
+    start_stack = _read(PROJECT_ROOT / "scripts" / "ops" / "start_stack.sh")
+    shadow_loop = _read(PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py")
+    process_watchdog = _read(PROJECT_ROOT / "scripts" / "ops" / "process_watchdog.py")
+
+    for text in (opsctl, runtime_env, start_stack):
+        assert 'PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0' in text
+        assert 'PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1' not in text
+    assert 'os.getenv("PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS", "0")' in shadow_loop
+    assert "env.setdefault('PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS', '0')" in process_watchdog
+    assert "--require-coinbase-futures" in process_watchdog
+    assert "OPS_WATCHDOG_REQUIRE_COINBASE_FUTURES', '1'" in process_watchdog
+    assert "shadow_loop_default_crypto_coinbase_*.json" in process_watchdog
+    assert "heartbeat_fresh = " in process_watchdog
+    assert "'process_live': bool(process_live)" in process_watchdog
+    assert "--require-coinbase-futures" in opsctl
+
+
+def test_runtime_env_has_keychain_handoff_and_calm_support_defaults() -> None:
+    runtime_env = _read(PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh")
+
+    assert "SCHWAB_KEYCHAIN_FALLBACK_ENABLED" in runtime_env
+    assert "security find-generic-password" in runtime_env
+    assert "schwab_trading_bot/SCHWAB_API_KEY" in runtime_env
+    assert "schwab_trading_bot/SCHWAB_SECRET" in runtime_env
+    assert "schwab_trading_bot/SCHWAB_REDIRECT" in runtime_env
+    assert 'ASYNC_PIPELINE_WORKERS="${ASYNC_PIPELINE_WORKERS:-4}"' in runtime_env
+    assert 'OPS_SUPPORT_JOBS_BACKGROUND_POLICY="${OPS_SUPPORT_JOBS_BACKGROUND_POLICY:-1}"' in runtime_env
+    assert 'SUPPORT_MAINTENANCE_CONCURRENCY="${SUPPORT_MAINTENANCE_CONCURRENCY:-2}"' in runtime_env
+
+
 def test_shadow_watchdog_defaults_cover_fx_and_dividend_capture() -> None:
     watchdog = _read(WATCHDOG_INSTALL_PATH)
     run_watchdog = _read(PROJECT_ROOT / "scripts" / "ops" / "run_shadow_watchdog_launchd.sh")
@@ -441,6 +522,26 @@ def test_shadow_watchdog_defaults_cover_fx_and_dividend_capture() -> None:
     assert "--watch-dividend-capture" in run_watchdog
 
 
+def test_livefeed_refresh_market_correlation_is_async_by_default() -> None:
+    opsctl = _read(OPSCTL_PATH)
+
+    assert "LIVEFEED_REFRESH_MARKET_CORRELATION_SYNC" in opsctl
+    assert "LIVEFEED_REFRESH_MARKET_CORRELATION_ASYNC:-1" in opsctl
+    assert "market_correlation_running" in opsctl
+    assert "LIVEFEED_REFRESH_MARKET_CORRELATION_TIMEOUT_SECONDS:-90" in opsctl
+    assert "market_correlation_sync_started_async" in opsctl
+    assert 'nohup "$PROJECT_ROOT/scripts/ops/opsctl.sh" market-correlation-sync \\' in opsctl
+    assert 'MARKET_CRYPTO_CORRELATION_TIMEOUT_SECONDS:-90' in opsctl
+    assert 'MARKET_CRYPTO_CORRELATION_LOOKBACK_DAYS:-1' in opsctl
+    assert 'bounded_market_crypto_correlation_sync.py' in opsctl
+    assert 'exec "$PROJECT_ROOT/scripts/ops/opsctl.sh" market-correlation-sync \\' in _read(
+        PROJECT_ROOT / "scripts" / "ops" / "run_market_crypto_correlation_launchd.sh"
+    )
+    assert "bounded_market_crypto_correlation_sync.py" in _read(PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py")
+    assert '"--timeout-seconds",' in _read(PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py")
+    assert "market-correlation-sync [--lookback-days N] [--bucket-seconds N] [--min-points N] [--timeout-seconds N] [--json]" in opsctl
+
+
 def test_live_feed_tail_has_memory_aware_heavy_defaults() -> None:
     text = _read(LIVE_FEED_TAIL_PATH)
 
@@ -449,12 +550,40 @@ def test_live_feed_tail_has_memory_aware_heavy_defaults() -> None:
     assert "LIVE_FEED_HEAVY_PRESSURE_LINES" in text
     assert "LIVE_FEED_DECISION_FILE_MODE_PRESSURE" in text
     assert "LIVE_FEED_INCLUDE_WATCHDOG_LOG_DEFAULT" in text
+    assert "LIVE_FEED_COLOR" in text
+    assert "LIVE_FEED_COLOR_PALETTE" in text
+    assert "--color|--highlight" in text
+    assert "--no-color|--no-highlight" in text
+    assert "--red-only|--red" in text
+    assert "--semantic-color|--semantic-colors" in text
+    assert "COLOR_ENABLED" in text
+    assert "COLOR_PALETTE" in text
+    assert "highlight_enabled" in text
+    assert "highlight_palette" in text
+    assert "LIVE_FEED_HEAVY_INCLUDE_ALL_DECISION_DIRS" in text
+    assert "LIVE_FEED_HEAVY_MAX_FOLLOW_FILES" in text
+    assert "LIVE_FEED_HEAVY_TAIL_BYTES" in text
+    assert "LIVE_FEED_HEAVY_BOOTSTRAP_MAX_LINES" in text
+    assert "LIVE_FEED_HEAVY_SNAPSHOT_MAX_LINES" in text
+    assert "LIVE_FEED_MAX_LINE_CHARS" in text
+    assert "LIVE_FEED_DECISION_MAX_AGE_HOURS" in text
+    assert 'tail -c "$HEAVY_TAIL_BYTES"' in text
+    assert "truncate_live_lines" in text
+    assert "colorize_line" in text
+    assert "[ALERT]" in text
+    assert "[WATCH]" in text
+    assert "[OK]" in text
+    assert "[FLOW]" in text
+    assert "append_decision_file" in text
+    assert "[decision] ts=" in text
     assert "--heavy" in text
     assert '"$SOURCE" == "infra"' in text
     assert "append_heavy_health_files" in text
     assert "--include-watchdog-log" in text
     assert '--no-watchdog-log' in text
     assert 'if [[ "$SOURCE" == "all" && "$INCLUDE_DECISIONS" == "1" ]]' in text
+    assert 'HEAVY_INCLUDE_ALL_DECISION_DIRS" == "1"' in text
+    assert "capped_files" in text
     assert 'if [[ "$DECISION_FILE_MODE" == "latest_only" ]]' in text
     assert 'if [[ "$INCLUDE_WATCHDOG_LOG" == "1" ]]; then' in text
 

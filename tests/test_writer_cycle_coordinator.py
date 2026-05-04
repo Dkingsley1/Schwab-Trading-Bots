@@ -209,3 +209,154 @@ def test_writer_cycle_coordinator_applies_drain_handoff_while_writer_active(tmp_
     assert payload["summary"]["maintenance_applied"] is False
     assert payload["steps"]["external_backlog_drain"]["status"] == "ok"
     assert "storage_maintenance_lane" not in payload["steps"]
+
+
+def test_writer_state_snapshot_ignores_unheld_stale_lock_file(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    locks = project_root / "governance" / "locks"
+    health.mkdir(parents=True, exist_ok=True)
+    locks.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        health / "sql_link_service_progress_latest.json",
+        {
+            "timestamp_utc": "2026-05-02T10:00:00+00:00",
+            "status": "running",
+            "running": True,
+            "current_step": "merge_primary",
+        },
+    )
+    (locks / "jsonl_sql_writer.lock").write_text("pid=123 started=old cmd=sql_link_shard_manager", encoding="utf-8")
+
+    state = src.writer_state_snapshot(project_root, now_utc=src.datetime.fromisoformat("2026-05-02T12:00:00+00:00"))
+
+    assert state["writer_lock_held"] is False
+    assert state["active"] is False
+
+
+def test_stale_writer_detection_uses_semantic_cycle_progress_not_heartbeat_only() -> None:
+    state = {
+        "active": True,
+        "writer_lock_held": True,
+        "current_step": "shard_linking",
+        "progress_age_minutes": 0.25,
+        "cycle_age_minutes": 310.0,
+        "completed_shard_count": 12,
+        "planned_shard_count": 18,
+        "timed_out_shard_count": 4,
+        "completed_merge_count": 0,
+        "merged_rows_this_cycle": 0,
+    }
+
+    assert src._stale_writer_detected(state, stale_progress_minutes=30.0) is True
+
+
+def test_stale_writer_detection_allows_long_cycle_with_recent_semantic_progress() -> None:
+    state = {
+        "active": True,
+        "writer_lock_held": True,
+        "current_step": "merge_primary",
+        "progress_age_minutes": 0.25,
+        "cycle_age_minutes": 45.0,
+        "completed_shard_count": 18,
+        "planned_shard_count": 18,
+        "timed_out_shard_count": 0,
+        "completed_merge_count": 4,
+        "merged_rows_this_cycle": 24000,
+    }
+
+    assert src._stale_writer_detected(state, stale_progress_minutes=30.0) is False
+
+
+def test_writer_cycle_coordinator_recovers_stale_writer_before_drain(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    (project_root / "governance" / "health").mkdir(parents=True, exist_ok=True)
+
+    states = [
+        {
+            "active": True,
+            "running": True,
+            "writer_lock_held": True,
+            "writer_lock_owner": "pid=123 started=old cmd=sql_link_shard_manager",
+            "current_step": "merge_primary",
+            "progress_age_minutes": 45.0,
+            "merged_rows_this_cycle": 16,
+        },
+        {
+            "active": False,
+            "running": False,
+            "writer_lock_held": False,
+            "writer_lock_owner": "",
+            "current_step": "complete",
+            "progress_age_minutes": 0.0,
+            "merged_rows_this_cycle": 16,
+        },
+    ]
+
+    def _fake_writer_state(*args, **kwargs) -> dict:
+        if states:
+            return states.pop(0)
+        return {
+            "active": False,
+            "running": False,
+            "writer_lock_held": False,
+            "writer_lock_owner": "",
+            "current_step": "complete",
+            "progress_age_minutes": 0.0,
+            "merged_rows_this_cycle": 16,
+        }
+
+    monkeypatch.setattr(src, "writer_state_snapshot", _fake_writer_state)
+    monkeypatch.setattr(
+        src,
+        "_terminate_stale_writer",
+        lambda *args, **kwargs: {
+            "attempted": True,
+            "needed": True,
+            "pid": 123,
+            "terminated": True,
+            "lock_released": True,
+            "reason": "terminated",
+        },
+    )
+    monkeypatch.setattr(
+        src.drain_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "ready",
+            "recommended_now": True,
+            "blocked_reasons": [],
+            "top_actions": ["drain deferred backlog"],
+            "off_hours_window": {"active": True},
+            "aged_candidate_files": 2,
+            "writer_busy": True,
+            "follow_through": {"status": "handoff_requested"},
+        },
+    )
+    monkeypatch.setattr(
+        src.maintenance_src,
+        "_priority_retention_focus",
+        lambda *args, **kwargs: {"enabled": False, "focus_shards": [], "top_actions": []},
+    )
+
+    def _fake_run(cmd: list[str], *, cwd: Path, payload_path: Path | None = None, timeout_sec: int) -> dict:
+        joined = " ".join(cmd)
+        if "external_backlog_drain.py" in joined:
+            payload = {"ok": True, "overall_status": "drain_active", "writer_busy": False, "follow_through": {"status": "completed"}}
+        elif "ingestion_storage_control.py" in joined:
+            payload = {"overall_status": "blocked"}
+        elif "runtime_gate_dashboard.py" in joined:
+            payload = {"overall": {"status": "degraded"}}
+        elif "operator_cockpit.py" in joined:
+            payload = {"overall_status": "degraded"}
+        else:
+            raise AssertionError(f"unexpected command: {cmd}")
+        return {"cmd": cmd, "rc": 0, "duration_ms": 5.0, "payload": payload, "stdout_tail": "", "stderr_tail": "", "timed_out": False}
+
+    monkeypatch.setattr(src, "_run_json_command", _fake_run)
+
+    payload = src.build_payload(project_root, apply=True, poll_seconds=0.0, wait_timeout_seconds=30.0)
+
+    assert payload["summary"]["stale_writer_detected"] is True
+    assert payload["summary"]["stale_writer_terminated"] is True
+    assert payload["steps"]["external_backlog_drain"]["status"] == "ok"

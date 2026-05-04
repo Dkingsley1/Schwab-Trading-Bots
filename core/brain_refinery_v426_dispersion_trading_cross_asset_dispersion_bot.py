@@ -15,7 +15,7 @@ except ModuleNotFoundError:
     from core.registry_backed_collection_bot import describe_registry_backed_bot, train_registry_backed_bot
 
 BOT_ID = 'brain_refinery_v426_dispersion_trading_cross_asset_dispersion_bot'
-GENERATED_AT_UTC = '2026-05-01T17:00:29.003349+00:00'
+GENERATED_AT_UTC = '2026-05-02T22:30:58.355346+00:00'
 BOT_SPEC = {'active': True,
  'allocation_enabled': False,
  'bootstrap_teacher_bot_ids': ['brain_refinery_v354_rainbow_options_cross_asset_correlation_skew_bot',
@@ -76,7 +76,7 @@ BOT_SPEC = {'active': True,
  'exclude_from_training': True,
  'execution_enabled': False,
  'execution_policy_label': 'research_only_no_execution',
- 'freshness_slo_seconds': 300,
+ 'freshness_slo_seconds': 1800,
  'label_contract': {},
  'labeling_tags': ['research_only',
                    'collection_only',

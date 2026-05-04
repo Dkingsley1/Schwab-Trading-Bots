@@ -61,6 +61,14 @@ def test_ingestion_storage_control_estimates_drain_time_and_retention_pressure(t
             "throttle_controls": {
                 "deferred_files_budget": 0,
                 "cold_files_budget": 0,
+                "queue_prune_orphans": "1",
+                "queue_orphan_days": 7,
+                "queue_max_db_gb": 8,
+                "stale_purge_low_value_days": 3,
+                "stale_purge_medium_value_days": 14,
+                "stale_purge_high_value_days": 30,
+                "stale_purge_critical_value_days": 90,
+                "stale_purge_max_gb": 20,
                 "log_api_calls": "0",
                 "log_loop_state": "0",
                 "log_data_ingress": "0",
@@ -82,8 +90,26 @@ def test_ingestion_storage_control_estimates_drain_time_and_retention_pressure(t
         health / "storage_failback_sync_latest.json",
         {"route_verification": {"verification_state": "warning", "ready_count": 1, "tracked_count": 3, "coverage_ratio": 0.333333, "mismatches": ["data/jsonl_link.sqlite3"]}},
     )
-    _write_json(health / "stale_artifact_sweeper_bot_latest.json", {"summary": {"candidate_files": 12, "staged_files": 9}})
-    _write_json(health / "stale_artifact_reaper_bot_latest.json", {"summary": {"deleted_files": 3}})
+    _write_json(health / "stale_artifact_sweeper_bot_latest.json", {"summary": {"candidate_files": 12, "candidate_bytes": 4096, "staged_files": 9, "staged_bytes": 3072}})
+    _write_json(
+        health / "stale_artifact_reaper_bot_latest.json",
+        {
+            "summary": {
+                "candidate_files": 7,
+                "candidate_bytes": 2048,
+                "candidate_files_raw": 9,
+                "candidate_bytes_raw": 4096,
+                "deleted_files": 3,
+                "deleted_bytes": 1024,
+                "delete_errors": 1,
+                "budget_limited": True,
+                "skipped_by_budget_files": 2,
+                "skipped_by_tier_files": 4,
+                "manifest_lines_after": 12,
+                "purge_policy": {"low_value_days": 3, "medium_value_days": 14},
+            }
+        },
+    )
     _write_json(health / "data_retention_latest.json", {"deleted": 22})
     _write_json(
         health / "jsonl_sql_ingestion_health_trading_latest.json",
@@ -102,8 +128,14 @@ def test_ingestion_storage_control_estimates_drain_time_and_retention_pressure(t
     assert payload["storage"]["aged_backlog_candidate_files"] == 4
     assert payload["throttling"]["deferred_files_budget"] == 0
     assert payload["throttling"]["backlog_drain_deferred_budget"] == 6
+    assert payload["throttling"]["queue_prune_orphans"] == "1"
+    assert payload["throttling"]["stale_purge_low_value_days"] == 3
     assert payload["backpressure"]["support_pending_lines"] == 220000
     assert payload["backpressure"]["stale_stage_pending_lines"] == 580000
+    assert payload["storage"]["stale_stage_deleted_bytes"] == 1024
+    assert payload["storage"]["stale_stage_budget_limited"] is True
+    assert payload["storage"]["stale_stage_delete_errors"] == 1
+    assert payload["storage"]["stale_stage_purge_policy"]["low_value_days"] == 3
     assert payload["backpressure_quality_score"] < 50.0
     assert payload["steady_state"]["target_status"]["target_breach_count"] >= 4
     assert payload["recommended_operating_mode"] == "maintenance_drain_window"
@@ -318,6 +350,169 @@ def test_ingestion_storage_control_prefers_live_backpressure_over_stale_governor
     assert payload["bounded_recovery_contract"]["stale_hard_gate_suppressed"] == ["ingestion_backpressure_overload"]
     assert payload["bounded_recovery_contract"]["hard_gate_keys"] == []
     assert payload["overall_status"] == "ready"
+
+
+def test_ingestion_storage_control_stabilizes_tiny_hot_queue_under_active_drain(tmp_path: Path) -> None:
+    now = datetime.now(timezone.utc)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 586,
+            "pending_lines_total": 586,
+            "pending_lines_deferred": 0,
+            "pending_lines_cold": 0,
+            "pending_lines_support_telemetry": 0,
+            "pending_lines_stale_stage": 0,
+            "pending_lines_threshold": 15000,
+            "oldest_pending_age_seconds": 19.4,
+            "oldest_age_threshold_seconds": 240.0,
+            "overload": False,
+        },
+    )
+    _write_json(
+        health / "sql_link_service_progress_latest.json",
+        {
+            "cycle_started_utc": (now - timedelta(seconds=25)).isoformat(),
+            "merged_rows_this_cycle": 1,
+        },
+    )
+    _write_json(health / "sql_link_service_latest.json", {"sqlite_wal_size_gb": 0.0})
+    _write_json(
+        health / "health_gates_latest.json",
+        {
+            "hard_gate_triggered": True,
+            "recommended_operating_mode": "maintenance_only",
+            "hard_gates": {"ingestion_backpressure_overload": True},
+            "storage_pressure": {"retention_debt_gb": 0.0, "severe_backpressure_overload": True},
+            "ingestion_pressure": {"severe_backpressure_overload": True},
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_governor_latest.json",
+        {
+            "profile": "critical_backpressure",
+            "sql_primary_db": {"route_drift": False},
+            "queue_watermarks": {"overall_status": "blocked"},
+            "writer_shedding": {"active": True, "level": "protect_core", "freeze_cold_lanes": True},
+        },
+    )
+    _write_json(
+        health / "external_backlog_drain_latest.json",
+        {
+            "overall_status": "drain_active",
+            "recommended_now": True,
+            "follow_through": {"progress_observed": False, "status": "handoff_requested"},
+            "drain_delta": {"core_pending_lines": 0, "total_pending_lines": 0},
+        },
+    )
+    _write_json(
+        health / "storage_failback_sync_latest.json",
+        {"route_verification": {"verification_state": "curated_ready", "ready_count": 3, "tracked_count": 3, "coverage_ratio": 1.0, "mismatches": []}},
+    )
+    _write_json(
+        health / "storage_resilience_control_latest.json",
+        {
+            "overall_status": "ready",
+            "resilience_score": 100,
+            "restore_drill_fresh": True,
+            "dual_root_ready": True,
+            "warm_standby_ready": True,
+            "unresolved_split_brain_conflicts": 0,
+        },
+    )
+    _write_json(
+        health / "jsonl_sql_ingestion_health_trading_latest.json",
+        {"timestamp_utc": now.isoformat(), "files_discovered": 2, "sqlite": {"invalid": 0}},
+    )
+
+    payload = src.build_payload(tmp_path, now_utc=now)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["severity"] == "stable"
+    assert payload["stabilization_contract"]["small_hot_queue_stable"] is True
+    assert payload["stabilization_contract"]["drain_minutes_total_bounded"] is True
+    assert payload["bounded_recovery_contract"]["stale_hard_gate_suppressed"] == ["ingestion_backpressure_overload"]
+    assert payload["bounded_recovery_contract"]["stale_severe_backpressure_suppressed"] == ["severe_backpressure_overload"]
+    assert payload["backpressure"]["estimated_total_drain_minutes"] == 15.0
+
+
+def test_ingestion_storage_control_tolerates_incidental_side_lane_trickle(tmp_path: Path) -> None:
+    now = datetime.now(timezone.utc)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 1058,
+            "pending_lines_total": 1061,
+            "pending_lines_deferred": 3,
+            "pending_lines_cold": 0,
+            "pending_lines_support_telemetry": 3,
+            "pending_lines_stale_stage": 0,
+            "pending_lines_threshold": 15000,
+            "oldest_pending_age_seconds": 2.9,
+            "oldest_age_threshold_seconds": 240.0,
+            "overload": False,
+        },
+    )
+    _write_json(
+        health / "sql_link_service_progress_latest.json",
+        {
+            "cycle_started_utc": (now - timedelta(seconds=18)).isoformat(),
+            "merged_rows_this_cycle": 0,
+        },
+    )
+    _write_json(
+        health / "health_gates_latest.json",
+        {
+            "hard_gate_triggered": True,
+            "hard_gates": {"ingestion_backpressure_overload": True},
+            "storage_pressure": {"retention_debt_gb": 0.0, "severe_backpressure_overload": True},
+            "ingestion_pressure": {"severe_backpressure_overload": True},
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_governor_latest.json",
+        {
+            "profile": "critical_backpressure",
+            "sql_primary_db": {"route_drift": False},
+            "writer_shedding": {"active": True, "level": "protect_core", "freeze_cold_lanes": True},
+        },
+    )
+    _write_json(
+        health / "external_backlog_drain_latest.json",
+        {
+            "overall_status": "drain_active",
+            "recommended_now": True,
+            "follow_through": {"progress_observed": False, "status": "handoff_requested"},
+        },
+    )
+    _write_json(
+        health / "storage_failback_sync_latest.json",
+        {"route_verification": {"verification_state": "curated_ready", "ready_count": 3, "tracked_count": 3, "coverage_ratio": 1.0, "mismatches": []}},
+    )
+    _write_json(
+        health / "storage_resilience_control_latest.json",
+        {
+            "overall_status": "ready",
+            "resilience_score": 100,
+            "restore_drill_fresh": True,
+            "dual_root_ready": True,
+            "warm_standby_ready": True,
+            "unresolved_split_brain_conflicts": 0,
+        },
+    )
+    _write_json(
+        health / "jsonl_sql_ingestion_health_trading_latest.json",
+        {"timestamp_utc": now.isoformat(), "files_discovered": 3, "sqlite": {"invalid": 0}},
+    )
+
+    payload = src.build_payload(tmp_path, now_utc=now)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["severity"] == "stable"
+    assert payload["stabilization_contract"]["small_hot_queue_stable"] is True
+    assert payload["backpressure"]["estimated_total_drain_minutes"] == 15.0
 
 
 def test_ingestion_storage_control_degrades_ready_state_when_storage_resilience_needs_work(tmp_path: Path) -> None:

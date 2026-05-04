@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,23 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _parse_dt(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     incident = load_json(health_root / "incident_timeline_latest.json")
@@ -37,14 +55,39 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     snapshot_cache = load_json(health_root / "broker_truth_shared_snapshot_schwab_latest.json")
 
     recent = incident.get("recent_incidents") if isinstance(incident.get("recent_incidents"), list) else []
-    write_failure_count = sum(1 for row in recent if isinstance(row, dict) and str(row.get("summary") or "").strip().lower() == "write_failure")
-    account_snapshot_count = sum(1 for row in recent if isinstance(row, dict) and str(row.get("summary") or "").strip().lower() == "get_accounts_snapshot")
+    write_failures = [
+        row
+        for row in recent
+        if isinstance(row, dict) and str(row.get("summary") or "").strip().lower() == "write_failure"
+    ]
+    account_snapshot_failures = [
+        row
+        for row in recent
+        if isinstance(row, dict) and str(row.get("summary") or "").strip().lower() == "get_accounts_snapshot"
+    ]
+    write_failure_count = len(write_failures)
+    account_snapshot_count_raw = len(account_snapshot_failures)
     pending_lines = _safe_int((queue.get("lane_counts") or {}).get("core", {}).get("pending_lines", queue.get("queue_depth", 0)), 0)
     drain_status = str(backlog_drain.get("overall_status") or "").strip().lower()
     runtime_clearance = str(((runtime.get("clearance_plan") or {}).get("clearance_state") or "")).strip().lower()
     hot_path_over_budget = _safe_int(((storage.get("pressure") or {}).get("hot_path_over_budget_bytes", 0)), 0)
     writer_busy = str(writer_progress.get("status") or "").strip().lower() in {"running", "busy"}
     snapshot_cache_ready = bool(snapshot_cache.get("fetched")) and bool(snapshot_cache.get("timestamp_utc"))
+    snapshot_cache_ts = _parse_dt(snapshot_cache.get("timestamp_utc"))
+    snapshot_failure_times = [
+        parsed
+        for parsed in (_parse_dt(row.get("timestamp_utc")) for row in account_snapshot_failures)
+        if parsed is not None
+    ]
+    last_snapshot_failure_ts = max(snapshot_failure_times) if snapshot_failure_times else None
+    snapshot_recovered_by_cache = bool(
+        account_snapshot_count_raw > 0
+        and snapshot_cache_ready
+        and snapshot_cache_ts is not None
+        and last_snapshot_failure_ts is not None
+        and snapshot_cache_ts >= last_snapshot_failure_ts
+    )
+    account_snapshot_count = 0 if snapshot_recovered_by_cache else account_snapshot_count_raw
     drain_delta = backlog_drain.get("drain_delta") if isinstance(backlog_drain.get("drain_delta"), dict) else {}
     follow_through = backlog_drain.get("follow_through") if isinstance(backlog_drain.get("follow_through"), dict) else {}
     blocked_reasons = [str(item).strip().lower() for item in (backlog_drain.get("blocked_reasons") or []) if str(item).strip()]
@@ -89,6 +132,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "recovery_state": recovery_state,
         "write_failure_count": write_failure_count,
         "account_snapshot_failure_count": account_snapshot_count,
+        "raw_account_snapshot_failure_count": account_snapshot_count_raw,
         "queue_depth": pending_lines,
         "external_backlog_status": drain_status,
         "runtime_clearance_state": runtime_clearance,
@@ -110,6 +154,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             ],
             "snapshot_probe_required": account_snapshot_count > 0,
             "snapshot_cache_ready": snapshot_cache_ready,
+            "snapshot_recovered_by_cache": snapshot_recovered_by_cache,
             "snapshot_probe_command": [
                 "./scripts/ops/opsctl.sh",
                 "token-refresh",
@@ -136,6 +181,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "snapshot_recovery_contract": {
             "cache_ready": snapshot_cache_ready,
             "cache_timestamp_utc": str(snapshot_cache.get("timestamp_utc") or ""),
+            "last_failure_timestamp_utc": last_snapshot_failure_ts.isoformat() if last_snapshot_failure_ts else "",
+            "recovered_by_fresh_cache": snapshot_recovered_by_cache,
             "stale_fallback_allowed": snapshot_cache_ready,
             "bounded_retry_count": 2 if account_snapshot_count > 0 else 0,
             "probe_required": account_snapshot_count > 0,

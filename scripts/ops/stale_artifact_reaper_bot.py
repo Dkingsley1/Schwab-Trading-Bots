@@ -41,12 +41,24 @@ def build_payload(
     stale_stage_root: Path,
     stale_stage_manifest: str,
     stale_purge_days: int,
+    stale_purge_low_value_days: int | None = None,
+    stale_purge_medium_value_days: int | None = None,
+    stale_purge_high_value_days: int | None = None,
+    stale_purge_critical_value_days: int | None = None,
+    max_delete_files: int = 5000,
+    max_delete_gb: float = 10.0,
 ) -> dict[str, Any]:
     manifest_path = retention._stale_manifest_path(stale_stage_root, stale_stage_manifest)
     purge = retention._purge_old_stale_stage(
         stale_root=stale_stage_root,
         manifest_path=manifest_path,
         older_than_days=int(stale_purge_days),
+        low_value_days=stale_purge_low_value_days,
+        medium_value_days=stale_purge_medium_value_days,
+        high_value_days=stale_purge_high_value_days,
+        critical_value_days=stale_purge_critical_value_days,
+        max_files=max_delete_files,
+        max_bytes=int(max(float(max_delete_gb), 0.0) * (1024**3)),
     )
     ok = int(purge.get("delete_errors", 0) or 0) == 0
     return {
@@ -58,10 +70,16 @@ def build_payload(
         "summary": {
             "candidate_files": int(purge.get("candidate_files", 0) or 0),
             "candidate_bytes": int(purge.get("candidate_bytes", 0) or 0),
+            "candidate_files_raw": int(purge.get("candidate_files_raw", purge.get("candidate_files", 0)) or 0),
+            "candidate_bytes_raw": int(purge.get("candidate_bytes_raw", purge.get("candidate_bytes", 0)) or 0),
             "deleted_files": int(purge.get("deleted_files", 0) or 0),
             "deleted_bytes": int(purge.get("deleted_bytes", 0) or 0),
             "delete_errors": int(purge.get("delete_errors", 0) or 0),
             "older_than_days": int(purge.get("older_than_days", stale_purge_days) or stale_purge_days),
+            "budget_limited": bool(purge.get("budget_limited", False)),
+            "skipped_by_budget_files": int(purge.get("skipped_by_budget_files", 0) or 0),
+            "skipped_by_tier_files": int(purge.get("skipped_by_tier_files", 0) or 0),
+            "purge_policy": purge.get("purge_policy") if isinstance(purge.get("purge_policy"), dict) else {},
             "manifest_lines_after": int(((purge.get("manifest_compaction") or {}).get("lines_after", 0) or 0)),
         },
         "purge": purge,
@@ -78,6 +96,12 @@ def main() -> int:
     parser.add_argument("--stale-stage-root", default=str(DEFAULT_STALE_STAGE_ROOT))
     parser.add_argument("--stale-stage-manifest", default="")
     parser.add_argument("--stale-purge-days", type=int, default=int(os.getenv("RETENTION_STALE_PURGE_DAYS", "30")))
+    parser.add_argument("--stale-purge-low-value-days", type=int, default=int(os.environ["RETENTION_STALE_PURGE_LOW_VALUE_DAYS"]) if "RETENTION_STALE_PURGE_LOW_VALUE_DAYS" in os.environ else None)
+    parser.add_argument("--stale-purge-medium-value-days", type=int, default=int(os.environ["RETENTION_STALE_PURGE_MEDIUM_VALUE_DAYS"]) if "RETENTION_STALE_PURGE_MEDIUM_VALUE_DAYS" in os.environ else None)
+    parser.add_argument("--stale-purge-high-value-days", type=int, default=int(os.environ["RETENTION_STALE_PURGE_HIGH_VALUE_DAYS"]) if "RETENTION_STALE_PURGE_HIGH_VALUE_DAYS" in os.environ else None)
+    parser.add_argument("--stale-purge-critical-value-days", type=int, default=int(os.environ["RETENTION_STALE_PURGE_CRITICAL_VALUE_DAYS"]) if "RETENTION_STALE_PURGE_CRITICAL_VALUE_DAYS" in os.environ else None)
+    parser.add_argument("--max-delete-files", type=int, default=int(os.getenv("RETENTION_STALE_PURGE_MAX_FILES", "5000")))
+    parser.add_argument("--max-delete-gb", type=float, default=float(os.getenv("RETENTION_STALE_PURGE_MAX_GB", "10")))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--lock-file", default=str(DEFAULT_LOCK_PATH))
     parser.add_argument("--json", action="store_true")
@@ -113,6 +137,12 @@ def main() -> int:
             stale_stage_root=Path(args.stale_stage_root).expanduser(),
             stale_stage_manifest=str(args.stale_stage_manifest or ""),
             stale_purge_days=int(args.stale_purge_days),
+            stale_purge_low_value_days=args.stale_purge_low_value_days if args.stale_purge_low_value_days is None else int(args.stale_purge_low_value_days),
+            stale_purge_medium_value_days=args.stale_purge_medium_value_days if args.stale_purge_medium_value_days is None else int(args.stale_purge_medium_value_days),
+            stale_purge_high_value_days=args.stale_purge_high_value_days if args.stale_purge_high_value_days is None else int(args.stale_purge_high_value_days),
+            stale_purge_critical_value_days=args.stale_purge_critical_value_days if args.stale_purge_critical_value_days is None else int(args.stale_purge_critical_value_days),
+            max_delete_files=int(args.max_delete_files),
+            max_delete_gb=float(args.max_delete_gb),
         )
         _write_json(out_file, payload)
 

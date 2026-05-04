@@ -77,6 +77,20 @@ def _sample_features() -> dict[str, float]:
         "reward_stability_norm": 0.52,
         "simulator_gradient_stability_norm": 0.48,
         "symmetry_consistency_norm": 0.55,
+        "arbitrage_violation_rate_norm": 0.08,
+        "put_call_parity_gap_norm": 0.12,
+        "convexity_constraint_pass_norm": 0.62,
+        "queue_jitter_norm": 0.20,
+        "fill_quality_norm": 0.58,
+        "backtest_gradient_stability_norm": 0.52,
+        "resilient_alternatives_coverage_norm": 0.50,
+        "fisher_information_stability_norm": 0.58,
+        "cross_asset_spillover_signal_norm": 0.47,
+        "attention_stability_norm": 0.55,
+        "intent_execution_match_norm": 0.60,
+        "formal_invariant_pass_norm": 0.66,
+        "signature_kernel_alignment_norm": 0.56,
+        "allocation_stability_norm": 0.54,
     }
 
 
@@ -137,6 +151,9 @@ def build_payload() -> dict[str, Any]:
             "brain_refinery_v497_agentic_quant_memory_guard_bot",
             "brain_refinery_v504_causal_omni_symbolic_regression_guard_bot",
             "brain_refinery_v505_rlbf_dms_equivariant_resource_guard_bot",
+            "brain_refinery_v510_formal_verification_smart_agent_safety_guard_bot",
+            "brain_refinery_v516_arbitrage_execution_safety_regression_guard_bot",
+            "brain_refinery_v517_geometry_spillover_durability_resource_guard_bot",
         ],
         "recommended_actions": actions,
         "artifact_paths": {

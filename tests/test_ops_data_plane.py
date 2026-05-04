@@ -122,6 +122,15 @@ def test_record_query_access_accumulates_atomically_with_batched_commits(tmp_pat
     assert heat_map["primary_sqlite"]["rows_returned_total"] == 3
 
 
+def test_load_shard_heat_map_fails_open_for_corrupt_ops_plane(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    ops_db = project_root / "governance" / "ops_data_plane.sqlite3"
+    ops_db.parent.mkdir(parents=True, exist_ok=True)
+    ops_db.write_bytes(b"not a sqlite database")
+
+    assert src.load_shard_heat_map(project_root) == {}
+
+
 def test_normalize_entity_key_relativizes_project_paths(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     artifact = project_root / "governance" / "health" / "collector.json"

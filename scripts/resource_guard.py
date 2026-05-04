@@ -119,13 +119,26 @@ def _creative_apps_snapshot() -> dict[str, Any]:
     active_apps = sorted(cpu_by_app)
     total_cpu = round(sum(cpu_by_app.values()), 2)
     hot_cpu_threshold = float(os.getenv("RESOURCE_GUARD_CREATIVE_HOT_CPU_THRESHOLD", "140"))
+    logic_hot_cpu_threshold = float(os.getenv("RESOURCE_GUARD_LOGIC_HOT_CPU_THRESHOLD", "80"))
+    final_cut_hot_cpu_threshold = float(os.getenv("RESOURCE_GUARD_FINAL_CUT_HOT_CPU_THRESHOLD", "140"))
+    has_logic = any("logic" in app.lower() for app in active_apps)
+    has_final_cut = any("final cut" in app.lower() for app in active_apps)
+    logic_cpu = round(sum(cpu for app, cpu in cpu_by_app.items() if "logic" in app.lower()), 2)
+    final_cut_cpu = round(sum(cpu for app, cpu in cpu_by_app.items() if "final cut" in app.lower()), 2)
     creative_level = "none"
-    if len(active_apps) >= 2:
+    creative_kind = "none"
+    if has_logic and has_final_cut:
         creative_level = "dual_pro"
-    elif active_apps and total_cpu >= hot_cpu_threshold:
-        creative_level = "hot"
+        creative_kind = "dual_pro"
+    elif has_logic:
+        creative_level = "hot" if max(logic_cpu, total_cpu) >= min(hot_cpu_threshold, logic_hot_cpu_threshold) else "active"
+        creative_kind = "logic_pro_hot" if creative_level == "hot" else "logic_pro"
+    elif has_final_cut:
+        creative_level = "hot" if max(final_cut_cpu, total_cpu) >= min(hot_cpu_threshold, final_cut_hot_cpu_threshold) else "active"
+        creative_kind = "final_cut_pro_hot" if creative_level == "hot" else "final_cut_pro"
     elif active_apps:
-        creative_level = "active"
+        creative_level = "hot" if total_cpu >= hot_cpu_threshold else "active"
+        creative_kind = "other_creative_hot" if creative_level == "hot" else "other_creative"
 
     return {
         "editing_app_cpu_sum": total_cpu,
@@ -134,7 +147,12 @@ def _creative_apps_snapshot() -> dict[str, Any]:
         "creative_apps": active_apps,
         "creative_apps_cpu": {key: round(value, 2) for key, value in sorted(cpu_by_app.items())},
         "creative_session_level": creative_level,
+        "creative_session_kind": creative_kind,
+        "logic_pro_cpu": logic_cpu,
+        "final_cut_pro_cpu": final_cut_cpu,
         "creative_hot_cpu_threshold": hot_cpu_threshold,
+        "logic_hot_cpu_threshold": logic_hot_cpu_threshold,
+        "final_cut_hot_cpu_threshold": final_cut_hot_cpu_threshold,
         "creative_app_commands": {key: active_commands.get(key, "") for key in active_apps},
     }
 

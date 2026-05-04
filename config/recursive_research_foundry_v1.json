@@ -1,0 +1,123 @@
+{
+  "generated_at_utc": "2026-05-02T21:19:51.286912+00:00",
+  "recursive_foundry_version": "recursive_research_foundry_v1",
+  "foundry": {
+    "slug": "recursive_research_foundry",
+    "display_name": "Recursive Research Foundry",
+    "sleeve_family": "recursive_research",
+    "sleeve_profile": "recursive_research_foundry",
+    "objective": "Generate, prove, red-team, distill, and package new research ideas before strategy admission.",
+    "bot_count": 15,
+    "bot_ids": [
+      "brain_refinery_v834_recursive_foundry_literature_hypothesis_compiler_bot",
+      "brain_refinery_v835_recursive_foundry_proof_obligation_generator_bot",
+      "brain_refinery_v836_recursive_foundry_symbolic_factor_grammar_miner_bot",
+      "brain_refinery_v837_recursive_foundry_market_ontology_evolution_curator_bot",
+      "brain_refinery_v838_recursive_foundry_self_supervised_representation_scout_bot",
+      "brain_refinery_v839_recursive_foundry_synthetic_market_validity_auditor_bot",
+      "brain_refinery_v840_recursive_foundry_agent_architecture_search_planner_bot",
+      "brain_refinery_v841_recursive_foundry_causal_mechanism_discovery_adjudicator_bot",
+      "brain_refinery_v842_recursive_foundry_adversarial_red_team_scenario_crafter_bot",
+      "brain_refinery_v843_recursive_foundry_teacher_student_distillation_steward_bot",
+      "brain_refinery_v844_recursive_foundry_micro_experiment_designer_bot",
+      "brain_refinery_v845_recursive_foundry_benchmark_replay_suite_curator_bot",
+      "brain_refinery_v846_recursive_foundry_proof_report_narrator_bot",
+      "brain_refinery_v847_recursive_foundry_research_compute_budget_sentinel_bot",
+      "brain_refinery_v848_recursive_foundry_grandmaster_foundry_bridge_bot"
+    ],
+    "dedicated_data_intake": [
+      "literature_to_hypothesis_trace",
+      "theorem_proof_obligation_trace",
+      "symbolic_factor_grammar_trace",
+      "market_ontology_evolution_trace",
+      "self_supervised_representation_trace",
+      "synthetic_market_validity_trace",
+      "agent_architecture_search_trace",
+      "causal_mechanism_discovery_trace",
+      "adversarial_red_team_scenario_trace",
+      "teacher_student_distillation_trace",
+      "micro_experiment_design_trace",
+      "benchmark_replay_suite_trace",
+      "proof_report_narrative_trace",
+      "research_compute_budget_trace",
+      "grandmaster_foundry_packet_trace"
+    ],
+    "storage_retention_rule": {
+      "retention_profile": "foundry_hot_7d_warm_60d_cold_365d",
+      "storage_targets": [
+        "governance/recursive_research_foundry",
+        "governance/recursive_research_foundry/hypotheses",
+        "governance/recursive_research_foundry/proofs",
+        "governance/recursive_research_foundry/benchmarks",
+        "governance/health/recursive_research_foundry",
+        "data/jsonl_link.sqlite3"
+      ],
+      "max_daily_mb_per_bot": 35,
+      "capture_mode": "sampled_digest_first",
+      "sample_rate": 0.2,
+      "dedupe_required": true,
+      "stale_deletion_policy": "distill_research_digest_then_stage_low_value_raw_traces"
+    },
+    "paper_only_floor": {
+      "paper_trade_lock_required": true,
+      "live_trading_enabled": false,
+      "execution_enabled": false,
+      "allocation_enabled": false,
+      "graduation_requires_minimum_observations": 12000,
+      "graduation_requires_collection_days": 45
+    },
+    "sleeve_master_bot_id": "brain_refinery_v834_recursive_foundry_literature_hypothesis_compiler_bot",
+    "regression_guard_bot_id": "brain_refinery_v835_recursive_foundry_proof_obligation_generator_bot",
+    "capacity_check": {
+      "active_bot_floor": 700,
+      "runtime_stability_mode": "full_force_buffered",
+      "runtime_control_refresh_seconds": 240,
+      "queue_policy": "buffered_jsonl_batching",
+      "compute_guard_mode": "sustain",
+      "global_halt_mode": "digest_only_before_hard_halt",
+      "heavy_reasoning_mode": "cold_lane_digest_only_until_host_pressure_clear"
+    },
+    "research_depth": [
+      "literature_to_hypothesis_compilation",
+      "proof_obligation_generation",
+      "symbolic_factor_grammar_mining",
+      "market_ontology_evolution",
+      "self_supervised_representation_learning",
+      "synthetic_market_validation",
+      "agent_architecture_search",
+      "causal_mechanism_discovery",
+      "adversarial_red_team_generation",
+      "teacher_student_distillation",
+      "micro_experiment_design",
+      "benchmark_replay_curation",
+      "proof_to_report_narration",
+      "research_compute_budgeting",
+      "grandmaster_foundry_bridge"
+    ]
+  },
+  "recursive_foundry_contract": {
+    "contract_version": "recursive_research_foundry_v1",
+    "purpose": "recursive_research_generation_validation_and_distillation_before_strategy_admission",
+    "research_depth": [
+      "literature_to_hypothesis_compilation",
+      "proof_obligation_generation",
+      "symbolic_factor_grammar_mining",
+      "market_ontology_evolution",
+      "self_supervised_representation_learning",
+      "synthetic_market_validation",
+      "agent_architecture_search",
+      "causal_mechanism_discovery",
+      "adversarial_red_team_generation",
+      "teacher_student_distillation",
+      "micro_experiment_design",
+      "benchmark_replay_curation",
+      "proof_to_report_narration",
+      "research_compute_budgeting",
+      "grandmaster_foundry_bridge"
+    ],
+    "graduation_policy": "collection_only_until_replay_proof_distillation_and_research_debt_checks_clear",
+    "resource_contract": "foundry_runs_cold_lane_only_and_distills_raw_research_traces",
+    "global_halt_contract": "foundry_must_degrade_to_digest_only_before_hard_halt",
+    "paper_lock_contract": "no_execution_path_and_no_paper_trade_until_admission_guard_promotes"
+  }
+}

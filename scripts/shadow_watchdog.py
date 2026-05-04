@@ -52,6 +52,7 @@ class Target:
     heartbeat_stale_seconds: int = 0
     min_healthy_heartbeats: int = 1
     heartbeat_profiles: tuple[str, ...] = ()
+    heartbeat_exclude_matches: Optional[tuple[str, ...]] = None
     allow_processless_heartbeat_live: bool = False
     exclude_matches: tuple[str, ...] = ()
     terminate_excluded_conflicts: bool = True
@@ -508,16 +509,21 @@ def _parse_ts(ts: str) -> Optional[datetime]:
         return None
 
 
-def _heartbeat_health(target: Target, rows_by_pid: dict[int, str]) -> tuple[bool, int, Optional[float], int]:
+def _heartbeat_health(
+    target: Target,
+    rows_by_pid: Optional[dict[int, str]] = None,
+) -> tuple[bool, int, Optional[float], int]:
     if not target.heartbeat_glob or target.heartbeat_stale_seconds <= 0:
         return True, 0, None, 0
 
     now = _now_utc()
+    rows_by_pid = rows_by_pid or {}
     healthy = 0
     latest_age: Optional[float] = None
     live_process_backed = 0
     profile_filter = {str(x).strip().lower() for x in target.heartbeat_profiles if str(x).strip()}
-    excludes = tuple(x for x in target.exclude_matches if x)
+    heartbeat_excludes = target.heartbeat_exclude_matches
+    excludes = tuple(x for x in (heartbeat_excludes if heartbeat_excludes is not None else target.exclude_matches) if x)
 
     for fp in glob.glob(target.heartbeat_glob):
         path = Path(fp)
@@ -1027,6 +1033,12 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="Emit JSON lines.")
 
     parser.add_argument("--simulate-schwab", action="store_true", help="Default Schwab start command adds --simulate.")
+    parser.add_argument(
+        "--allow-schwab-standby-heartbeats",
+        action="store_true",
+        default=_env_flag("SHADOW_WATCHDOG_ALLOW_SCHWAB_STANDBY_HEARTBEATS", "0"),
+        help="Count fresh Schwab hot-standby simulate heartbeats as processless coverage while keeping live restart commands.",
+    )
     parser.add_argument("--schwab-start-cmd", default=None)
     parser.add_argument("--schwab-futures-start-cmd", default=None)
     parser.add_argument("--coinbase-start-cmd", default=None)
@@ -1201,6 +1213,7 @@ def main() -> int:
             heartbeat_stale_seconds=max(args.schwab_heartbeat_stale_seconds, 30),
             min_healthy_heartbeats=max(args.schwab_min_heartbeats, 1),
             heartbeat_profiles=("conservative", "aggressive"),
+            heartbeat_exclude_matches=(() if args.allow_schwab_standby_heartbeats else None),
             allow_processless_heartbeat_live=True,
             suppress_tripwire_when_parent_live=True,
             exclude_matches=(() if args.simulate_schwab else ("--simulate",)),

@@ -459,14 +459,26 @@ def main() -> int:
     add_command(['./scripts/ops/opsctl.sh', 'global-halt-auto-clear', '--json'])
     payload['recommended_commands'] = recommended_commands
 
+    # Observability side effects: write latest snapshot + append event stream.
+    # These are evidence artifacts and must never prevent the command from emitting JSON.
+    io_errors: list[str] = []
     out = PROJECT_ROOT / 'governance' / 'health' / 'global_killswitch_latest.json'
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding='utf-8')
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding='utf-8')
+    except (OSError, PermissionError) as e:
+        io_errors.append(f"write_latest_failed:{out}:{type(e).__name__}:{e}")
 
     events = PROJECT_ROOT / 'governance' / 'watchdog' / 'global_killswitch_events.jsonl'
-    events.parent.mkdir(parents=True, exist_ok=True)
-    with events.open('a', encoding='utf-8') as f:
-        f.write(json.dumps(payload, ensure_ascii=True) + '\n')
+    try:
+        events.parent.mkdir(parents=True, exist_ok=True)
+        with events.open('a', encoding='utf-8') as f:
+            f.write(json.dumps(payload, ensure_ascii=True) + '\n')
+    except (OSError, PermissionError) as e:
+        io_errors.append(f"append_events_failed:{events}:{type(e).__name__}:{e}")
+
+    if io_errors:
+        payload['io_errors'] = io_errors
 
     print(json.dumps(payload, ensure_ascii=True))
     if args.exit_zero:

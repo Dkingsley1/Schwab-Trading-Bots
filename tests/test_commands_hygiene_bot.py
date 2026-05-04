@@ -142,6 +142,19 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "./scripts/ops/opsctl.sh token-refresh-interactive" in commands_text
     assert "### Schwab auth recovery plus lane restart" in commands_text
     assert "./scripts/ops/opsctl.sh feed-refresh --source schwab" in commands_text
+    assert "## Platform Expansion" in commands_text
+    assert "### Apply the coordination intelligence control-plane pack" in commands_text
+    assert "./scripts/ops/opsctl.sh coordination-intelligence --apply --json" in commands_text
+    assert "### Preview the coordination intelligence control-plane pack" in commands_text
+    assert "./scripts/ops/opsctl.sh coordination-intelligence --json" in commands_text
+    assert "### Apply the alpha intelligence evolution pack" in commands_text
+    assert "./scripts/ops/opsctl.sh alpha-intelligence-evolution --apply --json" in commands_text
+    assert "### Preview the alpha intelligence evolution pack" in commands_text
+    assert "./scripts/ops/opsctl.sh alpha-intelligence-evolution --json" in commands_text
+    assert "### Apply the intelligence layer advancement pack" in commands_text
+    assert "./scripts/ops/opsctl.sh intelligence-layer-advancement --apply --json" in commands_text
+    assert "### Preview the intelligence layer advancement pack" in commands_text
+    assert "./scripts/ops/opsctl.sh intelligence-layer-advancement --json" in commands_text
     assert "tastytrade-sync --json" not in commands_text
 
     runbook_text = (project_root / "scripts" / "runbook.sh").read_text(encoding="utf-8")
@@ -149,7 +162,7 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "find_section_heading()" in runbook_text
     contract_payload = json.loads((project_root / "governance" / "health" / "commands_contract_latest.json").read_text(encoding="utf-8"))
     assert contract_payload["schema_version"] == commands_src.COMMAND_CONTRACT_SCHEMA_VERSION
-    assert contract_payload["entry_count"] == 117
+    assert contract_payload["entry_count"] == 124
     assert contract_payload["contract_hash"] in commands_text
 
 

@@ -18,11 +18,18 @@ DEFAULT_PACKAGES = (
     "mlx-metal",
     "mlx-lm",
     "mlx-data",
+    "mlx-graphs",
+    "mlx-cluster",
+    "mlx-snn",
+    "mlx-vision",
     "mlx-vlm",
     "mlx-whisper",
     "mlx-audio",
     "mlx-embeddings",
     "mlx-embedding-models",
+    "esig",
+    "roughpy",
+    "pyrecombine",
     "parakeet-mlx",
     "transformers",
     "huggingface-hub",
@@ -152,10 +159,14 @@ import json
 import os
 
 import mlx.core as mx
+import mlx.nn as nn
+import mlx.optimizers as optim
 
 payload = {
     "default_device": str(mx.default_device()),
     "compile_available": bool(hasattr(mx, "compile")),
+    "nn_available": bool(nn is not None),
+    "optimizers_available": bool(optim is not None),
     "metal_attr_available": bool(getattr(mx, "metal", None) is not None),
     "jit_env": os.getenv("MLX_METAL_JIT", "unset"),
     "float16_available": bool(hasattr(mx, "float16")),
@@ -263,13 +274,20 @@ def main() -> int:
 
     import_steps = [
         _step("mlx_core_import", [str(python_bin), "-c", "import mlx.core as mx; print(mx.default_device())"]),
+        _step("mlx_nn_import", [str(python_bin), "-c", "import mlx.nn as nn; print(nn.__name__)"]),
+        _step("mlx_optimizers_import", [str(python_bin), "-c", "import mlx.optimizers as optim; print(optim.__name__)"]),
         _step("mlx_lm_import", [str(python_bin), "-c", "import mlx_lm; print(mlx_lm.__name__)"]),
         _step("mlx_data_import", [str(python_bin), "-c", "import mlx.data as mxdata; print(mxdata.__file__)"]),
+        _step("mlx_graphs_import", [str(python_bin), "-c", "import mlx_graphs; print(mlx_graphs.__name__)"]),
+        _step("mlx_snn_import", [str(python_bin), "-c", "import mlxsnn; print(mlxsnn.__name__)"]),
+        _step("mlx_vision_import", [str(python_bin), "-c", "import mlx_vision; print(mlx_vision.__name__)"]),
         _step("mlx_vlm_import", [str(python_bin), "-c", "import mlx_vlm; print(mlx_vlm.__file__)"]),
         _step("mlx_whisper_import", [str(python_bin), "-c", "import mlx_whisper; print(mlx_whisper.__name__)"]),
         _step("mlx_audio_import", [str(python_bin), "-c", "import mlx_audio; print(mlx_audio.__name__)"], accepted_rc={0, 1}),
         _step("mlx_embeddings_import", [str(python_bin), "-c", "import mlx_embeddings; print(mlx_embeddings.__name__)"], accepted_rc={0, 1}),
         _step("mlx_embedding_models_import", [str(python_bin), "-c", "import mlx_embedding_models; print(mlx_embedding_models.__name__)"], accepted_rc={0, 1}),
+        _step("esig_import", [str(python_bin), "-c", "import esig; print(esig.__name__)"]),
+        _step("roughpy_import", [str(python_bin), "-c", "import roughpy; print(roughpy.__name__)"]),
         _step("parakeet_mlx_import", [str(python_bin), "-c", "import parakeet_mlx; print(parakeet_mlx.__name__)"], accepted_rc={0, 1}),
         _step(
             "indicator_bot_common_import",

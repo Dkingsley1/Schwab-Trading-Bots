@@ -114,6 +114,7 @@ def _autopilot_contract(
     auto_launch_preconditions_met = (
         shortfall > 0
         and stage_count > 0
+        and repair_required_count <= 0
         and inflight_retrain_count <= 0
         and snapshot_ready
         and (coverage_repair_ready or not training_runtime_blocked)
@@ -139,6 +140,7 @@ def _autopilot_contract(
         [
             "coverage_cleared" if shortfall <= 0 else "",
             "awaiting_candidates" if shortfall > 0 and stage_count <= 0 else "",
+            "runtime_input_repair_required" if shortfall > 0 and stage_count > 0 and repair_required_count > 0 else "",
             "waiting_for_idle" if inflight_retrain_count > 0 else "",
             "training_runtime_blocked" if training_runtime_blocked and not coverage_repair_ready else "",
             "swap_pressure_elevated" if swap_pressure_elevated else "",
@@ -153,6 +155,7 @@ def _autopilot_contract(
     can_launch_now = (
         shortfall > 0
         and stage_count > 0
+        and repair_required_count <= 0
         and inflight_retrain_count <= 0
         and snapshot_ready
         and (coverage_repair_ready or not training_runtime_blocked)
@@ -170,6 +173,10 @@ def _autopilot_contract(
         launch_state = "awaiting_candidates"
         overall_status = "blocked"
         next_action = "refresh the coverage seed queue and stage the next non-infrastructure candidates"
+    elif repair_required_count > 0:
+        launch_state = "runtime_input_repair_required"
+        overall_status = "degraded"
+        next_action = "repair runtime inputs for staged candidates before launching coverage cycles"
     elif inflight_retrain_count > 0:
         launch_state = "waiting_for_idle"
         overall_status = "degraded"
@@ -467,6 +474,23 @@ def _candidate_pool(project_root: Path, *, candidate_limit: int, stage_count: in
             bucket.append(row)
         else:
             backups.append(row)
+    if not active_stage and backups:
+        promoted_backups: list[dict[str, Any]] = []
+        remaining_backups: list[dict[str, Any]] = []
+        for row in backups:
+            role = str(row.get("bot_role") or "").strip().lower()
+            if role == "infrastructure_sub_bot" and not bool(row.get("strong_seed_candidate", False)):
+                remaining_backups.append(row)
+                continue
+            if len(promoted_backups) < max(int(stage_count), 1):
+                promoted = dict(row)
+                promoted["coverage_stage_kind"] = "runtime_input_repair_required"
+                promoted_backups.append(promoted)
+            else:
+                remaining_backups.append(row)
+        if promoted_backups:
+            active_stage = promoted_backups
+            backups = remaining_backups
     min_considered_bots = max(
         _safe_int((readiness.get("thresholds") or {}).get("min_considered_bots"), 4),
         1,
@@ -717,9 +741,10 @@ def run_gap_closer(
     clear_other_candidates: bool,
     out_path: Path,
     queue_out_path: Path,
+    skip_refresh: bool = False,
 ) -> dict[str, Any]:
     python_bin = Path(sys.executable)
-    refresh_attempts = _refresh_artifacts(project_root, python_bin=python_bin, timeout_sec=refresh_timeout_sec)
+    refresh_attempts = [] if skip_refresh else _refresh_artifacts(project_root, python_bin=python_bin, timeout_sec=refresh_timeout_sec)
     pool = _candidate_pool(project_root, candidate_limit=candidate_limit, stage_count=stage_count)
     staged_rows = list(pool.get("active_stage") or [])
     backup_rows = list(pool.get("backup_candidates") or [])
@@ -891,6 +916,7 @@ def main() -> int:
     parser.add_argument("--apply-stage", action="store_true")
     parser.add_argument("--launch", action="store_true")
     parser.add_argument("--auto-launch-off-hours", action="store_true")
+    parser.add_argument("--skip-refresh", action="store_true")
     parser.add_argument("--no-clear-other-candidates", dest="clear_other_candidates", action="store_false")
     parser.add_argument("--json", action="store_true")
     parser.set_defaults(clear_other_candidates=True)
@@ -911,6 +937,7 @@ def main() -> int:
         launch=bool(args.launch),
         auto_launch_off_hours=bool(args.auto_launch_off_hours),
         clear_other_candidates=bool(args.clear_other_candidates),
+        skip_refresh=bool(args.skip_refresh),
         out_path=Path(args.out_file).expanduser(),
         queue_out_path=Path(args.queue_out).expanduser(),
     )

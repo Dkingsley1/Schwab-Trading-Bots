@@ -5,8 +5,10 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -18,6 +20,20 @@ else:
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "auth_lease_manager_latest.json"
+
+
+def _market_window() -> dict[str, Any]:
+    local = datetime.now(ZoneInfo("America/New_York"))
+    minutes = local.hour * 60 + local.minute
+    regular_open = (9 * 60 + 30) <= minutes <= (16 * 60 + 15)
+    is_weekend = local.weekday() >= 5
+    return {
+        "timezone": "America/New_York",
+        "local_time": local.isoformat(),
+        "is_weekend": bool(is_weekend),
+        "regular_session_open": bool((not is_weekend) and regular_open),
+        "off_hours": bool(is_weekend or not regular_open),
+    }
 
 
 def build_payload(
@@ -44,12 +60,28 @@ def build_payload(
     auth_ok = bool((token_guard.get("auth") or {}).get("ok", True))
     broker_ready = bool(broker_readiness.get("ready_for_open", broker_readiness.get("auth_ok", False)))
     configured_for_refresh = bool(token_before.get("exists", False) or token_after.get("exists", False))
+    market_window = _market_window()
+    account_probe_status = int(broker_readiness.get("account_probe_status_code", 0) or 0)
+    probe_backed = bool(200 <= account_probe_status < 300)
+    auth_reason = str((token_guard.get("auth") or {}).get("reason", "") or "")
+    auth_probe_ok = bool(auth_ok or (probe_backed and auth_reason.startswith("auth_succeeded_but_token_not_ready")))
+    broker_operable = bool(broker_ready or probe_backed)
 
     lease_state = "healthy"
-    if expires_in_seconds < float(critical_lease_seconds) or not network_ok or not auth_ok:
+    if expires_in_seconds < float(critical_lease_seconds) or not network_ok or not auth_probe_ok:
         lease_state = "critical"
     elif expires_in_seconds < float(min_lease_seconds) or (
         guard_age_minutes is not None and float(guard_age_minutes) > float(max_guard_age_minutes)
+    ):
+        lease_state = "warning"
+    if (
+        lease_state == "critical"
+        and bool(market_window["off_hours"])
+        and expires_in_seconds > 0.0
+        and network_ok
+        and auth_probe_ok
+        and broker_operable
+        and probe_backed
     ):
         lease_state = "warning"
 
@@ -79,14 +111,27 @@ def build_payload(
             "min_lease_seconds": int(min_lease_seconds),
             "critical_lease_seconds": int(critical_lease_seconds),
             "guard_age_minutes": round(float(guard_age_minutes), 4) if guard_age_minutes is not None else None,
+            "probe_backed": bool(probe_backed),
+            "off_hours_probe_grace": bool(
+                bool(market_window["off_hours"])
+                and expires_in_seconds > 0.0
+                and network_ok
+                and auth_probe_ok
+                and broker_operable
+                and probe_backed
+            ),
         },
         "broker_state": {
             "broker_ready": bool(broker_ready),
+            "broker_operable": bool(broker_operable),
             "network_ok": bool(network_ok),
             "auth_ok": bool(auth_ok),
+            "auth_probe_ok": bool(auth_probe_ok),
+            "auth_reason": auth_reason,
             "configured_for_refresh": bool(configured_for_refresh),
             "restart_storms": len(process_watchdog.get("restart_storms") or []),
         },
+        "market_window": market_window,
         "fallback_ladder": [
             "silent_refresh",
             "interactive_token_refresh",

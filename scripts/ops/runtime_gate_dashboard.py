@@ -30,6 +30,21 @@ def _artifact_config(project_root: Path) -> Dict[str, Dict[str, Any]]:
             "max_age_minutes": _hours_to_minutes(36.0),
             "required": False,
         },
+        "data_source_divergence": {
+            "paths": [project_root / "governance" / "health" / "data_source_divergence_latest.json"],
+            "max_age_minutes": _hours_to_minutes(6.0),
+            "required": False,
+        },
+        "execution_queue_stress": {
+            "paths": [project_root / "governance" / "health" / "execution_queue_stress_latest.json"],
+            "max_age_minutes": _hours_to_minutes(6.0),
+            "required": False,
+        },
+        "snapshot_coverage": {
+            "paths": [project_root / "governance" / "health" / "snapshot_coverage_latest.json"],
+            "max_age_minutes": _hours_to_minutes(12.0),
+            "required": False,
+        },
         "health_gates": {
             "paths": [project_root / "governance" / "health" / "health_gates_latest.json"],
             "max_age_minutes": 240.0,
@@ -112,6 +127,16 @@ def _artifact_config(project_root: Path) -> Dict[str, Dict[str, Any]]:
         },
         "platform_control_plane": {
             "paths": [project_root / "governance" / "health" / "platform_control_plane_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "platform_intelligence_expansion": {
+            "paths": [project_root / "governance" / "health" / "platform_intelligence_expansion_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "bot_founder_dna_lineage": {
+            "paths": [project_root / "governance" / "health" / "bot_founder_dna_lineage_latest.json"],
             "max_age_minutes": _days_to_minutes(2.0),
             "required": False,
         },
@@ -469,6 +494,24 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             "failed_checks": payload.get("failed_checks") if isinstance(payload.get("failed_checks"), list) else [],
             "completed_checks": int(payload.get("completed_checks", 0) or 0),
         }
+    if name == "data_source_divergence":
+        return {
+            "ok": bool(payload.get("ok", False)),
+            "worst_relative_spread": float(payload.get("worst_relative_spread", 0.0) or 0.0),
+        }
+    if name == "execution_queue_stress":
+        return {
+            "ok": bool(payload.get("ok", False)),
+            "samples": int(payload.get("samples", 0) or 0),
+            "queue_breach_rate": float(payload.get("queue_breach_rate", 0.0) or 0.0),
+            "max_queue_depth_seen": int(payload.get("max_queue_depth_seen", 0) or 0),
+        }
+    if name == "snapshot_coverage":
+        return {
+            "ok": bool(payload.get("ok", False)),
+            "coverage_ratio": float(payload.get("coverage_ratio", 0.0) or 0.0),
+            "missing_file_count": int(payload.get("missing_file_count", 0) or 0),
+        }
     if name == "health_gates":
         return {
             "data_quality_score": float(payload.get("data_quality_score", 0.0) or 0.0),
@@ -612,6 +655,35 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
                 if isinstance(row, dict) and str((row or {}).get("slug") or "").strip()
             ],
             "domain_count": int(readiness.get("domain_count", 0) or 0),
+        }
+    if name == "platform_intelligence_expansion":
+        sections = payload.get("sections") if isinstance(payload.get("sections"), dict) else {}
+        dashboard = sections.get("professional_system_dashboard") if isinstance(sections.get("professional_system_dashboard"), dict) else {}
+        pressure = payload.get("pressure_snapshot") if isinstance(payload.get("pressure_snapshot"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "bot_count": int(payload.get("bot_count", 0) or 0),
+            "sleeve_count": int(payload.get("sleeve_count", 0) or 0),
+            "expansion_count": int(payload.get("expansion_count", 0) or 0),
+            "section_count": int(dashboard.get("section_count", 0) or 0),
+            "swap_tier": str(pressure.get("swap_tier", "") or ""),
+            "host_saturation_score": float(pressure.get("host_saturation_score", 0.0) or 0.0),
+            "top_actions": payload.get("top_actions") if isinstance(payload.get("top_actions"), list) else [],
+        }
+    if name == "bot_founder_dna_lineage":
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        apply_result = payload.get("apply_result") if isinstance(payload.get("apply_result"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "founder_bot_id": str(summary.get("founder_bot_id", "") or ""),
+            "founder_dna_version": str(summary.get("founder_dna_version", "") or ""),
+            "total_bots": int(summary.get("total_bots", 0) or 0),
+            "explicit_founder_dna_count": int(summary.get("explicit_founder_dna_count", 0) or 0),
+            "missing_founder_dna_count": int(summary.get("missing_founder_dna_count", 0) or 0),
+            "coverage_ratio": float(summary.get("coverage_ratio", 0.0) or 0.0),
+            "all_have_founder_dna": bool(summary.get("all_have_founder_dna", False)),
+            "changed_rows": int(apply_result.get("changed_rows", 0) or 0),
+            "top_actions": payload.get("top_actions") if isinstance(payload.get("top_actions"), list) else [],
         }
     if name == "ingestion_priority_queue":
         lane_counts = payload.get("lane_counts") if isinstance(payload.get("lane_counts"), dict) else {}
@@ -1126,10 +1198,27 @@ def _artifact_freshness_resolver(
     return _artifact_freshness_recovered(freshness)
 
 
+def _incomplete_run_recovered_resolver(
+    daily_verify_payload: Dict[str, Any],
+    _artifacts: Dict[str, Dict[str, Any]],
+    _checks: Dict[str, Any],
+) -> bool:
+    note = str(daily_verify_payload.get("note", "") or "").lower()
+    if "recovered_stale_progress" in note:
+        return True
+    return bool(
+        daily_verify_payload.get("running") is False
+        and int(daily_verify_payload.get("completed_checks", 0) or 0) > 0
+    )
+
+
 _DAILY_AUTO_VERIFY_RESOLVERS: Dict[str, DailyVerifyResolver] = {
     "new_bot_graduation_gate": _artifact_ok_resolver("new_bot_graduation"),
     "bot_support_owner_guard": _artifact_ok_resolver("bot_support_owner_guard"),
     "new_bot_admission_guard": _artifact_ok_resolver("new_bot_admission_guard"),
+    "data_source_divergence_bot": _artifact_ok_resolver("data_source_divergence"),
+    "execution_queue_stress_bot": _artifact_ok_resolver("execution_queue_stress"),
+    "snapshot_coverage_sentinel": _artifact_ok_resolver("snapshot_coverage"),
     "retrain_schema_compatibility_guard": _artifact_ok_resolver("retrain_schema_compatibility_guard"),
     "golden_replay_regression_guard": _artifact_ok_resolver("golden_replay_regression_guard"),
     "cohort_drift_baseline_guard": _artifact_ok_resolver("cohort_drift_baseline_guard"),
@@ -1141,6 +1230,7 @@ _DAILY_AUTO_VERIFY_RESOLVERS: Dict[str, DailyVerifyResolver] = {
     "promotion_quality_gate": _artifact_ok_resolver("promotion_quality_gate"),
     "nightly_resilience_check": _nightly_resilience_resolver,
     "artifact_freshness": _artifact_freshness_resolver,
+    "incomplete_run_recovered": _incomplete_run_recovered_resolver,
 }
 
 

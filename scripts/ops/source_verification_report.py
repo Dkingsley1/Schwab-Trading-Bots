@@ -617,6 +617,125 @@ def _extended_quant_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     )
 
 
+def _fed_2026_stress_scenario_row(project_root: Path, now: datetime) -> dict[str, Any]:
+    scenario_path = project_root / "config" / "stress_scenarios" / "fed_2026_supervisory_severely_adverse.json"
+    plumbing_path = project_root / "config" / "stress_scenarios" / "fed_2026_source_plumbing.json"
+    modules_path = project_root / "config" / "stress_scenarios" / "fed_2026_stress_modules.json"
+    scenario = _read_json(scenario_path)
+    plumbing = _read_json(plumbing_path)
+    modules_payload = _read_json(modules_path)
+    source = scenario.get("source") if isinstance(scenario.get("source"), dict) else {}
+    ts = _parse_ts(source.get("retrieved_date"))
+    domestic = scenario.get("domestic_variables") if isinstance(scenario.get("domestic_variables"), dict) else {}
+    international = scenario.get("international_variables") if isinstance(scenario.get("international_variables"), dict) else {}
+    anchors = scenario.get("key_stress_anchors") if isinstance(scenario.get("key_stress_anchors"), dict) else {}
+    series_map = plumbing.get("series_map") if isinstance(plumbing.get("series_map"), dict) else {}
+    stress_module_map = plumbing.get("stress_module_map") if isinstance(plumbing.get("stress_module_map"), dict) else {}
+    internal_feature_keys = plumbing.get("internal_feature_keys") if isinstance(plumbing.get("internal_feature_keys"), list) else []
+    proxy_symbols = plumbing.get("market_proxy_symbols") if isinstance(plumbing.get("market_proxy_symbols"), dict) else {}
+    governance_targets = plumbing.get("governance_targets") if isinstance(plumbing.get("governance_targets"), list) else []
+    stress_modules = modules_payload.get("stress_modules") if isinstance(modules_payload.get("stress_modules"), list) else []
+    stress_module_ids = [str(item.get("module_id") or "") for item in stress_modules if isinstance(item, dict)]
+    expected_module_ids = {
+        "fed_2026_equity_crash_volatility_spike",
+        "fed_2026_corporate_credit_spread_blowout",
+        "fed_2026_housing_price_shock",
+        "fed_2026_commercial_real_estate_shock",
+        "fed_2026_unemployment_recession_shock",
+        "fed_2026_global_recession_deflation_shock",
+        "fed_2026_commodity_inflation_shock",
+        "fed_2026_treasury_yield_shock",
+        "fed_2026_us_dollar_stress",
+        "fed_2026_counterparty_default_contagion_shock",
+    }
+    notes: list[str] = []
+    if not scenario_path.exists():
+        notes.append("scenario_artifact_missing")
+    if not plumbing_path.exists():
+        notes.append("source_plumbing_missing")
+    if not modules_path.exists():
+        notes.append("stress_modules_missing")
+    if scenario.get("scenario_id") != "fed_2026_supervisory_severely_adverse":
+        notes.append("scenario_id_mismatch")
+    if modules_payload.get("scenario_id") not in {None, "fed_2026_supervisory_severely_adverse"}:
+        notes.append("stress_module_scenario_id_mismatch")
+    if "federalreserve.gov" not in str(source.get("url") or ""):
+        notes.append("official_fed_url_missing")
+    module_source = modules_payload.get("source") if isinstance(modules_payload.get("source"), dict) else {}
+    if modules_payload and "federalreserve.gov" not in str(module_source.get("url") or ""):
+        notes.append("stress_module_official_fed_url_missing")
+    if not domestic.get("columns") or not domestic.get("rows"):
+        notes.append("domestic_variables_missing")
+    if not international.get("columns") or not international.get("rows"):
+        notes.append("international_variables_missing")
+    if not anchors:
+        notes.append("key_stress_anchors_missing")
+    if not series_map.get("domestic_variables") or not series_map.get("international_variables"):
+        notes.append("series_map_incomplete")
+    if len(stress_modules) < 10:
+        notes.append(f"stress_module_count_low={len(stress_modules)}")
+    missing_modules = sorted(expected_module_ids.difference(stress_module_ids))
+    if missing_modules:
+        notes.append(f"stress_modules_missing_ids={','.join(missing_modules[:5])}")
+    if len(stress_module_map) < 10:
+        notes.append("stress_module_map_incomplete")
+    for module in stress_modules:
+        if not isinstance(module, dict):
+            continue
+        module_id = str(module.get("module_id") or "")
+        if module_id and module_id not in stress_module_map:
+            notes.append(f"stress_module_not_plumbed={module_id}")
+            break
+        if not module.get("primary_series") or not module.get("internal_feature_keys"):
+            notes.append(f"stress_module_contract_incomplete={module_id}")
+            break
+    usage_policy = modules_payload.get("usage_policy") if isinstance(modules_payload.get("usage_policy"), dict) else {}
+    if modules_payload and bool(usage_policy.get("direct_execution_allowed", True)):
+        notes.append("stress_modules_direct_execution_not_blocked")
+    if not internal_feature_keys:
+        notes.append("internal_feature_keys_missing")
+    if not proxy_symbols:
+        notes.append("market_proxy_symbols_missing")
+    for required_target in ("source_verification", "point_in_time_event_store", "replay_hash_registry"):
+        if required_target not in governance_targets:
+            notes.append(f"governance_target_missing={required_target}")
+    fresh = ts is not None and (_age_hours(ts, now) or 0.0) <= (365.0 * 3.0 * 24.0)
+    if not fresh:
+        notes.append("stale_or_missing_retrieved_date")
+    ok = not notes or notes == ["stale_or_missing_retrieved_date"]
+    status = STATUS_SINGLE_VERIFIED if ok and fresh else STATUS_SINGLE_UNVERIFIED
+    return _row(
+        source_id="fed_2026_supervisory_stress_scenario",
+        title="Fed 2026 Supervisory Stress Scenario",
+        category="macro_stress_scenario",
+        verification_status=status,
+        verification_mode="official_static_scenario_plus_internal_source_plumbing",
+        artifact_path=scenario_path,
+        artifact_timestamp=ts,
+        age_hours=_age_hours(ts, now),
+        fresh=fresh,
+        ok=ok and fresh,
+        notes=notes,
+        evidence={
+            "scenario_path": str(scenario_path),
+            "plumbing_path": str(plumbing_path),
+            "stress_modules_path": str(modules_path),
+            "domestic_column_count": len(domestic.get("columns") or []),
+            "domestic_row_count": len(domestic.get("rows") or []),
+            "international_column_count": len(international.get("columns") or []),
+            "international_row_count": len(international.get("rows") or []),
+            "anchor_count": len(anchors),
+            "stress_module_count": len(stress_modules),
+            "stress_module_ids": stress_module_ids,
+            "stress_module_map_count": len(stress_module_map),
+            "series_map_sections": sorted(series_map.keys()),
+            "internal_feature_count": len(internal_feature_keys),
+            "proxy_symbol_groups": sorted(proxy_symbols.keys()),
+            "governance_targets": governance_targets,
+        },
+    )
+
+
 def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     health_dir = project_root / "governance" / "health"
@@ -632,6 +751,7 @@ def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict
         _market_micro_row(health_dir, now),
         _sec_edgar_row(health_dir, now),
         _extended_quant_row(health_dir, now),
+        _fed_2026_stress_scenario_row(project_root, now),
     ]
 
     counts = {

@@ -247,14 +247,29 @@ def _recommendations(package_rows: list[dict[str, Any]], runtime: dict[str, Any]
     elif not runtime.get("mps_available"):
         recommendations.append("keep_pytorch_cpu_shadow_only_until_mps_available")
     elif runtime.get("tensor_smoke_ok"):
-        recommendations.append("candidate_pytorch_shadow_sidecar_on_mps")
+        recommendations.append("pytorch_runtime_available_for_manual_offline_replay_only")
 
     if runtime.get("compile_available") and not runtime.get("compile_smoke_ok"):
         recommendations.append("keep_torch_compile_off_for_canary")
     if runtime.get("selected_device") == "mps":
         recommendations.append("keep_mlx_default_live_backend_on_apple_silicon")
-    recommendations.append("pytorch_canary_is_sidecar_only_until_trading_brain_backend_exists")
+    recommendations.append("keep_pytorch_replay_canary_disabled_during_live_mlx_collection")
     return recommendations
+
+
+def _pip_check_effectively_ok(step: dict[str, Any]) -> bool:
+    if bool(step.get("ok")):
+        return True
+    combined = "\n".join([str(step.get("stdout_tail") or ""), str(step.get("stderr_tail") or "")])
+    lines = [line.strip() for line in combined.splitlines() if line.strip()]
+    if not lines:
+        return False
+    tolerated = (
+        "mlx-graphs 0.0.9 has requirement fsspec==2024.2.0",
+        "mlx-graphs 0.0.9 has requirement requests==2.31.0",
+        "mlx-graphs 0.0.9 has requirement tqdm==4.66.1",
+    )
+    return all(any(line.startswith(prefix) for prefix in tolerated) for line in lines)
 
 
 def main() -> int:
@@ -274,6 +289,7 @@ def main() -> int:
     installed_versions, inventory_step = _load_installed_versions(python_bin)
     package_rows, packages_ok = _package_rows(DEFAULT_PACKAGES, lock_versions, installed_versions)
     pip_check_step = _step("pip_check", [str(python_bin), "-m", "pip", "check"])
+    pip_check_ok = _pip_check_effectively_ok(pip_check_step)
     runtime_payload, runtime_step = _runtime_snapshot_step(python_bin)
     import_steps = [
         _step("torch_import", [str(python_bin), "-c", "import torch; print(torch.__version__)"]),
@@ -296,7 +312,7 @@ def main() -> int:
         "timestamp_utc": _now_utc(),
         "ok": bool(
             inventory_step["ok"]
-            and pip_check_step["ok"]
+            and pip_check_ok
             and packages_ok
             and all(step["ok"] for step in import_steps)
             and runtime_step["ok"]
@@ -305,6 +321,7 @@ def main() -> int:
         "lock_file": str(lock_file),
         "inventory_step": inventory_step,
         "pip_check_step": pip_check_step,
+        "pip_check_effectively_ok": bool(pip_check_ok),
         "critical_packages_ok": bool(packages_ok),
         "package_rows": package_rows,
         "runtime": runtime_payload,
@@ -313,7 +330,8 @@ def main() -> int:
         "recommendations": recommendations,
         "notes": [
             "PyTorch canary here is a runtime sidecar check and does not reroute the MLX trading brain.",
-            "Use this audit to decide whether PyTorch-on-MPS is healthy enough for shadow or research workloads.",
+            "PyTorch replay is disabled by default; use MLX for live collection and only run PyTorch checks intentionally.",
+            "mlx-graphs pins older requests/fsspec/tqdm metadata, so the audit tolerates those exact optional-package conflicts while preserving the newer ingestion-safe versions.",
         ],
     }
 

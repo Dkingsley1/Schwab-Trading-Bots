@@ -110,6 +110,33 @@ def test_roster_expansion_slots_build_and_apply_registry(tmp_path: Path) -> None
     assert "brain_refinery_v266_crypto_weekend_gap_liquidity_bot" in bot_ids
     assert "brain_refinery_v313_master_roster_load_balancer" in bot_ids
     assert "brain_refinery_v317_collection_observation_value_ranker" in bot_ids
+    assert "brain_refinery_v634_dividend_free_cash_flow_yield_quality_bot" in bot_ids
+    assert "brain_refinery_v642_dividend_options_assignment_income_guard_bot" in bot_ids
+    assert "brain_refinery_v644_intraday_opening_drive_failure_to_fill_bot" in bot_ids
+    assert "brain_refinery_v653_day_trading_market_on_close_imbalance_scout_bot" in bot_ids
+    assert "brain_refinery_v674_expansion_capacity_planner_bot" in bot_ids
+    assert "brain_refinery_v678_expansion_runtime_isolation_guard_bot" in bot_ids
+    assert "brain_refinery_v683_market_structure_resilience_regression_guard_bot" in bot_ids
+    assert "brain_refinery_v688_execution_quality_expansion_regression_guard_bot" in bot_ids
+    assert "brain_refinery_v693_data_lineage_expansion_regression_guard_bot" in bot_ids
+    dividend_rows = {row["bot_id"]: row for row in registry.get("sub_bots", []) if "dividend" in str(row.get("bot_id", ""))}
+    assert dividend_rows["brain_refinery_v634_dividend_free_cash_flow_yield_quality_bot"]["sleeve_profile"] == "dividend_income"
+    assert dividend_rows["brain_refinery_v639_pre_ex_dividend_liquidity_window_bot"]["sleeve_profile"] == "dividend_capture"
+    assert "dividend_cashflow_quality" in dividend_rows["brain_refinery_v634_dividend_free_cash_flow_yield_quality_bot"]["data_intake_collections"]
+    assert "early_assignment_risk_context" in dividend_rows["brain_refinery_v642_dividend_options_assignment_income_guard_bot"]["data_intake_collections"]
+    intraday_rows = {row["bot_id"]: row for row in registry.get("sub_bots", []) if str(row.get("bot_id", "")).startswith(("brain_refinery_v64", "brain_refinery_v65"))}
+    assert intraday_rows["brain_refinery_v644_intraday_opening_drive_failure_to_fill_bot"]["sleeve_profile"] == "intraday_aggressive"
+    assert intraday_rows["brain_refinery_v650_day_trading_first_five_minute_trap_filter_bot"]["sleeve_profile"] == "day_trading"
+    assert "intraday_tape_speed_context" in intraday_rows["brain_refinery_v647_intraday_tape_speed_acceleration_bot"]["data_intake_collections"]
+    assert "ssr_short_sale_restriction_context" in intraday_rows["brain_refinery_v648_intraday_short_sale_restriction_pressure_bot"]["data_intake_collections"]
+    assert "gamma_wall_intraday_context" in intraday_rows["brain_refinery_v646_intraday_gamma_wall_rejection_bot"]["data_intake_collections"]
+    expansion_rows = {row["bot_id"]: row for row in registry.get("sub_bots", []) if str(row.get("bot_id", "")).startswith("brain_refinery_v67")}
+    assert expansion_rows["brain_refinery_v674_expansion_capacity_planner_bot"]["sleeve_profile"] == "system_governor_expansion"
+    assert expansion_rows["brain_refinery_v674_expansion_capacity_planner_bot"]["bot_role"] == "infrastructure_sub_bot"
+    assert "expansion_capacity_contract" in expansion_rows["brain_refinery_v674_expansion_capacity_planner_bot"]["data_intake_collections"]
+    assert "runtime_lane_budget" in expansion_rows["brain_refinery_v678_expansion_runtime_isolation_guard_bot"]["data_intake_collections"]
+    assert expansion_rows["brain_refinery_v674_expansion_capacity_planner_bot"]["training_excluded"] is True
+    assert expansion_rows["brain_refinery_v674_expansion_capacity_planner_bot"]["paper_trading_enabled"] is False
     assert registry["summary"]["total_bots"] == len(slots_src.DEFAULT_SLOT_SPECS) + 1
     assert registry["summary"]["active_bots"] == len(slots_src.DEFAULT_SLOT_SPECS)
     assert registry["summary"]["inactive_infrastructure_sub_bots"] == 0

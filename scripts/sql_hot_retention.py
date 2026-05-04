@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -7,6 +8,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SWAP_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.swap_pressure_override"
 ARCHIVE_MONTH_FILE_RE = re.compile(r"^jsonl_link_archive_(\d{4})_(\d{2})\.sqlite3$")
 ARCHIVE_DAY_FILE_RE = re.compile(r"^jsonl_link_archive_(\d{4})_(\d{2})_(\d{2})\.sqlite3$")
 
@@ -26,6 +28,49 @@ def _connect(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=30000")
     return conn
+
+
+def _load_env_file(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for line in raw.splitlines():
+        clean = line.strip()
+        if not clean or clean.startswith("#") or "=" not in clean:
+            continue
+        key, value = clean.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key:
+            out[key] = value
+    return out
+
+
+def _retention_paused_for_swap(*, override_path: Path | None = None) -> tuple[bool, dict[str, str]]:
+    override = override_path or SWAP_OVERRIDE_PATH
+    effective = dict(os.environ)
+    effective.update(_load_env_file(override))
+    tier = str(effective.get("SWAP_PRESSURE_TIER", "")).strip()
+    paused = str(effective.get("RETENTION_MAINTENANCE_PAUSED_FOR_SWAP", "0")).strip() == "1"
+    heavy_paused = str(effective.get("SWAP_PRESSURE_HEAVY_RESEARCH_PAUSED", "0")).strip() == "1"
+    return bool(paused or heavy_paused or tier in {"pause_research", "survival"}), effective
+
+
+def _skip_payload(reason: str, env: dict[str, str]) -> dict[str, object]:
+    return {
+        "timestamp_utc": _now_utc().isoformat(),
+        "skipped": True,
+        "reason": reason,
+        "swap_pressure_tier": str(env.get("SWAP_PRESSURE_TIER", "")),
+        "swap_used_gb": str(env.get("SWAP_PRESSURE_SWAP_USED_GB", "")),
+        "moved_rows": 0,
+        "remaining_rows": 0,
+        "archive_dbs_touched": [],
+        "archive_rows_by_db": {},
+        "archive_pruning": {"enabled": False, "pruned_rows": 0, "deleted_archive_files": []},
+    }
 
 
 def _ensure_archive_schema(src: sqlite3.Connection, dst: sqlite3.Connection) -> None:
@@ -358,6 +403,18 @@ def main() -> int:
     parser.add_argument("--vacuum", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+
+    paused, pause_env = _retention_paused_for_swap()
+    if paused:
+        out = _skip_payload("swap_pressure_pause", pause_env)
+        if args.json:
+            print(json.dumps(out, ensure_ascii=True))
+        else:
+            print(
+                "sql_hot_retention_skip reason=swap_pressure_pause "
+                f"tier={out['swap_pressure_tier']} swap_gb={out['swap_used_gb']}"
+            )
+        return 0
 
     db_path = Path(args.db)
     if not db_path.exists():

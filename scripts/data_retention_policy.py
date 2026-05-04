@@ -413,9 +413,22 @@ def _purge_old_stale_stage(
     stale_root: Path,
     manifest_path: Path,
     older_than_days: int,
+    low_value_days: int | None = None,
+    medium_value_days: int | None = None,
+    high_value_days: int | None = None,
+    critical_value_days: int | None = None,
+    max_files: int = 0,
+    max_bytes: int = 0,
 ) -> dict[str, object]:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=max(int(older_than_days), 0))
-    rows: list[Path] = []
+    fallback_window = max(int(older_than_days), 0)
+    purge_windows = {
+        "low": max(int(low_value_days), 0) if low_value_days is not None else fallback_window,
+        "medium": max(int(medium_value_days), 0) if medium_value_days is not None else fallback_window,
+        "high": max(int(high_value_days), 0) if high_value_days is not None else fallback_window,
+        "critical": max(int(critical_value_days), 0) if critical_value_days is not None else fallback_window,
+    }
+    candidates: list[dict[str, object]] = []
+    skipped_by_tier = 0
     if stale_root.exists():
         for root, dirs, files in os.walk(stale_root):
             dirs.sort()
@@ -427,9 +440,59 @@ def _purge_old_stale_stage(
                     mt = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
                 except OSError:
                     continue
-                if mt < cutoff:
-                    rows.append(path)
-    bytes_total = sum(_path_size_bytes(path) for path in rows)
+                label = "unknown"
+                try:
+                    rel = path.relative_to(stale_root)
+                    if rel.parts:
+                        label = str(rel.parts[0] or "unknown")
+                except ValueError:
+                    label = "unknown"
+                economic_value = _stale_stage_economic_value(label, path)
+                purge_window_days = purge_windows.get(economic_value, fallback_window)
+                cutoff = datetime.now(timezone.utc) - timedelta(days=purge_window_days)
+                if mt >= cutoff:
+                    skipped_by_tier += 1
+                    continue
+                age_days = _path_age_days(path)
+                size_bytes = _path_size_bytes(path)
+                candidates.append(
+                    {
+                        "path": path,
+                        "label": label,
+                        "economic_value": economic_value,
+                        "purge_window_days": int(purge_window_days),
+                        "age_days": float(age_days),
+                        "size_bytes": int(size_bytes),
+                    }
+                )
+    candidates = sorted(
+        candidates,
+        key=lambda row: (
+            _economic_value_score(str(row.get("economic_value") or "medium")),
+            -float(row.get("age_days") or 0.0),
+            -int(row.get("size_bytes") or 0),
+            str(row.get("path") or ""),
+        ),
+    )
+    candidate_bytes = sum(int(row.get("size_bytes") or 0) for row in candidates)
+    selected: list[dict[str, object]] = []
+    selected_bytes = 0
+    max_files_value = max(int(max_files), 0)
+    max_bytes_value = max(int(max_bytes), 0)
+    skipped_by_budget = 0
+    for row in candidates:
+        size_bytes = int(row.get("size_bytes") or 0)
+        if max_files_value and len(selected) >= max_files_value:
+            skipped_by_budget += 1
+            continue
+        if max_bytes_value and selected and selected_bytes + size_bytes > max_bytes_value:
+            skipped_by_budget += 1
+            continue
+        if max_bytes_value and not selected and size_bytes > max_bytes_value:
+            skipped_by_budget += 1
+            continue
+        selected.append(row)
+        selected_bytes += size_bytes
     deleted = 0
     errors = 0
     deleted_bytes = 0
@@ -439,19 +502,23 @@ def _purge_old_stale_stage(
     by_age_bucket: dict[str, int] = {}
     by_economic_value: dict[str, int] = {}
     error_rows: list[str] = []
-    for path in sorted(_dedupe_paths(rows), key=lambda item: len(str(item)), reverse=True):
-        label = "unknown"
-        try:
-            rel = path.relative_to(stale_root)
-            if rel.parts:
-                label = str(rel.parts[0] or "unknown")
-        except ValueError:
-            label = "unknown"
-        size_bytes = _path_size_bytes(path)
+    deduped_selected: dict[str, dict[str, object]] = {}
+    for row in selected:
+        path = row.get("path")
+        if isinstance(path, Path):
+            deduped_selected[str(path)] = row
+    for row in sorted(deduped_selected.values(), key=lambda item: len(str(item.get("path") or "")), reverse=True):
+        path = row.get("path")
+        if not isinstance(path, Path):
+            continue
+        label = str(row.get("label") or "unknown")
+        size_bytes = int(row.get("size_bytes") or _path_size_bytes(path))
         temperature = _stale_stage_temperature_label(label, path)
         storage_tier = _stale_stage_storage_tier(label, path)
         age_bucket = _stale_stage_age_bucket(path)
-        economic_value = _stale_stage_economic_value(label, path)
+        economic_value = str(row.get("economic_value") or _stale_stage_economic_value(label, path))
+        age_days = float(row.get("age_days") or _path_age_days(path))
+        purge_window_days = int(row.get("purge_window_days") or fallback_window)
         try:
             if path.is_dir():
                 shutil.rmtree(path)
@@ -481,8 +548,8 @@ def _purge_old_stale_stage(
                 "age_bucket": age_bucket,
                 "economic_value": economic_value,
                 "economic_value_score": int(_economic_value_score(economic_value)),
-                "age_days": round(_path_age_days(path), 3),
-                "purge_window_days": int(older_than_days),
+                "age_days": round(age_days, 3),
+                "purge_window_days": int(purge_window_days),
                 "stale_reason": _stale_stage_reason(label, path),
             },
         )
@@ -499,8 +566,25 @@ def _purge_old_stale_stage(
                 continue
     manifest_compaction = _compact_stale_manifest(manifest_path=manifest_path)
     return {
-        "candidate_files": int(len(rows)),
-        "candidate_bytes": int(bytes_total),
+        "candidate_files": int(len(selected)),
+        "candidate_bytes": int(selected_bytes),
+        "candidate_files_raw": int(len(candidates)),
+        "candidate_bytes_raw": int(candidate_bytes),
+        "selected_files": int(len(selected)),
+        "selected_bytes": int(selected_bytes),
+        "skipped_by_budget_files": int(skipped_by_budget),
+        "skipped_by_tier_files": int(skipped_by_tier),
+        "budget_limited": bool(skipped_by_budget > 0),
+        "purge_policy": {
+            "fallback_days": int(fallback_window),
+            "low_value_days": int(purge_windows["low"]),
+            "medium_value_days": int(purge_windows["medium"]),
+            "high_value_days": int(purge_windows["high"]),
+            "critical_value_days": int(purge_windows["critical"]),
+            "max_files": int(max_files_value),
+            "max_bytes": int(max_bytes_value),
+            "selection_order": "lowest_economic_value_then_oldest_then_largest",
+        },
         "deleted_files": int(deleted),
         "deleted_bytes": int(deleted_bytes),
         "delete_errors": int(errors),
@@ -1186,6 +1270,12 @@ def main() -> int:
     parser.add_argument("--stale-stage-sections", default=os.getenv("RETENTION_STALE_STAGE_SECTIONS", ",".join(DEFAULT_STALE_STAGE_SECTION_TOKENS)))
     parser.add_argument("--stale-purge", action=argparse.BooleanOptionalAction, default=os.getenv("RETENTION_STALE_PURGE_ENABLED", "0").strip() == "1")
     parser.add_argument("--stale-purge-days", type=int, default=int(os.getenv("RETENTION_STALE_PURGE_DAYS", "30")))
+    parser.add_argument("--stale-purge-low-value-days", type=int, default=int(os.environ["RETENTION_STALE_PURGE_LOW_VALUE_DAYS"]) if "RETENTION_STALE_PURGE_LOW_VALUE_DAYS" in os.environ else None)
+    parser.add_argument("--stale-purge-medium-value-days", type=int, default=int(os.environ["RETENTION_STALE_PURGE_MEDIUM_VALUE_DAYS"]) if "RETENTION_STALE_PURGE_MEDIUM_VALUE_DAYS" in os.environ else None)
+    parser.add_argument("--stale-purge-high-value-days", type=int, default=int(os.environ["RETENTION_STALE_PURGE_HIGH_VALUE_DAYS"]) if "RETENTION_STALE_PURGE_HIGH_VALUE_DAYS" in os.environ else None)
+    parser.add_argument("--stale-purge-critical-value-days", type=int, default=int(os.environ["RETENTION_STALE_PURGE_CRITICAL_VALUE_DAYS"]) if "RETENTION_STALE_PURGE_CRITICAL_VALUE_DAYS" in os.environ else None)
+    parser.add_argument("--stale-purge-max-files", type=int, default=int(os.getenv("RETENTION_STALE_PURGE_MAX_FILES", "5000")))
+    parser.add_argument("--stale-purge-max-gb", type=float, default=float(os.getenv("RETENTION_STALE_PURGE_MAX_GB", "10")))
     parser.add_argument("--json", action="store_true", help="Accepted for orchestrator compatibility; JSON is always printed.")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
@@ -1513,6 +1603,12 @@ def main() -> int:
                 stale_root=stale_stage_root,
                 manifest_path=stale_stage_manifest,
                 older_than_days=int(args.stale_purge_days),
+                low_value_days=args.stale_purge_low_value_days if args.stale_purge_low_value_days is None else int(args.stale_purge_low_value_days),
+                medium_value_days=args.stale_purge_medium_value_days if args.stale_purge_medium_value_days is None else int(args.stale_purge_medium_value_days),
+                high_value_days=args.stale_purge_high_value_days if args.stale_purge_high_value_days is None else int(args.stale_purge_high_value_days),
+                critical_value_days=args.stale_purge_critical_value_days if args.stale_purge_critical_value_days is None else int(args.stale_purge_critical_value_days),
+                max_files=int(args.stale_purge_max_files),
+                max_bytes=int(max(float(args.stale_purge_max_gb), 0.0) * (1024**3)),
             )
         file_deleted, delete_errors = _delete_paths(hard_delete_rows)
 

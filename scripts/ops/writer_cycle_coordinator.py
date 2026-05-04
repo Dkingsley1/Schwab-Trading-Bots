@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import os
+import signal
 import subprocess
 import sys
 import time
@@ -29,6 +31,7 @@ DEFAULT_POLL_SECONDS = 20.0
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 2400
 WRITER_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "jsonl_sql_writer.lock"
 RECENT_PROGRESS_MINUTES = 30.0
+DEFAULT_STALE_PROGRESS_MINUTES = 30.0
 
 
 def _utc_now() -> str:
@@ -99,11 +102,149 @@ def _age_minutes_from_timestamp(raw: Any, *, now_utc: datetime | None = None) ->
     return max((now - dt.astimezone(timezone.utc)).total_seconds() / 60.0, 0.0)
 
 
-def _lock_owner(lock_path: Path) -> str:
+def _progress_cycle_age_minutes(progress: dict[str, Any], *, now_utc: datetime | None = None) -> float | None:
+    return _age_minutes_from_timestamp(progress.get("cycle_started_utc"), now_utc=now_utc)
+
+
+def _lock_snapshot(lock_path: Path) -> dict[str, Any]:
     try:
-        return lock_path.read_text(encoding="utf-8").strip()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            handle.seek(0)
+            owner = handle.read().strip()
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return {"owner": owner, "held": True}
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            return {"owner": owner, "held": False}
+    except Exception:
+        return {"owner": "", "held": False}
+
+
+def _lock_owner(lock_path: Path) -> str:
+    return str(_lock_snapshot(lock_path).get("owner") or "")
+
+
+def _parse_lock_owner_pid(owner: str) -> int | None:
+    for token in str(owner or "").split():
+        if token.startswith("pid="):
+            try:
+                pid = int(token.split("=", 1)[1])
+            except Exception:
+                return None
+            return pid if pid > 0 else None
+    return None
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+    return True
+
+
+def _pid_command(pid: int) -> str:
+    try:
+        proc = subprocess.run(
+            ["ps", "-p", str(int(pid)), "-o", "command="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
     except Exception:
         return ""
+    return (proc.stdout or "").strip()
+
+
+def _stale_writer_detected(state: dict[str, Any], *, stale_progress_minutes: float) -> bool:
+    if not bool(state.get("active", False)) or not bool(state.get("writer_lock_held", False)):
+        return False
+    current_step = str(state.get("current_step") or "")
+    if current_step in {"", "complete"}:
+        return False
+    stale_after = max(float(stale_progress_minutes), 1.0)
+    age = state.get("progress_age_minutes")
+    if age is not None and float(age) >= stale_after:
+        return True
+
+    cycle_age = state.get("cycle_age_minutes")
+    if cycle_age is None:
+        return False
+    semantic_stall_after = max(stale_after * 3.0, 90.0)
+    merged_rows = _safe_int(state.get("merged_rows_this_cycle"), 0)
+    merge_count = _safe_int(state.get("completed_merge_count"), 0)
+    shard_count = _safe_int(state.get("completed_shard_count"), 0)
+    planned_shards = _safe_int(state.get("planned_shard_count"), 0)
+    timeout_count = _safe_int(state.get("timed_out_shard_count"), 0)
+    if float(cycle_age) < semantic_stall_after:
+        return False
+    if current_step == "shard_linking":
+        if merged_rows <= 0 and merge_count <= 0 and (timeout_count > 0 or shard_count < max(planned_shards, 1)):
+            return True
+    if current_step == "merge_primary":
+        merge_stall_after = max(stale_after * 4.0, 120.0)
+        if float(cycle_age) >= merge_stall_after and merged_rows <= 0 and merge_count <= 0:
+            return True
+    return False
+
+
+def _terminate_stale_writer(
+    project_root: Path,
+    state: dict[str, Any],
+    *,
+    stale_progress_minutes: float,
+    grace_seconds: float = 5.0,
+) -> dict[str, Any]:
+    owner = str(state.get("writer_lock_owner") or "")
+    pid = _parse_lock_owner_pid(owner)
+    payload: dict[str, Any] = {
+        "attempted": False,
+        "needed": _stale_writer_detected(state, stale_progress_minutes=stale_progress_minutes),
+        "pid": pid,
+        "owner": owner,
+        "terminated": False,
+        "lock_released": False,
+        "reason": "",
+    }
+    if not bool(payload["needed"]):
+        payload["reason"] = "writer_not_stale"
+        return payload
+    if pid is None:
+        payload["reason"] = "missing_writer_pid"
+        return payload
+    command = _pid_command(pid)
+    payload["command"] = command
+    if "sql_link_shard_manager.py" not in command and "sql_link_shard_manager" not in owner:
+        payload["reason"] = "pid_not_sql_link_shard_manager"
+        return payload
+    try:
+        os.kill(pid, signal.SIGTERM)
+        payload["attempted"] = True
+    except ProcessLookupError:
+        payload["attempted"] = True
+        payload["terminated"] = True
+    except Exception as exc:
+        payload["reason"] = f"terminate_failed:{exc.__class__.__name__}"
+        return payload
+
+    deadline = time.monotonic() + max(float(grace_seconds), 0.0)
+    while _pid_exists(pid) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    payload["terminated"] = not _pid_exists(pid)
+    lock_state = _lock_snapshot(project_root / "governance" / "locks" / "jsonl_sql_writer.lock")
+    payload["lock_released"] = not bool(lock_state.get("held", False))
+    payload["reason"] = "terminated" if bool(payload["terminated"]) else "sigterm_sent_pid_still_running"
+    return payload
 
 
 def writer_state_snapshot(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None = None) -> dict[str, Any]:
@@ -111,12 +252,17 @@ def writer_state_snapshot(project_root: Path = PROJECT_ROOT, *, now_utc: datetim
     health_root = project_root / "governance" / "health"
     progress = _load_json(health_root / "sql_link_service_progress_latest.json")
     writer_lock = project_root / "governance" / "locks" / "jsonl_sql_writer.lock"
-    owner = _lock_owner(writer_lock)
+    lock_state = _lock_snapshot(writer_lock)
+    owner = str(lock_state.get("owner") or "")
+    lock_held = bool(lock_state.get("held", False))
     status = str(progress.get("status") or "").strip()
     running = bool(progress.get("running", False) or status == "running")
     progress_age_minutes = _age_minutes_from_timestamp(progress.get("timestamp_utc"), now_utc=now)
+    cycle_age_minutes = _progress_cycle_age_minutes(progress, now_utc=now)
     recent_progress = progress_age_minutes is None or progress_age_minutes <= RECENT_PROGRESS_MINUTES
-    active = bool(owner) or bool(running and recent_progress)
+    active = bool(lock_held) or bool(running and recent_progress)
+    shards = progress.get("shards") if isinstance(progress.get("shards"), list) else []
+    timed_out_shard_count = sum(1 for row in shards if isinstance(row, dict) and bool(row.get("timed_out", False)))
     return {
         "timestamp_utc": now.isoformat(),
         "active": active,
@@ -125,10 +271,14 @@ def writer_state_snapshot(project_root: Path = PROJECT_ROOT, *, now_utc: datetim
         "current_step": str(progress.get("current_step") or ""),
         "cycle_started_utc": str(progress.get("cycle_started_utc") or ""),
         "progress_age_minutes": round(float(progress_age_minutes), 3) if progress_age_minutes is not None else None,
+        "cycle_age_minutes": round(float(cycle_age_minutes), 3) if cycle_age_minutes is not None else None,
         "writer_lock_owner": owner,
+        "writer_lock_held": lock_held,
         "completed_shard_count": _safe_int(progress.get("completed_shard_count"), 0),
         "completed_merge_count": _safe_int(progress.get("completed_merge_count"), 0),
         "merged_rows_this_cycle": _safe_int(progress.get("merged_rows_this_cycle"), 0),
+        "planned_shard_count": len(list(progress.get("planned_shards") or [])) if isinstance(progress.get("planned_shards"), list) else len(shards),
+        "timed_out_shard_count": int(timed_out_shard_count),
     }
 
 
@@ -282,6 +432,7 @@ def build_payload(
     poll_seconds: float = DEFAULT_POLL_SECONDS,
     wait_timeout_seconds: float = DEFAULT_WAIT_TIMEOUT_SECONDS,
     command_timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT_SECONDS,
+    stale_progress_minutes: float = DEFAULT_STALE_PROGRESS_MINUTES,
     skip_drain: bool = False,
     skip_maintenance: bool = False,
     maintenance_force: bool = False,
@@ -297,23 +448,36 @@ def build_payload(
     maintenance_ready = bool(not skip_maintenance and maintenance_focus.get("enabled", False))
     actionable = bool(drain_ready or maintenance_ready)
     writer_before = writer_state_snapshot(project_root)
+    stale_writer_remediation = {
+        "attempted": False,
+        "needed": _stale_writer_detected(writer_before, stale_progress_minutes=stale_progress_minutes),
+        "reason": "preview_only" if not apply else "writer_not_stale",
+    }
+    writer_after_remediation = writer_before
+    if apply and bool(stale_writer_remediation.get("needed", False)):
+        stale_writer_remediation = _terminate_stale_writer(
+            project_root,
+            writer_before,
+            stale_progress_minutes=float(stale_progress_minutes),
+        )
+        writer_after_remediation = writer_state_snapshot(project_root)
     wait_result = {
         "requested": False,
-        "completed": not bool(writer_before.get("active", False)),
+        "completed": not bool(writer_after_remediation.get("active", False)),
         "timed_out": False,
         "attempts": 0,
         "waited_seconds": 0.0,
-        "final_state": writer_before,
+        "final_state": writer_after_remediation,
     }
-    writer_after = writer_before
-    if apply and bool(writer_before.get("active", False)) and not drain_ready:
+    writer_after = writer_after_remediation
+    if apply and bool(writer_after_remediation.get("active", False)) and not drain_ready:
         wait_result = _wait_for_writer_idle(
             project_root,
             poll_seconds=float(poll_seconds),
             wait_timeout_seconds=float(wait_timeout_seconds),
         )
-        writer_after = wait_result.get("final_state") if isinstance(wait_result.get("final_state"), dict) else writer_before
-    writer_progress = _writer_progress_summary(writer_before, writer_after)
+        writer_after = wait_result.get("final_state") if isinstance(wait_result.get("final_state"), dict) else writer_after_remediation
+    writer_progress = _writer_progress_summary(writer_after_remediation, writer_after)
 
     steps: dict[str, Any] = {}
     refresh_steps: dict[str, Any] = {}
@@ -427,6 +591,11 @@ def build_payload(
         list(drain_preview.get("top_actions") or [])[:3]
         + list(maintenance_focus.get("top_actions") or [])[:3]
         + (
+            ["stale SQL writer was restarted so the next drain handoff can be picked up cleanly"]
+            if bool(stale_writer_remediation.get("terminated", False)) or bool(stale_writer_remediation.get("lock_released", False))
+            else []
+        )
+        + (
             ["let the current SQL writer finish its active merge cycle before forcing drain or retention work; progress is still being made"]
             if bool(writer_progress.get("progress_observed", False))
             else []
@@ -459,6 +628,8 @@ def build_payload(
         "drain_ready": drain_ready,
         "maintenance_ready": maintenance_ready,
         "writer_state_before": writer_before,
+        "writer_state_after_remediation": writer_after_remediation,
+        "stale_writer_remediation": stale_writer_remediation,
         "writer_state_after_wait": writer_after,
         "writer_progress": writer_progress,
         "wait_for_writer": wait_result,
@@ -476,6 +647,10 @@ def build_payload(
         "recommended_actions": recommended_actions,
         "summary": {
             "writer_active_initial": bool(writer_before.get("active", False)),
+            "stale_writer_detected": bool(stale_writer_remediation.get("needed", False)),
+            "stale_writer_restart_attempted": bool(stale_writer_remediation.get("attempted", False)),
+            "stale_writer_terminated": bool(stale_writer_remediation.get("terminated", False)),
+            "stale_writer_lock_released": bool(stale_writer_remediation.get("lock_released", False)),
             "writer_active_after_wait": bool(writer_after.get("active", False)),
             "writer_current_step": str(writer_after.get("current_step") or writer_before.get("current_step") or ""),
             "wait_timed_out": bool(wait_result.get("timed_out", False)),
@@ -503,6 +678,7 @@ def main() -> int:
     parser.add_argument("--poll-seconds", type=float, default=DEFAULT_POLL_SECONDS)
     parser.add_argument("--wait-timeout-seconds", type=float, default=DEFAULT_WAIT_TIMEOUT_SECONDS)
     parser.add_argument("--command-timeout-seconds", type=int, default=DEFAULT_COMMAND_TIMEOUT_SECONDS)
+    parser.add_argument("--stale-progress-minutes", type=float, default=float(os.getenv("WRITER_CYCLE_STALE_PROGRESS_MINUTES", str(DEFAULT_STALE_PROGRESS_MINUTES))))
     parser.add_argument("--skip-drain", action="store_true")
     parser.add_argument("--skip-maintenance", action="store_true")
     parser.add_argument("--maintenance-force", action="store_true")
@@ -540,6 +716,7 @@ def main() -> int:
             poll_seconds=float(args.poll_seconds),
             wait_timeout_seconds=float(args.wait_timeout_seconds),
             command_timeout_seconds=int(args.command_timeout_seconds),
+            stale_progress_minutes=float(args.stale_progress_minutes),
             skip_drain=bool(args.skip_drain),
             skip_maintenance=bool(args.skip_maintenance),
             maintenance_force=bool(args.maintenance_force),

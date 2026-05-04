@@ -34,6 +34,10 @@ def _to_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _parse_bot_id_csv(value: str | None) -> set[str]:
+    return {item.strip().lower() for item in str(value or "").split(",") if item.strip()}
+
+
 def _scope_exempt_reason(row: dict[str, Any]) -> str:
     tokens = " ".join(
         [
@@ -121,9 +125,12 @@ def build_payload(
     min_training_sample_count: int,
     min_eligible_sequences: int,
     min_walk_forward_runs: int,
+    include_bot_ids: set[str] | None = None,
+    advisory_only: bool = False,
 ) -> dict[str, Any]:
     sub_bots = registry.get("sub_bots") if isinstance(registry.get("sub_bots"), list) else []
     wf_bots = walk_forward.get("bots") if isinstance(walk_forward.get("bots"), dict) else {}
+    include_bot_ids = {item.strip().lower() for item in (include_bot_ids or set()) if item.strip()}
 
     point_in_time_contract = (
         feature_store_manifest.get("point_in_time_contract")
@@ -149,6 +156,8 @@ def build_payload(
             continue
         bot_id = str(raw_row.get("bot_id") or "").strip()
         if not bot_id or _scope_exempt_reason(raw_row):
+            continue
+        if include_bot_ids and bot_id.lower() not in include_bot_ids:
             continue
         wf_row = wf_bots.get(bot_id) if isinstance(wf_bots.get(bot_id), dict) else {}
         lifecycle_state = str(raw_row.get("lifecycle_state") or "").strip().lower()
@@ -201,7 +210,8 @@ def build_payload(
         global_failed_checks.append("replay_hash_registry_not_ready")
 
     blocking_candidates = [row for row in candidate_rows if row.get("failed_contracts")]
-    ok = bool(not global_failed_checks and not blocking_candidates)
+    contract_ok = bool(not global_failed_checks and not blocking_candidates)
+    ok = True if advisory_only else contract_ok
 
     top_actions: list[str] = []
     if any("support_owner_missing" in row.get("failed_contracts", []) for row in candidate_rows):
@@ -220,6 +230,12 @@ def build_payload(
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "schema_version": 1,
         "ok": ok,
+        "contract_ok": contract_ok,
+        "advisory_only": bool(advisory_only),
+        "scope": {
+            "include_bot_ids": sorted(include_bot_ids),
+            "target_scoped": bool(include_bot_ids),
+        },
         "thresholds": {
             "min_training_sample_count": int(min_training_sample_count),
             "min_eligible_sequences": int(min_eligible_sequences),
@@ -264,6 +280,12 @@ def main() -> int:
     parser.add_argument("--min-training-sample-count", type=int, default=40)
     parser.add_argument("--min-eligible-sequences", type=int, default=4)
     parser.add_argument("--min-walk-forward-runs", type=int, default=12)
+    parser.add_argument("--include-bot-ids", default="", help="Optional comma-separated bot ids to scope the admission check.")
+    parser.add_argument(
+        "--advisory-only",
+        action="store_true",
+        help="Write admission findings but do not block the caller. Used for targeted coverage repair retrains.",
+    )
     parser.add_argument("--out-file", default=str(PROJECT_ROOT / "governance" / "health" / "new_bot_admission_guard_latest.json"))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -278,6 +300,8 @@ def main() -> int:
         min_training_sample_count=int(args.min_training_sample_count),
         min_eligible_sequences=int(args.min_eligible_sequences),
         min_walk_forward_runs=int(args.min_walk_forward_runs),
+        include_bot_ids=_parse_bot_id_csv(args.include_bot_ids),
+        advisory_only=bool(args.advisory_only),
     )
 
     out_path = Path(args.out_file)

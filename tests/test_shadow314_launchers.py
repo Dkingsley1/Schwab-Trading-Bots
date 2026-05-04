@@ -67,3 +67,24 @@ def test_shadow_launchers_honor_explicit_portable_override(monkeypatch) -> None:
     module = _load_module(PROJECT_ROOT / "scripts" / "run_dividend_shadow.py")
 
     assert ".venv314/bin/python" in str(module.VENV_PY)
+
+
+def test_failover_hot_standby_respects_swap_research_pause(monkeypatch, tmp_path: Path) -> None:
+    module = _load_module(PROJECT_ROOT / "scripts" / "failover_hot_standby.py")
+    swap_override = tmp_path / ".env.swap_pressure_override"
+    swap_override.write_text(
+        "SWAP_PRESSURE_TIER=pause_research\n"
+        "SWAP_PRESSURE_SWAP_USED_GB=19.059\n"
+        "SWAP_PRESSURE_HEAVY_RESEARCH_PAUSED=1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "SWAP_OVERRIDE_PATH", swap_override)
+    monkeypatch.setattr(module, "MEMORY_OVERRIDE_PATH", tmp_path / "missing.env")
+    monkeypatch.delenv("SWAP_PRESSURE_HEAVY_RESEARCH_PAUSED", raising=False)
+    monkeypatch.delenv("TRAINING_RUNTIME_PAUSED_FOR_SWAP", raising=False)
+
+    state = module._swap_research_pause_state()
+
+    assert state["active"] is True
+    assert state["tier"] == "pause_research"
+    assert state["swap_used_gb"] == "19.059"

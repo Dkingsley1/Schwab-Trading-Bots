@@ -20,6 +20,8 @@ DEFAULT_TARGET_CORE_PENDING_LINES = 5000
 DEFAULT_TARGET_TOTAL_DRAIN_MINUTES = 15.0
 DEFAULT_TARGET_STALE_STAGE_PENDING_LINES = 0
 DEFAULT_TARGET_RETENTION_DEBT_GB = 0.25
+SMALL_HOT_QUEUE_TOTAL_MULTIPLIER = 1.25
+SMALL_HOT_QUEUE_SIDE_LANE_ALLOWANCE = 10
 RECOVERABLE_HARD_GATE_KEYS = {
     "ingestion_backpressure_overload",
     "sql_progress_stall",
@@ -130,6 +132,48 @@ def _target_ratio(actual: float, target: float) -> float:
     if target_value <= 0.0:
         return 0.0 if actual_value <= 0.0 else 1.0
     return actual_value / target_value
+
+
+def _small_hot_queue_stable(
+    *,
+    live_backpressure_clear: bool,
+    core_pending_lines: int,
+    total_pending_lines: int,
+    deferred_pending_lines: int,
+    cold_pending_lines: int,
+    support_pending_lines: int,
+    stale_stage_pending_lines: int,
+    retention_debt_gb: float,
+) -> bool:
+    targets = _steady_state_targets()
+    core_target = max(_safe_int(targets.get("core_pending_lines"), DEFAULT_TARGET_CORE_PENDING_LINES), 1)
+    total_target = int(core_target * SMALL_HOT_QUEUE_TOTAL_MULTIPLIER)
+    side_lane_allowance = max(SMALL_HOT_QUEUE_SIDE_LANE_ALLOWANCE, int(core_target * 0.01))
+    return bool(
+        live_backpressure_clear
+        and int(core_pending_lines) <= core_target
+        and int(total_pending_lines) <= total_target
+        and int(deferred_pending_lines) <= side_lane_allowance
+        and int(cold_pending_lines) <= side_lane_allowance
+        and int(support_pending_lines) <= side_lane_allowance
+        and int(stale_stage_pending_lines) <= 0
+        and float(retention_debt_gb) <= float(targets.get("retention_debt_gb", DEFAULT_TARGET_RETENTION_DEBT_GB))
+    )
+
+
+def _bounded_drain_minutes(
+    *,
+    raw_minutes: float | None,
+    small_hot_queue_stable: bool,
+    target_minutes: float,
+) -> tuple[float | None, bool]:
+    if raw_minutes is None:
+        if small_hot_queue_stable:
+            return round(float(target_minutes), 3), True
+        return None, False
+    if small_hot_queue_stable and raw_minutes > target_minutes:
+        return round(float(target_minutes), 3), True
+    return raw_minutes, False
 
 
 def _backpressure_scorecard(
@@ -342,6 +386,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
     age_threshold = max(_safe_float(backpressure.get("oldest_age_threshold_seconds"), 240.0), 1.0)
     retention_debt_gb = _safe_float(health_gates.get("storage_pressure", {}).get("retention_debt_gb"), _safe_float(health_gates.get("retention_debt_gb"), 0.0))
     severe_backpressure = bool(health_gates.get("storage_pressure", {}).get("severe_backpressure_overload", False) or health_gates.get("ingestion_pressure", {}).get("severe_backpressure_overload", False))
+    stale_severe_backpressure_suppressed: list[str] = []
     hard_gate_flags = health_gates.get("hard_gates") if isinstance(health_gates.get("hard_gates"), dict) else {}
     storage_hard_gate_keys = [
         key
@@ -382,6 +427,18 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
     backlog_quarantine_candidate_files = _safe_int(backlog_quarantine.get("candidate_files"), 0)
     backlog_quarantine_moved_files = _safe_int(backlog_quarantine.get("moved_files"), 0)
     backlog_quarantine_moved_pending_lines = _safe_int(backlog_quarantine.get("moved_pending_lines"), 0)
+    stale_sweeper_summary = stale_sweeper.get("summary") if isinstance(stale_sweeper.get("summary"), dict) else {}
+    stale_reaper_summary = stale_reaper.get("summary") if isinstance(stale_reaper.get("summary"), dict) else {}
+    stale_reaper_purge = stale_reaper.get("purge") if isinstance(stale_reaper.get("purge"), dict) else {}
+    stale_stage_delete_errors = _safe_int(stale_reaper_summary.get("delete_errors"), _safe_int(stale_reaper_purge.get("delete_errors"), 0))
+    stale_stage_budget_limited = bool(stale_reaper_summary.get("budget_limited", stale_reaper_purge.get("budget_limited", False)))
+    stale_stage_purge_policy = (
+        stale_reaper_summary.get("purge_policy")
+        if isinstance(stale_reaper_summary.get("purge_policy"), dict)
+        else stale_reaper_purge.get("purge_policy")
+        if isinstance(stale_reaper_purge.get("purge_policy"), dict)
+        else {}
+    )
 
     core_ratio = core_pending_lines / pending_threshold
     total_ratio = total_pending_lines / max(pending_threshold * 20, 1)
@@ -389,6 +446,27 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
     retention_ratio = retention_debt_gb / 2.0 if retention_debt_gb > 0.0 else 0.0
     drain_minutes_core = round((core_pending_lines / max(throughput_rows_per_second, 1e-9)) / 60.0, 3) if throughput_rows_per_second > 0.0 else None
     drain_minutes_total = round((total_pending_lines / max(throughput_rows_per_second, 1e-9)) / 60.0, 3) if throughput_rows_per_second > 0.0 else None
+    small_hot_queue_stable = _small_hot_queue_stable(
+        live_backpressure_clear=live_backpressure_clear,
+        core_pending_lines=core_pending_lines,
+        total_pending_lines=total_pending_lines,
+        deferred_pending_lines=deferred_pending_lines,
+        cold_pending_lines=cold_pending_lines,
+        support_pending_lines=support_pending_lines,
+        stale_stage_pending_lines=stale_stage_pending_lines,
+        retention_debt_gb=retention_debt_gb,
+    )
+    target_total_drain_minutes = float(_steady_state_targets().get("estimated_total_drain_minutes", DEFAULT_TARGET_TOTAL_DRAIN_MINUTES))
+    drain_minutes_core, drain_minutes_core_bounded = _bounded_drain_minutes(
+        raw_minutes=drain_minutes_core,
+        small_hot_queue_stable=small_hot_queue_stable,
+        target_minutes=target_total_drain_minutes,
+    )
+    drain_minutes_total, drain_minutes_total_bounded = _bounded_drain_minutes(
+        raw_minutes=drain_minutes_total,
+        small_hot_queue_stable=small_hot_queue_stable,
+        target_minutes=target_total_drain_minutes,
+    )
     pressure_index = round(max(core_ratio, age_ratio, total_ratio, retention_ratio, 0.0), 3)
     live_queue_watermarks = _queue_watermarks(
         core_pending_lines=core_pending_lines,
@@ -430,6 +508,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         or drain_delta_signal_observed
         or drain_follow_status in {"handoff_requested", "drain_active", "writer_handoff_active", "requested_live_writer"}
     )
+    if severe_backpressure and small_hot_queue_stable and active_drain_progress:
+        severe_backpressure = False
+        stale_severe_backpressure_suppressed.append("severe_backpressure_overload")
     recoverable_hard_gate_only = bool(storage_hard_gate_keys) and set(storage_hard_gate_keys) <= RECOVERABLE_HARD_GATE_KEYS
     guarded_blocked_queue = bool(
         queue_watermarks_overall == "blocked"
@@ -462,13 +543,17 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         top_actions.append("keep watchdog failover and pager telemetry on the support shard so support logs stop inflating core ingestion pressure")
     if stale_stage_pending_lines >= max(pending_threshold, 1000):
         top_actions.append("reap or archive stale-stage artifacts so cold archive debt stops inflating total drain time")
+    if stale_stage_delete_errors > 0:
+        top_actions.append("repair stale-stage deletion errors before stale artifacts accumulate into retention debt")
+    if stale_stage_budget_limited:
+        top_actions.append("continue tiered stale reaping in small batches until the purge budget is no longer limiting cleanup")
     if retention_debt_gb > 0.0:
         top_actions.append("force retention and compaction on priority shards before broad retrains")
     if drain_minutes_core is not None and drain_minutes_core > 30.0:
         top_actions.append("reduce writer fan-out or increase merge throughput until core drain time is below 30 minutes")
     if drain_minutes_total is not None and drain_minutes_total > 180.0:
         top_actions.append("split deferred and explanation shards to keep total drain time below three hours")
-    if _safe_int(((stale_sweeper.get("summary") or {}).get("candidate_files")), 0) > 0:
+    if _safe_int(stale_sweeper_summary.get("candidate_files"), 0) > 0:
         top_actions.append("continue stale-stage sweeps so stale debug and report artifacts stop competing with hot ingestion")
     if _safe_int(sql_ingestion.get("sqlite", {}).get("invalid"), 0) > 0:
         top_actions.append("quarantine invalid ingestion rows before they amplify backlog and replay drift")
@@ -488,7 +573,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         top_actions.append("repair dual-root or warm-standby coverage so backlog drainage is not the only recovery path")
 
     recommended_mode = str(health_gates.get("recommended_operating_mode") or "")
-    if not recommended_mode:
+    unsafe_live_modes = {"normal", "live_full", "live_cautious", "paper_live"}
+    if not recommended_mode or (severity in {"critical", "high"} and recommended_mode in unsafe_live_modes):
         recommended_mode = "maintenance_only" if severity in {"critical", "high"} else "normal"
     if backlog_drain_recommended and severity in {"critical", "high"} and off_hours_active:
         recommended_mode = "maintenance_drain_window"
@@ -630,9 +716,22 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
             "backlog_quarantine_candidate_files": backlog_quarantine_candidate_files,
             "backlog_quarantine_moved_files": backlog_quarantine_moved_files,
             "backlog_quarantine_moved_pending_lines": backlog_quarantine_moved_pending_lines,
-            "stale_stage_candidate_files": _safe_int(((stale_sweeper.get("summary") or {}).get("candidate_files")), 0),
-            "stale_stage_staged_files": _safe_int(((stale_sweeper.get("summary") or {}).get("staged_files")), 0),
-            "stale_stage_deleted_files": _safe_int(((stale_reaper.get("summary") or {}).get("deleted_files")), 0),
+            "stale_stage_candidate_files": _safe_int(stale_sweeper_summary.get("candidate_files"), 0),
+            "stale_stage_candidate_bytes": _safe_int(stale_sweeper_summary.get("candidate_bytes"), 0),
+            "stale_stage_staged_files": _safe_int(stale_sweeper_summary.get("staged_files"), 0),
+            "stale_stage_staged_bytes": _safe_int(stale_sweeper_summary.get("staged_bytes"), 0),
+            "stale_stage_purge_candidate_files": _safe_int(stale_reaper_summary.get("candidate_files"), 0),
+            "stale_stage_purge_candidate_bytes": _safe_int(stale_reaper_summary.get("candidate_bytes"), 0),
+            "stale_stage_purge_candidate_files_raw": _safe_int(stale_reaper_summary.get("candidate_files_raw"), 0),
+            "stale_stage_purge_candidate_bytes_raw": _safe_int(stale_reaper_summary.get("candidate_bytes_raw"), 0),
+            "stale_stage_deleted_files": _safe_int(stale_reaper_summary.get("deleted_files"), 0),
+            "stale_stage_deleted_bytes": _safe_int(stale_reaper_summary.get("deleted_bytes"), 0),
+            "stale_stage_delete_errors": int(stale_stage_delete_errors),
+            "stale_stage_budget_limited": bool(stale_stage_budget_limited),
+            "stale_stage_skipped_by_budget_files": _safe_int(stale_reaper_summary.get("skipped_by_budget_files"), 0),
+            "stale_stage_skipped_by_tier_files": _safe_int(stale_reaper_summary.get("skipped_by_tier_files"), 0),
+            "stale_stage_manifest_lines_after": _safe_int(stale_reaper_summary.get("manifest_lines_after"), 0),
+            "stale_stage_purge_policy": stale_stage_purge_policy,
             "retention_deleted": _safe_int(retention.get("deleted"), 0),
         },
         "throttling": {
@@ -640,6 +739,14 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
             "cold_files_budget": _safe_int(governor_throttles.get("cold_files_budget"), 0),
             "backlog_drain_deferred_budget": _safe_int(drain_overrides.get("deferred_files_budget"), 0),
             "backlog_drain_cold_budget": _safe_int(drain_overrides.get("cold_files_budget"), 0),
+            "queue_prune_orphans": str(governor_throttles.get("queue_prune_orphans") or ""),
+            "queue_orphan_days": _safe_int(governor_throttles.get("queue_orphan_days"), 0),
+            "queue_max_db_gb": _safe_float(governor_throttles.get("queue_max_db_gb"), 0.0),
+            "stale_purge_low_value_days": _safe_int(governor_throttles.get("stale_purge_low_value_days"), 0),
+            "stale_purge_medium_value_days": _safe_int(governor_throttles.get("stale_purge_medium_value_days"), 0),
+            "stale_purge_high_value_days": _safe_int(governor_throttles.get("stale_purge_high_value_days"), 0),
+            "stale_purge_critical_value_days": _safe_int(governor_throttles.get("stale_purge_critical_value_days"), 0),
+            "stale_purge_max_gb": _safe_float(governor_throttles.get("stale_purge_max_gb"), 0.0),
             "log_api_calls": str(governor_throttles.get("log_api_calls") or ""),
             "log_loop_state": str(governor_throttles.get("log_loop_state") or ""),
             "log_data_ingress": str(governor_throttles.get("log_data_ingress") or ""),
@@ -680,8 +787,17 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
             "drain_delta_signal_observed": drain_delta_signal_observed,
             "hard_gate_keys": storage_hard_gate_keys,
             "stale_hard_gate_suppressed": stale_hard_gate_suppressed,
+            "stale_severe_backpressure_suppressed": stale_severe_backpressure_suppressed,
             "recoverable_hard_gate_only": recoverable_hard_gate_only,
             "guarded_blocked_queue": guarded_blocked_queue,
+        },
+        "stabilization_contract": {
+            "small_hot_queue_stable": small_hot_queue_stable,
+            "drain_minutes_core_bounded": drain_minutes_core_bounded,
+            "drain_minutes_total_bounded": drain_minutes_total_bounded,
+            "target_total_drain_minutes": round(target_total_drain_minutes, 3),
+            "stale_severe_backpressure_suppressed": stale_severe_backpressure_suppressed,
+            "reason": "small_hot_queue_with_active_drain" if small_hot_queue_stable and active_drain_progress else "",
         },
         "recovery_contract": recovery_scorecard,
         "storage_resilience": {

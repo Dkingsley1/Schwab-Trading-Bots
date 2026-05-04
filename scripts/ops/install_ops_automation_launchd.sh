@@ -30,6 +30,7 @@ SECTION_GRADE_AUTOPILOT_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_section_grade_
 CHROME_HEADLESS_GUARD_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_chrome_headless_guard_launchd.sh"
 SYSTEM_SUMMARY_AUTOPILOT_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_system_summary_autopilot_launchd.sh"
 CREATIVE_COTENANT_GUARD_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_creative_cotenant_guard_launchd.sh"
+SWAP_PRESSURE_GOVERNOR_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_swap_pressure_governor_launchd.sh"
 AGENTS_DIR="$HOME/Library/LaunchAgents"
 LOG_DIR="${BOT_OPS_LAUNCHD_LOG_DIR:-/tmp/schwab_trading_bot/launchd_ops}"
 UID_NUM="$(id -u)"
@@ -62,6 +63,7 @@ chmod +x "$SECTION_GRADE_AUTOPILOT_RUN_SCRIPT"
 chmod +x "$CHROME_HEADLESS_GUARD_RUN_SCRIPT"
 chmod +x "$SYSTEM_SUMMARY_AUTOPILOT_RUN_SCRIPT"
 chmod +x "$CREATIVE_COTENANT_GUARD_RUN_SCRIPT"
+chmod +x "$SWAP_PRESSURE_GOVERNOR_RUN_SCRIPT"
 
 WATCHDOG_PLIST="$AGENTS_DIR/com.dankingsley.ops.watchdog.plist"
 REPORT_PLIST="$AGENTS_DIR/com.dankingsley.ops.daily_report.plist"
@@ -122,7 +124,9 @@ CHROME_HEADLESS_GUARD_INTERVAL="${CHROME_HEADLESS_GUARD_INTERVAL_SECONDS:-300}"
 SYSTEM_SUMMARY_AUTOPILOT_PLIST="$AGENTS_DIR/com.dankingsley.ops.system_summary_autopilot.plist"
 SYSTEM_SUMMARY_AUTOPILOT_INTERVAL="${SYSTEM_SUMMARY_AUTOPILOT_INTERVAL_SECONDS:-1800}"
 CREATIVE_COTENANT_GUARD_PLIST="$AGENTS_DIR/com.dankingsley.ops.creative_cotenant_guard.plist"
-CREATIVE_COTENANT_GUARD_INTERVAL="${CREATIVE_COTENANT_GUARD_INTERVAL_SECONDS:-120}"
+CREATIVE_COTENANT_GUARD_INTERVAL="${CREATIVE_COTENANT_GUARD_INTERVAL_SECONDS:-20}"
+SWAP_PRESSURE_GOVERNOR_PLIST="$AGENTS_DIR/com.dankingsley.ops.swap_pressure_governor.plist"
+SWAP_PRESSURE_GOVERNOR_INTERVAL="${SWAP_PRESSURE_GOVERNOR_INTERVAL_SECONDS:-60}"
 
 cat > "$WATCHDOG_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -569,6 +573,21 @@ cat > "$SYSTEM_SUMMARY_AUTOPILOT_PLIST" <<PLIST
 </dict></plist>
 PLIST
 
+cat > "$SWAP_PRESSURE_GOVERNOR_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.swap_pressure_governor</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$SWAP_PRESSURE_GOVERNOR_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$SWAP_PRESSURE_GOVERNOR_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_swap_pressure_governor.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_swap_pressure_governor.err.log</string>
+</dict></plist>
+PLIST
+
 cat > "$CREATIVE_COTENANT_GUARD_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -636,6 +655,7 @@ install_job "com.dankingsley.ops.grade_regression_autopilot" "$GRADE_REGRESSION_
 install_job "com.dankingsley.ops.section_grade_autopilot" "$SECTION_GRADE_AUTOPILOT_PLIST"
 install_job "com.dankingsley.ops.chrome_headless_guard" "$CHROME_HEADLESS_GUARD_PLIST"
 install_job "com.dankingsley.ops.system_summary_autopilot" "$SYSTEM_SUMMARY_AUTOPILOT_PLIST"
+install_job "com.dankingsley.ops.swap_pressure_governor" "$SWAP_PRESSURE_GOVERNOR_PLIST"
 install_job "com.dankingsley.ops.creative_cotenant_guard" "$CREATIVE_COTENANT_GUARD_PLIST"
 
 echo "Ops automations installed."

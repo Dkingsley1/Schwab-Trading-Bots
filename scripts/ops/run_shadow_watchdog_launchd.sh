@@ -3,6 +3,10 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 export BOT_RUNTIME_LANE="${BOT_RUNTIME_LANE:-${BOT_SHADOW_RUNTIME_LANE:-shadow}}"
+BOOT_LOG="${SHADOW_WATCHDOG_BOOT_LOG:-$PROJECT_ROOT/logs/launchd_watchdog/shadow_watchdog.boot.log}"
+mkdir -p "$(dirname "$BOOT_LOG")"
+printf 'timestamp_utc=%s pid=%s ppid=%s profile=%s xpc=%s\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$PPID" "${BOT_RUNTIME_PROFILE:-live}" "${XPC_SERVICE_NAME:-}" >> "$BOOT_LOG" 2>/dev/null || true
 source "$PROJECT_ROOT/scripts/ops/runtime_python.sh"
 PROFILE="${BOT_RUNTIME_PROFILE:-live}"
 
@@ -58,6 +62,7 @@ export SHADOW_WATCHDOG_AUTO_CLEAR_GLOBAL_HALT="${SHADOW_WATCHDOG_AUTO_CLEAR_GLOB
 export SHADOW_WATCHDOG_AUTO_CLEAR_GLOBAL_HALT_MIN_AGE_SECONDS="${SHADOW_WATCHDOG_AUTO_CLEAR_GLOBAL_HALT_MIN_AGE_SECONDS:-60}"
 export SHADOW_WATCHDOG_AUTO_CLEAR_GLOBAL_HALT_ALLOWED_REASONS="${SHADOW_WATCHDOG_AUTO_CLEAR_GLOBAL_HALT_ALLOWED_REASONS:-incident_auto_halt,global_risk_killswitch,repeated_hard_gates,softguard_api_circuit_opened}"
 export SHADOW_WATCHDOG_AUTO_CLEAR_GLOBAL_HALT_REQUIRE_PAPER_ONLY="${SHADOW_WATCHDOG_AUTO_CLEAR_GLOBAL_HALT_REQUIRE_PAPER_ONLY:-1}"
+export SHADOW_WATCHDOG_ALLOW_SCHWAB_STANDBY_HEARTBEATS="${SHADOW_WATCHDOG_ALLOW_SCHWAB_STANDBY_HEARTBEATS:-1}"
 export DIVIDEND_CAPTURE_SHADOW_ENABLED="${DIVIDEND_CAPTURE_SHADOW_ENABLED:-1}"
 
 COINBASE_TOP_N="${COINBASE_TOP_BOT_PAPER_TRADING_TOP_N}"
@@ -111,6 +116,22 @@ WATCH_ARGS=(
   --watch-coinbase-futures
 )
 
+schwab_credentials_ready_for_watchdog() {
+  local key="${SCHWAB_API_KEY:-}"
+  local secret="${SCHWAB_SECRET:-}"
+  case "$key" in
+    ""|"YOUR_KEY_HERE"|"YOUR_REAL_KEY"|"<real_key>") return 1 ;;
+  esac
+  case "$secret" in
+    ""|"YOUR_SECRET_HERE"|"YOUR_REAL_SECRET"|"<real_secret>") return 1 ;;
+  esac
+  return 0
+}
+
+if ! schwab_credentials_ready_for_watchdog; then
+  WATCH_ARGS+=(--schwab-futures-optional)
+fi
+
 if [[ "${SHADOW_WATCHDOG_DIRECT_CHILD_SLEEVES:-0}" == "1" ]]; then
   WATCH_ARGS+=(
     --watch-aggressive-modes
@@ -125,6 +146,7 @@ fi
 
 exec "$PYTHON_BIN" "$PROJECT_ROOT/scripts/shadow_watchdog.py" \
   "${WATCH_ARGS[@]}" \
+  --allow-schwab-standby-heartbeats \
   --interval-seconds "${SHADOW_WATCHDOG_INTERVAL_SECONDS:-20}" \
   --max-restarts-per-window "${SHADOW_WATCHDOG_MAX_RESTARTS_PER_WINDOW:-12}" \
   --restart-window-seconds "${SHADOW_WATCHDOG_RESTART_WINDOW_SECONDS:-3600}" \

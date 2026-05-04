@@ -320,6 +320,11 @@ def _payload_shape_metrics(payload: dict[str, Any]) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Summarize collector freshness contracts for daily ops.")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
+    parser.add_argument(
+        "--out-file",
+        default=str(PROJECT_ROOT / "governance" / "health" / "collector_contracts_latest.json"),
+        help="Optional override for where the health payload is written.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -432,7 +437,7 @@ def main() -> int:
         "soft_failures": soft_failures,
         "rows": rows,
     }
-    out = project_root / "governance" / "health" / "collector_contracts_latest.json"
+    out = Path(args.out_file).expanduser()
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 

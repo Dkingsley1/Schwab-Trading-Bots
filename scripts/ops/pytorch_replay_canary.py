@@ -5,6 +5,7 @@ import argparse
 import gzip
 import json
 import math
+import os
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,7 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "pytorch_replay_canary_latest.json"
 DEFAULT_HISTORY_OUT = PROJECT_ROOT / "governance" / "health" / "pytorch_replay_canary_history.jsonl"
+DEFAULT_ENABLED = os.getenv("PYTORCH_REPLAY_CANARY_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 FEATURE_NAMES = [
     "model_score",
@@ -1075,6 +1077,34 @@ def _history_scoreboard(path: Path, *, limit: int = 30) -> dict[str, Any]:
     }
 
 
+def disabled_pytorch_replay_canary_payload(project_root: Path, history_path: Path) -> dict[str, Any]:
+    return {
+        "timestamp_utc": _now_utc(),
+        "ok": True,
+        "disabled": True,
+        "mode": "disabled_mlx_primary",
+        "project_root": str(project_root),
+        "load": {"source_files": [], "file_count": 0, "rows_scanned": 0, "rows_used": 0},
+        "feature_names": FEATURE_NAMES,
+        "notes": [
+            "PyTorch replay canary is disabled by default so it does not compete with MLX on unified memory during live collection.",
+            "MLX remains the default runtime for live, paper, and research feature collection.",
+            "Use --force or PYTORCH_REPLAY_CANARY_ENABLED=1 only for an intentional offline sidecar replay window.",
+        ],
+        "mlx_shadow_assist": {
+            "mode": "disabled",
+            "status": "disabled",
+            "eligible_source_profiles": [],
+            "rejected_source_profiles": [],
+        },
+        "recommendations": [
+            "keep_mlx_live_default_backend",
+            "keep_pytorch_replay_canary_disabled_during_live_collection",
+        ],
+        "scoreboard": _history_scoreboard(history_path, limit=30),
+    }
+
+
 def build_pytorch_replay_canary(
     project_root: Path,
     *,
@@ -1274,26 +1304,30 @@ def main() -> int:
     parser.add_argument("--device", default="auto", choices=("auto", "mps", "cpu"))
     parser.add_argument("--top-fraction", type=float, default=0.1)
     parser.add_argument("--walk-forward-folds", type=int, default=3)
+    parser.add_argument("--force", action="store_true", help="Run the PyTorch canary despite the MLX-primary default.")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    payload = build_pytorch_replay_canary(
-        Path(args.project_root).resolve(),
-        max_files=int(args.max_files),
-        max_rows=int(args.max_rows),
-        validation_fraction=float(args.validation_fraction),
-        min_rows=int(args.min_rows),
-        min_class_rows=int(args.min_class_rows),
-        epochs=int(args.epochs),
-        lr=float(args.learning_rate),
-        device=str(args.device),
-        top_fraction=float(args.top_fraction),
-        walk_forward_folds=int(args.walk_forward_folds),
-    )
-
+    project_root = Path(args.project_root).resolve()
     history_path = Path(args.history_out).expanduser().resolve()
-    _append_history(history_path, _history_entry(payload))
-    payload["scoreboard"] = _history_scoreboard(history_path, limit=30)
+    if DEFAULT_ENABLED or bool(args.force):
+        payload = build_pytorch_replay_canary(
+            project_root,
+            max_files=int(args.max_files),
+            max_rows=int(args.max_rows),
+            validation_fraction=float(args.validation_fraction),
+            min_rows=int(args.min_rows),
+            min_class_rows=int(args.min_class_rows),
+            epochs=int(args.epochs),
+            lr=float(args.learning_rate),
+            device=str(args.device),
+            top_fraction=float(args.top_fraction),
+            walk_forward_folds=int(args.walk_forward_folds),
+        )
+        _append_history(history_path, _history_entry(payload))
+        payload["scoreboard"] = _history_scoreboard(history_path, limit=30)
+    else:
+        payload = disabled_pytorch_replay_canary_payload(project_root, history_path)
 
     out_path = Path(args.out).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1304,7 +1338,8 @@ def main() -> int:
         print(
             "pytorch_replay_canary "
             f"ok={str(bool(payload.get('ok'))).lower()} "
-            f"device={payload.get('device', 'unknown')} "
+            f"mode={payload.get('mode', 'unknown')} "
+            f"device={payload.get('device', 'none')} "
             f"rows={int(((payload.get('dataset') or {}) if isinstance(payload.get('dataset'), dict) else {}).get('rows_total', 0) or 0)}"
         )
     return 0 if bool(payload.get("ok")) else 2

@@ -15,7 +15,7 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
-def test_retention_debt_sheriff_filters_to_explanations_and_delegates_when_writer_active(tmp_path: Path, monkeypatch) -> None:
+def test_retention_debt_sheriff_filters_to_priority_hot_shards_and_delegates_when_writer_active(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     (project_root / "governance" / "health").mkdir(parents=True, exist_ok=True)
 
@@ -75,7 +75,7 @@ def test_retention_debt_sheriff_filters_to_explanations_and_delegates_when_write
     payload = src.build_payload(project_root, apply=True, wait_timeout_seconds=30.0)
 
     assert payload["overall_status"] == "applied"
-    assert payload["focus"]["focus_shards"] == ["explanations", "crypto_explanations"]
-    assert payload["summary"]["targeted_retention_debt_gb"] == 63.765
+    assert payload["focus"]["focus_shards"] == ["explanations", "crypto_explanations", "shadow_attribution"]
+    assert payload["summary"]["targeted_retention_debt_gb"] == 71.765
     assert payload["steps"]["writer_cycle_coordinator"]["status"] == "ok"
     assert payload["refresh_steps"]["operator_cockpit"]["status"] == "ok"

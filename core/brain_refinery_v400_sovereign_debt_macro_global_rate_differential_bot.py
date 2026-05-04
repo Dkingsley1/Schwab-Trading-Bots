@@ -15,7 +15,7 @@ except ModuleNotFoundError:
     from core.registry_backed_collection_bot import describe_registry_backed_bot, train_registry_backed_bot
 
 BOT_ID = 'brain_refinery_v400_sovereign_debt_macro_global_rate_differential_bot'
-GENERATED_AT_UTC = '2026-05-01T17:00:28.987752+00:00'
+GENERATED_AT_UTC = '2026-05-02T22:30:58.340494+00:00'
 BOT_SPEC = {'active': True,
  'allocation_enabled': False,
  'bootstrap_teacher_bot_ids': ['brain_refinery_v130_rates_differential_fx_proxy',
@@ -71,7 +71,7 @@ BOT_SPEC = {'active': True,
  'exclude_from_training': True,
  'execution_enabled': False,
  'execution_policy_label': 'research_only_no_execution',
- 'freshness_slo_seconds': 300,
+ 'freshness_slo_seconds': 1800,
  'label_contract': {},
  'labeling_tags': ['research_only',
                    'collection_only',

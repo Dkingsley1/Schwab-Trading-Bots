@@ -1,6 +1,16 @@
 from scripts.ops import mlx_runtime_audit as src
 
 
+def test_default_packages_cover_mlx_research_extensions() -> None:
+    assert {
+        "mlx-graphs",
+        "mlx-snn",
+        "mlx-vision",
+        "esig",
+        "roughpy",
+    }.issubset(src.DEFAULT_PACKAGES)
+
+
 def test_package_rows_detect_drift_states() -> None:
     rows, ok = src._package_rows(
         ("mlx", "mlx-data", "mlx-vlm", "mlx-whisper", "transformers", "schwab-py", "duckdb"),

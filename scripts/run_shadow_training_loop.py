@@ -372,6 +372,7 @@ class SubBot:
     bot_role: str = "signal_sub_bot"
     lifecycle_state: str = ""
     slot_kind: str = ""
+    sleeve_profile: str = ""
     training_excluded: bool = False
 
 
@@ -714,6 +715,7 @@ def _parse_sub_bots(registry: Dict[str, Any]) -> List[SubBot]:
                 bot_role=str(row.get("bot_role", "signal_sub_bot")),
                 lifecycle_state=str(row.get("lifecycle_state", "")),
                 slot_kind=str(row.get("slot_kind", "")),
+                sleeve_profile=str(row.get("sleeve_profile", "")),
                 training_excluded=bool(row.get("training_excluded", False)),
             )
         )
@@ -3790,9 +3792,10 @@ def _weighted_direction_vote(decisions: List[Dict[str, Any]]) -> float:
 
 
 def _sleeve_family_for_row(row: Dict[str, Any]) -> str:
+    sleeve_profile = str(row.get("sleeve_profile") or "").strip().lower()
     slot_kind = str(row.get("slot_kind") or "").strip().lower()
     bot_id = str(row.get("bot_id") or "").strip().lower()
-    haystack = f"{slot_kind} {bot_id}"
+    haystack = f"{sleeve_profile} {slot_kind} {bot_id}"
     families = {
         "day_trading": ("day_trading", "same_session", "opening_range", "vwap"),
         "swing": ("swing", "multi_day"),
@@ -3806,11 +3809,20 @@ def _sleeve_family_for_row(row: Dict[str, Any]) -> str:
     for family, tokens in families.items():
         if any(token in haystack for token in tokens):
             return family
+    if sleeve_profile:
+        return _normalize_sleeve_family_name(sleeve_profile)
     return "general"
 
 
+def _normalize_sleeve_family_name(raw: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in str(raw or "").strip().lower())
+    while "__" in cleaned:
+        cleaned = cleaned.replace("__", "_")
+    return cleaned.strip("_") or "general"
+
+
 def _derive_sleeve_family_aux_features(rows: List[Dict[str, Any]]) -> Dict[str, float]:
-    families = [
+    canonical_families = [
         "day_trading",
         "swing",
         "conservative",
@@ -3820,6 +3832,14 @@ def _derive_sleeve_family_aux_features(rows: List[Dict[str, Any]]) -> Dict[str, 
         "sector_master",
         "position_lifecycle",
     ]
+    dynamic_families = sorted(
+        {
+            _normalize_sleeve_family_name(str(row.get("sleeve_profile") or ""))
+            for row in rows
+            if str(row.get("sleeve_profile") or "").strip()
+        }
+    )
+    families = list(dict.fromkeys([*canonical_families, *dynamic_families, "general"]))
     grouped: Dict[str, List[Dict[str, Any]]] = {family: [] for family in families}
     collect_only_count = 0
     eligible_count = 0
@@ -3836,17 +3856,33 @@ def _derive_sleeve_family_aux_features(rows: List[Dict[str, Any]]) -> Dict[str, 
     out: Dict[str, float] = {
         "sleeve_family_eligible_count_norm": _clamp01(eligible_count / 25.0),
         "sleeve_family_collect_only_pressure_norm": _clamp01(collect_only_count / max(len(rows), 1)),
+        "sleeve_master_rollup_enabled": 1.0,
+        "sleeve_master_family_count_norm": _clamp01(len([name for name in families if grouped.get(name)]) / 64.0),
+        "sleeve_master_collect_only_pressure_norm": _clamp01(collect_only_count / max(len(rows), 1)),
     }
     votes: List[float] = []
+    sleeve_master_votes: List[float] = []
+    active_family_count = 0
     for family in families:
         family_rows = grouped.get(family, [])
         vote = _weighted_direction_vote(family_rows)
         active = 1.0 if any(_row_master_vote_eligible(row) for row in family_rows) else 0.0
-        out[f"{family}_sleeve_active"] = active
-        out[f"{family}_sleeve_vote"] = vote
+        if family in canonical_families:
+            out[f"{family}_sleeve_active"] = active
+            out[f"{family}_sleeve_vote"] = vote
+        elif family != "general":
+            out[f"{family}_sleeve_master_active"] = active
+            out[f"{family}_sleeve_master_vote"] = vote
         if active > 0.0:
+            active_family_count += 1
+            sleeve_master_votes.append(vote)
             votes.append(vote)
     out["sleeve_family_consensus_vote"] = _clamp11(sum(votes) / max(len(votes), 1)) if votes else 0.0
+    out["sleeve_master_active_family_count_norm"] = _clamp01(active_family_count / 64.0)
+    out["sleeve_master_consensus_vote"] = (
+        _clamp11(sum(sleeve_master_votes) / max(len(sleeve_master_votes), 1)) if sleeve_master_votes else 0.0
+    )
+    out["sleeve_master_coverage_norm"] = _clamp01(active_family_count / max(len(dynamic_families) or len(canonical_families), 1))
     return out
 
 
@@ -5136,8 +5172,18 @@ def _grand_master_vote(
     )
     tradeability = _clamp01(float(features.get("market_micro_tradeability_score_norm", 0.5) or 0.5))
     cross_bot_conflict = _clamp01(float(features.get("cross_bot_conflict_norm", 0.0) or 0.0))
-    sleeve_consensus = _clamp11(float(features.get("sleeve_family_consensus_vote", 0.0) or 0.0))
-    sleeve_collect_pressure = _clamp01(float(features.get("sleeve_family_collect_only_pressure_norm", 0.0) or 0.0))
+    sleeve_family_consensus = _clamp11(float(features.get("sleeve_family_consensus_vote", 0.0) or 0.0))
+    sleeve_master_consensus = _clamp11(float(features.get("sleeve_master_consensus_vote", sleeve_family_consensus) or 0.0))
+    sleeve_rollup_enabled = _clamp01(float(features.get("sleeve_master_rollup_enabled", 0.0) or 0.0))
+    sleeve_consensus = (
+        _clamp11((0.55 * sleeve_family_consensus) + (0.45 * sleeve_master_consensus))
+        if sleeve_rollup_enabled > 0.0
+        else sleeve_family_consensus
+    )
+    sleeve_collect_pressure = max(
+        _clamp01(float(features.get("sleeve_family_collect_only_pressure_norm", 0.0) or 0.0)),
+        _clamp01(float(features.get("sleeve_master_collect_only_pressure_norm", 0.0) or 0.0)),
+    )
     label_contract_quality = _clamp01(float(features.get("label_contract_quality_norm", 1.0) or 1.0))
     market_neutral_vote = _clamp11(float(features.get("market_neutral_sleeve_vote", 0.0) or 0.0))
     volatility_regime_vote = _clamp11(float(features.get("volatility_regime_sleeve_vote", 0.0) or 0.0))
@@ -5273,6 +5319,7 @@ def _grand_master_vote(
         f"quant_data_confidence={quant_data_conf:.3f}",
         f"specialist_consensus={specialist_consensus:.3f}",
         f"sleeve_consensus={sleeve_consensus:.3f}",
+        f"sleeve_master_consensus={sleeve_master_consensus:.3f}",
         f"label_contract_quality={label_contract_quality:.3f}",
         f"collect_only_pressure={sleeve_collect_pressure:.3f}",
         f"directional_alignment={directional_alignment:.3f}",
@@ -5290,6 +5337,9 @@ def _grand_master_vote(
         "directional_trigger": float(directional_trigger),
         "specialist_consensus": float(specialist_consensus),
         "sleeve_consensus": float(sleeve_consensus),
+        "sleeve_family_consensus": float(sleeve_family_consensus),
+        "sleeve_master_consensus": float(sleeve_master_consensus),
+        "sleeve_master_rollup_enabled": float(sleeve_rollup_enabled),
         "sleeve_guard_vote": float(sleeve_guard_vote),
         "label_contract_quality": float(label_contract_quality),
         "collect_only_pressure": float(sleeve_collect_pressure),
@@ -13245,7 +13295,7 @@ def run_loop(
     paper_mirror_enabled = os.getenv("TOP_BOT_PAPER_TRADING_ENABLED", "0").strip() == "1"
     paper_mirror_top_n = max(int(os.getenv("TOP_BOT_PAPER_TRADING_TOP_N", "2")), 0)
     paper_mirror_min_accuracy = float(os.getenv("TOP_BOT_PAPER_TRADING_MIN_ACC", "0.0"))
-    paper_mirror_all_active = os.getenv("PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS", "1").strip() == "1"
+    paper_mirror_all_active = os.getenv("PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS", "0").strip() == "1"
     paper_mirror_profiles_raw = os.getenv("TOP_BOT_PAPER_TRADING_PROFILES", "").strip()
     paper_mirror_profiles = {
         x.strip().lower() for x in paper_mirror_profiles_raw.split(",") if x.strip()
@@ -14496,7 +14546,17 @@ def run_loop(
                         try:
                             refresh_cmd = [
                                 str(resolve_runtime_python(PROJECT_ROOT)),
-                                os.path.join(PROJECT_ROOT, "scripts", "collect_market_crypto_correlation_context.py"),
+                                os.path.join(PROJECT_ROOT, "scripts", "ops", "bounded_market_crypto_correlation_sync.py"),
+                                "--outer-timeout-seconds",
+                                str(max(int(os.getenv("MARKET_CRYPTO_CORRELATION_OUTER_TIMEOUT_SECONDS", "100") or 100), 5)),
+                                "--lookback-days",
+                                str(max(int(os.getenv("MARKET_CRYPTO_CORRELATION_LOOKBACK_DAYS", "1") or 1), 1)),
+                                "--bucket-seconds",
+                                str(max(int(os.getenv("MARKET_CRYPTO_CORRELATION_BUCKET_SECONDS", "300") or 300), 60)),
+                                "--min-points",
+                                str(max(int(os.getenv("MARKET_CRYPTO_CORRELATION_MIN_POINTS", "3") or 3), 3)),
+                                "--timeout-seconds",
+                                str(max(int(os.getenv("MARKET_CRYPTO_CORRELATION_TIMEOUT_SECONDS", "90") or 90), 5)),
                                 "--json",
                             ]
                             refresh_proc = subprocess.Popen(
@@ -15301,7 +15361,7 @@ def run_loop(
                         gates=gates,
                         reasons=row_reasons + [f"bot_id={b.bot_id}", f"bot_role={b.bot_role}"],
                         strategy=b.bot_id,
-                        metadata={"layer": "sub_bot", "snapshot_id": snapshot_id, "bot_weight": row_weight, "test_accuracy": b.test_accuracy, "bot_role": b.bot_role, "eligible_for_master_vote": eligible_for_master_vote, "lifecycle_state": b.lifecycle_state, "slot_kind": b.slot_kind},
+                        metadata={"layer": "sub_bot", "snapshot_id": snapshot_id, "bot_weight": row_weight, "test_accuracy": b.test_accuracy, "bot_role": b.bot_role, "eligible_for_master_vote": eligible_for_master_vote, "lifecycle_state": b.lifecycle_state, "slot_kind": b.slot_kind, "sleeve_profile": b.sleeve_profile},
                     )
 
                 row = {
@@ -15315,6 +15375,7 @@ def run_loop(
                     "eligible_for_master_vote": eligible_for_master_vote,
                     "lifecycle_state": b.lifecycle_state,
                     "slot_kind": b.slot_kind,
+                    "sleeve_profile": b.sleeve_profile,
                     "training_excluded": bool(b.training_excluded),
                     "reasons": row_reasons,
                     "test_accuracy": b.test_accuracy,
@@ -15436,6 +15497,7 @@ def run_loop(
                         "eligible_for_master_vote": eligible_for_master_vote,
                         "lifecycle_state": b.lifecycle_state,
                         "slot_kind": b.slot_kind,
+                        "sleeve_profile": b.sleeve_profile,
                         "training_excluded": bool(b.training_excluded),
                         "reasons": row_reasons,
                         "test_accuracy": b.test_accuracy,
@@ -15548,6 +15610,7 @@ def run_loop(
                         "eligible_for_master_vote": eligible_for_master_vote,
                         "lifecycle_state": b.lifecycle_state,
                         "slot_kind": b.slot_kind,
+                        "sleeve_profile": b.sleeve_profile,
                         "training_excluded": bool(b.training_excluded),
                         "reasons": row_reasons,
                         "test_accuracy": b.test_accuracy,
@@ -15668,6 +15731,7 @@ def run_loop(
                         "eligible_for_master_vote": eligible_for_master_vote,
                         "lifecycle_state": b.lifecycle_state,
                         "slot_kind": b.slot_kind,
+                        "sleeve_profile": b.sleeve_profile,
                         "training_excluded": bool(b.training_excluded),
                         "reasons": row_reasons,
                         "test_accuracy": b.test_accuracy,

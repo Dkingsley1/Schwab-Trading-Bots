@@ -316,6 +316,18 @@ def _canonical_pair_reconciliation(
         max_value = max(float(row["value"]) for row in provider_rows.values())
         min_value = min(float(row["value"]) for row in provider_rows.values())
         divergence_ratio = 0.0 if median_value <= 0.0 else abs(max_value - min_value) / max(median_value, 1e-9)
+        high_recency_values = [
+            float(row["value"])
+            for row in provider_rows.values()
+            if float(row.get("recency_score", 0.0) or 0.0) >= 0.7
+        ]
+        high_recency_divergence_ratio = 0.0
+        if len(high_recency_values) >= 2:
+            high_recency_mid = sum(high_recency_values) / max(len(high_recency_values), 1)
+            high_recency_divergence_ratio = (
+                abs(max(high_recency_values) - min(high_recency_values))
+                / max(float(high_recency_mid), 1e-9)
+            )
         provider_count = len(provider_rows)
         confidence = _clamp01((min(provider_count / 4.0, 1.0) * 0.45) + max(1.0 - (divergence_ratio / 0.02), 0.0) * 0.55)
         provider_votes = {
@@ -327,12 +339,27 @@ def _canonical_pair_reconciliation(
             }
             for source, row in provider_rows.items()
         }
+        divergence_severity = "none"
+        divergence_reason = ""
+        if divergence_ratio >= 0.01:
+            if len(high_recency_values) >= 2 and high_recency_divergence_ratio >= 0.01:
+                divergence_severity = "warning"
+                divergence_reason = "high_recency_provider_divergence"
+            elif not high_recency_values:
+                divergence_severity = "warning"
+                divergence_reason = "stale_provider_divergence"
+            else:
+                divergence_severity = "basis_watch"
+                divergence_reason = "intraday_official_basis_difference"
         out[pair] = {
             "canonical_source": str(canonical_source),
             "canonical_value": round(float(canonical_value), 6),
             "median_value": round(float(median_value), 6),
             "provider_count": provider_count,
             "divergence_ratio": round(float(divergence_ratio), 6),
+            "high_recency_divergence_ratio": round(float(high_recency_divergence_ratio), 6),
+            "divergence_severity": divergence_severity,
+            "divergence_reason": divergence_reason,
             "confidence_norm": round(float(confidence), 6),
             "provider_votes": provider_votes,
         }
@@ -983,7 +1010,12 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
     provider_divergence_warnings = [
         pair
         for pair, row in canonical_reconciliation.items()
-        if _to_float(row.get("divergence_ratio"), 0.0) >= 0.01
+        if str(row.get("divergence_severity") or "") == "warning"
+    ]
+    provider_divergence_basis_watch = [
+        pair
+        for pair, row in canonical_reconciliation.items()
+        if str(row.get("divergence_severity") or "") == "basis_watch"
     ]
     if provider_divergence_warnings:
         warnings.append("fx_provider_divergence_detected")
@@ -1114,6 +1146,7 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
         "sources": source_status,
         "canonical_pairs": len(canonical_reconciliation),
         "provider_divergence_pairs": provider_divergence_warnings,
+        "provider_divergence_basis_watch_pairs": provider_divergence_basis_watch,
         "source_contracts": payload["collection_contract"]["source_contracts"],
     }
     return payload, health

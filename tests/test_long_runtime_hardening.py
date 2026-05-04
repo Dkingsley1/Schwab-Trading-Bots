@@ -154,6 +154,41 @@ def test_auth_lease_default_accepts_fresh_schwab_half_hour_token(tmp_path: Path)
     assert auth["lease_budget"]["min_lease_seconds"] == 1200
 
 
+def test_auth_lease_uses_off_hours_probe_grace_for_short_schwab_lease(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    monkeypatch.setattr(
+        auth_src,
+        "_market_window",
+        lambda: {
+            "timezone": "America/New_York",
+            "local_time": "2026-05-02T09:15:00-04:00",
+            "is_weekend": True,
+            "regular_session_open": False,
+            "off_hours": True,
+        },
+    )
+    _write_json(
+        health / "premarket_token_guard_latest.json",
+        {
+            "timestamp_utc": auth_src.iso_now(),
+            "token_before": {"exists": True},
+            "token_after": {"exists": True, "expires_in_seconds": 120},
+            "network": {"ok": True},
+            "auth": {"ok": False, "reason": "auth_succeeded_but_token_not_ready:token_expiring_soon:120.0"},
+        },
+    )
+    _write_json(health / "broker_readiness_latest.json", {"ready_for_open": False, "auth_ok": False, "network_ok": True, "account_probe_status_code": 200})
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+
+    auth = auth_src.build_payload(project_root)
+
+    assert auth["overall_status"] == "degraded"
+    assert auth["lease_state"] == "warning"
+    assert auth["lease_budget"]["off_hours_probe_grace"] is True
+    assert auth["broker_state"]["auth_probe_ok"] is True
+
+
 def test_long_runtime_storage_and_freshness_controls(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -227,6 +262,48 @@ def test_long_runtime_storage_and_freshness_controls(tmp_path: Path) -> None:
     assert quota["overall_status"] == "blocked"
 
 
+def test_sleeve_isolation_excludes_session_pauses_and_resolves_repaired_daily_checks(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(health / "quarantine_pressure_latest.json", {"quarantine_events": 0})
+    _write_json(
+        health / "daily_auto_verify_latest.json",
+        {
+            "ok": False,
+            "running": False,
+            "completed_checks": 6,
+            "note": "recovered_stale_progress",
+            "failed_checks": ["bot_support_owner_guard", "data_source_divergence_bot", "incomplete_run_recovered"],
+        },
+    )
+    _write_json(health / "bot_support_owner_guard_latest.json", {"ok": True})
+    _write_json(health / "data_source_divergence_latest.json", {"ok": True})
+    _write_json(
+        health / "data_ingress_latest_aggressive_equities_schwab.json",
+        {"profile": "aggressive", "domain": "equities", "broker": "schwab", "loop_state": "paused_session_gate", "pause_reason": "weekend"},
+    )
+    _write_json(
+        health / "data_ingress_latest_dividend_equities_schwab.json",
+        {"profile": "dividend", "domain": "equities", "broker": "schwab", "loop_state": "paused_session_gate", "pause_reason": "post_window"},
+    )
+    _write_json(
+        health / "data_ingress_latest_intraday_equities_schwab.json",
+        {"profile": "intraday", "domain": "equities", "broker": "schwab", "loop_state": "paused_anomaly_killswitch", "pause_reason": "data_anomaly"},
+    )
+    _write_json(
+        health / "data_ingress_latest_crypto_coinbase.json",
+        {"profile": "default", "domain": "crypto", "broker": "coinbase", "loop_state": "running"},
+    )
+
+    isolation = isolation_src.build_payload(project_root)
+
+    assert isolation["overall_status"] == "degraded"
+    assert isolation["sleeve_matrix"]["isolated_lane_count"] == 1
+    assert isolation["sleeve_matrix"]["session_paused_lane_count"] == 2
+    assert isolation["sleeve_matrix"]["running_lane_count"] == 1
+    assert isolation["gates"]["unresolved_daily_verify_checks"] == []
+
+
 def test_alert_freeze_roster_and_chaos_controls(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     watchdog = project_root / "governance" / "watchdog"
@@ -245,7 +322,7 @@ def test_alert_freeze_roster_and_chaos_controls(tmp_path: Path) -> None:
     _write_json(ack_state, {"events": {"token_expiry": {"acknowledged_at_utc": "2026-04-09T16:05:00+00:00"}}})
     _write_json(
         window_path,
-        {"active": True, "started_at_utc": "2026-04-09T00:00:00+00:00", "ends_at_utc": "2026-04-30T00:00:00+00:00", "reason": "runtime_window"},
+        {"active": True, "started_at_utc": "2026-04-09T00:00:00+00:00", "ends_at_utc": "2026-12-30T00:00:00+00:00", "reason": "runtime_window"},
     )
     _write_json(
         health / "supportability_control_latest.json",

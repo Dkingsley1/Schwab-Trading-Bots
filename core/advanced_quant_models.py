@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import random
+from importlib import util as importlib_util
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
@@ -15,6 +16,18 @@ try:
     import mlx.core as mx
 except Exception:  # pragma: no cover - MLX is optional outside Apple Silicon runtimes.
     mx = None
+
+try:
+    import QuantLib as ql
+except Exception:  # pragma: no cover - QuantLib is optional in lightweight test/runtime shells.
+    ql = None
+
+
+def _module_available(name: str) -> bool:
+    try:
+        return importlib_util.find_spec(name) is not None
+    except Exception:
+        return False
 
 
 QUANT_MODEL_FEATURE_KEYS = [
@@ -33,6 +46,16 @@ QUANT_MODEL_FEATURE_KEYS = [
     "quant_trinomial_tree_price_norm",
     "quant_heston_vol_risk_norm",
     "quant_merton_jump_risk_norm",
+    "quant_sabr_vol_surface_norm",
+    "quant_svi_ssvi_vol_surface_norm",
+    "quant_dupire_local_vol_surface_norm",
+    "quant_bates_jump_vol_norm",
+    "quant_hull_white_rates_norm",
+    "quant_cir_intensity_norm",
+    "quant_hjm_forward_rate_norm",
+    "quant_sofr_market_model_norm",
+    "quant_dcc_garch_correlation_norm",
+    "quant_evt_pot_tail_norm",
     "quant_kalman_filter_confidence_norm",
     "quant_particle_filter_confidence_norm",
     "quant_kelly_fraction_norm",
@@ -53,6 +76,15 @@ QUANT_MODEL_FEATURE_KEYS = [
     "quant_mlx_jump_diffusion_grad_norm",
     "quant_mlx_runtime_available_norm",
     "quant_mlx_compile_available_norm",
+    "quant_mlx_nn_available_norm",
+    "quant_mlx_optimizers_available_norm",
+    "quant_mlx_lm_available_norm",
+    "quant_mlx_graphs_available_norm",
+    "quant_mlx_snn_available_norm",
+    "quant_mlx_vision_available_norm",
+    "quant_esig_signature_available_norm",
+    "quant_quantlib_available_norm",
+    "quant_quantlib_pricing_benchmark_norm",
     "quant_qemc_signal_norm",
     "quant_path_dependent_volatility_norm",
     "quant_rough_volatility_fbm_norm",
@@ -81,6 +113,67 @@ QUANT_MODEL_FEATURE_KEYS = [
     "quant_rlbf_backtracking_feedback_norm",
     "quant_differentiable_market_simulator_norm",
     "quant_equivariant_neural_network_norm",
+    "quant_dainn_arbitrage_invariant_norm",
+    "quant_markovian_execution_control_norm",
+    "quant_end_to_end_diff_backtest_norm",
+    "quant_portfolio_durability_norm",
+    "quant_information_geometry_manifold_norm",
+    "quant_graph_attention_spillover_norm",
+    "quant_agentic_wallet_intent_norm",
+    "quant_rough_path_signature_kernel_norm",
+    "quant_quantum_classical_hybrid_optimization_norm",
+    "quant_formal_verification_safety_norm",
+    "quant_lobdif_order_book_diffusion_norm",
+    "quant_fractional_hurst_rough_vol_norm",
+    "quant_differentiable_market_impact_norm",
+    "quant_persistent_homology_flash_crash_norm",
+    "quant_toxic_liquidity_injection_norm",
+    "quant_flash_freeze_slippage_norm",
+    "quant_photonic_quantum_optimization_norm",
+    "quant_replication_crisis_shield_norm",
+    "quant_synthetic_crisis_market_gan_norm",
+    "quant_correlation_convergence_norm",
+    "quant_macro_stress_2026_driver_norm",
+    "quant_fed_2026_scenario_integrity_norm",
+    "quant_fed_2026_equity_crash_vol_spike_norm",
+    "quant_fed_2026_credit_spread_blowout_norm",
+    "quant_fed_2026_housing_price_shock_norm",
+    "quant_fed_2026_cre_price_shock_norm",
+    "quant_fed_2026_unemployment_recession_norm",
+    "quant_fed_2026_global_recession_deflation_norm",
+    "quant_fed_2026_commodity_inflation_shock_norm",
+    "quant_fed_2026_treasury_yield_shock_norm",
+    "quant_fed_2026_usd_stress_norm",
+    "quant_fed_2026_counterparty_default_contagion_norm",
+    "quant_covid_2020_pandemic_replay_norm",
+    "quant_mckean_vlasov_control_norm",
+    "quant_tensor_network_mps_norm",
+    "quant_multifidelity_stochastic_programming_norm",
+    "quant_differentiable_tatonnement_norm",
+    "quant_signature_lead_lag_detector_norm",
+    "quant_chaos_propagation_norm",
+    "quant_mckean_vlasov_sde_sensitivity_norm",
+    "quant_mlmc_sequential_estimation_norm",
+    "quant_signature_volterra_kernel_calibration_norm",
+    "quant_dual_tatonnement_price_discovery_norm",
+    "quant_probabilistic_propagation_of_chaos_norm",
+    "quant_experience_accumulation_memory_norm",
+    "quant_rough_vvix_exotics_norm",
+    "quant_quantum_barrier_path_amplitude_norm",
+    "quant_cross_asset_correlation_heat_swap_norm",
+    "quant_cliquet_global_floor_local_cap_norm",
+    "quant_signature_trend_follower_options_norm",
+    "quant_esg_contingent_cds_norm",
+    "quant_sdg_control_norm",
+    "quant_nonlocal_fractional_laplacian_norm",
+    "quant_infinite_dimensional_heston_norm",
+    "quant_lie_group_rough_path_signature_norm",
+    "quant_mean_field_games_controls_norm",
+    "quant_wasserstein_gradient_flow_norm",
+    "quant_malliavin_wiener_greeks_norm",
+    "quant_tqft_braid_group_norm",
+    "quant_mfgc_congestion_norm",
+    "quant_spde_manifold_lob_fluid_norm",
     "quant_model_resource_pressure_norm",
     "quant_model_data_confidence_norm",
 ]
@@ -153,6 +246,42 @@ def black_scholes_price(
     if str(option_type).lower().startswith("p"):
         return max(strike * math.exp(-rate * t) * _norm_cdf(-d2) - spot * _norm_cdf(-d1), 0.0)
     return max(spot * _norm_cdf(d1) - strike * math.exp(-rate * t) * _norm_cdf(d2), 0.0)
+
+
+def quantlib_black_scholes_price(
+    spot: float,
+    strike: float,
+    time_years: float,
+    rate: float,
+    volatility: float,
+    *,
+    option_type: str = "call",
+) -> float | None:
+    if ql is None:
+        return None
+    try:
+        spot = max(_safe_float(spot), 1e-9)
+        strike = max(_safe_float(strike), 1e-9)
+        t = max(_safe_float(time_years), 1.0 / 365.0)
+        vol = max(_safe_float(volatility), 1e-9)
+        rate = _safe_float(rate)
+        calculation_date = ql.Date.todaysDate()
+        ql.Settings.instance().evaluationDate = calculation_date
+        maturity_date = calculation_date + max(int(round(t * 365.0)), 1)
+        day_count = ql.Actual365Fixed()
+        calendar = ql.NullCalendar()
+        payoff_type = ql.Option.Put if str(option_type).lower().startswith("p") else ql.Option.Call
+        option = ql.VanillaOption(ql.PlainVanillaPayoff(payoff_type, strike), ql.EuropeanExercise(maturity_date))
+        process = ql.BlackScholesMertonProcess(
+            ql.QuoteHandle(ql.SimpleQuote(spot)),
+            ql.YieldTermStructureHandle(ql.FlatForward(calculation_date, 0.0, day_count)),
+            ql.YieldTermStructureHandle(ql.FlatForward(calculation_date, rate, day_count)),
+            ql.BlackVolTermStructureHandle(ql.BlackConstantVol(calculation_date, calendar, vol, day_count)),
+        )
+        option.setPricingEngine(ql.AnalyticEuropeanEngine(process))
+        return max(float(option.NPV()), 0.0)
+    except Exception:
+        return None
 
 
 def monte_carlo_gbm_price(
@@ -477,6 +606,107 @@ def merton_jump_diffusion_price(
         adj_rate = _safe_float(rate) - lam * k + n * jm / t
         price += weight * black_scholes_price(spot, strike, t, adj_rate, adj_vol, option_type=option_type)
     return max(price, 0.0)
+
+
+def sabr_vol_surface_proxy(
+    forward: float,
+    strike: float,
+    time_years: float,
+    volatility: float,
+    *,
+    beta: float = 0.5,
+    rho: float = -0.35,
+    vol_of_vol: float = 0.45,
+) -> float:
+    fwd = max(_safe_float(forward), 1e-9)
+    k = max(_safe_float(strike), 1e-9)
+    t = max(_safe_float(time_years), 1e-9)
+    alpha = max(_safe_float(volatility), 1e-9)
+    beta_f = _clamp(_safe_float(beta, 0.5), 0.0, 1.0)
+    rho_f = _clamp(_safe_float(rho, -0.35), -0.999, 0.999)
+    nu = max(_safe_float(vol_of_vol, 0.45), 0.0)
+    log_moneyness = abs(math.log(fwd / k))
+    skew_pressure = abs(rho_f) * nu * math.sqrt(t)
+    smile_pressure = min(log_moneyness * nu / max(alpha, 1e-9), 2.0)
+    beta_shape = abs(1.0 - beta_f)
+    return _clamp01(0.30 * min(alpha / 1.50, 1.0) + 0.30 * skew_pressure + 0.25 * smile_pressure + 0.15 * beta_shape)
+
+
+def svi_ssvi_vol_surface_proxy(features: Mapping[str, Any]) -> float:
+    skew = _safe_float(features.get("options_skew_norm"), _safe_float(features.get("iv_skew_norm"), 0.35))
+    smoothness = _safe_float(features.get("vol_surface_smoothness_norm"), 0.65)
+    butterfly_risk = _safe_float(features.get("butterfly_arbitrage_risk_norm"), 0.15)
+    calendar_risk = _safe_float(features.get("calendar_arbitrage_risk_norm"), 0.15)
+    surface_change = _safe_float(features.get("options_surface_change_norm"), 0.25)
+    return _clamp01(
+        0.25 * skew
+        + 0.25 * smoothness
+        + 0.20 * (1.0 - butterfly_risk)
+        + 0.20 * (1.0 - calendar_risk)
+        + 0.10 * surface_change
+    )
+
+
+def dupire_local_vol_surface_proxy(features: Mapping[str, Any], path_volatility: float, svi_quality: float) -> float:
+    local_curvature = _safe_float(features.get("local_vol_curvature_norm"), _safe_float(features.get("smile_curvature_norm"), 0.30))
+    calendar_risk = _safe_float(features.get("calendar_arbitrage_risk_norm"), 0.15)
+    realized_alignment = _safe_float(features.get("realized_implied_vol_alignment_norm"), 0.55)
+    return _clamp01(0.30 * svi_quality + 0.25 * path_volatility + 0.20 * local_curvature + 0.15 * realized_alignment + 0.10 * (1.0 - calendar_risk))
+
+
+def bates_jump_vol_proxy(heston_risk: float, merton_jump_risk: float, features: Mapping[str, Any]) -> float:
+    vol_of_vol = _safe_float(features.get("options_vol_of_vol_change_norm"), _safe_float(features.get("vol_of_vol_stress_norm"), 0.35))
+    jump_gap = _safe_float(features.get("market_micro_gap_fade_risk_norm"), _safe_float(features.get("gap_risk_norm"), 0.25))
+    return _clamp01(0.35 * heston_risk + 0.35 * merton_jump_risk + 0.15 * vol_of_vol + 0.15 * jump_gap)
+
+
+def hull_white_rates_proxy(features: Mapping[str, Any]) -> float:
+    rate_vol = _safe_float(features.get("rate_volatility_norm"), _safe_float(features.get("rates_volatility_norm"), 0.25))
+    curve_shift = _safe_float(features.get("yield_curve_slope_change_norm"), _safe_float(features.get("duration_stress_norm"), 0.25))
+    mean_reversion = _safe_float(features.get("rates_mean_reversion_confidence_norm"), 0.55)
+    convexity = _safe_float(features.get("convexity_stress_norm"), _safe_float(features.get("duration_convexity_norm"), 0.25))
+    return _clamp01(0.35 * rate_vol + 0.30 * curve_shift + 0.20 * mean_reversion + 0.15 * convexity)
+
+
+def cir_intensity_proxy(features: Mapping[str, Any]) -> float:
+    credit_spread = _safe_float(features.get("credit_spread_stress_norm"), _safe_float(features.get("bbb_spread_stress_norm"), 0.30))
+    default_probability = _safe_float(features.get("default_probability_stress_norm"), _safe_float(features.get("hazard_rate_stress_norm"), 0.25))
+    funding = _safe_float(features.get("funding_stress_norm"), _safe_float(features.get("repo_funding_stress_norm"), 0.25))
+    positivity_quality = 1.0 - _safe_float(features.get("negative_intensity_risk_norm"), 0.10)
+    return _clamp01(0.35 * credit_spread + 0.30 * default_probability + 0.20 * funding + 0.15 * positivity_quality)
+
+
+def hjm_forward_rate_proxy(features: Mapping[str, Any]) -> float:
+    curve_shape = _safe_float(features.get("yield_curve_shape_change_norm"), _safe_float(features.get("yield_curve_slope_change_norm"), 0.25))
+    forward_dispersion = _safe_float(features.get("forward_rate_dispersion_norm"), _safe_float(features.get("swap_curve_dispersion_norm"), 0.25))
+    rate_vol = _safe_float(features.get("rate_volatility_norm"), 0.25)
+    factor_coverage = _safe_float(features.get("curve_pca_coverage_norm"), _safe_float(features.get("factor_model_confidence_norm"), 0.55))
+    return _clamp01(0.30 * curve_shape + 0.25 * forward_dispersion + 0.25 * rate_vol + 0.20 * factor_coverage)
+
+
+def sofr_market_model_proxy(features: Mapping[str, Any]) -> float:
+    sofr_shift = _safe_float(features.get("sofr_rate_change_norm"), _safe_float(features.get("front_end_rate_shock_norm"), 0.25))
+    swaption_vol = _safe_float(features.get("swaption_vol_surface_norm"), _safe_float(features.get("rates_option_vol_norm"), 0.30))
+    tenor_basis = _safe_float(features.get("tenor_basis_stress_norm"), _safe_float(features.get("basis_spread_stress_norm"), 0.20))
+    rate_corr = _safe_float(features.get("rates_correlation_norm"), _safe_float(features.get("cross_sleeve_correlation_pressure_norm"), 0.35))
+    return _clamp01(0.30 * sofr_shift + 0.25 * swaption_vol + 0.25 * tenor_basis + 0.20 * rate_corr)
+
+
+def dcc_garch_correlation_proxy(returns: list[float], context_returns: list[float], features: Mapping[str, Any]) -> float:
+    realized_cluster = min(sum(abs(x) for x in returns) / max(len(returns), 1) * 20.0, 1.0)
+    context_cluster = min(sum(abs(x) for x in context_returns) / max(len(context_returns), 1) * 4.0, 1.0)
+    corr_pressure = _safe_float(features.get("cross_sleeve_correlation_pressure_norm"), _safe_float(features.get("correlation_convergence_pressure_norm"), 0.35))
+    regime_shift = _safe_float(features.get("regime_transition_pressure_norm"), _safe_float(features.get("model_drift_risk_norm"), 0.25))
+    return _clamp01(0.30 * realized_cluster + 0.25 * context_cluster + 0.25 * corr_pressure + 0.20 * regime_shift)
+
+
+def evt_pot_tail_proxy(returns: list[float], cvar_value: float, features: Mapping[str, Any]) -> float:
+    losses = sorted([-float(x) for x in returns if float(x) < 0.0], reverse=True)
+    max_loss = losses[0] if losses else 0.0
+    threshold = losses[max(min(len(losses) // 4, len(losses) - 1), 0)] if losses else 0.0
+    exceedance_ratio = sum(1 for loss in losses if loss >= threshold and threshold > 0.0) / max(len(returns), 1)
+    tail_surface = _safe_float(features.get("tail_risk_surface_norm"), _safe_float(features.get("tail_risk_pressure_norm"), 0.30))
+    return _clamp01(max(abs(cvar_value) * 16.0, max_loss * 25.0, exceedance_ratio * 2.0, tail_surface))
 
 
 def mlx_jump_diffusion_gradient(
@@ -1130,6 +1360,119 @@ def equivariant_neural_network_proxy(features: Mapping[str, Any] | None = None) 
     return _clamp01(0.25 * graph + 0.25 * symmetry + 0.20 * cross_asset + 0.20 * (1.0 - overfit) + 0.10 * channel_quality)
 
 
+def differentiable_arbitrage_invariant_nn_proxy(features: Mapping[str, Any] | None = None) -> float:
+    features = features or {}
+    layers = _env_int("QUANT_MODEL_DAINN_LAYERS", 3, low=1, high=24)
+    gradient = _safe_float(features.get("simulator_gradient_stability_norm"), _safe_float(features.get("quant_mlx_jump_diffusion_grad_norm"), 0.45))
+    no_arb = 1.0 - _safe_float(features.get("arbitrage_violation_rate_norm"), _safe_float(features.get("pricing_model_dispersion_norm"), 0.20))
+    parity = 1.0 - _safe_float(features.get("put_call_parity_gap_norm"), _safe_float(features.get("basis_dislocation_norm"), 0.20))
+    convexity = _safe_float(features.get("convexity_constraint_pass_norm"), _safe_float(features.get("pinn_constraint_consistency_norm"), 0.55))
+    layer_quality = min(math.log2(max(layers, 1) + 1.0) / 5.0, 1.0)
+    return _clamp01(0.25 * gradient + 0.25 * no_arb + 0.20 * parity + 0.20 * convexity + 0.10 * layer_quality)
+
+
+def high_dimensional_markovian_execution_proxy(features: Mapping[str, Any] | None = None) -> float:
+    features = features or {}
+    states = _env_int("QUANT_MODEL_MARKOV_EXEC_STATES", 5, low=2, high=64)
+    micro = execution_microstructure_awareness_proxy(features)
+    queue = 1.0 - _safe_float(features.get("queue_jitter_norm"), _safe_float(features.get("latency_jitter_norm"), 0.25))
+    spread = 1.0 - _safe_float(features.get("bid_ask_spread_stress_norm"), 0.25)
+    fill = _safe_float(features.get("fill_quality_norm"), _safe_float(features.get("paper_execution_calibration_norm"), 0.55))
+    state_quality = min(math.log2(max(states, 2)) / 6.0, 1.0)
+    return _clamp01(0.30 * micro + 0.20 * queue + 0.20 * spread + 0.20 * fill + 0.10 * state_quality)
+
+
+def end_to_end_differentiable_backtest_proxy(values: list[float], features: Mapping[str, Any] | None = None) -> float:
+    features = features or {}
+    steps = _env_int("QUANT_MODEL_DIFF_BACKTEST_STEPS", 48, low=4, high=1024)
+    simulator = differentiable_market_simulator_proxy(values, features)
+    replay = _safe_float(features.get("golden_replay_pass_rate_norm"), 0.60)
+    cost = 1.0 - _safe_float(features.get("slippage_pressure_norm"), _safe_float(features.get("hedge_cost_pressure_norm"), 0.25))
+    gradient = _safe_float(features.get("backtest_gradient_stability_norm"), _safe_float(features.get("simulator_gradient_stability_norm"), 0.45))
+    step_quality = min(math.log2(max(steps, 4)) / 10.0, 1.0)
+    return _clamp01(0.25 * simulator + 0.25 * replay + 0.20 * cost + 0.20 * gradient + 0.10 * step_quality)
+
+
+def portfolio_durability_resilient_alternatives_proxy(features: Mapping[str, Any] | None = None) -> float:
+    features = features or {}
+    scenarios = _env_int("QUANT_MODEL_DURABILITY_SCENARIOS", 12, low=2, high=256)
+    drawdown = 1.0 - _safe_float(features.get("drawdown_pressure_norm"), _safe_float(features.get("cvar_breach_norm"), 0.25))
+    alternatives = _safe_float(features.get("resilient_alternatives_coverage_norm"), _safe_float(features.get("alternative_data_signal_norm"), 0.45))
+    correlation = 1.0 - _safe_float(features.get("cross_sleeve_correlation_pressure_norm"), 0.35)
+    tail_budget = 1.0 - _safe_float(features.get("tail_budget_pressure_norm"), _safe_float(features.get("tail_risk_pressure_norm"), 0.30))
+    scenario_quality = min(math.log2(max(scenarios, 2)) / 8.0, 1.0)
+    return _clamp01(0.25 * drawdown + 0.20 * alternatives + 0.20 * correlation + 0.25 * tail_budget + 0.10 * scenario_quality)
+
+
+def information_geometry_manifold_proxy(values: list[float], features: Mapping[str, Any] | None = None) -> float:
+    features = features or {}
+    dims = _env_int("QUANT_MODEL_INFO_GEOMETRY_DIM", 8, low=2, high=256)
+    if not values:
+        values = [0.0]
+    mean = sum(values) / len(values)
+    variance = sum((x - mean) ** 2 for x in values) / max(len(values), 1)
+    curvature = _clamp01(math.sqrt(max(variance, 0.0)) * 32.0)
+    fisher = _safe_float(features.get("fisher_information_stability_norm"), 1.0 - _safe_float(features.get("model_drift_risk_norm"), 0.25))
+    manifold = _safe_float(features.get("statistical_manifold_alignment_norm"), _safe_float(features.get("cross_asset_invariance_norm"), 0.50))
+    dim_quality = min(math.log2(max(dims, 2)) / 8.0, 1.0)
+    return _clamp01(0.25 * (1.0 - curvature) + 0.30 * fisher + 0.25 * manifold + 0.20 * dim_quality)
+
+
+def graph_attention_spillover_proxy(features: Mapping[str, Any] | None = None) -> float:
+    features = features or {}
+    heads = _env_int("QUANT_MODEL_GAT_HEADS", 4, low=1, high=32)
+    graph = graph_neural_network_structure_proxy(features)
+    spillover = _safe_float(features.get("cross_asset_spillover_signal_norm"), _safe_float(features.get("market_crypto_risk_corr_norm"), 0.45))
+    attention = _safe_float(features.get("attention_stability_norm"), 1.0 - _safe_float(features.get("cross_sleeve_correlation_pressure_norm"), 0.35))
+    contagion = _safe_float(features.get("spillover_contagion_pressure_norm"), _safe_float(features.get("tail_dependency_pressure_norm"), 0.30))
+    head_quality = min(math.log2(max(heads, 1) + 1.0) / 5.0, 1.0)
+    return _clamp01(0.25 * graph + 0.25 * spillover + 0.20 * attention + 0.15 * (1.0 - contagion) + 0.15 * head_quality)
+
+
+def agentic_wallet_intent_execution_proxy(features: Mapping[str, Any] | None = None) -> float:
+    features = features or {}
+    intents = _env_int("QUANT_MODEL_WALLET_INTENT_CAP", 8, low=1, high=128)
+    provenance = _safe_float(features.get("decision_provenance_coverage_norm"), 0.50)
+    auth = _safe_float(features.get("auth_lease_health_norm"), 0.60)
+    intent_match = _safe_float(features.get("intent_execution_match_norm"), _safe_float(features.get("rule_consistency_norm"), 0.55))
+    safety = _safe_float(features.get("formal_safety_pass_norm"), _safe_float(features.get("golden_replay_pass_rate_norm"), 0.60))
+    cap_quality = min(math.log2(max(intents, 1) + 1.0) / 7.0, 1.0)
+    return _clamp01(0.25 * provenance + 0.20 * auth + 0.25 * intent_match + 0.20 * safety + 0.10 * cap_quality)
+
+
+def rough_path_signature_kernel_proxy(values: list[float], features: Mapping[str, Any] | None = None) -> float:
+    features = features or {}
+    depth = _env_int("QUANT_MODEL_SIGNATURE_KERNEL_DEPTH", 3, low=1, high=8)
+    signature = signature_transform_path_dna(values)
+    rough = rough_volatility_fbm_proxy(values)
+    kernel = _safe_float(features.get("signature_kernel_alignment_norm"), _safe_float(features.get("path_similarity_norm"), 0.50))
+    truncation = 1.0 - _safe_float(features.get("signature_truncation_error_norm"), 0.20)
+    depth_quality = min(math.log2(max(depth, 1) + 1.0) / 4.0, 1.0)
+    return _clamp01(0.25 * signature + 0.20 * rough + 0.25 * kernel + 0.20 * truncation + 0.10 * depth_quality)
+
+
+def quantum_classical_hybrid_optimization_proxy(features: Mapping[str, Any] | None = None) -> float:
+    features = features or {}
+    iterations = _env_int("QUANT_MODEL_HYBRID_OPT_ITERATIONS", 16, low=2, high=512)
+    qemc = quantum_enhanced_monte_carlo_proxy(features)
+    kelly = _safe_float(features.get("quant_kelly_fraction_norm"), 0.50)
+    genetic = _safe_float(features.get("quant_genetic_optimization_stability_norm"), _safe_float(features.get("walk_forward_parameter_stability_norm"), 0.50))
+    allocation = _safe_float(features.get("allocation_stability_context_norm"), _safe_float(features.get("allocation_stability_norm"), 0.50))
+    iter_quality = min(math.log2(max(iterations, 2)) / 9.0, 1.0)
+    return _clamp01(0.25 * qemc + 0.20 * kelly + 0.25 * genetic + 0.20 * allocation + 0.10 * iter_quality)
+
+
+def formal_verification_smart_agent_safety_proxy(features: Mapping[str, Any] | None = None) -> float:
+    features = features or {}
+    checks = _env_int("QUANT_MODEL_FORMAL_CHECKS", 12, low=1, high=256)
+    invariant = _safe_float(features.get("formal_invariant_pass_norm"), _safe_float(features.get("rule_consistency_norm"), 0.60))
+    replay = _safe_float(features.get("golden_replay_pass_rate_norm"), 0.60)
+    policy = 1.0 - _safe_float(features.get("execution_policy_violation_norm"), _safe_float(features.get("rotation_violation_norm"), 0.05))
+    provenance = _safe_float(features.get("decision_provenance_coverage_norm"), 0.50)
+    check_quality = min(math.log2(max(checks, 1) + 1.0) / 8.0, 1.0)
+    return _clamp01(0.30 * invariant + 0.20 * replay + 0.25 * policy + 0.15 * provenance + 0.10 * check_quality)
+
+
 def quant_model_resource_profile() -> dict[str, float]:
     workers = _env_int("QUANT_MODEL_MAX_WORKERS", 1, low=1, high=16)
     mc_paths = _env_int("QUANT_MODEL_MONTE_CARLO_PATHS", 512, low=32, high=8192)
@@ -1160,6 +1503,16 @@ def quant_model_resource_profile() -> dict[str, float]:
     rlbf_backtracks = _env_int("QUANT_MODEL_RLBF_BACKTRACK_CAP", 8, low=1, high=128)
     dms_steps = _env_int("QUANT_MODEL_DMS_STEPS", 32, low=4, high=512)
     equivariant_channels = _env_int("QUANT_MODEL_EQUIVARIANT_CHANNELS", 16, low=4, high=256)
+    dainn_layers = _env_int("QUANT_MODEL_DAINN_LAYERS", 3, low=1, high=24)
+    markov_exec_states = _env_int("QUANT_MODEL_MARKOV_EXEC_STATES", 5, low=2, high=64)
+    diff_backtest_steps = _env_int("QUANT_MODEL_DIFF_BACKTEST_STEPS", 48, low=4, high=1024)
+    durability_scenarios = _env_int("QUANT_MODEL_DURABILITY_SCENARIOS", 12, low=2, high=256)
+    info_geometry_dim = _env_int("QUANT_MODEL_INFO_GEOMETRY_DIM", 8, low=2, high=256)
+    gat_heads = _env_int("QUANT_MODEL_GAT_HEADS", 4, low=1, high=32)
+    wallet_intent_cap = _env_int("QUANT_MODEL_WALLET_INTENT_CAP", 8, low=1, high=128)
+    signature_kernel_depth = _env_int("QUANT_MODEL_SIGNATURE_KERNEL_DEPTH", 3, low=1, high=8)
+    hybrid_opt_iterations = _env_int("QUANT_MODEL_HYBRID_OPT_ITERATIONS", 16, low=2, high=512)
+    formal_checks = _env_int("QUANT_MODEL_FORMAL_CHECKS", 12, low=1, high=256)
     pressure = (
         0.15 * workers / 8.0
         + 0.10 * mc_paths / 4096.0
@@ -1190,6 +1543,16 @@ def quant_model_resource_profile() -> dict[str, float]:
         + 0.01 * rlbf_backtracks / 64.0
         + 0.02 * dms_steps / 256.0
         + 0.01 * equivariant_channels / 128.0
+        + 0.01 * dainn_layers / 12.0
+        + 0.01 * markov_exec_states / 32.0
+        + 0.02 * diff_backtest_steps / 512.0
+        + 0.01 * durability_scenarios / 128.0
+        + 0.01 * info_geometry_dim / 128.0
+        + 0.01 * gat_heads / 16.0
+        + 0.01 * wallet_intent_cap / 64.0
+        + 0.01 * signature_kernel_depth / 8.0
+        + 0.01 * hybrid_opt_iterations / 256.0
+        + 0.01 * formal_checks / 128.0
     )
     return {
         "workers": float(workers),
@@ -1221,6 +1584,16 @@ def quant_model_resource_profile() -> dict[str, float]:
         "rlbf_backtrack_cap": float(rlbf_backtracks),
         "dms_steps": float(dms_steps),
         "equivariant_channels": float(equivariant_channels),
+        "dainn_layers": float(dainn_layers),
+        "markov_exec_states": float(markov_exec_states),
+        "diff_backtest_steps": float(diff_backtest_steps),
+        "durability_scenarios": float(durability_scenarios),
+        "info_geometry_dim": float(info_geometry_dim),
+        "gat_heads": float(gat_heads),
+        "wallet_intent_cap": float(wallet_intent_cap),
+        "signature_kernel_depth": float(signature_kernel_depth),
+        "hybrid_opt_iterations": float(hybrid_opt_iterations),
+        "formal_checks": float(formal_checks),
         "mlx_runtime_available": 1.0 if mx is not None else 0.0,
         "mlx_compile_available": 1.0 if mx is not None and hasattr(mx, "compile") else 0.0,
         "resource_pressure_norm": round(_clamp01(pressure), 4),
@@ -1296,9 +1669,32 @@ def summarize_quant_model_features(
     resource = quant_model_resource_profile()
     price_scale = max(spot, 1.0)
     bs_price = black_scholes_price(spot, strike, time_years, rate, vol)
+    quantlib_price = quantlib_black_scholes_price(spot, strike, time_years, rate, vol)
+    quantlib_benchmark = (
+        _clamp01(1.0 - abs(quantlib_price - bs_price) / max(bs_price * 0.03, price_scale * 0.003, 1e-9))
+        if quantlib_price is not None
+        else 0.0
+    )
+    merton_jump_risk = _clamp01(abs(merton - bs_price) / price_scale * 4.0)
     plain_error = abs(mc - bs_price)
     variance_reduced_error = min(abs(qmc - bs_price), abs(lhs - bs_price))
     antithetic_efficiency = _clamp01(1.0 - variance_reduced_error / max(plain_error + 1e-9, bs_price * 0.03, 1e-9))
+    sabr = sabr_vol_surface_proxy(
+        spot * math.exp(rate * time_years),
+        strike,
+        time_years,
+        vol,
+        beta=_safe_float(features.get("sabr_beta"), 0.5),
+        rho=_safe_float(features.get("sabr_rho"), _safe_float(features.get("skew_rho_proxy"), -0.35)),
+        vol_of_vol=_safe_float(features.get("sabr_vol_of_vol"), _safe_float(features.get("options_vol_of_vol_change_norm"), 0.45)),
+    )
+    svi_ssvi = svi_ssvi_vol_surface_proxy(features)
+    dupire = dupire_local_vol_surface_proxy(features, functional_ito_path_volatility(returns), svi_ssvi)
+    bates = bates_jump_vol_proxy(heston, merton_jump_risk, features)
+    hull_white = hull_white_rates_proxy(features)
+    cir_intensity = cir_intensity_proxy(features)
+    hjm = hjm_forward_rate_proxy(features)
+    sofr_lmm = sofr_market_model_proxy(features)
     kalman = kalman_filter_level(returns)
     gpu_kalman = real_time_kalman_filter_gpu(returns)
     particle = particle_filter_level(returns)
@@ -1308,6 +1704,8 @@ def summarize_quant_model_features(
     )
     cvar = conditional_value_at_risk(returns, alpha=0.95)
     copula = gaussian_copula_dependency_proxy(returns, context_returns)
+    dcc_garch = dcc_garch_correlation_proxy(returns, context_returns, features)
+    evt_pot = evt_pot_tail_proxy(returns, cvar, features)
     ou = ornstein_uhlenbeck_signal(returns)
     ga = genetic_optimize_parameters([0.5 + min(max(x, -0.49), 0.49) for x in returns])
     actor_critic = actor_critic_policy_proxy(returns)
@@ -1360,6 +1758,423 @@ def summarize_quant_model_features(
     rlbf = rlbf_backtracking_feedback_proxy(features)
     dms = differentiable_market_simulator_proxy(returns, features)
     equivariant = equivariant_neural_network_proxy(features)
+    dainn = differentiable_arbitrage_invariant_nn_proxy(
+        {
+            **dict(features),
+            "simulator_gradient_stability_norm": _safe_float(features.get("simulator_gradient_stability_norm"), dms),
+            "pinn_constraint_consistency_norm": pinn,
+        }
+    )
+    markov_exec = high_dimensional_markovian_execution_proxy(features)
+    diff_backtest = end_to_end_differentiable_backtest_proxy(returns, {**dict(features), "simulator_gradient_stability_norm": dms})
+    durability = portfolio_durability_resilient_alternatives_proxy(
+        {
+            **dict(features),
+            "tail_risk_pressure_norm": max(_clamp01(abs(cvar) * 16.0), copula),
+            "alternative_data_signal_norm": alt_data,
+        }
+    )
+    info_geometry = information_geometry_manifold_proxy(returns, features)
+    gat_spillover = graph_attention_spillover_proxy(
+        {
+            **dict(features),
+            "market_crypto_risk_corr_norm": _safe_float(features.get("market_crypto_risk_corr_norm"), copula),
+        }
+    )
+    wallet_intent = agentic_wallet_intent_execution_proxy(features)
+    rough_path_kernel = rough_path_signature_kernel_proxy(returns, features)
+    hybrid_opt = quantum_classical_hybrid_optimization_proxy(
+        {
+            **dict(features),
+            "quant_quasi_monte_carlo_price_norm": _clamp01(qmc / price_scale),
+            "quant_antithetic_variates_efficiency_norm": antithetic_efficiency,
+            "quant_kelly_fraction_norm": _clamp01((kelly + 1.0) / 2.0),
+            "quant_genetic_optimization_stability_norm": _clamp01(ga.get("stability", 0.0)),
+        }
+    )
+    formal_safety = formal_verification_smart_agent_safety_proxy(features)
+    lobdif = _clamp01(0.45 * lit + 0.35 * geometric_lit + 0.20 * microstructure)
+    fractional_hurst = _clamp01(0.55 * hurst + 0.45 * rough_vol)
+    market_impact = _clamp01(
+        0.45 * dms
+        + 0.35 * markov_exec
+        + 0.20 * (1.0 - _safe_float(features.get("slippage_pressure_norm"), _safe_float(features.get("hedge_cost_pressure_norm"), 0.25)))
+    )
+    persistent_homology = _clamp01(0.60 * tda + 0.40 * laplacian)
+    toxic_liquidity = _clamp01(0.70 * vpin + 0.30 * _safe_float(features.get("stress_injection_replay_norm"), 0.45))
+    flash_freeze = _clamp01(
+        0.35 * _safe_float(features.get("quote_fade_risk_norm"), 0.25)
+        + 0.35 * _safe_float(features.get("bid_ask_spread_stress_norm"), _safe_float(features.get("spread_stress_norm"), 0.25))
+        + 0.30 * toxic_liquidity
+    )
+    photonic_quantum = _clamp01(0.60 * hybrid_opt + 0.40 * qemc)
+    replication_shield = _clamp01(
+        0.45 * _safe_float(features.get("golden_replay_pass_rate_norm"), 0.60)
+        + 0.35 * _safe_float(features.get("walk_forward_parameter_stability_norm"), _clamp01(ga.get("stability", 0.0)))
+        + 0.20 * (1.0 - _safe_float(features.get("model_drift_risk_norm"), 0.25))
+    )
+    synthetic_crisis = _clamp01(0.45 * signature_gen + 0.30 * hawkes + 0.25 * max(_clamp01(abs(cvar) * 16.0), copula))
+    correlation_convergence = _clamp01(
+        max(
+            copula,
+            _safe_float(features.get("cross_sleeve_correlation_pressure_norm"), 0.35),
+            _safe_float(features.get("correlation_convergence_pressure_norm"), 0.35),
+        )
+    )
+    macro_stress_2026 = _clamp01(
+        0.30 * _safe_float(features.get("vix_stress_norm"), _safe_float(features.get("options_iv_percentile_norm"), 0.25))
+        + 0.25 * _safe_float(features.get("credit_spread_stress_norm"), _safe_float(features.get("bbb_spread_stress_norm"), 0.30))
+        + 0.20 * _safe_float(features.get("unemployment_stress_norm"), 0.35)
+        + 0.15 * correlation_convergence
+        + 0.10 * _safe_float(features.get("real_estate_stress_norm"), 0.30)
+    )
+    fed_2026_integrity = _clamp01(_safe_float(features.get("fed_2026_scenario_integrity_norm"), 0.85))
+    fed_2026_equity_crash_vol = _clamp01(
+        max(
+            _safe_float(features.get("fed_2026_equity_crash_vol_spike_norm"), 0.0),
+            0.45 * _safe_float(features.get("vix_stress_norm"), _safe_float(features.get("options_iv_percentile_norm"), 0.25))
+            + 0.35 * _safe_float(features.get("equity_drawdown_norm"), _safe_float(features.get("market_drawdown_norm"), 0.30))
+            + 0.20 * correlation_convergence,
+        )
+    )
+    fed_2026_credit_blowout = _clamp01(
+        max(
+            _safe_float(features.get("fed_2026_credit_spread_blowout_norm"), 0.0),
+            0.50 * _safe_float(features.get("credit_spread_stress_norm"), _safe_float(features.get("bbb_spread_stress_norm"), 0.30))
+            + 0.25 * _safe_float(features.get("default_probability_stress_norm"), _safe_float(features.get("hazard_rate_stress_norm"), 0.25))
+            + 0.25 * _safe_float(features.get("funding_stress_norm"), 0.25),
+        )
+    )
+    fed_2026_housing_shock = _clamp01(
+        max(
+            _safe_float(features.get("fed_2026_housing_price_shock_norm"), 0.0),
+            0.40 * _safe_float(features.get("house_price_stress_norm"), _safe_float(features.get("housing_price_stress_norm"), 0.30))
+            + 0.30 * _safe_float(features.get("mortgage_rate_stress_norm"), _safe_float(features.get("rate_volatility_context_norm"), 0.25))
+            + 0.30 * _safe_float(features.get("unemployment_stress_norm"), 0.35),
+        )
+    )
+    fed_2026_cre_shock = _clamp01(
+        max(
+            _safe_float(features.get("fed_2026_cre_price_shock_norm"), 0.0),
+            0.45 * _safe_float(features.get("cre_price_stress_norm"), _safe_float(features.get("commercial_real_estate_stress_norm"), 0.35))
+            + 0.30 * _safe_float(features.get("regional_bank_stress_norm"), _safe_float(features.get("bank_stress_norm"), 0.25))
+            + 0.25 * fed_2026_credit_blowout,
+        )
+    )
+    fed_2026_unemployment_recession = _clamp01(
+        max(
+            _safe_float(features.get("fed_2026_unemployment_recession_norm"), 0.0),
+            0.50 * _safe_float(features.get("unemployment_stress_norm"), 0.35)
+            + 0.30 * _safe_float(features.get("real_gdp_contraction_norm"), _safe_float(features.get("macro_recession_norm"), 0.30))
+            + 0.20 * _safe_float(features.get("income_stress_norm"), 0.25),
+        )
+    )
+    fed_2026_global_deflation = _clamp01(
+        max(
+            _safe_float(features.get("fed_2026_global_recession_deflation_norm"), 0.0),
+            0.35 * _safe_float(features.get("global_growth_stress_norm"), _safe_float(features.get("euro_area_growth_stress_norm"), 0.35))
+            + 0.25 * _safe_float(features.get("deflation_stress_norm"), _safe_float(features.get("inflation_downside_stress_norm"), 0.25))
+            + 0.20 * _safe_float(features.get("fx_pressure_norm"), _safe_float(features.get("usd_stress_norm"), 0.30))
+            + 0.20 * correlation_convergence,
+        )
+    )
+    fed_2026_commodity_inflation = _clamp01(
+        max(
+            _safe_float(features.get("fed_2026_commodity_inflation_shock_norm"), 0.0),
+            0.40 * _safe_float(features.get("commodity_shock_norm"), _safe_float(features.get("oil_price_shock_norm"), 0.25))
+            + 0.30 * _safe_float(features.get("inflation_expectation_stress_norm"), _safe_float(features.get("inflation_shock_norm"), 0.25))
+            + 0.30 * _safe_float(features.get("energy_futures_stress_norm"), _safe_float(features.get("futures_curve_stress_norm"), 0.25)),
+        )
+    )
+    fed_2026_treasury_yield_shock = _clamp01(
+        max(
+            _safe_float(features.get("fed_2026_treasury_yield_shock_norm"), 0.0),
+            0.40 * _safe_float(features.get("front_end_rate_shock_norm"), _safe_float(features.get("rate_shock_norm"), 0.25))
+            + 0.35 * _safe_float(features.get("long_rate_shock_norm"), _safe_float(features.get("duration_stress_norm"), 0.25))
+            + 0.25 * _safe_float(features.get("inflation_expectation_stress_norm"), _safe_float(features.get("inflation_shock_norm"), 0.25)),
+        )
+    )
+    fed_2026_usd_stress = _clamp01(
+        max(
+            _safe_float(features.get("fed_2026_usd_stress_norm"), 0.0),
+            0.40 * _safe_float(features.get("usd_stress_norm"), _safe_float(features.get("uup_momentum_norm"), 0.25))
+            + 0.30 * _safe_float(features.get("fx_pressure_norm"), _safe_float(features.get("em_fx_pressure_norm"), 0.25))
+            + 0.30 * _safe_float(features.get("safe_haven_flow_norm"), 0.25),
+        )
+    )
+    fed_2026_counterparty_contagion = _clamp01(
+        max(
+            _safe_float(features.get("fed_2026_counterparty_default_contagion_norm"), 0.0),
+            0.35 * fed_2026_credit_blowout
+            + 0.25 * _safe_float(features.get("counterparty_default_stress_norm"), _safe_float(features.get("xva_exposure_stress_norm"), 0.25))
+            + 0.20 * _safe_float(features.get("repo_funding_stress_norm"), _safe_float(features.get("funding_stress_norm"), 0.25))
+            + 0.20 * fed_2026_equity_crash_vol,
+        )
+    )
+    covid_2020_pandemic = _clamp01(
+        max(
+            _safe_float(features.get("covid_2020_pandemic_replay_norm"), 0.0),
+            0.20 * _safe_float(features.get("vix_stress_norm"), _safe_float(features.get("options_iv_percentile_norm"), 0.30))
+            + 0.18 * _safe_float(features.get("unemployment_stress_norm"), 0.45)
+            + 0.16 * _safe_float(features.get("liquidity_facility_stress_norm"), _safe_float(features.get("funding_stress_norm"), 0.35))
+            + 0.14 * _safe_float(features.get("pandemic_shutdown_stress_norm"), _safe_float(features.get("event_burst_rate_norm"), 0.35))
+            + 0.12 * _safe_float(features.get("oil_price_shock_norm"), _safe_float(features.get("commodity_shock_norm"), 0.25))
+            + 0.10 * correlation_convergence
+            + 0.10 * _safe_float(features.get("policy_rate_zero_bound_norm"), _safe_float(features.get("rate_cut_shock_norm"), 0.30)),
+        )
+    )
+    mckean_vlasov = _clamp01(
+        max(
+            _safe_float(features.get("mckean_vlasov_control_norm"), 0.0),
+            0.35 * mean_field
+            + 0.25 * sdg
+            + 0.20 * rlbf
+            + 0.20 * (1.0 - correlation_convergence),
+        )
+    )
+    tensor_mps = _clamp01(
+        max(
+            _safe_float(features.get("tensor_network_mps_norm"), 0.0),
+            0.30 * graph_structure
+            + 0.25 * signature
+            + 0.20 * info_geometry
+            + 0.15 * hybrid_opt
+            + 0.10 * _safe_float(features.get("source_confidence_norm"), 0.55),
+        )
+    )
+    multifidelity = _clamp01(
+        max(
+            _safe_float(features.get("multifidelity_stochastic_programming_norm"), 0.0),
+            0.25 * _clamp01(qmc / price_scale)
+            + 0.20 * _clamp01(lhs / price_scale)
+            + 0.20 * antithetic_efficiency
+            + 0.20 * durability
+            + 0.15 * replication_shield,
+        )
+    )
+    tatonnement = _clamp01(
+        max(
+            _safe_float(features.get("differentiable_tatonnement_norm"), 0.0),
+            0.30 * market_impact
+            + 0.25 * markov_exec
+            + 0.20 * (1.0 - _safe_float(features.get("spread_stress_norm"), _safe_float(features.get("bid_ask_spread_stress_norm"), 0.25)))
+            + 0.15 * wallet_intent
+            + 0.10 * formal_safety,
+        )
+    )
+    lead_lag_detector = _clamp01(
+        max(
+            _safe_float(features.get("signature_lead_lag_detector_norm"), 0.0),
+            0.35 * signature
+            + 0.25 * hawkes
+            + 0.20 * _safe_float(features.get("cross_sleeve_correlation_pressure_norm"), correlation_convergence)
+            + 0.20 * microstructure,
+        )
+    )
+    chaos_propagation = _clamp01(
+        max(
+            _safe_float(features.get("chaos_propagation_norm"), 0.0),
+            0.30 * mean_field
+            + 0.25 * correlation_convergence
+            + 0.20 * hawkes
+            + 0.15 * tda
+            + 0.10 * covid_2020_pandemic,
+        )
+    )
+    mckean_vlasov_sensitivity = _clamp01(
+        max(
+            _safe_float(features.get("mckean_vlasov_sde_sensitivity_norm"), 0.0),
+            0.35 * mckean_vlasov
+            + 0.25 * rough_vol
+            + 0.20 * pin_sde
+            + 0.20 * sdg,
+        )
+    )
+    mlmc_sequential = _clamp01(
+        max(
+            _safe_float(features.get("mlmc_sequential_estimation_norm"), 0.0),
+            0.30 * _clamp01(mc / price_scale)
+            + 0.25 * _clamp01(qmc / price_scale)
+            + 0.20 * antithetic_efficiency
+            + 0.15 * _clamp01(kalman.get("confidence", 0.0))
+            + 0.10 * (1.0 - _clamp01(resource["resource_pressure_norm"])),
+        )
+    )
+    volterra_kernel = _clamp01(
+        max(
+            _safe_float(features.get("signature_volterra_kernel_calibration_norm"), 0.0),
+            0.35 * signature
+            + 0.25 * rough_path_kernel
+            + 0.20 * path_vol
+            + 0.20 * fractional_hurst,
+        )
+    )
+    dual_tatonnement = _clamp01(
+        max(
+            _safe_float(features.get("dual_tatonnement_price_discovery_norm"), 0.0),
+            0.40 * tatonnement
+            + 0.25 * market_impact
+            + 0.20 * wallet_intent
+            + 0.15 * dainn,
+        )
+    )
+    probabilistic_chaos = _clamp01(
+        max(
+            _safe_float(features.get("probabilistic_propagation_of_chaos_norm"), 0.0),
+            0.45 * chaos_propagation
+            + 0.25 * mckean_vlasov
+            + 0.15 * hawkes
+            + 0.15 * correlation_convergence,
+        )
+    )
+    rough_vvix = _clamp01(
+        max(
+            _safe_float(features.get("rough_vvix_exotics_norm"), _safe_float(features.get("vix_on_vix_exotics_norm"), 0.0)),
+            0.35 * fractional_hurst
+            + 0.25 * _safe_float(features.get("vvix_stress_norm"), _safe_float(features.get("vol_of_vol_stress_norm"), 0.35))
+            + 0.20 * _safe_float(features.get("vix_stress_norm"), _safe_float(features.get("options_iv_percentile_norm"), 0.30))
+            + 0.20 * heston,
+        )
+    )
+    quantum_barrier = _clamp01(
+        max(
+            _safe_float(features.get("quantum_barrier_path_amplitude_norm"), 0.0),
+            0.35 * qemc
+            + 0.25 * _safe_float(features.get("barrier_touch_risk_norm"), _safe_float(features.get("options_barrier_touch_risk_norm"), 0.30))
+            + 0.20 * path_vol
+            + 0.20 * hybrid_opt,
+        )
+    )
+    correlation_heat_swap = _clamp01(
+        max(
+            _safe_float(features.get("cross_asset_correlation_heat_swap_norm"), 0.0),
+            0.45 * correlation_convergence
+            + 0.25 * copula
+            + 0.20 * gat_spillover
+            + 0.10 * macro_stress_2026,
+        )
+    )
+    cliquet_floor_cap = _clamp01(
+        max(
+            _safe_float(features.get("cliquet_global_floor_local_cap_norm"), 0.0),
+            0.30 * path_vol
+            + 0.25 * _safe_float(features.get("structured_payoff_stress_norm"), _safe_float(features.get("coupon_barrier_stress_norm"), 0.35))
+            + 0.20 * _safe_float(features.get("realized_vol_stress_norm"), _safe_float(features.get("options_iv_percentile_norm"), 0.30))
+            + 0.15 * _safe_float(features.get("floor_cap_distance_norm"), 0.45)
+            + 0.10 * durability,
+        )
+    )
+    signature_trend_option = _clamp01(
+        max(
+            _safe_float(features.get("signature_trend_follower_options_norm"), 0.0),
+            0.30 * lead_lag_detector
+            + 0.25 * signature
+            + 0.20 * rough_path_kernel
+            + 0.15 * _safe_float(features.get("trend_persistence_norm"), _safe_float(features.get("lead_lag_confidence_norm"), 0.40))
+            + 0.10 * _safe_float(features.get("options_surface_change_norm"), _safe_float(features.get("options_iv_percentile_norm"), 0.30)),
+        )
+    )
+    esg_ccds = _clamp01(
+        max(
+            _safe_float(features.get("esg_contingent_cds_norm"), _safe_float(features.get("ccds_stress_norm"), 0.0)),
+            0.35 * _safe_float(features.get("credit_spread_stress_norm"), _safe_float(features.get("bbb_spread_stress_norm"), 0.30))
+            + 0.25 * _safe_float(features.get("esg_controversy_stress_norm"), _safe_float(features.get("issuer_esg_event_norm"), 0.25))
+            + 0.20 * _safe_float(features.get("hazard_rate_stress_norm"), _safe_float(features.get("default_probability_stress_norm"), 0.30))
+            + 0.20 * macro_stress_2026,
+        )
+    )
+    sdg_control = _clamp01(
+        max(
+            _safe_float(features.get("sdg_control_norm"), 0.0),
+            0.45 * sdg
+            + 0.25 * formal_safety
+            + 0.15 * mckean_vlasov
+            + 0.15 * market_impact,
+        )
+    )
+    nonlocal_fractional_laplacian = _clamp01(
+        max(
+            _safe_float(features.get("nonlocal_fractional_laplacian_norm"), 0.0),
+            0.35 * laplacian
+            + 0.25 * fractional_hurst
+            + 0.20 * tda
+            + 0.20 * rough_path_kernel,
+        )
+    )
+    infinite_heston = _clamp01(
+        max(
+            _safe_float(features.get("infinite_dimensional_heston_norm"), 0.0),
+            0.40 * heston
+            + 0.25 * rough_vol
+            + 0.20 * _safe_float(features.get("options_vol_of_vol_change_norm"), _safe_float(features.get("vol_of_vol_stress_norm"), 0.35))
+            + 0.15 * pin_sde,
+        )
+    )
+    lie_group_signature = _clamp01(
+        max(
+            _safe_float(features.get("lie_group_rough_path_signature_norm"), 0.0),
+            0.40 * signature
+            + 0.25 * rough_path_kernel
+            + 0.20 * graph_structure
+            + 0.15 * info_geometry,
+        )
+    )
+    mfg_controls = _clamp01(
+        max(
+            _safe_float(features.get("mean_field_games_controls_norm"), _safe_float(features.get("mfg_controls_norm"), 0.0)),
+            0.40 * mean_field
+            + 0.25 * mckean_vlasov
+            + 0.20 * sdg
+            + 0.15 * rlbf,
+        )
+    )
+    wasserstein_flow = _clamp01(
+        max(
+            _safe_float(features.get("wasserstein_gradient_flow_norm"), 0.0),
+            0.35 * ot_bridge
+            + 0.25 * info_geometry
+            + 0.20 * tda
+            + 0.20 * hybrid_opt,
+        )
+    )
+    malliavin_greeks = _clamp01(
+        max(
+            _safe_float(features.get("malliavin_wiener_greeks_norm"), 0.0),
+            0.30 * infinite_heston
+            + 0.25 * _clamp01((abs(mlx_grad.get("delta", 0.0)) + min(abs(mlx_grad.get("gamma", 0.0)), 1.0)) / 2.0)
+            + 0.20 * heston
+            + 0.15 * pin_sde
+            + 0.10 * path_vol,
+        )
+    )
+    tqft_braid = _clamp01(
+        max(
+            _safe_float(features.get("tqft_braid_group_norm"), 0.0),
+            0.35 * tda
+            + 0.25 * lie_group_signature
+            + 0.20 * graph_structure
+            + 0.20 * info_geometry,
+        )
+    )
+    mfgc_congestion = _clamp01(
+        max(
+            _safe_float(features.get("mfgc_congestion_norm"), 0.0),
+            0.40 * mfg_controls
+            + 0.25 * mean_field
+            + 0.20 * market_impact
+            + 0.15 * toxic_liquidity,
+        )
+    )
+    spde_lob_fluid = _clamp01(
+        max(
+            _safe_float(features.get("spde_manifold_lob_fluid_norm"), 0.0),
+            0.30 * geometric_lit
+            + 0.25 * lit
+            + 0.20 * laplacian
+            + 0.15 * pin_sde
+            + 0.10 * microstructure,
+        )
+    )
     snapshots = external_snapshots or {}
     external_conf = 0.0
     if isinstance(snapshots, Mapping) and snapshots:
@@ -1370,6 +2185,16 @@ def summarize_quant_model_features(
         + 0.20 * _safe_float(features.get("market_micro_tradeability_score_norm"), 0.5)
         + 0.15 * _safe_float(features.get("options_surface_change_norm"), 0.0)
         + 0.15 * external_conf
+    )
+    experience_memory = _clamp01(
+        max(
+            _safe_float(features.get("experience_accumulation_memory_norm"), 0.0),
+            0.25 * critic
+            + 0.20 * observer_critic
+            + 0.20 * rlbf
+            + 0.20 * _safe_float(features.get("replay_memory_hit_rate_norm"), _safe_float(features.get("experience_replay_coverage_norm"), 0.50))
+            + 0.15 * data_conf,
+        )
     )
     out = default_quant_model_features()
     out.update(
@@ -1388,7 +2213,17 @@ def summarize_quant_model_features(
             "quant_fft_price_norm": _clamp01(fft / price_scale),
             "quant_trinomial_tree_price_norm": _clamp01(tri / price_scale),
             "quant_heston_vol_risk_norm": heston,
-            "quant_merton_jump_risk_norm": _clamp01(abs(merton - bs_price) / price_scale * 4.0),
+            "quant_merton_jump_risk_norm": merton_jump_risk,
+            "quant_sabr_vol_surface_norm": sabr,
+            "quant_svi_ssvi_vol_surface_norm": svi_ssvi,
+            "quant_dupire_local_vol_surface_norm": dupire,
+            "quant_bates_jump_vol_norm": bates,
+            "quant_hull_white_rates_norm": hull_white,
+            "quant_cir_intensity_norm": cir_intensity,
+            "quant_hjm_forward_rate_norm": hjm,
+            "quant_sofr_market_model_norm": sofr_lmm,
+            "quant_dcc_garch_correlation_norm": dcc_garch,
+            "quant_evt_pot_tail_norm": evt_pot,
             "quant_kalman_filter_confidence_norm": _clamp01(kalman.get("confidence", 0.0)),
             "quant_particle_filter_confidence_norm": _clamp01(particle.get("confidence", 0.0)),
             "quant_kelly_fraction_norm": _clamp01((kelly + 1.0) / 2.0),
@@ -1409,6 +2244,15 @@ def summarize_quant_model_features(
             "quant_mlx_jump_diffusion_grad_norm": _clamp01((abs(mlx_grad.get("delta", 0.0)) + min(abs(mlx_grad.get("gamma", 0.0)), 1.0)) / 2.0),
             "quant_mlx_runtime_available_norm": 1.0 if mx is not None else 0.0,
             "quant_mlx_compile_available_norm": 1.0 if mx is not None and hasattr(mx, "compile") else 0.0,
+            "quant_mlx_nn_available_norm": 1.0 if _module_available("mlx.nn") else 0.0,
+            "quant_mlx_optimizers_available_norm": 1.0 if _module_available("mlx.optimizers") else 0.0,
+            "quant_mlx_lm_available_norm": 1.0 if _module_available("mlx_lm") else 0.0,
+            "quant_mlx_graphs_available_norm": 1.0 if _module_available("mlx_graphs") else 0.0,
+            "quant_mlx_snn_available_norm": 1.0 if _module_available("mlxsnn") else 0.0,
+            "quant_mlx_vision_available_norm": 1.0 if _module_available("mlx_vision") else 0.0,
+            "quant_esig_signature_available_norm": 1.0 if (_module_available("esig") or _module_available("roughpy")) else 0.0,
+            "quant_quantlib_available_norm": 1.0 if ql is not None else 0.0,
+            "quant_quantlib_pricing_benchmark_norm": quantlib_benchmark,
             "quant_qemc_signal_norm": qemc,
             "quant_path_dependent_volatility_norm": path_vol,
             "quant_rough_volatility_fbm_norm": rough_vol,
@@ -1437,6 +2281,67 @@ def summarize_quant_model_features(
             "quant_rlbf_backtracking_feedback_norm": rlbf,
             "quant_differentiable_market_simulator_norm": dms,
             "quant_equivariant_neural_network_norm": equivariant,
+            "quant_dainn_arbitrage_invariant_norm": dainn,
+            "quant_markovian_execution_control_norm": markov_exec,
+            "quant_end_to_end_diff_backtest_norm": diff_backtest,
+            "quant_portfolio_durability_norm": durability,
+            "quant_information_geometry_manifold_norm": info_geometry,
+            "quant_graph_attention_spillover_norm": gat_spillover,
+            "quant_agentic_wallet_intent_norm": wallet_intent,
+            "quant_rough_path_signature_kernel_norm": rough_path_kernel,
+            "quant_quantum_classical_hybrid_optimization_norm": hybrid_opt,
+            "quant_formal_verification_safety_norm": formal_safety,
+            "quant_lobdif_order_book_diffusion_norm": lobdif,
+            "quant_fractional_hurst_rough_vol_norm": fractional_hurst,
+            "quant_differentiable_market_impact_norm": market_impact,
+            "quant_persistent_homology_flash_crash_norm": persistent_homology,
+            "quant_toxic_liquidity_injection_norm": toxic_liquidity,
+            "quant_flash_freeze_slippage_norm": flash_freeze,
+            "quant_photonic_quantum_optimization_norm": photonic_quantum,
+            "quant_replication_crisis_shield_norm": replication_shield,
+            "quant_synthetic_crisis_market_gan_norm": synthetic_crisis,
+            "quant_correlation_convergence_norm": correlation_convergence,
+            "quant_macro_stress_2026_driver_norm": macro_stress_2026,
+            "quant_fed_2026_scenario_integrity_norm": fed_2026_integrity,
+            "quant_fed_2026_equity_crash_vol_spike_norm": fed_2026_equity_crash_vol,
+            "quant_fed_2026_credit_spread_blowout_norm": fed_2026_credit_blowout,
+            "quant_fed_2026_housing_price_shock_norm": fed_2026_housing_shock,
+            "quant_fed_2026_cre_price_shock_norm": fed_2026_cre_shock,
+            "quant_fed_2026_unemployment_recession_norm": fed_2026_unemployment_recession,
+            "quant_fed_2026_global_recession_deflation_norm": fed_2026_global_deflation,
+            "quant_fed_2026_commodity_inflation_shock_norm": fed_2026_commodity_inflation,
+            "quant_fed_2026_treasury_yield_shock_norm": fed_2026_treasury_yield_shock,
+            "quant_fed_2026_usd_stress_norm": fed_2026_usd_stress,
+            "quant_fed_2026_counterparty_default_contagion_norm": fed_2026_counterparty_contagion,
+            "quant_covid_2020_pandemic_replay_norm": covid_2020_pandemic,
+            "quant_mckean_vlasov_control_norm": mckean_vlasov,
+            "quant_tensor_network_mps_norm": tensor_mps,
+            "quant_multifidelity_stochastic_programming_norm": multifidelity,
+            "quant_differentiable_tatonnement_norm": tatonnement,
+            "quant_signature_lead_lag_detector_norm": lead_lag_detector,
+            "quant_chaos_propagation_norm": chaos_propagation,
+            "quant_mckean_vlasov_sde_sensitivity_norm": mckean_vlasov_sensitivity,
+            "quant_mlmc_sequential_estimation_norm": mlmc_sequential,
+            "quant_signature_volterra_kernel_calibration_norm": volterra_kernel,
+            "quant_dual_tatonnement_price_discovery_norm": dual_tatonnement,
+            "quant_probabilistic_propagation_of_chaos_norm": probabilistic_chaos,
+            "quant_experience_accumulation_memory_norm": experience_memory,
+            "quant_rough_vvix_exotics_norm": rough_vvix,
+            "quant_quantum_barrier_path_amplitude_norm": quantum_barrier,
+            "quant_cross_asset_correlation_heat_swap_norm": correlation_heat_swap,
+            "quant_cliquet_global_floor_local_cap_norm": cliquet_floor_cap,
+            "quant_signature_trend_follower_options_norm": signature_trend_option,
+            "quant_esg_contingent_cds_norm": esg_ccds,
+            "quant_sdg_control_norm": sdg_control,
+            "quant_nonlocal_fractional_laplacian_norm": nonlocal_fractional_laplacian,
+            "quant_infinite_dimensional_heston_norm": infinite_heston,
+            "quant_lie_group_rough_path_signature_norm": lie_group_signature,
+            "quant_mean_field_games_controls_norm": mfg_controls,
+            "quant_wasserstein_gradient_flow_norm": wasserstein_flow,
+            "quant_malliavin_wiener_greeks_norm": malliavin_greeks,
+            "quant_tqft_braid_group_norm": tqft_braid,
+            "quant_mfgc_congestion_norm": mfgc_congestion,
+            "quant_spde_manifold_lob_fluid_norm": spde_lob_fluid,
             "quant_model_resource_pressure_norm": _clamp01(resource["resource_pressure_norm"]),
             "quant_model_data_confidence_norm": data_conf,
         }
@@ -1458,6 +2363,16 @@ def quant_model_inventory() -> dict[str, Any]:
             "trinomial_tree_pricing",
             "heston_stochastic_volatility_proxy",
             "merton_jump_diffusion",
+            "sabr_stochastic_alpha_beta_rho_vol_surface_proxy",
+            "svi_ssvi_arbitrage_free_vol_surface_proxy",
+            "dupire_local_volatility_surface_proxy",
+            "bates_heston_jump_diffusion_proxy",
+            "hull_white_one_factor_rates_proxy",
+            "cir_short_rate_credit_intensity_proxy",
+            "hjm_forward_rate_model_proxy",
+            "sofr_libor_market_model_proxy",
+            "dynamic_conditional_correlation_garch_proxy",
+            "extreme_value_theory_peaks_over_threshold_proxy",
             "kalman_filter",
             "particle_filter",
             "kelly_criterion",
@@ -1479,6 +2394,7 @@ def quant_model_inventory() -> dict[str, Any]:
             "real_time_kalman_filter_gpu",
             "mlx_grad_jump_diffusion_greeks",
             "mlx_compile_fair_value_path",
+            "quantlib_black_scholes_benchmark_proxy",
             "quantum_enhanced_monte_carlo_proxy",
             "functional_ito_path_dependent_volatility",
             "rough_volatility_fractional_brownian_motion_proxy",
@@ -1507,6 +2423,67 @@ def quant_model_inventory() -> dict[str, Any]:
             "reinforcement_learning_with_backtracking_feedback_proxy",
             "differentiable_market_simulator_proxy",
             "equivariant_neural_network_symmetry_proxy",
+            "differentiable_arbitrage_invariant_neural_network_proxy",
+            "high_dimensional_markovian_order_execution_proxy",
+            "end_to_end_differentiable_backtesting_proxy",
+            "portfolio_durability_resilient_alternatives_proxy",
+            "information_geometry_statistical_manifold_proxy",
+            "graph_attention_network_cross_asset_spillover_proxy",
+            "agentic_wallet_intent_based_execution_proxy",
+            "rough_path_signature_kernel_proxy",
+            "quantum_classical_hybrid_optimization_proxy",
+            "formal_verification_smart_agent_safety_proxy",
+            "lobdif_order_book_diffusion_proxy",
+            "fractional_hurst_rough_volatility_proxy",
+            "differentiable_market_impact_proxy",
+            "persistent_homology_flash_crash_proxy",
+            "toxic_liquidity_vpin_stress_injector_proxy",
+            "flash_freeze_slippage_model_proxy",
+            "photonic_quantum_optimization_proxy",
+            "replication_crisis_shield_proxy",
+            "synthetic_crisis_market_gan_proxy",
+            "correlation_convergence_simulation_proxy",
+            "macro_stress_2026_driver_proxy",
+            "fed_2026_supervisory_scenario_dataset_proxy",
+            "fed_2026_equity_crash_volatility_spike_proxy",
+            "fed_2026_corporate_credit_spread_blowout_proxy",
+            "fed_2026_housing_price_shock_proxy",
+            "fed_2026_commercial_real_estate_shock_proxy",
+            "fed_2026_unemployment_recession_shock_proxy",
+            "fed_2026_global_recession_deflation_shock_proxy",
+            "fed_2026_commodity_inflation_shock_proxy",
+            "fed_2026_treasury_yield_shock_proxy",
+            "fed_2026_us_dollar_stress_proxy",
+            "fed_2026_counterparty_default_contagion_proxy",
+            "covid_2020_pandemic_crash_replay_proxy",
+            "mckean_vlasov_master_equation_control_proxy",
+            "quantum_tensor_network_matrix_product_state_proxy",
+            "multifidelity_stochastic_programming_proxy",
+            "differentiable_tatonnement_price_discovery_proxy",
+            "signature_lead_lag_detector_proxy",
+            "probabilistic_chaos_propagation_proxy",
+            "mckean_vlasov_sde_sensitivity_proxy",
+            "multi_level_monte_carlo_sequential_estimation_proxy",
+            "signature_volterra_kernel_calibration_proxy",
+            "dual_tatonnement_price_discovery_proxy",
+            "probabilistic_propagation_of_chaos_proxy",
+            "experience_accumulation_memory_design_proxy",
+            "rough_volatility_vvix_exotics_proxy",
+            "quantum_barrier_path_amplitude_option_proxy",
+            "cross_asset_correlation_heat_swap_proxy",
+            "cliquet_global_floor_local_cap_proxy",
+            "signature_trend_follower_option_proxy",
+            "esg_linked_contingent_credit_default_swap_proxy",
+            "stochastic_differential_games_control_proxy",
+            "nonlocal_fractional_laplacian_proxy",
+            "infinite_dimensional_heston_model_proxy",
+            "lie_group_rough_path_signature_proxy",
+            "mean_field_games_of_controls_proxy",
+            "wasserstein_gradient_flow_measure_optimization_proxy",
+            "malliavin_wiener_space_infinite_dimensional_greeks_proxy",
+            "topological_quantum_field_theory_braid_group_proxy",
+            "mfgc_congestion_control_proxy",
+            "spde_manifold_limit_order_book_fluid_proxy",
         ],
         "feature_keys": list(QUANT_MODEL_FEATURE_KEYS),
         "resource_profile": resource,
@@ -1514,6 +2491,15 @@ def quant_model_inventory() -> dict[str, Any]:
             "mlx_core_random": mx is not None and hasattr(mx, "random"),
             "mx_grad": mx is not None and hasattr(mx, "grad"),
             "mlx_compile": mx is not None and hasattr(mx, "compile"),
+            "mlx_nn": _module_available("mlx.nn"),
+            "mlx_optimizers": _module_available("mlx.optimizers"),
+            "mlx_lm": _module_available("mlx_lm"),
+            "mlx_graphs": _module_available("mlx_graphs"),
+            "mlx_snn": _module_available("mlxsnn"),
+            "mlx_vision": _module_available("mlx_vision"),
+            "esig": _module_available("esig"),
+            "roughpy": _module_available("roughpy"),
+            "quantlib": ql is not None,
             "fair_value_gradient": mx is not None and hasattr(mx, "grad"),
         },
         "execution_policy": {

@@ -36,7 +36,7 @@ def build_payload(
     project_root: Path = PROJECT_ROOT,
     *,
     max_session_age_minutes: float = 30.0,
-    swap_restart_gb: float = 8.0,
+    swap_restart_gb: float = 20.0,
     max_shadow_age_minutes: float = 120.0,
 ) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
@@ -118,7 +118,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Plan rolling restart windows with checkpoint and resume prerequisites.")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--max-session-age-minutes", type=float, default=30.0)
-    parser.add_argument("--swap-restart-gb", type=float, default=8.0)
+    parser.add_argument("--swap-restart-gb", type=float, default=20.0)
     parser.add_argument("--max-shadow-age-minutes", type=float, default=120.0)
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--json", action="store_true")

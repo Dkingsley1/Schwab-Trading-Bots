@@ -15,7 +15,7 @@ except ModuleNotFoundError:
     from core.registry_backed_collection_bot import describe_registry_backed_bot, train_registry_backed_bot
 
 BOT_ID = 'brain_refinery_v315_collection_freshness_slo_sentinel'
-GENERATED_AT_UTC = '2026-05-01T17:00:28.939406+00:00'
+GENERATED_AT_UTC = '2026-05-02T22:30:58.294639+00:00'
 BOT_SPEC = {'active': True,
  'allocation_enabled': False,
  'bootstrap_teacher_bot_ids': ['brain_refinery_v270_bot_catalog_freshness_sentinel',

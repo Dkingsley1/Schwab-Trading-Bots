@@ -26,7 +26,12 @@ DEFAULT_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "retention_debt_sher
 DEFAULT_POLL_SECONDS = 20.0
 DEFAULT_WAIT_TIMEOUT_SECONDS = 900.0
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 2400
-SHERIFF_SHARDS = {"explanations", "crypto_explanations"}
+SHERIFF_SHARDS = {
+    "explanations",
+    "crypto_explanations",
+    "shadow_attribution",
+    "crypto_shadow_attribution",
+}
 
 
 def _utc_now() -> str:

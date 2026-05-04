@@ -33,6 +33,12 @@ def test_exotic_proxy_features_use_public_and_listed_inputs() -> None:
         "options_gamma_scalping_pressure_norm": 0.62,
         "options_variance_swap_proxy_norm": 0.71,
         "market_micro_order_flow_imbalance_norm": 0.59,
+        "vvix_stress_norm": 0.64,
+        "quantum_barrier_path_amplitude_norm": 0.57,
+        "cross_asset_correlation_heat_norm": 0.62,
+        "cliquet_global_floor_local_cap_norm": 0.55,
+        "signature_trend_follower_options_norm": 0.60,
+        "esg_contingent_cds_norm": 0.52,
     }
     out = summarize_exotic_derivative_proxy_features(
         sleeve="structured_products",
@@ -56,6 +62,12 @@ def test_exotic_proxy_features_use_public_and_listed_inputs() -> None:
     assert out["exotic_proxy_higher_order_greeks_norm"] > 0.0
     assert out["exotic_proxy_gamma_scalping_norm"] > 0.0
     assert out["exotic_proxy_vol_arbitrage_norm"] > 0.0
+    assert out["exotic_proxy_rough_vvix_norm"] > 0.0
+    assert out["exotic_proxy_quantum_barrier_path_norm"] > 0.0
+    assert out["exotic_proxy_correlation_heat_swap_norm"] > 0.0
+    assert out["exotic_proxy_cliquet_floor_cap_norm"] > 0.0
+    assert out["exotic_proxy_signature_trend_follower_norm"] > 0.0
+    assert out["exotic_proxy_esg_ccds_norm"] > 0.0
     assert out["exotic_data_confidence_norm"] > 0.0
 
 

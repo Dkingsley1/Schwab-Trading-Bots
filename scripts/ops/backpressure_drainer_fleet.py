@@ -26,6 +26,54 @@ WRITER_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "jsonl_sql_writer.loc
 MIN_MATERIAL_PENDING_LINES = 100
 CORE_HARD_PENDING_LINES = 50_000
 
+DRAINER_OWNERS: dict[str, dict[str, Any]] = {
+    "core_decision_drainer": {
+        "owner_bot_id": "brain_refinery_v602_system_governor_cpu_memory_backlog_pressure_bot",
+        "backup_bot_ids": [
+            "brain_refinery_v187_data_collection_storage_budget_guard",
+            "brain_refinery_v316_collection_halt_pressure_preemption_guard",
+        ],
+        "pressure_lane": "core_decision_backpressure",
+        "ops_infrabots": ["backpressure_slo_bot", "storage_backpressure_autopilot"],
+    },
+    "cold_stage_drainer": {
+        "owner_bot_id": "brain_refinery_v187_data_collection_storage_budget_guard",
+        "backup_bot_ids": [
+            "brain_refinery_v602_system_governor_cpu_memory_backlog_pressure_bot",
+            "brain_refinery_v601_system_governor_collector_priority_ranker_bot",
+        ],
+        "pressure_lane": "explanation_deferred_backpressure",
+        "ops_infrabots": ["backpressure_drainer_fleet", "storage_pressure_clearance_bot"],
+    },
+    "governance_execution_drainer": {
+        "owner_bot_id": "brain_refinery_v601_system_governor_collector_priority_ranker_bot",
+        "backup_bot_ids": [
+            "brain_refinery_v316_collection_halt_pressure_preemption_guard",
+            "brain_refinery_v602_system_governor_cpu_memory_backlog_pressure_bot",
+        ],
+        "pressure_lane": "governance_execution_backpressure",
+        "ops_infrabots": ["backpressure_drainer_fleet", "storage_backpressure_autopilot"],
+    },
+    "runtime_channel_drainer": {
+        "owner_bot_id": "brain_refinery_v316_collection_halt_pressure_preemption_guard",
+        "backup_bot_ids": [
+            "brain_refinery_v602_system_governor_cpu_memory_backlog_pressure_bot",
+            "brain_refinery_v601_system_governor_collector_priority_ranker_bot",
+        ],
+        "pressure_lane": "runtime_channel_backpressure",
+        "ops_infrabots": ["runtime_throttle_control", "backpressure_drainer_fleet"],
+    },
+    "support_watchdog_drainer": {
+        "owner_bot_id": "brain_refinery_v316_collection_halt_pressure_preemption_guard",
+        "backup_bot_ids": [
+            "brain_refinery_v602_system_governor_cpu_memory_backlog_pressure_bot",
+            "brain_refinery_v187_data_collection_storage_budget_guard",
+        ],
+        "pressure_lane": "support_watchdog_backpressure",
+        "ops_infrabots": ["backpressure_slo_bot", "storage_pressure_clearance_bot"],
+    },
+}
+
 
 def _safe_int(raw: Any, default: int = 0) -> int:
     try:
@@ -57,10 +105,26 @@ def _acquire_nonblocking_lock(path: Path):
 
 
 def _writer_owner(lock_path: Path = WRITER_LOCK_PATH) -> str:
+    return str(_writer_lock_snapshot(lock_path).get("owner") or "")
+
+
+def _writer_lock_snapshot(lock_path: Path = WRITER_LOCK_PATH) -> dict[str, Any]:
     try:
-        return lock_path.read_text(encoding="utf-8").strip()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            handle.seek(0)
+            owner = handle.read().strip()
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return {"owner": owner, "held": True}
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            return {"owner": owner, "held": False}
     except Exception:
-        return ""
+        return {"owner": "", "held": False}
 
 
 def _rows_from(backpressure: dict[str, Any], key: str) -> list[dict[str, Any]]:
@@ -108,10 +172,14 @@ def _base_env(*, critical: bool) -> dict[str, str]:
         "LOG_LOOP_STATE": "0",
         "LOG_SHADOW_PNL_ATTRIBUTION": "0",
         "SQL_LINK_SERVICE_INTERVAL_SECONDS": "12" if critical else "15",
+        "SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS": "120" if critical else "150",
         "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "25" if critical else "45",
         "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS": "30",
         "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "240000" if critical else "200000",
         "SQL_LINK_SERVICE_HOT_MAX_ROWS": "2400000" if critical else "1800000",
+        "SQL_LINK_SERVICE_AUTO_HOT_RETENTION": "0",
+        "SQL_LINK_SERVICE_AUTO_QUEUE_RETENTION": "0",
+        "SQL_LINK_SERVICE_AUTO_LOCAL_FALLBACK_PRUNE": "0",
         "SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB": "0.25" if critical else "0.5",
         "SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_GROWTH_GB": "0.25" if critical else "0.5",
     }
@@ -131,6 +199,7 @@ def _profile(
     oldest_age = max([_safe_float(row.get("oldest_pending_age_seconds"), 0.0) for row in rows] or [0.0])
     path_focus = [str(row.get("source_rel") or "").strip() for row in rows[:8] if str(row.get("source_rel") or "").strip()]
     priority_score = int(priority_boost + pending_lines + (oldest_age / 60.0))
+    owner_contract = DRAINER_OWNERS.get(name, {})
     return {
         "name": name,
         "reason": reason,
@@ -138,6 +207,10 @@ def _profile(
         "pending_lines": int(pending_lines),
         "oldest_pending_age_seconds": round(oldest_age, 3),
         "priority_score": priority_score,
+        "owner_bot_id": str(owner_contract.get("owner_bot_id") or ""),
+        "backup_bot_ids": list(owner_contract.get("backup_bot_ids") or []),
+        "assigned_pressure_lane": str(owner_contract.get("pressure_lane") or ""),
+        "ops_infrabots": list(owner_contract.get("ops_infrabots") or []),
         "shards": shards,
         "path_focus": path_focus,
         "live_window_safe": bool(live_window_safe),
@@ -252,6 +325,9 @@ def _candidate_drainers(backpressure: dict[str, Any], *, critical: bool) -> list
         keys=("top_cold_pending_files", "top_deferred_pending_files"),
     )
     decision_shards, decision_env = _decision_drainer_env(base, core_rows)
+    cold_focus_paths = [str(row["source_rel"]) for row in cold_rows[:8]]
+    crypto_cold_focus_paths = [path for path in cold_focus_paths if _is_crypto_decision_source(path)]
+    regular_cold_focus_paths = [path for path in cold_focus_paths if path not in crypto_cold_focus_paths]
 
     profiles = [
         _profile(
@@ -321,11 +397,17 @@ def _candidate_drainers(backpressure: dict[str, Any], *, critical: bool) -> list
                 **base,
                 "SQL_LINK_SERVICE_SHARDS": "data,explanations,crypto_explanations,health_fast",
                 "JSONL_SQL_MAX_COLD_LANE_FILES": "4" if critical else "2",
-                "SQL_LINK_SERVICE_SHARD_DATA_PATH_CONTAINS": ",".join(str(row["source_rel"]) for row in cold_rows[:8]),
+                "SQL_LINK_SERVICE_SHARD_DATA_PATH_CONTAINS": ",".join(cold_focus_paths),
                 "SQL_LINK_SERVICE_SHARD_DATA_MAX_FILES": "10",
                 "SQL_LINK_SERVICE_SHARD_DATA_MAX_LINES_PER_FILE": "64000",
                 "SQL_LINK_SERVICE_SHARD_EXPLANATIONS_MAX_FILES": "8",
                 "SQL_LINK_SERVICE_SHARD_CRYPTO_EXPLANATIONS_MAX_FILES": "8",
+                "SQL_LINK_SERVICE_SHARD_EXPLANATIONS_PATH_CONTAINS": ",".join(regular_cold_focus_paths),
+                "SQL_LINK_SERVICE_SHARD_CRYPTO_EXPLANATIONS_PATH_CONTAINS": ",".join(crypto_cold_focus_paths),
+                "SQL_LINK_SERVICE_SHARD_EXPLANATIONS_MAX_LINES_PER_FILE": "64000",
+                "SQL_LINK_SERVICE_SHARD_CRYPTO_EXPLANATIONS_MAX_LINES_PER_FILE": "64000",
+                "SQL_LINK_SERVICE_SHARD_EXPLANATIONS_STATE_CHECKPOINT_LINES": "2000",
+                "SQL_LINK_SERVICE_SHARD_CRYPTO_EXPLANATIONS_STATE_CHECKPOINT_LINES": "2000",
             },
         ),
     ]
@@ -343,6 +425,10 @@ def _write_service_request(path: Path, *, active_drainer: dict[str, Any], now_ut
         "active": True,
         "request_kind": "backpressure_drainer_fleet",
         "reason": f"backpressure_drainer_fleet:{active_drainer.get('name', '')}",
+        "owner_bot_id": str(active_drainer.get("owner_bot_id") or ""),
+        "backup_bot_ids": list(active_drainer.get("backup_bot_ids") or []),
+        "assigned_pressure_lane": str(active_drainer.get("assigned_pressure_lane") or ""),
+        "ops_infrabots": list(active_drainer.get("ops_infrabots") or []),
         "requested_at": now_utc.isoformat(),
         "expires_utc": datetime.fromtimestamp(expires_utc, tz=timezone.utc).isoformat(),
         "env_overrides": {str(key): str(value) for key, value in env.items() if str(key).strip()},
@@ -394,6 +480,7 @@ def build_payload(
         )
 
     active_env = active_drainer.get("env_overrides") if isinstance(active_drainer.get("env_overrides"), dict) else {}
+    writer_lock_state = _writer_lock_snapshot(project_root / "governance" / "locks" / "jsonl_sql_writer.lock")
     payload = {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
@@ -402,8 +489,9 @@ def build_payload(
         "apply_requested": bool(apply),
         "service_request": service_request,
         "service_request_path": str(project_root / "governance" / "health" / "sql_link_service_request_latest.json"),
-        "writer_active": bool(_writer_owner(project_root / "governance" / "locks" / "jsonl_sql_writer.lock")),
-        "writer_lock_owner": _writer_owner(project_root / "governance" / "locks" / "jsonl_sql_writer.lock"),
+        "writer_active": bool(writer_lock_state.get("held", False)),
+        "writer_lock_owner": str(writer_lock_state.get("owner") or ""),
+        "writer_lock_held": bool(writer_lock_state.get("held", False)),
         "off_hours_window": window,
         "blocked_reasons": blocked_reasons,
         "active_drainer": {

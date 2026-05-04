@@ -241,6 +241,43 @@ def test_heartbeat_health_ignores_simulated_rows_and_non_target_profiles(tmp_pat
     assert live_count == 1
 
 
+def test_heartbeat_health_can_count_standby_simulated_rows_when_allowed(tmp_path) -> None:
+    now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    conservative = tmp_path / "shadow_loop_conservative_equities_schwab_111.json"
+    conservative.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now_iso,
+                "pid": 111,
+                "profile": "conservative",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    target = Target(
+        name="schwab_parallel",
+        match="scripts/run_all_sleeves.py",
+        start_cmd="echo hi",
+        heartbeat_glob=str(tmp_path / "shadow_loop_*_equities_schwab_*.json"),
+        heartbeat_stale_seconds=600,
+        min_healthy_heartbeats=1,
+        heartbeat_profiles=("conservative",),
+        exclude_matches=("--simulate",),
+        heartbeat_exclude_matches=(),
+    )
+
+    ok, count, age, live_count = _heartbeat_health(
+        target,
+        rows_by_pid={111: "python scripts/run_shadow_training_loop.py --broker schwab --simulate"},
+    )
+
+    assert ok is True
+    assert count == 1
+    assert age is not None
+    assert live_count == 1
+
+
 def test_heartbeat_health_requires_live_pid_for_processless_mode(tmp_path) -> None:
     now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     conservative = tmp_path / "shadow_loop_conservative_equities_schwab_111.json"

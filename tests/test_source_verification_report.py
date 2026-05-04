@@ -18,6 +18,96 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
 
+def _write_fed_2026_stress_scenario_files(root: Path) -> None:
+    scenario_dir = root / "config" / "stress_scenarios"
+    _write_json(
+        scenario_dir / "fed_2026_supervisory_severely_adverse.json",
+        {
+            "schema_version": 1,
+            "scenario_id": "fed_2026_supervisory_severely_adverse",
+            "source": {
+                "publisher": "Board of Governors of the Federal Reserve System",
+                "url": "https://www.federalreserve.gov/publications/2026-stress-test-scenarios.htm",
+                "retrieved_date": "2026-05-01",
+            },
+            "key_stress_anchors": {"unemployment_peak_pct": 10.0, "vix_peak": 72.0},
+            "domestic_variables": {
+                "columns": ["date", "unemployment_rate", "market_volatility_index"],
+                "rows": [["2026-Q1", 5.9, 59.7], ["2026-Q2", 7.2, 72.0]],
+            },
+            "international_variables": {
+                "columns": ["date", "euro_area_real_gdp_growth"],
+                "rows": [["2026-Q1", -8.6], ["2026-Q2", -8.5]],
+            },
+        },
+    )
+    _write_json(
+        scenario_dir / "fed_2026_stress_modules.json",
+        {
+            "schema_version": 1,
+            "module_map_id": "fed_2026_supervisory_stress_modules",
+            "scenario_id": "fed_2026_supervisory_severely_adverse",
+            "module_count": 10,
+            "source": {
+                "publisher": "Board of Governors of the Federal Reserve System",
+                "url": "https://www.federalreserve.gov/publications/2026-stress-test-scenarios.htm",
+                "retrieved_date": "2026-05-01",
+            },
+            "usage_policy": {"direct_execution_allowed": False},
+            "stress_modules": [
+                {"module_id": "fed_2026_equity_crash_volatility_spike", "primary_series": ["dow_jones_total_stock_market_index"], "internal_feature_keys": ["fed_2026_equity_crash_vol_spike_norm"]},
+                {"module_id": "fed_2026_corporate_credit_spread_blowout", "primary_series": ["bbb_corporate_yield"], "internal_feature_keys": ["fed_2026_credit_spread_blowout_norm"]},
+                {"module_id": "fed_2026_housing_price_shock", "primary_series": ["house_price_index"], "internal_feature_keys": ["fed_2026_housing_price_shock_norm"]},
+                {"module_id": "fed_2026_commercial_real_estate_shock", "primary_series": ["commercial_real_estate_price_index"], "internal_feature_keys": ["fed_2026_cre_price_shock_norm"]},
+                {"module_id": "fed_2026_unemployment_recession_shock", "primary_series": ["unemployment_rate"], "internal_feature_keys": ["fed_2026_unemployment_recession_norm"]},
+                {"module_id": "fed_2026_global_recession_deflation_shock", "primary_series": ["euro_area_real_gdp_growth"], "internal_feature_keys": ["fed_2026_global_recession_deflation_norm"]},
+                {"module_id": "fed_2026_commodity_inflation_shock", "primary_series": ["cpi_inflation_rate"], "internal_feature_keys": ["fed_2026_commodity_inflation_shock_norm"]},
+                {"module_id": "fed_2026_treasury_yield_shock", "primary_series": ["ten_year_treasury_yield"], "internal_feature_keys": ["fed_2026_treasury_yield_shock_norm"]},
+                {"module_id": "fed_2026_us_dollar_stress", "primary_series": ["euro_area_usd_per_euro"], "internal_feature_keys": ["fed_2026_usd_stress_norm"]},
+                {"module_id": "fed_2026_counterparty_default_contagion_shock", "primary_series": ["market_volatility_index"], "internal_feature_keys": ["fed_2026_counterparty_default_contagion_norm"]},
+            ],
+        },
+    )
+    _write_json(
+        scenario_dir / "fed_2026_source_plumbing.json",
+        {
+            "schema_version": 1,
+            "plumbing_id": "fed_2026_supervisory_source_plumbing",
+            "scenario_id": "fed_2026_supervisory_severely_adverse",
+            "series_map": {
+                "domestic_variables": {
+                    "unemployment_rate": "fed_2026_unemployment_stress_norm",
+                    "market_volatility_index": "fed_2026_vix_stress_norm",
+                },
+                "international_variables": {
+                    "euro_area_real_gdp_growth": "fed_2026_euro_area_growth_norm",
+                },
+            },
+            "market_proxy_symbols": {"equity_beta": ["SPY"], "volatility": ["VIXY"]},
+            "stress_module_map": {
+                "fed_2026_equity_crash_volatility_spike": "fed_2026_equity_crash_vol_spike_norm",
+                "fed_2026_corporate_credit_spread_blowout": "fed_2026_credit_spread_blowout_norm",
+                "fed_2026_housing_price_shock": "fed_2026_housing_price_shock_norm",
+                "fed_2026_commercial_real_estate_shock": "fed_2026_cre_price_shock_norm",
+                "fed_2026_unemployment_recession_shock": "fed_2026_unemployment_recession_norm",
+                "fed_2026_global_recession_deflation_shock": "fed_2026_global_recession_deflation_norm",
+                "fed_2026_commodity_inflation_shock": "fed_2026_commodity_inflation_shock_norm",
+                "fed_2026_treasury_yield_shock": "fed_2026_treasury_yield_shock_norm",
+                "fed_2026_us_dollar_stress": "fed_2026_usd_stress_norm",
+                "fed_2026_counterparty_default_contagion_shock": "fed_2026_counterparty_default_contagion_norm",
+            },
+            "internal_feature_keys": [
+                "quant_macro_stress_2026_driver_norm",
+                "quant_fed_2026_scenario_integrity_norm",
+                "quant_fed_2026_equity_crash_vol_spike_norm",
+                "quant_fed_2026_credit_spread_blowout_norm",
+                "fed_2026_source_plumbing_map",
+            ],
+            "governance_targets": ["source_verification", "point_in_time_event_store", "replay_hash_registry"],
+        },
+    )
+
+
 def test_build_source_verification_payload_classifies_sources(tmp_path: Path) -> None:
     fresh_ts = datetime.now(timezone.utc).isoformat()
     _write_json(
@@ -166,12 +256,13 @@ def test_build_source_verification_payload_classifies_sources(tmp_path: Path) ->
             },
         },
     )
+    _write_fed_2026_stress_scenario_files(tmp_path)
 
     payload = svr.build_source_verification_payload(tmp_path)
 
     counts = payload["overall"]["counts"]
     assert counts["cross_verified"] == 5
-    assert counts["single_source_verified"] == 6
+    assert counts["single_source_verified"] == 7
     assert counts["single_source_unverified"] == 0
     assert payload["overall"]["all_verified"] is True
 
@@ -182,6 +273,10 @@ def test_build_source_verification_payload_classifies_sources(tmp_path: Path) ->
     assert rows["macro_crossstack"]["verification_status"] == "cross_verified"
     assert rows["crypto_market_context"]["verification_status"] == "cross_verified"
     assert rows["public_macro_feeds"]["verification_status"] == "single_source_verified"
+    assert rows["fed_2026_supervisory_stress_scenario"]["verification_status"] == "single_source_verified"
+    assert rows["fed_2026_supervisory_stress_scenario"]["evidence"]["internal_feature_count"] >= 3
+    assert rows["fed_2026_supervisory_stress_scenario"]["evidence"]["stress_module_count"] == 10
+    assert rows["fed_2026_supervisory_stress_scenario"]["evidence"]["stress_module_map_count"] == 10
 
 
 def test_build_source_verification_payload_marks_stale_sources_unverified(tmp_path: Path) -> None:
@@ -240,7 +335,7 @@ def test_build_source_verification_payload_marks_stale_sources_unverified(tmp_pa
     payload = svr.build_source_verification_payload(tmp_path)
 
     assert payload["overall"]["all_verified"] is False
-    assert payload["overall"]["counts"]["single_source_unverified"] == 11
+    assert payload["overall"]["counts"]["single_source_unverified"] == 12
 
 
 def test_build_source_verification_payload_treats_export_only_options_flow_as_unverified(tmp_path: Path) -> None:

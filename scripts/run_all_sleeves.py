@@ -125,6 +125,25 @@ SPECIALIZED_SLEEVE_PROFILES = (
     "critic_hmm_pinsde",
     "causal_omni_symbolic",
     "rlbf_dms_equivariant",
+    "arbitrage_execution_safety",
+    "geometry_spillover_durability",
+    "institutional_data_plumbing",
+    "lobdif_crisis_microstructure",
+    "macro_crisis_scenario_lab",
+    "xva_counterparty_margin",
+    "credit_derivatives_cdx_cds",
+    "securitized_products_mbs_abs_clo",
+    "repo_securities_lending",
+    "market_data_tape_normalization",
+    "provider_adapter_verification",
+    "proof_quantum_formal_backends",
+    "model_risk_validation",
+    "transaction_cost_slippage_intelligence",
+    "portfolio_construction",
+    "event_intelligence",
+    "feature_quality_data_confidence",
+    "liquidity_regime",
+    "system_governor_expansion",
 )
 
 
@@ -362,12 +381,13 @@ def _read_one_numbers(path: Path) -> dict:
         return {}
 
 
-def _breaker_reasons(metrics: dict, args) -> tuple[list[str], str]:
+def _breaker_reasons(metrics: dict, args, *, runtime_seconds: float = 0.0) -> tuple[list[str], str]:
     reasons: list[str] = []
     dq = _safe_float(metrics.get("data_quality_score"), 0.0)
     blocked = _safe_float(metrics.get("combined_blocked_rate"), 0.0)
+    data_quality_grace_seconds = max(float(getattr(args, "breaker_data_quality_grace_seconds", 0.0) or 0.0), 0.0)
 
-    if dq < args.breaker_min_data_quality:
+    if dq < args.breaker_min_data_quality and runtime_seconds >= data_quality_grace_seconds:
         reasons.append(f"data_quality_low:{dq:.2f}")
     if blocked > args.breaker_max_blocked_rate:
         reasons.append(f"blocked_rate_high:{blocked:.4f}")
@@ -550,6 +570,18 @@ def main() -> int:
     parser.add_argument("--breaker-check-interval-seconds", type=int, default=int(os.getenv("ALL_SLEEVES_BREAKER_CHECK_SECONDS", "60")))
     parser.add_argument("--breaker-consecutive-breaches", type=int, default=int(os.getenv("ALL_SLEEVES_BREAKER_STREAK", "2")))
     parser.add_argument("--breaker-cooldown-seconds", type=int, default=int(os.getenv("ALL_SLEEVES_BREAKER_COOLDOWN", "300")))
+    parser.add_argument(
+        "--breaker-startup-grace-seconds",
+        type=int,
+        default=int(os.getenv("ALL_SLEEVES_BREAKER_STARTUP_GRACE_SECONDS", "180")),
+        help="Skip all one-number breaker checks while the expanded feed stack is warming up.",
+    )
+    parser.add_argument(
+        "--breaker-data-quality-grace-seconds",
+        type=int,
+        default=int(os.getenv("ALL_SLEEVES_BREAKER_DATA_QUALITY_GRACE_SECONDS", "900")),
+        help="Ignore low data-quality score until fresh live observations have had time to arrive.",
+    )
     parser.add_argument("--breaker-min-data-quality", type=float, default=float(os.getenv("ALL_SLEEVES_BREAKER_MIN_DQ", "75")))
     parser.add_argument("--breaker-max-blocked-rate", type=float, default=float(os.getenv("ALL_SLEEVES_BREAKER_MAX_BLOCKED", "0.35")))
     parser.add_argument("--breaker-min-pnl-proxy", type=float, default=float(os.getenv("ALL_SLEEVES_BREAKER_MIN_PNL", "-0.020")))
@@ -798,6 +830,7 @@ def main() -> int:
     group_disabled_until: dict[str, float] = {"core": 0.0}
     last_breaker_check_ts = 0.0
     breaker_path = Path(args.breaker_one_numbers_path)
+    launcher_started_at = time.time()
 
     try:
         for name, spec in specs.items():
@@ -816,30 +849,37 @@ def main() -> int:
             now = time.time()
             if not args.disable_circuit_breakers and (now - last_breaker_check_ts) >= max(args.breaker_check_interval_seconds, 15):
                 last_breaker_check_ts = now
-                metrics = _read_one_numbers(breaker_path)
-                reasons, _domain = _breaker_reasons(metrics, args)
-                if reasons:
-                    breaker_streaks["core"] = breaker_streaks.get("core", 0) + 1
+                runtime_seconds = max(now - launcher_started_at, 0.0)
+                if runtime_seconds < max(args.breaker_startup_grace_seconds, 0):
                     print(
-                        f"[CircuitBreaker] breach_streak={breaker_streaks['core']}/{max(args.breaker_consecutive_breaches,1)} "
-                        f"reasons={'|'.join(reasons)}"
+                        "[CircuitBreaker] startup_grace "
+                        f"remaining_s={int(max(args.breaker_startup_grace_seconds - runtime_seconds, 0))}"
                     )
                 else:
-                    breaker_streaks["core"] = 0
+                    metrics = _read_one_numbers(breaker_path)
+                    reasons, _domain = _breaker_reasons(metrics, args, runtime_seconds=runtime_seconds)
+                    if reasons:
+                        breaker_streaks["core"] = breaker_streaks.get("core", 0) + 1
+                        print(
+                            f"[CircuitBreaker] breach_streak={breaker_streaks['core']}/{max(args.breaker_consecutive_breaches,1)} "
+                            f"reasons={'|'.join(reasons)}"
+                        )
+                    else:
+                        breaker_streaks["core"] = 0
 
-                if breaker_streaks["core"] >= max(args.breaker_consecutive_breaches, 1):
-                    group_disabled_until["core"] = now + max(args.breaker_cooldown_seconds, 30)
-                    breaker_streaks["core"] = 0
-                    print(
-                        f"[CircuitBreaker] TRIPPED group=core cooldown_s={max(args.breaker_cooldown_seconds,30)} "
-                        f"reasons={'|'.join(reasons)}"
-                    )
-                    _emit_incident_snapshot("circuit_breaker_tripped", "|".join(reasons))
-                    for name, proc in list(procs.items()):
-                        if specs[name].breaker_group != "core":
-                            continue
-                        if proc.poll() is None:
-                            proc.terminate()
+                    if breaker_streaks["core"] >= max(args.breaker_consecutive_breaches, 1):
+                        group_disabled_until["core"] = now + max(args.breaker_cooldown_seconds, 30)
+                        breaker_streaks["core"] = 0
+                        print(
+                            f"[CircuitBreaker] TRIPPED group=core cooldown_s={max(args.breaker_cooldown_seconds,30)} "
+                            f"reasons={'|'.join(reasons)}"
+                        )
+                        _emit_incident_snapshot("circuit_breaker_tripped", "|".join(reasons))
+                        for name, proc in list(procs.items()):
+                            if specs[name].breaker_group != "core":
+                                continue
+                            if proc.poll() is None:
+                                proc.terminate()
 
             for name, proc in list(procs.items()):
                 if name in quarantined_jobs:

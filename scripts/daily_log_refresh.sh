@@ -109,7 +109,7 @@ run_cached_collector "market_crypto_correlation" "${DAILY_CACHE_MARKET_CRYPTO_CO
   "$PROJECT_ROOT/governance/health/market_crypto_correlation_sync_latest.json" \
   "$PROJECT_ROOT/exports/external_context/market_crypto_correlation_latest.json" \
   -- \
-  "$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_market_crypto_correlation_context.py" --json \
+  "$PROJECT_ROOT/scripts/ops/opsctl.sh" market-correlation-sync --json \
   || echo "[WARN] collect_market_crypto_correlation_context failed; continuing daily refresh"
 run_cached_collector "fx_market_context" "${DAILY_CACHE_FX_MARKET_MINUTES:-90}" \
   "$PROJECT_ROOT/governance/health/fx_market_context_sync_latest.json" \

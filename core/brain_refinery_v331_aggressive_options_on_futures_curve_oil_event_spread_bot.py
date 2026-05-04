@@ -15,7 +15,7 @@ except ModuleNotFoundError:
     from core.registry_backed_collection_bot import describe_registry_backed_bot, train_registry_backed_bot
 
 BOT_ID = 'brain_refinery_v331_aggressive_options_on_futures_curve_oil_event_spread_bot'
-GENERATED_AT_UTC = '2026-05-01T17:00:28.947189+00:00'
+GENERATED_AT_UTC = '2026-05-02T22:30:58.301750+00:00'
 BOT_SPEC = {'active': True,
  'allocation_enabled': False,
  'bootstrap_teacher_bot_ids': ['brain_refinery_v276_futures_curve_steepener_flattener_signal',

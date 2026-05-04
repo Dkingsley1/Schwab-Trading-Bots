@@ -24,6 +24,8 @@ DEFAULT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.runtime_resource_guard_o
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
 TOP_PROCESS_COUNT = 12
 APPLY_CPU_THRESHOLD = 12.0
+FULL_FORCE_PAPER_BOT_FLOOR = 650
+FULL_FORCE_PAPER_CAPACITY_TARGET = 700
 
 
 PROCESS_RULES: tuple[tuple[str, str, str, bool], ...] = (
@@ -40,8 +42,14 @@ PROCESS_RULES: tuple[tuple[str, str, str, bool], ...] = (
     ("scripts/ops/live_macro_media_ingest.py", "macro_capture", "protected_if_live", False),
     ("yt-dlp", "macro_capture", "protected_if_live", False),
     ("ffmpeg", "macro_capture", "protected_if_live", False),
+    ("scripts/ops/schwab_auth_supervisor.py", "live_execution", "protected_if_live", False),
     ("report-bundle-pdf-open", "support_maintenance", "throttle_first", True),
     ("scripts/build_one_numbers_report.py", "support_maintenance", "throttle_first", True),
+    ("scripts/paper_performance_report.py", "support_maintenance", "throttle_first", True),
+    ("paper_performance_report.py", "support_maintenance", "throttle_first", True),
+    ("scripts/snapshot_coverage_sentinel.py", "support_maintenance", "throttle_first", True),
+    ("scripts/collector_contracts.py", "support_maintenance", "throttle_first", True),
+    ("scripts/data_source_divergence_bot.py", "support_maintenance", "throttle_first", True),
     ("scripts/collect_market_crypto_correlation_context.py", "support_maintenance", "throttle_first", True),
     ("scripts/collect_market_correlation_context.py", "support_maintenance", "throttle_first", True),
     ("scripts/collect_crypto_market_context.py", "support_maintenance", "throttle_first", True),
@@ -50,16 +58,46 @@ PROCESS_RULES: tuple[tuple[str, str, str, bool], ...] = (
     ("live_feed source=", "operator_observability", "operator_visible", False),
     ("tail -n 80 -F", "operator_observability", "operator_visible", False),
     ("tail -n 120 -F", "operator_observability", "operator_visible", False),
+    ("failover_hot_standby.py", "support_maintenance", "throttle_first", True),
     ("sql_queue_retention.py", "support_maintenance", "throttle_first", True),
+    ("sql_hot_retention.py", "support_maintenance", "throttle_first", True),
+    ("sqlite_performance_maintenance.py", "support_maintenance", "throttle_first", True),
     ("data_retention_policy.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/artifact_freshness_slo.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/backpressure_slo_bot.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/backpressure_drainer_fleet.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/bot_quality_autopilot.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/command_validity_bot.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/commands_hygiene_bot.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/coverage_gap_closer.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/daily_verify_auto_remediation_bot.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/external_backlog_drain.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/ingestion_storage_governor.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/infrastructure_autofix_bot.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/master_infrastructure_supervisor.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/process_watchdog.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/retention_debt_sheriff.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/report_quality_guard.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/runtime_gate_dashboard.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/storage_reconnect_infrabot.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/mlx_runtime_audit.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/mlx_intelligence_router.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/library_utilization_router.py", "support_maintenance", "throttle_first", True),
     ("scripts/ops/storage_maintenance_lane.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/storage_backpressure_autopilot.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/storage_quota_guard.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/storage_resilience_control.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/storage_split_brain_reconciler.py", "support_maintenance", "throttle_first", True),
     ("scripts/ops/sql_link_shard_manager.py", "support_maintenance", "throttle_first", True),
     ("scripts/ops/sql_link_writer_service.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/writer_cycle_coordinator.py", "support_maintenance", "throttle_first", True),
     ("scripts/link_jsonl_to_sql.py", "support_maintenance", "throttle_first", True),
     ("Google Chrome Helper --headless", "support_maintenance", "throttle_first", True),
     ("Google Chrome", "interactive_cotenant", "external_cotenant", False),
     ("Codex", "interactive_cotenant", "external_cotenant", False),
-    ("PyCharm", "interactive_cotenant", "external_cotenant", False),
+    ("/Applications/PyCharm", "interactive_cotenant", "external_cotenant", False),
+    ("PyCharm.app", "interactive_cotenant", "external_cotenant", False),
+    ("com.jetbrains.pycharm", "interactive_cotenant", "external_cotenant", False),
     ("WindowServer", "interactive_cotenant", "external_cotenant", False),
     ("Code Helper", "interactive_cotenant", "external_cotenant", False),
 )
@@ -236,6 +274,122 @@ def _memory_pressure_level(resource_guard: dict[str, Any], memory_efficiency: di
     return "normal"
 
 
+def _cotenant_awareness_contract(memory_efficiency: dict[str, Any]) -> dict[str, Any]:
+    cotenant = memory_efficiency.get("cotenant_awareness") if isinstance(memory_efficiency.get("cotenant_awareness"), dict) else {}
+    mode = str(cotenant.get("mode") or "").strip().lower()
+    open_apps = cotenant.get("open_apps") if isinstance(cotenant.get("open_apps"), list) else []
+    classes = cotenant.get("co_running_classes") if isinstance(cotenant.get("co_running_classes"), list) else []
+    active = bool(cotenant.get("active", False) or mode in {"managed_cotenant", "guarded_cotenant"})
+    creative_level = str(cotenant.get("creative_level") or "none").strip().lower()
+    co_running_level = str(cotenant.get("co_running_level") or "").strip().lower()
+    memory_clear = bool(cotenant.get("memory_pressure_clear", False))
+    storage_clear = bool(cotenant.get("storage_pressure_clear", False))
+    if active and creative_level not in {"", "none", "idle"}:
+        guard_mode = "creative_cotenant_guarded"
+        recommended_profile_cap = "soft_cap"
+    elif active and co_running_level in {"interactive", "heavy", "developer"}:
+        guard_mode = "interactive_cotenant_managed"
+        recommended_profile_cap = "soft_cap"
+    elif active:
+        guard_mode = "background_cotenant_managed"
+        recommended_profile_cap = "observe"
+    else:
+        guard_mode = "inactive"
+        recommended_profile_cap = "observe"
+    return {
+        "active": active,
+        "mode": mode or ("managed_cotenant" if active else "inactive"),
+        "guard_mode": guard_mode,
+        "recommended_profile_cap": recommended_profile_cap,
+        "open_app_count": _safe_int(cotenant.get("open_app_count"), len(open_apps)),
+        "open_apps": [str(item) for item in open_apps if str(item).strip()][:12],
+        "co_running_classes": [str(item) for item in classes if str(item).strip()][:12],
+        "co_running_level": co_running_level,
+        "creative_level": creative_level or "none",
+        "memory_pressure_clear": memory_clear,
+        "storage_pressure_clear": storage_clear,
+        "policy": "consume_memory_efficiency_cotenant_awareness_before_runtime_profile_selection",
+    }
+
+
+def _apply_cotenant_profile_guard(
+    throttle_profile: str,
+    *,
+    cotenant_contract: dict[str, Any],
+    compute_pressure_level: str,
+    memory_pressure_level: str,
+    saturation_score: float,
+) -> tuple[str, dict[str, Any]]:
+    profile = str(throttle_profile or "observe")
+    active = bool(cotenant_contract.get("active", False))
+    if not active:
+        return profile, {**cotenant_contract, "profile_adjusted": False, "adjustment_reason": "cotenant_inactive"}
+    if memory_pressure_level == "high" or compute_pressure_level == "high" or profile == "protect_live":
+        return profile, {**cotenant_contract, "profile_adjusted": False, "adjustment_reason": "host_pressure_takes_priority"}
+
+    cap = str(cotenant_contract.get("recommended_profile_cap") or "observe")
+    adjusted = False
+    reason = "cotenant_observed_no_profile_change"
+    if cap == "soft_cap" and profile == "observe":
+        profile = "soft_cap"
+        adjusted = True
+        reason = "foreground_cotenant_soft_cap"
+    elif cap == "soft_cap" and profile == "sustain" and saturation_score < 56.0 and memory_pressure_level == "normal":
+        profile = "soft_cap"
+        adjusted = True
+        reason = "cotenant_clear_memory_downshifted_from_sustain"
+    return profile, {**cotenant_contract, "profile_adjusted": adjusted, "adjustment_reason": reason}
+
+
+def _mlx_intelligence_contract(router: dict[str, Any]) -> dict[str, Any]:
+    status = str(router.get("overall_status") or router.get("status") or "").strip().lower()
+    caps = router.get("runtime_caps") if isinstance(router.get("runtime_caps"), dict) else {}
+    coverage = router.get("library_coverage") if isinstance(router.get("library_coverage"), dict) else {}
+    route_coverage = router.get("route_coverage") if isinstance(router.get("route_coverage"), dict) else {}
+    env = router.get("recommended_runtime_env") if isinstance(router.get("recommended_runtime_env"), dict) else {}
+    active = bool(status in {"ready", "advisory", "degraded"} and caps and coverage)
+    return {
+        "active": active,
+        "status": status or "missing",
+        "profile": str(caps.get("profile") or "foreground_safe"),
+        "max_concurrent_mlx_jobs": _safe_int(caps.get("max_concurrent_mlx_jobs"), 1),
+        "tensor_batch_cap": _safe_int(caps.get("tensor_batch_cap"), 32),
+        "embedding_batch_cap": _safe_int(caps.get("embedding_batch_cap"), 64),
+        "graph_node_cap": _safe_int(caps.get("graph_node_cap"), 6000),
+        "audio_minutes_per_job_cap": _safe_int(caps.get("audio_minutes_per_job_cap"), 20),
+        "heavy_vlm_enabled": bool(caps.get("heavy_vlm_enabled", False)),
+        "compile_mode": str(caps.get("compile_mode") or "off"),
+        "library_coverage_ratio": _safe_float(coverage.get("coverage_ratio"), 0.0),
+        "route_coverage_ratio": _safe_float(route_coverage.get("route_coverage_ratio"), 0.0),
+        "recommended_runtime_env": {str(key): str(value) for key, value in env.items()},
+        "policy": "consume_mlx_intelligence_router_caps_before_running_heavy_mlx_jobs",
+    }
+
+
+def _library_utilization_contract(router: dict[str, Any]) -> dict[str, Any]:
+    status = str(router.get("overall_status") or router.get("status") or "").strip().lower()
+    caps = router.get("runtime_caps") if isinstance(router.get("runtime_caps"), dict) else {}
+    coverage = router.get("coverage") if isinstance(router.get("coverage"), dict) else {}
+    env = router.get("recommended_runtime_env") if isinstance(router.get("recommended_runtime_env"), dict) else {}
+    active = bool(status in {"ready", "advisory", "degraded"} and caps and coverage)
+    return {
+        "active": active,
+        "status": status or "missing",
+        "profile": str(caps.get("profile") or "foreground_safe"),
+        "coverage_ratio": _safe_float(coverage.get("coverage_ratio"), 0.0),
+        "locked_runtime_ok_ratio": _safe_float(coverage.get("locked_runtime_ok_ratio"), 0.0),
+        "managed_non_mlx_package_count": _safe_int(coverage.get("managed_non_mlx_package_count"), 0),
+        "max_async_request_concurrency": _safe_int(caps.get("max_async_request_concurrency"), 8),
+        "max_sql_writer_workers": _safe_int(caps.get("max_sql_writer_workers"), 1),
+        "max_dataframe_workers": _safe_int(caps.get("max_dataframe_workers"), 2),
+        "max_portable_model_replay_jobs": _safe_int(caps.get("max_portable_model_replay_jobs"), 0),
+        "max_report_render_jobs": _safe_int(caps.get("max_report_render_jobs"), 1),
+        "default_ml_backend": str(env.get("LIBRARY_DEFAULT_ML_BACKEND") or env.get("PRIMARY_ML_RUNTIME_BACKEND") or "mlx"),
+        "recommended_runtime_env": {str(key): str(value) for key, value in env.items()},
+        "policy": "consume_non_mlx_library_router_caps_while_keeping_mlx_default",
+    }
+
+
 def _compute_pressure_level(load_ratio_one: float, load_ratio_fifteen: float) -> str:
     if load_ratio_one >= 1.25 or load_ratio_fifteen >= 1.0:
         return "high"
@@ -309,6 +463,91 @@ def _registry_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [row for row in rows if isinstance(row, dict)]
 
 
+def _registry_capacity_counts(project_root: Path, *, registry_path: Path = DEFAULT_REGISTRY_PATH) -> dict[str, Any]:
+    path = registry_path if registry_path.is_absolute() else project_root / registry_path
+    registry = load_json(path)
+    rows = _registry_rows(registry)
+    active_rows = [row for row in rows if bool(row.get("active", False))]
+    data_collection_rows = [
+        row
+        for row in active_rows
+        if str(row.get("lifecycle_state") or "").strip().lower() == "data_collection_only"
+    ]
+    options_rows = [
+        row
+        for row in active_rows
+        if "option" in " ".join(str(row.get(key) or "").lower() for key in ("bot_id", "sleeve_profile", "slot_kind"))
+    ]
+    intraday_rows = [
+        row
+        for row in active_rows
+        if "intraday" in " ".join(str(row.get(key) or "").lower() for key in ("bot_id", "sleeve_profile", "slot_kind"))
+    ]
+    paper_tagged_rows = [
+        row
+        for row in active_rows
+        if bool(row.get("paper_execution_allowed", False))
+        or bool(row.get("paper_trade_enabled", False))
+        or str(row.get("paper_runtime_stability_mode") or "").strip()
+    ]
+    return {
+        "registry_path": str(path),
+        "registered_bot_count": len(rows),
+        "active_bot_count": len(active_rows),
+        "data_collection_only_count": len(data_collection_rows),
+        "options_active_count": len(options_rows),
+        "intraday_active_count": len(intraday_rows),
+        "paper_tagged_count": len(paper_tagged_rows),
+    }
+
+
+def _paper_capacity_contract(
+    counts: dict[str, Any],
+    *,
+    throttle_profile: str,
+    memory_pressure_level: str,
+    compute_pressure_level: str,
+    storage_pressure_index: float,
+    storage_total_pending_lines: int,
+) -> dict[str, Any]:
+    active_count = _safe_int(counts.get("active_bot_count"), 0)
+    full_force_required = active_count >= FULL_FORCE_PAPER_BOT_FLOOR
+    pressure_limited = bool(
+        throttle_profile == "protect_live"
+        or memory_pressure_level == "high"
+        or compute_pressure_level == "high"
+        or storage_pressure_index >= 1.0
+    )
+    if not full_force_required:
+        mode = "standard_paper_runtime"
+    elif pressure_limited:
+        mode = "full_force_guarded"
+    else:
+        mode = "full_force_buffered"
+    return {
+        "target_bot_floor": FULL_FORCE_PAPER_CAPACITY_TARGET,
+        "full_force_stabilization_required": full_force_required,
+        "mode": mode,
+        "ready_for_700_bot_paper": bool(full_force_required and not pressure_limited),
+        "pressure_limited": pressure_limited,
+        "active_bot_count": active_count,
+        "registered_bot_count": _safe_int(counts.get("registered_bot_count"), 0),
+        "data_collection_only_count": _safe_int(counts.get("data_collection_only_count"), 0),
+        "options_active_count": _safe_int(counts.get("options_active_count"), 0),
+        "intraday_active_count": _safe_int(counts.get("intraday_active_count"), 0),
+        "paper_tagged_count": _safe_int(counts.get("paper_tagged_count"), 0),
+        "storage_total_pending_lines": int(storage_total_pending_lines),
+        "runtime_policy": {
+            "paper_execution": "buffered_jsonl_batching",
+            "control_refresh_seconds": 240 if full_force_required else 180,
+            "jsonl_buffer_max_items": 240 if full_force_required else 80,
+            "jsonl_buffer_max_age_seconds": 1.25 if full_force_required else 2.5,
+            "broker_snapshot_lock_wait_seconds": 0.75 if full_force_required else 1.25,
+            "live_execution_blocked": True,
+        },
+    }
+
+
 def _collector_guard_policy(throttle_profile: str, memory_pressure_level: str, compute_pressure_level: str) -> dict[str, Any]:
     if throttle_profile == "protect_live" or memory_pressure_level == "high" or compute_pressure_level == "high":
         return {
@@ -347,9 +586,116 @@ def _collector_guard_policy(throttle_profile: str, memory_pressure_level: str, c
     }
 
 
-def _runtime_env_overrides(throttle_profile: str, memory_pressure_level: str, compute_pressure_level: str) -> dict[str, str]:
+def _drain_friendly_sql_overrides() -> dict[str, str]:
+    return {
+        "SQL_LINK_SERVICE_INTERVAL_SECONDS": "12",
+        "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS": "30",
+        "SQL_LINK_SERVICE_QUEUE_MIN_INTERVAL_SECONDS": "180",
+        "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "240000",
+        "SQL_LINK_SERVICE_QUEUE_BATCH_SIZE": "180000",
+        "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "25",
+    }
+
+
+def _runtime_env_overrides(
+    throttle_profile: str,
+    memory_pressure_level: str,
+    compute_pressure_level: str,
+    *,
+    storage_drain_active: bool = False,
+    paper_capacity_contract: dict[str, Any] | None = None,
+    cotenant_contract: dict[str, Any] | None = None,
+    mlx_contract: dict[str, Any] | None = None,
+    library_contract: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    paper_capacity_contract = paper_capacity_contract if isinstance(paper_capacity_contract, dict) else {}
+    cotenant_contract = cotenant_contract if isinstance(cotenant_contract, dict) else {}
+    mlx_contract = mlx_contract if isinstance(mlx_contract, dict) else {}
+    library_contract = library_contract if isinstance(library_contract, dict) else {}
+    full_force_paper = bool(paper_capacity_contract.get("full_force_stabilization_required", False))
+
+    def _with_full_force_paper(overrides: dict[str, str]) -> dict[str, str]:
+        if not full_force_paper:
+            return overrides
+        overrides.update(
+            {
+                "PAPER_FULL_FORCE_STABILITY_MODE": str(paper_capacity_contract.get("mode") or "full_force_buffered"),
+                "PAPER_RUNTIME_CONTROL_REFRESH_SECONDS": "240",
+                "PAPER_RUNTIME_CONTROL_MAX_ROWS": "12000",
+                "JSONL_BUFFER_ENABLED": "1",
+                "JSONL_BUFFER_MAX_ITEMS": "240",
+                "JSONL_BUFFER_MAX_AGE_SECONDS": "1.25",
+                "JSONL_MESSAGE_ID_DEDUP_WINDOW_SECONDS": "1800",
+                "BROKER_TRUTH_SHARED_SNAPSHOT_LOCK_WAIT_SECONDS": "0.75",
+                "BROKER_TRUTH_SHARED_SNAPSHOT_SKIP_WRITE_ON_LOCK_TIMEOUT": "1",
+                "EXECUTION_LANE_QUEUE_ENQUEUE_RETRIES": "4",
+                "EXECUTION_LANE_QUEUE_ENQUEUE_SLEEP_SECONDS": "0.15",
+            }
+        )
+        return overrides
+
+    def _with_cotenant_awareness(overrides: dict[str, str]) -> dict[str, str]:
+        if not bool(cotenant_contract.get("active", False)):
+            return overrides
+        overrides.update(
+            {
+                "RUNTIME_COTENANT_AWARE": "1",
+                "RUNTIME_COTENANT_MODE": str(cotenant_contract.get("mode") or "managed_cotenant"),
+                "RUNTIME_COTENANT_GUARD_MODE": str(cotenant_contract.get("guard_mode") or "interactive_cotenant_managed"),
+                "RUNTIME_COTENANT_OPEN_APP_COUNT": str(_safe_int(cotenant_contract.get("open_app_count"), 0)),
+                "RUNTIME_COTENANT_PROFILE_CAP": str(cotenant_contract.get("recommended_profile_cap") or "observe"),
+            }
+        )
+        return overrides
+
+    def _with_mlx_intelligence(overrides: dict[str, str]) -> dict[str, str]:
+        if not bool(mlx_contract.get("active", False)):
+            return overrides
+        env = mlx_contract.get("recommended_runtime_env") if isinstance(mlx_contract.get("recommended_runtime_env"), dict) else {}
+        if env:
+            overrides.update({str(key): str(value) for key, value in env.items()})
+            return overrides
+        overrides.update(
+            {
+                "MLX_INTELLIGENCE_ROUTER_ENABLED": "1",
+                "MLX_INTELLIGENCE_PROFILE": str(mlx_contract.get("profile") or "foreground_safe"),
+                "MLX_INTELLIGENCE_MAX_CONCURRENT_JOBS": str(_safe_int(mlx_contract.get("max_concurrent_mlx_jobs"), 1)),
+                "MLX_INTELLIGENCE_TENSOR_BATCH_CAP": str(_safe_int(mlx_contract.get("tensor_batch_cap"), 32)),
+                "MLX_INTELLIGENCE_EMBED_BATCH_CAP": str(_safe_int(mlx_contract.get("embedding_batch_cap"), 64)),
+                "MLX_INTELLIGENCE_GRAPH_NODE_CAP": str(_safe_int(mlx_contract.get("graph_node_cap"), 6000)),
+                "MLX_INTELLIGENCE_AUDIO_MINUTES_CAP": str(_safe_int(mlx_contract.get("audio_minutes_per_job_cap"), 20)),
+                "MLX_INTELLIGENCE_HEAVY_VLM_ENABLED": "1" if bool(mlx_contract.get("heavy_vlm_enabled", False)) else "0",
+                "MLX_INTELLIGENCE_COMPILE_MODE": str(mlx_contract.get("compile_mode") or "off"),
+                "MLX_INTELLIGENCE_SHARED_MEMORY_POLICY": "foreground_safe_unified_memory",
+            }
+        )
+        return overrides
+
+    def _with_library_utilization(overrides: dict[str, str]) -> dict[str, str]:
+        if not bool(library_contract.get("active", False)):
+            return overrides
+        env = library_contract.get("recommended_runtime_env") if isinstance(library_contract.get("recommended_runtime_env"), dict) else {}
+        if env:
+            overrides.update({str(key): str(value) for key, value in env.items()})
+            return overrides
+        overrides.update(
+            {
+                "LIBRARY_UTILIZATION_ROUTER_ENABLED": "1",
+                "LIBRARY_UTILIZATION_PROFILE": str(library_contract.get("profile") or "foreground_safe"),
+                "LIBRARY_ASYNC_REQUEST_CONCURRENCY_CAP": str(_safe_int(library_contract.get("max_async_request_concurrency"), 8)),
+                "LIBRARY_SQL_WRITER_WORKER_CAP": str(_safe_int(library_contract.get("max_sql_writer_workers"), 1)),
+                "LIBRARY_DATAFRAME_WORKER_CAP": str(_safe_int(library_contract.get("max_dataframe_workers"), 2)),
+                "LIBRARY_PORTABLE_MODEL_REPLAY_JOBS": str(_safe_int(library_contract.get("max_portable_model_replay_jobs"), 0)),
+                "LIBRARY_REPORT_RENDER_JOBS": str(_safe_int(library_contract.get("max_report_render_jobs"), 1)),
+                "LIBRARY_DEFAULT_ML_BACKEND": "mlx",
+                "PRIMARY_ML_RUNTIME_BACKEND": "mlx",
+                "PORTABLE_MODEL_REPLAY_POLICY": "canary_or_off_hours_only",
+            }
+        )
+        return overrides
+
     if throttle_profile == "protect_live" or memory_pressure_level == "high" or compute_pressure_level == "high":
-        return {
+        overrides = {
             "BOT_RUNTIME_RESOURCE_GUARD_PROFILE": "protect_live",
             "SQL_LINK_SERVICE_INTERVAL_SECONDS": "180",
             "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS": "720",
@@ -368,9 +714,14 @@ def _runtime_env_overrides(throttle_profile: str, memory_pressure_level: str, co
             "DATA_COLLECTION_RESOURCE_CAPTURE_MODE": "thin_sample",
             "OPS_SUPPORT_JOB_NICE": "15",
             "OPS_SUPPORT_JOBS_BACKGROUND_POLICY": "1",
+            "OPS_SUPPORT_HEAVY_COLLECTOR_COOLDOWN_SECONDS": "900",
+            "OPS_SUPPORT_HEAVY_COLLECTOR_MAX_CPU_PERCENT": "35",
         }
+        if storage_drain_active:
+            overrides.update(_drain_friendly_sql_overrides())
+        return _with_library_utilization(_with_mlx_intelligence(_with_cotenant_awareness(_with_full_force_paper(overrides))))
     if throttle_profile == "sustain":
-        return {
+        overrides = {
             "BOT_RUNTIME_RESOURCE_GUARD_PROFILE": "sustain",
             "SQL_LINK_SERVICE_INTERVAL_SECONDS": "120",
             "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS": "480",
@@ -389,15 +740,25 @@ def _runtime_env_overrides(throttle_profile: str, memory_pressure_level: str, co
             "DATA_COLLECTION_RESOURCE_CAPTURE_MODE": "sampled",
             "OPS_SUPPORT_JOB_NICE": "10",
             "OPS_SUPPORT_JOBS_BACKGROUND_POLICY": "1",
+            "OPS_SUPPORT_HEAVY_COLLECTOR_COOLDOWN_SECONDS": "600",
+            "OPS_SUPPORT_HEAVY_COLLECTOR_MAX_CPU_PERCENT": "45",
         }
-    return {
+        if storage_drain_active:
+            overrides.update(_drain_friendly_sql_overrides())
+        return _with_library_utilization(_with_mlx_intelligence(_with_cotenant_awareness(_with_full_force_paper(overrides))))
+    overrides = {
         "BOT_RUNTIME_RESOURCE_GUARD_PROFILE": throttle_profile,
         "DATA_COLLECTION_RESOURCE_GUARD_MODE": throttle_profile,
         "DATA_COLLECTION_RESOURCE_SAMPLE_RATE": "0.50" if throttle_profile == "soft_cap" else "1.0",
         "DATA_COLLECTION_RESOURCE_CAPTURE_MODE": "sampled" if throttle_profile == "soft_cap" else "full",
         "OPS_SUPPORT_JOB_NICE": "5" if throttle_profile == "soft_cap" else "0",
         "OPS_SUPPORT_JOBS_BACKGROUND_POLICY": "0",
+        "OPS_SUPPORT_HEAVY_COLLECTOR_COOLDOWN_SECONDS": "300" if throttle_profile == "soft_cap" else "0",
+        "OPS_SUPPORT_HEAVY_COLLECTOR_MAX_CPU_PERCENT": "60" if throttle_profile == "soft_cap" else "0",
     }
+    if storage_drain_active:
+        overrides.update(_drain_friendly_sql_overrides())
+    return _with_library_utilization(_with_mlx_intelligence(_with_cotenant_awareness(_with_full_force_paper(overrides))))
 
 
 def _write_env_override(path: Path, overrides: dict[str, str], *, profile: str) -> bool:
@@ -466,20 +827,50 @@ def _apply_registry_collector_guard(project_root: Path, payload: dict[str, Any],
         str(payload.get("compute_pressure_level") or "normal"),
     )
     rows = _registry_rows(registry)
+    paper_capacity_contract = payload.get("paper_capacity_contract") if isinstance(payload.get("paper_capacity_contract"), dict) else {}
+    full_force_paper = bool(paper_capacity_contract.get("full_force_stabilization_required", False))
     changed_count = 0
+    paper_changed_count = 0
     for row in rows:
         lifecycle = str(row.get("lifecycle_state") or "").strip().lower()
-        if not bool(row.get("active", False)) or lifecycle != "data_collection_only":
+        active = bool(row.get("active", False))
+        if not active:
             continue
-        base_slo = _safe_int(row.get("freshness_slo_seconds"), 900)
-        updates = {
-            "data_collection_compute_guard_mode": policy["compute_guard_mode"],
-            "data_collection_resource_guard_reason": policy["reason"],
-            "data_collection_capture_mode": policy["capture_mode"],
-            "data_collection_sample_rate": policy["sample_rate"],
-            "data_collection_max_daily_mb": policy["max_daily_mb"],
-            "freshness_slo_seconds": max(base_slo, _safe_int(policy["freshness_slo_minimum_seconds"], base_slo)),
-        }
+        updates: dict[str, Any] = {}
+        if lifecycle == "data_collection_only":
+            base_slo = _safe_int(row.get("freshness_slo_seconds"), 900)
+            contract = row.get("capability_pack_contract") if isinstance(row.get("capability_pack_contract"), dict) else {}
+            retention = contract.get("storage_retention_rule") if isinstance(contract.get("storage_retention_rule"), dict) else {}
+            contract_sample_rate = _safe_float(retention.get("sample_rate"), 0.0)
+            contract_max_daily_mb = _safe_float(retention.get("max_daily_mb_per_bot"), 0.0)
+            effective_sample_rate = _safe_float(policy["sample_rate"], 1.0)
+            if 0.0 < contract_sample_rate < effective_sample_rate:
+                effective_sample_rate = contract_sample_rate
+            effective_max_daily_mb = _safe_float(policy["max_daily_mb"], 150.0)
+            if 0.0 < contract_max_daily_mb < effective_max_daily_mb:
+                effective_max_daily_mb = contract_max_daily_mb
+            updates.update(
+                {
+                    "data_collection_compute_guard_mode": policy["compute_guard_mode"],
+                    "data_collection_resource_guard_reason": policy["reason"],
+                    "data_collection_capture_mode": policy["capture_mode"],
+                    "data_collection_sample_rate": effective_sample_rate,
+                    "data_collection_max_daily_mb": effective_max_daily_mb,
+                    "freshness_slo_seconds": max(base_slo, _safe_int(policy["freshness_slo_minimum_seconds"], base_slo)),
+                }
+            )
+        if full_force_paper:
+            updates.update(
+                {
+                    "paper_runtime_stability_mode": str(paper_capacity_contract.get("mode") or "full_force_buffered"),
+                    "paper_execution_queue_policy": "buffered_jsonl_batching",
+                    "paper_runtime_capacity_floor": FULL_FORCE_PAPER_CAPACITY_TARGET,
+                    "paper_trade_lock_required": True,
+                    "paper_runtime_control_refresh_seconds": int(
+                        ((paper_capacity_contract.get("runtime_policy") or {}).get("control_refresh_seconds") or 240)
+                    ),
+                }
+            )
         row_changed = False
         for key, value in updates.items():
             if row.get(key) != value:
@@ -487,13 +878,17 @@ def _apply_registry_collector_guard(project_root: Path, payload: dict[str, Any],
                 row_changed = True
         if row_changed:
             changed_count += 1
+            if full_force_paper:
+                paper_changed_count += 1
     if changed_count:
         registry["updated_at_utc"] = iso_now()
         path.write_text(json.dumps(registry, ensure_ascii=True, indent=2), encoding="utf-8")
     return {
         "applied": bool(changed_count),
         "changed_count": changed_count,
+        "paper_runtime_changed_count": paper_changed_count,
         "collector_count": sum(1 for row in rows if bool(row.get("active", False)) and str(row.get("lifecycle_state") or "").strip().lower() == "data_collection_only"),
+        "full_force_paper_stabilization": full_force_paper,
         "policy": policy,
         "registry_path": str(path),
     }
@@ -508,11 +903,26 @@ def apply_runtime_guard(
     max_renice_processes: int = 4,
 ) -> dict[str, Any]:
     profile = str(payload.get("throttle_profile") or "observe")
+    runtime_snapshot = payload.get("runtime_snapshot") if isinstance(payload.get("runtime_snapshot"), dict) else {}
+    storage_pressure = runtime_snapshot.get("storage_pressure") if isinstance(runtime_snapshot.get("storage_pressure"), dict) else {}
+    storage_stabilization = payload.get("storage_stabilization") if isinstance(payload.get("storage_stabilization"), dict) else {}
+    storage_drain_active = bool(storage_stabilization.get("drain_friendly_sql_required", False))
     env_overrides = _runtime_env_overrides(
         profile,
         str(payload.get("memory_pressure_level") or "normal"),
         str(payload.get("compute_pressure_level") or "normal"),
+        storage_drain_active=storage_drain_active,
+        paper_capacity_contract=payload.get("paper_capacity_contract") if isinstance(payload.get("paper_capacity_contract"), dict) else {},
+        cotenant_contract=payload.get("cotenant_awareness_contract") if isinstance(payload.get("cotenant_awareness_contract"), dict) else {},
+        mlx_contract=payload.get("mlx_intelligence_contract") if isinstance(payload.get("mlx_intelligence_contract"), dict) else {},
+        library_contract=payload.get("library_utilization_contract") if isinstance(payload.get("library_utilization_contract"), dict) else {},
     )
+    if _safe_float(storage_pressure.get("pressure_index"), 0.0) >= 1.0:
+        env_overrides = {
+            key: value
+            for key, value in env_overrides.items()
+            if not key.startswith("SQL_LINK_SERVICE_")
+        }
     support_candidates = payload.get("support_trim_candidates") if isinstance(payload.get("support_trim_candidates"), list) else []
     throttle_candidates = list(support_candidates)
     if profile == "protect_live":
@@ -528,6 +938,8 @@ def apply_runtime_guard(
         "override_path": str(override_path),
         "override_changed": _write_env_override(override_path, env_overrides, profile=profile),
         "env_override_count": len(env_overrides),
+        "storage_drain_active": storage_drain_active,
+        "drain_friendly_sql_overrides": _drain_friendly_sql_overrides() if storage_drain_active else {},
         "process_throttle": _apply_process_throttle(throttle_candidates, max_processes=max_renice_processes),
         "collector_guard": _apply_registry_collector_guard(project_root, payload, registry_path=registry_path),
     }
@@ -561,8 +973,11 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, runtime_snapshot: dict[s
     resource_guard = load_json(health_root / "resource_guard_latest.json")
     memory_efficiency = load_json(health_root / "memory_efficiency_control_latest.json")
     live_runtime = load_json(health_root / "live_runtime_separation_control_latest.json")
+    storage_control = load_json(health_root / "ingestion_storage_control_latest.json")
     apple_profile = load_json(health_root / "apple_silicon_profile_latest.json")
     portable_brain = load_json(health_root / "portable_brain_contract_latest.json")
+    mlx_router = load_json(health_root / "mlx_intelligence_router_latest.json")
+    library_router = load_json(health_root / "library_utilization_router_latest.json")
 
     snapshot = runtime_snapshot if isinstance(runtime_snapshot, dict) else collect_runtime_snapshot()
     cpu_count = max(_safe_int(snapshot.get("cpu_count"), os.cpu_count() or 1), 1)
@@ -582,6 +997,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, runtime_snapshot: dict[s
     interactive_cpu = _safe_float(((domains.get("interactive_cotenant") or {}).get("cpu_percent")), 0.0)
     live_read_only = bool(((live_runtime.get("release_contract") or {}).get("live_lane_should_be_read_only", False)))
     memory_pressure_level = _memory_pressure_level(resource_guard, memory_efficiency)
+    cotenant_contract = _cotenant_awareness_contract(memory_efficiency)
+    mlx_intelligence_contract = _mlx_intelligence_contract(mlx_router)
+    library_utilization_contract = _library_utilization_contract(library_router)
     compute_pressure_level = _compute_pressure_level(load_ratio_one, load_ratio_fifteen)
     saturation_score = _host_saturation_score(
         load_ratio_one=load_ratio_one,
@@ -601,7 +1019,50 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, runtime_snapshot: dict[s
         performance_warning_active=performance_warning_active,
         live_read_only=live_read_only,
     )
+    throttle_profile, cotenant_contract = _apply_cotenant_profile_guard(
+        throttle_profile,
+        cotenant_contract=cotenant_contract,
+        compute_pressure_level=compute_pressure_level,
+        memory_pressure_level=memory_pressure_level,
+        saturation_score=saturation_score,
+    )
+    storage_pressure_index = _safe_float(storage_control.get("pressure_index"), 0.0)
+    storage_severity = str(storage_control.get("severity") or "").strip().lower()
+    storage_backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
+    storage_core_pending_lines = _safe_int(storage_backpressure.get("core_pending_lines"), 0)
+    storage_total_pending_lines = _safe_int(storage_backpressure.get("total_pending_lines"), storage_core_pending_lines)
+    storage_backlog_drain_status = str(((storage_control.get("storage") or {}).get("backlog_drain_status")) or "").strip().lower()
+    storage_recommended_mode = str(storage_control.get("recommended_operating_mode") or "").strip().lower()
+    storage_drain_active = bool(
+        storage_backlog_drain_status in {"drain_active", "handoff_requested"}
+        or storage_recommended_mode == "maintenance_drain_window"
+        or storage_total_pending_lines > 0
+    )
+    if storage_pressure_index >= 1.0 or (
+        storage_severity in {"high", "critical", "blocked"}
+        and storage_core_pending_lines >= 15000
+    ):
+        throttle_profile = "protect_live"
+    elif storage_pressure_index >= 0.5 and throttle_profile not in {"protect_live", "sustain"}:
+        throttle_profile = "sustain"
     overall_status = _overall_status(throttle_profile)
+    if (
+        overall_status == "degraded"
+        and bool(cotenant_contract.get("profile_adjusted", False))
+        and memory_pressure_level == "normal"
+        and compute_pressure_level == "normal"
+        and storage_pressure_index < 0.5
+    ):
+        overall_status = "advisory"
+    registry_counts = _registry_capacity_counts(project_root)
+    paper_capacity_contract = _paper_capacity_contract(
+        registry_counts,
+        throttle_profile=throttle_profile,
+        memory_pressure_level=memory_pressure_level,
+        compute_pressure_level=compute_pressure_level,
+        storage_pressure_index=storage_pressure_index,
+        storage_total_pending_lines=storage_total_pending_lines,
+    )
 
     top_processes = snapshot.get("top_processes") if isinstance(snapshot.get("top_processes"), list) else []
     protected_processes = [
@@ -629,11 +1090,29 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, runtime_snapshot: dict[s
             "treat Chrome, Codex, PyCharm, and other foreground apps as cotenants and downshift background support work instead of bouncing the stack"
             if interactive_cpu >= 60.0
             else "",
+            "use memory-efficiency cotenant awareness to keep MLX, SQL, report, and collector jobs inside a foreground-app-safe profile"
+            if bool(cotenant_contract.get("active", False))
+            else "",
+            "route MLX language, embedding, graph, audio, VLM, SNN, data, and quant jobs through mlx-intelligence-router caps"
+            if bool(mlx_intelligence_contract.get("active", False))
+            else "",
+            "keep MLX as the default backend while routing non-MLX libraries into support, storage, reporting, canary, and ingestion lanes"
+            if bool(library_utilization_contract.get("active", False))
+            else "",
             "./scripts/ops/opsctl.sh memory-efficiency apply --json"
             if memory_pressure_level in {"elevated", "high"} and status_rank(str(memory_efficiency.get("overall_status") or "")) >= status_rank("degraded")
             else "",
             "keep the live runtime on read-only release posture until the host saturation score drops back into the soft-cap band"
             if live_read_only and overall_status in {"degraded", "blocked"}
+            else "",
+            "force the collector floor into protect-live sampling while storage pressure is high"
+            if storage_pressure_index >= 1.0 or storage_severity in {"high", "critical", "blocked"}
+            else "",
+            "keep SQL writer intervals drain-friendly while support jobs are throttled"
+            if storage_drain_active and overall_status in {"degraded", "blocked"}
+            else "",
+            "run 700-bot paper trading through buffered JSONL, slower paper-control rescans, and the persistent paper-trade lock"
+            if bool(paper_capacity_contract.get("full_force_stabilization_required", False))
             else "",
             "upgrade this throttling bot alongside autonomy, memory-efficiency, and partner API surfaces so the same policy contract governs every infrabot"
             if upgrade_recommended
@@ -664,6 +1143,11 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, runtime_snapshot: dict[s
             },
             "vm_pages_throttled": _safe_int(((snapshot.get("vm_stat") or {}).get("pages_throttled")), 0),
             "thermal": thermal,
+            "storage_pressure": {
+                "severity": storage_severity,
+                "pressure_index": round(storage_pressure_index, 3),
+                "core_pending_lines": storage_core_pending_lines,
+            },
         },
         "host_contract": {
             "chip": str(host_contract.get("chip") or host_contract.get("model") or ""),
@@ -679,6 +1163,18 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, runtime_snapshot: dict[s
                 ((live_runtime.get("release_contract") or {}).get("shared_host_training_resume_allowed", False))
             ),
         },
+        "storage_stabilization": {
+            "drain_friendly_sql_required": storage_drain_active,
+            "backlog_drain_status": storage_backlog_drain_status,
+            "recommended_operating_mode": storage_recommended_mode,
+            "total_pending_lines": storage_total_pending_lines,
+            "core_pending_lines": storage_core_pending_lines,
+            "policy": "keep_sql_writer_responsive_while_throttling_support_jobs" if storage_drain_active else "normal_runtime_throttle",
+        },
+        "paper_capacity_contract": paper_capacity_contract,
+        "cotenant_awareness_contract": cotenant_contract,
+        "mlx_intelligence_contract": mlx_intelligence_contract,
+        "library_utilization_contract": library_utilization_contract,
         "throttle_domains": domains,
         "protected_workloads": {
             "categories": [name for name, row in domains.items() if bool(row.get("protected", False)) and _safe_float(row.get("cpu_percent"), 0.0) > 0.0],
@@ -695,6 +1191,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, runtime_snapshot: dict[s
                 "macos_background_task_policy",
                 "runtime_env_resource_override",
                 "data_collection_compute_guard",
+                "mlx_intelligence_runtime_caps",
+                "non_mlx_library_runtime_caps",
             ],
             "priority_tiers": ["protected", "protected_if_live", "operator_visible", "throttle_first", "external_cotenant"],
         },
@@ -707,6 +1205,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, runtime_snapshot: dict[s
                 "live_runtime_separation_control",
                 "autonomy_control_plane",
                 "supportability_control",
+                "mlx_intelligence_router",
+                "library_utilization_router",
             ],
             "future_upgrade_paths": [
                 "launchd quiet-hours for support jobs",

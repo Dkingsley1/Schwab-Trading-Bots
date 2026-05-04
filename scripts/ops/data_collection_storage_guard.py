@@ -71,6 +71,14 @@ def _mode_for_space(*, available_gb: float, used_ratio: float, warn_gb: float, t
 def _collector_kind(row: dict[str, Any]) -> str:
     kind = str(row.get("slot_kind") or "").strip().lower()
     role = str(row.get("bot_role") or "").strip().lower()
+    label_contract = str(row.get("data_label_contract_version") or "").strip().lower()
+    collections = ",".join(str(item or "").strip().lower() for item in list(row.get("data_intake_collections") or []))
+    if (
+        "quant" in kind
+        or label_contract.startswith("quant_")
+        or any(token in collections for token in ("mlx_library", "mlx_graph", "mlx_snn", "mlx_vision", "esig_rough_path"))
+    ):
+        return "quant_research"
     if "aggressive_intraday" in kind:
         return "aggressive_intraday"
     if role == "options_sub_bot" or "options" in kind:
@@ -82,6 +90,14 @@ def _collector_kind(row: dict[str, Any]) -> str:
 
 def _guard_profile(mode: str, kind: str) -> dict[str, Any]:
     if mode == "normal":
+        if kind == "quant_research":
+            return {
+                "capture_mode": "sampled",
+                "max_daily_storage_mb": 80,
+                "freshness_floor_seconds": 900,
+                "retention_profile": "hot_quant_sampled_2d_warm_30d",
+                "sample_rate": 0.35,
+            }
         return {
             "capture_mode": "full",
             "max_daily_storage_mb": 250 if kind == "aggressive_intraday" else 150,
@@ -90,6 +106,14 @@ def _guard_profile(mode: str, kind: str) -> dict[str, Any]:
             "sample_rate": 1.0,
         }
     if mode == "watch":
+        if kind == "quant_research":
+            return {
+                "capture_mode": "thin_sample",
+                "max_daily_storage_mb": 45,
+                "freshness_floor_seconds": 1200,
+                "retention_profile": "hot_quant_thin_1d_warm_21d",
+                "sample_rate": 0.18,
+            }
         return {
             "capture_mode": "sampled",
             "max_daily_storage_mb": 100 if kind == "aggressive_intraday" else 80,
@@ -98,6 +122,14 @@ def _guard_profile(mode: str, kind: str) -> dict[str, Any]:
             "sample_rate": 0.5,
         }
     if mode == "throttle":
+        if kind == "quant_research":
+            return {
+                "capture_mode": "metadata_only",
+                "max_daily_storage_mb": 20,
+                "freshness_floor_seconds": 2400,
+                "retention_profile": "hot_quant_metadata_12h_warm_14d",
+                "sample_rate": 0.08,
+            }
         return {
             "capture_mode": "thin_sample",
             "max_daily_storage_mb": 50 if kind == "aggressive_intraday" else 40,
@@ -107,10 +139,10 @@ def _guard_profile(mode: str, kind: str) -> dict[str, Any]:
         }
     return {
         "capture_mode": "metadata_only",
-        "max_daily_storage_mb": 15 if kind == "aggressive_intraday" else 20,
+        "max_daily_storage_mb": 10 if kind == "quant_research" else (15 if kind == "aggressive_intraday" else 20),
         "freshness_floor_seconds": 1800 if kind == "aggressive_intraday" else (1800 if kind == "options" else 3600),
-        "retention_profile": "hot_metadata_12h_warm_14d",
-        "sample_rate": 0.05,
+        "retention_profile": "hot_quant_metadata_6h_warm_7d" if kind == "quant_research" else "hot_metadata_12h_warm_14d",
+        "sample_rate": 0.03 if kind == "quant_research" else 0.05,
     }
 
 
@@ -239,6 +271,9 @@ def build_payload(
             "data_collection_sample_rate": profile["sample_rate"],
             "data_collection_max_daily_storage_mb": profile["max_daily_storage_mb"],
             "data_collection_storage_guard_updated_utc": now,
+            "data_collection_runtime_dependency_profile": (
+                "mlx_optional_research_only" if kind == "quant_research" else str(row.get("data_collection_runtime_dependency_profile") or "")
+            ),
             "storage_pressure_capture_reason": (
                 f"external_available_gb={available_gb:.2f};mode={mode};{compute_floor['reason']}"
                 if compute_floor

@@ -10,11 +10,15 @@ joblib==1.5.3
 llvmlite==0.44.0
 mlx==0.31.1
 mlx-audio==0.4.2
+mlx-cluster==0.0.7
 mlx-data==0.2.0
 mlx-embedding-models==0.0.11
 mlx-embeddings==0.1.0
+mlx-graphs==0.0.9
 mlx-lm==0.31.1
 mlx-metal==0.31.1
+mlx-snn==0.5.0
+mlx-vision==0.1.0
 mlx-vlm==0.4.4
 numba==0.61.2
 numpy==2.2.6

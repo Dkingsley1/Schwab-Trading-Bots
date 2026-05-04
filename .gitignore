@@ -51,6 +51,7 @@ data
 !master_bot_registry.json
 
 # Generated registry backups / datasets
+backups/master_bot_registry_before_*.json
 master_bot_registry.backup_*.json
 data/trade_history/import_summary_*.json
 data/trade_history/trade_learning_dataset.json

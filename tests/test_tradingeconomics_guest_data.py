@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import json
 import sys
+from types import SimpleNamespace
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +48,67 @@ def test_derive_macro_backfill_prefers_primary_country_indicator_rows() -> None:
     assert round(float(out["inflation_mom_ratio"]), 6) == 0.003
     assert round(float(out["gdp_qoq_ratio"]), 6) == 0.024
     assert out["unemployment_source"] == "indicators"
+
+
+def test_guest_collector_falls_back_when_guest_api_is_retired(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(te_guest, "PROJECT_ROOT", tmp_path)
+    external_context = tmp_path / "exports" / "external_context"
+    external_context.mkdir(parents=True, exist_ok=True)
+    (external_context / "official_macro_context_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc).isoformat(),
+                "derived": {
+                    "calendar_features": {"calendar_high_impact_24h_norm": 0.8},
+                    "news_features": {"news_source_quality_norm": 0.9},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (external_context / "market_crypto_correlation_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime(2026, 5, 2, 12, 5, tzinfo=timezone.utc).isoformat(),
+                "derived": {"latest_market": {"SPY": {"pct_from_close": 0.01}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (external_context / "fx_market_context_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime(2026, 5, 2, 12, 10, tzinfo=timezone.utc).isoformat(),
+                "derived": {"pair_values": {"EURUSD": 1.08, "USDJPY": 157.0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(te_guest, "_fetch_dataset", lambda *args, **kwargs: (None, [], "HTTPError:410:Gone"))
+    monkeypatch.setattr(te_guest, "_fetch_market_symbols", lambda *args, **kwargs: ([], ["chunk=SPY error=HTTPError:410:Gone"]))
+
+    args = SimpleNamespace(
+        countries="United States",
+        market_symbols="SPY:US",
+        auth="",
+        lookahead_days=5,
+        news_limit=5,
+        timeout_seconds=0.1,
+        test_only=False,
+        json=True,
+    )
+
+    rc = te_guest.collect(args)
+    status = json.loads((tmp_path / "governance" / "health" / "tradingeconomics_guest_sync_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads((tmp_path / "data" / "external_context" / "tradingeconomics_latest.json").read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert status["ok"] is True
+    assert status["fallback_active"] is True
+    assert status["guest_api_endpoint_retired"] is True
+    assert status["datasets"]["official_context_fallback"]["ok"] is True
+    assert payload["derived"]["fallback_sources"]["official_macro_context"]["ok"] is True
 
 
 def test_derive_market_breadth_builds_snapshot_from_quote_rows() -> None:

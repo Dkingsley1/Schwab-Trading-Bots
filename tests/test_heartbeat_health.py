@@ -25,7 +25,8 @@ def test_heartbeat_health_uses_staleness(tmp_path: Path) -> None:
         min_healthy_heartbeats=1,
     )
 
-    ok, count, age = _heartbeat_health(t)
+    ok, count, age, live_count = _heartbeat_health(t)
     assert ok
     assert count == 1
     assert age is not None
+    assert live_count == 0

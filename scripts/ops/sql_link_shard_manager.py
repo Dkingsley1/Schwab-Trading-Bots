@@ -44,6 +44,54 @@ PROGRESS_HEALTH = HEALTH_ROOT / "sql_link_service_progress_latest.json"
 REQUEST_PATH = HEALTH_ROOT / "sql_link_service_request_latest.json"
 MAINTENANCE_STATE_PATH = HEALTH_ROOT / "sql_link_service_maintenance_state.json"
 INTEGRITY_MARKER_ROOT = HEALTH_ROOT / "sql_link_integrity"
+SWAP_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.swap_pressure_override"
+
+
+def _ensure_directory(path: Path) -> None:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        if path.is_dir():
+            return
+        raise
+
+
+def _load_env_file(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for line in raw.splitlines():
+        clean = line.strip()
+        if not clean or clean.startswith("#") or "=" not in clean:
+            continue
+        key, value = clean.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key:
+            out[key] = value
+    return out
+
+
+def _retention_maintenance_paused_for_swap(*, override_path: Path | None = None) -> tuple[bool, dict[str, str]]:
+    override = override_path or SWAP_OVERRIDE_PATH
+    effective = dict(os.environ)
+    effective.update(_load_env_file(override))
+    tier = str(effective.get("SWAP_PRESSURE_TIER", "")).strip()
+    paused = str(effective.get("RETENTION_MAINTENANCE_PAUSED_FOR_SWAP", "0")).strip() == "1"
+    heavy_paused = str(effective.get("SWAP_PRESSURE_HEAVY_RESEARCH_PAUSED", "0")).strip() == "1"
+    return bool(paused or heavy_paused or tier in {"pause_research", "survival"}), effective
+
+
+def _swap_pause_details(env: dict[str, str]) -> dict[str, object]:
+    return {
+        "skipped": True,
+        "reason": "swap_pressure_pause",
+        "swap_pressure_tier": str(env.get("SWAP_PRESSURE_TIER", "")),
+        "swap_used_gb": str(env.get("SWAP_PRESSURE_SWAP_USED_GB", "")),
+    }
+
 
 JSONL_COLUMNS = [
     "source_file",
@@ -403,7 +451,7 @@ def _busy_progress_summary() -> dict:
 
 
 def _write_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_directory(path.parent)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
@@ -779,6 +827,16 @@ def _effective_cycle_args(args: argparse.Namespace, overrides: dict[str, str]) -
         _dynamic_env_value(overrides, "SQL_LINK_SERVICE_WAL_CHECKPOINT_MODE", str(args.wal_checkpoint_mode or "auto")) or "auto"
     )
     values["auto_hot_retention"] = _dynamic_env_flag(overrides, "SQL_LINK_SERVICE_AUTO_HOT_RETENTION", bool(args.auto_hot_retention))
+    values["auto_queue_retention"] = _dynamic_env_flag(
+        overrides,
+        "SQL_LINK_SERVICE_AUTO_QUEUE_RETENTION",
+        bool(getattr(args, "auto_queue_retention", True)),
+    )
+    values["auto_local_fallback_prune"] = _dynamic_env_flag(
+        overrides,
+        "SQL_LINK_SERVICE_AUTO_LOCAL_FALLBACK_PRUNE",
+        bool(getattr(args, "auto_local_fallback_prune", True)),
+    )
     values["hot_retention_max_db_gb"] = max(
         _dynamic_env_float(overrides, "SQL_LINK_SERVICE_HOT_MAX_DB_GB", float(args.hot_retention_max_db_gb)),
         0.0,
@@ -908,7 +966,7 @@ def _load_integrity_marker(path: Path) -> dict[str, object]:
 
 
 def _save_integrity_marker(path: Path, payload: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_directory(path.parent)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
@@ -1513,7 +1571,10 @@ def _run_wal_checkpoint(
 def _build_shards(shard_names: list[str]) -> list[dict[str, object]]:
     day_utc = datetime.now(timezone.utc).strftime("%Y%m%d")
     specs: list[dict[str, object]] = []
-    heat_map = ops_data_plane.load_shard_heat_map(PROJECT_ROOT)
+    try:
+        heat_map = ops_data_plane.load_shard_heat_map(PROJECT_ROOT)
+    except Exception:
+        heat_map = {}
     for name in shard_names:
         safe_name = str(name).strip().lower().replace("-", "_")
         if not safe_name:
@@ -1781,7 +1842,7 @@ def main() -> int:
         return 2
 
     lock_path = Path(args.lock_path)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_directory(lock_path.parent)
     fh = open(lock_path, "a+", encoding="utf-8")
     try:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1812,11 +1873,11 @@ def main() -> int:
     fh.flush()
 
     primary_db = _configured_primary_db_path(args.primary_db)
-    primary_db.parent.mkdir(parents=True, exist_ok=True)
-    SHARD_DB_ROOT.mkdir(parents=True, exist_ok=True)
-    SHARD_STATE_ROOT.mkdir(parents=True, exist_ok=True)
-    HEALTH_ROOT.mkdir(parents=True, exist_ok=True)
-    EVENT_ROOT.mkdir(parents=True, exist_ok=True)
+    _ensure_directory(primary_db.parent)
+    _ensure_directory(SHARD_DB_ROOT)
+    _ensure_directory(SHARD_STATE_ROOT)
+    _ensure_directory(HEALTH_ROOT)
+    _ensure_directory(EVENT_ROOT)
 
     maintenance_state = _load_maintenance_state(
         MAINTENANCE_STATE_PATH,
@@ -2068,7 +2129,12 @@ def main() -> int:
         for shard in shards:
             shard_name = str(shard["name"])
             result = next((row for row in shard_results if row["shard"] == shard_name), None)
-            if not result or int(result.get("rc", 1)) != 0 or not bool(shard.get("hot_retention_enabled", False)):
+            if (
+                not bool(cycle_args.auto_hot_retention)
+                or not result
+                or int(result.get("rc", 1)) != 0
+                or not bool(shard.get("hot_retention_enabled", False))
+            ):
                 continue
             db_path = Path(str(shard["sqlite_db"]))
             db_size = _db_size_gb(db_path)
@@ -2109,44 +2175,49 @@ def main() -> int:
             if trigger_reasons:
                 since_last = cycle_ts - float(_as_float(shard_state.get("last_run_epoch"), 0.0))
                 if since_last >= max(int(shard.get("hot_retention_min_interval_seconds", 300) or 300), 60):
-                    do_vacuum = db_size >= float(shard.get("hot_retention_vacuum_threshold_gb", 0.0) or 0.0)
-                    rc, out, err = _run_hot_retention(
-                        db_path=db_path,
-                        hot_days=int(shard.get("hot_retention_hot_days", 1) or 1),
-                        hot_hours=int(shard.get("hot_retention_hot_hours", 0) or 0),
-                        batch_size=int(shard.get("hot_retention_batch_size", 50000) or 50000),
-                        max_rows=int(shard.get("hot_retention_max_rows", 0) or 0),
-                        archive_db=str(Path(str(shard.get("hot_retention_archive_root") or "")) / "latest.sqlite3"),
-                        archive_root=str(shard.get("hot_retention_archive_root") or ""),
-                        archive_period=str(shard.get("hot_retention_archive_period", "day") or "day"),
-                        archive_retention_days=int(shard.get("hot_retention_archive_retention_days", 365) or 365),
-                        archive_prune_vacuum=True,
-                        cold_export_root=str(shard.get("hot_retention_cold_export_root") or ""),
-                        cold_export_format=str(shard.get("hot_retention_cold_export_format", "parquet") or "parquet"),
-                        cold_export_batch_size=int(shard.get("hot_retention_cold_export_batch_size", 50000) or 50000),
-                        cold_export_compression=str(shard.get("hot_retention_cold_export_compression", "zstd") or "zstd"),
-                        vacuum=do_vacuum,
-                    )
-                    shard_retention.update(
-                        {
-                            "ran": True,
-                            "rc": int(rc),
-                            "stdout_tail": "\n".join(out.splitlines()[-12:]),
-                            "stderr_tail": "\n".join(err.splitlines()[-12:]),
-                            "details": _parse_json_output(out),
-                            "vacuum": bool(do_vacuum),
-                        }
-                    )
-                    if int(rc) == 0:
-                        shard_state.update(
+                    swap_pause, swap_env = _retention_maintenance_paused_for_swap()
+                    if swap_pause:
+                        shard_retention["skipped_reason"] = "swap_pressure_pause"
+                        shard_retention["details"] = _swap_pause_details(swap_env)
+                    else:
+                        do_vacuum = db_size >= float(shard.get("hot_retention_vacuum_threshold_gb", 0.0) or 0.0)
+                        rc, out, err = _run_hot_retention(
+                            db_path=db_path,
+                            hot_days=int(shard.get("hot_retention_hot_days", 1) or 1),
+                            hot_hours=int(shard.get("hot_retention_hot_hours", 0) or 0),
+                            batch_size=int(shard.get("hot_retention_batch_size", 50000) or 50000),
+                            max_rows=int(shard.get("hot_retention_max_rows", 0) or 0),
+                            archive_db=str(Path(str(shard.get("hot_retention_archive_root") or "")) / "latest.sqlite3"),
+                            archive_root=str(shard.get("hot_retention_archive_root") or ""),
+                            archive_period=str(shard.get("hot_retention_archive_period", "day") or "day"),
+                            archive_retention_days=int(shard.get("hot_retention_archive_retention_days", 365) or 365),
+                            archive_prune_vacuum=True,
+                            cold_export_root=str(shard.get("hot_retention_cold_export_root") or ""),
+                            cold_export_format=str(shard.get("hot_retention_cold_export_format", "parquet") or "parquet"),
+                            cold_export_batch_size=int(shard.get("hot_retention_cold_export_batch_size", 50000) or 50000),
+                            cold_export_compression=str(shard.get("hot_retention_cold_export_compression", "zstd") or "zstd"),
+                            vacuum=do_vacuum,
+                        )
+                        shard_retention.update(
                             {
-                                "last_run_utc": ts,
-                                "last_run_epoch": float(cycle_ts),
-                                "baseline_db_size_gb": round(_db_size_gb(db_path), 3),
-                                "rows_since_last_run": 0,
-                                "last_trigger_reasons": list(trigger_reasons),
+                                "ran": True,
+                                "rc": int(rc),
+                                "stdout_tail": "\n".join(out.splitlines()[-12:]),
+                                "stderr_tail": "\n".join(err.splitlines()[-12:]),
+                                "details": _parse_json_output(out),
+                                "vacuum": bool(do_vacuum),
                             }
                         )
+                        if int(rc) == 0:
+                            shard_state.update(
+                                {
+                                    "last_run_utc": ts,
+                                    "last_run_epoch": float(cycle_ts),
+                                    "baseline_db_size_gb": round(_db_size_gb(db_path), 3),
+                                    "rows_since_last_run": 0,
+                                    "last_trigger_reasons": list(trigger_reasons),
+                                }
+                            )
                 else:
                     shard_retention["skipped_reason"] = f"min_interval_not_met:{int(since_last)}s"
             else:
@@ -2155,7 +2226,7 @@ def main() -> int:
             shard_hot_retention_results.append(shard_retention)
 
         local_fallback_prune = {
-            "enabled": bool(args.auto_local_fallback_prune),
+            "enabled": bool(cycle_args.auto_local_fallback_prune),
             "candidate_files": 0,
             "deleted_files": 0,
             "deleted_bytes": 0,
@@ -2164,7 +2235,7 @@ def main() -> int:
             "roots": [],
             "older_than_seconds": int(args.local_fallback_prune_older_than_seconds),
         }
-        if args.auto_local_fallback_prune:
+        if cycle_args.auto_local_fallback_prune:
             local_fallback_prune = _prune_stale_local_fallback_artifacts(
                 roots=[HEALTH_ROOT, PROJECT_ROOT / "data"],
                 older_than_seconds=int(args.local_fallback_prune_older_than_seconds),
@@ -2292,45 +2363,50 @@ def main() -> int:
         elif cycle_args.auto_hot_retention and overall_rc == 0 and hot_trigger_reasons:
             since_last = cycle_ts - float(last_hot_retention_ts)
             if since_last >= max(int(cycle_args.hot_retention_min_interval_seconds), 60):
-                do_vacuum = db_size >= float(cycle_args.hot_retention_vacuum_threshold_gb)
-                rc, out, err = _run_hot_retention(
-                    db_path=primary_db,
-                    hot_days=int(cycle_args.hot_retention_hot_days),
-                    hot_hours=int(cycle_args.hot_retention_hot_hours),
-                    batch_size=int(cycle_args.hot_retention_batch_size),
-                    max_rows=int(cycle_args.hot_retention_max_rows),
-                    archive_db=str(cycle_args.hot_retention_archive_db),
-                    archive_root=str(cycle_args.hot_retention_archive_root or ""),
-                    archive_period=str(cycle_args.hot_retention_archive_period),
-                    archive_retention_days=int(cycle_args.hot_retention_archive_retention_days),
-                    archive_prune_vacuum=bool(cycle_args.hot_retention_archive_prune_vacuum),
-                    cold_export_root=str(cycle_args.hot_retention_cold_export_root or ""),
-                    cold_export_format=str(cycle_args.hot_retention_cold_export_format),
-                    cold_export_batch_size=int(cycle_args.hot_retention_cold_export_batch_size),
-                    cold_export_compression=str(cycle_args.hot_retention_cold_export_compression),
-                    vacuum=do_vacuum,
-                )
-                hot_retention.update(
-                    {
-                        "ran": True,
-                        "rc": int(rc),
-                        "stdout_tail": "\n".join(out.splitlines()[-12:]),
-                        "stderr_tail": "\n".join(err.splitlines()[-12:]),
-                        "details": _parse_json_output(out),
-                        "vacuum": bool(do_vacuum),
-                    }
-                )
-                last_hot_retention_ts = cycle_ts
-                if int(rc) == 0:
-                    hot_state.update(
+                swap_pause, swap_env = _retention_maintenance_paused_for_swap()
+                if swap_pause:
+                    hot_retention["skipped_reason"] = "swap_pressure_pause"
+                    hot_retention["details"] = _swap_pause_details(swap_env)
+                else:
+                    do_vacuum = db_size >= float(cycle_args.hot_retention_vacuum_threshold_gb)
+                    rc, out, err = _run_hot_retention(
+                        db_path=primary_db,
+                        hot_days=int(cycle_args.hot_retention_hot_days),
+                        hot_hours=int(cycle_args.hot_retention_hot_hours),
+                        batch_size=int(cycle_args.hot_retention_batch_size),
+                        max_rows=int(cycle_args.hot_retention_max_rows),
+                        archive_db=str(cycle_args.hot_retention_archive_db),
+                        archive_root=str(cycle_args.hot_retention_archive_root or ""),
+                        archive_period=str(cycle_args.hot_retention_archive_period),
+                        archive_retention_days=int(cycle_args.hot_retention_archive_retention_days),
+                        archive_prune_vacuum=bool(cycle_args.hot_retention_archive_prune_vacuum),
+                        cold_export_root=str(cycle_args.hot_retention_cold_export_root or ""),
+                        cold_export_format=str(cycle_args.hot_retention_cold_export_format),
+                        cold_export_batch_size=int(cycle_args.hot_retention_cold_export_batch_size),
+                        cold_export_compression=str(cycle_args.hot_retention_cold_export_compression),
+                        vacuum=do_vacuum,
+                    )
+                    hot_retention.update(
                         {
-                            "last_run_utc": ts,
-                            "baseline_db_size_gb": round(_db_size_gb(primary_db), 3),
-                            "baseline_wal_size_gb": round(_wal_size_gb(primary_db), 3),
-                            "rows_since_last_run": 0,
-                            "last_trigger_reasons": list(hot_trigger_reasons),
+                            "ran": True,
+                            "rc": int(rc),
+                            "stdout_tail": "\n".join(out.splitlines()[-12:]),
+                            "stderr_tail": "\n".join(err.splitlines()[-12:]),
+                            "details": _parse_json_output(out),
+                            "vacuum": bool(do_vacuum),
                         }
                     )
+                    last_hot_retention_ts = cycle_ts
+                    if int(rc) == 0:
+                        hot_state.update(
+                            {
+                                "last_run_utc": ts,
+                                "baseline_db_size_gb": round(_db_size_gb(primary_db), 3),
+                                "baseline_wal_size_gb": round(_wal_size_gb(primary_db), 3),
+                                "rows_since_last_run": 0,
+                                "last_trigger_reasons": list(hot_trigger_reasons),
+                            }
+                        )
             else:
                 hot_retention["skipped_reason"] = f"min_interval_not_met:{int(since_last)}s"
         elif cycle_args.auto_hot_retention:
@@ -2340,7 +2416,7 @@ def main() -> int:
         queue_db_path = Path(str(args.queue_retention_db))
         queue_db_size = _db_size_gb(queue_db_path)
         queue_retention = {
-            "enabled": bool(args.auto_queue_retention),
+            "enabled": bool(cycle_args.auto_queue_retention),
             "db_path": str(queue_db_path),
             "db_size_gb_before": round(queue_db_size, 3),
             "max_db_gb": float(args.queue_retention_max_db_gb),
@@ -2357,34 +2433,39 @@ def main() -> int:
             "details": {},
             "skipped_reason": "",
         }
-        if args.auto_queue_retention and overall_rc == 0 and queue_db_path.exists() and queue_db_size >= float(args.queue_retention_max_db_gb):
+        if cycle_args.auto_queue_retention and overall_rc == 0 and queue_db_path.exists() and queue_db_size >= float(args.queue_retention_max_db_gb):
             since_last = cycle_ts - float(last_queue_retention_ts)
             if since_last >= max(int(args.queue_retention_min_interval_seconds), 60):
-                do_vacuum = queue_db_size >= float(args.queue_retention_vacuum_threshold_gb)
-                rc, out, err = _run_queue_retention(
-                    db_path=str(queue_db_path),
-                    acked_days=int(args.queue_retention_acked_days),
-                    batch_size=int(args.queue_retention_batch_size),
-                    max_rows=int(args.queue_retention_max_rows),
-                    cleanup_consumer_state_days=int(args.queue_retention_cleanup_consumer_state_days),
-                    prune_orphans=bool(args.queue_retention_prune_orphans),
-                    orphan_days=int(args.queue_retention_orphan_days),
-                    vacuum=do_vacuum,
-                )
-                queue_retention.update(
-                    {
-                        "ran": True,
-                        "rc": int(rc),
-                        "stdout_tail": "\n".join(out.splitlines()[-12:]),
-                        "stderr_tail": "\n".join(err.splitlines()[-12:]),
-                        "details": _parse_json_output(out),
-                        "vacuum": bool(do_vacuum),
-                    }
-                )
-                last_queue_retention_ts = cycle_ts
+                swap_pause, swap_env = _retention_maintenance_paused_for_swap()
+                if swap_pause:
+                    queue_retention["skipped_reason"] = "swap_pressure_pause"
+                    queue_retention["details"] = _swap_pause_details(swap_env)
+                else:
+                    do_vacuum = queue_db_size >= float(args.queue_retention_vacuum_threshold_gb)
+                    rc, out, err = _run_queue_retention(
+                        db_path=str(queue_db_path),
+                        acked_days=int(args.queue_retention_acked_days),
+                        batch_size=int(args.queue_retention_batch_size),
+                        max_rows=int(args.queue_retention_max_rows),
+                        cleanup_consumer_state_days=int(args.queue_retention_cleanup_consumer_state_days),
+                        prune_orphans=bool(args.queue_retention_prune_orphans),
+                        orphan_days=int(args.queue_retention_orphan_days),
+                        vacuum=do_vacuum,
+                    )
+                    queue_retention.update(
+                        {
+                            "ran": True,
+                            "rc": int(rc),
+                            "stdout_tail": "\n".join(out.splitlines()[-12:]),
+                            "stderr_tail": "\n".join(err.splitlines()[-12:]),
+                            "details": _parse_json_output(out),
+                            "vacuum": bool(do_vacuum),
+                        }
+                    )
+                    last_queue_retention_ts = cycle_ts
             else:
                 queue_retention["skipped_reason"] = f"min_interval_not_met:{int(since_last)}s"
-        elif args.auto_queue_retention:
+        elif cycle_args.auto_queue_retention:
             if not queue_db_path.exists():
                 queue_retention["skipped_reason"] = "db_missing"
             else:
@@ -2432,7 +2513,7 @@ def main() -> int:
             "archive_maintenance_blockers": archive_blockers,
             "active_request": active_request,
         }
-        LATEST_HEALTH.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_directory(LATEST_HEALTH.parent)
         LATEST_HEALTH.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
         _write_service_progress(
             cycle_started_utc=ts,

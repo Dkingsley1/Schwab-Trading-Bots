@@ -46,7 +46,7 @@ DEFAULT_TARGET_PENDING_LINES = 20000
 DEFAULT_TARGET_RETENTION_DEBT_GB = 0.25
 MIN_PENDING_PROGRESS_LINES = 250
 MIN_RETENTION_PROGRESS_GB = 0.05
-CORE_FOCUS_MIN_PENDING_LINES = 50_000
+CORE_FOCUS_MIN_PENDING_LINES = 30_000
 CORE_FOCUS_MIN_TOP3_LINES = 40_000
 CORE_FOCUS_MIN_SHARE = 0.65
 
@@ -173,9 +173,11 @@ def _core_focus(backpressure_payload: dict[str, Any]) -> dict[str, Any]:
     top3_share = round((top3_pending_lines / max(total_pending_lines, 1)) if total_pending_lines > 0 else 0.0, 6)
     top1_share = round((top1_pending_lines / max(total_pending_lines, 1)) if total_pending_lines > 0 else 0.0, 6)
     concentrated_core_backlog = bool(
-        total_pending_lines >= CORE_FOCUS_MIN_PENDING_LINES
-        and top3_pending_lines >= CORE_FOCUS_MIN_TOP3_LINES
-        and top3_share >= CORE_FOCUS_MIN_SHARE
+        top3_share >= CORE_FOCUS_MIN_SHARE
+        and (
+            total_pending_lines >= CORE_FOCUS_MIN_PENDING_LINES
+            or top3_pending_lines >= CORE_FOCUS_MIN_TOP3_LINES
+        )
     )
     return {
         "total_pending_lines": total_pending_lines,

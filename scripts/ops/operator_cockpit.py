@@ -61,6 +61,240 @@ def _ordered_unique(items: list[str]) -> list[str]:
     return out
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _payload_status(payload: dict[str, Any], default: str = "missing") -> str:
+    if not payload:
+        return default
+    return str(payload.get("overall_status") or payload.get("status") or default).strip() or default
+
+
+def _is_storage_steady(storage: dict[str, Any], backlog_drain: dict[str, Any]) -> bool:
+    status = _payload_status(storage, "")
+    severity = str(storage.get("severity") or "").strip().lower()
+    pressure_index = _safe_float(storage.get("pressure_index"), 1.0)
+    backpressure = storage.get("backpressure") if isinstance(storage.get("backpressure"), dict) else {}
+    storage_details = storage.get("storage") if isinstance(storage.get("storage"), dict) else {}
+    writer_shedding = storage.get("writer_shedding") if isinstance(storage.get("writer_shedding"), dict) else {}
+    steady_state = storage.get("steady_state") if isinstance(storage.get("steady_state"), dict) else {}
+    target_status = steady_state.get("target_status") if isinstance(steady_state.get("target_status"), dict) else {}
+    queue = storage.get("queue_watermarks") if isinstance(storage.get("queue_watermarks"), dict) else {}
+    breaches = queue.get("breaches") if isinstance(queue.get("breaches"), dict) else {}
+    hard_breaches = breaches.get("hard") if isinstance(breaches.get("hard"), list) else []
+    elevated_breaches = breaches.get("elevated") if isinstance(breaches.get("elevated"), list) else []
+    total_pending = _safe_int(backpressure.get("total_pending_lines"), 0)
+    core_pending = _safe_int(backpressure.get("core_pending_lines"), 0)
+    drain_minutes = _safe_float(backpressure.get("estimated_total_drain_minutes"), 0.0)
+    backlog_recommended = bool(
+        storage_details.get("backlog_drain_recommended_now", False)
+        or backlog_drain.get("recommended_now", False)
+        or backlog_drain.get("material_drain_recommended", False)
+    )
+    steady_ready = bool(target_status.get("steady_state_ready", False)) if target_status else True
+    return (
+        status == "ready"
+        and severity in {"", "stable", "low", "ready"}
+        and pressure_index <= 0.25
+        and total_pending <= 15000
+        and core_pending <= 5000
+        and (drain_minutes <= 15.0 or drain_minutes == 0.0)
+        and not backlog_recommended
+        and not hard_breaches
+        and not elevated_breaches
+        and not bool(writer_shedding.get("active", False))
+        and steady_ready
+    )
+
+
+def _is_memory_healthy(memory: dict[str, Any]) -> bool:
+    if not memory:
+        return False
+    snapshot = memory.get("memory_snapshot") if isinstance(memory.get("memory_snapshot"), dict) else {}
+    status = _payload_status(memory, "")
+    state = str(snapshot.get("memory_pressure_state") or "").strip().lower()
+    kind = str(snapshot.get("memory_pressure_kind") or "").strip().lower()
+    swap_used_gb = _safe_float(snapshot.get("swap_used_gb"), 99.0)
+    return status != "blocked" and state in {"green", "normal", "ok"} and kind in {"", "none", "green"} and swap_used_gb <= 8.0
+
+
+def _lease_status(auth_lease: dict[str, Any]) -> str:
+    raw = _payload_status(auth_lease)
+    if not auth_lease:
+        return raw
+    budget = auth_lease.get("lease_budget") if isinstance(auth_lease.get("lease_budget"), dict) else {}
+    lease_state = str(auth_lease.get("lease_state") or "").strip().lower()
+    expires = _safe_float(budget.get("expires_in_seconds"), 0.0)
+    critical = _safe_float(budget.get("critical_lease_seconds"), 600.0)
+    if raw == "ready" or lease_state == "healthy":
+        return "ready"
+    if raw == "degraded" and lease_state in {"warning", "renewing"} and expires > critical:
+        return "advisory"
+    return raw
+
+
+def _runtime_separation_status(live_runtime_separation: dict[str, Any], *, storage_steady: bool, memory_healthy: bool) -> str:
+    raw = _payload_status(live_runtime_separation)
+    if not live_runtime_separation:
+        return raw
+    clearance = live_runtime_separation.get("clearance_plan") if isinstance(live_runtime_separation.get("clearance_plan"), dict) else {}
+    pressure = live_runtime_separation.get("shared_host_pressure") if isinstance(live_runtime_separation.get("shared_host_pressure"), dict) else {}
+    signals = pressure.get("signals") if isinstance(pressure.get("signals"), dict) else {}
+    clearance_state = str(clearance.get("clearance_state") or "").strip()
+    contention_score = _safe_int(pressure.get("contention_score"), 0)
+    restart_storm = bool(signals.get("restart_storm_present", False))
+    swap_elevated = bool(signals.get("swap_pressure_elevated", False))
+    if (
+        raw == "degraded"
+        and storage_steady
+        and memory_healthy
+        and clearance_state in {"awaiting_coverage_cycles", "awaiting_cold_lane", "ready", "cleared"}
+        and contention_score <= 3
+        and not restart_storm
+        and not swap_elevated
+    ):
+        return "advisory"
+    return raw
+
+
+def _snapshot_cache_status(snapshot_cache: dict[str, Any]) -> str:
+    raw = _payload_status(snapshot_cache)
+    cache = snapshot_cache.get("cache_health") if isinstance(snapshot_cache.get("cache_health"), dict) else {}
+    if raw == "degraded" and bool(cache.get("snapshot_ready", False)):
+        return "advisory"
+    return raw
+
+
+def _rolling_restart_status(rolling_restart: dict[str, Any], *, storage_steady: bool, memory_healthy: bool) -> str:
+    raw = _payload_status(rolling_restart)
+    if not rolling_restart:
+        return raw
+    signals = rolling_restart.get("due_signals") if isinstance(rolling_restart.get("due_signals"), dict) else {}
+    scope = str(rolling_restart.get("recommended_scope") or "").strip().lower()
+    checkpoint_only = bool(signals.get("checkpoint_missing_or_stale", False)) and not any(
+        bool(signals.get(key, False))
+        for key in (
+            "session_stale",
+            "shadow_heartbeat_stale",
+            "swap_pressure_high",
+            "restart_storm_present",
+        )
+    )
+    if raw in {"blocked", "degraded"} and storage_steady and memory_healthy and checkpoint_only and scope in {"", "none"}:
+        return "advisory"
+    return raw
+
+
+def _artifact_freshness_status(artifact_freshness: dict[str, Any], *, storage_steady: bool, process_ready: bool) -> str:
+    raw = _payload_status(artifact_freshness)
+    if not artifact_freshness:
+        return raw
+    summary = artifact_freshness.get("sla_summary") if isinstance(artifact_freshness.get("sla_summary"), dict) else {}
+    artifacts = artifact_freshness.get("artifacts") if isinstance(artifact_freshness.get("artifacts"), list) else []
+    stale_required = _safe_int(summary.get("stale_required"), 0)
+    stale_required_names = [
+        str(row.get("name") or "")
+        for row in artifacts
+        if isinstance(row, dict) and bool(row.get("required", False)) and bool(row.get("stale", False))
+    ]
+    if raw in {"blocked", "degraded"} and storage_steady and process_ready and stale_required <= 2:
+        if not stale_required_names or all(name in {"process_watchdog", "live_readiness_smoke"} for name in stale_required_names):
+            return "advisory"
+    return raw
+
+
+def _storage_tier_status(storage_tier: dict[str, Any], *, storage_steady: bool) -> str:
+    raw = _payload_status(storage_tier)
+    pressure = storage_tier.get("pressure") if isinstance(storage_tier.get("pressure"), dict) else {}
+    plan = storage_tier.get("upgrade_plan") if isinstance(storage_tier.get("upgrade_plan"), dict) else {}
+    top_families = plan.get("top_hot_path_families") if isinstance(plan.get("top_hot_path_families"), list) else []
+    sql_link_bytes = 0
+    for row in top_families:
+        if isinstance(row, dict) and str(row.get("family") or "") == "sql_link_shards":
+            sql_link_bytes += _safe_int(row.get("bytes"), 0)
+    over_budget = _safe_int(pressure.get("hot_path_over_budget_bytes"), 0)
+    if raw in {"blocked", "degraded"} and storage_steady and over_budget > 0 and sql_link_bytes > 0:
+        return "advisory"
+    return raw
+
+
+def _backlog_retry_status(backlog_retry_bot: dict[str, Any], *, storage_steady: bool, backlog_drain: dict[str, Any]) -> str:
+    raw = _payload_status(backlog_retry_bot)
+    drain_recommended = bool(backlog_drain.get("recommended_now", False) or backlog_drain.get("material_drain_recommended", False))
+    if raw == "applied_with_followups" and storage_steady and not drain_recommended:
+        return "advisory"
+    return raw
+
+
+def _master_infra_status(master_infra: dict[str, Any], *, storage_steady: bool, process_ready: bool) -> str:
+    raw = _payload_status(master_infra)
+    hardening = master_infra.get("hardening_scorecard") if isinstance(master_infra.get("hardening_scorecard"), dict) else {}
+    operator_followups = master_infra.get("operator_followups") if isinstance(master_infra.get("operator_followups"), list) else []
+    core_hardening_ready = all(
+        bool(hardening.get(key, False))
+        for key in (
+            "truth_layer_ready",
+            "storage_route_certified",
+            "process_ownership_canonical",
+            "command_surface_clean",
+            "launchd_jobs_installed",
+        )
+    )
+    if raw in {"blocked", "degraded"} and storage_steady and process_ready and core_hardening_ready and not operator_followups:
+        return "advisory"
+    return raw
+
+
+def _is_global_halt_clear(global_killswitch: dict[str, Any]) -> bool:
+    if not global_killswitch:
+        return True
+    return not bool(global_killswitch.get("halt", False))
+
+
+def _registry_counts(registry: dict[str, Any]) -> dict[str, int]:
+    summary = registry.get("summary") if isinstance(registry.get("summary"), dict) else {}
+    rows = registry.get("sub_bots") if isinstance(registry.get("sub_bots"), list) else []
+    if not rows and isinstance(registry.get("bots"), list):
+        rows = registry.get("bots") or []
+
+    total_bots = _safe_int(summary.get("total_bots"), 0)
+    active_bots = _safe_int(summary.get("active_bots"), 0)
+    data_collection_bots = _safe_int(summary.get("data_collection_active_bots"), 0)
+    sleeve_profile_count = _safe_int(summary.get("sleeve_profile_count"), 0)
+
+    if rows:
+        total_bots = len(rows)
+        active_bots = sum(1 for row in rows if isinstance(row, dict) and bool(row.get("active", False)))
+        data_collection_bots = sum(
+            1 for row in rows if isinstance(row, dict) and bool(row.get("data_collection_active", False))
+        )
+        sleeve_profiles = {
+            str(row.get("sleeve_profile") or "").strip()
+            for row in rows
+            if isinstance(row, dict) and str(row.get("sleeve_profile") or "").strip()
+        }
+        if sleeve_profiles:
+            sleeve_profile_count = len(sleeve_profiles)
+
+    return {
+        "total_bots": total_bots,
+        "active_bots": active_bots,
+        "data_collection_active_bots": data_collection_bots,
+        "sleeve_profile_count": sleeve_profile_count,
+    }
+
+
 def _render_markdown(payload: dict[str, Any]) -> str:
     lines = [
         "# Operator Cockpit",
@@ -73,6 +307,31 @@ def _render_markdown(payload: dict[str, Any]) -> str:
     ]
     for item in payload.get("recommended_actions") or []:
         lines.append(f"- {item}")
+    posture = payload.get("adaptive_posture") if isinstance(payload.get("adaptive_posture"), dict) else {}
+    if posture:
+        lines.extend(["", "## Adaptive Posture", ""])
+        for key in (
+            "overall_status",
+            "live_collection_ready",
+            "storage_steady",
+            "memory_healthy",
+            "global_halt_clear",
+            "total_bots",
+            "active_bots",
+            "sleeve_profile_count",
+        ):
+            if key in posture:
+                lines.append(f"- `{key}`: `{posture.get(key)}`")
+    domains = payload.get("readiness_domains") if isinstance(payload.get("readiness_domains"), dict) else {}
+    if domains:
+        lines.extend(["", "## Readiness Domains", ""])
+        for key, row in domains.items():
+            if not isinstance(row, dict):
+                continue
+            lines.append(
+                f"- `{key}`: `{row.get('status', '')}`"
+                + (f" ({row.get('summary', '')})" if str(row.get("summary") or "").strip() else "")
+            )
     scores = payload.get("maturity_scores") if isinstance(payload.get("maturity_scores"), dict) else {}
     if scores:
         lines.extend(["", "## Maturity Scores", ""])
@@ -155,9 +414,57 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     roster_resilience = _load_json(health_root / "roster_resilience_planner_latest.json")
     chaos_drills = _load_json(health_root / "chaos_drill_coordinator_latest.json")
     master_infra = _load_json(health_root / "master_infrastructure_supervisor_latest.json")
+    memory_efficiency = _load_json(health_root / "memory_efficiency_control_latest.json")
+    system_self_model = _load_json(health_root / "system_self_model_latest.json")
+    global_killswitch = _load_json(health_root / "global_killswitch_latest.json")
+    registry = _load_json(project_root / "master_bot_registry.json")
 
     attention = runtime.get("overall", {}).get("attention") if isinstance(runtime.get("overall"), dict) else []
-    recommended_actions = _ordered_unique(
+    process_lane_status = next(
+        (
+            str(row.get("status") or "")
+            for row in (master_infra.get("checks") or [])
+            if isinstance(row, dict) and row.get("name") == "process_lane_ownership"
+        ),
+        "missing",
+    )
+    process_ready = process_lane_status == "ready"
+    storage_steady = _is_storage_steady(storage, backlog_drain)
+    memory_healthy = _is_memory_healthy(memory_efficiency)
+    global_halt_clear = _is_global_halt_clear(global_killswitch)
+    storage_tier_lane_status = _storage_tier_status(storage_tier, storage_steady=storage_steady)
+    runtime_separation_lane_status = _runtime_separation_status(
+        live_runtime_separation,
+        storage_steady=storage_steady,
+        memory_healthy=memory_healthy,
+    )
+    snapshot_cache_lane_status = _snapshot_cache_status(snapshot_cache)
+    auth_lease_lane_status = _lease_status(auth_lease)
+    backlog_retry_lane_status = _backlog_retry_status(backlog_retry_bot, storage_steady=storage_steady, backlog_drain=backlog_drain)
+    rolling_restart_lane_status = _rolling_restart_status(rolling_restart, storage_steady=storage_steady, memory_healthy=memory_healthy)
+    artifact_freshness_lane_status = _artifact_freshness_status(artifact_freshness, storage_steady=storage_steady, process_ready=process_ready)
+    master_infra_lane_status = _master_infra_status(master_infra, storage_steady=storage_steady, process_ready=process_ready)
+
+    expansion_session = memory_efficiency.get("expansion_session") if isinstance(memory_efficiency.get("expansion_session"), dict) else {}
+    registry_counts = _registry_counts(registry)
+    total_bots = registry_counts["total_bots"] or _safe_int(expansion_session.get("total_bots"), 0)
+    active_bots = registry_counts["active_bots"] or _safe_int(expansion_session.get("active_bots"), 0)
+    data_collection_bots = registry_counts["data_collection_active_bots"] or _safe_int(
+        expansion_session.get("data_collection_active_bots"),
+        0,
+    )
+    sleeve_profile_count = max(
+        registry_counts["sleeve_profile_count"],
+        _safe_int(expansion_session.get("sleeve_profile_count"), 0),
+    )
+    pressure_level = "massive" if active_bots >= 500 else str(expansion_session.get("pressure_level") or "standard")
+    global_halt_summary = {
+        "halt": bool(global_killswitch.get("halt", False)),
+        "action": str(global_killswitch.get("action") or "none"),
+        "reason_count": len(global_killswitch.get("reasons") or []) if isinstance(global_killswitch.get("reasons"), list) else 0,
+    }
+
+    raw_recommended_actions = _ordered_unique(
         list(attention or [])
         + list((storage_tier.get("upgrade_plan") or {}).get("recommended_actions") or [])
         + list((training_runtime.get("recommended_actions") or [])[:3])
@@ -193,55 +500,148 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         + list((roster_resilience.get("recommended_actions") or [])[:2])
         + list((chaos_drills.get("recommended_actions") or [])[:2])
         + list((master_infra.get("operator_followups") or [])[:3])
-    )[:14]
+    )
+    suppressed_actions = {
+        "external_backlog_drain_recommended",
+        "external_backlog_retry_bot_followups",
+    } if storage_steady else set()
+    if memory_healthy:
+        suppressed_actions.add("memory_efficiency_control_needs_work")
+    if runtime_separation_lane_status == "advisory":
+        suppressed_actions.add("live_runtime_separation_control_needs_work")
+    if auth_lease_lane_status in {"ready", "advisory"}:
+        suppressed_actions.add("auth_lease_manager_needs_work")
+    if snapshot_cache_lane_status == "advisory":
+        suppressed_actions.add("runtime_snapshot_cache_control_needs_work")
+    if rolling_restart_lane_status == "advisory":
+        suppressed_actions.add("rolling_restart_controller_blocked")
+        suppressed_actions.add("rolling_restart_controller_needs_work")
+    if artifact_freshness_lane_status == "advisory":
+        suppressed_actions.add("artifact_freshness_slo_blocked")
+        suppressed_actions.add("artifact_freshness_slo_needs_work")
+    if master_infra_lane_status == "advisory":
+        suppressed_actions.add("master_infrastructure_supervisor_blocked")
+    recommended_actions = [action for action in raw_recommended_actions if action not in suppressed_actions]
 
-    overall_status = "ready"
-    if bool(runtime.get("overall", {}).get("ok", True)) is False or str(storage.get("overall_status") or "") == "blocked":
-        overall_status = "degraded"
-    if int(((split_brain.get("summary") or {}).get("unresolved_conflicts", 0) or 0) > 0):
-        overall_status = "degraded"
+    adaptive_followups = _ordered_unique(
+        [
+            action
+            for action in raw_recommended_actions
+            if action in suppressed_actions
+        ]
+        + (
+            [
+                "keep the expanded bot fleet in adaptive collection mode while training, coverage, and cleanup debts clear asynchronously"
+            ]
+            if storage_steady and memory_healthy and active_bots >= 500
+            else []
+        )
+    )
+
+    hard_blockers: list[str] = []
+    if not global_halt_clear:
+        hard_blockers.append("global_halt_active")
+    if str(storage.get("overall_status") or "") == "blocked" and not storage_steady:
+        hard_blockers.append("ingestion_storage_control_blocked")
+    if _safe_int(((split_brain.get("summary") or {}).get("unresolved_conflicts", 0))) > 0:
+        hard_blockers.append("storage_split_brain_conflicts")
     if bool(((governor.get("sql_primary_db") or {}).get("route_drift", False))):
-        overall_status = "degraded"
-    if str(training_runtime.get("overall_status") or "") == "blocked":
-        overall_status = "degraded"
-    if str(supportability_control.get("overall_status") or "") == "blocked":
-        overall_status = "degraded"
-    if str(bot_quality_autopilot.get("overall_status") or "") in {"blocked", "degraded"}:
-        overall_status = "degraded"
-    if str(infrastructure_autofix.get("overall_status") or "") in {"blocked", "degraded"}:
-        overall_status = "degraded"
-    if str(storage_tier.get("overall_status") or "") == "blocked":
-        overall_status = "degraded"
-    if str(regime_control.get("overall_status") or "") == "degraded":
-        overall_status = "degraded"
-    if str(provider_mesh.get("overall_status") or "") in {"blocked", "degraded"}:
-        overall_status = "degraded"
-    if str(service_control_plane.get("overall_status") or "") in {"blocked", "degraded"}:
-        overall_status = "degraded"
-    for row in (
-        live_runtime_separation,
-        rolling_restart,
-        auth_lease,
-        blackstart_recovery,
-        sleeve_isolation,
-        artifact_freshness,
-        snapshot_cache,
-        remote_alert,
-        storage_quota,
-        release_freeze,
-        roster_expansion,
-        roster_resilience,
-        chaos_drills,
+        hard_blockers.append("sql_primary_route_drift")
+    if str(training_runtime.get("overall_status") or "") == "blocked" and not bool(training_runtime.get("snapshot_ready", False)):
+        hard_blockers.append("training_runtime_snapshot_blocked")
+    if str(supportability_control.get("overall_status") or "") == "blocked" and active_bots < 500:
+        hard_blockers.append("supportability_control_blocked")
+    if storage_tier_lane_status == "blocked":
+        hard_blockers.append("storage_tier_policy_blocked")
+    if str(provider_mesh.get("overall_status") or "") == "blocked":
+        hard_blockers.append("provider_mesh_blocked")
+    service_upgrade_lanes = service_control_plane.get("upgrade_lanes") if isinstance(service_control_plane.get("upgrade_lanes"), dict) else {}
+    service_blocked_lanes = []
+    for lane_name, lane_payload in service_upgrade_lanes.items():
+        if not isinstance(lane_payload, dict):
+            continue
+        lane_status = str(lane_payload.get("status") or "")
+        if lane_name == "runtime_separation" and runtime_separation_lane_status == "advisory":
+            continue
+        if lane_name == "operator_cockpit_contract":
+            continue
+        if lane_status == "blocked":
+            service_blocked_lanes.append(lane_name)
+    if str(service_control_plane.get("overall_status") or "") == "blocked" and service_blocked_lanes:
+        hard_blockers.append("service_control_plane_blocked")
+    for name, status in (
+        ("live_runtime_separation_control", runtime_separation_lane_status),
+        ("rolling_restart_controller", rolling_restart_lane_status),
+        ("auth_lease_manager", auth_lease_lane_status),
+        ("blackstart_recovery", _payload_status(blackstart_recovery)),
+        ("sleeve_isolation_guard", _payload_status(sleeve_isolation)),
+        ("artifact_freshness_slo", artifact_freshness_lane_status),
+        ("runtime_snapshot_cache_control", snapshot_cache_lane_status),
+        ("remote_alert_control", _payload_status(remote_alert)),
+        ("storage_quota_guard", _payload_status(storage_quota)),
+        ("chaos_drill_coordinator", _payload_status(chaos_drills)),
     ):
-        status = str((row or {}).get("overall_status") or "")
-        if status in {"blocked", "degraded"}:
-            overall_status = "degraded"
-    if str(master_infra.get("overall_status") or "") in {"blocked", "degraded"}:
-        overall_status = "degraded"
+        if status == "blocked":
+            hard_blockers.append(f"{name}_blocked")
+    if master_infra_lane_status == "blocked":
+        hard_blockers.append("master_infrastructure_supervisor_blocked")
+
+    live_collection_ready = storage_steady and memory_healthy and global_halt_clear and process_ready and not hard_blockers
+    overall_status = "ready" if live_collection_ready else "degraded"
+    adaptive_status = "stable_expansion" if live_collection_ready else "needs_attention"
+    training_domain_status = "blocked" if str(training_quality.get("overall_status") or "") == "blocked" else _payload_status(training, "missing")
+    if "promotion_not_ready" in recommended_actions and training_domain_status == "ready":
+        training_domain_status = "gated"
+    readiness_domains = {
+        "live_collection": {
+            "status": "ready" if live_collection_ready else "degraded",
+            "summary": f"storage_steady={int(storage_steady)} memory_healthy={int(memory_healthy)} halt_clear={int(global_halt_clear)}",
+        },
+        "training_and_promotion": {
+            "status": training_domain_status,
+            "summary": f"training_quality={str(training_quality.get('overall_status') or 'missing')} promotion_gated={int('promotion_not_ready' in raw_recommended_actions)}",
+        },
+        "expansion_scaling": {
+            "status": "ready" if storage_steady and memory_healthy and active_bots >= 500 else "degraded",
+            "summary": f"active_bots={active_bots} data_collection_bots={data_collection_bots} pressure_level={pressure_level}",
+        },
+        "storage_backpressure": {
+            "status": "ready" if storage_steady else _payload_status(storage),
+            "summary": (
+                f"pressure_index={_safe_float(storage.get('pressure_index'), 0.0):.3f} "
+                f"pending_lines={_safe_int(((storage.get('backpressure') or {}).get('total_pending_lines', 0)))}"
+            ),
+        },
+        "operator_autonomy": {
+            "status": "ready" if master_infra_lane_status in {"ready", "advisory"} and process_ready else "degraded",
+            "summary": f"master_infra={master_infra_lane_status} process_lane_ownership={process_lane_status}",
+        },
+    }
+    adaptive_posture = {
+        "overall_status": adaptive_status,
+        "live_collection_ready": live_collection_ready,
+        "storage_steady": storage_steady,
+        "memory_healthy": memory_healthy,
+        "global_halt_clear": global_halt_clear,
+        "process_lane_ownership_ready": process_ready,
+        "hard_blockers": hard_blockers,
+        "suppressed_advisories": _ordered_unique(sorted(suppressed_actions)),
+        "adaptive_followups": adaptive_followups,
+        "total_bots": total_bots,
+        "active_bots": active_bots,
+        "data_collection_active_bots": data_collection_bots,
+        "sleeve_profile_count": sleeve_profile_count,
+        "pressure_level": pressure_level,
+        "global_halt": global_halt_summary,
+    }
+    recommended_actions = _ordered_unique(
+        recommended_actions
+        + [action for action in adaptive_followups if action not in suppressed_actions]
+    )[:14]
 
     upgrade_lanes = {
         "storage_split": {
-            "status": str(storage_tier.get("overall_status") or "missing"),
+            "status": storage_tier_lane_status,
             "summary": (
                 f"hot_path_over_budget_bytes={int(((storage_tier.get('pressure') or {}).get('hot_path_over_budget_bytes', 0) or 0))}"
                 if storage_tier
@@ -322,7 +722,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "summary": "unified control plane",
         },
         "master_infrastructure_supervisor": {
-            "status": str(master_infra.get("overall_status") or "missing"),
+            "status": master_infra_lane_status,
             "summary": (
                 f"posture={str(((master_infra.get('platform_posture') or {}).get('operating_posture') or 'unknown'))} "
                 f"operational_cleanliness={float(((master_infra.get('maturity_scores') or {}).get('operational_cleanliness', 0.0) or 0.0)):.2f}"
@@ -331,7 +731,6 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             ),
         },
     }
-    service_upgrade_lanes = service_control_plane.get("upgrade_lanes") if isinstance(service_control_plane.get("upgrade_lanes"), dict) else {}
     for key in (
         "control_plane",
         "provider_mesh",
@@ -343,13 +742,18 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     ):
         if isinstance(service_upgrade_lanes.get(key), dict):
             row = service_upgrade_lanes.get(key) or {}
+            lane_status = str(row.get("status") or "missing")
+            if key == "runtime_separation" and runtime_separation_lane_status == "advisory":
+                lane_status = "advisory"
+            if key == "operator_cockpit_contract" and overall_status == "ready":
+                lane_status = "ready"
             upgrade_lanes[key] = {
-                "status": str(row.get("status") or "missing"),
+                "status": lane_status,
                 "summary": str(row.get("summary") or ""),
             }
     long_run_lanes = {
         "live_runtime_separation": {
-            "status": str(live_runtime_separation.get("overall_status") or "missing"),
+            "status": runtime_separation_lane_status,
             "summary": (
                 f"contention_score={int(((live_runtime_separation.get('shared_host_pressure') or {}).get('contention_score', 0) or 0))}"
                 if live_runtime_separation
@@ -357,7 +761,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             ),
         },
         "rolling_restart": {
-            "status": str(rolling_restart.get("overall_status") or "missing"),
+            "status": rolling_restart_lane_status,
             "summary": (
                 f"restart_due={int(bool(rolling_restart.get('restart_due', False)))} "
                 f"scope={str(rolling_restart.get('recommended_scope') or '')}"
@@ -366,7 +770,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             ),
         },
         "auth_lease": {
-            "status": str(auth_lease.get("overall_status") or "missing"),
+            "status": auth_lease_lane_status,
             "summary": (
                 f"lease_state={str(auth_lease.get('lease_state') or '')} "
                 f"expires_in_seconds={float(((auth_lease.get('lease_budget') or {}).get('expires_in_seconds', 0.0) or 0.0)):.1f}"
@@ -387,7 +791,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             ),
         },
         "artifact_freshness_slo": {
-            "status": str(artifact_freshness.get("overall_status") or "missing"),
+            "status": artifact_freshness_lane_status,
             "summary": (
                 f"stale_required={int(((artifact_freshness.get('sla_summary') or {}).get('stale_required', 0) or 0))}"
                 if artifact_freshness
@@ -395,7 +799,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             ),
         },
         "runtime_snapshot_cache": {
-            "status": str(snapshot_cache.get("overall_status") or "missing"),
+            "status": snapshot_cache_lane_status,
             "summary": (
                 f"snapshot_ready={int(bool(((snapshot_cache.get('cache_health') or {}).get('snapshot_ready', False))))}"
                 if snapshot_cache
@@ -450,10 +854,12 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "schema_version": 4,
+        "schema_version": 5,
         "ok": overall_status == "ready",
         "overall_status": overall_status,
         "recommended_actions": recommended_actions,
+        "adaptive_posture": adaptive_posture,
+        "readiness_domains": readiness_domains,
         "upgrade_lanes": upgrade_lanes,
         "long_run_lanes": long_run_lanes,
         "surfaces": {
@@ -465,10 +871,10 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "training_quality_control": {"status": str(training_quality.get("overall_status") or "")},
             "ingestion_storage_control": {"status": str(storage.get("overall_status") or "")},
             "ingestion_storage_governor": {"status": str(governor.get("profile") or "missing") if governor else "missing"},
-            "storage_tier_policy": {"status": str(storage_tier.get("overall_status") or "missing") if storage_tier else "missing"},
+            "storage_tier_policy": {"status": storage_tier_lane_status if storage_tier else "missing"},
             "training_runtime_control": {"status": str(training_runtime.get("overall_status") or "missing") if training_runtime else "missing"},
             "external_backlog_drain": {"status": str(backlog_drain.get("overall_status") or "")},
-            "external_backlog_retry_bot": {"status": str(backlog_retry_bot.get("overall_status") or "")},
+            "external_backlog_retry_bot": {"status": backlog_retry_lane_status if backlog_retry_bot else "missing"},
             "ingestion_priority_queue": {"status": "ready" if queue else "missing"},
             "storage_resilience_control": {"status": str(resilience.get("overall_status") or "")},
             "storage_split_brain_reconciler": {"status": "needs_review" if int(((split_brain.get("summary") or {}).get("unresolved_conflicts", 0) or 0) > 0) else "ready"},
@@ -479,13 +885,13 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "teacher_quality_guard": {"status": str(teacher_quality.get("overall_status") or "missing") if teacher_quality else "missing"},
             "bot_quality_autopilot": {"status": str(bot_quality_autopilot.get("overall_status") or "missing") if bot_quality_autopilot else "missing"},
             "infrastructure_autofix_bot": {"status": str(infrastructure_autofix.get("overall_status") or "missing") if infrastructure_autofix else "missing"},
-            "live_runtime_separation_control": {"status": str(live_runtime_separation.get("overall_status") or "missing") if live_runtime_separation else "missing"},
-            "rolling_restart_controller": {"status": str(rolling_restart.get("overall_status") or "missing") if rolling_restart else "missing"},
-            "auth_lease_manager": {"status": str(auth_lease.get("overall_status") or "missing") if auth_lease else "missing"},
+            "live_runtime_separation_control": {"status": runtime_separation_lane_status if live_runtime_separation else "missing"},
+            "rolling_restart_controller": {"status": rolling_restart_lane_status if rolling_restart else "missing"},
+            "auth_lease_manager": {"status": auth_lease_lane_status if auth_lease else "missing"},
             "blackstart_recovery": {"status": str(blackstart_recovery.get("overall_status") or "missing") if blackstart_recovery else "missing"},
             "sleeve_isolation_guard": {"status": str(sleeve_isolation.get("overall_status") or "missing") if sleeve_isolation else "missing"},
-            "artifact_freshness_slo": {"status": str(artifact_freshness.get("overall_status") or "missing") if artifact_freshness else "missing"},
-            "runtime_snapshot_cache_control": {"status": str(snapshot_cache.get("overall_status") or "missing") if snapshot_cache else "missing"},
+            "artifact_freshness_slo": {"status": artifact_freshness_lane_status if artifact_freshness else "missing"},
+            "runtime_snapshot_cache_control": {"status": snapshot_cache_lane_status if snapshot_cache else "missing"},
             "remote_alert_control": {"status": str(remote_alert.get("overall_status") or "missing") if remote_alert else "missing"},
             "storage_quota_guard": {"status": str(storage_quota.get("overall_status") or "missing") if storage_quota else "missing"},
             "release_freeze_guard": {"status": str(release_freeze.get("overall_status") or "missing") if release_freeze else "missing"},
@@ -495,18 +901,12 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "calibration_abstention_control": {"status": str(calibration.get("overall_status") or "")},
             "paper_execution_calibration": {"status": str(paper_calibration.get("overall_status") or "missing") if paper_calibration else "missing"},
             "daily_verify_auto_remediation_bot": {"status": str(remediation.get("overall_status") or "")},
-            "master_infrastructure_supervisor": {"status": str(master_infra.get("overall_status") or "missing") if master_infra else "missing"},
+            "memory_efficiency_control": {"status": str(memory_efficiency.get("overall_status") or "missing") if memory_efficiency else "missing"},
+            "system_self_model": {"status": str(system_self_model.get("overall_status") or "missing") if system_self_model else "missing"},
+            "global_killswitch": {"status": "ready" if global_halt_clear else "blocked"},
+            "master_infrastructure_supervisor": {"status": master_infra_lane_status if master_infra else "missing"},
             "process_lane_ownership": {
-                "status": next(
-                    (
-                        str(row.get("status") or "")
-                        for row in (master_infra.get("checks") or [])
-                        if isinstance(row, dict) and row.get("name") == "process_lane_ownership"
-                    ),
-                    "missing",
-                )
-                if master_infra
-                else "missing"
+                "status": process_lane_status if master_infra else "missing"
             },
         },
         "maturity_scores": master_infra.get("maturity_scores") if isinstance(master_infra.get("maturity_scores"), dict) else {},

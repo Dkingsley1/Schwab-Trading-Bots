@@ -21,6 +21,76 @@ NON_RUNTIME_DAILY_VERIFY_CHECKS = {
     "promotion_quality_gate",
     "retrain_schema_compatibility_guard",
 }
+RESOLVABLE_DAILY_VERIFY_ARTIFACTS = {
+    "bot_support_owner_guard": "bot_support_owner_guard_latest.json",
+    "data_source_divergence_bot": "data_source_divergence_latest.json",
+    "execution_queue_stress_bot": "execution_queue_stress_latest.json",
+    "snapshot_coverage_sentinel": "snapshot_coverage_latest.json",
+    "new_bot_admission_guard": "new_bot_admission_guard_latest.json",
+    "replay_hash_registry_guard": "replay_hash_registry_guard_latest.json",
+}
+SESSION_PAUSE_REASONS = {
+    "weekend",
+    "post_window",
+    "pre_window",
+    "market_closed",
+    "session_gate",
+    "outside_session",
+}
+
+
+def _daily_verify_check_resolved(project_root: Path, daily_verify: dict[str, Any], name: str) -> bool:
+    key = str(name or "").strip()
+    if key in NON_RUNTIME_DAILY_VERIFY_CHECKS:
+        return True
+    if key == "incomplete_run_recovered":
+        note = str(daily_verify.get("note", "") or "").lower()
+        return bool(
+            "recovered_stale_progress" in note
+            or (
+                daily_verify.get("running") is False
+                and int(daily_verify.get("completed_checks", 0) or 0) > 0
+            )
+        )
+    artifact_name = RESOLVABLE_DAILY_VERIFY_ARTIFACTS.get(key, "")
+    if not artifact_name:
+        return False
+    artifact = load_json(project_root / "governance" / "health" / artifact_name)
+    return artifact.get("ok") is True
+
+
+def _unresolved_daily_verify_checks(project_root: Path, daily_verify: dict[str, Any]) -> list[str]:
+    raw_failed_checks = daily_verify.get("failed_checks") if isinstance(daily_verify.get("failed_checks"), list) else []
+    unresolved: list[str] = []
+    for item in raw_failed_checks:
+        name = str(item or "").strip()
+        if not name:
+            continue
+        if _daily_verify_check_resolved(project_root, daily_verify, name):
+            continue
+        unresolved.append(name)
+    return unresolved
+
+
+def _is_session_pause(row: dict[str, Any]) -> bool:
+    loop_state = str(row.get("loop_state") or "").strip().lower()
+    pause_reason = str(row.get("pause_reason") or "").strip().lower()
+    return loop_state == "paused_session_gate" or pause_reason in SESSION_PAUSE_REASONS
+
+
+def _is_isolated_pause(row: dict[str, Any]) -> bool:
+    loop_state = str(row.get("loop_state") or "").strip().lower()
+    pause_reason = str(row.get("pause_reason") or "").strip().lower()
+    if not ("paused" in loop_state or "killswitch" in loop_state or "quarantine" in loop_state):
+        return False
+    if _is_session_pause(row):
+        return False
+    return bool(
+        "killswitch" in loop_state
+        or "quarantine" in loop_state
+        or "anomaly" in loop_state
+        or pause_reason in {"data_anomaly", "anomaly", "quarantine", "killswitch", "risk_halt"}
+    )
 
 
 def _ingress_rows(project_root: Path) -> list[dict[str, Any]]:
@@ -50,19 +120,15 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_quarantine_events: i
     lane_thaw = load_json(health_root / "lane_thaw_controller_latest.json")
     ingress_rows = _ingress_rows(project_root)
 
-    isolated_lanes = [
+    isolated_lanes = [row for row in ingress_rows if _is_isolated_pause(row)]
+    session_paused_lanes = [
         row
         for row in ingress_rows
-        if "paused" in str(row.get("loop_state") or "") or "killswitch" in str(row.get("loop_state") or "")
+        if _is_session_pause(row) and not _is_isolated_pause(row)
     ]
     running_lanes = [row for row in ingress_rows if str(row.get("loop_state") or "") == "running"]
     quarantine_events = int(quarantine_pressure.get("quarantine_events", 0) or 0)
-    raw_failed_checks = daily_verify.get("failed_checks") if isinstance(daily_verify.get("failed_checks"), list) else []
-    unresolved_checks = [
-        name
-        for name in [str(item or "").strip() for item in raw_failed_checks]
-        if name and name not in NON_RUNTIME_DAILY_VERIFY_CHECKS
-    ]
+    unresolved_checks = _unresolved_daily_verify_checks(project_root, daily_verify)
 
     overall_status = "ready"
     if len(isolated_lanes) >= 2 or quarantine_events > int(max_quarantine_events):
@@ -142,6 +208,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_quarantine_events: i
         "sleeve_matrix": {
             "isolated_lanes": isolated_lanes,
             "isolated_lane_count": isolated_lane_count,
+            "session_paused_lanes": session_paused_lanes[:12],
+            "session_paused_lane_count": len(session_paused_lanes),
             "running_lane_count": running_lane_count,
             "running_examples": running_lanes[:6],
         },

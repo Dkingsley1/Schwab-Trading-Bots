@@ -97,6 +97,161 @@ def test_operator_cockpit_aggregates_upgrade_surfaces(tmp_path: Path) -> None:
     assert payload["surfaces"]["daily_verify_auto_remediation_bot"]["status"] == "pending"
 
 
+def test_operator_cockpit_keeps_expanded_collection_green_with_adaptive_followups(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "runtime_gate_dashboard_latest.json",
+        {
+            "overall": {
+                "status": "degraded",
+                "ok": False,
+                "attention": [
+                    "external_backlog_drain_recommended",
+                    "external_backlog_retry_bot_followups",
+                    "memory_efficiency_control_needs_work",
+                    "live_runtime_separation_control_needs_work",
+                    "auth_lease_manager_needs_work",
+                    "runtime_snapshot_cache_control_needs_work",
+                    "promotion_not_ready",
+                    "training_quality_control_blocked",
+                ],
+            }
+        },
+    )
+    _write_json(health / "training_report_latest.json", {"overall_status": "blocked"})
+    _write_json(health / "training_quality_control_latest.json", {"overall_status": "blocked"})
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.01,
+            "steady_state": {"target_status": {"steady_state_ready": True}},
+            "queue_watermarks": {"breaches": {"hard": [], "elevated": []}},
+            "backpressure": {
+                "total_pending_lines": 69,
+                "core_pending_lines": 34,
+                "estimated_total_drain_minutes": 15.0,
+            },
+            "storage": {"backlog_drain_recommended_now": False},
+            "writer_shedding": {"active": False},
+        },
+    )
+    _write_json(health / "external_backlog_drain_latest.json", {"overall_status": "ready", "recommended_now": False, "material_drain_recommended": False})
+    _write_json(health / "external_backlog_retry_bot_latest.json", {"overall_status": "applied_with_followups", "recommended_actions": ["retry again"]})
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "needs_work",
+            "memory_snapshot": {"memory_pressure_state": "green", "memory_pressure_kind": "none", "swap_used_gb": 0.4},
+            "expansion_session": {
+                "total_bots": 869,
+                "active_bots": 814,
+                "data_collection_active_bots": 784,
+                "sleeve_profile_count": 206,
+                "pressure_level": "massive",
+            },
+        },
+    )
+    _write_json(
+        project_root / "master_bot_registry.json",
+        {
+            "summary": {
+                "total_bots": 884,
+                "active_bots": 829,
+                "data_collection_active_bots": 799,
+                "sleeve_profile_count": 207,
+            }
+        },
+    )
+    _write_json(health / "global_killswitch_latest.json", {"halt": False, "action": "none", "reasons": []})
+    _write_json(
+        health / "storage_tier_policy_latest.json",
+        {
+            "overall_status": "blocked",
+            "pressure": {"hot_path_over_budget_bytes": 2048},
+            "upgrade_plan": {"top_hot_path_families": [{"family": "sql_link_shards", "bytes": 4096}]},
+        },
+    )
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {
+            "overall_status": "degraded",
+            "shared_host_pressure": {"contention_score": 2, "signals": {"swap_pressure_elevated": False, "restart_storm_present": False}},
+            "clearance_plan": {"clearance_state": "awaiting_coverage_cycles"},
+        },
+    )
+    _write_json(health / "runtime_snapshot_cache_control_latest.json", {"overall_status": "degraded", "cache_health": {"snapshot_ready": True}})
+    _write_json(health / "auth_lease_manager_latest.json", {"overall_status": "degraded", "lease_state": "warning", "lease_budget": {"expires_in_seconds": 1800, "critical_lease_seconds": 600}})
+    _write_json(
+        health / "rolling_restart_controller_latest.json",
+        {
+            "overall_status": "blocked",
+            "restart_due": True,
+            "recommended_scope": "none",
+            "due_signals": {
+                "checkpoint_missing_or_stale": True,
+                "session_stale": False,
+                "shadow_heartbeat_stale": False,
+                "swap_pressure_high": False,
+                "restart_storm_present": False,
+            },
+        },
+    )
+    _write_json(
+        health / "artifact_freshness_slo_latest.json",
+        {
+            "overall_status": "blocked",
+            "sla_summary": {"stale_required": 1},
+            "artifacts": [{"name": "process_watchdog", "required": True, "stale": True}],
+        },
+    )
+    _write_json(
+        health / "service_control_plane_latest.json",
+        {
+            "overall_status": "blocked",
+            "upgrade_lanes": {
+                "runtime_separation": {"status": "blocked", "summary": "contention_score=4"},
+                "operator_cockpit_contract": {"status": "degraded", "summary": "recommended_actions=14"},
+            },
+        },
+    )
+    _write_json(
+        health / "master_infrastructure_supervisor_latest.json",
+        {
+            "overall_status": "blocked",
+            "operator_followups": [],
+            "hardening_scorecard": {
+                "truth_layer_ready": True,
+                "storage_route_certified": True,
+                "process_ownership_canonical": True,
+                "command_surface_clean": True,
+                "launchd_jobs_installed": True,
+            },
+            "checks": [{"name": "process_lane_ownership", "status": "ready"}],
+        },
+    )
+
+    payload = cockpit_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["adaptive_posture"]["overall_status"] == "stable_expansion"
+    assert payload["adaptive_posture"]["active_bots"] == 829
+    assert payload["adaptive_posture"]["data_collection_active_bots"] == 799
+    assert payload["adaptive_posture"]["sleeve_profile_count"] == 207
+    assert payload["readiness_domains"]["live_collection"]["status"] == "ready"
+    assert payload["readiness_domains"]["training_and_promotion"]["status"] == "blocked"
+    assert payload["upgrade_lanes"]["storage_split"]["status"] == "advisory"
+    assert payload["upgrade_lanes"]["runtime_separation"]["status"] == "advisory"
+    assert payload["surfaces"]["external_backlog_retry_bot"]["status"] == "advisory"
+    assert payload["surfaces"]["auth_lease_manager"]["status"] == "advisory"
+    assert payload["surfaces"]["rolling_restart_controller"]["status"] == "advisory"
+    assert payload["surfaces"]["artifact_freshness_slo"]["status"] == "advisory"
+    assert "external_backlog_drain_recommended" not in payload["recommended_actions"]
+    assert "memory_efficiency_control_needs_work" not in payload["recommended_actions"]
+
+
 def test_daily_verify_auto_remediation_bot_builds_actionable_plan(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     _write_json(project_root / "governance" / "health" / "daily_auto_verify_latest.json", {"failed_checks": ["replay_hash_registry_guard", "db_integrity"]})

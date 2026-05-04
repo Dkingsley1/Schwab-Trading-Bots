@@ -19,11 +19,18 @@ MLX_PACKAGE_NAMES = {
     "mlx-metal",
     "mlx-lm",
     "mlx-data",
+    "mlx-graphs",
+    "mlx-cluster",
+    "mlx-snn",
+    "mlx-vision",
     "mlx-vlm",
     "mlx-whisper",
     "mlx-audio",
     "mlx-embeddings",
     "mlx-embedding-models",
+    "esig",
+    "roughpy",
+    "pyrecombine",
     "parakeet-mlx",
 }
 

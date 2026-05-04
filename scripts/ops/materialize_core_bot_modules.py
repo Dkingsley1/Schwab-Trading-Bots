@@ -93,6 +93,11 @@ def _compact_spec(row: dict[str, Any]) -> dict[str, Any]:
         "execution_enabled",
         "rotation_blocked",
         "rotation_block_reason",
+        "capability_pack_version",
+        "capability_pack_slug",
+        "capability_pack_display_name",
+        "capability_pack_contract",
+        "advanced_intelligence_layer_contract",
     ]
     return {key: row.get(key) for key in keys if key in row}
 

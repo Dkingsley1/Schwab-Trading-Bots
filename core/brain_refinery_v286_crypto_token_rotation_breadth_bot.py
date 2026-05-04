@@ -15,7 +15,7 @@ except ModuleNotFoundError:
     from core.registry_backed_collection_bot import describe_registry_backed_bot, train_registry_backed_bot
 
 BOT_ID = 'brain_refinery_v286_crypto_token_rotation_breadth_bot'
-GENERATED_AT_UTC = '2026-05-01T17:00:28.926223+00:00'
+GENERATED_AT_UTC = '2026-05-02T22:30:58.281695+00:00'
 BOT_SPEC = {'active': True,
  'allocation_enabled': False,
  'bootstrap_teacher_bot_ids': ['brain_refinery_v257_crypto_spot_momentum_regime_bot',

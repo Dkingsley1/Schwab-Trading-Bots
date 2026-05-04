@@ -1,0 +1,123 @@
+{
+  "generated_at_utc": "2026-05-03T14:52:06.743225+00:00",
+  "adaptive_intelligence_kernel_version": "adaptive_intelligence_kernel_v1",
+  "kernel": {
+    "slug": "adaptive_intelligence_kernel",
+    "display_name": "Adaptive Intelligence Kernel",
+    "sleeve_family": "adaptive_meta_learning",
+    "sleeve_profile": "adaptive_intelligence_kernel",
+    "objective": "Add an adaptive meta-learning kernel that watches how the whole platform learns, forgets, transfers, and aligns over time.",
+    "bot_count": 15,
+    "bot_ids": [
+      "brain_refinery_v879_adaptive_kernel_online_meta_learning_master_bot",
+      "brain_refinery_v880_adaptive_kernel_regime_transfer_learning_bridge_bot",
+      "brain_refinery_v881_adaptive_kernel_continual_rehearsal_memory_buffer_bot",
+      "brain_refinery_v882_adaptive_kernel_catastrophic_forgetting_guard_bot",
+      "brain_refinery_v883_adaptive_kernel_self_supervised_state_encoder_bot",
+      "brain_refinery_v884_adaptive_kernel_causal_representation_disentangler_bot",
+      "brain_refinery_v885_adaptive_kernel_bayesian_model_router_bot",
+      "brain_refinery_v886_adaptive_kernel_meta_gradient_reward_guard_bot",
+      "brain_refinery_v887_adaptive_kernel_operator_preference_alignment_recorder_bot",
+      "brain_refinery_v888_adaptive_kernel_tool_reliability_auditor_bot",
+      "brain_refinery_v889_adaptive_kernel_teacher_committee_distillation_router_bot",
+      "brain_refinery_v890_adaptive_kernel_rl_curriculum_environment_builder_bot",
+      "brain_refinery_v891_adaptive_kernel_simulation_to_reality_gap_detector_bot",
+      "brain_refinery_v892_adaptive_kernel_data_valuation_prioritizer_bot",
+      "brain_refinery_v893_adaptive_kernel_grandmaster_adaptive_kernel_bridge_bot"
+    ],
+    "dedicated_data_intake": [
+      "meta_learning_update_trace",
+      "continual_learning_rehearsal_trace",
+      "catastrophic_forgetting_probe_trace",
+      "regime_transfer_evidence_trace",
+      "self_supervised_state_embedding_trace",
+      "causal_representation_trace",
+      "bayesian_model_router_trace",
+      "meta_gradient_reward_trace",
+      "operator_preference_alignment_trace",
+      "tool_reliability_observation_trace",
+      "teacher_committee_distillation_trace",
+      "rl_curriculum_environment_trace",
+      "simulation_to_reality_gap_trace",
+      "data_valuation_priority_trace",
+      "grandmaster_adaptive_kernel_packet_trace"
+    ],
+    "storage_retention_rule": {
+      "retention_profile": "adaptive_kernel_hot_7d_warm_90d_cold_365d",
+      "storage_targets": [
+        "governance/adaptive_intelligence_kernel",
+        "governance/adaptive_intelligence_kernel/meta_learning",
+        "governance/adaptive_intelligence_kernel/rehearsal_memory",
+        "governance/adaptive_intelligence_kernel/sim_to_real",
+        "governance/health/adaptive_intelligence_kernel",
+        "data/jsonl_link.sqlite3"
+      ],
+      "max_daily_mb_per_bot": 40,
+      "capture_mode": "sampled_distilled",
+      "sample_rate": 0.2,
+      "dedupe_required": true,
+      "stale_deletion_policy": "distill_rehearsal_memory_then_stage_low_value_raw_traces_under_quota_guard"
+    },
+    "paper_only_floor": {
+      "paper_trade_lock_required": true,
+      "live_trading_enabled": false,
+      "execution_enabled": false,
+      "allocation_enabled": false,
+      "graduation_requires_minimum_observations": 10000,
+      "graduation_requires_collection_days": 35
+    },
+    "sleeve_master_bot_id": "brain_refinery_v879_adaptive_kernel_online_meta_learning_master_bot",
+    "regression_guard_bot_id": "brain_refinery_v882_adaptive_kernel_catastrophic_forgetting_guard_bot",
+    "capacity_check": {
+      "active_bot_floor": 700,
+      "runtime_stability_mode": "adaptive_ready_with_followups",
+      "runtime_control_refresh_seconds": 300,
+      "queue_policy": "buffered_jsonl_batching",
+      "compute_guard_mode": "cold_lane_preferred",
+      "global_halt_mode": "adaptive_downshift_before_hard_halt",
+      "heavy_reasoning_mode": "off_hot_path_low_pressure_or_simulation_window_only"
+    },
+    "adaptive_depth": [
+      "online_meta_learning",
+      "continual_learning_rehearsal",
+      "catastrophic_forgetting_control",
+      "regime_transfer_learning",
+      "self_supervised_market_state_encoding",
+      "causal_representation_learning",
+      "bayesian_model_routing",
+      "meta_gradient_reward_shaping",
+      "operator_preference_alignment",
+      "tool_reliability_auditing",
+      "teacher_committee_distillation",
+      "rl_environment_curriculum",
+      "simulation_to_reality_gap_detection",
+      "data_valuation",
+      "grandmaster_kernel_bridge"
+    ]
+  },
+  "adaptive_kernel_contract": {
+    "contract_version": "adaptive_intelligence_kernel_v1",
+    "purpose": "adaptive_meta_learning_kernel_for_continual_learning_transfer_safety_and_grandmaster_intelligence_routing",
+    "adaptive_depth": [
+      "online_meta_learning",
+      "continual_learning_rehearsal",
+      "catastrophic_forgetting_control",
+      "regime_transfer_learning",
+      "self_supervised_market_state_encoding",
+      "causal_representation_learning",
+      "bayesian_model_routing",
+      "meta_gradient_reward_shaping",
+      "operator_preference_alignment",
+      "tool_reliability_auditing",
+      "teacher_committee_distillation",
+      "rl_environment_curriculum",
+      "simulation_to_reality_gap_detection",
+      "data_valuation",
+      "grandmaster_kernel_bridge"
+    ],
+    "graduation_policy": "collection_only_until_long_horizon_replay_forgetting_and_alignment_guards_clear",
+    "global_halt_contract": "adaptive_kernel_must_downshift_or_distill_before_hard_global_halt",
+    "paper_lock_contract": "paper_trade_lock_required_before_any_execution_path",
+    "resource_contract": "sampled_observer_mode_with_heavy_adaptation_off_hot_path"
+  }
+}

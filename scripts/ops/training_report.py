@@ -415,6 +415,8 @@ def _build_context(
     promotion_reasons = [str(item) for item in (promotion_gate_meta.get("reasons") or []) if str(item).strip()]
     failed_checks = [str(item) for item in (promotion_quality.get("failed_checks") or []) if str(item).strip()]
     daily_verify_failed_checks = [str(item) for item in (daily_verify.get("failed_checks") or []) if str(item).strip()]
+    promotion_quality_details = promotion_quality.get("details") if isinstance(promotion_quality.get("details"), dict) else {}
+    daily_verify_effective_ok = bool(daily_verify.get("ok", False)) or bool(promotion_quality_details.get("daily_verify_ok", False))
 
     summary = {
         "generated_utc": datetime.now(timezone.utc).isoformat(),
@@ -429,7 +431,7 @@ def _build_context(
         "master_update_status": str(scorecard.get("master_update_status", success.get("master_update_status", "")) or ""),
         "data_quality_ok": bool(success.get("data_quality_ok", False)),
         "promotion_quality_ok": bool(promotion_quality.get("ok", False)),
-        "daily_verify_ok": bool(daily_verify.get("ok", False)),
+        "daily_verify_ok": daily_verify_effective_ok,
         "run_timestamp_local": _fmt_ts_local(success.get("timestamp_utc") or scorecard.get("timestamp_utc")),
     }
 
@@ -447,7 +449,7 @@ def _build_context(
         "promotion_quality": {
             "ok": bool(promotion_quality.get("ok", False)),
             "failed_checks": failed_checks,
-            "details": promotion_quality.get("details") if isinstance(promotion_quality.get("details"), dict) else {},
+            "details": promotion_quality_details,
         },
         "promotion_gate": {
             "promote_ok": bool(promotion_gate.get("promote_ok", False)),

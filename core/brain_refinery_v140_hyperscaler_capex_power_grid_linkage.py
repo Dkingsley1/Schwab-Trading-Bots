@@ -15,7 +15,7 @@ except ModuleNotFoundError:
     from core.registry_backed_collection_bot import describe_registry_backed_bot, train_registry_backed_bot
 
 BOT_ID = 'brain_refinery_v140_hyperscaler_capex_power_grid_linkage'
-GENERATED_AT_UTC = '2026-05-01T17:00:28.855887+00:00'
+GENERATED_AT_UTC = '2026-05-02T22:30:58.212604+00:00'
 BOT_SPEC = {'active': True,
  'allocation_enabled': False,
  'bootstrap_teacher_bot_ids': ['brain_refinery_v49_investment_trend_quality',

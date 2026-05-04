@@ -661,14 +661,26 @@ def load_shard_heat_map(project_root: Path = PROJECT_ROOT, *, db_path: Path | st
     path = resolve_db_path(project_root, db_path=db_path)
     if not path.exists():
         return {}
-    with connect(project_root, db_path=path) as conn:
-        rows = conn.execute(
-            """
-            SELECT shard_name, query_count, rows_scanned_total, rows_returned_total, duration_ms_total,
-                   last_heat_score, promotion_candidate, last_query_family, last_access_utc
-            FROM shard_heat_state
-            """
-        ).fetchall()
+    try:
+        conn = _shared_connect_sqlite(
+            path,
+            project_root=project_root,
+            timeout_seconds=1.0,
+            query_only=True,
+            readonly=True,
+        )
+        try:
+            rows = conn.execute(
+                """
+                SELECT shard_name, query_count, rows_scanned_total, rows_returned_total, duration_ms_total,
+                       last_heat_score, promotion_candidate, last_query_family, last_access_utc
+                FROM shard_heat_state
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError:
+        return {}
     return {
         str(row[0]): {
             "query_count": int(row[1] or 0),

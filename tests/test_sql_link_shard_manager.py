@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -11,6 +12,42 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import scripts.ops.sql_link_shard_manager as shard_manager
+
+
+def test_retention_maintenance_pause_reads_live_swap_override(tmp_path, monkeypatch) -> None:
+    override = tmp_path / ".env.swap_pressure_override"
+    override.write_text(
+        "\n".join(
+            [
+                "SWAP_PRESSURE_TIER=pause_research",
+                "SWAP_PRESSURE_SWAP_USED_GB=19.1",
+                "RETENTION_MAINTENANCE_PAUSED_FOR_SWAP=1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("RETENTION_MAINTENANCE_PAUSED_FOR_SWAP", raising=False)
+    paused, env = shard_manager._retention_maintenance_paused_for_swap(override_path=override)
+    assert paused is True
+    assert env["SWAP_PRESSURE_TIER"] == "pause_research"
+
+
+def test_retention_maintenance_pause_can_clear_with_normal_override(tmp_path, monkeypatch) -> None:
+    override = tmp_path / ".env.swap_pressure_override"
+    override.write_text(
+        "\n".join(
+            [
+                "SWAP_PRESSURE_TIER=normal",
+                "RETENTION_MAINTENANCE_PAUSED_FOR_SWAP=0",
+                "SWAP_PRESSURE_HEAVY_RESEARCH_PAUSED=0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RETENTION_MAINTENANCE_PAUSED_FOR_SWAP", "1")
+    paused, env = shard_manager._retention_maintenance_paused_for_swap(override_path=override)
+    assert paused is False
+    assert env["RETENTION_MAINTENANCE_PAUSED_FOR_SWAP"] == "0"
 
 
 def _create_shard_jsonl_db(path: Path) -> None:
@@ -524,6 +561,20 @@ def test_build_shards_uses_heat_map_to_expand_hot_shard_capacity(monkeypatch) ->
     assert shards["explanations"]["heat_promotion_candidate"] is True
     assert shards["explanations"]["last_heat_score"] == 3.4
     assert shards["explanations"]["max_files"] == int(shard_manager.DEFAULT_SHARD_DEFS["explanations"]["max_files"]) + 2
+
+
+def test_build_shards_fails_open_when_heat_map_unavailable(monkeypatch) -> None:
+    def _raise(_project_root):
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    monkeypatch.setattr(shard_manager.ops_data_plane, "load_shard_heat_map", _raise)
+
+    shards = {
+        row["name"]: row
+        for row in shard_manager._build_shards(["trading"])
+    }
+
+    assert shards["trading"]["heat_promotion_candidate"] is False
 
 
 def test_sql_link_service_payload_marks_mysql_disabled_in_sqlite_mode(tmp_path) -> None:

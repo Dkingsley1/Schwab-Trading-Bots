@@ -140,3 +140,43 @@ def test_new_bot_admission_guard_ignores_inactive_probation_backlog_without_acti
     assert payload["ok"] is True
     assert payload["candidate_bot_count"] == 0
     assert payload["blocking_candidate_count"] == 0
+
+
+def test_new_bot_admission_guard_targeted_advisory_scope_does_not_block_coverage_repair(tmp_path: Path) -> None:
+    diagnostics_root = tmp_path / "governance" / "training_diagnostics"
+    _write_json(
+        diagnostics_root / "brain_refinery_v4_simple_latest.json",
+        {"status": "deferred_sample_starved", "sample_count": 5, "eligible_sequences": 1, "sequence_count": 1},
+    )
+
+    payload = src.build_payload(
+        registry={
+            "sub_bots": [
+                {"bot_id": "brain_refinery_v4_simple", "active": True},
+                {"bot_id": "brain_refinery_v900_unrelated_new_bot", "active": True},
+            ]
+        },
+        walk_forward={
+            "bots": {
+                "brain_refinery_v4_simple": {"runs": 0, "status": "insufficient_runs"},
+                "brain_refinery_v900_unrelated_new_bot": {"runs": 0, "status": "insufficient_runs"},
+            }
+        },
+        feature_store_manifest={"ok": False, "point_in_time_contract": {"complete": False}, "contract_hashes": {}},
+        replay_hash_registry_guard={"ok": False, "details": {}},
+        ownership_payload={"default_owner": "coverage-repair"},
+        diagnostics_root=diagnostics_root,
+        min_training_sample_count=40,
+        min_eligible_sequences=4,
+        min_walk_forward_runs=12,
+        include_bot_ids={"brain_refinery_v4_simple"},
+        advisory_only=True,
+    )
+
+    assert payload["ok"] is True
+    assert payload["contract_ok"] is False
+    assert payload["advisory_only"] is True
+    assert payload["scope"]["target_scoped"] is True
+    assert payload["candidate_bot_count"] == 1
+    assert payload["blocking_candidate_count"] == 1
+    assert payload["blocking_candidates"][0]["bot_id"] == "brain_refinery_v4_simple"

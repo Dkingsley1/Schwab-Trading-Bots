@@ -44,12 +44,17 @@ def test_build_payload_includes_detected_and_applied_tiers(tmp_path: Path) -> No
     assert payload["applied_tier"] == "max_throughput"
     assert payload["override_exists"] is True
     assert payload["env_overrides"]["SQL_LINK_SERVICE_INTERVAL_SECONDS"] == "45"
+    assert payload["unified_memory_telemetry"]["memory_architecture"] == "unified"
+    assert payload["unified_memory_telemetry"]["competitive_advantage"] == "high"
     assert payload["env_overrides"]["COINBASE_SNAPSHOT_MAX_WORKERS"] == "4"
     assert payload["env_overrides"]["ASYNC_PIPELINE_WORKERS"] == "6"
     assert payload["env_overrides"]["RUNTIME_TRAIN_MAX_SAMPLES"] == "32000"
     assert payload["env_overrides"]["RESOURCE_GUARD_CREATIVE_HOT_CPU_THRESHOLD"] == "135"
     assert payload["env_overrides"]["RESOURCE_GUARD_OPTIONAL_BLOCK_ON_CREATIVE_SESSION_LEVELS"] == "dual_pro,hot"
     assert payload["env_overrides"]["MEMORY_EFFICIENCY_CREATIVE_HOT_PROFILE"] == "air_safe"
+    assert payload["env_overrides"]["CREATIVE_AUDIO_SAMPLE_RATE_HZ"] == "96000"
+    assert payload["creative_audio_contract"]["target_sample_rate_hz"] == 96000
+    assert payload["creative_audio_contract"]["require_matched_input_output"] is True
     json.dumps(payload, ensure_ascii=True)
 
 
@@ -66,3 +71,4 @@ def test_override_lines_quote_values_with_spaces() -> None:
 
     assert "RESOURCE_GUARD_CREATIVE_APP_NAMES='Final Cut Pro,Logic Pro'" in lines
     assert "BOT_APPLE_SILICON_CHIP=Apple_M4_Max" in lines
+    assert "LOGIC_PRO_AUDIO_SAMPLE_RATE_HZ=96000" in lines

@@ -73,9 +73,9 @@ def test_exotic_derivative_bots_are_collection_first_and_correlated() -> None:
         assert row["correlation_peer_sleeves"]
         assert row["correlation_dependencies"]
 
-    expected = {sleeve: 5 for sleeve in EXOTIC_SLEEVES}
-    expected["advanced_derivatives_infrastructure"] = 1
-    assert sleeve_counts == expected
+    for sleeve in EXOTIC_SLEEVES:
+        assert sleeve_counts[sleeve] >= 5
+    assert sleeve_counts["advanced_derivatives_infrastructure"] == 1
     guard = roster_expansion_slots._slot_registry_row(
         next(row for row in specs if str(row.get("bot_id")) == "brain_refinery_v438_advanced_derivatives_data_regression_guard_bot")
     )
@@ -120,4 +120,11 @@ def test_exotic_derivative_sleeves_are_in_strategy_coverage_config() -> None:
         assert len(config["ticker_universes"][sleeve]) >= 10
         assert sleeve in sleeves
         assert sleeves[sleeve]["runtime_status"] == "active_data_collection"
-        assert len(sleeves[sleeve]["strategies"]) == 5
+        assert len(sleeves[sleeve]["strategies"]) >= 5
+
+    assert "rough_volatility_vvix_exotics" in sleeves["variance_volatility_swaps"]["strategies"]
+    assert "quantum_barrier_path_amplitude_options" in sleeves["barrier_lookback_options"]["strategies"]
+    assert "cross_asset_correlation_heat_swaps" in sleeves["dispersion_trading"]["strategies"]
+    assert "cliquet_global_floor_local_cap" in sleeves["structured_products"]["strategies"]
+    assert "signature_trend_follower_options" in sleeves["rainbow_options"]["strategies"]
+    assert "esg_linked_contingent_credit_default_swaps" in sleeves["synthetic_cdo"]["strategies"]

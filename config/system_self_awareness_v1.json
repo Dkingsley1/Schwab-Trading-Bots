@@ -1,0 +1,71 @@
+{
+  "generated_at_utc": "2026-05-03T15:27:18.334330+00:00",
+  "system_self_awareness_version": "system_self_awareness_v1",
+  "pack": {
+    "slug": "system_self_awareness",
+    "display_name": "System Self-Awareness Infrabots",
+    "sleeve_family": "self_awareness_infrastructure",
+    "sleeve_profile": "system_self_awareness",
+    "objective": "Add operational self-awareness infrabots that maintain identity, resource, dependency, failure-memory, growth, and self-reporting context.",
+    "bot_count": 10,
+    "bot_ids": [
+      "brain_refinery_v894_self_model_identity_cartographer_bot",
+      "brain_refinery_v895_resource_cotenant_awareness_guard_bot",
+      "brain_refinery_v896_bot_roster_drift_mapper_bot",
+      "brain_refinery_v897_incident_failure_memory_linker_bot",
+      "brain_refinery_v898_dependency_graph_surface_mapper_bot",
+      "brain_refinery_v899_growth_pressure_forecaster_bot",
+      "brain_refinery_v900_self_reporting_narrator_bot",
+      "brain_refinery_v901_optimization_recommendation_ranker_bot",
+      "brain_refinery_v902_self_model_regression_guard_bot",
+      "brain_refinery_v903_grandmaster_self_awareness_bridge_bot"
+    ],
+    "dedicated_data_intake": [
+      "system_self_model_snapshot",
+      "operator_cockpit_adaptive_posture",
+      "memory_cotenant_awareness_trace",
+      "registry_identity_surface",
+      "health_surface_status_matrix",
+      "incident_failure_memory_trace",
+      "dependency_edge_trace",
+      "expansion_pressure_trace",
+      "self_optimization_action_trace",
+      "grandmaster_self_model_packet"
+    ],
+    "storage_retention_rule": {
+      "retention_profile": "self_model_hot_14d_warm_120d_cold_365d",
+      "storage_targets": [
+        "governance/self_model",
+        "governance/self_model/dependency_graph",
+        "governance/self_model/failure_memory",
+        "governance/self_model/optimization",
+        "governance/health/system_self_model_latest.json",
+        "exports/reports/operator/system_self_model_latest.md"
+      ],
+      "max_daily_mb_per_bot": 25,
+      "capture_mode": "diffed_snapshot_summary",
+      "sample_rate": 0.25,
+      "dedupe_required": true
+    },
+    "paper_only_floor": {
+      "paper_trade_lock_required": true,
+      "live_trading_enabled": false,
+      "execution_enabled": false,
+      "allocation_enabled": false,
+      "graduation_requires_minimum_observations": 5000,
+      "graduation_requires_collection_days": 21
+    },
+    "sleeve_master_bot_id": "brain_refinery_v894_self_model_identity_cartographer_bot",
+    "regression_guard_bot_id": "brain_refinery_v902_self_model_regression_guard_bot",
+    "self_awareness_depth": [
+      "resource_awareness",
+      "bot_identity_awareness",
+      "failure_memory",
+      "dependency_graph",
+      "growth_pressure",
+      "self_reporting",
+      "optimization_ranking",
+      "grandmaster_self_model_bridge"
+    ]
+  }
+}

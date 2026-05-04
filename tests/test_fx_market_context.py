@@ -258,6 +258,26 @@ def test_canonical_pair_reconciliation_prefers_closest_current_provider():
     assert row["divergence_ratio"] < 0.001
 
 
+def test_canonical_pair_reconciliation_marks_intraday_official_basis_as_watch():
+    payload = _canonical_pair_reconciliation(
+        ecb_pairs={"USDJPY": 156.562981},
+        fed_pairs={"USDJPY": 159.35},
+        twelve_data_intraday={
+            "USDJPY": {
+                "ok": True,
+                "latest_close": 157.07807,
+                "latest_ts": datetime.now(timezone.utc).isoformat(),
+            }
+        },
+        alpha_vantage_intraday={},
+    )
+
+    row = payload["USDJPY"]
+    assert row["divergence_ratio"] >= 0.01
+    assert row["divergence_severity"] == "basis_watch"
+    assert row["divergence_reason"] == "intraday_official_basis_difference"
+
+
 def test_fed_h10_current_parsing():
     html = """
     Release Date: March 23, 2026

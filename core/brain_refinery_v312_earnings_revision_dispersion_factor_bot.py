@@ -15,7 +15,7 @@ except ModuleNotFoundError:
     from core.registry_backed_collection_bot import describe_registry_backed_bot, train_registry_backed_bot
 
 BOT_ID = 'brain_refinery_v312_earnings_revision_dispersion_factor_bot'
-GENERATED_AT_UTC = '2026-05-01T17:00:28.937880+00:00'
+GENERATED_AT_UTC = '2026-05-02T22:30:58.293364+00:00'
 BOT_SPEC = {'active': True,
  'allocation_enabled': False,
  'bootstrap_teacher_bot_ids': ['brain_refinery_v165_guidance_revision_dispersion_scanner',

@@ -7,6 +7,7 @@ Mako==1.3.10
 MarkupSafe==3.0.3
 PyYAML==6.0.3
 Pygments==2.19.2
+QuantLib==1.42.1
 SQLAlchemy==2.0.48
 Werkzeug==3.1.6
 adbc-driver-manager==1.10.0
@@ -40,6 +41,7 @@ dill==0.4.1
 duckdb==1.5.0
 duckdb_engine==0.17.0
 empyrical-reloaded==0.5.12
+esig==1.0.0
 fastapi==0.135.3
 filelock==3.25.0
 flatbuffers==25.12.19
@@ -70,10 +72,14 @@ miniaudio==1.61
 ml_dtypes==0.5.4
 mlx-data==0.2.0
 mlx-audio==0.4.2
+mlx-cluster==0.0.7
 mlx-embedding-models==0.0.11
 mlx-embeddings==0.1.0
+mlx-graphs==0.0.9
 mlx-lm==0.31.1
 mlx-metal==0.31.1
+mlx-snn==0.5.0
+mlx-vision==0.1.0
 mlx-vlm==0.4.4
 mlx-whisper==0.4.3
 mlx==0.31.1
@@ -111,6 +117,7 @@ propcache==0.4.1
 protobuf==7.34.0
 psutil==7.2.2
 py-spy==0.4.1
+pyrecombine==1.0.1
 py-vollib-vectorized==0.1.1
 py_lets_be_rational==1.0.1
 py_vollib==1.0.1
@@ -132,6 +139,7 @@ redis==7.3.0
 regex==2026.2.28
 requests==2.32.5
 rich==14.3.3
+roughpy==0.3.0
 safetensors==0.7.0
 schwab-py==1.5.1
 scikit-learn==1.8.0

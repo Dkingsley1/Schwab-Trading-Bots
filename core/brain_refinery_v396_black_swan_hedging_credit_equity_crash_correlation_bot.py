@@ -15,7 +15,7 @@ except ModuleNotFoundError:
     from core.registry_backed_collection_bot import describe_registry_backed_bot, train_registry_backed_bot
 
 BOT_ID = 'brain_refinery_v396_black_swan_hedging_credit_equity_crash_correlation_bot'
-GENERATED_AT_UTC = '2026-05-01T17:00:28.985596+00:00'
+GENERATED_AT_UTC = '2026-05-02T22:30:58.338306+00:00'
 BOT_SPEC = {'active': True,
  'allocation_enabled': False,
  'bootstrap_teacher_bot_ids': ['brain_refinery_v145_bond_equity_correlation_breaker',
@@ -75,7 +75,7 @@ BOT_SPEC = {'active': True,
  'exclude_from_training': True,
  'execution_enabled': False,
  'execution_policy_label': 'research_only_no_execution',
- 'freshness_slo_seconds': 300,
+ 'freshness_slo_seconds': 1800,
  'label_contract': {},
  'labeling_tags': ['research_only',
                    'collection_only',

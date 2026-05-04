@@ -1,40 +1,40 @@
 # Auto-Refreshed Highlights
 
-_Generated at 2026-05-01 17:02 UTC_
+_Generated at 2026-05-03 23:49 UTC_
 
 ## Platform Snapshot
 
-- Registered bots: `492`
-- Active bots: `428`
-- Live lane artifacts tracked: `75`
+- Registered bots: `924`
+- Active bots: `869`
+- Live lane artifacts tracked: `94`
 - Running lane artifacts: `3`
-- Institutional readiness: `93.72/100` (`industry_leaning`)
-- Live readiness: `65.00/100` (`blocked`)
-- Runtime separation: `blocked`
+- Institutional readiness: `98.27/100` (`industry_leaning`)
+- Live readiness: `100.00/100` (`degraded`)
+- Runtime separation: `degraded`
 - Crypto source coverage: `14/14`
 - Crypto news coverage: `7/7`
 - Correlation mode: `exact`
-- Last training result: `0 trained / 0 failed`
-- PyTorch shadow-assist candidates: `0`
-- Autonomy control plane: `41.10/100` (`blocked`)
-- Architecture upgrades: `4/12` ready proof surfaces
+- Last training result: `3 trained / 4 failed`
+- PyTorch shadow-assist: `disabled` (MLX-primary live runtime)
+- Autonomy control plane: `77.34/100` (`blocked`)
+- Architecture upgrades: `9/12` ready proof surfaces
 
 ## Key Highlights
 
-- Registry currently tracks 492 bots with 428 active across crypto_sub_bot, futures_sub_bot, infrastructure_bot, infrastructure_sub_bot, macro_sub_bot, options_sub_bot, signal_sub_bot lanes.
-- Live ingestion is wired across 75 lane artifacts with 3 currently reporting `running`.
-- Institutional-readiness score is `93.72/100` with status `industry_leaning` across 12 governance domains.
-- Live readiness is `blocked` at `65.00/100`, with broker/session ready=`True/False` and watchdog healthy=`False`.
-- Runtime separation is `blocked` with contention score `4` and live-read-only=`False`.
-- Autonomy control plane is `blocked` at `41.10/100`, with `3` triggered playbooks, `2` open incidents, and promotion state `assembling_packet`.
-- Architecture upgrade scoreboard tracks `4` ready proof surfaces out of `12`, with host profile `unknown` and portable proof `unknown`.
+- Registry currently tracks 924 bots with 869 active across crypto_sub_bot, futures_sub_bot, infrastructure_bot, infrastructure_sub_bot, macro_sub_bot, options_sub_bot, signal_sub_bot lanes.
+- Live ingestion is wired across 94 lane artifacts with 3 currently reporting `running`.
+- Institutional-readiness score is `98.27/100` with status `industry_leaning` across 12 governance domains.
+- Live readiness is `degraded` at `100.00/100`, with broker/session ready=`True/True` and watchdog healthy=`True`.
+- Runtime separation is `degraded` with contention score `2` and live-read-only=`True`.
+- Autonomy control plane is `blocked` at `77.34/100`, with `1` triggered playbooks, `0` open incidents, and promotion state `assembling_packet`.
+- Architecture upgrade scoreboard tracks `9` ready proof surfaces out of `12`, with host profile `max_throughput` and portable proof `ready`.
 - Crypto context is aggregating 14/14 healthy sources and 7/7 healthy crypto news feeds.
-- Latest divergence check is `ok=True` with worst relative spread 0.46%.
-- Market/crypto correlation overlay is running in `exact` mode with 6 aligned pairs and cache hits/misses 0/21.
-- Latest training summary is unknown age: 0 trained, 0 failed, `confirmed_training_success=False` with reason `unknown`.
-- Process watchdog currently tracks `3` services with `3` healthy targets, `0` restart storms, and `0` alerts. Tripwire event flag remains `active=False`.
+- Latest divergence check is `ok=True` with worst relative spread 0.36%.
+- Market/crypto correlation overlay is running in `exact` mode with 0 aligned pairs and cache hits/misses 0/0.
+- Latest training summary is 4.7d old: 3 trained, 4 failed, `confirmed_training_success=False` with reason `training_failures_present:4`.
+- Process watchdog currently tracks `4` services with `4` healthy targets, `0` restart storms, and `0` alerts. Tripwire event flag remains `active=False`.
 - PyTorch sidecar stays observation-only, but it now carries `0` active shadow-assist candidate profiles across `0` tracked runs.
-- Latest daily ops quality score is 100.0 and the weakest institutional domain is `immutable_experiment_tracking` (67.60).
+- Latest daily ops quality score is 0.0 and the weakest institutional domain is `immutable_experiment_tracking` (79.20).
 
 ## Executive Summary
 
@@ -44,67 +44,67 @@ _Generated at 2026-05-01 17:02 UTC_
 
 ## Real-World Readiness
 
-- Institutional posture: `industry_leaning` at `93.72/100`.
-- Live operating posture: `blocked` at `65.00/100` with runtime separation `blocked`.
-- Watchdog coverage: `3/3` healthy targets, restart storms `0`, alerts `0`.
-- Training lane: `0` trained / `0` failed, artifact `unknown age`.
-- PyTorch research lane: `0` assist candidates over `0` tracked runs.
-- Autonomy posture: `blocked` at `41.10/100`, triggered playbooks `3`, open incidents `2`.
-- Architecture posture: `4/12` proof surfaces ready, host profile ``, portable proof ``.
+- Institutional posture: `industry_leaning` at `98.27/100`.
+- Live operating posture: `degraded` at `100.00/100` with runtime separation `degraded`.
+- Watchdog coverage: `4/4` healthy targets, restart storms `0`, alerts `0`.
+- Training lane: `3` trained / `4` failed, artifact `4.7d old`.
+- PyTorch research lane: `disabled` during MLX-primary live collection.
+- Autonomy posture: `blocked` at `77.34/100`, triggered playbooks `1`, open incidents `0`.
+- Architecture posture: `9/12` proof surfaces ready, host profile `max_throughput`, portable proof `ready`.
 
 ## Special Features
 
-- Adaptive Apple Silicon Brain: host-aware tuning now recognizes `unknown`, sees memory architecture `unknown`, and lands on `unknown` before the stack starts.
-- Three-Mode Switchboard: mission control now tracks shadow/paper/live with `2` active modes and runtime clearance `awaiting_cold_lane`.
-- Event-to-Trade Intelligence: the macro lane now surfaces live-detection and media ingest proof as `degraded` with `live_detected=0 media_status=missing`.
-- Self-Healing Ops Plane: autonomy currently sits at `41.10/100` with `3` triggered playbooks.
-- Portable Brain Contract: the host contract now recommends `unknown` mode with proof-node status `unknown`, backend `unknown`, and parity focus `unknown` while keeping the broker/runtime seam portable.
+- Adaptive Apple Silicon Brain: host-aware tuning now recognizes `Apple M1 Max`, sees memory architecture `unified`, and lands on `max_throughput` before the stack starts.
+- Three-Mode Switchboard: mission control now tracks shadow/paper/live with `2` active modes and runtime clearance `awaiting_coverage_cycles`.
+- Event-to-Trade Intelligence: the macro lane now surfaces live-detection and media ingest proof as `ready` with `relevance=low transcript_quality=missing media_status=missing idle_ready=1`.
+- Self-Healing Ops Plane: autonomy currently sits at `77.34/100` with `1` triggered playbooks.
+- Portable Brain Contract: the host contract now recommends `native` mode with proof-node status `ready`, backend `pytorch`, and parity focus `mlx_vs_portable_replay` while keeping the broker/runtime seam portable.
 
 ## Special Feature Proof Notes
 
 ### Adaptive Apple Silicon Brain
-- Adaptive Apple Silicon Brain: host-aware tuning now recognizes `unknown`, sees memory architecture `unknown`, and lands on `unknown` before the stack starts.
+- Adaptive Apple Silicon Brain: host-aware tuning now recognizes `Apple M1 Max`, sees memory architecture `unified`, and lands on `max_throughput` before the stack starts.
 - Why it matters: This matters because Apple Silicon unified memory gives the live stack one shared CPU and GPU pool for feature windows, broker-context caches, and MLX inference, so the same code can stay responsive on a MacBook Air and then scale up hard on Max-class machines without copy-heavy rewrites.
-- Recognized host `unknown chip` on `unknown os` with profile `unknown`.
-- Memory architecture is `unknown` with shared CPU/GPU pool `False`.
-- Apple Silicon memory advantage details are not yet published in the host contract.
-- Recommended runtime posture is `unknown` with backend `unknown`.
-- Host override file is `missing` at `unknown`.
-- Current watch item: Portable posture is still strongest on native Apple Silicon; non-Mac proof is `unknown` and still about replay parity rather than full live parity.
+- Recognized host `Apple M1 Max` on `Darwin` with profile `max_throughput`.
+- Memory architecture is `unified` with shared CPU/GPU pool `True`.
+- Apple Silicon unified memory keeps CPU, GPU, and MLX tensors in one pool, which cuts copy overhead for large feature windows, broker context caches, and multi-model inference.
+- Recommended runtime posture is `native` with backend `mlx`.
+- Host override file is `present` at `/Users/dankingsley/PycharmProjects/schwab_trading_bot/config/.env.host_profile_override`.
+- Current watch item: Portable posture is still strongest on native Apple Silicon; non-Mac proof is `ready` and still about replay parity rather than full live parity.
 
 ### Three-Mode Switchboard
-- Three-Mode Switchboard: mission control now tracks shadow/paper/live with `2` active modes and runtime clearance `awaiting_cold_lane`.
+- Three-Mode Switchboard: mission control now tracks shadow/paper/live with `2` active modes and runtime clearance `awaiting_coverage_cycles`.
 - Why it matters: This is the control surface that keeps the same trading brain coherent across shadow, paper, and live instead of forcing three separate systems to drift apart over time.
-- Switchboard currently tracks `2` active modes and `2` ready modes.
-- Active modes: `shadow, paper`; ready modes: `shadow, paper`.
-- Control surface clearance is `awaiting_cold_lane` with live read-only `False`.
-- Current watch item: Runtime clearance is still `awaiting_cold_lane`, which means the switchboard is operationally honest about when live should stay read-only.
+- Switchboard currently tracks `2` active modes and `3` ready modes.
+- Active modes: `shadow, paper`; ready modes: `shadow, paper, live`.
+- Control surface clearance is `awaiting_coverage_cycles` with live read-only `True`.
+- Current watch item: Runtime clearance is still `awaiting_coverage_cycles`, which means the switchboard is operationally honest about when live should stay read-only.
 
 ### Event-to-Trade Intelligence
-- Event-to-Trade Intelligence: the macro lane now surfaces live-detection and media ingest proof as `degraded` with `live_detected=0 media_status=missing`.
+- Event-to-Trade Intelligence: the macro lane now surfaces live-detection and media ingest proof as `ready` with `relevance=low transcript_quality=missing media_status=missing idle_ready=1`.
 - Why it matters: It gives the platform a route from macro hearings, policy streams, and transcripts into market-aware stance, relevance, and bulletin surfaces that the rest of the brain can actually use.
-- Latest macro event status is `missing` from `unknown source` with speaker `unknown speaker`.
-- Transcript quality is `unknown` at `0.0000`, cue match `0.0000`.
-- Market read is `unknown` with sentiment `0.0000` and relevance `unknown`.
-- Current watch item: Current transcript pipeline is `unknown` and should keep moving toward fully clean replay-grade transcripts for every event.
+- Latest macro event status is `degraded` from `` with speaker ``.
+- Transcript quality is `missing` at `0.0000`, cue match `0.0000`.
+- Market read is `` with sentiment `0.0000` and relevance `low`.
+- Current watch item: Current transcript pipeline is `missing` and should keep moving toward fully clean replay-grade transcripts for every event.
 
 ### Self-Healing Ops Plane
-- Self-Healing Ops Plane: autonomy currently sits at `41.10/100` with `3` triggered playbooks.
+- Self-Healing Ops Plane: autonomy currently sits at `77.34/100` with `1` triggered playbooks.
 - Why it matters: It is the difference between a platform that merely runs and one that can diagnose pressure, throttle itself, freeze bad lanes, and preserve operator trust while the rest of the stack keeps moving.
-- Autonomy score is `41.10/100` with `3` autonomous repair paths.
-- Triggered playbooks: `3`; notification ladder `degraded`; incident review `blocked`.
-- Process watchdog shows `3/3` healthy targets and `0` restart storms; chaos drill score `100.00`.
-- Current watch item: Incident review is currently `blocked`, so the self-healing story is strong but still not fully frictionless.
+- Autonomy score is `77.34/100` with `5` autonomous repair paths.
+- Triggered playbooks: `1`; notification ladder `ready`; incident review `ready`.
+- Process watchdog shows `4/4` healthy targets and `0` restart storms; chaos drill score `100.00`.
+- Current watch item: Incident review is currently `ready`, so the self-healing story is strong but still not fully frictionless.
 
 ### Portable Brain Contract
-- Portable Brain Contract: the host contract now recommends `unknown` mode with proof-node status `unknown`, backend `unknown`, and parity focus `unknown` while keeping the broker/runtime seam portable.
+- Portable Brain Contract: the host contract now recommends `native` mode with proof-node status `ready`, backend `pytorch`, and parity focus `mlx_vs_portable_replay` while keeping the broker/runtime seam portable.
 - Why it matters: This is the selling point that keeps the platform from being a dead-end Mac-only build: Apple Silicon stays first-class for the live brain, but the runtime now has an explicit broker-agnostic contract for replay, research, and proof on Linux and Windows.
-- Native contract is `unknown` on backend `unknown`, portable contract is `unknown` on `unknown`.
+- Native contract is `native` on backend `mlx`, portable contract is `portable` on `pytorch`.
 - Broker-specific news, options, and calendar context now sit behind adapter seams instead of being hardwired to one brokerage client.
-- Apple Silicon keeps a live-trading edge through `unknown` memory architecture while the proof node preserves Linux and Windows replay portability.
-- Cross-platform proof node is `unknown` and nightly parity support is `False`.
-- Linux and Windows deployment matrix entries are present, with next step `unknown`.
-- Current watch item: Next portability milestone is `unknown`, which is still the bridge between strong design and undeniable parity proof.
+- Apple Silicon keeps a live-trading edge through `unified` memory architecture while the proof node preserves Linux and Windows replay portability.
+- Cross-platform proof node is `ready` and nightly parity support is `True`.
+- Linux and Windows deployment matrix entries are present, with next step `run replay and parity checks on the non-Mac node before claiming live portability`.
+- Current watch item: Next portability milestone is `run replay and parity checks on the non-Mac node before claiming live portability`, which is still the bridge between strong design and undeniable parity proof.
 
 ## Next Proof Targets
 

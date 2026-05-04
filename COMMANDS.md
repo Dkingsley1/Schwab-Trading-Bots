@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `925893f054342b8974a92a14a2d2ec425b3118756b9e9e202f8920fb987f3c40`.
+Command contract hash: `c59307a2c6bbfdb653889ad0b41c0c93a8e1d3c1faa7e653074249e4f037a607`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -119,7 +119,7 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh livefeed-refresh
 ```
 
-`livefeed-refresh` is the all-feeds shortcut for the `feed-refresh` live-loop restart helper. It kills and restarts the relevant market-data loops. If you want a full supervised stack refresh instead of a feed-loop refresh, use `./scripts/ops/opsctl.sh start --force-restart`.
+`livefeed-refresh` is the all-feeds shortcut for the `feed-refresh` live-loop restart helper. It kills and restarts the relevant market-data loops. Use `./scripts/ops/opsctl.sh livefeed-refresh --dry-run` to validate the route without touching processes. If you want a full supervised stack refresh instead of a feed-loop refresh, use `./scripts/ops/opsctl.sh start --force-restart`.
 
 ### Refresh the special features and framework map reports
 ```bash
@@ -138,6 +138,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 This releases the manual OPERATOR_STOP flag without bypassing the global halt safe-clear checks.
+
+### Run post-restart settlement
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh post-restart-settle --apply --json
+```
+
+This rechecks restart sanity, auth lease, global halt blockers, collector contracts, process watchdog coverage, and runtime throttle after a restart.
 
 ### Runtime mode switchboard
 ```bash
@@ -285,7 +293,8 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh feed --source all --heavy
 ```
 
-Use this as the primary all-feeds operator view when you want sleeve logs, decision streams, and infrastructure health artifacts in one window.
+Use this as the primary all-feeds operator view when you want sleeve logs, decision streams, highlighted health states, and infrastructure health artifacts in one window.
+Heavy views use a red-only highlight by default while preserving `[ALERT]`, `[WATCH]`, `[OK]`, and `[FLOW]` labels; pass `--no-color` only when redirecting clean text to a file.
 If the Mac is running an `air_safe` or `constrained` memory-efficiency profile, the feed automatically trims decision fanout and uses a lower default line budget unless you pass your own `--lines` or `--no-memory-aware`.
 
 ### Heavy main live feed view
@@ -361,6 +370,59 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh macro-auto-start --force-restart --youtube-channel-url "https://www.youtube.com/@federalreserve" --template fed --speaker "Federal Reserve" --source "Federal Reserve"
 ```
+
+## Platform Expansion
+
+### Apply the alpha intelligence evolution pack
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh alpha-intelligence-evolution --apply --json
+```
+
+Adds the guarded alpha advancement layer: training readiness, execution reality, portfolio exposure, source confidence, research intake, duplicate-alpha novelty control, regime memory v2, dashboard v2, adapter mesh, and cleanup governor.
+The bots are collection-only with paper/live execution blocked until readiness, execution realism, source confidence, and duplicate-alpha gates clear.
+
+### Apply the coordination intelligence control-plane pack
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh coordination-intelligence --apply --json
+```
+
+Adds the guarded coordination layer: bot genome lineage, strategy conflict resolution, capital simulation, regime memory, research-to-bot intake, feature quality, adversarial paper-trade lab, sleeve master summaries, admission committee, and explainability dashboard.
+The bots are collection-only until their evidence, data-quality, and runtime thresholds clear.
+
+### Apply the intelligence layer advancement pack
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh intelligence-layer-advancement --apply --json
+```
+
+Adds the guarded meta-intelligence layer: metacognitive routing, counterfactual world models, alpha benchmarks, memory compression, critic debate, active learning, ensemble uncertainty, library routing, safety invariants, and self-improvement backlog planning.
+The bots are collection-only with paper/live execution blocked until benchmark, memory-quality, safety-invariant, and runtime-pressure gates clear.
+
+### Preview the alpha intelligence evolution pack
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh alpha-intelligence-evolution --json
+```
+
+Use the dry run to see planned alpha intelligence bots, data intakes, storage contracts, and self-awareness upgrades without changing the registry.
+
+### Preview the coordination intelligence control-plane pack
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh coordination-intelligence --json
+```
+
+Use the dry run to see planned coordination bots, storage contracts, and paper-only guardrails without changing the registry.
+
+### Preview the intelligence layer advancement pack
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh intelligence-layer-advancement --json
+```
+
+Use the dry run to see planned intelligence-layer bots, data intakes, storage contracts, and routing/safety guardrails without changing the registry.
 
 ## Reports And PDFs
 

@@ -85,6 +85,8 @@ def test_stale_artifact_reaper_build_payload_purges_old_staged_files(tmp_path) -
     assert payload["ok"] is True
     assert payload["summary"]["deleted_files"] == 1
     assert payload["summary"]["manifest_lines_after"] == 3
+    assert payload["summary"]["purge_policy"]["low_value_days"] >= 0
+    assert payload["summary"]["budget_limited"] is False
     assert stale_file.exists() is False
     assert any(row.get("event") == "purged" for row in manifest_rows)
     assert len(manifest_rows) == 3

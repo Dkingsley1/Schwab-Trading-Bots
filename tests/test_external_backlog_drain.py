@@ -156,6 +156,156 @@ def test_external_backlog_drain_pins_decision_channels_to_trading_shard(tmp_path
     assert any("trading shard pinned" in item for item in payload["top_actions"])
 
 
+def test_external_backlog_drain_includes_crypto_trading_for_crypto_decision_backlog(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 9600,
+            "pending_lines_total": 9600,
+            "pending_lines_deferred": 0,
+            "pending_lines_cold": 0,
+            "top_pending_files": [
+                {
+                    "source_rel": "decisions/shadow_crypto/trade_decisions_20260502.jsonl",
+                    "pending_lines": 6200,
+                    "oldest_pending_age_seconds": 12.0,
+                },
+                {
+                    "source_rel": "decisions/shadow_crypto_futures_crypto/trade_decisions_20260502.jsonl",
+                    "pending_lines": 2600,
+                    "oldest_pending_age_seconds": 8.0,
+                },
+            ],
+        },
+    )
+    _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 2})
+    _write_json(health / "ingestion_storage_control_latest.json", {"overall_status": "ready"})
+    _write_json(health / "storage_mount_guard_latest.json", {"external_available": True, "storage_mode": "external"})
+    _write_json(health / "storage_failback_sync_latest.json", {"mode": "external", "split_brain_conflicts": 0})
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    _write_json(health / "sql_link_service_latest.json", {"primary_db": str(project_root / "data" / "jsonl_link.sqlite3")})
+    _write_json(health / "sql_link_service_progress_latest.json", {})
+    _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": False, "storage_pressure": {"retention_debt_gb": 0.0}})
+
+    payload = src.build_payload(
+        project_root,
+        apply=False,
+        now_utc=datetime(2026, 5, 2, 21, 0, tzinfo=timezone.utc),
+    )
+
+    assert "crypto_trading" in payload["drain_overrides"]["preferred_shards"]
+    assert payload["drain_overrides"]["preferred_shards"].index("crypto_trading") < payload["drain_overrides"]["preferred_shards"].index("trading")
+
+
+def test_external_backlog_drain_focuses_near_hard_core_expansion_backlog(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 43991,
+            "pending_lines_total": 44565,
+            "pending_lines_deferred": 574,
+            "pending_lines_cold": 0,
+            "top_pending_files": [
+                {
+                    "source_rel": "decisions/paper/trade_decisions_20260503.jsonl",
+                    "pending_lines": 33735,
+                    "oldest_pending_age_seconds": 60.0,
+                },
+                {
+                    "source_rel": "decisions/shadow_crypto/trade_decisions_20260503.jsonl",
+                    "pending_lines": 8613,
+                    "oldest_pending_age_seconds": 22092.0,
+                },
+                {
+                    "source_rel": "paper_trades_paper.jsonl",
+                    "pending_lines": 799,
+                    "oldest_pending_age_seconds": 0.0,
+                },
+            ],
+        },
+    )
+    _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 2})
+    _write_json(health / "ingestion_storage_control_latest.json", {"overall_status": "blocked"})
+    _write_json(health / "storage_mount_guard_latest.json", {"external_available": True, "storage_mode": "external"})
+    _write_json(health / "storage_failback_sync_latest.json", {"mode": "external", "split_brain_conflicts": 0})
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    _write_json(health / "sql_link_service_latest.json", {"primary_db": str(project_root / "data" / "jsonl_link.sqlite3")})
+    _write_json(health / "sql_link_service_progress_latest.json", {})
+    _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": True, "storage_pressure": {"retention_debt_gb": 0.0}})
+
+    payload = src.build_payload(
+        project_root,
+        apply=False,
+        now_utc=datetime(2026, 5, 3, 13, 45, tzinfo=timezone.utc),
+    )
+
+    assert payload["core_focus_concentrated"] is True
+    assert payload["drain_overrides"]["preferred_shards"][:4] == [
+        "trading",
+        "crypto_trading",
+        "health_fast",
+        "support_watchdog",
+    ]
+    assert payload["drain_overrides"]["trading_path_focus"] == [
+        "decisions/paper/trade_decisions_20260503.jsonl",
+    ]
+    assert payload["drain_overrides"]["crypto_trading_path_focus"] == [
+        "decisions/shadow_crypto/trade_decisions_20260503.jsonl",
+    ]
+    assert payload["drain_overrides"]["shard_link_timeout_seconds"] == 120
+
+
+def test_external_backlog_drain_does_not_recommend_broad_sweep_for_tiny_hot_queue(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 182,
+            "pending_lines_total": 184,
+            "pending_lines_deferred": 2,
+            "pending_lines_cold": 0,
+            "pending_lines_support_telemetry": 2,
+            "top_pending_files": [
+                {
+                    "source_rel": "decisions/paper/trade_decisions_20260503.jsonl",
+                    "pending_lines": 155,
+                    "oldest_pending_age_seconds": 145.0,
+                }
+            ],
+            "top_support_telemetry_pending_files": [
+                {
+                    "source_rel": "governance/watchdog/failover_events.jsonl",
+                    "pending_lines": 2,
+                    "oldest_pending_age_seconds": 18.0,
+                }
+            ],
+        },
+    )
+    _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 2})
+    _write_json(health / "ingestion_storage_control_latest.json", {"overall_status": "ready"})
+    _write_json(health / "storage_mount_guard_latest.json", {"external_available": True, "storage_mode": "external"})
+    _write_json(health / "storage_failback_sync_latest.json", {"mode": "external", "split_brain_conflicts": 0})
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    _write_json(health / "sql_link_service_latest.json", {"primary_db": str(project_root / "data" / "jsonl_link.sqlite3")})
+    _write_json(health / "sql_link_service_progress_latest.json", {})
+    _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": False, "storage_pressure": {"retention_debt_gb": 0.0}})
+
+    payload = src.build_payload(
+        project_root,
+        apply=False,
+        now_utc=datetime(2026, 5, 3, 14, 5, tzinfo=timezone.utc),
+    )
+
+    assert payload["recommended_now"] is False
+    assert payload["material_drain_recommended"] is False
+    assert payload["core_focus_concentrated"] is False
+
+
 def test_external_backlog_drain_writes_handoff_when_resource_guard_blocks_focused_core_backlog(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -409,6 +559,8 @@ def test_external_backlog_drain_apply_executes_and_refreshes_backlog(tmp_path: P
             assert env_overrides["JSONL_SQL_MAX_COLD_LANE_FILES"] == "2"
             assert env_overrides["SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB"] == "0.25"
             assert env_overrides["SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"] == "25"
+            assert env_overrides["SQL_LINK_SERVICE_AUTO_HOT_RETENTION"] == "0"
+            assert env_overrides["SQL_LINK_SERVICE_AUTO_QUEUE_RETENTION"] == "0"
             assert env_overrides["SQL_LINK_SERVICE_SHARD_RUNTIME_STATE_CHECKPOINT_LINES"] == "1500"
             assert env_overrides["SQL_LINK_SERVICE_SHARDS"].startswith("governance,")
             assert env_overrides["SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES"] == "14"

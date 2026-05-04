@@ -254,3 +254,73 @@ def test_grand_master_label_quality_and_sleeve_pressure_gate_weak_edges() -> Non
     assert meta["label_contract_quality"] == 0.25
     assert meta["collect_only_pressure"] == 0.80
     assert any("label_contract_quality=" in reason for reason in reasons)
+
+
+def test_sleeve_master_rollups_feed_dynamic_sleeves_to_grand_master() -> None:
+    rows = [
+        {
+            "bot_id": "brain_refinery_v327_options_on_futures_defined_risk_hedge_bot",
+            "sleeve_profile": "options_on_futures",
+            "action": "BUY",
+            "direction": 1.0,
+            "weight": 0.4,
+            "eligible_for_master_vote": True,
+        },
+        {
+            "bot_id": "brain_refinery_v542_credit_derivatives_single_name_cds_proxy_bot",
+            "sleeve_profile": "credit_derivatives_cdx_cds",
+            "action": "SELL",
+            "direction": -1.0,
+            "weight": 0.2,
+            "eligible_for_master_vote": True,
+        },
+        {
+            "bot_id": "brain_refinery_v619_quantum_barrier_path_amplitude_options_bot",
+            "sleeve_profile": "barrier_lookback_options",
+            "action": "HOLD",
+            "direction": 0.0,
+            "weight": 0.0,
+            "lifecycle_state": "data_collection_only",
+            "eligible_for_master_vote": False,
+        },
+    ]
+
+    aux = loop._derive_sleeve_family_aux_features(rows)
+
+    assert aux["sleeve_master_rollup_enabled"] == 1.0
+    assert aux["options_on_futures_sleeve_master_active"] == 1.0
+    assert aux["credit_derivatives_cdx_cds_sleeve_master_active"] == 1.0
+    assert aux["sleeve_master_collect_only_pressure_norm"] > 0.0
+
+    action, _score, _threshold, reasons, meta = loop._grand_master_vote(
+        {
+            "trend": _master_output(0.42, score=0.70),
+            "mean_revert": _master_output(0.22, action="HOLD", score=0.58),
+            "shock": _master_output(0.18, score=0.60),
+        },
+        {"trend": 0.50, "mean_revert": 0.25, "shock": 0.25},
+        {
+            **aux,
+            "infra_vote": 0.10,
+            "infra_risk_throttle_norm": 0.10,
+            "infra_veto_active": 0.0,
+            "infra_confidence_calibrator_scale_norm": 0.80,
+            "options_specialist_vote": 0.40,
+            "futures_specialist_vote": 0.35,
+            "flow_direction_signed": 0.36,
+            "flow_conviction_norm": 0.66,
+            "flow_stress_norm": 0.12,
+            "lead_lag_signal_signed": 0.32,
+            "lead_lag_confidence_norm": 0.70,
+            "lead_lag_break_norm": 0.08,
+            "market_micro_order_flow_imbalance_norm": 0.68,
+            "execution_fitness_norm": 0.78,
+            "market_micro_tradeability_score_norm": 0.74,
+            "cross_bot_conflict_norm": 0.12,
+        },
+    )
+
+    assert action in {"BUY", "HOLD"}
+    assert meta["sleeve_master_rollup_enabled"] == 1.0
+    assert "sleeve_master_consensus" in meta
+    assert any("sleeve_master_consensus=" in reason for reason in reasons)

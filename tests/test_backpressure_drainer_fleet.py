@@ -181,3 +181,5 @@ def test_backpressure_drainer_fleet_can_force_cold_stage_handoff(tmp_path: Path)
     assert payload["overall_status"] == "handoff_requested"
     assert payload["active_drainer"]["name"] == "cold_stage_drainer"
     assert payload["service_request"]["env_overrides"]["SQL_LINK_SERVICE_SHARDS"].startswith("data,")
+    assert payload["service_request"]["env_overrides"]["SQL_LINK_SERVICE_SHARD_EXPLANATIONS_PATH_CONTAINS"].endswith("a.jsonl")
+    assert payload["service_request"]["env_overrides"]["SQL_LINK_SERVICE_SHARD_CRYPTO_EXPLANATIONS_MAX_LINES_PER_FILE"] == "64000"

@@ -8,12 +8,14 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | backlog_quarantine_bot | ops_infrastructure_bot | scripted_control_plane | scripts/ops/backlog_quarantine_bot.py |
 | backpressure_slo_bot | ops_infrastructure_bot | scripted_control_plane | scripts/ops/backpressure_slo_bot.py |
 | blackstart_recovery | ops_infrastructure_bot | scripted_control_plane | scripts/ops/blackstart_recovery.py |
+| bot_founder_dna_lineage | ops_infrastructure_bot | scripted_control_plane | scripts/ops/bot_founder_dna_lineage.py |
 | bot_logs_finder_sync | ops_infrastructure_bot | scripted_control_plane | scripts/ops/bot_logs_finder_sync.py |
 | bot_quality_autopilot | ops_infrastructure_bot | scripted_control_plane | scripts/ops/bot_quality_autopilot.py |
 | build_core_bot_catalog | ops_infrastructure_bot | scripted_control_plane | scripts/ops/build_core_bot_catalog.py |
 | calibration_abstention_control | ops_infrastructure_bot | scripted_control_plane | scripts/ops/calibration_abstention_control.py |
 | chrome_headless_guard | ops_infrastructure_bot | scripted_control_plane | scripts/ops/chrome_headless_guard.py |
 | codex_project_guard | ops_infrastructure_bot | scripted_control_plane | scripts/ops/codex_project_guard.py |
+| cognitive_control_plane_expansion | ops_infrastructure_bot | scripted_control_plane | scripts/ops/cognitive_control_plane_expansion.py |
 | command_validity_bot | ops_infrastructure_bot | scripted_control_plane | scripts/ops/command_validity_bot.py |
 | commands_hygiene_bot | ops_infrastructure_bot | scripted_control_plane | scripts/ops/commands_hygiene_bot.py |
 | core_bot_materialization_guard | ops_infrastructure_bot | scripted_control_plane | scripts/ops/core_bot_materialization_guard.py |
@@ -22,6 +24,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | daily_verify_auto_remediation_bot | ops_infrastructure_bot | scripted_control_plane | scripts/ops/daily_verify_auto_remediation_bot.py |
 | data_collection_storage_guard | ops_infrastructure_bot | scripted_control_plane | scripts/ops/data_collection_storage_guard.py |
 | data_plane_recovery_controller | ops_infrastructure_bot | scripted_control_plane | scripts/ops/data_plane_recovery_controller.py |
+| expansion_capacity_planner_bot | ops_infrastructure_bot | scripted_control_plane | scripts/ops/expansion_capacity_planner_bot.py |
 | external_backlog_retry_bot | ops_infrastructure_bot | scripted_control_plane | scripts/ops/external_backlog_retry_bot.py |
 | grade_regression_autopilot | ops_infrastructure_bot | scripted_control_plane | scripts/ops/grade_regression_autopilot.py |
 | grade_regression_guard | ops_infrastructure_bot | scripted_control_plane | scripts/ops/grade_regression_guard.py |
@@ -29,6 +32,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | infrastructure_autofix_bot | ops_infrastructure_bot | scripted_control_plane | scripts/ops/infrastructure_autofix_bot.py |
 | ingestion_storage_control | ops_infrastructure_bot | scripted_control_plane | scripts/ops/ingestion_storage_control.py |
 | lane_thaw_controller | ops_infrastructure_bot | scripted_control_plane | scripts/ops/lane_thaw_controller.py |
+| legacy_bot_harmonizer | ops_infrastructure_bot | scripted_control_plane | scripts/ops/legacy_bot_harmonizer.py |
 | live_canary_control | ops_infrastructure_bot | scripted_control_plane | scripts/ops/live_canary_control.py |
 | live_runtime_separation_control | ops_infrastructure_bot | scripted_control_plane | scripts/ops/live_runtime_separation_control.py |
 | lock_watchdog | ops_infrastructure_bot | scripted_control_plane | scripts/ops/lock_watchdog.py |
@@ -44,6 +48,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | premarket_token_guard | ops_infrastructure_bot | scripted_control_plane | scripts/ops/premarket_token_guard.py |
 | process_watchdog | ops_infrastructure_bot | scripted_control_plane | scripts/ops/process_watchdog.py |
 | promotion_autopilot_packet | ops_infrastructure_bot | scripted_control_plane | scripts/ops/promotion_autopilot_packet.py |
+| quant_model_control | ops_infrastructure_bot | scripted_control_plane | scripts/ops/quant_model_control.py |
 | reboot_resilience_guard | ops_infrastructure_bot | scripted_control_plane | scripts/ops/reboot_resilience_guard.py |
 | regime_control_plane | ops_infrastructure_bot | scripted_control_plane | scripts/ops/regime_control_plane.py |
 | release_freeze_guard | ops_infrastructure_bot | scripted_control_plane | scripts/ops/release_freeze_guard.py |

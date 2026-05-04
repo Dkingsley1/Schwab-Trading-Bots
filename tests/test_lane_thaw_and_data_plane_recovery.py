@@ -115,6 +115,35 @@ def test_data_plane_recovery_controller_flags_write_failures_and_snapshot_failur
     ]
 
 
+def test_data_plane_recovery_controller_clears_snapshot_failures_after_fresh_cache(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "incident_timeline_latest.json",
+        {
+            "recent_incidents": [
+                {"summary": "get_accounts_snapshot", "timestamp_utc": "2026-05-03T20:18:08+00:00"},
+            ]
+        },
+    )
+    _write_json(health / "external_backlog_drain_latest.json", {"overall_status": "ready"})
+    _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 0})
+    _write_json(health / "storage_tier_policy_latest.json", {"pressure": {"hot_path_over_budget_bytes": 0}})
+    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "ready"}})
+    _write_json(
+        health / "broker_truth_shared_snapshot_schwab_latest.json",
+        {"fetched": {"ok": True}, "timestamp_utc": "2026-05-03T23:05:40+00:00"},
+    )
+
+    payload = data_plane_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["account_snapshot_failure_count"] == 0
+    assert payload["raw_account_snapshot_failure_count"] == 1
+    assert payload["recovery_contract"]["snapshot_recovered_by_cache"] is True
+    assert payload["snapshot_recovery_contract"]["recovered_by_fresh_cache"] is True
+
+
 def test_data_plane_recovery_controller_marks_guarded_recovery_when_writer_handoff_is_active(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

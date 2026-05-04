@@ -399,6 +399,54 @@ def test_main_can_purge_old_stale_stage_files(monkeypatch, tmp_path):
     assert payload['stale_stage']['purge']['deleted_files'] == 1
 
 
+def test_main_tiered_stale_purge_preserves_high_value_and_budget_limits_low_value(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_retention_policy, 'PROJECT_ROOT', tmp_path)
+
+    stale_root = tmp_path / 'data' / 'stale_stage'
+    low_a = stale_root / 'logs' / 'project' / 'logs' / 'old-a.log'
+    low_b = stale_root / 'exports_csv' / 'project' / 'exports' / 'csv' / 'old-b.csv'
+    high = stale_root / 'decision_explanations' / 'project' / 'decision_explanations' / 'old-high.jsonl'
+    for path in (low_a, low_b, high):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(path.name, encoding='utf-8')
+
+    old_epoch = 1_735_689_600
+    for path in (low_a, low_b, high):
+        os.utime(path, (old_epoch, old_epoch))
+
+    monkeypatch.setattr(
+        data_retention_policy.sys,
+        'argv',
+        [
+            'data_retention_policy.py',
+            '--apply',
+            '--skip-sqlite-vacuum',
+            '--stale-purge',
+            '--stale-purge-days',
+            '30',
+            '--stale-purge-low-value-days',
+            '1',
+            '--stale-purge-high-value-days',
+            '99999',
+            '--stale-purge-max-files',
+            '1',
+        ],
+    )
+
+    rc = data_retention_policy.main()
+    payload = json.loads((tmp_path / 'governance' / 'health' / 'data_retention_latest.json').read_text(encoding='utf-8'))
+    purge = payload['stale_stage']['purge']
+
+    assert rc == 0
+    assert purge['deleted_files'] == 1
+    assert purge['candidate_files_raw'] == 2
+    assert purge['skipped_by_budget_files'] == 1
+    assert purge['skipped_by_tier_files'] == 1
+    assert purge['budget_limited'] is True
+    assert high.exists() is True
+    assert sum(1 for path in (low_a, low_b) if path.exists()) == 1
+
+
 def test_main_stage_only_can_stage_all_candidate_labels(monkeypatch, tmp_path):
     monkeypatch.setattr(data_retention_policy, 'PROJECT_ROOT', tmp_path)
 

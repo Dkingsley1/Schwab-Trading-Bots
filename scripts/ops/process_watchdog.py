@@ -112,7 +112,17 @@ def _proc_elapsed_seconds(pattern: str, exclude_patterns: List[str] | None = Non
 def _spawn(cmd: List[str], log_path: Path) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     fh = open(log_path, 'a', encoding='utf-8')
-    p = subprocess.Popen(cmd, cwd=str(PROJECT_ROOT), stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
+    env = dict(os.environ)
+    env.setdefault('PYTHONUNBUFFERED', '1')
+    env.setdefault('PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS', '0')
+    p = subprocess.Popen(
+        cmd,
+        cwd=str(PROJECT_ROOT),
+        stdout=fh,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        env=env,
+    )
     return int(p.pid)
 
 
@@ -800,6 +810,7 @@ def main() -> int:
     parser.add_argument('--max-restarts-per-hour', type=int, default=int(os.getenv('OPS_WATCHDOG_MAX_RESTARTS_PER_HOUR', '6')))
     parser.add_argument('--require-all-sleeves', action='store_true', default=os.getenv('OPS_WATCHDOG_REQUIRE_ALL_SLEEVES', '1') == '1')
     parser.add_argument('--require-coinbase', action='store_true', default=os.getenv('OPS_WATCHDOG_REQUIRE_COINBASE', '1') == '1')
+    parser.add_argument('--require-coinbase-futures', action='store_true', default=os.getenv('OPS_WATCHDOG_REQUIRE_COINBASE_FUTURES', '1') == '1')
     parser.add_argument('--require-paper-executor', action='store_true', default=_default_require_paper_executor())
     parser.add_argument('--refresh-reports', action='store_true', default=os.getenv('OPS_WATCHDOG_REFRESH_REPORTS', '1') == '1')
     parser.add_argument('--refresh-max-age-seconds', type=int, default=int(os.getenv('OPS_WATCHDOG_REFRESH_MAX_AGE_SECONDS', '7200')))
@@ -1042,7 +1053,42 @@ def main() -> int:
                 'cmd': coinbase_cmd,
                 'log': PROJECT_ROOT / 'logs' / 'watchdog_coinbase_loop.log',
                 'alt_patterns': [],
-                'heartbeat_glob': str(PROJECT_ROOT / 'governance' / 'health' / 'shadow_loop_*_crypto_coinbase_*.json'),
+                'heartbeat_glob': str(PROJECT_ROOT / 'governance' / 'health' / 'shadow_loop_default_crypto_coinbase_*.json'),
+                'heartbeat_max_age_seconds': max(int(args.coinbase_heartbeat_stale_seconds), 60),
+            }
+        )
+
+    if args.require_coinbase_futures:
+        futures_profile = os.getenv('COINBASE_FUTURES_PROFILE', 'crypto_futures')
+        coinbase_futures_cmd: List[str] = [
+            str(PY),
+            str(PROJECT_ROOT / 'scripts' / 'run_shadow_training_loop.py'),
+            '--broker',
+            'coinbase',
+            '--profile',
+            futures_profile,
+            '--domain',
+            'crypto',
+            '--symbols',
+            os.getenv('COINBASE_FUTURES_WATCH_SYMBOLS', 'BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LINK-USD,DOGE-USD'),
+            '--context-symbols',
+            os.getenv('COINBASE_FUTURES_CONTEXT_SYMBOLS', 'BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LTC-USD,LINK-USD,DOGE-USD'),
+            '--interval-seconds',
+            os.getenv('COINBASE_FUTURES_WATCH_INTERVAL_SECONDS', '20'),
+            '--max-iterations',
+            '0',
+        ]
+        if _env_flag('OPS_WATCHDOG_COINBASE_FUTURES_SIMULATE', '0'):
+            coinbase_futures_cmd.append('--simulate')
+        targets.append(
+            {
+                'name': 'coinbase_futures_loop',
+                'pattern': f'scripts/run_shadow_training_loop.py --broker coinbase --profile {futures_profile}',
+                'exclude_patterns': [],
+                'cmd': coinbase_futures_cmd,
+                'log': PROJECT_ROOT / 'logs' / 'watchdog_coinbase_futures_loop.log',
+                'alt_patterns': [],
+                'heartbeat_glob': str(PROJECT_ROOT / 'governance' / 'health' / 'shadow_loop_*crypto_futures*_crypto_coinbase_*.json'),
                 'heartbeat_max_age_seconds': max(int(args.coinbase_heartbeat_stale_seconds), 60),
             }
         )
@@ -1064,12 +1110,15 @@ def main() -> int:
         heartbeat_required = bool(heartbeat_glob)
         heartbeat_age = _latest_heartbeat_age_seconds(heartbeat_glob) if heartbeat_required else 0.0
         heartbeat_max_age = float(t.get('heartbeat_max_age_seconds', 0) or 0.0)
-        heartbeat_ok = (not heartbeat_required) or (heartbeat_age <= heartbeat_max_age)
+        heartbeat_fresh = (not heartbeat_required) or (heartbeat_age <= heartbeat_max_age)
+        process_live = (running > 0) or (alt_running > 0)
+        heartbeat_ok = heartbeat_fresh and (process_live or not heartbeat_required)
 
         row: Dict[str, Any] = {
             'name': t['name'],
             'running': int(running),
             'heartbeat_ok': bool(heartbeat_ok),
+            'process_live': bool(process_live),
         }
         if 'restart_storm_settle_seconds' in t:
             row['restart_storm_settle_seconds'] = int(t['restart_storm_settle_seconds'])
@@ -1080,8 +1129,8 @@ def main() -> int:
         if heartbeat_required:
             row['heartbeat_age_seconds'] = round(float(heartbeat_age), 2)
             row['heartbeat_max_age_seconds'] = float(heartbeat_max_age)
+            row['heartbeat_fresh'] = bool(heartbeat_fresh)
 
-        process_live = (running > 0) or (alt_running > 0)
         if safety_pause['active'] and t['name'] in safety_pause_target_names:
             row['paused_by_safety_flags'] = True
             row['safety_pause_reason'] = str(safety_pause.get('reason') or 'safety_pause_active')

@@ -45,7 +45,14 @@ def test_ingestion_storage_governor_marks_route_drift_and_targets_routed_paths(t
     assert payload["env_overrides"]["LOG_DECISION_EXPLANATIONS"] == "0"
     assert payload["env_overrides"]["CHANNEL_LOG_PRIMARY_MODE"] == "channel"
     assert payload["env_overrides"]["LEGACY_HOT_CHANNEL_MIRROR_ENABLED"] == "0"
+    assert payload["env_overrides"]["SQL_LINK_SERVICE_QUEUE_PRUNE_ORPHANS"] == "1"
+    assert payload["env_overrides"]["SQL_LINK_SERVICE_QUEUE_MAX_DB_GB"] == "8"
+    assert payload["env_overrides"]["RETENTION_STALE_PURGE_ENABLED"] == "1"
+    assert payload["env_overrides"]["RETENTION_STALE_PURGE_LOW_VALUE_DAYS"] == "3"
+    assert payload["env_overrides"]["RETENTION_STALE_PURGE_MAX_GB"] == "20"
     assert payload["throttle_controls"]["deferred_files_budget"] == 0
+    assert payload["throttle_controls"]["queue_prune_orphans"] == "1"
+    assert payload["throttle_controls"]["stale_purge_low_value_days"] == 3
     assert payload["throttle_controls"]["log_gate_evaluations"] == "0"
     assert payload["throttle_controls"]["log_shadow_pnl_attribution"] == "0"
     assert payload["queue_watermarks"]["overall_status"] == "blocked"
@@ -80,6 +87,7 @@ def test_ingestion_storage_governor_allows_small_deferred_trickle_when_core_is_l
     assert payload["throttle_controls"]["deferred_files_budget"] == 2
     assert payload["env_overrides"]["INGEST_MAX_DEFERRED_FILES"] == "2"
     assert payload["env_overrides"]["SQL_LINK_SERVICE_SHARD_EXPLANATIONS_MAX_FILES"] == "4"
+    assert payload["env_overrides"]["RETENTION_STALE_PURGE_MAX_FILES"] == "8000"
 
 
 def test_ingestion_storage_governor_treats_stale_stage_as_archive_debt_not_critical_pressure(tmp_path: Path) -> None:

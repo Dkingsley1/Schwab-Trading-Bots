@@ -20,4 +20,9 @@ if ! guard_output="$("$PYTHON_BIN" "$PROJECT_ROOT/scripts/resource_guard.py" --p
   exit 0
 fi
 
-exec "$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_market_crypto_correlation_context.py" --json
+exec "$PROJECT_ROOT/scripts/ops/opsctl.sh" market-correlation-sync \
+  --lookback-days "${MARKET_CRYPTO_CORRELATION_LOOKBACK_DAYS:-1}" \
+  --bucket-seconds "${MARKET_CRYPTO_CORRELATION_BUCKET_SECONDS:-300}" \
+  --min-points "${MARKET_CRYPTO_CORRELATION_MIN_POINTS:-3}" \
+  --timeout-seconds "${MARKET_CRYPTO_CORRELATION_TIMEOUT_SECONDS:-90}" \
+  --json

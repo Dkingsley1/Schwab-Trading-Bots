@@ -11,7 +11,7 @@ shift || true
 
 PROFILE="${BOT_RUNTIME_PROFILE:-live}"
 case "$cmd" in
-  status|start|start-sim|start-live|restart-sanity|sql-sync|tradingeconomics-sync|macro-context-sync|market-micro-sync|sec-edgar-sync|extended-quant-sync|quant-model-control|quant-engine-control|quant-models|pricing-grad|gpu-mc-sim|kalman-parallel|options-flow-sync|tastytrade-sync|options-flow-export-hygiene|options-flow-efficiency|bot-stack-report|active-bot-report|core-bot-catalog|bot-catalog|core-bot-materialize|materialize-core-bots|core-bot-materialization-guard|core-bot-file-guard|core-bot-materialization-infrabot|core-bot-file-infrabot|core-bot-tier-organizer|organize-core-bot-tiers|bot-tier-organizer|crypto-market-sync|market-correlation-sync|fx-market-sync|dividend-drip-sync|showcase-refresh|system-explainers|system-explainer-docs|system-summary|executive-summary|system-summary-autopilot|master-infra-supervisor|master-infrastructure-supervisor|infra-supervisor|macro-crosscheck|source-verification|collector-contracts|sleeve-strategy-coverage|sleeve-coverage|strategy-coverage|mlx-audit|mlx-library-upgrade|mlx-upgrade|mlx-audio-audit|onnx-audit|pytorch-audit|torch-audit|pytorch-replay-canary|torch-replay-canary|sql-audit|training-registry-audit|training-label-audit|training-quality|feature-store|multiple-testing-guard|decay-monitor|security-audit|security-evidence-autofix|secret-scan|schema-migration|ingestion-storage-control|ingestion-storage-governor|external-backlog-drain|backpressure-drainer-fleet|backpressure-drainers|drainer-fleet|external-backlog-retry-bot|storage-backpressure-autopilot|storage-pressure-clearance|storage-pressure-clear|storage-pressure-supervisor|storage-clearance|storage-reconnect-regression-guard|storage-reconnect-guard|storage-reconnect-infrabot|storage-recovery-infrabot|storage-auto-recovery-bot|stateful-storage-regression-guard|stateful-storage-guard|local-stateful-guard|data-collection-storage-guard|collector-storage-guard|data-collection-observation-rollup|collector-observation-rollup|writer-cycle-coordinator|retention-debt-sheriff|backpressure-slo-bot|backlog-quarantine|ingestion-priority-queue|content-store|split-brain-reconcile|storage-resilience|storage-tier-policy|runtime-training-snapshot|training-runtime-control|training-requalification|coverage-seed|coverage-gap-closer|regime-control|supportability-control|teacher-quality|bot-quality-autopilot|commands-hygiene|runbook-hygiene|command-validity|commands-verify|codex-project-guard|codex-guard|infrastructure-autofix|system-cleanliness-autopilot|cleanliness-autopilot|system-cleanliness-infrabot|cleanliness-infrabot|report-quality-guard|reporter-quality|reporter-infrabot|report-infrabot|system-drift-guard|drift-guard|drift-mesh|system-drift-autopilot|drift-autopilot|drift-mesh-autopilot|global-halt|global-halt-status|halt-status|global-halt-refresh|global-halt-clear-blockers|halt-clear-blockers|global-halt-auto-clear|halt-auto-clear|clear-all-halts|clear-global-halts|global-halt-force-clear|halt-force-clear|operator-control|operator-release|operator-stop-status|live-runtime-separation|live-canary-control|rolling-restart|schwab-auth-supervisor|schwab-auth-guard|auth-supervisor|auth-lease|incident-timeline|incident-closeout|incident-review-packet|incident-packet|promotion-autopilot|autonomy-control|runtime-throttle|throttle-control|throttle-bot|mode-switchboard|mode-switchboard-mission-control|decision-provenance|decision-provenance-cards|blackstart-recovery|sleeve-isolation|artifact-freshness-slo|runtime-snapshot-cache|remote-alert-control|storage-quota-guard|release-freeze|roster-expansion|roster-resilience|chaos-drills|calibration-control|portfolio-allocator|portfolio-capacity-curves|capacity-curves|risk-service|execution-lab|operator-cockpit|daily-verify-remediation|memory-efficiency|creative-cotenant-guard|creative-cotenant|cotenant-guard|model-lifecycle|grade-lift-hardening|a-grade-hardening|grade-up|grade-regression-guard|regression-guard|grade-regression-autopilot|grade-regression-bot|regression-upgrade|section-grade-guard|section-floor-guard|grade-floor-guard|section-grade-autopilot|section-floor-autopilot|grade-floor-autopilot|chrome-headless-guard|chrome-guard|chrome-pdf-guard|cost-telemetry|cross-host-parity|parity-report|experiment-ledger|immutable-experiment-ledger|one-numbers-regression-guard|one-numbers-guard|point-in-time-event-store|pit-event-store|event-store|replay-hash-registry|replay-hash-guard|golden-replay-regression|golden-replay-guard|paper-trade-lock-infrabot|paper-lock-infrabot|paper-trade-lock-guard|paper-lock|coinbase-api-health|coinbase-health|coinbase-start|coinbase-futures-start|schwab-futures-start|fx-start|feed-refresh|livefeed-refresh|live-feed-refresh|feed|phone-feed|schwab-tail|coinbase-tail|main-tail|futures-tail|schwab-futures-tail|coinbase-futures-tail|fx-tail|infra-tail|storage-switch-local|storage-switch-external|storage-safe-eject|storage-prune-standby|storage-standby-prune|storage-transition-coordinator|storage-transition-bots|storage-disaster-recovery|storage-recovery-bot|storage-maintenance|ops-coordinator|platform-control-plane|institutional-readiness|retrain-force-full|retrain-force-targeted|token-refresh|token-refresh-interactive|macro-bulletin|macro-auto-start|macro-replay|macro-media-ingest|macro-auto-stop|macro-auto-status|access-status|apple-profile|apple-silicon-profile)
+  status|start|start-sim|start-live|restart-sanity|post-restart-settle|post-restart-settlement|restart-settlement|sql-sync|tradingeconomics-sync|macro-context-sync|market-micro-sync|sec-edgar-sync|extended-quant-sync|quant-model-control|quant-engine-control|quant-models|pricing-grad|gpu-mc-sim|kalman-parallel|options-flow-sync|tastytrade-sync|options-flow-export-hygiene|options-flow-efficiency|bot-stack-report|active-bot-report|core-bot-catalog|bot-catalog|core-bot-materialize|materialize-core-bots|core-bot-materialization-guard|core-bot-file-guard|core-bot-materialization-infrabot|core-bot-file-infrabot|core-bot-tier-organizer|organize-core-bot-tiers|bot-tier-organizer|crypto-market-sync|market-correlation-sync|fx-market-sync|dividend-drip-sync|showcase-refresh|system-explainers|system-explainer-docs|system-summary|executive-summary|system-summary-autopilot|master-infra-supervisor|master-infrastructure-supervisor|infra-supervisor|macro-crosscheck|source-verification|collector-contracts|sleeve-strategy-coverage|sleeve-coverage|strategy-coverage|mlx-audit|mlx-library-upgrade|mlx-upgrade|mlx-audio-audit|mlx-intelligence-router|mlx-compute-brain|mlx-utilization|library-utilization-router|library-router|non-mlx-library-router|dependency-utilization|onnx-audit|pytorch-audit|torch-audit|pytorch-replay-canary|torch-replay-canary|sql-audit|training-registry-audit|training-label-audit|training-quality|feature-store|multiple-testing-guard|decay-monitor|security-audit|security-evidence-autofix|secret-scan|schema-migration|ingestion-storage-control|ingestion-storage-governor|external-backlog-drain|backpressure-drainer-fleet|backpressure-drainers|drainer-fleet|external-backlog-retry-bot|storage-backpressure-autopilot|storage-pressure-clearance|storage-pressure-clear|storage-pressure-supervisor|storage-clearance|storage-reconnect-regression-guard|storage-reconnect-guard|storage-reconnect-infrabot|storage-recovery-infrabot|storage-auto-recovery-bot|stateful-storage-regression-guard|stateful-storage-guard|local-stateful-guard|data-retention|retention-policy|data-retention-policy|stale-sweeper|stale-artifact-sweeper|stale-stage-bot|stale-reaper|stale-artifact-reaper|stale-delete-bot|data-collection-storage-guard|collector-storage-guard|data-collection-observation-rollup|collector-observation-rollup|writer-cycle-coordinator|retention-debt-sheriff|backpressure-slo-bot|backlog-quarantine|ingestion-priority-queue|content-store|split-brain-reconcile|storage-resilience|storage-tier-policy|runtime-training-snapshot|training-runtime-control|training-requalification|coverage-seed|coverage-gap-closer|regime-control|supportability-control|teacher-quality|bot-quality-autopilot|commands-hygiene|runbook-hygiene|command-validity|commands-verify|codex-project-guard|codex-guard|infrastructure-autofix|system-cleanliness-autopilot|cleanliness-autopilot|system-cleanliness-infrabot|cleanliness-infrabot|report-quality-guard|reporter-quality|reporter-infrabot|report-infrabot|system-drift-guard|drift-guard|drift-mesh|system-drift-autopilot|drift-autopilot|drift-mesh-autopilot|global-halt|global-halt-status|halt-status|global-halt-refresh|global-halt-clear-blockers|halt-clear-blockers|global-halt-auto-clear|halt-auto-clear|clear-all-halts|clear-global-halts|global-halt-force-clear|halt-force-clear|operator-control|operator-release|operator-stop-status|live-runtime-separation|live-canary-control|rolling-restart|schwab-auth-supervisor|schwab-auth-guard|auth-supervisor|auth-lease|incident-timeline|incident-closeout|incident-review-packet|incident-packet|promotion-autopilot|autonomy-control|runtime-throttle|throttle-control|throttle-bot|mode-switchboard|mode-switchboard-mission-control|decision-provenance|decision-provenance-cards|blackstart-recovery|sleeve-isolation|artifact-freshness-slo|runtime-snapshot-cache|remote-alert-control|storage-quota-guard|release-freeze|legacy-bot-harmonizer|legacy-bot-harmonize|legacy-v107-harmonizer|roster-expansion|roster-resilience|chaos-drills|calibration-control|portfolio-allocator|portfolio-capacity-curves|capacity-curves|risk-service|execution-lab|operator-cockpit|daily-verify-remediation|memory-efficiency|creative-cotenant-guard|creative-cotenant|cotenant-guard|model-lifecycle|grade-lift-hardening|a-grade-hardening|grade-up|grade-regression-guard|regression-guard|grade-regression-autopilot|grade-regression-bot|regression-upgrade|section-grade-guard|section-floor-guard|grade-floor-guard|section-grade-autopilot|section-floor-autopilot|grade-floor-autopilot|chrome-headless-guard|chrome-guard|chrome-pdf-guard|cost-telemetry|cross-host-parity|parity-report|experiment-ledger|immutable-experiment-ledger|one-numbers-regression-guard|one-numbers-guard|point-in-time-event-store|pit-event-store|replay-hash-registry|replay-hash-guard|golden-replay-regression|golden-replay-guard|paper-trade-lock-infrabot|paper-lock-infrabot|paper-trade-lock-guard|paper-lock|coinbase-api-health|coinbase-health|coinbase-start|coinbase-futures-start|schwab-futures-start|fx-start|feed-refresh|livefeed-refresh|live-feed-refresh|feed|phone-feed|schwab-tail|coinbase-tail|main-tail|futures-tail|schwab-futures-tail|coinbase-futures-tail|fx-tail|infra-tail|storage-switch-local|storage-switch-external|storage-safe-eject|storage-prune-standby|storage-standby-prune|storage-transition-coordinator|storage-transition-bots|storage-disaster-recovery|storage-recovery-bot|storage-maintenance|ops-coordinator|platform-control-plane|institutional-readiness|intelligence-capability-expansion|capability-expansion|platform-intelligence|platform-intelligence-expansion|bot-admission|new-bot-admission|new-bot-admission-guard|admission-guard|sleeve-masters|quality-score-system|market-regime-router|capacity-planner|expansion-capacity|expansion-capacity-planner|growth-capacity|research-pipeline|correlation-governor|model-decay-detector|system-dashboard|big-platform-brain|platform-brain|system-self-model|self-model|self-awareness|metacognition|self-awareness-infrabots|system-self-awareness|alpha-intelligence-evolution|alpha-advancement|alpha-evolution|alpha-intelligence|training-readiness-brain|execution-reality-lab|portfolio-exposure-brain|data-source-confidence-engine|research-intake-pipeline|duplicate-alpha-novelty|professional-dashboard-v2|broker-adapter-mesh|adapter-mesh|cleanup-governor|intelligence-layer-advancement|intelligence-layer-v2|intelligence-upgrade|meta-intelligence-v2|metacognitive-routing-v2|world-model-lab|alpha-benchmark-suite|memory-retrieval-v2|critic-board|active-learning-v2|ensemble-uncertainty|tool-intelligence-router|safety-invariants-v2|self-improvement-backlog|adaptive-intelligence-kernel|intelligence-kernel|meta-learning-kernel|bot-founder-dna|founder-dna|bot-genome|lineage-dna|retrain-force-full|retrain-force-targeted|token-refresh|token-refresh-interactive|macro-bulletin|macro-auto-start|macro-replay|macro-media-ingest|macro-auto-stop|macro-auto-status|access-status|apple-profile|apple-silicon-profile)
     if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
       # shellcheck disable=SC1091
       source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" "$PROFILE" --quiet
@@ -30,7 +30,7 @@ load_runtime_profile() {
   export ALLOW_ORDER_EXECUTION="${ALLOW_ORDER_EXECUTION:-0}"
   export TOP_BOT_PAPER_TRADING_ENABLED="${TOP_BOT_PAPER_TRADING_ENABLED:-1}"
   export TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED="${TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED:-1}"
-  export PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1}"
+  export PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"
   export PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"
   export PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"
   export LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"
@@ -117,6 +117,22 @@ abort_loop_refresh_if_safety_flags_active() {
     echo "manual_clear_all_halts=./scripts/ops/opsctl.sh clear-all-halts --json" >&2
     exit 2
   fi
+}
+
+refresh_system_self_model_quietly() {
+  if [[ "${OPSCTL_SELF_MODEL_AUTO_REFRESH:-1}" == "0" ]]; then
+    return 0
+  fi
+  "$PY" "$PROJECT_ROOT/scripts/ops/system_self_model.py" --json >/dev/null 2>&1 || true
+}
+
+run_then_refresh_self_model() {
+  set +e
+  "$@"
+  local rc=$?
+  set -e
+  refresh_system_self_model_quietly
+  exit "$rc"
 }
 
 write_storage_override() {
@@ -223,6 +239,14 @@ start_schwab_live_loops() {
     "$PY" "$PROJECT_ROOT/scripts/run_all_sleeves.py"
     --with-aggressive-modes
   )
+  local specialized_interval="${SPECIALIZED_SLEEVE_INTERVAL:-300}"
+  local specialized_workers="${SLEEVE_WORKERS_SPECIALIZED:-1}"
+  local specialized_nice="${SLEEVE_NICE_SPECIALIZED:-14}"
+  local breaker_startup_grace="${ALL_SLEEVES_BREAKER_STARTUP_GRACE_SECONDS:-600}"
+  local breaker_data_quality_grace="${ALL_SLEEVES_BREAKER_DATA_QUALITY_GRACE_SECONDS:-1800}"
+  local breaker_streak="${ALL_SLEEVES_BREAKER_STREAK:-3}"
+  local breaker_cooldown="${ALL_SLEEVES_BREAKER_COOLDOWN:-120}"
+  echo "livefeed_expansion=enabled specialized_interval=$specialized_interval specialized_workers=$specialized_workers specialized_nice=$specialized_nice breaker_startup_grace=$breaker_startup_grace breaker_data_quality_grace=$breaker_data_quality_grace"
 
   if [[ "$paper_mode" == "1" ]]; then
     paper_trade_lock_env
@@ -244,8 +268,34 @@ start_schwab_live_loops() {
     TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES="$options_paper_profiles" \
     PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}" \
     PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}" \
+    PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}" \
+    RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES="${RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES:-1}" \
+    SPECIALIZED_SLEEVE_INTERVAL="$specialized_interval" \
+    SLEEVE_WORKERS_SPECIALIZED="$specialized_workers" \
+    SLEEVE_NICE_SPECIALIZED="$specialized_nice" \
+    ALL_SLEEVES_BREAKER_STARTUP_GRACE_SECONDS="$breaker_startup_grace" \
+    ALL_SLEEVES_BREAKER_DATA_QUALITY_GRACE_SECONDS="$breaker_data_quality_grace" \
+    ALL_SLEEVES_BREAKER_STREAK="$breaker_streak" \
+    ALL_SLEEVES_BREAKER_COOLDOWN="$breaker_cooldown" \
+    TRAINING_EXCLUDED_UNTIL_READY="${TRAINING_EXCLUDED_UNTIL_READY:-1}" \
+    SOURCE_CREDENTIAL_GATED="${SOURCE_CREDENTIAL_GATED:-1}" \
+    ALLOW_SYNTHETIC_VENDOR_PULLS="${ALLOW_SYNTHETIC_VENDOR_PULLS:-0}" \
+    PYTORCH_REPLAY_CANARY_ENABLED="${PYTORCH_REPLAY_CANARY_ENABLED:-0}" \
     PYTHONUNBUFFERED=1 nohup "${cmd[@]}" > "$log_file" 2>&1 & disown
   else
+    PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}" \
+    RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES="${RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES:-1}" \
+    SPECIALIZED_SLEEVE_INTERVAL="$specialized_interval" \
+    SLEEVE_WORKERS_SPECIALIZED="$specialized_workers" \
+    SLEEVE_NICE_SPECIALIZED="$specialized_nice" \
+    ALL_SLEEVES_BREAKER_STARTUP_GRACE_SECONDS="$breaker_startup_grace" \
+    ALL_SLEEVES_BREAKER_DATA_QUALITY_GRACE_SECONDS="$breaker_data_quality_grace" \
+    ALL_SLEEVES_BREAKER_STREAK="$breaker_streak" \
+    ALL_SLEEVES_BREAKER_COOLDOWN="$breaker_cooldown" \
+    TRAINING_EXCLUDED_UNTIL_READY="${TRAINING_EXCLUDED_UNTIL_READY:-1}" \
+    SOURCE_CREDENTIAL_GATED="${SOURCE_CREDENTIAL_GATED:-1}" \
+    ALLOW_SYNTHETIC_VENDOR_PULLS="${ALLOW_SYNTHETIC_VENDOR_PULLS:-0}" \
+    PYTORCH_REPLAY_CANARY_ENABLED="${PYTORCH_REPLAY_CANARY_ENABLED:-0}" \
     PYTHONUNBUFFERED=1 nohup "${cmd[@]}" > "$log_file" 2>&1 & disown
   fi
   sleep 2
@@ -283,6 +333,14 @@ kill_coinbase_spot_loops() {
 kill_coinbase_futures_loops() {
   local futures_profile="${COINBASE_FUTURES_PROFILE:-crypto_futures}"
   pkill -f "scripts/run_shadow_training_loop.py --broker coinbase --profile $futures_profile" || true
+}
+
+market_correlation_process_lines() {
+  ps -axo pid,command | grep -F "scripts/collect_market_crypto_correlation_context.py" | grep -v grep || true
+}
+
+market_correlation_running() {
+  market_correlation_process_lines | grep -q .
 }
 
 fx_process_lines() {
@@ -362,6 +420,9 @@ case "$cmd" in
     ;;
   restart-sanity)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/restart_sanity_bundle.py" "$@"
+    ;;
+  post-restart-settle|post-restart-settlement|restart-settlement)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/post_restart_settlement.py" "$@"
     ;;
   retrain)
     # MLX Metal JIT can intermittently crash in some launch contexts; keep a stable default.
@@ -469,13 +530,13 @@ case "$cmd" in
     exec "$PY" "$PROJECT_ROOT/scripts/ops/build_core_bot_catalog.py" "$@"
     ;;
   core-bot-materialize|materialize-core-bots)
-    exec "$PY" "$PROJECT_ROOT/scripts/ops/materialize_core_bot_modules.py" "$@"
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/materialize_core_bot_modules.py" "$@"
     ;;
   core-bot-materialization-guard|core-bot-file-guard)
-    exec "$PY" "$PROJECT_ROOT/scripts/ops/core_bot_materialization_guard.py" "$@"
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/core_bot_materialization_guard.py" "$@"
     ;;
   core-bot-materialization-infrabot|core-bot-file-infrabot)
-    exec "$PY" "$PROJECT_ROOT/scripts/ops/core_bot_materialization_infrabot.py" "$@"
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/core_bot_materialization_infrabot.py" "$@"
     ;;
   core-bot-tier-organizer|organize-core-bot-tiers|bot-tier-organizer)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/organize_core_bot_tiers.py" "$@"
@@ -484,7 +545,34 @@ case "$cmd" in
     exec "$PY" "$PROJECT_ROOT/scripts/collect_crypto_market_context.py" "$@"
     ;;
   market-correlation-sync)
-    exec "$PY" "$PROJECT_ROOT/scripts/collect_market_crypto_correlation_context.py" "$@"
+    corr_args=("$@")
+    corr_has_timeout=0
+    corr_has_lookback=0
+    corr_has_bucket=0
+    corr_has_min_points=0
+    for arg in "$@"; do
+      case "$arg" in
+        --timeout-seconds) corr_has_timeout=1 ;;
+        --lookback-days) corr_has_lookback=1 ;;
+        --bucket-seconds) corr_has_bucket=1 ;;
+        --min-points) corr_has_min_points=1 ;;
+      esac
+    done
+    if [[ "$corr_has_lookback" == "0" ]]; then
+      corr_args+=(--lookback-days "${MARKET_CRYPTO_CORRELATION_LOOKBACK_DAYS:-1}")
+    fi
+    if [[ "$corr_has_bucket" == "0" ]]; then
+      corr_args+=(--bucket-seconds "${MARKET_CRYPTO_CORRELATION_BUCKET_SECONDS:-300}")
+    fi
+    if [[ "$corr_has_min_points" == "0" ]]; then
+      corr_args+=(--min-points "${MARKET_CRYPTO_CORRELATION_MIN_POINTS:-3}")
+    fi
+    if [[ "$corr_has_timeout" == "0" ]]; then
+      corr_args+=(--timeout-seconds "${MARKET_CRYPTO_CORRELATION_TIMEOUT_SECONDS:-90}")
+    fi
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/bounded_market_crypto_correlation_sync.py" \
+      --outer-timeout-seconds "${MARKET_CRYPTO_CORRELATION_OUTER_TIMEOUT_SECONDS:-100}" \
+      "${corr_args[@]}"
     ;;
   fx-market-sync)
     exec "$PY" "$PROJECT_ROOT/scripts/collect_fx_market_context.py" "$@"
@@ -513,22 +601,22 @@ case "$cmd" in
     exec "$PY" "$PROJECT_ROOT/scripts/ops/sleeve_strategy_coverage_guard.py" "$@"
     ;;
   global-halt|global-halt-status|halt-status)
-    exec "$PY" "$PROJECT_ROOT/scripts/global_risk_killswitch.py" --status-only --exit-zero "$@"
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/global_risk_killswitch.py" --status-only --exit-zero "$@"
     ;;
   global-halt-refresh|global-halt-clear-blockers|halt-clear-blockers)
-    exec "$PY" "$PROJECT_ROOT/scripts/global_risk_killswitch.py" --clear-blockers --status-only --exit-zero "$@"
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/global_risk_killswitch.py" --clear-blockers --status-only --exit-zero "$@"
     ;;
   global-halt-auto-clear|halt-auto-clear)
-    exec "$PY" "$PROJECT_ROOT/scripts/global_risk_killswitch.py" --auto-clear "$@"
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/global_risk_killswitch.py" --auto-clear "$@"
     ;;
   clear-all-halts|clear-global-halts|global-halt-force-clear|halt-force-clear)
-    exec "$PY" "$PROJECT_ROOT/scripts/operator_control.py" --release --clear-global-halt "$@"
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/operator_control.py" --release --clear-global-halt "$@"
     ;;
   operator-control|operator-stop-status)
-    exec "$PY" "$PROJECT_ROOT/scripts/operator_control.py" "$@"
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/operator_control.py" "$@"
     ;;
   operator-release)
-    exec "$PY" "$PROJECT_ROOT/scripts/operator_control.py" --release "$@"
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/operator_control.py" --release "$@"
     ;;
   mlx-audit|mlx-runtime-audit)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/mlx_runtime_audit.py" "$@"
@@ -538,6 +626,12 @@ case "$cmd" in
     ;;
   mlx-audio-audit|mlx-audio-runtime-audit)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/mlx_audio_runtime_audit.py" "$@"
+    ;;
+  mlx-intelligence-router|mlx-compute-brain|mlx-utilization)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/mlx_intelligence_router.py" "$@"
+    ;;
+  library-utilization-router|library-router|non-mlx-library-router|dependency-utilization)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/library_utilization_router.py" "$@"
     ;;
   onnx-audit|onnx-runtime-audit)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/onnx_runtime_audit.py" "$@"
@@ -610,6 +704,9 @@ case "$cmd" in
     ;;
   stateful-storage-regression-guard|stateful-storage-guard|local-stateful-guard)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/stateful_storage_regression_guard.py" "$@"
+    ;;
+  data-retention|retention-policy|data-retention-policy)
+    exec "$PY" "$PROJECT_ROOT/scripts/data_retention_policy.py" "$@"
     ;;
   data-collection-storage-guard|collector-storage-guard)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/data_collection_storage_guard.py" "$@"
@@ -735,7 +832,7 @@ case "$cmd" in
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_canary_control.py" "$@"
     ;;
   runtime-throttle|throttle-control|throttle-bot)
-    exec "$PY" "$PROJECT_ROOT/scripts/ops/runtime_throttle_control.py" "$@"
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/runtime_throttle_control.py" "$@"
     ;;
   mode-switchboard|mode-switchboard-mission-control)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/mode_switchboard_mission_control.py" "$@"
@@ -763,6 +860,9 @@ case "$cmd" in
     ;;
   release-freeze|freeze-window|runtime-freeze)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/release_freeze_guard.py" "$@"
+    ;;
+  legacy-bot-harmonizer|legacy-bot-harmonize|legacy-v107-harmonizer)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/legacy_bot_harmonizer.py" "$@"
     ;;
   roster-expansion|roster-slots|bot-slots)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/roster_expansion_slots.py" "$@"
@@ -797,7 +897,12 @@ case "$cmd" in
   memory-efficiency|memory-efficiency-control)
     subcmd="${1:-status}"
     shift || true
-    exec "$PY" "$PROJECT_ROOT/scripts/ops/memory_efficiency_control.py" "$subcmd" "$@"
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/memory_efficiency_control.py" "$subcmd" "$@"
+    ;;
+  swap-pressure-governor|swap-pressure|swap-governor)
+    subcmd="${1:-status}"
+    shift || true
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/swap_pressure_governor.py" "$subcmd" "$@"
     ;;
   creative-cotenant-guard|creative-cotenant|cotenant-guard)
     subcmd="${1:-status}"
@@ -806,6 +911,48 @@ case "$cmd" in
     ;;
   platform-control-plane|platform-control|control-plane|institutional-readiness)
     exec "$PY" "$PROJECT_ROOT/scripts/platform_control_plane_report.py" "$@"
+    ;;
+  new-bot-admission|new-bot-admission-guard|admission-guard)
+    exec "$PY" "$PROJECT_ROOT/scripts/new_bot_admission_guard.py" "$@"
+    ;;
+  intelligence-capability-expansion|capability-expansion|platform-intelligence|platform-intelligence-expansion|bot-admission|sleeve-masters|quality-score-system|market-regime-router|capacity-planner|research-pipeline|correlation-governor|model-decay-detector|system-dashboard)
+    if [[ "$cmd" == "intelligence-capability-expansion" || "$cmd" == "capability-expansion" ]]; then
+      run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/intelligence_capability_expansion.py" "$@"
+    fi
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/platform_intelligence_expansion.py" "$@"
+    ;;
+  expansion-capacity|expansion-capacity-planner|growth-capacity)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/expansion_capacity_planner_bot.py" "$@"
+    ;;
+  advanced-intelligence-mesh|intelligence-mesh|meta-intelligence)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/advanced_intelligence_mesh_expansion.py" "$@"
+    ;;
+  cognitive-control-plane|cognitive-control|cognition-plane)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/cognitive_control_plane_expansion.py" "$@"
+    ;;
+  recursive-research-foundry|research-foundry|recursive-foundry)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/recursive_research_foundry_expansion.py" "$@"
+    ;;
+  coordination-intelligence|coordination-control|strategy-conflict-resolver|capital-simulator|market-regime-memory|research-to-bot-pipeline|feature-quality-layer|adversarial-paper-lab|sleeve-master-upgrade|bot-admission-committee|system-explainability)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/coordination_intelligence_expansion.py" "$@"
+    ;;
+  adaptive-intelligence-kernel|intelligence-kernel|meta-learning-kernel)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/adaptive_intelligence_kernel_expansion.py" "$@"
+    ;;
+  big-platform-brain|platform-brain|system-self-model|self-model|self-awareness|metacognition)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/system_self_model.py" "$@"
+    ;;
+  self-awareness-infrabots|system-self-awareness)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/system_self_awareness_expansion.py" "$@"
+    ;;
+  alpha-intelligence-evolution|alpha-advancement|alpha-evolution|alpha-intelligence|training-readiness-brain|execution-reality-lab|portfolio-exposure-brain|data-source-confidence-engine|research-intake-pipeline|duplicate-alpha-novelty|professional-dashboard-v2|broker-adapter-mesh|adapter-mesh|cleanup-governor)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/alpha_intelligence_evolution_expansion.py" "$@"
+    ;;
+  intelligence-layer-advancement|intelligence-layer-v2|intelligence-upgrade|meta-intelligence-v2|metacognitive-routing-v2|world-model-lab|alpha-benchmark-suite|memory-retrieval-v2|critic-board|active-learning-v2|ensemble-uncertainty|tool-intelligence-router|safety-invariants-v2|self-improvement-backlog)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/intelligence_layer_advancement_expansion.py" "$@"
+    ;;
+  bot-founder-dna|founder-dna|bot-genome|lineage-dna)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/bot_founder_dna_lineage.py" "$@"
     ;;
   stale-sweeper|stale-artifact-sweeper|stale-stage-bot)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/stale_artifact_sweeper_bot.py" "$@"
@@ -1037,9 +1184,9 @@ case "$cmd" in
     if [[ "$PAPER_MODE" == "1" ]]; then
       paper_trade_lock_env
       echo "coinbase_paper=enabled top_n=$PAPER_TOP_N min_acc=$PAPER_MIN_ACC profiles=$PAPER_PROFILES"
-      TOP_BOT_PAPER_TRADING_ENABLED=1       TOP_BOT_PAPER_TRADING_TOP_N="$PAPER_TOP_N"       TOP_BOT_PAPER_TRADING_MIN_ACC="$PAPER_MIN_ACC"       TOP_BOT_PAPER_TRADING_PROFILES="$PAPER_PROFILES"       PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"       PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}"       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
+      TOP_BOT_PAPER_TRADING_ENABLED=1       TOP_BOT_PAPER_TRADING_TOP_N="$PAPER_TOP_N"       TOP_BOT_PAPER_TRADING_MIN_ACC="$PAPER_MIN_ACC"       TOP_BOT_PAPER_TRADING_PROFILES="$PAPER_PROFILES"       PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"       PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"       PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
     else
-      ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}"       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
+      PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
     fi
 
     sleep 2
@@ -1109,20 +1256,27 @@ case "$cmd" in
     if [[ "$PAPER_MODE" == "1" ]]; then
       paper_trade_lock_env
       echo "coinbase_futures_paper=enabled profile=$FUTURES_PROFILE top_n=$PAPER_TOP_N min_acc=$PAPER_MIN_ACC profiles=$PAPER_PROFILES"
-      SHADOW_PROFILE="$FUTURES_PROFILE"       SHADOW_DOMAIN=crypto       SHADOW_THRESHOLD_SHIFT="${COINBASE_FUTURES_THRESHOLD_SHIFT:-0.02}"       SIZING_MAX_NOTIONAL_PCT="${COINBASE_FUTURES_MAX_NOTIONAL_PCT:-0.03}"       PORTFOLIO_BASE_BUDGET="${COINBASE_FUTURES_BASE_BUDGET:-0.50}"       CROSS_SYMBOL_MAX_LONG="${COINBASE_FUTURES_MAX_LONG:-4}"       CROSS_SYMBOL_MAX_SHORT="${COINBASE_FUTURES_MAX_SHORT:-4}"       RISK_MAX_DAILY_LOSS_PROXY="${COINBASE_FUTURES_MAX_DAILY_LOSS_PROXY:-0.03}"       LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"       LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"       LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"       LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"       TOP_BOT_PAPER_TRADING_ENABLED=1       TOP_BOT_PAPER_TRADING_TOP_N="$PAPER_TOP_N"       TOP_BOT_PAPER_TRADING_MIN_ACC="$PAPER_MIN_ACC"       TOP_BOT_PAPER_TRADING_PROFILES="$PAPER_PROFILES"       PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"       PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_FUTURES_ADAPTIVE_INTERVAL_ENABLED:-${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}}"       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
+      SHADOW_PROFILE="$FUTURES_PROFILE"       SHADOW_DOMAIN=crypto       SHADOW_THRESHOLD_SHIFT="${COINBASE_FUTURES_THRESHOLD_SHIFT:-0.02}"       SIZING_MAX_NOTIONAL_PCT="${COINBASE_FUTURES_MAX_NOTIONAL_PCT:-0.03}"       PORTFOLIO_BASE_BUDGET="${COINBASE_FUTURES_BASE_BUDGET:-0.50}"       CROSS_SYMBOL_MAX_LONG="${COINBASE_FUTURES_MAX_LONG:-4}"       CROSS_SYMBOL_MAX_SHORT="${COINBASE_FUTURES_MAX_SHORT:-4}"       RISK_MAX_DAILY_LOSS_PROXY="${COINBASE_FUTURES_MAX_DAILY_LOSS_PROXY:-0.03}"       LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"       LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"       LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"       LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"       TOP_BOT_PAPER_TRADING_ENABLED=1       TOP_BOT_PAPER_TRADING_TOP_N="$PAPER_TOP_N"       TOP_BOT_PAPER_TRADING_MIN_ACC="$PAPER_MIN_ACC"       TOP_BOT_PAPER_TRADING_PROFILES="$PAPER_PROFILES"       PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"       PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"       PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_FUTURES_ADAPTIVE_INTERVAL_ENABLED:-${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
     else
-      SHADOW_PROFILE="$FUTURES_PROFILE"       SHADOW_DOMAIN=crypto       SHADOW_THRESHOLD_SHIFT="${COINBASE_FUTURES_THRESHOLD_SHIFT:-0.02}"       SIZING_MAX_NOTIONAL_PCT="${COINBASE_FUTURES_MAX_NOTIONAL_PCT:-0.03}"       PORTFOLIO_BASE_BUDGET="${COINBASE_FUTURES_BASE_BUDGET:-0.50}"       CROSS_SYMBOL_MAX_LONG="${COINBASE_FUTURES_MAX_LONG:-4}"       CROSS_SYMBOL_MAX_SHORT="${COINBASE_FUTURES_MAX_SHORT:-4}"       RISK_MAX_DAILY_LOSS_PROXY="${COINBASE_FUTURES_MAX_DAILY_LOSS_PROXY:-0.03}"       LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"       LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"       LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"       LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_FUTURES_ADAPTIVE_INTERVAL_ENABLED:-${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}}"       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
+      SHADOW_PROFILE="$FUTURES_PROFILE"       SHADOW_DOMAIN=crypto       SHADOW_THRESHOLD_SHIFT="${COINBASE_FUTURES_THRESHOLD_SHIFT:-0.02}"       SIZING_MAX_NOTIONAL_PCT="${COINBASE_FUTURES_MAX_NOTIONAL_PCT:-0.03}"       PORTFOLIO_BASE_BUDGET="${COINBASE_FUTURES_BASE_BUDGET:-0.50}"       CROSS_SYMBOL_MAX_LONG="${COINBASE_FUTURES_MAX_LONG:-4}"       CROSS_SYMBOL_MAX_SHORT="${COINBASE_FUTURES_MAX_SHORT:-4}"       RISK_MAX_DAILY_LOSS_PROXY="${COINBASE_FUTURES_MAX_DAILY_LOSS_PROXY:-0.03}"       LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"       LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"       LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"       LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"       PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_FUTURES_ADAPTIVE_INTERVAL_ENABLED:-${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
     fi
 
     sleep 2
     if ps -axo command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase --profile $FUTURES_PROFILE" | grep -v grep >/dev/null 2>&1; then
       echo "$LOG"
       echo "coinbase_futures_loop_started profile=$FUTURES_PROFILE simulate=$COINBASE_SIMULATE paper_mode=$PAPER_MODE"
-      OPS_WATCHDOG_REFRESH_REPORTS=0 "$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py" --require-coinbase --json >/dev/null 2>&1 || true
+      OPS_WATCHDOG_REFRESH_REPORTS=0 "$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py" --require-coinbase-futures --json >/dev/null 2>&1 || true
     else
-      echo "coinbase_futures_loop failed_to_start profile=$FUTURES_PROFILE"
-      tail -n 60 "$LOG" || true
-      exit 1
+      OPS_WATCHDOG_REFRESH_REPORTS=0 "$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py" --require-coinbase-futures --json >/dev/null 2>&1 || true
+      sleep 2
+      if ps -axo command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase --profile $FUTURES_PROFILE" | grep -v grep >/dev/null 2>&1; then
+        echo "$LOG"
+        echo "coinbase_futures_loop_started profile=$FUTURES_PROFILE simulate=$COINBASE_SIMULATE paper_mode=$PAPER_MODE via=watchdog"
+      else
+        echo "coinbase_futures_loop failed_to_start profile=$FUTURES_PROFILE"
+        tail -n 60 "$LOG" || true
+        exit 1
+      fi
     fi
     ;;
   coinbase-futures-stop)
@@ -1298,7 +1452,31 @@ case "$cmd" in
       "$PROJECT_ROOT/scripts/ops/opsctl.sh" fx-start --paper --force-restart --live-data
     fi
 
-    "$PROJECT_ROOT/scripts/ops/opsctl.sh" market-correlation-sync --json >/dev/null 2>&1 || true
+    if [[ "${LIVEFEED_REFRESH_MARKET_CORRELATION_SYNC:-0}" == "1" ]]; then
+      "$PROJECT_ROOT/scripts/ops/opsctl.sh" market-correlation-sync \
+        --lookback-days "${LIVEFEED_REFRESH_MARKET_CORRELATION_LOOKBACK_DAYS:-1}" \
+        --bucket-seconds "${LIVEFEED_REFRESH_MARKET_CORRELATION_BUCKET_SECONDS:-300}" \
+        --min-points "${LIVEFEED_REFRESH_MARKET_CORRELATION_MIN_POINTS:-3}" \
+        --timeout-seconds "${LIVEFEED_REFRESH_MARKET_CORRELATION_TIMEOUT_SECONDS:-90}" \
+        --json >/dev/null 2>&1 || true
+    elif [[ "${LIVEFEED_REFRESH_MARKET_CORRELATION_ASYNC:-1}" == "1" ]]; then
+      if market_correlation_running; then
+        MARKET_CORR_PIDS="$(market_correlation_process_lines | awk '{print $1}' | paste -sd, -)"
+        echo "market_correlation_sync_skipped reason=already_running pids=${MARKET_CORR_PIDS:-unknown}"
+      else
+        MARKET_CORR_LOG="$PROJECT_ROOT/logs/market_correlation_livefeed_$(date -u +%Y%m%d_%H%M%S).log"
+        nohup "$PROJECT_ROOT/scripts/ops/opsctl.sh" market-correlation-sync \
+          --lookback-days "${LIVEFEED_REFRESH_MARKET_CORRELATION_LOOKBACK_DAYS:-1}" \
+          --bucket-seconds "${LIVEFEED_REFRESH_MARKET_CORRELATION_BUCKET_SECONDS:-300}" \
+          --min-points "${LIVEFEED_REFRESH_MARKET_CORRELATION_MIN_POINTS:-3}" \
+          --timeout-seconds "${LIVEFEED_REFRESH_MARKET_CORRELATION_TIMEOUT_SECONDS:-90}" \
+          --json > "$MARKET_CORR_LOG" 2>&1 & disown
+        echo "market_correlation_sync_started_async log=$MARKET_CORR_LOG"
+      fi
+    else
+      echo "market_correlation_sync_skipped async=0 sync=0"
+    fi
+    echo "livefeed_refresh_completed source=$SOURCE schwab_paper=$SCHWAB_PAPER coinbase_paper=$COINBASE_PAPER"
     exit 0
     ;;
   storage-switch-local|storage-safe-eject)
@@ -1685,6 +1863,7 @@ opsctl commands:
   stop
   status
   restart-sanity [--json] [--start-after] [--start-mode start|start-sim|start-live] [--force-restart]
+  post-restart-settle|post-restart-settlement [--apply] [--max-renice-processes N] [--json]
   retrain
   retrain-force-full [extra weekly_retrain args...]
   retrain-force-targeted --include-bot-ids CSV [extra weekly_retrain args...]
@@ -1702,7 +1881,7 @@ opsctl commands:
   options-flow-sync [--symbols CSV] [--timeout-seconds N] [--json]
   tastytrade-sync [legacy alias for options-flow-sync]
   crypto-market-sync [--symbols CSV] [--timeout N] [--json]
-  market-correlation-sync [--lookback-days N] [--bucket-seconds N] [--min-points N] [--json]
+  market-correlation-sync [--lookback-days N] [--bucket-seconds N] [--min-points N] [--timeout-seconds N] [--json]
   fx-market-sync [--timeout N] [--json]
   dividend-drip-sync [--lookback-days N] [--recent-window-days N] [--json]
   showcase-refresh
@@ -1714,6 +1893,8 @@ opsctl commands:
   mlx-audit [--json]
   mlx-library-upgrade [--apply] [--json]
   mlx-audio-audit [--json]
+  mlx-intelligence-router|mlx-compute-brain|mlx-utilization [--apply] [--json]
+  library-utilization-router|library-router|non-mlx-library-router [--apply] [--json]
   onnx-audit [--json]
   pytorch-audit [--json]
   pytorch-replay-canary [--json]
@@ -1804,6 +1985,7 @@ opsctl commands:
   remote-alert-control [--hours N] [--ack-event NAME] [--ack-all-critical] [--json]
   storage-quota-guard [--json]
   release-freeze [--activate-days N | --clear-window] [--reason TEXT] [--json]
+  legacy-bot-harmonizer|legacy-v107-harmonizer [--apply] [--json]
   roster-expansion [--apply-registry] [--json]
   roster-resilience [--json]
   chaos-drills [--record-drill NAME] [--note TEXT] [--json]
@@ -1815,12 +1997,30 @@ opsctl commands:
   operator-cockpit [--json]
   daily-verify-remediation [--apply] [--json]
   memory-efficiency [status|apply] [--json]
+  swap-pressure-governor|swap-pressure [status|apply] [--json]
   creative-cotenant-guard|creative-cotenant|cotenant-guard [status|apply] [--json]
   platform-control-plane [--max-rows N] [--json]
+  intelligence-capability-expansion|capability-expansion [--apply] [--json]
+  platform-intelligence [--max-rows N] [--json]
+  expansion-capacity [--wave-size N] [--json]
+  advanced-intelligence-mesh|intelligence-mesh [--apply] [--json]
+  cognitive-control-plane|cognitive-control [--apply] [--json]
+  recursive-research-foundry|research-foundry [--apply] [--json]
+  coordination-intelligence|strategy-conflict-resolver [--apply] [--json]
+  adaptive-intelligence-kernel|intelligence-kernel [--apply] [--json]
+  mlx-intelligence-router|mlx-compute-brain|mlx-utilization [--apply] [--json]
+  library-utilization-router|library-router|non-mlx-library-router [--apply] [--json]
+  big-platform-brain|platform-brain|system-self-model|self-model|self-awareness [--json]
+  self-awareness-infrabots|system-self-awareness [--apply] [--json]
+  alpha-intelligence-evolution|alpha-advancement [--apply] [--json]
+  intelligence-layer-advancement|intelligence-layer-v2 [--apply] [--json]
+  new-bot-admission|new-bot-admission-guard [--json]
+  bot-founder-dna|founder-dna [--apply-registry] [--json]
   cross-host-parity [--json]
   experiment-ledger [--name TEXT] [--event-type TEXT] [--json]
   stale-sweeper [--stale-stage-sections all|logs,governance,exports] [--json]
-  stale-reaper [--stale-purge-days DAYS] [--json]
+  data-retention [--apply] [--stale-stage] [--stale-purge] [--json]
+  stale-reaper [--stale-purge-days DAYS] [--stale-purge-low-value-days DAYS] [--max-delete-gb GB] [--json]
   model-lifecycle [--json]
   access-portable
   access-native
@@ -1848,9 +2048,9 @@ opsctl commands:
   fx-start [paper only] [--paper] [--force-restart] [--live-data|--simulate] [--symbols CSV] [--context-symbols CSV] [--interval-seconds N]
   fx-stop
   paper-trade-lock-infrabot [--apply] [--json]
-  feed-refresh [paper default] [--source schwab|coinbase|fx|all] [--paper|--schwab-paper] [--coinbase-paper]
-  livefeed-refresh|live-feed-refresh [paper default] [--paper|--schwab-paper] [--coinbase-paper]
-  feed [--source schwab|coinbase|fx|futures|schwab_futures|coinbase_futures|main|infra|all] [--symbol SYMBOL] [--lines 40] [--raw] [--include-decisions|--heavy]
+  feed-refresh [paper default] [--dry-run] [--source schwab|coinbase|fx|all] [--paper|--schwab-paper] [--coinbase-paper]
+  livefeed-refresh|live-feed-refresh [paper default] [--dry-run] [--paper|--schwab-paper] [--coinbase-paper]
+  feed [--source schwab|coinbase|fx|futures|schwab_futures|coinbase_futures|main|infra|all] [--symbol SYMBOL] [--lines 40] [--raw] [--color|--no-color] [--include-decisions|--heavy]
   phone-feed [--host 127.0.0.1|0.0.0.0] [--port 8787] [--source all] [--lines 80] [--include-decisions] [--token TOKEN]
   schwab-tail [--symbol SYMBOL] [--lines 40]
   coinbase-tail [--symbol SYMBOL] [--lines 40]

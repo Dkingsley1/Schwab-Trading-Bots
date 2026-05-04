@@ -383,6 +383,85 @@ def test_coverage_gap_closer_keeps_non_coverage_ready_candidate_out_of_active_st
     assert pool["backup_candidates"] == []
 
 
+def test_coverage_gap_closer_stages_repair_needed_backups_without_launching(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    repair_actions = [
+        "rebuild_model_artifact",
+        "recover_training_log",
+        "refresh_training_diagnostics",
+        "repair_runtime_inputs",
+        "generate_walk_forward_runs",
+    ]
+    _write_json(
+        project_root / "governance" / "walk_forward" / "coverage_seed_latest.json",
+        {
+            "seed_queue": [
+                {
+                    "bot_id": "brain_refinery_v35_dmi_state_machine",
+                    "bot_role": "signal_sub_bot",
+                    "priority": 100.0,
+                    "current_runs": 0,
+                    "runs_remaining": 12,
+                    "needs_runtime_input_repair": True,
+                    "actions": repair_actions,
+                },
+                {
+                    "bot_id": "brain_refinery_v4_simple",
+                    "bot_role": "signal_sub_bot",
+                    "priority": 99.0,
+                    "current_runs": 0,
+                    "runs_remaining": 12,
+                    "needs_runtime_input_repair": True,
+                    "actions": repair_actions,
+                },
+                {
+                    "bot_id": "brain_refinery_v13_choppy",
+                    "bot_role": "signal_sub_bot",
+                    "priority": 98.0,
+                    "current_runs": 0,
+                    "runs_remaining": 12,
+                    "needs_runtime_input_repair": True,
+                    "actions": repair_actions,
+                },
+            ]
+        },
+    )
+    _write_json(
+        project_root / "governance" / "walk_forward" / "promotion_readiness_latest.json",
+        {"coverage_shortfall_bots": 3, "considered_bots": 1, "thresholds": {"min_considered_bots": 4}},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "training_runtime_control_latest.json",
+        {"overall_status": "ready", "snapshot_ready": True, "coverage_repair_ready": True},
+    )
+    _write_json(project_root / "governance" / "health" / "resource_guard_latest.json", {"swap_used_gb": 0.1})
+    _write_json(
+        project_root / "governance" / "health" / "live_runtime_separation_control_latest.json",
+        {
+            "overall_status": "degraded",
+            "release_contract": {"live_lane_should_be_read_only": True},
+            "clearance_plan": {"cold_lane_refresh": {"overall_status": "ready"}},
+        },
+    )
+
+    payload = gap_closer_src._build_payload(
+        project_root,
+        candidate_limit=8,
+        stage_count=3,
+        retrain_profile="coverage_canary",
+    )
+
+    assert payload["staged_candidate_count"] == 3
+    assert {row["coverage_stage_kind"] for row in payload["active_stage_candidates"]} == {
+        "runtime_input_repair_required"
+    }
+    assert payload["autopilot_contract"]["can_apply_stage"] is True
+    assert payload["autopilot_contract"]["can_launch_now"] is False
+    assert payload["autopilot_contract"]["repair_required_count"] == 3
+    assert payload["autopilot_contract"]["launch_state"] == "runtime_input_repair_required"
+    assert "runtime_input_repair_required" in payload["autopilot_contract"]["blocking_reasons"]
+
+
 def test_coverage_gap_closer_prefers_sample_viable_candidates_over_recent_failed_bot(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     _write_json(

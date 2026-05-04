@@ -155,6 +155,14 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
 
 
+def _safe_load_json(path: Path) -> Dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _append_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
@@ -576,6 +584,127 @@ def _fetch_market_symbols(
     return rows, errors
 
 
+def _all_guest_endpoints_gone(dataset_status: Dict[str, Dict[str, Any]]) -> bool:
+    if not dataset_status:
+        return False
+    checked = 0
+    gone = 0
+    for row in dataset_status.values():
+        error = str((row or {}).get("error") or "")
+        if not error:
+            continue
+        checked += 1
+        if "HTTPError:410" in error:
+            gone += 1
+    return checked > 0 and checked == gone
+
+
+def _nested_mapping(payload: Dict[str, Any], *keys: str) -> Dict[str, Any]:
+    row: Any = payload
+    for key in keys:
+        if not isinstance(row, dict):
+            return {}
+        row = row.get(key)
+    return row if isinstance(row, dict) else {}
+
+
+def _build_official_context_fallback(
+    *,
+    now_iso: str,
+    primary_country: str,
+    endpoint_retired: bool,
+) -> Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]]]:
+    external_context = PROJECT_ROOT / "exports" / "external_context"
+    source_specs = {
+        "official_macro_context": external_context / "official_macro_context_latest.json",
+        "market_crypto_correlation": external_context / "market_crypto_correlation_latest.json",
+        "fx_market_context": external_context / "fx_market_context_latest.json",
+        "extended_quant_context": external_context / "extended_quant_context_latest.json",
+    }
+    sources: Dict[str, Dict[str, Any]] = {}
+    source_payloads: Dict[str, Dict[str, Any]] = {}
+    for name, path in source_specs.items():
+        payload = _safe_load_json(path)
+        if not payload:
+            continue
+        source_payloads[name] = payload
+        derived = payload.get("derived") if isinstance(payload.get("derived"), dict) else {}
+        sources[name] = {
+            "ok": True,
+            "path": str(path),
+            "timestamp_utc": str(payload.get("timestamp_utc") or payload.get("generated_utc") or ""),
+            "derived_key_count": len(derived),
+        }
+
+    if not source_payloads:
+        return {}, {}, []
+
+    official_macro = source_payloads.get("official_macro_context", {})
+    official_derived = _nested_mapping(official_macro, "derived")
+    market_context = source_payloads.get("market_crypto_correlation", {})
+    market_derived = _nested_mapping(market_context, "derived")
+    fx_context = source_payloads.get("fx_market_context", {})
+    fx_derived = _nested_mapping(fx_context, "derived")
+    quant_context = source_payloads.get("extended_quant_context", {})
+    quant_derived = _nested_mapping(quant_context, "derived")
+
+    market_breadth = {
+        "timestamp_utc": now_iso,
+        "source": "tradingeconomics_guest_official_context_fallback",
+        "row_count": len(_nested_mapping(market_derived, "latest_market") or _nested_mapping(market_derived, "latest_snapshots")),
+        "index_alignment_score": _to_float(_nested_mapping(market_derived, "global_features").get("market_crypto_risk_alignment_norm"), 0.0),
+        "risk_on_score": _to_float(_nested_mapping(market_derived, "global_features").get("market_crypto_risk_on_norm"), 0.0),
+    }
+    if market_breadth["row_count"] <= 0:
+        latest_market = market_derived.get("latest_market") if isinstance(market_derived.get("latest_market"), dict) else {}
+        market_breadth["row_count"] = len(latest_market)
+
+    bond_reference = {
+        "timestamp_utc": now_iso,
+        "source": "tradingeconomics_guest_official_context_fallback",
+        "symbols": {},
+        "fx_pair_count": len(_nested_mapping(fx_derived, "pair_values")),
+        "quant_context_present": bool(quant_derived),
+    }
+
+    derived = {
+        "calendar_features": official_derived.get("calendar_features") if isinstance(official_derived.get("calendar_features"), dict) else {},
+        "news_features": official_derived.get("news_features") if isinstance(official_derived.get("news_features"), dict) else {},
+        "macro_backfill": {
+            "country": primary_country,
+            "unemployment_rate_latest": None,
+            "inflation_mom_ratio": None,
+            "gdp_qoq_ratio": None,
+            "fallback_source": "official_macro_context",
+        },
+        "market_breadth": market_breadth,
+        "bond_reference": bond_reference,
+        "calendar_rows": [],
+        "fallback_sources": sources,
+    }
+    fallback_rows = [
+        {
+            "timestamp_utc": now_iso,
+            "provider": "tradingeconomics_guest",
+            "dataset": "official_context_fallback",
+            "country": primary_country,
+            "row_index": idx,
+            "row_key": name,
+            "row": row,
+        }
+        for idx, (name, row) in enumerate(sorted(sources.items()))
+    ]
+    dataset_status = {
+        "ok": True,
+        "error": None,
+        "url": "local://official-context-fallback",
+        "rows_count": len(fallback_rows),
+        "fallback": True,
+        "fallback_reason": "tradingeconomics_guest_api_http_410" if endpoint_retired else "tradingeconomics_guest_api_unavailable",
+    }
+    return derived, dataset_status, fallback_rows
+
+
 def _dataset_event_rows(
     *,
     now_iso: str,
@@ -727,6 +856,21 @@ def collect(args: argparse.Namespace) -> int:
         "calendar_rows": combined_calendar_rows,
     }
 
+    native_datasets_ok_count = sum(1 for node in dataset_status.values() if bool(node.get("ok")))
+    endpoint_retired = _all_guest_endpoints_gone(dataset_status)
+    fallback_active = False
+    fallback_rows: List[Dict[str, Any]] = []
+    if native_datasets_ok_count <= 0:
+        fallback_derived, fallback_status, fallback_rows = _build_official_context_fallback(
+            now_iso=now_iso,
+            primary_country=primary_country,
+            endpoint_retired=endpoint_retired,
+        )
+        if fallback_status:
+            fallback_active = True
+            dataset_status["official_context_fallback"] = fallback_status
+            derived = fallback_derived
+
     datasets_ok_count = sum(1 for node in dataset_status.values() if bool(node.get("ok")))
     status = {
         "timestamp_utc": now_iso,
@@ -734,8 +878,12 @@ def collect(args: argparse.Namespace) -> int:
         "auth_mode": auth_mode,
         "countries": countries,
         "datasets_ok_count": datasets_ok_count,
+        "native_datasets_ok_count": native_datasets_ok_count,
         "datasets_total_count": len(dataset_status),
         "ok": datasets_ok_count > 0,
+        "fallback_active": fallback_active,
+        "source_degraded": fallback_active,
+        "guest_api_endpoint_retired": endpoint_retired,
         "datasets": dataset_status,
     }
 
@@ -795,6 +943,7 @@ def collect(args: argparse.Namespace) -> int:
                     country=primary_country,
                 )
             )
+        data_rows.extend(fallback_rows)
         if data_rows:
             _append_jsonl(data_rows_path, data_rows)
 

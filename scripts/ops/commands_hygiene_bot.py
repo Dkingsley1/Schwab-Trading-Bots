@@ -562,7 +562,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "Refresh the live loops without reinstalling the stack watchdog",
                 ["./scripts/ops/opsctl.sh livefeed-refresh"],
                 notes=[
-                    "`livefeed-refresh` is the all-feeds shortcut for the `feed-refresh` live-loop restart helper. It kills and restarts the relevant market-data loops. If you want a full supervised stack refresh instead of a feed-loop refresh, use `./scripts/ops/opsctl.sh start --force-restart`.",
+                    "`livefeed-refresh` is the all-feeds shortcut for the `feed-refresh` live-loop restart helper. It kills and restarts the relevant market-data loops. Use `./scripts/ops/opsctl.sh livefeed-refresh --dry-run` to validate the route without touching processes. If you want a full supervised stack refresh instead of a feed-loop refresh, use `./scripts/ops/opsctl.sh start --force-restart`.",
                 ],
             ),
             _command_entry(
@@ -621,6 +621,14 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                     "This only clears the halt when the runtime, auth, watchdog, and data-plane guardrails are back inside the safe-clear envelope.",
                 ],
             ),
+            _command_entry(
+                project_root,
+                "Run post-restart settlement",
+                ["./scripts/ops/opsctl.sh post-restart-settle --apply --json"],
+                notes=[
+                    "This rechecks restart sanity, auth lease, global halt blockers, collector contracts, process watchdog coverage, and runtime throttle after a restart.",
+                ],
+            ),
             _command_entry(project_root, "Validate documented commands", ["./scripts/ops/opsctl.sh command-validity --json"]),
         ),
         _section(
@@ -668,7 +676,8 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "Heavy live feed view across all sections",
                 ["./scripts/ops/opsctl.sh feed --source all --heavy"],
                 notes=[
-                    "Use this as the primary all-feeds operator view when you want sleeve logs, decision streams, and infrastructure health artifacts in one window.",
+                    "Use this as the primary all-feeds operator view when you want sleeve logs, decision streams, highlighted health states, and infrastructure health artifacts in one window.",
+                    "Heavy views use a red-only highlight by default while preserving `[ALERT]`, `[WATCH]`, `[OK]`, and `[FLOW]` labels; pass `--no-color` only when redirecting clean text to a file.",
                     "If the Mac is running an `air_safe` or `constrained` memory-efficiency profile, the feed automatically trims decision fanout and uses a lower default line budget unless you pass your own `--lines` or `--no-memory-aware`.",
                 ],
             ),
@@ -985,6 +994,60 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(project_root, "FX market context sync", ["./scripts/ops/opsctl.sh fx-market-sync --json"]),
             _command_entry(project_root, "Macro context sync", ["./scripts/ops/opsctl.sh macro-context-sync --json"]),
             _command_entry(project_root, "Source verification", ["./scripts/ops/opsctl.sh source-verification --json"]),
+        ),
+        _section(
+            "Platform Expansion",
+            _command_entry(
+                project_root,
+                "Apply the coordination intelligence control-plane pack",
+                ["./scripts/ops/opsctl.sh coordination-intelligence --apply --json"],
+                notes=[
+                    "Adds the guarded coordination layer: bot genome lineage, strategy conflict resolution, capital simulation, regime memory, research-to-bot intake, feature quality, adversarial paper-trade lab, sleeve master summaries, admission committee, and explainability dashboard.",
+                    "The bots are collection-only until their evidence, data-quality, and runtime thresholds clear.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview the coordination intelligence control-plane pack",
+                ["./scripts/ops/opsctl.sh coordination-intelligence --json"],
+                notes=[
+                    "Use the dry run to see planned coordination bots, storage contracts, and paper-only guardrails without changing the registry.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply the alpha intelligence evolution pack",
+                ["./scripts/ops/opsctl.sh alpha-intelligence-evolution --apply --json"],
+                notes=[
+                    "Adds the guarded alpha advancement layer: training readiness, execution reality, portfolio exposure, source confidence, research intake, duplicate-alpha novelty control, regime memory v2, dashboard v2, adapter mesh, and cleanup governor.",
+                    "The bots are collection-only with paper/live execution blocked until readiness, execution realism, source confidence, and duplicate-alpha gates clear.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview the alpha intelligence evolution pack",
+                ["./scripts/ops/opsctl.sh alpha-intelligence-evolution --json"],
+                notes=[
+                    "Use the dry run to see planned alpha intelligence bots, data intakes, storage contracts, and self-awareness upgrades without changing the registry.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply the intelligence layer advancement pack",
+                ["./scripts/ops/opsctl.sh intelligence-layer-advancement --apply --json"],
+                notes=[
+                    "Adds the guarded meta-intelligence layer: metacognitive routing, counterfactual world models, alpha benchmarks, memory compression, critic debate, active learning, ensemble uncertainty, library routing, safety invariants, and self-improvement backlog planning.",
+                    "The bots are collection-only with paper/live execution blocked until benchmark, memory-quality, safety-invariant, and runtime-pressure gates clear.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview the intelligence layer advancement pack",
+                ["./scripts/ops/opsctl.sh intelligence-layer-advancement --json"],
+                notes=[
+                    "Use the dry run to see planned intelligence-layer bots, data intakes, storage contracts, and routing/safety guardrails without changing the registry.",
+                ],
+            ),
         ),
         _section(
             "Macro And Media",

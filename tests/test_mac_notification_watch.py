@@ -126,3 +126,24 @@ def test_halt_clear_events_share_imessage_allowlist_family() -> None:
 
     assert watch._imessage_event_allowed("global_halt_cleared", allowlist) is True
     assert watch._imessage_event_allowed("incident_auto_halt_cleared", allowlist) is True
+
+
+def test_swap_pressure_event_surfaces_restart_advisory() -> None:
+    event = watch._swap_pressure_event(
+        {
+            "notification": {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "event": "swap_pressure_restart_advisory",
+                "current_tier": "pause_research",
+                "message": "Swap pressure is pause_research at 18.4 GB; restart PyCharm when convenient.",
+            }
+        },
+        900.0,
+    )
+
+    assert event is not None
+    key, message = event
+    assert key == "swap_pressure:swap_pressure_restart_advisory:pause_research"
+    assert "restart PyCharm" in message
+    assert watch._event_severity(key, message) == "warn"
+    assert watch._notification_heading(key, message) == ("Trading Bot Warning", "Swap Pressure")

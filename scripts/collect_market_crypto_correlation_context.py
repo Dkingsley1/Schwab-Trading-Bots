@@ -7,6 +7,7 @@ import fcntl
 import json
 import math
 import os
+import signal
 import statistics
 import sys
 from collections import defaultdict
@@ -1579,6 +1580,12 @@ def main() -> int:
     parser.add_argument("--lookback-days", type=int, default=5)
     parser.add_argument("--bucket-seconds", type=int, default=300)
     parser.add_argument("--min-points", type=int, default=6)
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=int(os.getenv("MARKET_CRYPTO_CORRELATION_TIMEOUT_SECONDS", "0") or 0),
+        help="Optional wall-clock timeout for unattended ops runs.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -1604,19 +1611,54 @@ def main() -> int:
     lock_fh.write(json.dumps({"pid": os.getpid(), "started": datetime.now(timezone.utc).isoformat()}, ensure_ascii=True))
     lock_fh.flush()
 
+    timeout_seconds = max(int(args.timeout_seconds or 0), 0)
+
+    def _timeout_handler(_signum: int, _frame: Any) -> None:
+        raise TimeoutError(f"market_crypto_correlation_timeout seconds={timeout_seconds}")
+
+    if timeout_seconds > 0:
+        signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.alarm(timeout_seconds)
+
     extra_roots: list[Path] = []
     configured_external_raw = str(os.environ.get("BOT_LOGS_EXTERNAL_ROOT", str(EXTERNAL_MIRROR_DEFAULT))).strip()
     if configured_external_raw:
         configured_external = Path(configured_external_raw)
         extra_roots.append(configured_external)
 
-    payload, status = collect_market_crypto_correlation_context(
-        project_root=PROJECT_ROOT,
-        lookback_days=max(int(args.lookback_days), 1),
-        bucket_seconds=max(int(args.bucket_seconds), 60),
-        min_points=max(int(args.min_points), 3),
-        extra_roots=extra_roots,
-    )
+    try:
+        payload, status = collect_market_crypto_correlation_context(
+            project_root=PROJECT_ROOT,
+            lookback_days=max(int(args.lookback_days), 1),
+            bucket_seconds=max(int(args.bucket_seconds), 60),
+            min_points=max(int(args.min_points), 3),
+            extra_roots=extra_roots,
+        )
+    except TimeoutError as exc:
+        status = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "schema_version": CORRELATION_SCHEMA_VERSION,
+            "ok": False,
+            "status": "degraded",
+            "reason": "timeout",
+            "error": str(exc),
+            "lookback_days": max(int(args.lookback_days), 1),
+            "bucket_seconds": max(int(args.bucket_seconds), 60),
+            "min_points": max(int(args.min_points), 3),
+            "timeout_seconds": timeout_seconds,
+            "files_scanned": 0,
+            "rows_scanned": 0,
+            "aligned_pairs": 0,
+        }
+        _write_json(PROJECT_ROOT / "governance" / "health" / "market_crypto_correlation_sync_latest.json", status)
+        if args.json:
+            print(json.dumps(status, ensure_ascii=True))
+        else:
+            print(f"market_crypto_correlation timeout seconds={timeout_seconds}")
+        return 2
+    finally:
+        if timeout_seconds > 0:
+            signal.alarm(0)
 
     _write_json(PROJECT_ROOT / "exports" / "external_context" / "market_crypto_correlation_latest.json", payload)
     _write_json(PROJECT_ROOT / "governance" / "health" / "market_crypto_correlation_sync_latest.json", status)

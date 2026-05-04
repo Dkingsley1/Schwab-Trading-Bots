@@ -27,7 +27,7 @@ def test_package_rows_detect_pytorch_lock_drift() -> None:
     ]
 
 
-def test_recommendations_prefer_shadow_canary_when_mps_ready() -> None:
+def test_recommendations_keep_pytorch_manual_when_mps_ready() -> None:
     recommendations = src._recommendations(
         [
             {
@@ -47,7 +47,23 @@ def test_recommendations_prefer_shadow_canary_when_mps_ready() -> None:
         },
     )
 
-    assert "candidate_pytorch_shadow_sidecar_on_mps" in recommendations
+    assert "pytorch_runtime_available_for_manual_offline_replay_only" in recommendations
     assert "keep_torch_compile_off_for_canary" in recommendations
     assert "keep_mlx_default_live_backend_on_apple_silicon" in recommendations
-    assert "pytorch_canary_is_sidecar_only_until_trading_brain_backend_exists" in recommendations
+    assert "keep_pytorch_replay_canary_disabled_during_live_mlx_collection" in recommendations
+
+
+def test_pip_check_tolerates_mlx_graphs_optional_pin_override() -> None:
+    assert src._pip_check_effectively_ok(
+        {
+            "ok": False,
+            "stdout_tail": "\n".join(
+                [
+                    "mlx-graphs 0.0.9 has requirement fsspec==2024.2.0, but you have fsspec 2026.2.0.",
+                    "mlx-graphs 0.0.9 has requirement requests==2.31.0, but you have requests 2.32.5.",
+                    "mlx-graphs 0.0.9 has requirement tqdm==4.66.1, but you have tqdm 4.67.3.",
+                ]
+            ),
+            "stderr_tail": "",
+        }
+    )

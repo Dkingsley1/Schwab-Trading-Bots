@@ -20,6 +20,8 @@ RUNTIME_PY = resolve_runtime_python(PROJECT_ROOT)
 LOG_PATH = PROJECT_ROOT / 'governance' / 'watchdog' / 'failover_events.jsonl'
 FALLBACK_LOG_PATH = Path('/tmp/failover_events.jsonl')
 DEFAULT_HEARTBEAT_GLOB = str(PROJECT_ROOT / 'governance' / 'health' / 'shadow_loop_conservative_equities_schwab_*.json')
+SWAP_OVERRIDE_PATH = PROJECT_ROOT / 'config' / '.env.swap_pressure_override'
+MEMORY_OVERRIDE_PATH = PROJECT_ROOT / 'config' / '.env.memory_efficiency_override'
 
 
 
@@ -40,6 +42,49 @@ def _append(row: dict) -> str:
         with FALLBACK_LOG_PATH.open('a', encoding='utf-8') as f:
             f.write(encoded + '\n')
         return str(FALLBACK_LOG_PATH)
+
+
+def _parse_env_override_file(path: Path) -> dict[str, str]:
+    try:
+        text = path.read_text(encoding='utf-8')
+    except Exception:
+        return {}
+
+    out: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, raw_value = line.split('=', 1)
+        key = key.strip()
+        if not key:
+            continue
+        try:
+            parsed = shlex.split(raw_value.strip(), comments=False, posix=True)
+            value = parsed[0] if parsed else ''
+        except Exception:
+            value = raw_value.strip().strip('"').strip("'")
+        out[key] = value
+    return out
+
+
+def _swap_research_pause_state() -> dict:
+    env = dict(os.environ)
+    env.update(_parse_env_override_file(MEMORY_OVERRIDE_PATH))
+    env.update(_parse_env_override_file(SWAP_OVERRIDE_PATH))
+    tier = str(env.get('SWAP_PRESSURE_TIER', '')).strip().lower()
+    active = (
+        str(env.get('SWAP_PRESSURE_HEAVY_RESEARCH_PAUSED', '0')).strip() == '1'
+        or str(env.get('TRAINING_RUNTIME_PAUSED_FOR_SWAP', '0')).strip() == '1'
+        or str(env.get('AUTO_RETRAIN_PAUSED_FOR_SWAP', '0')).strip() == '1'
+        or tier in {'pause_research', 'survival'}
+    )
+    return {
+        'active': bool(active),
+        'tier': tier,
+        'swap_used_gb': str(env.get('SWAP_PRESSURE_SWAP_USED_GB', '')).strip(),
+        'source': str(SWAP_OVERRIDE_PATH),
+    }
 
 
 
@@ -109,19 +154,27 @@ def main() -> int:
         alive = _proc_alive(args.primary_match)
         hb_age = _heartbeat_age_sec(args.primary_heartbeat)
         stale = hb_age > args.max_heartbeat_age_sec
+        swap_pause = _swap_research_pause_state()
         event = {
             'timestamp_utc': _now_iso(),
             'primary_alive': alive,
             'heartbeat_age_sec': hb_age,
             'stale': stale,
             'action': 'none',
+            'swap_pause_active': bool(swap_pause.get('active', False)),
         }
 
         if (not alive) or stale:
-            ok = _start_cmd(standby_cmd)
-            event['action'] = 'standby_start_attempt'
-            event['standby_ok'] = ok
-            event['standby_cmd'] = standby_cmd
+            if swap_pause.get('active', False):
+                event['action'] = 'standby_start_skipped_swap_pause'
+                event['standby_ok'] = False
+                event['standby_cmd'] = standby_cmd
+                event['swap_pause'] = swap_pause
+            else:
+                ok = _start_cmd(standby_cmd)
+                event['action'] = 'standby_start_attempt'
+                event['standby_ok'] = ok
+                event['standby_cmd'] = standby_cmd
 
         log_file = _append(event)
         event['log_file'] = log_file

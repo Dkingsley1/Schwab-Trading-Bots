@@ -56,6 +56,9 @@ PROFILE_PRESETS: Dict[str, Dict[str, str]] = {
         "MEMORY_EFFICIENCY_CREATIVE_ACTIVE_MAX_PROFILE": "air_safe",
         "MEMORY_EFFICIENCY_CREATIVE_HOT_PROFILE": "constrained",
         "MEMORY_EFFICIENCY_CREATIVE_DUAL_PROFILE": "constrained",
+        "CREATIVE_AUDIO_SAMPLE_RATE_HZ": "96000",
+        "LOGIC_PRO_AUDIO_SAMPLE_RATE_HZ": "96000",
+        "CREATIVE_AUDIO_REQUIRE_MATCHED_IO_SAMPLE_RATE": "1",
     },
     "pro_balanced": {
         "SQL_LINK_SERVICE_INTERVAL_SECONDS": "60",
@@ -97,6 +100,9 @@ PROFILE_PRESETS: Dict[str, Dict[str, str]] = {
         "MEMORY_EFFICIENCY_CREATIVE_ACTIVE_MAX_PROFILE": "air_safe",
         "MEMORY_EFFICIENCY_CREATIVE_HOT_PROFILE": "constrained",
         "MEMORY_EFFICIENCY_CREATIVE_DUAL_PROFILE": "constrained",
+        "CREATIVE_AUDIO_SAMPLE_RATE_HZ": "96000",
+        "LOGIC_PRO_AUDIO_SAMPLE_RATE_HZ": "96000",
+        "CREATIVE_AUDIO_REQUIRE_MATCHED_IO_SAMPLE_RATE": "1",
     },
     "max_throughput": {
         "SQL_LINK_SERVICE_INTERVAL_SECONDS": "45",
@@ -138,6 +144,9 @@ PROFILE_PRESETS: Dict[str, Dict[str, str]] = {
         "MEMORY_EFFICIENCY_CREATIVE_ACTIVE_MAX_PROFILE": "pro_balanced",
         "MEMORY_EFFICIENCY_CREATIVE_HOT_PROFILE": "air_safe",
         "MEMORY_EFFICIENCY_CREATIVE_DUAL_PROFILE": "constrained",
+        "CREATIVE_AUDIO_SAMPLE_RATE_HZ": "96000",
+        "LOGIC_PRO_AUDIO_SAMPLE_RATE_HZ": "96000",
+        "CREATIVE_AUDIO_REQUIRE_MATCHED_IO_SAMPLE_RATE": "1",
     },
 }
 
@@ -192,6 +201,39 @@ def detect_profile_tier(hardware: Dict[str, Any]) -> str:
     return "air_safe"
 
 
+def _unified_memory_telemetry(hardware: Dict[str, Any], tier: str) -> Dict[str, Any]:
+    memory_gb = float(hardware.get("memory_gb", 0.0) or 0.0)
+    is_unified = bool(hardware.get("is_apple_silicon", False))
+    feature_budget_ratio = 0.18 if tier == "max_throughput" else 0.12 if tier == "pro_balanced" else 0.08
+    inference_budget_ratio = 0.12 if tier == "max_throughput" else 0.08 if tier == "pro_balanced" else 0.05
+    competitive_advantage = "high" if is_unified and memory_gb >= 32.0 else "moderate" if is_unified else "portable_only"
+    return {
+        "memory_architecture": ("unified" if is_unified else "system_memory"),
+        "shared_cpu_gpu_memory_pool": is_unified,
+        "estimated_feature_cache_budget_gb": round(memory_gb * feature_budget_ratio, 3),
+        "estimated_live_inference_budget_gb": round(memory_gb * inference_budget_ratio, 3),
+        "broker_context_window_multiplier": (2.0 if is_unified and tier == "max_throughput" else 1.5 if is_unified else 1.0),
+        "competitive_advantage": competitive_advantage,
+        "copy_avoidance_summary": (
+            "Shared CPU, GPU, and MLX memory keeps broker context, feature windows, and inference tensors on one low-copy path."
+            if is_unified
+            else "Portable hosts can run the stack, but they usually incur extra copy overhead between CPU and accelerator memory domains."
+        ),
+    }
+
+
+def _creative_audio_contract(tier: str) -> Dict[str, Any]:
+    profile = PROFILE_PRESETS.get(str(tier), {})
+    sample_rate = int(profile.get("CREATIVE_AUDIO_SAMPLE_RATE_HZ", "96000") or 96000)
+    return {
+        "target_sample_rate_hz": sample_rate,
+        "target_sample_rate_khz": round(sample_rate / 1000.0, 1),
+        "require_matched_input_output": profile.get("CREATIVE_AUDIO_REQUIRE_MATCHED_IO_SAMPLE_RATE", "1") == "1",
+        "logic_pro_sample_rate_hz": int(profile.get("LOGIC_PRO_AUDIO_SAMPLE_RATE_HZ", str(sample_rate)) or sample_rate),
+        "reason": "Logic Pro and standalone audio apps should see the same 96 kHz input/output contract before heavy bot work starts.",
+    }
+
+
 def override_lines_for_tier(tier: str, hardware: Dict[str, Any]) -> list[str]:
     profile = PROFILE_PRESETS.get(str(tier), {})
     lines = [
@@ -221,6 +263,7 @@ def _write_override(path: Path, tier: str, hardware: Dict[str, Any]) -> bool:
 
 
 def build_payload(*, action: str, tier: str, hardware: Dict[str, Any], override_path: Path, changed: bool) -> Dict[str, Any]:
+    unified_memory = _unified_memory_telemetry(hardware, tier)
     notes = []
     if tier == "air_safe":
         notes.append("favor slower refresh cadence and tighter swap ceilings for MacBook Air and low-memory Apple Silicon")
@@ -231,6 +274,7 @@ def build_payload(*, action: str, tier: str, hardware: Dict[str, Any], override_
     else:
         notes.append("no Apple Silicon-specific override was applied on this hardware")
     notes.append("MLX remains the preferred live backend; profile overrides focus on storage, ingestion, and memory behavior")
+    notes.append("Creative audio sessions pin the intended Logic Pro input/output contract to 96 kHz so runtime guards do not treat 48 kHz as the default.")
     return {
         "timestamp_utc": _now_utc(),
         "ok": True,
@@ -242,6 +286,8 @@ def build_payload(*, action: str, tier: str, hardware: Dict[str, Any], override_
         "override_path": str(override_path),
         "override_exists": bool(override_path.exists()),
         "env_overrides": PROFILE_PRESETS.get(tier, {}),
+        "unified_memory_telemetry": unified_memory,
+        "creative_audio_contract": _creative_audio_contract(tier),
         "notes": notes,
     }
 

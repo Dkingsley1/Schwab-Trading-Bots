@@ -1,0 +1,512 @@
+{
+  "generated_at_utc": "2026-05-02T20:56:39.821390+00:00",
+  "capability_pack_version": "intelligence_capability_pack_v1",
+  "packs": [
+    {
+      "slug": "execution_intelligence",
+      "display_name": "Execution Intelligence",
+      "sleeve_family": "execution",
+      "sleeve_profile": "execution_intelligence",
+      "objective": "Measure fill quality, latency, slippage, and paper/live parity before any execution logic can graduate.",
+      "bot_count": 5,
+      "bot_ids": [
+        "brain_refinery_v764_execution_intelligence_fill_quality_collector_bot",
+        "brain_refinery_v765_execution_intelligence_slippage_forecaster_bot",
+        "brain_refinery_v766_execution_intelligence_route_timing_master_bot",
+        "brain_refinery_v767_execution_intelligence_paper_live_parity_regression_guard_bot",
+        "brain_refinery_v768_execution_intelligence_latency_capacity_guard_bot"
+      ],
+      "dedicated_data_intake": [
+        "fill_quality_trace",
+        "paper_live_slippage_gap",
+        "route_latency_histogram",
+        "partial_fill_context",
+        "spread_decay_context"
+      ],
+      "storage_retention_rule": {
+        "retention_profile": "execution_hot_7d_warm_45d_cold_180d",
+        "storage_targets": [
+          "data/execution_intelligence/fill_quality",
+          "data/execution_intelligence/latency",
+          "governance/health/execution_intelligence",
+          "data/jsonl_link.sqlite3"
+        ],
+        "max_daily_mb_per_bot": 90,
+        "capture_mode": "sampled",
+        "sample_rate": 0.5,
+        "dedupe_required": true,
+        "stale_deletion_policy": "stage_low_value_after_hot_window_and_purge_under_quota_guard"
+      },
+      "paper_only_floor": {
+        "paper_trade_lock_required": true,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false,
+        "graduation_requires_minimum_observations": 3000,
+        "graduation_requires_collection_days": 14
+      },
+      "sleeve_master_bot_id": "brain_refinery_v766_execution_intelligence_route_timing_master_bot",
+      "regression_guard_bot_id": "brain_refinery_v767_execution_intelligence_paper_live_parity_regression_guard_bot",
+      "capacity_check": {
+        "active_bot_floor": 700,
+        "runtime_stability_mode": "full_force_buffered",
+        "runtime_control_refresh_seconds": 240,
+        "queue_policy": "buffered_jsonl_batching",
+        "compute_guard_mode": "soft_cap",
+        "global_halt_mode": "soft_cap_and_backpressure_before_hard_halt"
+      },
+      "intelligence_layers": [
+        "perception",
+        "reasoning",
+        "governance",
+        "critic",
+        "capacity"
+      ]
+    },
+    {
+      "slug": "portfolio_risk_layer",
+      "display_name": "Portfolio Risk Layer",
+      "sleeve_family": "risk",
+      "sleeve_profile": "portfolio_risk_layer",
+      "objective": "Unify exposure, margin, convexity, correlation, and capital efficiency across every sleeve.",
+      "bot_count": 5,
+      "bot_ids": [
+        "brain_refinery_v769_portfolio_risk_exposure_netting_collector_bot",
+        "brain_refinery_v770_portfolio_risk_correlation_cap_allocator_bot",
+        "brain_refinery_v771_portfolio_risk_sleeve_master_bot",
+        "brain_refinery_v772_portfolio_risk_margin_convexity_regression_guard_bot",
+        "brain_refinery_v773_portfolio_risk_capacity_budget_guard_bot"
+      ],
+      "dedicated_data_intake": [
+        "cross_sleeve_exposure_netting",
+        "margin_guard_trace",
+        "convexity_exposure_surface",
+        "correlation_matrix",
+        "capital_efficiency_surface"
+      ],
+      "storage_retention_rule": {
+        "retention_profile": "risk_hot_14d_warm_90d_cold_365d",
+        "storage_targets": [
+          "data/portfolio_risk/exposures",
+          "data/portfolio_risk/margin",
+          "governance/health/portfolio_risk",
+          "data/jsonl_link.sqlite3"
+        ],
+        "max_daily_mb_per_bot": 90,
+        "capture_mode": "sampled",
+        "sample_rate": 0.5,
+        "dedupe_required": true,
+        "stale_deletion_policy": "stage_low_value_after_hot_window_and_purge_under_quota_guard"
+      },
+      "paper_only_floor": {
+        "paper_trade_lock_required": true,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false,
+        "graduation_requires_minimum_observations": 3000,
+        "graduation_requires_collection_days": 14
+      },
+      "sleeve_master_bot_id": "brain_refinery_v771_portfolio_risk_sleeve_master_bot",
+      "regression_guard_bot_id": "brain_refinery_v772_portfolio_risk_margin_convexity_regression_guard_bot",
+      "capacity_check": {
+        "active_bot_floor": 700,
+        "runtime_stability_mode": "full_force_buffered",
+        "runtime_control_refresh_seconds": 240,
+        "queue_policy": "buffered_jsonl_batching",
+        "compute_guard_mode": "soft_cap",
+        "global_halt_mode": "soft_cap_and_backpressure_before_hard_halt"
+      },
+      "intelligence_layers": [
+        "perception",
+        "reasoning",
+        "governance",
+        "critic",
+        "capacity"
+      ]
+    },
+    {
+      "slug": "event_intelligence",
+      "display_name": "Event Intelligence",
+      "sleeve_family": "macro_event",
+      "sleeve_profile": "event_intelligence",
+      "objective": "Fuse calendars, speakers, macro releases, transcripts, and earnings clusters into point-in-time event context.",
+      "bot_count": 5,
+      "bot_ids": [
+        "brain_refinery_v774_event_intelligence_macro_calendar_collector_bot",
+        "brain_refinery_v775_event_intelligence_surprise_decay_signal_bot",
+        "brain_refinery_v776_event_intelligence_cluster_sleeve_master_bot",
+        "brain_refinery_v777_event_intelligence_calendar_label_regression_guard_bot",
+        "brain_refinery_v778_event_intelligence_feed_freshness_capacity_guard_bot"
+      ],
+      "dedicated_data_intake": [
+        "fed_speaker_calendar",
+        "earnings_cluster_events",
+        "treasury_auction_schedule",
+        "cpi_pce_nfp_surprise",
+        "macro_media_transcript_trace"
+      ],
+      "storage_retention_rule": {
+        "retention_profile": "event_hot_30d_warm_180d_cold_730d",
+        "storage_targets": [
+          "data/event_intelligence/calendar",
+          "data/event_intelligence/transcripts",
+          "governance/health/event_intelligence",
+          "data/event_store.sqlite3"
+        ],
+        "max_daily_mb_per_bot": 90,
+        "capture_mode": "sampled",
+        "sample_rate": 0.5,
+        "dedupe_required": true,
+        "stale_deletion_policy": "stage_low_value_after_hot_window_and_purge_under_quota_guard"
+      },
+      "paper_only_floor": {
+        "paper_trade_lock_required": true,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false,
+        "graduation_requires_minimum_observations": 3000,
+        "graduation_requires_collection_days": 14
+      },
+      "sleeve_master_bot_id": "brain_refinery_v776_event_intelligence_cluster_sleeve_master_bot",
+      "regression_guard_bot_id": "brain_refinery_v777_event_intelligence_calendar_label_regression_guard_bot",
+      "capacity_check": {
+        "active_bot_floor": 700,
+        "runtime_stability_mode": "full_force_buffered",
+        "runtime_control_refresh_seconds": 240,
+        "queue_policy": "buffered_jsonl_batching",
+        "compute_guard_mode": "soft_cap",
+        "global_halt_mode": "soft_cap_and_backpressure_before_hard_halt"
+      },
+      "intelligence_layers": [
+        "perception",
+        "reasoning",
+        "governance",
+        "critic",
+        "capacity"
+      ]
+    },
+    {
+      "slug": "market_microstructure",
+      "display_name": "Market Microstructure",
+      "sleeve_family": "microstructure",
+      "sleeve_profile": "market_microstructure",
+      "objective": "Track spread, queue, auction, imbalance, and liquidity toxicity signals without raw-feed overload.",
+      "bot_count": 5,
+      "bot_ids": [
+        "brain_refinery_v779_microstructure_spread_queue_collector_bot",
+        "brain_refinery_v780_microstructure_liquidity_reversion_signal_bot",
+        "brain_refinery_v781_microstructure_auction_orderflow_master_bot",
+        "brain_refinery_v782_microstructure_lob_label_regression_guard_bot",
+        "brain_refinery_v783_microstructure_storage_sampling_guard_bot"
+      ],
+      "dedicated_data_intake": [
+        "spread_decay_context",
+        "queue_position_context",
+        "opening_auction_imbalance",
+        "closing_auction_imbalance",
+        "order_book_imbalance"
+      ],
+      "storage_retention_rule": {
+        "retention_profile": "microstructure_hot_3d_warm_30d_cold_120d",
+        "storage_targets": [
+          "data/market_microstructure/spreads",
+          "data/market_microstructure/auction",
+          "governance/health/market_microstructure",
+          "data/jsonl_link.sqlite3"
+        ],
+        "max_daily_mb_per_bot": 90,
+        "capture_mode": "sampled",
+        "sample_rate": 0.5,
+        "dedupe_required": true,
+        "stale_deletion_policy": "stage_low_value_after_hot_window_and_purge_under_quota_guard"
+      },
+      "paper_only_floor": {
+        "paper_trade_lock_required": true,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false,
+        "graduation_requires_minimum_observations": 3000,
+        "graduation_requires_collection_days": 14
+      },
+      "sleeve_master_bot_id": "brain_refinery_v781_microstructure_auction_orderflow_master_bot",
+      "regression_guard_bot_id": "brain_refinery_v782_microstructure_lob_label_regression_guard_bot",
+      "capacity_check": {
+        "active_bot_floor": 700,
+        "runtime_stability_mode": "full_force_buffered",
+        "runtime_control_refresh_seconds": 240,
+        "queue_policy": "buffered_jsonl_batching",
+        "compute_guard_mode": "soft_cap",
+        "global_halt_mode": "soft_cap_and_backpressure_before_hard_halt"
+      },
+      "intelligence_layers": [
+        "perception",
+        "reasoning",
+        "governance",
+        "critic",
+        "capacity"
+      ]
+    },
+    {
+      "slug": "research_automation",
+      "display_name": "Research Automation",
+      "sleeve_family": "research",
+      "sleeve_profile": "research_automation",
+      "objective": "Turn new quant papers and experiments into traceable hypotheses with duplicate-alpha and evidence guards.",
+      "bot_count": 5,
+      "bot_ids": [
+        "brain_refinery_v784_research_automation_paper_ingestion_collector_bot",
+        "brain_refinery_v785_research_automation_hypothesis_evidence_scorer_bot",
+        "brain_refinery_v786_research_automation_research_committee_master_bot",
+        "brain_refinery_v787_research_automation_duplicate_alpha_regression_guard_bot",
+        "brain_refinery_v788_research_automation_experiment_budget_guard_bot"
+      ],
+      "dedicated_data_intake": [
+        "arxiv_qfin_recent_research_intake",
+        "ssrn_market_infrastructure_reference",
+        "alpha_hypothesis_graph_trace",
+        "bayesian_evidence_score_trace",
+        "duplicate_alpha_retirement_queue"
+      ],
+      "storage_retention_rule": {
+        "retention_profile": "research_hot_30d_warm_365d_cold_evergreen",
+        "storage_targets": [
+          "data/research_automation/papers",
+          "data/research_automation/hypotheses",
+          "governance/health/research_automation",
+          "governance/experiment_ledger"
+        ],
+        "max_daily_mb_per_bot": 90,
+        "capture_mode": "sampled",
+        "sample_rate": 0.5,
+        "dedupe_required": true,
+        "stale_deletion_policy": "stage_low_value_after_hot_window_and_purge_under_quota_guard"
+      },
+      "paper_only_floor": {
+        "paper_trade_lock_required": true,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false,
+        "graduation_requires_minimum_observations": 3000,
+        "graduation_requires_collection_days": 14
+      },
+      "sleeve_master_bot_id": "brain_refinery_v786_research_automation_research_committee_master_bot",
+      "regression_guard_bot_id": "brain_refinery_v787_research_automation_duplicate_alpha_regression_guard_bot",
+      "capacity_check": {
+        "active_bot_floor": 700,
+        "runtime_stability_mode": "full_force_buffered",
+        "runtime_control_refresh_seconds": 240,
+        "queue_policy": "buffered_jsonl_batching",
+        "compute_guard_mode": "soft_cap",
+        "global_halt_mode": "soft_cap_and_backpressure_before_hard_halt"
+      },
+      "intelligence_layers": [
+        "perception",
+        "reasoning",
+        "governance",
+        "critic",
+        "capacity"
+      ]
+    },
+    {
+      "slug": "stress_lab",
+      "display_name": "Stress Lab",
+      "sleeve_family": "stress",
+      "sleeve_profile": "stress_lab",
+      "objective": "Replay crisis regimes and supervisory scenarios as reusable regression evidence.",
+      "bot_count": 5,
+      "bot_ids": [
+        "brain_refinery_v789_stress_lab_scenario_dataset_collector_bot",
+        "brain_refinery_v790_stress_lab_covid_2008_replay_signal_bot",
+        "brain_refinery_v791_stress_lab_crisis_sleeve_master_bot",
+        "brain_refinery_v792_stress_lab_replay_label_regression_guard_bot",
+        "brain_refinery_v793_stress_lab_compute_storage_budget_guard_bot"
+      ],
+      "dedicated_data_intake": [
+        "covid_2020_pandemic_replay_trace",
+        "gfc_2008_replay_trace",
+        "fed_2026_supervisory_scenario_dataset_trace",
+        "flash_crash_replay_trace",
+        "liquidity_freeze_scenario_trace"
+      ],
+      "storage_retention_rule": {
+        "retention_profile": "stress_hot_30d_warm_365d_cold_evergreen",
+        "storage_targets": [
+          "data/stress_lab/scenarios",
+          "data/stress_lab/replays",
+          "governance/health/stress_lab",
+          "governance/replay_hash_registry"
+        ],
+        "max_daily_mb_per_bot": 90,
+        "capture_mode": "sampled",
+        "sample_rate": 0.5,
+        "dedupe_required": true,
+        "stale_deletion_policy": "stage_low_value_after_hot_window_and_purge_under_quota_guard"
+      },
+      "paper_only_floor": {
+        "paper_trade_lock_required": true,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false,
+        "graduation_requires_minimum_observations": 3000,
+        "graduation_requires_collection_days": 14
+      },
+      "sleeve_master_bot_id": "brain_refinery_v791_stress_lab_crisis_sleeve_master_bot",
+      "regression_guard_bot_id": "brain_refinery_v792_stress_lab_replay_label_regression_guard_bot",
+      "capacity_check": {
+        "active_bot_floor": 700,
+        "runtime_stability_mode": "full_force_buffered",
+        "runtime_control_refresh_seconds": 240,
+        "queue_policy": "buffered_jsonl_batching",
+        "compute_guard_mode": "soft_cap",
+        "global_halt_mode": "soft_cap_and_backpressure_before_hard_halt"
+      },
+      "intelligence_layers": [
+        "perception",
+        "reasoning",
+        "governance",
+        "critic",
+        "capacity"
+      ]
+    },
+    {
+      "slug": "model_lifecycle",
+      "display_name": "Model Lifecycle",
+      "sleeve_family": "model_governance",
+      "sleeve_profile": "model_lifecycle",
+      "objective": "Standardize drift, challenger, leakage, overfit, retrain, and promotion evidence across the expanded fleet.",
+      "bot_count": 5,
+      "bot_ids": [
+        "brain_refinery_v794_model_lifecycle_decay_drift_collector_bot",
+        "brain_refinery_v795_model_lifecycle_challenger_selector_bot",
+        "brain_refinery_v796_model_lifecycle_promotion_master_bot",
+        "brain_refinery_v797_model_lifecycle_leakage_overfit_regression_guard_bot",
+        "brain_refinery_v798_model_lifecycle_retrain_capacity_guard_bot"
+      ],
+      "dedicated_data_intake": [
+        "model_calibration_decay",
+        "challenger_drift_validation",
+        "overfit_leakage_replay",
+        "walk_forward_requalification",
+        "promotion_readiness"
+      ],
+      "storage_retention_rule": {
+        "retention_profile": "model_hot_30d_warm_180d_cold_730d",
+        "storage_targets": [
+          "governance/model_lifecycle",
+          "governance/walk_forward",
+          "governance/training_diagnostics",
+          "data/jsonl_link.sqlite3"
+        ],
+        "max_daily_mb_per_bot": 90,
+        "capture_mode": "sampled",
+        "sample_rate": 0.5,
+        "dedupe_required": true,
+        "stale_deletion_policy": "stage_low_value_after_hot_window_and_purge_under_quota_guard"
+      },
+      "paper_only_floor": {
+        "paper_trade_lock_required": true,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false,
+        "graduation_requires_minimum_observations": 3000,
+        "graduation_requires_collection_days": 14
+      },
+      "sleeve_master_bot_id": "brain_refinery_v796_model_lifecycle_promotion_master_bot",
+      "regression_guard_bot_id": "brain_refinery_v797_model_lifecycle_leakage_overfit_regression_guard_bot",
+      "capacity_check": {
+        "active_bot_floor": 700,
+        "runtime_stability_mode": "full_force_buffered",
+        "runtime_control_refresh_seconds": 240,
+        "queue_policy": "buffered_jsonl_batching",
+        "compute_guard_mode": "soft_cap",
+        "global_halt_mode": "soft_cap_and_backpressure_before_hard_halt"
+      },
+      "intelligence_layers": [
+        "perception",
+        "reasoning",
+        "governance",
+        "critic",
+        "capacity"
+      ]
+    },
+    {
+      "slug": "reporting_layer",
+      "display_name": "Reporting Layer",
+      "sleeve_family": "reporting",
+      "sleeve_profile": "reporting_layer",
+      "objective": "Make reports command-validated, readable, freshness-aware, and presentation-ready.",
+      "bot_count": 5,
+      "bot_ids": [
+        "brain_refinery_v799_reporting_layer_metric_contract_collector_bot",
+        "brain_refinery_v800_reporting_layer_professional_narrative_builder_bot",
+        "brain_refinery_v801_reporting_layer_report_suite_master_bot",
+        "brain_refinery_v802_reporting_layer_pdf_open_regression_guard_bot",
+        "brain_refinery_v803_reporting_layer_freshness_capacity_guard_bot"
+      ],
+      "dedicated_data_intake": [
+        "report_surface_freshness_contract",
+        "paper_performance_graph_contract",
+        "system_overview_document_contract",
+        "strategy_inventory_pdf_contract",
+        "commands_report_validation"
+      ],
+      "storage_retention_rule": {
+        "retention_profile": "reports_hot_30d_warm_180d_cold_365d",
+        "storage_targets": [
+          "exports/reports",
+          "exports/sql_reports",
+          "governance/health/reporting_layer",
+          "governance/report_quality"
+        ],
+        "max_daily_mb_per_bot": 90,
+        "capture_mode": "sampled",
+        "sample_rate": 0.5,
+        "dedupe_required": true,
+        "stale_deletion_policy": "stage_low_value_after_hot_window_and_purge_under_quota_guard"
+      },
+      "paper_only_floor": {
+        "paper_trade_lock_required": true,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false,
+        "graduation_requires_minimum_observations": 3000,
+        "graduation_requires_collection_days": 14
+      },
+      "sleeve_master_bot_id": "brain_refinery_v801_reporting_layer_report_suite_master_bot",
+      "regression_guard_bot_id": "brain_refinery_v802_reporting_layer_pdf_open_regression_guard_bot",
+      "capacity_check": {
+        "active_bot_floor": 700,
+        "runtime_stability_mode": "full_force_buffered",
+        "runtime_control_refresh_seconds": 240,
+        "queue_policy": "buffered_jsonl_batching",
+        "compute_guard_mode": "soft_cap",
+        "global_halt_mode": "soft_cap_and_backpressure_before_hard_halt"
+      },
+      "intelligence_layers": [
+        "perception",
+        "reasoning",
+        "governance",
+        "critic",
+        "capacity"
+      ]
+    }
+  ],
+  "advanced_intelligence_layer_contract": {
+    "contract_version": "advanced_intelligence_layers_v2",
+    "layer_stack": [
+      "perception_data_normalization",
+      "reasoning_signal_and_hypothesis_scoring",
+      "governance_sleeve_master_aggregation",
+      "critic_regression_and_label_validation",
+      "capacity_resource_budgeting",
+      "memory_experience_accumulation"
+    ],
+    "cross_pack_memory": "experience_accumulation_memory_trace",
+    "critic_loop": "observer_critic_loop_trace",
+    "semantic_ontology": "semantic_feature_ontology_trace",
+    "causal_evidence": "causal_intervention_ledger_trace",
+    "market_state_graph": "cross_asset_correlation_context",
+    "resource_budget": "compute_capital_allocation_trace",
+    "global_halt_contract": "expansion_pressure_aware_soft_cap_before_hard_halt"
+  }
+}

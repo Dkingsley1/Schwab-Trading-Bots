@@ -19,6 +19,8 @@ DEFAULT_PID_PATH = HEALTH_DIR / "mac_notification_watch.pid"
 TRIPWIRE_PATH = HEALTH_DIR / "shadow_watchdog_tripwire_latest.json"
 PROCESS_WATCHDOG_PATH = HEALTH_DIR / "process_watchdog_latest.json"
 STORAGE_GUARD_PATH = HEALTH_DIR / "storage_mount_guard_latest.json"
+CREATIVE_COTENANT_PATH = HEALTH_DIR / "creative_cotenant_guard_latest.json"
+SWAP_PRESSURE_GOVERNOR_PATH = HEALTH_DIR / "swap_pressure_governor_latest.json"
 GLOBAL_HALT_PATH = HEALTH_DIR / "GLOBAL_TRADING_HALT.flag"
 HALT_RECOVERY_PATH = HEALTH_DIR / "shadow_watchdog_halt_recovery_latest.json"
 INCIDENT_AUTO_HALT_PATH = ALERTS_DIR / "incident_auto_halt_latest.json"
@@ -69,6 +71,13 @@ def _human_event_label(event: str) -> str:
         "options_margin_guard": "Margin Guard",
         "global_halt_cleared": "Global Halt Cleared",
         "incident_auto_halt_cleared": "Auto Halt Cleared",
+        "creative_mode_active": "Creative Mode Active",
+        "creative_mode_cooldown": "Creative Cooldown",
+        "creative_mode_cleared": "Creative Mode Cleared",
+        "swap_pressure_downshifted": "Swap Pressure Downshifted",
+        "swap_pressure_restart_advisory": "Swap Restart Advisory",
+        "swap_pressure_reboot_recommended": "Swap Reboot Recommended",
+        "swap_pressure_cleared": "Swap Pressure Cleared",
         "critical_alert": "Critical Alert",
     }
     key = str(event or "").strip().lower()
@@ -100,6 +109,10 @@ def _event_family(key: str) -> str:
         return "tripwire"
     if normalized_key.startswith("restart_storm:"):
         return "restart_storm"
+    if normalized_key.startswith("creative_mode:"):
+        return "creative_mode"
+    if normalized_key.startswith("swap_pressure:"):
+        return "swap_pressure"
     return normalized_key
 
 
@@ -141,6 +154,14 @@ def _event_severity(key: str, message: str) -> str:
         return "critical"
     if normalized_key in {"global_halt_cleared", "incident_auto_halt_cleared"}:
         return "info"
+    if normalized_key.startswith("creative_mode:"):
+        return "info"
+    if normalized_key.startswith("swap_pressure:"):
+        if "reboot_recommended" in normalized_key or "restart_advisory" in normalized_key:
+            return "warn"
+        if "survival" in normalized_key:
+            return "critical"
+        return "info"
     if normalized_key in {"tripwire", "all_sleeves_down", "global_halt", "incident_auto_halt", "preflight_critical", "storage_mount_missing"}:
         return "critical"
     return "warn"
@@ -172,6 +193,15 @@ def _notification_heading(key: str, message: str) -> Tuple[str, str]:
         return ("Trading Bot Critical", "Auto Halt")
     if key == "incident_auto_halt_cleared":
         return ("Trading Bot Incident", "Auto Halt Cleared")
+    if key.startswith("creative_mode:"):
+        return ("Trading Bot Incident", "Creative Mode")
+    if key.startswith("swap_pressure:"):
+        severity = _event_severity(key, message)
+        if severity == "critical":
+            return ("Trading Bot Critical", "Swap Pressure")
+        if severity == "warn":
+            return ("Trading Bot Warning", "Swap Pressure")
+        return ("Trading Bot Incident", "Swap Pressure")
     if key == "preflight_critical":
         return ("Trading Bot Critical", "Preflight")
     if key == "storage_mount_missing":
@@ -212,6 +242,14 @@ def _notification_action_hint(key: str, message: str) -> str:
         return "Action: clear the listed checks before market open."
     if normalized_key == "storage_mount_missing":
         return "Action: keep writes on fallback storage until the route recovers."
+    if normalized_key.startswith("creative_mode:"):
+        return "Action: keep creative apps foregrounded; bot stack will stay downshifted automatically."
+    if normalized_key.startswith("swap_pressure:"):
+        if "reboot_recommended" in normalized_key:
+            return "Action: save work and reboot when you are ready; automation will not reboot automatically."
+        if "restart_advisory" in normalized_key:
+            return "Action: restart the listed foreground app when convenient; automation will not force-quit it."
+        return "Action: bot stack downshifted automatically; keep live collection running calm."
     return ""
 
 
@@ -237,6 +275,10 @@ def _notification_inspect_target(key: str, message: str) -> Path | None:
         return PREFLIGHT_CRITICAL_PATH
     if normalized_key == "storage_mount_missing":
         return STORAGE_GUARD_PATH
+    if normalized_key.startswith("creative_mode:"):
+        return CREATIVE_COTENANT_PATH
+    if normalized_key.startswith("swap_pressure:"):
+        return SWAP_PRESSURE_GOVERNOR_PATH
     return INCIDENT_TIMELINE_PATH if INCIDENT_TIMELINE_PATH.exists() else None
 
 
@@ -589,6 +631,37 @@ def _storage_event(payload: Dict[str, Any]) -> Tuple[str, str] | None:
     return None
 
 
+def _creative_mode_event(payload: Dict[str, Any], max_age_seconds: float) -> Tuple[str, str] | None:
+    notification = payload.get("notification") if isinstance(payload.get("notification"), dict) else {}
+    if not notification or not _is_recent(notification, max_age_seconds):
+        return None
+    event = str(notification.get("event") or "").strip().lower()
+    if event not in {"creative_mode_active", "creative_mode_cooldown", "creative_mode_cleared"}:
+        return None
+    message = str(notification.get("message") or event).strip()
+    state = str(notification.get("current_state") or "").strip().lower()
+    key_state = re.sub(r"[^a-z0-9]+", "_", state).strip("_") or "state"
+    return (f"creative_mode:{event}:{key_state}", message)
+
+
+def _swap_pressure_event(payload: Dict[str, Any], max_age_seconds: float) -> Tuple[str, str] | None:
+    notification = payload.get("notification") if isinstance(payload.get("notification"), dict) else {}
+    if not notification or not _is_recent(notification, max_age_seconds):
+        return None
+    event = str(notification.get("event") or "").strip().lower()
+    if event not in {
+        "swap_pressure_downshifted",
+        "swap_pressure_restart_advisory",
+        "swap_pressure_reboot_recommended",
+        "swap_pressure_cleared",
+    }:
+        return None
+    message = str(notification.get("message") or event).strip()
+    tier = str(notification.get("current_tier") or "").strip().lower()
+    key_tier = re.sub(r"[^a-z0-9]+", "_", tier).strip("_") or "tier"
+    return (f"swap_pressure:{event}:{key_tier}", message)
+
+
 def _critical_alert_events(max_age_seconds: float) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
     for path in sorted(ALERTS_DIR.glob("critical_latest_*.json")):
@@ -664,6 +737,8 @@ def _event_candidates(max_age_seconds: float) -> List[Tuple[str, str]]:
         _restart_storm_event(_read_json(PROCESS_WATCHDOG_PATH)),
         _all_sleeves_down_event(_read_json(PROCESS_WATCHDOG_PATH)),
         _storage_event(_read_json(STORAGE_GUARD_PATH)),
+        _creative_mode_event(_read_json(CREATIVE_COTENANT_PATH), max_age_seconds),
+        _swap_pressure_event(_read_json(SWAP_PRESSURE_GOVERNOR_PATH), max_age_seconds),
         _incident_auto_halt_event(_read_json(INCIDENT_AUTO_HALT_PATH), max_age_seconds),
         _preflight_critical_event(_read_json(PREFLIGHT_CRITICAL_PATH), max_age_seconds),
     ):

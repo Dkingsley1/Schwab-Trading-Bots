@@ -3153,6 +3153,7 @@ def main() -> int:
             print("Retrain blocked by artifact freshness guard.")
             return finish(1, "blocked_artifact_freshness")
 
+    explicit_include_requested = bool(str(args.include_bot_ids or "").strip())
     for script_path, label in [
         (SCHEMA_MIGRATION_GUARD_SCRIPT, "schema migration guard"),
         (BOT_SUPPORT_OWNER_GUARD_SCRIPT, "bot support owner guard"),
@@ -3164,8 +3165,13 @@ def main() -> int:
     ]:
         if not os.path.exists(script_path):
             continue
+        guard_cmd = [VENV_PY, script_path, "--json"]
+        if script_path == NEW_BOT_ADMISSION_GUARD_SCRIPT and explicit_include_requested:
+            guard_cmd += ["--include-bot-ids", str(args.include_bot_ids or "")]
+            if args.skip_master_update:
+                guard_cmd.append("--advisory-only")
         rc_guard = run_cmd(
-            [VENV_PY, script_path, "--json"],
+            guard_cmd,
             args.dry_run,
             os.environ.copy(),
             extra_nice=max(args.ops_extra_nice, 0),
@@ -3173,8 +3179,6 @@ def main() -> int:
         if rc_guard != 0:
             print(f"Retrain blocked by {label}.")
             return finish(1, f"blocked_{label.replace(' ', '_')}")
-
-    explicit_include_requested = bool(str(args.include_bot_ids or "").strip())
 
     promotion_bottleneck_handle: dict[str, Any] | None = None
     if args.promotion_bottleneck_priority and os.path.exists(PROMOTION_BOTTLENECK_SCRIPT):

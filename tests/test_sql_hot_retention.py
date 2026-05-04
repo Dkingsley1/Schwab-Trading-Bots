@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -55,13 +56,56 @@ def _count_rows(path: Path) -> int:
 
 def _run_main(module, argv: list[str]) -> tuple[int, dict]:
     buf = StringIO()
-    with mock.patch.object(sys, "argv", argv):
-        with redirect_stdout(buf):
-            rc = module.main()
+    with tempfile.TemporaryDirectory() as td:
+        missing_override = Path(td) / "missing_swap_override.env"
+        with mock.patch.object(module, "SWAP_OVERRIDE_PATH", missing_override):
+            with mock.patch.object(sys, "argv", argv):
+                with redirect_stdout(buf):
+                    rc = module.main()
     return rc, json.loads(buf.getvalue().strip())
 
 
 class SqlHotRetentionTests(unittest.TestCase):
+    def test_swap_pressure_pause_skips_hot_retention_without_touching_rows(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db = root / "jsonl_link.sqlite3"
+            archive_db = root / "jsonl_link_archive.sqlite3"
+            _init_db(db)
+            now = datetime.now(timezone.utc)
+            _insert_rows(db, [(1, (now - timedelta(days=30)).isoformat(), "old.jsonl", 1)])
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "RETENTION_MAINTENANCE_PAUSED_FOR_SWAP": "1",
+                    "SWAP_PRESSURE_TIER": "pause_research",
+                    "SWAP_PRESSURE_SWAP_USED_GB": "19.1",
+                },
+                clear=False,
+            ):
+                rc, payload = _run_main(
+                    module,
+                    [
+                        "sql_hot_retention.py",
+                        "--db",
+                        str(db),
+                        "--archive-db",
+                        str(archive_db),
+                        "--hot-days",
+                        "1",
+                        "--json",
+                    ],
+                )
+
+            self.assertEqual(rc, 0)
+            self.assertTrue(payload["skipped"])
+            self.assertEqual(payload["reason"], "swap_pressure_pause")
+            self.assertEqual(payload["moved_rows"], 0)
+            self.assertEqual(_count_rows(db), 1)
+            self.assertFalse(archive_db.exists())
+
     def test_monthly_archive_files_older_than_retention_are_deleted(self) -> None:
         module = _load_module()
         with tempfile.TemporaryDirectory() as td:

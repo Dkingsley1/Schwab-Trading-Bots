@@ -280,3 +280,13 @@ def test_history_scoreboard_tracks_recent_runs(tmp_path: Path) -> None:
     assert scoreboard["ok_runs"] == 1
     assert scoreboard["positive_calibrated_runs"] == 1
     assert scoreboard["active_assist_candidate_runs"] == 1
+
+
+def test_disabled_payload_keeps_canary_out_of_live_mlx_path(tmp_path: Path) -> None:
+    payload = src.disabled_pytorch_replay_canary_payload(tmp_path, tmp_path / "history.jsonl")
+
+    assert payload["ok"] is True
+    assert payload["disabled"] is True
+    assert payload["mode"] == "disabled_mlx_primary"
+    assert "keep_pytorch_replay_canary_disabled_during_live_collection" in payload["recommendations"]
+    assert payload["mlx_shadow_assist"]["eligible_source_profiles"] == []

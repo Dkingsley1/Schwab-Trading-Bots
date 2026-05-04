@@ -252,6 +252,12 @@ EXOTIC_DERIVATIVE_FEATURE_KEYS = [
     "exotic_proxy_stat_arb_norm",
     "exotic_proxy_cross_asset_basis_norm",
     "exotic_proxy_vol_arbitrage_norm",
+    "exotic_proxy_rough_vvix_norm",
+    "exotic_proxy_quantum_barrier_path_norm",
+    "exotic_proxy_correlation_heat_swap_norm",
+    "exotic_proxy_cliquet_floor_cap_norm",
+    "exotic_proxy_signature_trend_follower_norm",
+    "exotic_proxy_esg_ccds_norm",
     "exotic_data_confidence_norm",
     "exotic_proxy_only_guard_norm",
 ]
@@ -453,6 +459,44 @@ def summarize_exotic_derivative_proxy_features(
         _feature(features, "options_vanna_volga_hedge_pressure_norm"),
         _feature(features, "options_iv_realized_spread_norm"),
     )
+    rough_vvix = max(
+        variance_vol_swap,
+        _feature(features, "vvix_stress_norm"),
+        _feature(features, "vix_on_vix_exotic_proxy_norm"),
+        _feature(features, "vol_of_vol_stress_norm"),
+        _feature(features, "rough_volatility_swap_proxy_norm"),
+    )
+    quantum_barrier_path = max(
+        barrier_path,
+        _feature(features, "quantum_barrier_path_amplitude_norm"),
+        _feature(features, "path_amplitude_barrier_proxy_norm"),
+        _feature(features, "quantum_enhanced_mc_trace_norm"),
+    )
+    correlation_heat_swap = max(
+        correlation_dispersion,
+        tranche_correlation,
+        _feature(features, "cross_asset_correlation_heat_norm"),
+        _feature(features, "correlation_heat_swap_proxy_norm"),
+    )
+    cliquet_floor_cap = max(
+        structured_payoff,
+        barrier_path,
+        _feature(features, "cliquet_global_floor_local_cap_norm"),
+        _feature(features, "coupon_barrier_stress_norm"),
+        _feature(features, "floor_cap_distance_norm"),
+    )
+    signature_trend_follower = max(
+        _feature(features, "signature_trend_follower_options_norm"),
+        _feature(features, "signature_lead_lag_detector_norm"),
+        _feature(features, "trend_persistence_norm"),
+        correlation_dispersion,
+    )
+    esg_ccds = max(
+        credit_stress,
+        _feature(features, "esg_contingent_cds_norm"),
+        _feature(features, "issuer_esg_event_norm"),
+        _feature(features, "esg_controversy_stress_norm"),
+    )
 
     public_source_score = 0.0
     snapshots = external_snapshots if isinstance(external_snapshots, Mapping) else {}
@@ -503,6 +547,12 @@ def summarize_exotic_derivative_proxy_features(
             "exotic_proxy_stat_arb_norm": stat_arb,
             "exotic_proxy_cross_asset_basis_norm": cross_asset_basis,
             "exotic_proxy_vol_arbitrage_norm": vol_arbitrage,
+            "exotic_proxy_rough_vvix_norm": rough_vvix,
+            "exotic_proxy_quantum_barrier_path_norm": quantum_barrier_path,
+            "exotic_proxy_correlation_heat_swap_norm": correlation_heat_swap,
+            "exotic_proxy_cliquet_floor_cap_norm": cliquet_floor_cap,
+            "exotic_proxy_signature_trend_follower_norm": signature_trend_follower,
+            "exotic_proxy_esg_ccds_norm": esg_ccds,
             "exotic_proxy_only_guard_norm": 1.0,
         }
     )
@@ -530,6 +580,12 @@ def summarize_exotic_derivative_proxy_features(
         stat_arb,
         cross_asset_basis,
         vol_arbitrage,
+        rough_vvix,
+        quantum_barrier_path,
+        correlation_heat_swap,
+        cliquet_floor_cap,
+        signature_trend_follower,
+        esg_ccds,
     ]
     out["exotic_data_confidence_norm"] = _clamp01(sum(relevant_proxy_values) / max(len(relevant_proxy_values), 1))
     return out

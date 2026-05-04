@@ -1,0 +1,122 @@
+{
+  "generated_at_utc": "2026-05-02T21:05:35.890723+00:00",
+  "advanced_mesh_version": "advanced_intelligence_mesh_v1",
+  "mesh": {
+    "slug": "advanced_intelligence_mesh",
+    "display_name": "Advanced Intelligence Mesh",
+    "sleeve_family": "meta_intelligence",
+    "sleeve_profile": "advanced_intelligence_mesh",
+    "objective": "Push the platform into higher-order self-awareness, memory, causal reasoning, critic-loop correction, and resource-aware intelligence.",
+    "bot_count": 15,
+    "bot_ids": [
+      "brain_refinery_v804_advanced_mesh_metacognitive_state_router_master_bot",
+      "brain_refinery_v805_advanced_mesh_experience_memory_consolidator_bot",
+      "brain_refinery_v806_advanced_mesh_causal_counterfactual_evaluator_bot",
+      "brain_refinery_v807_advanced_mesh_uncertainty_calibration_guard_bot",
+      "brain_refinery_v808_advanced_mesh_self_correction_regression_guard_bot",
+      "brain_refinery_v809_advanced_mesh_active_learning_query_planner_bot",
+      "brain_refinery_v810_advanced_mesh_neuro_symbolic_rule_bridge_bot",
+      "brain_refinery_v811_advanced_mesh_world_model_market_simulator_bot",
+      "brain_refinery_v812_advanced_mesh_cross_modal_context_encoder_bot",
+      "brain_refinery_v813_advanced_mesh_adversarial_robustness_guard_bot",
+      "brain_refinery_v814_advanced_mesh_resource_aware_reasoning_scheduler_bot",
+      "brain_refinery_v815_advanced_mesh_hypothesis_retrieval_rag_bot",
+      "brain_refinery_v816_advanced_mesh_explainability_trace_builder_bot",
+      "brain_refinery_v817_advanced_mesh_safety_invariant_verifier_bot",
+      "brain_refinery_v818_advanced_mesh_grandmaster_intelligence_bridge_bot"
+    ],
+    "dedicated_data_intake": [
+      "metacognitive_state_trace",
+      "experience_accumulation_memory_trace",
+      "causal_counterfactual_evidence_trace",
+      "uncertainty_calibration_trace",
+      "observer_critic_self_correction_trace",
+      "active_learning_query_trace",
+      "neuro_symbolic_rule_trace",
+      "world_model_scenario_trace",
+      "cross_modal_context_embedding_trace",
+      "adversarial_robustness_probe_trace",
+      "compute_capital_allocation_trace",
+      "hypothesis_retrieval_context_trace",
+      "explainability_decision_trace",
+      "safety_invariant_verification_trace",
+      "grandmaster_intelligence_bridge_trace"
+    ],
+    "storage_retention_rule": {
+      "retention_profile": "mesh_hot_14d_warm_120d_cold_365d",
+      "storage_targets": [
+        "governance/advanced_intelligence_mesh",
+        "governance/advanced_intelligence_mesh/memory",
+        "governance/advanced_intelligence_mesh/critic",
+        "governance/advanced_intelligence_mesh/explainability",
+        "governance/health/advanced_intelligence_mesh",
+        "data/jsonl_link.sqlite3"
+      ],
+      "max_daily_mb_per_bot": 60,
+      "capture_mode": "sampled",
+      "sample_rate": 0.35,
+      "dedupe_required": true,
+      "stale_deletion_policy": "compress_memory_then_stage_low_value_raw_traces_under_quota_guard"
+    },
+    "paper_only_floor": {
+      "paper_trade_lock_required": true,
+      "live_trading_enabled": false,
+      "execution_enabled": false,
+      "allocation_enabled": false,
+      "graduation_requires_minimum_observations": 5000,
+      "graduation_requires_collection_days": 21
+    },
+    "sleeve_master_bot_id": "brain_refinery_v804_advanced_mesh_metacognitive_state_router_master_bot",
+    "regression_guard_bot_id": "brain_refinery_v808_advanced_mesh_self_correction_regression_guard_bot",
+    "capacity_check": {
+      "active_bot_floor": 700,
+      "runtime_stability_mode": "full_force_buffered",
+      "runtime_control_refresh_seconds": 240,
+      "queue_policy": "buffered_jsonl_batching",
+      "compute_guard_mode": "soft_cap",
+      "global_halt_mode": "soft_cap_and_backpressure_before_hard_halt",
+      "heavy_reasoning_mode": "off_hot_path_low_pressure_only"
+    },
+    "intelligence_depth": [
+      "metacognition",
+      "experience_memory",
+      "causal_counterfactual_reasoning",
+      "uncertainty_calibration",
+      "self_correction_critic_loop",
+      "active_learning",
+      "neuro_symbolic_reasoning",
+      "world_model_simulation",
+      "cross_modal_context_fusion",
+      "adversarial_robustness",
+      "resource_aware_reasoning",
+      "retrieval_augmented_hypothesis_memory",
+      "explainability_traceability",
+      "safety_invariant_verification",
+      "grandmaster_bridge"
+    ]
+  },
+  "advanced_mesh_contract": {
+    "contract_version": "advanced_intelligence_mesh_v1",
+    "purpose": "higher_order_reasoning_mesh_for_cross_sleeve_memory_critic_and_resource_aware_intelligence",
+    "intelligence_depth": [
+      "metacognition",
+      "experience_memory",
+      "causal_counterfactual_reasoning",
+      "uncertainty_calibration",
+      "self_correction_critic_loop",
+      "active_learning",
+      "neuro_symbolic_reasoning",
+      "world_model_simulation",
+      "cross_modal_context_fusion",
+      "adversarial_robustness",
+      "resource_aware_reasoning",
+      "retrieval_augmented_hypothesis_memory",
+      "explainability_traceability",
+      "safety_invariant_verification",
+      "grandmaster_bridge"
+    ],
+    "graduation_policy": "collection_only_until_minimum_evidence_and_guarded_replay",
+    "global_halt_contract": "expansion_pressure_aware_soft_cap_before_hard_halt",
+    "paper_lock_contract": "paper_trade_lock_required_before_any_execution_path"
+  }
+}

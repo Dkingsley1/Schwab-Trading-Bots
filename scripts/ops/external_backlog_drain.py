@@ -32,6 +32,7 @@ DEFAULT_DRAIN_SHARDS = [
     "health_fast",
     "trading_fast",
     "crypto_trading_fast",
+    "crypto_trading",
     "runtime",
     "crypto_runtime",
     "aggressive_trading",
@@ -43,9 +44,12 @@ DEFAULT_DRAIN_SHARDS = [
     "shadow_attribution",
     "crypto_shadow_attribution",
 ]
-CORE_FOCUS_MIN_PENDING_LINES = 50_000
+CORE_FOCUS_MIN_PENDING_LINES = 30_000
 CORE_FOCUS_MIN_TOP3_LINES = 40_000
 CORE_FOCUS_MIN_SHARE = 0.65
+DRAIN_RECOMMEND_MIN_TOTAL_PENDING_LINES = 3_000
+DRAIN_RECOMMEND_MIN_DEFERRED_PENDING_LINES = 1_000
+DRAIN_RECOMMEND_MIN_SUPPORT_PENDING_LINES = 500
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -239,10 +243,27 @@ def _prioritized_shards_for_core_focus(core_focus: dict[str, Any] | None) -> lis
             or source.startswith("decisions/shadow_swing_aggressive_")
         )
     )
+    crypto_pending = _pending_for(
+        lambda source: (
+            source.startswith("decisions/shadow_crypto/")
+            or source.startswith("decisions/shadow_crypto_futures_crypto/")
+            or "default_crypto_coinbase" in source
+            or "crypto_futures_crypto_coinbase" in source
+            or "default_crypto_schwab" in source
+            or "crypto_futures_crypto_schwab" in source
+        )
+    )
     trading_pending = _pending_for(
         lambda source: (
             source.startswith("governance/channels/decision/")
-            or source.startswith("decisions/")
+            or (source.startswith("decisions/") and not (
+                source.startswith("decisions/shadow_crypto/")
+                or source.startswith("decisions/shadow_crypto_futures_crypto/")
+                or "default_crypto_coinbase" in source
+                or "crypto_futures_crypto_coinbase" in source
+                or "default_crypto_schwab" in source
+                or "crypto_futures_crypto_schwab" in source
+            ))
         )
     )
     runtime_pending = _pending_for(lambda source: source.startswith("governance/channels/runtime/"))
@@ -255,6 +276,7 @@ def _prioritized_shards_for_core_focus(core_focus: dict[str, Any] | None) -> lis
             for shard, pending in sorted(
                 [
                     ("governance", governance_pending),
+                    ("crypto_trading", crypto_pending),
                     ("trading", trading_pending),
                     ("aggressive_trading", aggressive_pending),
                     ("runtime", runtime_pending),
@@ -274,6 +296,8 @@ def _prioritized_shards_for_core_focus(core_focus: dict[str, Any] | None) -> lis
     priority: list[str] = []
     if governance_pending >= material_pending_floor:
         priority.append("governance")
+    if crypto_pending >= material_pending_floor:
+        priority.append("crypto_trading")
     if aggressive_pending >= material_pending_floor:
         priority.append("aggressive_trading")
     if trading_pending >= material_pending_floor:
@@ -325,6 +349,8 @@ def _trading_focus_paths(core_focus: dict[str, Any] | None) -> list[str]:
             or source_rel.startswith("decisions/")
         ):
             continue
+        if _is_crypto_decision_source(source_rel) or _is_aggressive_decision_source(source_rel):
+            continue
         pending_lines = max(_safe_int(row.get("pending_lines"), 0), 0)
         age_seconds = max(_safe_float(row.get("age_seconds"), 0.0), 0.0)
         if pending_lines < 25000 and age_seconds < 15 * 60:
@@ -332,6 +358,73 @@ def _trading_focus_paths(core_focus: dict[str, Any] | None) -> list[str]:
         if source_rel not in focus_paths:
             focus_paths.append(source_rel)
     return focus_paths
+
+
+def _crypto_trading_focus_paths(core_focus: dict[str, Any] | None) -> list[str]:
+    if not isinstance(core_focus, dict) or not bool(core_focus.get("concentrated", False)):
+        return []
+
+    focus_paths: list[str] = []
+    for row in list(core_focus.get("hotspots") or [])[:5]:
+        if not isinstance(row, dict):
+            continue
+        source_rel = str(row.get("source_rel") or "").strip()
+        if not _is_crypto_decision_source(source_rel):
+            continue
+        pending_lines = max(_safe_int(row.get("pending_lines"), 0), 0)
+        age_seconds = max(_safe_float(row.get("age_seconds"), 0.0), 0.0)
+        if pending_lines < 5000 and age_seconds < 15 * 60:
+            continue
+        if source_rel not in focus_paths:
+            focus_paths.append(source_rel)
+    return focus_paths
+
+
+def _aggressive_trading_focus_paths(core_focus: dict[str, Any] | None) -> list[str]:
+    if not isinstance(core_focus, dict) or not bool(core_focus.get("concentrated", False)):
+        return []
+
+    focus_paths: list[str] = []
+    for row in list(core_focus.get("hotspots") or [])[:5]:
+        if not isinstance(row, dict):
+            continue
+        source_rel = str(row.get("source_rel") or "").strip()
+        if not _is_aggressive_decision_source(source_rel):
+            continue
+        pending_lines = max(_safe_int(row.get("pending_lines"), 0), 0)
+        age_seconds = max(_safe_float(row.get("age_seconds"), 0.0), 0.0)
+        if pending_lines < 5000 and age_seconds < 15 * 60:
+            continue
+        if source_rel not in focus_paths:
+            focus_paths.append(source_rel)
+    return focus_paths
+
+
+def _is_crypto_decision_source(source_rel: str) -> bool:
+    rel = str(source_rel or "")
+    return any(
+        part in rel
+        for part in (
+            "shadow_crypto/",
+            "shadow_crypto_futures_crypto/",
+            "default_crypto_coinbase",
+            "crypto_futures_crypto_coinbase",
+            "default_crypto_schwab",
+            "crypto_futures_crypto_schwab",
+        )
+    )
+
+
+def _is_aggressive_decision_source(source_rel: str) -> bool:
+    rel = str(source_rel or "")
+    return any(
+        part in rel
+        for part in (
+            "shadow_aggressive_",
+            "shadow_intraday_aggressive_",
+            "shadow_swing_aggressive_",
+        )
+    )
 
 
 def _drain_env(
@@ -348,6 +441,8 @@ def _drain_env(
     prioritized_shards = _prioritized_shards_for_core_focus(core_focus)
     governance_focus_paths = _governance_focus_paths(core_focus)
     trading_focus_paths = _trading_focus_paths(core_focus)
+    crypto_trading_focus_paths = _crypto_trading_focus_paths(core_focus)
+    aggressive_trading_focus_paths = _aggressive_trading_focus_paths(core_focus)
     governance_first = bool(prioritized_shards and prioritized_shards[0] == "governance")
     governance_max_files = "14" if governance_first and critical else ("10" if governance_first else ("8" if critical else "6"))
     governance_max_lines = "64000" if governance_focus_paths else (
@@ -357,6 +452,14 @@ def _drain_env(
     trading_first = bool(prioritized_shards and prioritized_shards[0] == "trading")
     trading_max_files = "16" if trading_focused and critical else ("14" if critical or trading_first else "12")
     trading_max_lines = "64000" if trading_focused else ("20000" if critical or trading_first else "14000")
+    crypto_trading_focused = bool(crypto_trading_focus_paths)
+    crypto_trading_first = bool(prioritized_shards and prioritized_shards[0] == "crypto_trading")
+    crypto_trading_max_files = "16" if crypto_trading_focused and critical else ("14" if critical or crypto_trading_first else "10")
+    crypto_trading_max_lines = "64000" if crypto_trading_focused else ("20000" if critical or crypto_trading_first else "14000")
+    aggressive_trading_focused = bool(aggressive_trading_focus_paths)
+    aggressive_trading_first = bool(prioritized_shards and prioritized_shards[0] == "aggressive_trading")
+    aggressive_trading_max_files = "14" if aggressive_trading_focused and critical else ("12" if critical or aggressive_trading_first else "10")
+    aggressive_trading_max_lines = "32000" if aggressive_trading_focused else ("20000" if critical or aggressive_trading_first else "14000")
 
     env.update(
         {
@@ -367,8 +470,11 @@ def _drain_env(
             "LOG_LOOP_STATE": "0",
             "LOG_SHADOW_PNL_ATTRIBUTION": "0",
             "SQL_LINK_SERVICE_INTERVAL_SECONDS": "12" if critical else "15",
+            "SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS": "120" if critical else "150",
             "SQL_LINK_SERVICE_SHARDS": ",".join(prioritized_shards),
             "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "25" if critical else "45",
+            "SQL_LINK_SERVICE_AUTO_HOT_RETENTION": "0",
+            "SQL_LINK_SERVICE_AUTO_QUEUE_RETENTION": "0",
             "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS": "30",
             "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "240000" if critical else "200000",
             "SQL_LINK_SERVICE_HOT_MAX_ROWS": "2400000" if critical else "1800000",
@@ -377,22 +483,27 @@ def _drain_env(
             "SQL_LINK_SERVICE_SHARD_RUNTIME_MAX_FILES": "14" if critical else "12",
             "SQL_LINK_SERVICE_SHARD_CRYPTO_RUNTIME_MAX_FILES": "10" if critical else "8",
             "SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES": governance_max_files,
-            "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_FILES": "14" if critical else "12",
             "SQL_LINK_SERVICE_SHARD_TRADING_MAX_FILES": trading_max_files,
             "SQL_LINK_SERVICE_SHARD_RUNTIME_STATE_CHECKPOINT_LINES": "1500",
             "SQL_LINK_SERVICE_SHARD_CRYPTO_RUNTIME_STATE_CHECKPOINT_LINES": "1500",
             "SQL_LINK_SERVICE_SHARD_GOVERNANCE_STATE_CHECKPOINT_LINES": "1500",
             "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_STATE_CHECKPOINT_LINES": "1500",
             "SQL_LINK_SERVICE_SHARD_TRADING_STATE_CHECKPOINT_LINES": "1500",
+            "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_STATE_CHECKPOINT_LINES": "1500",
             "SQL_LINK_SERVICE_SHARD_RUNTIME_MAX_LINES_PER_FILE": "16000",
             "SQL_LINK_SERVICE_SHARD_CRYPTO_RUNTIME_MAX_LINES_PER_FILE": "16000",
             "SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_LINES_PER_FILE": governance_max_lines,
             "SQL_LINK_SERVICE_SHARD_GOVERNANCE_PATH_CONTAINS": ",".join(governance_focus_paths),
+            "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_PATH_CONTAINS": ",".join(aggressive_trading_focus_paths),
             "SQL_LINK_SERVICE_SHARD_TRADING_PATH_CONTAINS": ",".join(trading_focus_paths),
+            "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_PATH_CONTAINS": ",".join(crypto_trading_focus_paths),
             "SQL_LINK_SERVICE_SHARD_SUPPORT_WATCHDOG_MAX_LINES_PER_FILE": "96000" if critical else "64000",
             "SQL_LINK_SERVICE_SHARD_SUPPORT_WATCHDOG_STATE_CHECKPOINT_LINES": "4000",
-            "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_LINES_PER_FILE": "16000" if critical else "14000",
+            "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_FILES": aggressive_trading_max_files,
+            "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_LINES_PER_FILE": aggressive_trading_max_lines,
             "SQL_LINK_SERVICE_SHARD_TRADING_MAX_LINES_PER_FILE": trading_max_lines,
+            "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_MAX_FILES": crypto_trading_max_files,
+            "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_MAX_LINES_PER_FILE": crypto_trading_max_lines,
             "SQL_LINK_SERVICE_SHARD_EXPLANATIONS_MAX_FILES": "6" if critical else "5",
             "SQL_LINK_SERVICE_SHARD_CRYPTO_EXPLANATIONS_MAX_FILES": "6" if critical else "5",
             "SQL_LINK_SERVICE_SHARD_SHADOW_ATTRIBUTION_MAX_FILES": "3" if critical else "2",
@@ -533,11 +644,32 @@ def _core_hotspots(backpressure: dict[str, Any]) -> dict[str, Any]:
         "top3_pending_lines": top3_pending_lines,
         "top3_share": round((top3_pending_lines / max(total_pending_lines, 1)) if total_pending_lines > 0 else 0.0, 6),
         "concentrated": bool(
-            total_pending_lines >= CORE_FOCUS_MIN_PENDING_LINES
-            and top3_pending_lines >= CORE_FOCUS_MIN_TOP3_LINES
-            and (top3_pending_lines / max(total_pending_lines, 1)) >= CORE_FOCUS_MIN_SHARE
+            (top3_pending_lines / max(total_pending_lines, 1)) >= CORE_FOCUS_MIN_SHARE
+            and (
+                total_pending_lines >= CORE_FOCUS_MIN_PENDING_LINES
+                or top3_pending_lines >= CORE_FOCUS_MIN_TOP3_LINES
+            )
         ),
     }
+
+
+def _material_drain_recommended(
+    snapshot: dict[str, int],
+    *,
+    core_focus: dict[str, Any],
+    aged_candidate_count: int,
+    stale_stage_candidate_count: int,
+    support_watchdog_pending_lines: int,
+) -> bool:
+    return bool(
+        bool(core_focus.get("concentrated", False))
+        or int(snapshot.get("total_pending_lines", 0) or 0) >= DRAIN_RECOMMEND_MIN_TOTAL_PENDING_LINES
+        or int(snapshot.get("deferred_pending_lines", 0) or 0) >= DRAIN_RECOMMEND_MIN_DEFERRED_PENDING_LINES
+        or int(snapshot.get("cold_pending_lines", 0) or 0) >= DRAIN_RECOMMEND_MIN_DEFERRED_PENDING_LINES
+        or int(support_watchdog_pending_lines) >= DRAIN_RECOMMEND_MIN_SUPPORT_PENDING_LINES
+        or int(aged_candidate_count) > 0
+        or int(stale_stage_candidate_count) > 0
+    )
 
 
 def _follow_through_progress_signature(payload: dict[str, Any]) -> dict[str, Any]:
@@ -900,10 +1032,16 @@ def build_payload(
         top_actions.append("keep the writer focused on the dominant core backlog files before widening deferred or cold drain budgets")
     governance_focus_paths = [part for part in str(drain_env.get("SQL_LINK_SERVICE_SHARD_GOVERNANCE_PATH_CONTAINS") or "").split(",") if part]
     trading_focus_paths = [part for part in str(drain_env.get("SQL_LINK_SERVICE_SHARD_TRADING_PATH_CONTAINS") or "").split(",") if part]
+    crypto_trading_focus_paths = [part for part in str(drain_env.get("SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_PATH_CONTAINS") or "").split(",") if part]
+    aggressive_trading_focus_paths = [part for part in str(drain_env.get("SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_PATH_CONTAINS") or "").split(",") if part]
     if governance_focus_paths:
         top_actions.append("keep the governance shard pinned to the stale execution-lane backlog files until those dominant queue anchors step down")
     if trading_focus_paths:
         top_actions.append("keep the trading shard pinned to the dominant decision-channel files until the core queue falls below the halt threshold")
+    if crypto_trading_focus_paths:
+        top_actions.append("keep the crypto trading shard pinned to stale crypto decision files until the crypto queue catches up")
+    if aggressive_trading_focus_paths:
+        top_actions.append("keep the aggressive trading shard pinned to high-velocity aggressive decision files until the intraday queue catches up")
     if follow_through and follow_through_summary["status"] == "timed_out":
         if str(follow_through_summary.get("progress_state") or "") == "progressing":
             top_actions.append("the automatic follow-through timed out, but the SQL writer was still advancing shard or merge work, so let the current maintenance window run or extend the timeout next pass")
@@ -923,7 +1061,14 @@ def build_payload(
     if after_snapshot["total_pending_lines"] > 0:
         top_actions.append("keep shadow attribution and channel logging throttled while the external backlog burns down")
 
-    recommended_now = bool(window.get("active", False) and not blocked_reasons)
+    material_drain = _material_drain_recommended(
+        after_snapshot,
+        core_focus=core_focus,
+        aged_candidate_count=len(aged_candidates),
+        stale_stage_candidate_count=len(stale_stage_candidates),
+        support_watchdog_pending_lines=sum(int(row.get("pending_lines", 0) or 0) for row in support_watchdog_candidates),
+    )
+    recommended_now = bool(window.get("active", False) and not blocked_reasons and material_drain)
     payload = {
         "timestamp_utc": now.isoformat(),
         "schema_version": 1,
@@ -933,6 +1078,7 @@ def build_payload(
         "apply_executed": bool(apply_executed),
         "follow_through": follow_through_summary,
         "recommended_now": recommended_now,
+        "material_drain_recommended": material_drain,
         "blocked_reasons": blocked_reasons,
         "off_hours_window": window,
         "drain_profile": drain_profile,
@@ -964,6 +1110,8 @@ def build_payload(
             "deferred_files_budget": _safe_int(drain_env.get("INGEST_MAX_DEFERRED_FILES"), 0),
             "cold_files_budget": _safe_int(drain_env.get("JSONL_SQL_MAX_COLD_LANE_FILES"), 0),
             "sql_interval_seconds": _safe_int(drain_env.get("SQL_LINK_SERVICE_INTERVAL_SECONDS"), 0),
+            "auto_hot_retention": str(drain_env.get("SQL_LINK_SERVICE_AUTO_HOT_RETENTION") or ""),
+            "auto_queue_retention": str(drain_env.get("SQL_LINK_SERVICE_AUTO_QUEUE_RETENTION") or ""),
             "hot_batch_size": _safe_int(drain_env.get("SQL_LINK_SERVICE_HOT_BATCH_SIZE"), 0),
             "preferred_shards": [part for part in str(drain_env.get("SQL_LINK_SERVICE_SHARDS") or "").split(",") if part],
             "governance_max_files": _safe_int(drain_env.get("SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES"), 0),
@@ -972,6 +1120,13 @@ def build_payload(
             "trading_max_files": _safe_int(drain_env.get("SQL_LINK_SERVICE_SHARD_TRADING_MAX_FILES"), 0),
             "trading_max_lines_per_file": _safe_int(drain_env.get("SQL_LINK_SERVICE_SHARD_TRADING_MAX_LINES_PER_FILE"), 0),
             "trading_path_focus": trading_focus_paths,
+            "crypto_trading_max_files": _safe_int(drain_env.get("SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_MAX_FILES"), 0),
+            "crypto_trading_max_lines_per_file": _safe_int(drain_env.get("SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_MAX_LINES_PER_FILE"), 0),
+            "crypto_trading_path_focus": crypto_trading_focus_paths,
+            "aggressive_trading_max_files": _safe_int(drain_env.get("SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_FILES"), 0),
+            "aggressive_trading_max_lines_per_file": _safe_int(drain_env.get("SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_LINES_PER_FILE"), 0),
+            "aggressive_trading_path_focus": aggressive_trading_focus_paths,
+            "shard_link_timeout_seconds": _safe_int(drain_env.get("SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS"), 0),
         },
         "steps": steps,
         "top_actions": top_actions[:8],
