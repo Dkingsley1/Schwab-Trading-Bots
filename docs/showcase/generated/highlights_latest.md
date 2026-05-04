@@ -1,11 +1,11 @@
 # Auto-Refreshed Highlights
 
-_Generated at 2026-05-03 23:49 UTC_
+_Generated at 2026-05-04 00:21 UTC_
 
 ## Platform Snapshot
 
-- Registered bots: `924`
-- Active bots: `869`
+- Registered bots: `954`
+- Active bots: `899`
 - Live lane artifacts tracked: `94`
 - Running lane artifacts: `3`
 - Institutional readiness: `98.27/100` (`industry_leaning`)
@@ -21,7 +21,7 @@ _Generated at 2026-05-03 23:49 UTC_
 
 ## Key Highlights
 
-- Registry currently tracks 924 bots with 869 active across crypto_sub_bot, futures_sub_bot, infrastructure_bot, infrastructure_sub_bot, macro_sub_bot, options_sub_bot, signal_sub_bot lanes.
+- Registry currently tracks 954 bots with 899 active across crypto_sub_bot, futures_sub_bot, infrastructure_bot, infrastructure_sub_bot, macro_sub_bot, options_sub_bot, signal_sub_bot lanes.
 - Live ingestion is wired across 94 lane artifacts with 3 currently reporting `running`.
 - Institutional-readiness score is `98.27/100` with status `industry_leaning` across 12 governance domains.
 - Live readiness is `degraded` at `100.00/100`, with broker/session ready=`True/True` and watchdog healthy=`True`.
@@ -29,7 +29,7 @@ _Generated at 2026-05-03 23:49 UTC_
 - Autonomy control plane is `blocked` at `77.34/100`, with `1` triggered playbooks, `0` open incidents, and promotion state `assembling_packet`.
 - Architecture upgrade scoreboard tracks `9` ready proof surfaces out of `12`, with host profile `max_throughput` and portable proof `ready`.
 - Crypto context is aggregating 14/14 healthy sources and 7/7 healthy crypto news feeds.
-- Latest divergence check is `ok=True` with worst relative spread 0.36%.
+- Latest divergence check is `ok=True` with worst relative spread 0.32%.
 - Market/crypto correlation overlay is running in `exact` mode with 0 aligned pairs and cache hits/misses 0/0.
 - Latest training summary is 4.7d old: 3 trained, 4 failed, `confirmed_training_success=False` with reason `training_failures_present:4`.
 - Process watchdog currently tracks `4` services with `4` healthy targets, `0` restart storms, and `0` alerts. Tripwire event flag remains `active=False`.

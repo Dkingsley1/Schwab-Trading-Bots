@@ -1,11 +1,11 @@
 {
-  "generated_at_utc": "2026-05-03T23:49:48.471668+00:00",
+  "generated_at_utc": "2026-05-04T00:21:15.979734+00:00",
   "bot_summary": {
-    "total_registered": 924,
-    "active_count": 869,
+    "total_registered": 954,
+    "active_count": 899,
     "active_roles": {
-      "signal_sub_bot": 411,
-      "infrastructure_sub_bot": 285,
+      "signal_sub_bot": 420,
+      "infrastructure_sub_bot": 306,
       "options_sub_bot": 139,
       "futures_sub_bot": 18,
       "infrastructure_bot": 8,
@@ -58,235 +58,235 @@
       {
         "lane": "adaptive_architectures_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "adversarial_ml_security_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "aggressive_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 2264,
+        "iter": 2328,
         "api_error": 0
       },
       {
         "lane": "alternative_data_ingestion_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "arbitrage_execution_safety_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 21,
+        "iter": 30,
         "api_error": 0
       },
       {
         "lane": "barrier_lookback_options_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "black_swan_hedging_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "bond_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 96,
+        "iter": 112,
         "api_error": 0
       },
       {
         "lane": "cash_rotation_tactical_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 71,
+        "iter": 80,
         "api_error": 0
       },
       {
         "lane": "causal_omni_symbolic_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "cdo_cubed_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "cdo_squared_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "commodity_inflation_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 71,
+        "iter": 80,
         "api_error": 0
       },
       {
         "lane": "compound_options_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 26,
+        "iter": 35,
         "api_error": 0
       },
       {
         "lane": "conservative_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 2274,
+        "iter": 2338,
         "api_error": 0
       },
       {
         "lane": "credit_derivatives_cdx_cds_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 8,
+        "iter": 11,
         "api_error": 0
       },
       {
         "lane": "critic_hmm_pinsde_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "cross_asset_basis_training_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "crowd_physics_games_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "crypto_futures_basis_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 51,
+        "iter": 60,
         "api_error": 0
       },
       {
         "lane": "crypto_futures_crypto_coinbase",
         "loop_state": "running",
-        "iter": 2781,
+        "iter": 2876,
         "api_error": 0
       },
       {
         "lane": "default_crypto_coinbase",
         "loop_state": "running",
-        "iter": 7281,
+        "iter": 7376,
         "api_error": 0
       },
       {
         "lane": "dispersion_trading_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "dividend_capture_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 267,
+        "iter": 299,
         "api_error": 0
       },
       {
         "lane": "dividend_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 252,
+        "iter": 284,
         "api_error": 0
       },
       {
         "lane": "earnings_event_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 71,
+        "iter": 80,
         "api_error": 0
       },
       {
         "lane": "event_intelligence_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 11,
+        "iter": 15,
         "api_error": 0
       },
       {
         "lane": "feature_quality_data_confidence_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 11,
+        "iter": 15,
         "api_error": 0
       },
       {
         "lane": "futures_commodity_macro_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 51,
+        "iter": 60,
         "api_error": 0
       },
       {
         "lane": "futures_event_reaction_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 46,
+        "iter": 55,
         "api_error": 0
       },
       {
         "lane": "futures_index_intraday_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 41,
+        "iter": 50,
         "api_error": 0
       },
       {
         "lane": "futures_rates_curve_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 41,
+        "iter": 50,
         "api_error": 0
       },
       {
         "lane": "fx_equities_schwab",
         "loop_state": "running",
-        "iter": 371,
+        "iter": 413,
         "api_error": 0
       },
       {
         "lane": "gamma_scalping_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "geometry_spillover_durability_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 26,
+        "iter": 35,
         "api_error": 0
       },
       {
         "lane": "gpu_quant_acceleration_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "high_frequency_market_making_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "institutional_data_plumbing_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 8,
+        "iter": 11,
         "api_error": 0
       },
       {
         "lane": "international_macro_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 76,
+        "iter": 85,
         "api_error": 0
       },
       {
@@ -298,241 +298,241 @@
       {
         "lane": "intraday_aggressive_equities_schwab_core_volatile",
         "loop_state": "paused_session_gate",
-        "iter": 437,
+        "iter": 500,
         "api_error": 0
       },
       {
         "lane": "intraday_aggressive_equities_schwab_defensive",
         "loop_state": "paused_session_gate",
-        "iter": 437,
+        "iter": 500,
         "api_error": 0
       },
       {
         "lane": "liquidity_regime_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 18,
+        "iter": 26,
         "api_error": 0
       },
       {
         "lane": "lit_order_book_transformers_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "lobdif_crisis_microstructure_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 15,
+        "iter": 21,
         "api_error": 0
       },
       {
         "lane": "low_latency_orchestration_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "macro_crisis_scenario_lab_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 8,
+        "iter": 11,
         "api_error": 0
       },
       {
         "lane": "market_data_tape_normalization_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 11,
+        "iter": 15,
         "api_error": 0
       },
       {
         "lane": "market_making_liquidity_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 66,
+        "iter": 75,
         "api_error": 0
       },
       {
         "lane": "model_risk_validation_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 8,
+        "iter": 11,
         "api_error": 0
       },
       {
         "lane": "neural_sde_kan_hedging_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 26,
+        "iter": 35,
         "api_error": 0
       },
       {
         "lane": "nlp_sentiment_agents_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "optimization_research_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "options_on_futures_aggressive_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 26,
+        "iter": 35,
         "api_error": 0
       },
       {
         "lane": "options_on_futures_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 26,
+        "iter": 35,
         "api_error": 0
       },
       {
         "lane": "order_flow_market_microstructure_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 26,
+        "iter": 35,
         "api_error": 0
       },
       {
         "lane": "order_flow_toxicity_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "pairs_correlation_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 81,
+        "iter": 90,
         "api_error": 0
       },
       {
         "lane": "portfolio_construction_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 8,
+        "iter": 11,
         "api_error": 0
       },
       {
         "lane": "privacy_zkp_controls_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 21,
+        "iter": 30,
         "api_error": 0
       },
       {
         "lane": "proof_quantum_formal_backends_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 5,
+        "iter": 7,
         "api_error": 0
       },
       {
         "lane": "provider_adapter_verification_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 5,
+        "iter": 7,
         "api_error": 0
       },
       {
         "lane": "qemc_path_volatility_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "quant_pricing_models_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "rainbow_options_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "rates_credit_macro_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 56,
+        "iter": 65,
         "api_error": 0
       },
       {
         "lane": "repo_securities_lending_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 8,
+        "iter": 11,
         "api_error": 0
       },
       {
         "lane": "rlbf_dms_equivariant_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "schwab_futures_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 1099,
+        "iter": 1163,
         "api_error": 0
       },
       {
         "lane": "second_third_order_greeks_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "securitized_products_mbs_abs_clo_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 5,
+        "iter": 7,
         "api_error": 0
       },
       {
         "lane": "short_bias_hedge_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 56,
+        "iter": 65,
         "api_error": 0
       },
       {
         "lane": "signature_hawkes_generators_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "single_name_options_event_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 66,
+        "iter": 75,
         "api_error": 0
       },
       {
         "lane": "sovereign_debt_macro_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "stat_arb_market_neutral_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 71,
+        "iter": 80,
         "api_error": 0
       },
       {
         "lane": "state_space_models_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "statistical_arbitrage_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "structured_products_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "swaptions_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
@@ -544,79 +544,79 @@
       {
         "lane": "swing_aggressive_equities_schwab_core_volatile",
         "loop_state": "paused_session_gate",
-        "iter": 101,
+        "iter": 117,
         "api_error": 0
       },
       {
         "lane": "swing_aggressive_equities_schwab_defensive",
-        "loop_state": "booting",
-        "iter": 0,
+        "loop_state": "paused_session_gate",
+        "iter": 100,
         "api_error": 0
       },
       {
         "lane": "synthetic_cdo_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "system_governor_expansion_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 8,
+        "iter": 11,
         "api_error": 0
       },
       {
         "lane": "tail_dependency_risk_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "tail_risk_parity_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 26,
+        "iter": 35,
         "api_error": 0
       },
       {
         "lane": "transaction_cost_slippage_intelligence_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 15,
+        "iter": 21,
         "api_error": 0
       },
       {
         "lane": "transport_topology_research_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "vanna_volga_hedging_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "variance_volatility_swaps_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "volatility_arbitrage_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 31,
+        "iter": 40,
         "api_error": 0
       },
       {
         "lane": "volatility_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 61,
+        "iter": 70,
         "api_error": 0
       },
       {
         "lane": "xva_counterparty_margin_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 8,
+        "iter": 11,
         "api_error": 0
       }
     ]
@@ -736,11 +736,11 @@
       }
     },
     "divergence": {
-      "timestamp_utc": "2026-05-03T23:43:32.159409+00:00",
+      "timestamp_utc": "2026-05-04T00:21:03.846544+00:00",
       "ok": true,
       "window_hours": 2,
-      "compared_buckets": 618,
-      "worst_relative_spread": 0.003592,
+      "compared_buckets": 840,
+      "worst_relative_spread": 0.003214,
       "max_relative_spread": 0.03,
       "offenders": [],
       "comparison_mode": "scope_health_summary",
@@ -753,10 +753,10 @@
       "summary_source": "scope",
       "scopes": {
         "non_bond_profiles": {
-          "timestamp_utc": "2026-05-03T23:43:32.159409+00:00",
+          "timestamp_utc": "2026-05-04T00:21:03.846544+00:00",
           "ok": true,
           "window_hours": 2,
-          "compared_buckets": 618,
+          "compared_buckets": 840,
           "worst_relative_spread": 0.003214,
           "max_relative_spread": 0.03,
           "offenders": [],
@@ -770,7 +770,7 @@
           ]
         },
         "bond_profile": {
-          "timestamp_utc": "2026-05-03T23:43:32.159409+00:00",
+          "timestamp_utc": "2026-05-04T00:21:03.846544+00:00",
           "ok": true,
           "window_hours": 2,
           "compared_buckets": 0,
@@ -785,11 +785,11 @@
       },
       "profiles": {
         "shadow_crypto_futures_crypto": {
-          "timestamp_utc": "2026-05-03T23:43:32.159409+00:00",
+          "timestamp_utc": "2026-05-04T00:21:03.846544+00:00",
           "ok": true,
           "window_hours": 2,
-          "compared_buckets": 348,
-          "worst_relative_spread": 0.002473,
+          "compared_buckets": 480,
+          "worst_relative_spread": 0.002175,
           "max_relative_spread": 0.03,
           "offenders": [],
           "comparison_mode": "within_profile",
@@ -800,7 +800,7 @@
           ]
         },
         "shadow_fx_equities": {
-          "timestamp_utc": "2026-05-03T23:43:32.159409+00:00",
+          "timestamp_utc": "2026-05-04T00:21:03.846544+00:00",
           "ok": true,
           "window_hours": 2,
           "compared_buckets": 0,
@@ -815,10 +815,10 @@
           ]
         },
         "shadow_crypto": {
-          "timestamp_utc": "2026-05-03T23:43:32.159409+00:00",
+          "timestamp_utc": "2026-05-04T00:21:03.846544+00:00",
           "ok": true,
           "window_hours": 2,
-          "compared_buckets": 270,
+          "compared_buckets": 360,
           "worst_relative_spread": 0.003214,
           "max_relative_spread": 0.03,
           "offenders": [],
@@ -832,11 +832,11 @@
       },
       "skipped_simulated_rows": 0,
       "cross_profile": {
-        "timestamp_utc": "2026-05-03T23:43:32.159409+00:00",
+        "timestamp_utc": "2026-05-04T00:21:03.846544+00:00",
         "ok": true,
         "window_hours": 2,
-        "compared_buckets": 694,
-        "worst_relative_spread": 0.003592,
+        "compared_buckets": 800,
+        "worst_relative_spread": 0.003214,
         "max_relative_spread": 0.03,
         "offenders": [],
         "comparison_mode": "cross_profile",
@@ -850,7 +850,7 @@
       }
     },
     "correlation": {
-      "timestamp_utc": "2026-05-03T23:45:25.121324+00:00",
+      "timestamp_utc": "2026-05-04T00:17:45.608975+00:00",
       "schema_version": 2,
       "ok": true,
       "status": "degraded",
@@ -860,13 +860,13 @@
       "fallback_used": true,
       "partial_data": true,
       "fallback_payload_path": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/external_context/market_crypto_correlation_latest.json",
-      "fallback_payload_age_seconds": 5188.779,
+      "fallback_payload_age_seconds": 836.638,
       "fallback_max_age_seconds": 43200.0,
       "sources": {
         "last_known_market_crypto_correlation_payload": {
           "ok": true,
           "contract_participates": true,
-          "age_seconds": 5188.779,
+          "age_seconds": 836.638,
           "path": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/external_context/market_crypto_correlation_latest.json"
         }
       }
@@ -1008,7 +1008,7 @@
       }
     },
     "watchdog": {
-      "timestamp_utc": "2026-05-03T23:49:28.124981Z",
+      "timestamp_utc": "2026-05-04T00:21:03.062476Z",
       "enabled": true,
       "streak_threshold": 2,
       "active": false,
@@ -1016,7 +1016,7 @@
       "events_emitted": []
     },
     "process_watchdog": {
-      "timestamp_utc": "2026-05-03T23:46:36.156792+00:00",
+      "timestamp_utc": "2026-05-04T00:21:04.460202+00:00",
       "status": [
         {
           "name": "sql_link_writer",
@@ -1030,7 +1030,7 @@
           "heartbeat_ok": true,
           "process_live": true,
           "alt_running": 4,
-          "heartbeat_age_seconds": 1.46,
+          "heartbeat_age_seconds": 10.55,
           "heartbeat_max_age_seconds": 360.0,
           "heartbeat_fresh": true
         },
@@ -1039,7 +1039,7 @@
           "running": 1,
           "heartbeat_ok": true,
           "process_live": true,
-          "heartbeat_age_seconds": 13.92,
+          "heartbeat_age_seconds": 17.83,
           "heartbeat_max_age_seconds": 420.0,
           "heartbeat_fresh": true
         },
@@ -1048,7 +1048,7 @@
           "running": 1,
           "heartbeat_ok": true,
           "process_live": true,
-          "heartbeat_age_seconds": 8.91,
+          "heartbeat_age_seconds": 12.61,
           "heartbeat_max_age_seconds": 420.0,
           "heartbeat_fresh": true
         }
@@ -1069,17 +1069,17 @@
           "name": "lock_watchdog",
           "ok": true,
           "rc": 0,
-          "stdout_tail": "{\"timestamp_utc\": \"2026-05-03T23:46:33.422653+00:00\", \"healthy_locks\": [{\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/all_sleeves.lock\", \"pid\": 58802}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/jsonl_sql_writer.lock\", \"pid\": 22063}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_coinbase_crypto_futures.lock\", \"pid\": 59618}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_coinbase_default.lock\", \"pid\": 59361}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_adaptive_architectures.lock\", \"pid\": 61352}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_adversarial_ml_security.lock\", \"pid\": 61391}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_aggressive.lock\", \"pid\": 58834}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_alternative_data_ingestion.lock\", \"pid\": 61459}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_arbitrage_execution_safety.lock\", \"pid\": 61966}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_barrier_lookback_options.lock\", \"pid\": 60406}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_black_swan_hedging.lock\", \"pid\": 60681}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_bond.lock\", \"pid\": 59005}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_cash_rotation_tactical.lock\", \"pid\": 59607}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_causal_omni_symbolic.lock\", \"pid\": 61868}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_cdo_cubed.lock\", \"pid\": 60340}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_cdo_squared.lock\", \"pid\": 60285}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_commodity_inflation.lock\", \"pid\": 59329}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_compound_options.lock\", \"pid\": 60029}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_conservative.lock\", \"pid\": 58833}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_credit_derivatives_cdx_cds.lock\", \"pid\": 62197}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_critic_hmm_pinsde.lock\", \"pid\": 61836}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_cross_asset_basis_training.lock\", \"pid\": 60912}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_crowd_physics_games.lock\", \"pid\": 61772}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_crypto_futures_basis.lock\", \"pid\": 59825}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_dispersion_trading.lock\", \"pid\": 60880}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_dividend.lock\", \"pid\": 59608}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_dividend_capture.lock\", \"pid\": 59603}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_earnings_event.lock\", \"pid\": 59259}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_event_intelligence.lock\", \"pid\": 62566}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_feature_quality_data_confidence.lock\", \"pid\": 62601}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_futures_commodity_macro.lock\", \"pid\": 59748}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_futures_event_reaction.lock\", \"pid\": 59907}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_futures_index_intraday.lock\", \"pid\": 59663}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_futures_rates_curve.lock\", \"pid\": 59713}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_fx.lock\", \"pid\": 60073}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_gamma_scalping.lock\", \"pid\": 60745}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_geometry_spillover_durability.lock\", \"pid\": 61998}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_gpu_quant_acceleration.lock\", \"pid\": 61552}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_high_frequency_market_making.lock\", \"pid\": 60609}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_institutional_data_plumbing.lock\", \"pid\": 62032}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_international_macro.lock\", \"pid\": 59374}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_intraday_aggressive_core_volatile.lock\", \"pid\": 62677}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_intraday_aggressive_defensive.lock\", \"pid\": 62679}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_liquidity_regime.lock\", \"pid\": 62633}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_lit_order_book_transformers.lock\", \"pid\": 61804}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_lobdif_crisis_microstructure.lock\", \"pid\": 62069}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_low_latency_orchestration.lock\", \"pid\": 61425}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_macro_crisis_scenario_lab.lock\", \"pid\": 62111}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_market_data_tape_normalization.lock\", \"pid\": 62319}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_market_making_liquidity.lock\", \"pid\": 59406}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_model_risk_validation.lock\", \"pid\": 62444}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_neural_sde_kan_hedging.lock\", \"pid\": 61649}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_nlp_sentiment_agents.lock\", \"pid\": 61235}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_optimization_research.lock\", \"pid\": 61179}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_options_on_futures.lock\", \"pid\": 59940}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_options_on_futures_aggressive.lock\", \"pid\": 59993}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_order_flow_market_microstructure.lock\", \"pid\": 60845}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_order_flow_toxicity.lock\", \"pid\": 61708}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_pairs_correlation.lock\", \"pid\": 59129}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_portfolio_construction.lock\", \"pid\": 62518}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_privacy_zkp_controls.lock\", \"pid\": 61491}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_proof_quantum_formal_backends.lock\", \"pid\": 62411}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_provider_adapter_verification.lock\", \"pid\": 62351}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_qemc_path_volatility.lock\", \"pid\": 61584}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_quant_pricing_models.lock\", \"pid\": 61072}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_rainbow_options.lock\", \"pid\": 61031}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_rates_credit_macro.lock\", \"pid\": 59568}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_repo_securities_lending.lock\", \"pid\": 62287}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_rlbf_dms_equivariant.lock\", \"pid\": 61906}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_schwab_futures.lock\", \"pid\": 59057}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_second_third_order_greeks.lock\", \"pid\": 60482}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_securitized_products_mbs_abs_clo.lock\", \"pid\": 62229}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_short_bias_hedge.lock\", \"pid\": 59438}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_signature_hawkes_generators.lock\", \"pid\": 61740}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_single_name_options_event.lock\", \"pid\": 59512}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_sovereign_debt_macro.lock\", \"pid\": 60713}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_stat_arb_market_neutral.lock\", \"pid\": 59184}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_state_space_models.lock\", \"pid\": 61106}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_statistical_arbitrage.lock\", \"pid\": 60777}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_structured_products.lock\", \"pid\": 60148}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_swaptions.lock\", \"pid\": 60105}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_swing_aggressive_core_volatile.lock\", \"pid\": 62712}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_swing_aggressive_defensive.lock\", \"pid\": 62713}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_synthetic_cdo.lock\", \"pid\": 60236}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_system_governor_expansion.lock\", \"pid\": 62666}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_tail_dependency_risk.lock\", \"pid\": 61145}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_tail_risk_parity.lock\", \"pid\": 60649}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_transaction_cost_slippage_intelligence.lock\", \"pid\": 62477}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_transport_topology_research.lock\", \"pid\": 61617}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_vanna_volga_hedging.lock\", \"pid\": 60809}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_variance_volatility_swaps.lock\", \"pid\": 60374}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_volatility.lock\", \"pid\": 59092}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_volatility_arbitrage.lock\", \"pid\": 60979}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_xva_counterparty_margin.lock\", \"pid\": 62160}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/parallel_shadow.lock\", \"pid\": 31846}], \"policy_locks\": [], \"stale_locks\": [{\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/data_retention.lock\", \"reason\": \"owner_pid_not_running\", \"pid\": 28405}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/external_backlog_retry_bot.lock\", \"reason\": \"missing_pid\", \"pid\": null}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/market_crypto_correlation.lock\", \"reason\": \"missing_pid\", \"pid\": null}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/stale_artifact_reaper_bot.lock\", \"reason\": \"missing_pid\", \"pid\": null}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/stale_artifact_sweeper_bot.lock\", \"reason\": \"missing_pid\", \"pid\": null}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/storage_disaster_recovery.lock\", \"reason\": \"owner_pid_not_running\", \"pid\": 27438}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/storage_failback_sync.lock\", \"reason\": \"owner_pid_not_running\", \"pid\": 29024}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/storage_standby_prune.lock\", \"reason\": \"owner_pid_not_running\", \"pid\": 27522}], \"apply\": true, \"removed\": [\"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/data_retention.lock\", \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/external_backlog_retry_bot.lock\", \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/market_crypto_correlation.lock\", \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/stale_artifact_reaper_bot.lock\", \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/stale_artifact_sweeper_bot.lock\", \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/storage_disaster_recovery.lock\", \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/storage_failback_sync.lock\", \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/storage_standby_prune.lock\"]}",
+          "stdout_tail": "{\"timestamp_utc\": \"2026-05-04T00:10:33.065444+00:00\", \"healthy_locks\": [{\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/all_sleeves.lock\", \"pid\": 58802}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/jsonl_sql_writer.lock\", \"pid\": 22063}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_coinbase_crypto_futures.lock\", \"pid\": 59618}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_coinbase_default.lock\", \"pid\": 59361}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_adaptive_architectures.lock\", \"pid\": 61352}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_adversarial_ml_security.lock\", \"pid\": 61391}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_aggressive.lock\", \"pid\": 58834}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_alternative_data_ingestion.lock\", \"pid\": 61459}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_arbitrage_execution_safety.lock\", \"pid\": 61966}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_barrier_lookback_options.lock\", \"pid\": 60406}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_black_swan_hedging.lock\", \"pid\": 60681}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_bond.lock\", \"pid\": 59005}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_cash_rotation_tactical.lock\", \"pid\": 59607}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_causal_omni_symbolic.lock\", \"pid\": 61868}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_cdo_cubed.lock\", \"pid\": 60340}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_cdo_squared.lock\", \"pid\": 60285}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_commodity_inflation.lock\", \"pid\": 59329}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_compound_options.lock\", \"pid\": 60029}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_conservative.lock\", \"pid\": 58833}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_credit_derivatives_cdx_cds.lock\", \"pid\": 62197}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_critic_hmm_pinsde.lock\", \"pid\": 61836}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_cross_asset_basis_training.lock\", \"pid\": 60912}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_crowd_physics_games.lock\", \"pid\": 61772}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_crypto_futures_basis.lock\", \"pid\": 59825}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_dispersion_trading.lock\", \"pid\": 60880}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_dividend.lock\", \"pid\": 59608}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_dividend_capture.lock\", \"pid\": 59603}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_earnings_event.lock\", \"pid\": 59259}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_event_intelligence.lock\", \"pid\": 62566}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_feature_quality_data_confidence.lock\", \"pid\": 62601}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_futures_commodity_macro.lock\", \"pid\": 59748}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_futures_event_reaction.lock\", \"pid\": 59907}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_futures_index_intraday.lock\", \"pid\": 59663}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_futures_rates_curve.lock\", \"pid\": 59713}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_fx.lock\", \"pid\": 60073}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_gamma_scalping.lock\", \"pid\": 60745}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_geometry_spillover_durability.lock\", \"pid\": 61998}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_gpu_quant_acceleration.lock\", \"pid\": 61552}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_high_frequency_market_making.lock\", \"pid\": 60609}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_institutional_data_plumbing.lock\", \"pid\": 62032}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_international_macro.lock\", \"pid\": 59374}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_intraday_aggressive_core_volatile.lock\", \"pid\": 62677}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_intraday_aggressive_defensive.lock\", \"pid\": 62679}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_liquidity_regime.lock\", \"pid\": 62633}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_lit_order_book_transformers.lock\", \"pid\": 61804}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_lobdif_crisis_microstructure.lock\", \"pid\": 62069}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_low_latency_orchestration.lock\", \"pid\": 61425}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_macro_crisis_scenario_lab.lock\", \"pid\": 62111}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_market_data_tape_normalization.lock\", \"pid\": 62319}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_market_making_liquidity.lock\", \"pid\": 59406}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_model_risk_validation.lock\", \"pid\": 62444}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_neural_sde_kan_hedging.lock\", \"pid\": 61649}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_nlp_sentiment_agents.lock\", \"pid\": 61235}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_optimization_research.lock\", \"pid\": 61179}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_options_on_futures.lock\", \"pid\": 59940}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_options_on_futures_aggressive.lock\", \"pid\": 59993}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_order_flow_market_microstructure.lock\", \"pid\": 60845}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_order_flow_toxicity.lock\", \"pid\": 61708}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_pairs_correlation.lock\", \"pid\": 59129}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_portfolio_construction.lock\", \"pid\": 62518}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_privacy_zkp_controls.lock\", \"pid\": 61491}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_proof_quantum_formal_backends.lock\", \"pid\": 62411}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_provider_adapter_verification.lock\", \"pid\": 62351}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_qemc_path_volatility.lock\", \"pid\": 61584}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_quant_pricing_models.lock\", \"pid\": 61072}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_rainbow_options.lock\", \"pid\": 61031}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_rates_credit_macro.lock\", \"pid\": 59568}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_repo_securities_lending.lock\", \"pid\": 62287}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_rlbf_dms_equivariant.lock\", \"pid\": 61906}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_schwab_futures.lock\", \"pid\": 59057}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_second_third_order_greeks.lock\", \"pid\": 60482}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_securitized_products_mbs_abs_clo.lock\", \"pid\": 62229}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_short_bias_hedge.lock\", \"pid\": 59438}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_signature_hawkes_generators.lock\", \"pid\": 61740}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_single_name_options_event.lock\", \"pid\": 59512}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_sovereign_debt_macro.lock\", \"pid\": 60713}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_stat_arb_market_neutral.lock\", \"pid\": 59184}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_state_space_models.lock\", \"pid\": 61106}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_statistical_arbitrage.lock\", \"pid\": 60777}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_structured_products.lock\", \"pid\": 60148}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_swaptions.lock\", \"pid\": 60105}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_swing_aggressive_core_volatile.lock\", \"pid\": 62712}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_swing_aggressive_defensive.lock\", \"pid\": 62713}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_synthetic_cdo.lock\", \"pid\": 60236}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_system_governor_expansion.lock\", \"pid\": 62666}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_tail_dependency_risk.lock\", \"pid\": 61145}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_tail_risk_parity.lock\", \"pid\": 60649}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_transaction_cost_slippage_intelligence.lock\", \"pid\": 62477}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_transport_topology_research.lock\", \"pid\": 61617}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_vanna_volga_hedging.lock\", \"pid\": 60809}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_variance_volatility_swaps.lock\", \"pid\": 60374}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_volatility.lock\", \"pid\": 59092}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_volatility_arbitrage.lock\", \"pid\": 60979}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/shadow_loop_schwab_xva_counterparty_margin.lock\", \"pid\": 62160}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/parallel_aggressive_modes.lock\", \"pid\": 50794}], \"policy_locks\": [], \"stale_locks\": [{\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/data_retention.lock\", \"reason\": \"owner_pid_not_running\", \"pid\": 52077}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/market_crypto_correlation.lock\", \"reason\": \"missing_pid\", \"pid\": null}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/stale_artifact_reaper_bot.lock\", \"reason\": \"missing_pid\", \"pid\": null}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/stale_artifact_sweeper_bot.lock\", \"reason\": \"missing_pid\", \"pid\": null}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/storage_disaster_recovery.lock\", \"reason\": \"owner_pid_not_running\", \"pid\": 52033}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/storage_failback_sync.lock\", \"reason\": \"owner_pid_not_running\", \"pid\": 53645}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/storage_standby_prune.lock\", \"reason\": \"owner_pid_not_running\", \"pid\": 50979}, {\"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/parallel_shadow.lock\", \"reason\": \"owner_pid_not_running\", \"pid\": 53542}], \"apply\": true, \"removed\": [\"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/data_retention.lock\", \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/market_crypto_correlation.lock\", \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/stale_artifact_reaper_bot.lock\", \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/stale_artifact_sweeper_bot.lock\", \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/storage_disaster_recovery.lock\", \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/storage_failback_sync.lock\", \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/storage_standby_prune.lock\", \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/parallel_shadow.lock\"]}",
           "stderr_tail": ""
         },
         {
           "name": "storage_failback_sync",
           "ok": true,
           "rc": 0,
-          "stdout_tail": "{\"timestamp_utc\": \"2026-05-03T23:46:33.623879+00:00\", \"mode\": \"external\", \"certified_mode\": \"external\", \"active_root\": \"/Volumes/BOT_LOGS/schwab_trading_bot\", \"switched_links\": [], \"passthrough_paths\": [\"data\", \"governance\"], \"autosync\": {\"copied_files\": 0, \"copy_errors\": 0, \"pruned_files\": 0, \"error_details\": []}, \"split_brain_conflicts\": 0, \"low_space_autoprune\": {\"enabled\": true, \"attempted\": true, \"external_root\": \"/Volumes/BOT_LOGS/schwab_trading_bot\", \"external_free_bytes_before\": 30463520768, \"external_min_free_bytes\": 107374182400, \"external_low_space_before\": true, \"candidate_count\": 0, \"details\": {\"mount_root\": \"/Volumes/BOT_LOGS\", \"external_root\": \"/Volumes/BOT_LOGS/schwab_trading_bot\", \"mount_present\": true, \"external_root_exists\": true, \"external_root_writable\": true, \"external_free_bytes\": 30463520768, \"external_min_free_bytes\": 107374182400, \"external_low_space\": true, \"storage_mode\": \"\", \"require_local_fallback\": true, \"allow_external_mode_pressure_prune\": true, \"skipped_reason\": \"storage_mode_not_local_fallback\"}, \"skipped_reason\": \"storage_mode_not_local_fallback\"}, \"sqlite_skip_report\": {\"mode\": \"external\", \"certified_mode\": \"external\", \"active_root\": \"/Volumes/BOT_LOGS/schwab_trading_bot\", \"queue_db_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/data/bot_channel_queue.sqlite3\", \"summary\": {\"tracked_entries\": 3, \"local_present_count\": 0, \"active_local_count\": 0, \"warm_standby_count\": 0, \"external_ready_count\": 3, \"verified_count\": 3, \"curated_standby_count\": 0, \"verification_mismatch_count\": 0, \"verification_state\": \"ready\", \"prune_eligible_count\": 0, \"local_bytes_total\": 0}, \"route_verification\": {\"verification_state\": \"ready\", \"certified_mode\": \"external\", \"ready_count\": 3, \"verified_count\": 3, \"curated_standby_count\": 0, \"tracked_count\": 3, \"coverage_ratio\": 1.0, \"mismatches\": []}, \"entries\": [{\"relative_path\": \"data/jsonl_link.sqlite3\", \"classification\": \"not_present\", \"reason\": \"No retained local fallback SQLite file is present for this skip path.\", \"prune_eligible\": false, \"active_path\": \"\", \"route_verification\": {\"state\": \"verified\", \"reason\": \"The external route carries a present SQLite copy that is at least as large as the retained local copy.\"}, \"local\": {\"path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/local_fallback_storage/data/jsonl_link.sqlite3\", \"exists\": false, \"size_bytes\": 0, \"mtime_utc\": \"\", \"sidecars\": []}, \"external\": {\"path\": \"/Volumes/BOT_LOGS/schwab_trading_bot/data/jsonl_link.sqlite3\", \"exists\": true, \"size_bytes\": 248912150528, \"mtime_utc\": \"2026-05-03T23:44:43.772336+00:00\", \"sidecars\": [\"jsonl_link.sqlite3-wal\", \"jsonl_link.sqlite3-shm\"]}, \"external_at_least_as_large\": false}, {\"relative_path\": \"data/bot_channel_queue.sqlite3\", \"classification\": \"not_present\", \"reason\": \"No retained local fallback SQLite file is present for this skip path.\", \"prune_eligible\": false, \"active_path\": \"\", \"route_verification\": {\"state\": \"verified\", \"reason\": \"The external route carries a present SQLite copy that is at least as large as the retained local copy.\"}, \"local\": {\"path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/local_fallback_storage/data/bot_channel_queue.sqlite3\", \"exists\": false, \"size_bytes\": 0, \"mtime_utc\": \"\", \"sidecars\": []}, \"external\": {\"path\": \"/Volumes/BOT_LOGS/schwab_trading_bot/data/bot_channel_queue.sqlite3\", \"exists\": true, \"size_bytes\": 73312239616, \"mtime_utc\": \"2026-05-03T23:46:29.660256+00:00\", \"sidecars\": []}, \"external_at_least_as_large\": false}, {\"relative_path\": \"data/snapshot_context.sqlite3\", \"classification\": \"not_present\", \"reason\": \"No retained local fallback SQLite file is present for this skip path.\", \"prune_eligible\": false, \"active_path\": \"\", \"route_verification\": {\"state\": \"verified\", \"reason\": \"The external route carries a present SQLite copy that is at least as large as the retained local copy.\"}, \"local\": {\"path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/local_fallback_storage/data/snapshot_context.sqlite3\", \"exists\": false, \"size_bytes\": 0, \"mtime_utc\": \"\", \"sidecars\": []}, \"external\": {\"path\": \"/Volumes/BOT_LOGS/schwab_trading_bot/data/snapshot_context.sqlite3\", \"exists\": true, \"size_bytes\": 64806912, \"mtime_utc\": \"2026-05-03T22:56:35.584606+00:00\", \"sidecars\": []}, \"external_at_least_as_large\": false}]}, \"finder_sync\": {\"attempted\": true, \"ok\": true, \"rc\": 0, \"desktop_shortcut_enabled\": true, \"payload\": {\"timestamp_utc\": \"2026-05-03T23:46:33.681865+00:00\", \"schema_version\": 1, \"ok\": true, \"project_root\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot\", \"logs_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/logs\", \"alias\": {\"path\": \"/Users/dankingsley/bot_logs\", \"target\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/logs\", \"ok\": true, \"error\": \"\"}, \"desktop_shortcut\": {\"path\": \"/Users/dankingsley/Desktop/Bot Logs\", \"target\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/logs\", \"ok\": true, \"error\": \"\", \"enabled\": true}}, \"stderr_tail\": \"\"}, \"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/storage_failback_sync.lock\", \"route_verification\": {\"verification_state\": \"ready\", \"certified_mode\": \"external\", \"ready_count\": 3, \"verified_count\": 3, \"curated_standby_count\": 0, \"tracked_count\": 3, \"coverage_ratio\": 1.0, \"mismatches\": []}}",
+          "stdout_tail": "{\"timestamp_utc\": \"2026-05-04T00:10:41.110840+00:00\", \"mode\": \"external\", \"certified_mode\": \"external\", \"active_root\": \"/Volumes/BOT_LOGS/schwab_trading_bot\", \"switched_links\": [], \"passthrough_paths\": [\"data\", \"governance\"], \"autosync\": {\"copied_files\": 0, \"copy_errors\": 0, \"pruned_files\": 0, \"error_details\": []}, \"split_brain_conflicts\": 0, \"low_space_autoprune\": {\"enabled\": true, \"attempted\": true, \"external_root\": \"/Volumes/BOT_LOGS/schwab_trading_bot\", \"external_free_bytes_before\": 29178691584, \"external_min_free_bytes\": 107374182400, \"external_low_space_before\": true, \"candidate_count\": 0, \"details\": {\"mount_root\": \"/Volumes/BOT_LOGS\", \"external_root\": \"/Volumes/BOT_LOGS/schwab_trading_bot\", \"mount_present\": true, \"external_root_exists\": true, \"external_root_writable\": true, \"external_free_bytes\": 29178691584, \"external_min_free_bytes\": 107374182400, \"external_low_space\": true, \"storage_mode\": \"\", \"require_local_fallback\": true, \"allow_external_mode_pressure_prune\": true, \"skipped_reason\": \"storage_mode_not_local_fallback\"}, \"skipped_reason\": \"storage_mode_not_local_fallback\"}, \"sqlite_skip_report\": {\"mode\": \"external\", \"certified_mode\": \"external\", \"active_root\": \"/Volumes/BOT_LOGS/schwab_trading_bot\", \"queue_db_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/data/bot_channel_queue.sqlite3\", \"summary\": {\"tracked_entries\": 3, \"local_present_count\": 0, \"active_local_count\": 0, \"warm_standby_count\": 0, \"external_ready_count\": 3, \"verified_count\": 3, \"curated_standby_count\": 0, \"verification_mismatch_count\": 0, \"verification_state\": \"ready\", \"prune_eligible_count\": 0, \"local_bytes_total\": 0}, \"route_verification\": {\"verification_state\": \"ready\", \"certified_mode\": \"external\", \"ready_count\": 3, \"verified_count\": 3, \"curated_standby_count\": 0, \"tracked_count\": 3, \"coverage_ratio\": 1.0, \"mismatches\": []}, \"entries\": [{\"relative_path\": \"data/jsonl_link.sqlite3\", \"classification\": \"not_present\", \"reason\": \"No retained local fallback SQLite file is present for this skip path.\", \"prune_eligible\": false, \"active_path\": \"\", \"route_verification\": {\"state\": \"verified\", \"reason\": \"The external route carries a present SQLite copy that is at least as large as the retained local copy.\"}, \"local\": {\"path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/local_fallback_storage/data/jsonl_link.sqlite3\", \"exists\": false, \"size_bytes\": 0, \"mtime_utc\": \"\", \"sidecars\": []}, \"external\": {\"path\": \"/Volumes/BOT_LOGS/schwab_trading_bot/data/jsonl_link.sqlite3\", \"exists\": true, \"size_bytes\": 248936923136, \"mtime_utc\": \"2026-05-04T00:07:11.965004+00:00\", \"sidecars\": [\"jsonl_link.sqlite3-wal\", \"jsonl_link.sqlite3-shm\"]}, \"external_at_least_as_large\": false}, {\"relative_path\": \"data/bot_channel_queue.sqlite3\", \"classification\": \"not_present\", \"reason\": \"No retained local fallback SQLite file is present for this skip path.\", \"prune_eligible\": false, \"active_path\": \"\", \"route_verification\": {\"state\": \"verified\", \"reason\": \"The external route carries a present SQLite copy that is at least as large as the retained local copy.\"}, \"local\": {\"path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/local_fallback_storage/data/bot_channel_queue.sqlite3\", \"exists\": false, \"size_bytes\": 0, \"mtime_utc\": \"\", \"sidecars\": []}, \"external\": {\"path\": \"/Volumes/BOT_LOGS/schwab_trading_bot/data/bot_channel_queue.sqlite3\", \"exists\": true, \"size_bytes\": 73513959424, \"mtime_utc\": \"2026-05-04T00:10:13.641174+00:00\", \"sidecars\": [\"bot_channel_queue.sqlite3-wal\", \"bot_channel_queue.sqlite3-shm\"]}, \"external_at_least_as_large\": false}, {\"relative_path\": \"data/snapshot_context.sqlite3\", \"classification\": \"not_present\", \"reason\": \"No retained local fallback SQLite file is present for this skip path.\", \"prune_eligible\": false, \"active_path\": \"\", \"route_verification\": {\"state\": \"verified\", \"reason\": \"The external route carries a present SQLite copy that is at least as large as the retained local copy.\"}, \"local\": {\"path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/local_fallback_storage/data/snapshot_context.sqlite3\", \"exists\": false, \"size_bytes\": 0, \"mtime_utc\": \"\", \"sidecars\": []}, \"external\": {\"path\": \"/Volumes/BOT_LOGS/schwab_trading_bot/data/snapshot_context.sqlite3\", \"exists\": true, \"size_bytes\": 64860160, \"mtime_utc\": \"2026-05-03T23:50:59.701516+00:00\", \"sidecars\": []}, \"external_at_least_as_large\": false}]}, \"finder_sync\": {\"attempted\": true, \"ok\": true, \"rc\": 0, \"desktop_shortcut_enabled\": true, \"payload\": {\"timestamp_utc\": \"2026-05-04T00:10:41.185886+00:00\", \"schema_version\": 1, \"ok\": true, \"project_root\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot\", \"logs_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/logs\", \"alias\": {\"path\": \"/Users/dankingsley/bot_logs\", \"target\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/logs\", \"ok\": true, \"error\": \"\"}, \"desktop_shortcut\": {\"path\": \"/Users/dankingsley/Desktop/Bot Logs\", \"target\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/logs\", \"ok\": true, \"error\": \"\", \"enabled\": true}}, \"stderr_tail\": \"\"}, \"lock_path\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/locks/storage_failback_sync.lock\", \"route_verification\": {\"verification_state\": \"ready\", \"certified_mode\": \"external\", \"ready_count\": 3, \"verified_count\": 3, \"curated_standby_count\": 0, \"tracked_count\": 3, \"coverage_ratio\": 1.0, \"mismatches\": []}}",
           "stderr_tail": "",
           "payload": {
-            "timestamp_utc": "2026-05-03T23:46:33.623879+00:00",
+            "timestamp_utc": "2026-05-04T00:10:41.110840+00:00",
             "mode": "external",
             "certified_mode": "external",
             "active_root": "/Volumes/BOT_LOGS/schwab_trading_bot",
@@ -1099,7 +1099,7 @@
               "enabled": true,
               "attempted": true,
               "external_root": "/Volumes/BOT_LOGS/schwab_trading_bot",
-              "external_free_bytes_before": 30463520768,
+              "external_free_bytes_before": 29178691584,
               "external_min_free_bytes": 107374182400,
               "external_low_space_before": true,
               "candidate_count": 0,
@@ -1109,7 +1109,7 @@
                 "mount_present": true,
                 "external_root_exists": true,
                 "external_root_writable": true,
-                "external_free_bytes": 30463520768,
+                "external_free_bytes": 29178691584,
                 "external_min_free_bytes": 107374182400,
                 "external_low_space": true,
                 "storage_mode": "",
@@ -1168,8 +1168,8 @@
                   "external": {
                     "path": "/Volumes/BOT_LOGS/schwab_trading_bot/data/jsonl_link.sqlite3",
                     "exists": true,
-                    "size_bytes": 248912150528,
-                    "mtime_utc": "2026-05-03T23:44:43.772336+00:00",
+                    "size_bytes": 248936923136,
+                    "mtime_utc": "2026-05-04T00:07:11.965004+00:00",
                     "sidecars": [
                       "jsonl_link.sqlite3-wal",
                       "jsonl_link.sqlite3-shm"
@@ -1197,9 +1197,12 @@
                   "external": {
                     "path": "/Volumes/BOT_LOGS/schwab_trading_bot/data/bot_channel_queue.sqlite3",
                     "exists": true,
-                    "size_bytes": 73312239616,
-                    "mtime_utc": "2026-05-03T23:46:29.660256+00:00",
-                    "sidecars": []
+                    "size_bytes": 73513959424,
+                    "mtime_utc": "2026-05-04T00:10:13.641174+00:00",
+                    "sidecars": [
+                      "bot_channel_queue.sqlite3-wal",
+                      "bot_channel_queue.sqlite3-shm"
+                    ]
                   },
                   "external_at_least_as_large": false
                 },
@@ -1223,8 +1226,8 @@
                   "external": {
                     "path": "/Volumes/BOT_LOGS/schwab_trading_bot/data/snapshot_context.sqlite3",
                     "exists": true,
-                    "size_bytes": 64806912,
-                    "mtime_utc": "2026-05-03T22:56:35.584606+00:00",
+                    "size_bytes": 64860160,
+                    "mtime_utc": "2026-05-03T23:50:59.701516+00:00",
                     "sidecars": []
                   },
                   "external_at_least_as_large": false
@@ -1237,7 +1240,7 @@
               "rc": 0,
               "desktop_shortcut_enabled": true,
               "payload": {
-                "timestamp_utc": "2026-05-03T23:46:33.681865+00:00",
+                "timestamp_utc": "2026-05-04T00:10:41.185886+00:00",
                 "schema_version": 1,
                 "ok": true,
                 "project_root": "/Users/dankingsley/PycharmProjects/schwab_trading_bot",
@@ -1275,55 +1278,59 @@
           "name": "canary_auto_tuner",
           "ok": true,
           "rc": 0,
-          "stdout_tail": "{\"timestamp_utc\": \"2026-05-03T23:46:33.759556+00:00\", \"fail_share\": 1.0, \"data_quality_score\": 0.0, \"target_canary_max_weight\": 0.04, \"reason\": \"defensive_floor\", \"env_file\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/health/canary_rollout.env\", \"applied\": true}",
+          "stdout_tail": "{\"timestamp_utc\": \"2026-05-04T00:10:42.976934+00:00\", \"fail_share\": 1.0, \"data_quality_score\": 0.0, \"target_canary_max_weight\": 0.04, \"reason\": \"defensive_floor\", \"env_file\": \"/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/health/canary_rollout.env\", \"applied\": true}",
           "stderr_tail": ""
         }
       ],
       "refresh_reports": {
         "one_numbers": {
           "path": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/one_numbers/one_numbers_summary.json",
-          "refreshed": false,
-          "age_seconds_before": 471.49,
+          "refreshed": true,
+          "age_seconds_before": 1921.04,
           "rc": 0,
           "error": "",
           "synced_health": true,
-          "age_seconds_after": 471.49
+          "resource_guard_ok": true,
+          "resource_guard_detail": "one_numbers_refresh:resource_guard_ok=True profile=refresh memory_pressure_state=green creative_session_level=none load1_per_core=0.985 disk_free_gb=27.18 editing_app_cpu_sum=0 reasons=none",
+          "age_seconds_after": 0.2
         },
         "paper_performance": {
           "path": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/health/paper_performance_latest.json",
-          "refreshed": false,
-          "age_seconds_before": 461.51,
+          "refreshed": true,
+          "age_seconds_before": 1911.06,
           "rc": 0,
           "error": "",
           "synced_health": true,
-          "age_seconds_after": 461.51
+          "resource_guard_ok": true,
+          "resource_guard_detail": "paper_performance_refresh:resource_guard_ok=True profile=refresh memory_pressure_state=green creative_session_level=none load1_per_core=0.57 disk_free_gb=26.88 editing_app_cpu_sum=0 reasons=none",
+          "age_seconds_after": 0.05
         },
         "daily_runtime_summary": {
-          "path": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/sql_reports/daily_runtime_summary_20260503.json",
+          "path": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/sql_reports/daily_runtime_summary_20260504.json",
           "refreshed": false,
-          "age_seconds_before": 1594.64,
+          "age_seconds_before": 506.56,
           "rc": 0,
           "error": "",
           "synced_health": true,
-          "age_seconds_after": 1594.64
+          "age_seconds_after": 871.84
         },
         "ingestion_backpressure": {
           "path": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/health/ingestion_backpressure_latest.json",
-          "refreshed": true,
-          "age_seconds_before": 183.09,
+          "refreshed": false,
+          "age_seconds_before": 198.58,
           "rc": 0,
           "error": "",
-          "resource_guard_ok": true,
-          "resource_guard_detail": "ingestion_backpressure_refresh:resource_guard_ok=True profile=refresh memory_pressure_state=green creative_session_level=none load1_per_core=0.568 disk_free_gb=28.37 editing_app_cpu_sum=0 reasons=none",
-          "age_seconds_after": 0.01
+          "age_seconds_after": 76.56
         },
         "data_source_divergence": {
           "path": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/health/data_source_divergence_latest.json",
-          "refreshed": false,
-          "age_seconds_before": 181.62,
+          "refreshed": true,
+          "age_seconds_before": 373.0,
           "rc": 0,
           "error": "",
-          "age_seconds_after": 183.38
+          "resource_guard_ok": true,
+          "resource_guard_detail": "data_source_divergence_refresh:resource_guard_ok=True profile=refresh memory_pressure_state=green creative_session_level=none load1_per_core=0.545 disk_free_gb=26.84 editing_app_cpu_sum=0 reasons=none",
+          "age_seconds_after": 0.04
         }
       },
       "network": {
@@ -1368,12 +1375,12 @@
         "mount_present": true,
         "external_root_exists": true,
         "external_root_writable": true,
-        "external_free_bytes": 30463504384,
+        "external_free_bytes": 29177532416,
         "external_min_free_bytes": 26843545600,
         "external_low_space": false,
         "external_unavailable_reason": "ok",
         "external_available": true,
-        "timestamp_utc": "2026-05-03T23:46:33.797184+00:00",
+        "timestamp_utc": "2026-05-04T00:10:43.352602+00:00",
         "storage_mode": "external",
         "previous_mount_present": true,
         "out_file": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/health/storage_mount_guard_latest.json"
@@ -1451,7 +1458,7 @@
       }
     },
     "runtime_separation": {
-      "timestamp_utc": "2026-05-03T23:41:37.938147+00:00",
+      "timestamp_utc": "2026-05-04T00:12:42.139184+00:00",
       "schema_version": 1,
       "ok": false,
       "overall_status": "degraded",
@@ -1460,7 +1467,7 @@
         "broker_ready": true,
         "session_ready": true,
         "live_lane_running": false,
-        "live_readiness_age_minutes": 35.8479
+        "live_readiness_age_minutes": 66.9125
       },
       "training_plane": {
         "overall_status": "degraded",
@@ -1471,7 +1478,7 @@
       "shared_host_pressure": {
         "contention_score": 2,
         "hot_path_over_budget_bytes": 288246314432,
-        "swap_used_gb": 0.49,
+        "swap_used_gb": 0.487,
         "restart_storms": 0,
         "signals": {
           "training_runtime_blocked": false,
@@ -1500,7 +1507,7 @@
           "active": true,
           "is_weekend": true,
           "timezone": "America/New_York",
-          "local_time": "2026-05-03T19:41:37.935365-04:00",
+          "local_time": "2026-05-03T20:12:41.808438-04:00",
           "window_start_local": "16:15",
           "window_end_local": "09:20",
           "label": "off_hours"
@@ -20165,7 +20172,7 @@
       }
     },
     "architecture_upgrades": {
-      "timestamp_utc": "2026-05-03T23:49:29.451338+00:00",
+      "timestamp_utc": "2026-05-04T00:21:15.851612+00:00",
       "schema_version": 1,
       "ok": false,
       "overall_status": "blocked",
@@ -20639,7 +20646,7 @@
     "failure_count": 4,
     "reason": "training_failures_present:4",
     "failure_reason": "RuntimeError: runtime_training_quality_guard_failed run_tag=brain_refinery_v68_risk_budget_layer acted_coverage=0.9685 > max_acted_coverage=0.4200; diagnostics_path=/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/training_diagnostics/brain_refinery_v68_risk_budget_layer_latest.json",
-    "age_hours": 112.47084217611112,
+    "age_hours": 112.99515032083333,
     "likely_environment_mismatch": false
   },
   "pytorch_summary": {
@@ -20743,7 +20750,7 @@
     }
   },
   "highlights": [
-    "Registry currently tracks 924 bots with 869 active across crypto_sub_bot, futures_sub_bot, infrastructure_bot, infrastructure_sub_bot, macro_sub_bot, options_sub_bot, signal_sub_bot lanes.",
+    "Registry currently tracks 954 bots with 899 active across crypto_sub_bot, futures_sub_bot, infrastructure_bot, infrastructure_sub_bot, macro_sub_bot, options_sub_bot, signal_sub_bot lanes.",
     "Live ingestion is wired across 94 lane artifacts with 3 currently reporting `running`.",
     "Institutional-readiness score is `98.27/100` with status `industry_leaning` across 12 governance domains.",
     "Live readiness is `degraded` at `100.00/100`, with broker/session ready=`True/True` and watchdog healthy=`True`.",
@@ -20751,7 +20758,7 @@
     "Autonomy control plane is `blocked` at `77.34/100`, with `1` triggered playbooks, `0` open incidents, and promotion state `assembling_packet`.",
     "Architecture upgrade scoreboard tracks `9` ready proof surfaces out of `12`, with host profile `max_throughput` and portable proof `ready`.",
     "Crypto context is aggregating 14/14 healthy sources and 7/7 healthy crypto news feeds.",
-    "Latest divergence check is `ok=True` with worst relative spread 0.36%.",
+    "Latest divergence check is `ok=True` with worst relative spread 0.32%.",
     "Market/crypto correlation overlay is running in `exact` mode with 0 aligned pairs and cache hits/misses 0/0.",
     "Latest training summary is 4.7d old: 3 trained, 4 failed, `confirmed_training_success=False` with reason `training_failures_present:4`.",
     "Process watchdog currently tracks `4` services with `4` healthy targets, `0` restart storms, and `0` alerts. Tripwire event flag remains `active=False`.",

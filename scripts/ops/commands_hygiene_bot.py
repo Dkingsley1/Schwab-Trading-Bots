@@ -1048,6 +1048,23 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                     "Use the dry run to see planned intelligence-layer bots, data intakes, storage contracts, and routing/safety guardrails without changing the registry.",
                 ],
             ),
+            _command_entry(
+                project_root,
+                "Apply the apex self-awareness intelligence pack",
+                ["./scripts/ops/opsctl.sh apex-self-awareness-intelligence --apply --json"],
+                notes=[
+                    "Adds the 46 guarded apex bots that bring the platform to 1000 total bots: deep self-modeling, meta-reasoning, experience memory, scenario oracles, upgrade foundry, causal alpha safety, resource autonomy, operator copilot, Grand Master collective intelligence, and research frontier scouting.",
+                    "The bots are collection-only with live execution, allocation, and training blocked until 120 days, 30000 observations, and safety/resource/memory gates clear.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview the apex self-awareness intelligence pack",
+                ["./scripts/ops/opsctl.sh apex-self-awareness-intelligence --json"],
+                notes=[
+                    "Use the dry run to see the 46 planned apex bots, 1000-bot target contract, storage limits, and paper-only guardrails without changing the registry.",
+                ],
+            ),
         ),
         _section(
             "Macro And Media",

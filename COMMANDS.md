@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `c59307a2c6bbfdb653889ad0b41c0c93a8e1d3c1faa7e653074249e4f037a607`.
+Command contract hash: `80c21b2c67c23fb22970c80a1a8e1f499bb0a37ac52b34f08371f1102280c6d5`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -382,6 +382,15 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 Adds the guarded alpha advancement layer: training readiness, execution reality, portfolio exposure, source confidence, research intake, duplicate-alpha novelty control, regime memory v2, dashboard v2, adapter mesh, and cleanup governor.
 The bots are collection-only with paper/live execution blocked until readiness, execution realism, source confidence, and duplicate-alpha gates clear.
 
+### Apply the apex self-awareness intelligence pack
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh apex-self-awareness-intelligence --apply --json
+```
+
+Adds the 46 guarded apex bots that bring the platform to 1000 total bots: deep self-modeling, meta-reasoning, experience memory, scenario oracles, upgrade foundry, causal alpha safety, resource autonomy, operator copilot, Grand Master collective intelligence, and research frontier scouting.
+The bots are collection-only with live execution, allocation, and training blocked until 120 days, 30000 observations, and safety/resource/memory gates clear.
+
 ### Apply the coordination intelligence control-plane pack
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -407,6 +416,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 Use the dry run to see planned alpha intelligence bots, data intakes, storage contracts, and self-awareness upgrades without changing the registry.
+
+### Preview the apex self-awareness intelligence pack
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh apex-self-awareness-intelligence --json
+```
+
+Use the dry run to see the 46 planned apex bots, 1000-bot target contract, storage limits, and paper-only guardrails without changing the registry.
 
 ### Preview the coordination intelligence control-plane pack
 ```bash

@@ -155,6 +155,10 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "./scripts/ops/opsctl.sh intelligence-layer-advancement --apply --json" in commands_text
     assert "### Preview the intelligence layer advancement pack" in commands_text
     assert "./scripts/ops/opsctl.sh intelligence-layer-advancement --json" in commands_text
+    assert "### Apply the apex self-awareness intelligence pack" in commands_text
+    assert "./scripts/ops/opsctl.sh apex-self-awareness-intelligence --apply --json" in commands_text
+    assert "### Preview the apex self-awareness intelligence pack" in commands_text
+    assert "./scripts/ops/opsctl.sh apex-self-awareness-intelligence --json" in commands_text
     assert "tastytrade-sync --json" not in commands_text
 
     runbook_text = (project_root / "scripts" / "runbook.sh").read_text(encoding="utf-8")
@@ -162,7 +166,7 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "find_section_heading()" in runbook_text
     contract_payload = json.loads((project_root / "governance" / "health" / "commands_contract_latest.json").read_text(encoding="utf-8"))
     assert contract_payload["schema_version"] == commands_src.COMMAND_CONTRACT_SCHEMA_VERSION
-    assert contract_payload["entry_count"] == 124
+    assert contract_payload["entry_count"] == 126
     assert contract_payload["contract_hash"] in commands_text
 
 

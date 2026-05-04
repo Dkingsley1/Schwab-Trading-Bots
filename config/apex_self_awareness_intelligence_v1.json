@@ -1,0 +1,227 @@
+{
+  "generated_at_utc": "2026-05-04T00:22:59.011940+00:00",
+  "apex_self_awareness_intelligence_version": "apex_self_awareness_intelligence_v1",
+  "pack": {
+    "slug": "apex_self_awareness_intelligence",
+    "display_name": "Apex Self-Awareness Intelligence Pack",
+    "sleeve_family": "apex_meta_intelligence_control_plane",
+    "sleeve_profile": "apex_self_awareness_intelligence",
+    "objective": "Push the self-awareness and intelligence layers into a 1000-bot control plane that can observe itself, route reasoning, remember lessons, test scenarios, rank upgrades, judge alpha safety, smooth resources, and brief the operator.",
+    "target_platform_total_bots": 1000,
+    "system_count": 10,
+    "bot_count": 46,
+    "bot_ids": [
+      "brain_refinery_v964_apex_self_model_state_vector_builder_bot",
+      "brain_refinery_v965_apex_capability_graph_integrity_mapper_bot",
+      "brain_refinery_v966_apex_live_assumption_inventory_guard_bot",
+      "brain_refinery_v967_apex_internal_contradiction_detector_bot",
+      "brain_refinery_v968_apex_identity_lineage_checkpoint_master_bot",
+      "brain_refinery_v969_apex_reasoning_policy_router_bot",
+      "brain_refinery_v970_apex_confidence_budget_allocator_bot",
+      "brain_refinery_v971_apex_deliberation_depth_throttle_bot",
+      "brain_refinery_v972_apex_specialist_consensus_weighting_bot",
+      "brain_refinery_v973_apex_reasoning_trace_regression_guard_bot",
+      "brain_refinery_v974_apex_episodic_memory_index_builder_bot",
+      "brain_refinery_v975_apex_causal_lesson_retrieval_scorer_bot",
+      "brain_refinery_v976_apex_failure_memory_replay_picker_bot",
+      "brain_refinery_v977_apex_memory_compaction_quality_guard_bot",
+      "brain_refinery_v978_apex_stale_lesson_retirement_master_bot",
+      "brain_refinery_v979_apex_regime_state_space_mapper_bot",
+      "brain_refinery_v980_apex_shock_path_counterfactual_generator_bot",
+      "brain_refinery_v981_apex_cross_sleeve_scenario_consistency_guard_bot",
+      "brain_refinery_v982_apex_market_microstructure_scenario_bridge_bot",
+      "brain_refinery_v983_apex_scenario_truth_decay_auditor_bot",
+      "brain_refinery_v984_apex_upgrade_hypothesis_generator_bot",
+      "brain_refinery_v985_apex_dependency_safe_patch_planner_bot",
+      "brain_refinery_v986_apex_regression_surface_forecaster_bot",
+      "brain_refinery_v987_apex_payoff_risk_upgrade_ranker_bot",
+      "brain_refinery_v988_apex_blocked_idea_parking_lot_curator_bot",
+      "brain_refinery_v989_apex_causal_evidence_gatekeeper_bot",
+      "brain_refinery_v990_apex_duplicate_alpha_semantic_guard_bot",
+      "brain_refinery_v991_apex_overfit_leakage_prosecutor_bot",
+      "brain_refinery_v992_apex_promotion_safety_judge_bot",
+      "brain_refinery_v993_apex_paper_live_gap_preemption_guard_bot",
+      "brain_refinery_v994_apex_host_app_awareness_scheduler_bot",
+      "brain_refinery_v995_apex_swap_pressure_learning_controller_bot",
+      "brain_refinery_v996_apex_cpu_memory_lane_arbiter_bot",
+      "brain_refinery_v997_apex_storage_backpressure_predictor_v2_bot",
+      "brain_refinery_v998_apex_thousand_bot_runtime_smoother_bot",
+      "brain_refinery_v999_apex_operator_intent_memory_mapper_bot",
+      "brain_refinery_v1000_apex_daily_system_brief_composer_bot",
+      "brain_refinery_v1001_apex_command_recommendation_router_bot",
+      "brain_refinery_v1002_apex_report_readiness_editor_guard_bot",
+      "brain_refinery_v1003_apex_sleeve_master_vote_harmonizer_bot",
+      "brain_refinery_v1004_apex_grandmaster_context_packet_builder_bot",
+      "brain_refinery_v1005_apex_cross_sleeve_disagreement_referee_bot",
+      "brain_refinery_v1006_apex_collective_intelligence_health_guard_bot",
+      "brain_refinery_v1007_apex_frontier_model_watchlist_curator_bot",
+      "brain_refinery_v1008_apex_experiment_design_frontier_scout_bot",
+      "brain_refinery_v1009_apex_research_to_bot_blueprint_guard_bot"
+    ],
+    "systems": [
+      {
+        "slug": "self_model_deep_introspection",
+        "display_name": "Self-Model Deep Introspection",
+        "objective": "Keep a live, contradiction-aware map of identity, capabilities, assumptions, lineage, and current posture.",
+        "outputs": [
+          "self_state_vector",
+          "assumption_inventory",
+          "contradiction_packet"
+        ]
+      },
+      {
+        "slug": "meta_reasoning_policy_engine",
+        "display_name": "Meta-Reasoning Policy Engine",
+        "objective": "Route reasoning depth, specialist selection, confidence budgets, and trace quality by payoff and pressure.",
+        "outputs": [
+          "reasoning_policy_packet",
+          "confidence_budget_vote",
+          "reasoning_trace_quality"
+        ]
+      },
+      {
+        "slug": "experience_memory_os",
+        "display_name": "Experience Memory OS",
+        "objective": "Compress, retrieve, replay, and retire system lessons with point-in-time evidence.",
+        "outputs": [
+          "memory_index_packet",
+          "causal_lesson_score",
+          "memory_compaction_vote"
+        ]
+      },
+      {
+        "slug": "world_model_scenario_oracle",
+        "display_name": "World Model Scenario Oracle",
+        "objective": "Compare live state against counterfactual scenarios, regime maps, and cross-sleeve consistency checks.",
+        "outputs": [
+          "scenario_path_packet",
+          "world_model_consistency_score",
+          "scenario_decay_flag"
+        ]
+      },
+      {
+        "slug": "autonomous_upgrade_foundry",
+        "display_name": "Autonomous Upgrade Foundry",
+        "objective": "Propose, rank, dependency-map, and park future upgrades before they touch production paths.",
+        "outputs": [
+          "upgrade_hypothesis",
+          "dependency_safe_plan",
+          "payoff_risk_rank"
+        ]
+      },
+      {
+        "slug": "alpha_safety_causal_judge",
+        "display_name": "Alpha Safety / Causal Judge",
+        "objective": "Judge alphas for causal evidence, duplicate behavior, leakage, promotion safety, and paper/live drift.",
+        "outputs": [
+          "causal_evidence_packet",
+          "promotion_safety_vote",
+          "duplicate_alpha_flag"
+        ]
+      },
+      {
+        "slug": "resource_autonomy_governor",
+        "display_name": "Resource Autonomy Governor",
+        "objective": "Keep the 1000-bot platform calm by learning host pressure, app co-tenancy, storage pressure, and lane budgets.",
+        "outputs": [
+          "resource_autonomy_packet",
+          "lane_budget_vote",
+          "thousand_bot_smoothing_state"
+        ]
+      },
+      {
+        "slug": "operator_copilot_narrative",
+        "display_name": "Operator Copilot Narrative",
+        "objective": "Turn state, incidents, commands, and reports into concise operator-ready system explanations.",
+        "outputs": [
+          "operator_brief_packet",
+          "command_recommendation",
+          "report_readiness_flag"
+        ]
+      },
+      {
+        "slug": "grandmaster_collective_intelligence",
+        "display_name": "Grand Master Collective Intelligence",
+        "objective": "Harmonize sleeve master votes, disagreement, context packets, and collective health for Grand Master routing.",
+        "outputs": [
+          "grandmaster_context_packet",
+          "sleeve_vote_harmony_score",
+          "collective_health_flag"
+        ]
+      },
+      {
+        "slug": "adaptive_research_frontier",
+        "display_name": "Adaptive Research Frontier",
+        "objective": "Watch frontier research ideas and convert only evidence-backed ideas into safe bot blueprints.",
+        "outputs": [
+          "frontier_watchlist_packet",
+          "experiment_design_candidate",
+          "research_blueprint_guard_vote"
+        ]
+      }
+    ],
+    "dedicated_data_intake": [
+      "apex_self_state_vector_trace",
+      "assumption_inventory_contradiction_trace",
+      "meta_reasoning_policy_trace",
+      "experience_memory_index_trace",
+      "world_model_scenario_oracle_trace",
+      "upgrade_foundry_hypothesis_trace",
+      "causal_alpha_safety_judge_trace",
+      "resource_autonomy_pressure_trace",
+      "operator_copilot_narrative_trace",
+      "grandmaster_collective_intelligence_trace",
+      "adaptive_research_frontier_trace"
+    ],
+    "storage_retention_rule": {
+      "retention_profile": "apex_intelligence_hot_7d_warm_90d_cold_365d",
+      "storage_targets": [
+        "governance/apex_intelligence",
+        "governance/apex_intelligence/self_model",
+        "governance/apex_intelligence/meta_reasoning",
+        "governance/apex_intelligence/memory",
+        "governance/apex_intelligence/world_model",
+        "governance/apex_intelligence/upgrade_foundry",
+        "governance/apex_intelligence/alpha_safety",
+        "governance/apex_intelligence/resource_autonomy",
+        "governance/apex_intelligence/operator_copilot",
+        "governance/apex_intelligence/grandmaster",
+        "governance/apex_intelligence/research_frontier",
+        "governance/health/apex_self_awareness_intelligence_latest.json"
+      ],
+      "max_daily_mb_per_bot": 18,
+      "capture_mode": "sampled_digest_first_control_trace",
+      "sample_rate": 0.12,
+      "dedupe_required": true,
+      "stale_deletion_policy": "retain_decision_and_control_digests_stage_raw_traces"
+    },
+    "paper_only_floor": {
+      "paper_trade_lock_required": true,
+      "live_trading_enabled": false,
+      "execution_enabled": false,
+      "allocation_enabled": false,
+      "graduation_requires_minimum_observations": 30000,
+      "graduation_requires_collection_days": 120
+    },
+    "sleeve_master_bot_id": "brain_refinery_v964_apex_self_model_state_vector_builder_bot",
+    "regression_guard_bot_id": "brain_refinery_v1006_apex_collective_intelligence_health_guard_bot",
+    "grandmaster_bridge_bot_id": "brain_refinery_v1004_apex_grandmaster_context_packet_builder_bot",
+    "resource_governor_bot_id": "brain_refinery_v998_apex_thousand_bot_runtime_smoother_bot",
+    "runtime_capacity_floor": 1000,
+    "self_awareness_advancements": [
+      "deep_self_state_vectors",
+      "live_assumption_inventory",
+      "internal_contradiction_detection",
+      "operator_intent_memory",
+      "grandmaster_context_packets"
+    ],
+    "intelligence_advancements": [
+      "meta_reasoning_policy",
+      "experience_memory_os",
+      "world_model_scenario_oracle",
+      "autonomous_upgrade_foundry",
+      "alpha_safety_causal_judge",
+      "adaptive_research_frontier"
+    ]
+  }
+}

@@ -334,6 +334,8 @@ def test_opsctl_exposes_commands_hygiene() -> None:
     assert "alpha_intelligence_evolution_expansion.py" in text
     assert "intelligence-layer-advancement|intelligence-layer-v2" in text
     assert "intelligence_layer_advancement_expansion.py" in text
+    assert "apex-self-awareness-intelligence|thousand-bot-apex" in text
+    assert "apex_self_awareness_intelligence_expansion.py" in text
 
 
 def test_macro_context_sync_does_not_pass_json_to_bls_helper() -> None:

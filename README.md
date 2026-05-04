@@ -64,9 +64,9 @@ The important generated artifacts are:
 ## Auto-Refreshed Highlights
 
 <!-- SHOWCASE_HIGHLIGHTS_START -->
-_Generated at 2026-05-03 23:49 UTC_
+_Generated at 2026-05-04 00:21 UTC_
 
-- Active registry lineup: `869` of `924` bots are active.
+- Active registry lineup: `899` of `954` bots are active.
 - Live collection snapshot: `3/94` lane artifacts are reporting `running`.
 - Institutional readiness: `98.27/100` with status `industry_leaning`.
 - Live/runtime posture: live readiness `degraded` at `100.00/100`, runtime separation `degraded`.
