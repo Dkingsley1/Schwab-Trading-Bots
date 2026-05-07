@@ -1,0 +1,714 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+BASE_VERSION = 1326
+TARGET_PLATFORM_TOTAL_BOTS = 1386
+PACK_VERSION = "platform_organ_systems_v1"
+PACK_SLUG = "platform_organ_systems"
+PACK_DISPLAY_NAME = "Platform Organ Systems Pack"
+SLEEVE_FAMILY = "platform_organs"
+LABEL_CONTRACT_VERSION = "platform_organ_systems_label_v1"
+MINIMUM_TRAINING_OBSERVATIONS = 60000
+MINIMUM_COLLECTION_DAYS = 150
+PAPER_RUNTIME_CAPACITY_FLOOR = 1000
+SAMPLE_RATE = 0.02
+MAX_DAILY_MB_PER_BOT = 3
+
+
+ORGANS: list[dict[str, Any]] = [
+    {
+        "slug": "data_quality_v2",
+        "display_name": "Data Quality v2",
+        "objective": "Continuously score point-in-time joins, provider freshness, duplicate records, missing labels, stale shards, and source confidence before any bot can train or paper trade.",
+        "outputs": ["data_quality_scorecard", "stale_join_alert", "provider_confidence_delta"],
+        "peer_systems": ["feature_quality_data_confidence", "source_verification", "data_collection_observation_rollup"],
+        "data_intakes": ["provider_freshness_trace", "point_in_time_join_trace", "label_completeness_trace"],
+    },
+    {
+        "slug": "feature_store_dataset_registry",
+        "display_name": "Feature Store And Dataset Registry",
+        "objective": "Track every feature, dataset, label set, replay slice, and training candidate with lineage, schema versions, retention class, and leakage-safe joins.",
+        "outputs": ["feature_lineage_manifest", "dataset_readiness_index", "schema_drift_alert"],
+        "peer_systems": ["point_in_time_event_store", "replay_hash_registry", "model_lifecycle"],
+        "data_intakes": ["feature_store_lineage_trace", "dataset_manifest_trace", "schema_compatibility_trace"],
+    },
+    {
+        "slug": "replay_scenario_lab_v2",
+        "display_name": "Replay And Scenario Lab v2",
+        "objective": "Build replay packs for COVID, 2008-style stress, Fed scenarios, flash crashes, volatility shocks, and expansion rehearsals without touching live execution.",
+        "outputs": ["scenario_replay_manifest", "stress_replay_score", "golden_replay_regression_delta"],
+        "peer_systems": ["golden_replay_regression", "macro_crisis_scenario_lab", "institutional_replay_crisis_simulation_factory"],
+        "data_intakes": ["replay_hash_trace", "scenario_lab_trace", "macro_stress_driver_trace"],
+    },
+    {
+        "slug": "execution_realism_layer",
+        "display_name": "Execution Realism Layer",
+        "objective": "Estimate fill quality, slippage, queue position, market impact, option spread costs, broker reliability, and venue stress before promotion.",
+        "outputs": ["execution_reality_score", "slippage_capacity_curve", "venue_reliability_packet"],
+        "peer_systems": ["execution_quality_lab_v2", "broker_venue_reliability_lab", "order_flow_market_microstructure"],
+        "data_intakes": ["paper_fill_trace", "slippage_trace", "venue_health_trace"],
+    },
+    {
+        "slug": "portfolio_brain",
+        "display_name": "Portfolio Brain",
+        "objective": "Model sleeve overlap, correlation crowding, concentration, margin pressure, tail exposure, and capital utilization across all bots.",
+        "outputs": ["portfolio_overlap_map", "capital_pressure_score", "tail_exposure_delta"],
+        "peer_systems": ["portfolio_intelligence_layer", "capital_simulator", "funding_collateral_margin_intelligence"],
+        "data_intakes": ["portfolio_exposure_trace", "margin_guard_trace", "cross_sleeve_correlation_trace"],
+    },
+    {
+        "slug": "alpha_decay_tracker",
+        "display_name": "Alpha Decay Tracker",
+        "objective": "Watch whether each alpha source is improving, flattening, decaying, duplicating another sleeve, or becoming regime-dependent noise.",
+        "outputs": ["alpha_decay_curve", "novelty_decay_score", "retire_or_retrain_vote"],
+        "peer_systems": ["model_decay_detector", "duplicate_alpha_detector", "alpha_evidence_court"],
+        "data_intakes": ["alpha_outcome_trace", "model_decay_trace", "duplicate_alpha_trace"],
+    },
+    {
+        "slug": "regime_router",
+        "display_name": "Regime Router",
+        "objective": "Route sleeves through risk-on, risk-off, liquidity stress, event windows, macro shocks, volatility expansions, and rangebound regimes.",
+        "outputs": ["regime_route_vote", "sleeve_regime_fit_score", "transition_risk_alert"],
+        "peer_systems": ["market_regime_router", "regime_transition_engine", "sovereign_debt_macro"],
+        "data_intakes": ["market_regime_trace", "macro_calendar_trace", "volatility_regime_trace"],
+    },
+    {
+        "slug": "research_assimilation",
+        "display_name": "Research Assimilation",
+        "objective": "Convert papers, arXiv/SSRN ideas, QuantLib notes, and operator hypotheses into evidence-backed experiments with licensing and feasibility gates.",
+        "outputs": ["research_to_experiment_ticket", "implementation_feasibility_score", "evidence_gap_map"],
+        "peer_systems": ["research_paper_assimilation_foundry", "recursive_research_foundry", "experiment_ledger"],
+        "data_intakes": ["research_digest_trace", "paper_evidence_trace", "experiment_backlog_trace"],
+    },
+    {
+        "slug": "bot_promotion_court",
+        "display_name": "Bot Promotion Court",
+        "objective": "Keep new bots collecting until evidence, data quality, runtime safety, execution realism, paper lock, and global halt gates are all clean.",
+        "outputs": ["promotion_case_packet", "bot_readiness_verdict", "gate_blocker_docket"],
+        "peer_systems": ["bot_admission_committee", "promotion_quality_gate", "model_governance_board"],
+        "data_intakes": ["promotion_gate_trace", "training_readiness_trace", "paper_trade_lock_trace"],
+    },
+    {
+        "slug": "operator_cockpit_v2",
+        "display_name": "Operator Cockpit v2",
+        "objective": "Summarize system health, feed status, halt blockers, expansion readiness, pressure relief, reports, and next safe command in one operator surface.",
+        "outputs": ["cockpit_readiness_board", "next_safe_command", "operator_attention_queue"],
+        "peer_systems": ["professional_dashboard_v2", "operator_copilot_v2", "dashboard_refresh"],
+        "data_intakes": ["operator_cockpit_trace", "health_gate_trace", "global_halt_trace"],
+    },
+    {
+        "slug": "resource_metabolism_controller",
+        "display_name": "Resource Metabolism Controller",
+        "objective": "Budget CPU, memory, swap, IO, MLX/GPU work, and creative app co-tenancy so platform growth stays calm under load.",
+        "outputs": ["resource_budget_packet", "cotenant_mode_vote", "runtime_throttle_shape"],
+        "peer_systems": ["memory_efficiency_control", "runtime_throttle_control", "creative_cotenant_guard"],
+        "data_intakes": ["cpu_pressure_trace", "memory_pressure_trace", "mlx_runtime_trace"],
+    },
+    {
+        "slug": "memory_lymphatic_system",
+        "display_name": "Memory Lymphatic System",
+        "objective": "Compress low-value runtime state, drain stale snapshots, age off duplicate artifacts, and keep hot memory reserved for live collection.",
+        "outputs": ["memory_cleanup_manifest", "stale_state_drain_score", "swap_pressure_relief_plan"],
+        "peer_systems": ["pressure_relief_control", "stale_artifact_sweeper", "data_retention"],
+        "data_intakes": ["swap_pressure_trace", "stale_artifact_trace", "memory_cache_trace"],
+    },
+    {
+        "slug": "backpressure_circulatory_system",
+        "display_name": "Backpressure Circulatory System",
+        "objective": "Move queued work through the system with fair drains, shard-aware writer pacing, feed cadences, and live/paper separation under expansion load.",
+        "outputs": ["backpressure_flow_map", "drain_priority_vote", "writer_pacing_packet"],
+        "peer_systems": ["backpressure_drainer_fleet", "ingestion_backpressure", "storage_backpressure_autopilot"],
+        "data_intakes": ["queue_depth_trace", "sqlite_writer_trace", "feed_cadence_trace"],
+    },
+    {
+        "slug": "audit_immune_system",
+        "display_name": "Audit Immune System",
+        "objective": "Detect broken commands, missing reports, malformed PDFs, regression drift, unsafe execution flags, and governance contract violations.",
+        "outputs": ["audit_regression_packet", "unsafe_flag_alert", "report_contract_status"],
+        "peer_systems": ["commands_hygiene", "report_quality_guard", "grade_regression_guard"],
+        "data_intakes": ["command_contract_trace", "report_quality_trace", "regression_guard_trace"],
+    },
+]
+
+
+ROLE_TEMPLATES: list[dict[str, Any]] = [
+    {"suffix": "telemetry_collector", "label": "Telemetry Collector", "bot_role": "infrastructure_sub_bot", "priority": "high"},
+    {"suffix": "contract_validator", "label": "Contract Validator", "bot_role": "infrastructure_sub_bot", "priority": "critical"},
+    {"suffix": "optimization_modeler", "label": "Optimization Modeler", "bot_role": "signal_sub_bot", "priority": "high"},
+    {"suffix": "regression_sentinel", "label": "Regression Sentinel", "bot_role": "infrastructure_sub_bot", "priority": "critical"},
+    {"suffix": "master_bridge", "label": "Master Bridge", "bot_role": "infrastructure_sub_bot", "priority": "critical"},
+]
+
+
+BASE_DATA_INTAKES = [
+    "platform_organ_telemetry_trace",
+    "system_self_model_event_trace",
+    "runtime_resource_trace",
+    "backpressure_queue_trace",
+    "data_quality_contract_trace",
+    "feature_store_lineage_trace",
+    "paper_trade_safety_trace",
+    "global_halt_status_trace",
+    "operator_cockpit_state_trace",
+]
+
+REQUIRED_LABELS = [
+    "organ_health_state",
+    "organ_pressure_bucket",
+    "dependency_freshness_bucket",
+    "runtime_budget_state",
+    "self_model_confidence_bucket",
+    "promotion_gate_status",
+    "regression_guard_status",
+    "operator_visibility_state",
+]
+
+STORAGE_TARGETS = [
+    "governance/platform_organ_systems",
+    *[f"governance/platform_organ_systems/{organ['slug']}" for organ in ORGANS],
+    "governance/health/platform_organ_systems_latest.json",
+]
+
+
+def _bot_specs() -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = []
+    for organ in ORGANS:
+        for role in ROLE_TEMPLATES:
+            role_slug = f"{organ['slug']}_{role['suffix']}"
+            specs.append(
+                {
+                    "role_slug": role_slug,
+                    "slug": f"platform_organ_{role_slug}_bot",
+                    "label": f"{organ['display_name']} {role['label']}",
+                    "organ": organ["slug"],
+                    "bot_role": role["bot_role"],
+                    "priority": role["priority"],
+                    "objective": f"{role['label']} for {organ['objective']}",
+                    "target_functions": list(organ.get("outputs", [])),
+                }
+            )
+    return specs
+
+
+BOTS = _bot_specs()
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+
+
+def _ensure_storage_targets(project_root: Path) -> list[str]:
+    ready: list[str] = []
+    for target in STORAGE_TARGETS:
+        path = project_root / target
+        if path.suffix:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            ready.append(str(path.parent.relative_to(project_root)))
+        else:
+            path.mkdir(parents=True, exist_ok=True)
+            ready.append(str(path.relative_to(project_root)))
+    return sorted(set(ready))
+
+
+def _version_from_bot_id(bot_id: str) -> int | None:
+    match = re.match(r"^brain_refinery_v(?P<version>\d+)", bot_id)
+    return int(match.group("version")) if match else None
+
+
+def _next_available_version(used_versions: set[int], start: int) -> int:
+    version = start
+    while version in used_versions:
+        version += 1
+    used_versions.add(version)
+    return version
+
+
+def _slot_kind(bot: dict[str, Any]) -> str:
+    return f"{PACK_SLUG}_{bot['role_slug']}"
+
+
+def _assign_bot_ids(rows: list[dict[str, Any]]) -> dict[str, str]:
+    existing_by_slot = {
+        str(row.get("slot_kind") or ""): str(row.get("bot_id") or "")
+        for row in rows
+        if str(row.get("slot_kind") or "") and str(row.get("bot_id") or "")
+    }
+    used_versions = {
+        version
+        for row in rows
+        for version in [_version_from_bot_id(str(row.get("bot_id") or ""))]
+        if version is not None
+    }
+    assigned: dict[str, str] = {}
+    for index, bot in enumerate(BOTS):
+        slot = _slot_kind(bot)
+        if slot in existing_by_slot:
+            assigned[slot] = existing_by_slot[slot]
+            continue
+        desired = BASE_VERSION + index
+        if desired not in used_versions:
+            version = desired
+            used_versions.add(version)
+        else:
+            version = _next_available_version(used_versions, max(max(used_versions, default=BASE_VERSION - 1) + 1, desired))
+        assigned[slot] = f"brain_refinery_v{version}_{bot['slug']}"
+    return assigned
+
+
+def _organ(bot: dict[str, Any]) -> dict[str, Any]:
+    for organ in ORGANS:
+        if organ["slug"] == bot["organ"]:
+            return organ
+    return {"slug": bot["organ"], "display_name": bot["organ"], "objective": bot["objective"], "outputs": []}
+
+
+def _threshold_progress() -> dict[str, Any]:
+    return {
+        "observations": 0,
+        "minimum_training_observations": MINIMUM_TRAINING_OBSERVATIONS,
+        "observations_ready": False,
+        "collection_age_days": 0.0,
+        "minimum_data_collection_days": MINIMUM_COLLECTION_DAYS,
+        "days_ready": False,
+        "training_ready": False,
+    }
+
+
+def _pack_contract(assigned_ids: dict[str, str]) -> dict[str, Any]:
+    return {
+        "contract_version": PACK_VERSION,
+        "target_platform_total_bots": TARGET_PLATFORM_TOTAL_BOTS,
+        "sleeve_family": SLEEVE_FAMILY,
+        "display_name": PACK_DISPLAY_NAME,
+        "organ_count": len(ORGANS),
+        "bot_count": len(BOTS),
+        "bot_pack_size_rule": "14_organ_systems_5_bots_each_70_bot_platform_stability_layer",
+        "organ_systems": [organ["slug"] for organ in ORGANS],
+        "dedicated_data_intake": list(BASE_DATA_INTAKES),
+        "storage_retention_rule": {
+            "retention_profile": "platform_organs_hot_3d_warm_90d_cold_365d",
+            "storage_targets": list(STORAGE_TARGETS),
+            "max_daily_mb_per_bot": MAX_DAILY_MB_PER_BOT,
+            "capture_mode": "thin_digest_first_organ_trace",
+            "sample_rate": SAMPLE_RATE,
+            "dedupe_required": True,
+            "stale_deletion_policy": "retain_health_scores_and_contract_digests_stage_raw_organ_traces",
+        },
+        "paper_only_floor": {
+            "paper_trade_lock_required": True,
+            "paper_trading_enabled": False,
+            "live_trading_enabled": False,
+            "execution_enabled": False,
+            "allocation_enabled": False,
+            "graduation_requires_minimum_observations": MINIMUM_TRAINING_OBSERVATIONS,
+            "graduation_requires_collection_days": MINIMUM_COLLECTION_DAYS,
+        },
+        "anchor_bot_ids": {
+            bot["organ"]: assigned_ids.get(_slot_kind(bot), "")
+            for bot in BOTS
+            if bot["role_slug"].endswith("telemetry_collector")
+        },
+        "runtime_capacity_floor": PAPER_RUNTIME_CAPACITY_FLOOR,
+        "global_halt_contract": "organ_system_pack_can_report_halt_blockers_and_readiness_but_never_force_clear_halts",
+        "paper_lock_contract": "no_execution_no_allocation_no_training_until_150_days_60000_observations_and_organ_contract_gates_clear",
+    }
+
+
+def _row_for_bot(bot: dict[str, Any], bot_id: str, assigned_ids: dict[str, str], now: str) -> dict[str, Any]:
+    organ = _organ(bot)
+    contract = _pack_contract(assigned_ids)
+    organ_slug = str(organ["slug"])
+    data_intakes = list(BASE_DATA_INTAKES) + list(organ.get("data_intakes", [])) + [
+        f"{organ_slug}_health_trace",
+        f"{organ_slug}_label_quality_trace",
+    ]
+    peer_sleeves = [
+        "platform_brain_v6",
+        "deep_recursive_awareness",
+        "frontier_intelligence",
+        "institutional_alpha_validation",
+        "quant_strategy_gap",
+        *list(organ.get("peer_systems", [])),
+    ]
+    organ_contract = {
+        "contract_version": "platform_organ_systems_layers_v1",
+        "capability_pack": PACK_SLUG,
+        "organ_system": organ_slug,
+        "organ_display_name": organ["display_name"],
+        "organ_outputs": list(organ.get("outputs", [])),
+        "operational_boundary": "collection_only_no_runtime_authority_until_observation_quality_resource_and_regression_gates_clear",
+        "pressure_boundary": "thin_digest_storage_low_compute_collect_only",
+    }
+    return {
+        "bot_id": bot_id,
+        "bot_role": bot["bot_role"],
+        "active": True,
+        "reason": "platform_organ_systems_expansion_slot",
+        "weight": 0.0,
+        "preference_score": 0.0,
+        "quality_score": 0.0,
+        "test_accuracy": None,
+        "candidate_test_accuracy": None,
+        "candidate_quality_score": 0.0,
+        "previous_best_accuracy": None,
+        "no_improvement_streak": 0,
+        "deleted_from_rotation": False,
+        "delete_reason": "",
+        "promoted": False,
+        "promotion_reason": "platform_organ_systems_expansion_slot",
+        "model_path": "",
+        "log_file": "",
+        "candidate_log_file": "",
+        "lifecycle_state": "data_collection_only",
+        "slot_label": bot["label"],
+        "slot_kind": _slot_kind(bot),
+        "slot_priority": bot["priority"],
+        "slot_objective": bot["objective"],
+        "target_functions": list(bot["target_functions"]),
+        "preferred_regimes": [
+            "normal_collection",
+            "market_hours_pressure",
+            "overnight_drain",
+            "creative_cotenant_mode",
+            "global_halt_review",
+            "post_expansion_settlement",
+            "stress_replay_window",
+        ],
+        "bootstrap_teacher_bot_ids": [
+            "brain_refinery_v1",
+            "brain_refinery_v1006_apex_grandmaster_collective_intelligence_governance_guard_bot",
+            "brain_refinery_v1034_recursive_awareness_recursive_platform_graph_builder_bot",
+            "brain_refinery_v1086_institutional_alpha_evidence_court_evidence_collector_bot",
+            "brain_refinery_v1136_institutional_backpressure_storage_brain_v2_evidence_collector_bot",
+        ],
+        "data_intake_collections": data_intakes,
+        "storage_targets": [
+            "governance/platform_organ_systems",
+            f"governance/platform_organ_systems/{organ_slug}",
+            "governance/health/platform_organ_systems_latest.json",
+        ],
+        "freshness_slo_seconds": 1200,
+        "retention_profile": "platform_organs_hot_3d_warm_90d_cold_365d",
+        "data_collection_active": True,
+        "data_collection_started_utc": now,
+        "data_collection_observations": 0,
+        "data_collection_mode": "active_observer",
+        "data_collection_reason": "platform_organ_systems_collect_only_until_health_quality_resource_and_regression_gates_clear",
+        "trading_enabled": False,
+        "paper_trading_enabled": False,
+        "live_trading_enabled": False,
+        "allocation_enabled": False,
+        "execution_enabled": False,
+        "rotation_blocked": True,
+        "rotation_block_reason": "platform_organ_systems_collection_only_zero_weight",
+        "training_excluded": True,
+        "exclude_from_training": True,
+        "training_candidate_after_threshold": True,
+        "training_exclusion_reason": "collecting_platform_organ_health_evidence_before_training",
+        "training_exclusion_until": "minimum_data_collection_threshold_met",
+        "minimum_training_observations": MINIMUM_TRAINING_OBSERVATIONS,
+        "minimum_data_collection_days": MINIMUM_COLLECTION_DAYS,
+        "training_threshold_policy": {
+            "minimum_observations": MINIMUM_TRAINING_OBSERVATIONS,
+            "minimum_collection_days": MINIMUM_COLLECTION_DAYS,
+            "requires_data_quality_clearance": True,
+            "requires_runtime_pressure_clearance": True,
+            "requires_backpressure_clearance": True,
+            "requires_regression_guard_clearance": True,
+            "requires_operator_visibility_clearance": True,
+            "requires_global_halt_clear": True,
+        },
+        "data_collection_storage_guarded": True,
+        "data_collection_capture_mode": "thin_sampled",
+        "data_collection_sample_rate": SAMPLE_RATE,
+        "data_collection_max_daily_storage_mb": MAX_DAILY_MB_PER_BOT,
+        "data_collection_max_daily_mb": float(MAX_DAILY_MB_PER_BOT),
+        "data_collection_compute_guard_mode": "thin_digest",
+        "data_collection_resource_guard_reason": "platform_organ_pack_uses_digest_only_capture_to_protect_cpu_memory_storage",
+        "data_collection_threshold_progress": _threshold_progress(),
+        "data_collection_training_ready": False,
+        "paper_execution_queue_policy": "blocked_until_organ_evidence_thresholds_clear",
+        "paper_runtime_control_refresh_seconds": 300,
+        "sleeve_profile": organ_slug,
+        "sleeve_family": SLEEVE_FAMILY,
+        "organ_system": organ_slug,
+        "strategy_family": "platform_stability_and_intelligence_organs",
+        "correlation_peer_sleeves": sorted(set(peer_sleeves)),
+        "correlation_dependencies": [
+            "system_self_model",
+            "platform_brain_v6",
+            "institutional_alpha_validation",
+            "quant_strategy_gap",
+            "paper_trade_lock_guard",
+            "global_halt_guard",
+            "memory_efficiency_control",
+            "backpressure_drainer_fleet",
+        ],
+        "provider_capability_profile": "internal_governance_telemetry_collect_only",
+        "direct_market_data_available": False,
+        "direct_execution_allowed": False,
+        "proxy_data_sources": [
+            "master_bot_registry",
+            "governance_health",
+            "commands_contract",
+            "report_quality_metrics",
+            "runtime_pressure_metrics",
+            "self_model_events",
+        ],
+        "schwab_direct_inputs": [],
+        "proxy_only_reason": "platform_organ_pack_collects_internal_telemetry_and_governance_labels_only",
+        "label_contract": {
+            "version": LABEL_CONTRACT_VERSION,
+            "required_labels": list(REQUIRED_LABELS),
+            "primary_horizon": f"{organ_slug}_health_improvement_after_guarded_action",
+            "required_context": data_intakes,
+            "required_join_mode": "point_in_time_only",
+            "forbidden_join_modes": ["future_leakage", "lookahead_join", "unbounded_raw_feed_join"],
+            "quality_floor": 0.86,
+            "freshness_slo_seconds": 1200,
+            "regression_guard_bot_id": contract["anchor_bot_ids"].get(organ_slug, ""),
+        },
+        "data_label_contract_version": LABEL_CONTRACT_VERSION,
+        "labeling_tags": [
+            "research_only",
+            "collection_only",
+            "execution_blocked",
+            "paper_only_floor",
+            f"sleeve_family:{SLEEVE_FAMILY}",
+            f"sleeve_profile:{organ_slug}",
+            f"organ_system:{organ_slug}",
+            f"capability_pack:{PACK_SLUG}",
+            "platform_organ_systems",
+            "point_in_time_only",
+            "training_after_threshold",
+            "global_halt_aware",
+            "pressure_safe",
+            "mlx_default",
+        ],
+        "execution_policy_label": "collection_only_platform_organ_systems_no_execution",
+        "eligible_for_master_vote": False,
+        "founder_bot_id": "brain_refinery_v1",
+        "founder_dna_version": "founder_dna_v1",
+        "founder_dna_traits": [
+            "market_data_observation",
+            "paper_first_safety",
+            "global_halt_awareness",
+            "resource_throttle_awareness",
+            "decision_explanation_contract",
+            "registry_auditable_identity",
+            "platform_self_modeling",
+            "point_in_time_labeling",
+        ],
+        "founder_dna_applied_utc": now,
+        "lineage_root_bot_id": "brain_refinery_v1",
+        "lineage_guard_enabled": True,
+        "lineage_revalidation_command": "./scripts/ops/opsctl.sh bot-founder-dna --json",
+        "paper_runtime_stability_mode": "thin_digest_platform_organ_systems",
+        "paper_trade_lock_required": True,
+        "paper_runtime_capacity_floor": PAPER_RUNTIME_CAPACITY_FLOOR,
+        "capability_pack_version": PACK_VERSION,
+        "capability_pack_slug": PACK_SLUG,
+        "capability_pack_display_name": PACK_DISPLAY_NAME,
+        "platform_organ_systems_version": PACK_VERSION,
+        "capability_pack_contract": contract,
+        "platform_organ_systems_contract": organ_contract,
+    }
+
+
+def _refresh_summary(registry: dict[str, Any]) -> None:
+    rows = [row for row in registry.get("sub_bots", []) if isinstance(row, dict)]
+    active = [row for row in rows if bool(row.get("active"))]
+    inactive = [row for row in rows if not bool(row.get("active"))]
+    signal_active = [row for row in active if str(row.get("bot_role") or "") == "signal_sub_bot"]
+    infra_active = [row for row in active if str(row.get("bot_role") or "") == "infrastructure_sub_bot"]
+    structured = [row for row in rows if str(row.get("capability_pack_version") or "")]
+    pack_rows = [row for row in rows if str(row.get("platform_organ_systems_version") or "") == PACK_VERSION]
+    versions = [
+        int(match.group(1))
+        for row in rows
+        for match in [re.match(r"^brain_refinery_v(\d+)", str(row.get("bot_id") or ""))]
+        if match
+    ]
+    summary = dict(registry.get("summary") or {})
+    summary.update(
+        {
+            "total_bots": len(rows),
+            "active_bots": len(active),
+            "inactive_bots": len(inactive),
+            "active_signal_sub_bots": len(signal_active),
+            "active_infrastructure_sub_bots": len(infra_active),
+            "data_collection_active_bots": sum(1 for row in rows if bool(row.get("data_collection_active"))),
+            "training_excluded_bots": sum(1 for row in rows if bool(row.get("training_excluded"))),
+            "structured_capability_pack_bot_count": len(structured),
+            "platform_organ_systems_bot_count": len(pack_rows),
+            "latest_platform_organ_systems": PACK_VERSION,
+            "max_bot_version": max(versions) if versions else None,
+            "target_platform_total_bots": TARGET_PLATFORM_TOTAL_BOTS,
+            "target_platform_total_bots_met": len(rows) >= TARGET_PLATFORM_TOTAL_BOTS,
+        }
+    )
+    registry["summary"] = summary
+
+
+def _pack_summary(assigned_ids: dict[str, str]) -> dict[str, Any]:
+    contract = _pack_contract(assigned_ids)
+    return {
+        "slug": PACK_SLUG,
+        "display_name": PACK_DISPLAY_NAME,
+        "sleeve_family": SLEEVE_FAMILY,
+        "objective": "Add 14 platform organ systems covering the 10 requested stability/intelligence organs plus resource metabolism, memory lymphatics, backpressure circulation, and audit immunity.",
+        "target_platform_total_bots": TARGET_PLATFORM_TOTAL_BOTS,
+        "organ_count": len(ORGANS),
+        "bot_count": len(BOTS),
+        "bot_ids": [assigned_ids[_slot_kind(bot)] for bot in BOTS],
+        "organs": list(ORGANS),
+        "dedicated_data_intake": list(BASE_DATA_INTAKES),
+        "storage_retention_rule": contract["storage_retention_rule"],
+        "paper_only_floor": contract["paper_only_floor"],
+        "runtime_capacity_floor": contract["runtime_capacity_floor"],
+        "organ_systems": list(contract["organ_systems"]),
+        "anchor_bot_ids": contract["anchor_bot_ids"],
+    }
+
+
+def plan_registry_expansion(registry: dict[str, Any]) -> dict[str, Any]:
+    rows = [row for row in registry.get("sub_bots", []) if isinstance(row, dict)]
+    existing_slot_kinds = {str(row.get("slot_kind") or "") for row in rows}
+    assigned_ids = _assign_bot_ids(rows)
+    now = _utc_now()
+    planned_rows: list[dict[str, Any]] = []
+    skipped_existing: list[str] = []
+    for bot in BOTS:
+        slot = _slot_kind(bot)
+        if slot in existing_slot_kinds:
+            skipped_existing.append(slot)
+            continue
+        planned_rows.append(_row_for_bot(bot, assigned_ids[slot], assigned_ids, now))
+    return {
+        "generated_at_utc": now,
+        "platform_organ_systems_version": PACK_VERSION,
+        "organ_count": len(ORGANS),
+        "bot_count": len(BOTS),
+        "planned_bot_count": len(planned_rows),
+        "skipped_existing_count": len(skipped_existing),
+        "planned_total_after_apply": len(rows) + len(planned_rows),
+        "target_platform_total_bots": TARGET_PLATFORM_TOTAL_BOTS,
+        "planned_reaches_target_total": len(rows) + len(planned_rows) >= TARGET_PLATFORM_TOTAL_BOTS,
+        "planned_rows": planned_rows,
+        "skipped_existing_slot_kinds": skipped_existing,
+        "pack": _pack_summary(assigned_ids),
+    }
+
+
+def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
+    registry = _load_json(project_root / "master_bot_registry.json")
+    plan = plan_registry_expansion(registry)
+    rows = [row for row in registry.get("sub_bots", []) if isinstance(row, dict)]
+    return {
+        "ok": True,
+        "generated_at_utc": plan["generated_at_utc"],
+        "mode": "dry_run",
+        "registry_path": str((project_root / "master_bot_registry.json").resolve()),
+        "current_total_bots": len(rows),
+        "current_active_bots": sum(1 for row in rows if bool(row.get("active"))),
+        "target_platform_total_bots": TARGET_PLATFORM_TOTAL_BOTS,
+        "planned_total_after_apply": plan["planned_total_after_apply"],
+        "planned_reaches_target_total": plan["planned_reaches_target_total"],
+        "platform_organ_systems_version": PACK_VERSION,
+        "organ_count": plan["organ_count"],
+        "bot_count": plan["bot_count"],
+        "planned_bot_count": plan["planned_bot_count"],
+        "skipped_existing_count": plan["skipped_existing_count"],
+        "pack": plan["pack"],
+        "recommended_apply_command": "./scripts/ops/opsctl.sh platform-organs --apply --json",
+    }
+
+
+def apply_registry(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
+    registry_path = project_root / "master_bot_registry.json"
+    registry = _load_json(registry_path)
+    rows = [row for row in registry.get("sub_bots", []) if isinstance(row, dict)]
+    plan = plan_registry_expansion(registry)
+    added_rows = list(plan["planned_rows"])
+    storage_targets_ready = _ensure_storage_targets(project_root)
+    backup_path = ""
+    if added_rows:
+        backup_dir = project_root / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup = backup_dir / f"master_bot_registry_before_platform_organ_systems_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+        shutil.copy2(registry_path, backup)
+        backup_path = str(backup)
+        rows.extend(added_rows)
+        registry["sub_bots"] = rows
+        registry["updated_at_utc"] = _utc_now()
+        _refresh_summary(registry)
+        _write_json(registry_path, registry)
+
+    payload = build_payload(project_root)
+    payload.update(
+        {
+            "mode": "applied",
+            "added_bot_count": len(added_rows),
+            "added_bot_ids": [str(row.get("bot_id") or "") for row in added_rows],
+            "backup_path": backup_path,
+            "new_total_bots": len(rows),
+            "new_active_bots": sum(1 for row in rows if bool(row.get("active"))),
+            "target_platform_total_bots_met": len(rows) >= TARGET_PLATFORM_TOTAL_BOTS,
+            "storage_targets_ready": storage_targets_ready,
+        }
+    )
+    _write_json(
+        project_root / "config" / "platform_organ_systems_v1.json",
+        {"generated_at_utc": _utc_now(), "platform_organ_systems_version": PACK_VERSION, "pack": payload["pack"]},
+    )
+    _write_json(project_root / "governance" / "health" / "platform_organ_systems_latest.json", payload)
+    return payload
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Add the 70-bot platform organ systems collect-only pack.")
+    parser.add_argument("--project-root", default=str(PROJECT_ROOT))
+    parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+
+    project_root = Path(args.project_root).resolve()
+    payload = apply_registry(project_root) if args.apply else build_payload(project_root)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=True, indent=2))
+    else:
+        print(
+            "platform_organ_systems "
+            f"mode={payload['mode']} organs={payload['organ_count']} "
+            f"bots={payload['bot_count']} planned={payload['planned_bot_count']} "
+            f"added={payload.get('added_bot_count', 0)} "
+            f"target_total={payload.get('planned_total_after_apply') or payload.get('new_total_bots')}"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

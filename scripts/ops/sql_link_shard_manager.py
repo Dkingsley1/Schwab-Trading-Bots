@@ -271,6 +271,137 @@ DEFAULT_SHARD_DEFS = {
         "merge_priority": "low",
         "merge_to_primary": False,
     },
+    "writer_progress": {
+        "include_streams": "governance_events,governance_watchdog,governance",
+        "path_contains": (
+            "governance/health/sql_link_service_,"
+            "governance/health/jsonl_sql_ingestion_health_,"
+            "governance/health/writer_cycle_coordinator_,"
+            "governance/health/writer_process_intelligence_,"
+            "governance/health/backpressure_drainer_fleet_,"
+            "governance/health/backpressure_super_drainer_,"
+            "governance/health/drainer_intelligence_layer_"
+        ),
+        "skip_json_files": False,
+        "max_files": 10,
+        "max_lines_per_file": 6000,
+        "state_checkpoint_lines": 1000,
+        "merge_max_jsonl_rows": 4000,
+        "merge_max_json_file_rows": 96,
+    },
+    "predictive_stability": {
+        "include_streams": "governance,governance_events",
+        "path_contains": (
+            "predictive_stability,"
+            "pressure_trajectory,"
+            "stability_forecast,"
+            "halt_forecast,"
+            "pressure_memory,"
+            "trajectory_memory,"
+            "runtime_forecast,"
+            "stability_oracle"
+        ),
+        "skip_json_files": False,
+        "max_files": 8,
+        "max_lines_per_file": 6000,
+        "state_checkpoint_lines": 1000,
+        "merge_max_jsonl_rows": 3000,
+        "merge_max_json_file_rows": 64,
+    },
+    "self_healing": {
+        "include_streams": "governance,governance_events,governance_watchdog",
+        "path_contains": (
+            "self_healing,"
+            "blocked_surface,"
+            "recovery_router,"
+            "blackstart,"
+            "safe_recovery,"
+            "autofix,"
+            "incident_closeout,"
+            "recovery_plan"
+        ),
+        "skip_json_files": False,
+        "max_files": 8,
+        "max_lines_per_file": 6000,
+        "state_checkpoint_lines": 1000,
+        "merge_max_jsonl_rows": 3000,
+        "merge_max_json_file_rows": 64,
+    },
+    "collector_utility": {
+        "include_streams": "governance,data,external_context,external_feeds",
+        "path_contains": (
+            "collector_utility,"
+            "collector_budget,"
+            "collection_value,"
+            "collector_overlap,"
+            "observation_rollup,"
+            "collection_maturity,"
+            "freshness_value,"
+            "collector_thin"
+        ),
+        "skip_json_files": False,
+        "max_files": 8,
+        "max_lines_per_file": 6000,
+        "state_checkpoint_lines": 1000,
+        "merge_priority": "low",
+        "merge_to_primary": False,
+    },
+    "hot_path_storage": {
+        "include_streams": "governance,governance_events",
+        "path_contains": (
+            "hot_path_storage,"
+            "storage_budget,"
+            "hot_lane_budget,"
+            "warm_lane_budget,"
+            "cold_lane_budget,"
+            "storage_tier_policy,"
+            "queue_watermark,"
+            "write_budget"
+        ),
+        "skip_json_files": False,
+        "max_files": 8,
+        "max_lines_per_file": 6000,
+        "state_checkpoint_lines": 1000,
+        "merge_max_jsonl_rows": 3000,
+        "merge_max_json_file_rows": 64,
+    },
+    "admission_evidence": {
+        "include_streams": "governance,governance_walk_forward,governance_events",
+        "path_contains": (
+            "new_bot_admission,"
+            "admission_evidence,"
+            "sample_depth,"
+            "walk_forward_evidence,"
+            "promotion_evidence,"
+            "replay_hash_evidence,"
+            "feature_store_evidence,"
+            "teacher_lineage"
+        ),
+        "skip_json_files": False,
+        "max_files": 8,
+        "max_lines_per_file": 6000,
+        "state_checkpoint_lines": 1000,
+        "merge_priority": "low",
+        "merge_to_primary": False,
+    },
+    "reports": {
+        "include_streams": "governance,governance_events",
+        "path_contains": (
+            "exports/reports/,"
+            "docs/showcase/generated/,"
+            "operator_cockpit,"
+            "system_self_brief,"
+            "system_self_model,"
+            "showcase,"
+            "report_quality"
+        ),
+        "skip_json_files": False,
+        "max_files": 6,
+        "max_lines_per_file": 4000,
+        "state_checkpoint_lines": 1000,
+        "merge_priority": "low",
+        "merge_to_primary": False,
+    },
     "runtime": {
         "include_streams": "governance",
         "path_contains": "governance/channels/runtime/",
@@ -371,7 +502,7 @@ ARCHIVE_MAINTENANCE_GLOBS = ("*.compact.sqlite3", "*.precompact.bak.sqlite3")
 LEGACY_DEFAULT_SHARDS = "trading,governance,data"
 PRE_FAST_DEFAULT_SHARDS = "crypto_governance,crypto_trading,governance,trading,data"
 PRE_BACKLOG_SPLIT_DEFAULT_SHARDS = "health_fast,crypto_trading_fast,trading_fast,crypto_governance,crypto_trading,governance,trading,data"
-CURRENT_DEFAULT_SHARDS = "health_fast,trading_fast,crypto_trading_fast,runtime,crypto_runtime,crypto_api_ingress,aggressive_trading,trading,crypto_trading,governance,support_watchdog,crypto_governance,schema_violations,data,explanations,crypto_explanations,shadow_attribution,crypto_shadow_attribution"
+CURRENT_DEFAULT_SHARDS = "health_fast,trading_fast,crypto_trading_fast,writer_progress,runtime,crypto_runtime,crypto_api_ingress,aggressive_trading,trading,crypto_trading,predictive_stability,self_healing,hot_path_storage,governance,support_watchdog,crypto_governance,schema_violations,collector_utility,admission_evidence,data,reports,explanations,crypto_explanations,shadow_attribution,crypto_shadow_attribution"
 
 
 def _now_utc() -> str:

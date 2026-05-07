@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `80c21b2c67c23fb22970c80a1a8e1f499bb0a37ac52b34f08371f1102280c6d5`.
+Command contract hash: `1c623766cbdacab30214e27ef541d399dc4eb7d9d7d2e5ee2198d8c8be5f2220`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -13,6 +13,14 @@ This file is intentionally trimmed down with Most Used pinned first and the rema
 - no duplicate restart commands are listed when a broader command already covers them
 
 ## Most Used
+
+### Apply pressure relief controls
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh pressure-relief --apply --json
+```
+
+This writes the pressure-relief override used by runtime loading, maintenance guards, heavy feed TTL, SQL cadence, foreground-app awareness, macro capture niceness, MLX/quant caps, report caps, and quiet-window behavior.
 
 ### Attempt a safe global halt clear
 ```bash
@@ -61,6 +69,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 Use this as the red-button stop when you want both the operator stop flag and the global trading halt set immediately.
+
+### Fast read-only health check
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh health-fast --json
+```
+
+This reads the latest health artifacts without starting report refreshes, daily verification, or PDF/report jobs.
 
 ### Keep the Mac awake
 ```bash
@@ -373,6 +389,60 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 ## Platform Expansion
 
+### Apply Platform Brain v4 Grande
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh platform-brain-v4 --apply --json
+```
+
+Adds the decision-brain layer: executive meta-orchestration, causal world modeling, experience memory v2, expansion simulation, priority ranking, self-upgrade planning, critic council, outcome verification, bot economics, data value scoring, training scheduling, and operator intent modeling.
+The layer is advisory/read-only, keeps MLX as default, and preserves paper-trade lock and live-execution separation.
+
+### Apply Platform Brain v5 Reflex Cortex
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh platform-brain-v5 --apply --json
+```
+
+Adds the reflex layer: temporal self-modeling, safe reflex routing, regret and outcome ledgering, scenario rehearsal, adaptive cadence, safe autonomy boundary, critic fusion, resource budgeting, data contract negotiation, bot curriculum, dependency mapping, and strategic roadmap synthesis.
+The layer stays advisory/read-only, keeps MLX as default, and preserves paper-trade lock with live execution disabled.
+
+### Apply the 12-layer platform intelligence control plane
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh platform-intelligence --apply --json
+```
+
+Adds the operational layer for bot lifecycle, data quality scoring, provider failover, backpressure prediction, duplicate-alpha detection, paper capacity, self-healing playbooks, sleeve masters, training readiness, regime routing, execution realism, and black-box recording.
+This writes the platform-intelligence override while keeping the layer advisory/read-only and MLX-first.
+
+### Apply the 14-muscle trading action systems pack
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh trading-muscles --apply --json
+```
+
+Adds 70 collect-only trading muscle bots across intraday momentum, mean reversion, swing trend, options convexity, options income, futures macro, crypto basis, volatility arbitrage, events, relative value, portfolio hedging, execution timing, position sizing, and exits/rebalancing.
+The pack generates trade-candidate, sizing, hedge, exit, and execution-rehearsal evidence only; training, paper trading, live trading, allocation, and execution stay blocked until 180 days, 75000 observations, and quality/risk/halts gates clear.
+
+### Apply the 14-organ platform organ systems pack
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh platform-organs --apply --json
+```
+
+Adds 70 collect-only platform organ bots across data quality, feature registry, replay lab, execution realism, portfolio brain, alpha decay, regime routing, research assimilation, promotion court, cockpit, resource metabolism, memory lymphatics, backpressure circulation, and audit immunity.
+The pack stays zero-weight, training-excluded, paper-disabled, live-disabled, and thin-sampled until 150 days, 60000 observations, and runtime/regression/operator gates clear.
+
+### Apply the 24-sleeve quant strategy gap pack
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh quant-strategy-gap --apply --json
+```
+
+Adds 24 practical tradable-alpha strategy sleeves with five collect-only bots each: event arb, relative value, carry, ETF/NAV, auction flow, dealer expiry, rates/credit/crypto basis, and liquidity simulation.
+The pack is zero-weight, training-excluded, paper-disabled, live-disabled, and thin-sampled until 120 days, 45000 observations, and strategy evidence gates clear.
+
 ### Apply the alpha intelligence evolution pack
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -400,6 +470,15 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 Adds the guarded coordination layer: bot genome lineage, strategy conflict resolution, capital simulation, regime memory, research-to-bot intake, feature quality, adversarial paper-trade lab, sleeve master summaries, admission committee, and explainability dashboard.
 The bots are collection-only until their evidence, data-quality, and runtime thresholds clear.
 
+### Apply the deep recursive awareness pack
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh deep-recursive-awareness --apply --json
+```
+
+Adds the guarded recursive awareness layer: causal self-diagnosis, predictive runtime oracle, experience memory core, self-upgrade critic board, operator context governor, internal critic board, and living platform map.
+The bots are collection-only with live execution, allocation, and training blocked until 150 days, 36000 observations, and causal/runtime/memory/critic/operator-context gates clear.
+
 ### Apply the intelligence layer advancement pack
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -408,6 +487,81 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 Adds the guarded meta-intelligence layer: metacognitive routing, counterfactual world models, alpha benchmarks, memory compression, critic debate, active learning, ensemble uncertainty, library routing, safety invariants, and self-improvement backlog planning.
 The bots are collection-only with paper/live execution blocked until benchmark, memory-quality, safety-invariant, and runtime-pressure gates clear.
+
+### Apply the settlement stabilization layer
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh platform-settlement-stabilization --apply --json
+```
+
+Adds the post-expansion settlement layer for queue decay, single-writer protection, market-hours cadence, global-halt clear readiness, paper collection floors, off-hours drain planning, and stabilization memory.
+This layer keeps MLX as default, leaves live execution disabled, and records whether each stabilization pass actually reduces pressure.
+
+### Apply the seven-part stabilization and quality layer
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh platform-stabilization --apply --json
+```
+
+Adds the guarded pre-expansion layer for backlog drainage, bot data quality, duplicate-alpha compression, paper-trade realism, provider cooldown/failover, ready-only microtraining, and expansion rehearsal.
+This writes the stabilization override, assigns infrastructure bots to each lane, keeps MLX as default, and keeps live execution disabled.
+
+### Arm the guarded 400 bot paper ramp
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh paper-400-ramp --apply --json
+```
+
+Plans the 400-bot paper target now and only writes the high paper caps after Monday 2026-05-11 when global halt, memory, runtime, and ingestion gates are clean.
+The controller keeps live execution blocked, paper-trade lock enabled, and explains any blocker in `governance/health/paper_400_ramp_latest.json`.
+
+### Preview Platform Brain v4 Grande
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh platform-brain-v4 --json
+```
+
+Use this to inspect the 12 brain sections, next-best command, ranked priorities, expansion simulations, and verification plan without writing overrides.
+
+### Preview Platform Brain v5 Reflex Cortex
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh platform-brain-v5 --json
+```
+
+Use this to inspect the reflex queue, safe-vs-operator-reviewed actions, scenario rehearsal, resource budgets, and roadmap without writing overrides.
+
+### Preview the 12-layer platform intelligence control plane
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh platform-intelligence --json
+```
+
+Use this to inspect all 12 platform sections and their latest artifacts without changing runtime overrides.
+
+### Preview the 14-muscle trading action systems pack
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh trading-muscles --json
+```
+
+Use this dry run to inspect the trading muscles, bot IDs, storage guardrails, and trade-candidate-only floor without changing the registry.
+
+### Preview the 14-organ platform organ systems pack
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh platform-organs --json
+```
+
+Use this dry run to inspect the organ systems, bot IDs, storage guardrails, and paper-only floors without changing the registry.
+
+### Preview the 24-sleeve quant strategy gap pack
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh quant-strategy-gap --json
+```
+
+Use this dry run to inspect planned strategy sleeves, bot IDs, storage guardrails, and paper-only floors without changing the registry.
 
 ### Preview the alpha intelligence evolution pack
 ```bash
@@ -433,6 +587,22 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 Use the dry run to see planned coordination bots, storage contracts, and paper-only guardrails without changing the registry.
 
+### Preview the deep recursive awareness pack
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh deep-recursive-awareness --json
+```
+
+Use the dry run to see the 28 planned recursive-awareness bots, data intakes, storage limits, and paper-only guardrails without changing the registry.
+
+### Preview the guarded 400 bot paper ramp
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh paper-400-ramp --json
+```
+
+Use this to see whether the ramp is planned, armed, or blocked before changing runtime overrides.
+
 ### Preview the intelligence layer advancement pack
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -440,6 +610,22 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 Use the dry run to see planned intelligence-layer bots, data intakes, storage contracts, and routing/safety guardrails without changing the registry.
+
+### Preview the settlement stabilization layer
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh platform-settlement-stabilization --json
+```
+
+Use this after a large expansion or during market hours to see whether the system is settling cleanly before adding more bots or training load.
+
+### Preview the seven-part stabilization and quality layer
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh platform-stabilization --json
+```
+
+Use this before another expansion to see the backlog, quality, duplicate-alpha, paper realism, provider, training, and rehearsal gates in one place.
 
 ## Reports And PDFs
 
@@ -531,6 +717,15 @@ open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/daily
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/sql_reports/daily_runtime_summary_latest.pdf
 ```
+
+### Open the expansion inventory PDF
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/open_report_artifact.sh expansions
+```
+
+Latest PDF path: `/Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/expansion_inventory/expansion_inventory_latest.pdf`.
+This regenerates the expansion list from registry-backed packs and control-plane config files, then opens the report-ready PDF.
 
 ### Open the incident report PDF
 ```bash
@@ -763,6 +958,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 This is the safer manual retrain entrypoint because it refreshes stale artifacts and honors freshness checks before launching weekly retrain.
 
+### Training and labeling intelligence
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh training-labeling-intelligence --apply --json
+```
+
+Normalizes label contracts, writes training-process intelligence, and keeps targeted retrain candidates behind schema, feature-store, coverage, runtime, and lineage gates.
+
 ## Schwab Auth
 
 Use these exact Schwab authorization commands when tokens expire, browser consent needs renewal, callback ports get stuck, or broker-truth lanes start surfacing 401/403 errors.
@@ -839,6 +1042,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 This checks Coinbase public market-data endpoints and reports only credential presence booleans, never secret values.
 
+### Docs, commands, and reporting intelligence
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh docs-reporting-intelligence --apply --json
+```
+
+This refreshes the README, COMMANDS.md, report-quality, and PyCharm visibility intelligence layer, including blue active-bot rows in `docs/pycharm/intelligence_layers_latest.md`.
+
 ### Doctor
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -883,6 +1094,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 This rebuilds the normalized event store used to prove source state at replay and report time.
+
+### PyCharm active bot blue highlights
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh pycharm-active-bot-highlights --apply --json
+```
+
+This writes the JetBrains `Active Bots` scope and blue file-color mapping so active `core/brain_refinery_*.py` files get a durable Project-pane scope background. PyCharm's bright blue filename text remains reserved for VCS-modified files.
 
 ### Refresh runtime dashboard contracts
 ```bash

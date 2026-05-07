@@ -22,8 +22,11 @@ else:
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "runtime_throttle_control_latest.json"
 DEFAULT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.runtime_resource_guard_override"
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
+DEFAULT_BACKPRESSURE_DRAINER_PATH = PROJECT_ROOT / "governance" / "health" / "backpressure_drainer_fleet_latest.json"
 TOP_PROCESS_COUNT = 12
 APPLY_CPU_THRESHOLD = 12.0
+RESEARCH_TRAINING_CPU_THRESHOLD = 25.0
+SIMULATED_RESEARCH_TRAINING_CPU_THRESHOLD = 10.0
 FULL_FORCE_PAPER_BOT_FLOOR = 650
 FULL_FORCE_PAPER_CAPACITY_TARGET = 700
 
@@ -266,10 +269,38 @@ def _memory_pressure_level(resource_guard: dict[str, Any], memory_efficiency: di
     pressure_state = str(resource_guard.get("memory_pressure_state") or "").strip().lower()
     pressure_kind = str(resource_guard.get("memory_pressure_kind") or "").strip().lower()
     efficiency_status = str(memory_efficiency.get("overall_status") or "").strip().lower()
+    efficiency_snapshot = memory_efficiency.get("memory_snapshot") if isinstance(memory_efficiency.get("memory_snapshot"), dict) else {}
+    cotenant = memory_efficiency.get("cotenant_awareness") if isinstance(memory_efficiency.get("cotenant_awareness"), dict) else {}
+    efficiency_state = str(efficiency_snapshot.get("memory_pressure_state") or "").strip().lower()
+    efficiency_kind = str(efficiency_snapshot.get("memory_pressure_kind") or "").strip().lower()
     swap_used_gb = _safe_float(resource_guard.get("swap_used_gb"), 0.0)
-    if pressure_state in {"red", "critical"} or pressure_kind == "throttled" or efficiency_status == "blocked" or swap_used_gb >= 20.0:
+    efficiency_swap_used_gb = _safe_float(efficiency_snapshot.get("swap_used_gb"), 0.0)
+    reasons = [str(item).strip().lower() for item in memory_efficiency.get("reasons", []) if str(item).strip()]
+    memory_reasons = [
+        item
+        for item in reasons
+        if any(marker in item for marker in ("memory", "swap", "compress", "throttled"))
+    ]
+    memory_clear_by_efficiency = bool(
+        efficiency_state in {"green", "none", "normal", "clear"}
+        and efficiency_kind in {"", "none", "normal", "green", "clear"}
+        and bool(cotenant.get("memory_pressure_clear", False))
+        and not memory_reasons
+    )
+    if (
+        pressure_state in {"red", "critical"}
+        or pressure_kind == "throttled"
+        or (efficiency_status == "blocked" and not memory_clear_by_efficiency)
+        or swap_used_gb >= 20.0
+        or efficiency_swap_used_gb >= 20.0
+    ):
         return "high"
-    if pressure_state in {"yellow", "warn"} or efficiency_status in {"degraded", "needs_work"} or swap_used_gb >= 8.0:
+    if (
+        pressure_state in {"yellow", "warn"}
+        or (efficiency_status in {"degraded", "needs_work"} and not memory_clear_by_efficiency)
+        or swap_used_gb >= 8.0
+        or efficiency_swap_used_gb >= 8.0
+    ):
         return "elevated"
     return "normal"
 
@@ -487,8 +518,9 @@ def _registry_capacity_counts(project_root: Path, *, registry_path: Path = DEFAU
         row
         for row in active_rows
         if bool(row.get("paper_execution_allowed", False))
+        or bool(row.get("paper_live_data_enabled", False))
+        or bool(row.get("paper_trading_enabled", False))
         or bool(row.get("paper_trade_enabled", False))
-        or str(row.get("paper_runtime_stability_mode") or "").strip()
     ]
     return {
         "registry_path": str(path),
@@ -586,14 +618,54 @@ def _collector_guard_policy(throttle_profile: str, memory_pressure_level: str, c
     }
 
 
-def _drain_friendly_sql_overrides() -> dict[str, str]:
-    return {
+def _drain_friendly_sql_overrides(*, concentrated_core: bool = False) -> dict[str, str]:
+    overrides = {
         "SQL_LINK_SERVICE_INTERVAL_SECONDS": "12",
         "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS": "30",
         "SQL_LINK_SERVICE_QUEUE_MIN_INTERVAL_SECONDS": "180",
         "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "240000",
         "SQL_LINK_SERVICE_QUEUE_BATCH_SIZE": "180000",
         "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "25",
+    }
+    if concentrated_core:
+        overrides.update(
+            {
+                "SQL_LINK_SERVICE_CONCENTRATED_CORE_DRAIN": "1",
+                "SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS": "420",
+                "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "60",
+                "SQL_LINK_SERVICE_SHARD_TRADING_STATE_CHECKPOINT_LINES": "1000",
+                "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_STATE_CHECKPOINT_LINES": "1000",
+                "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_LINES_PER_FILE": "12000",
+            }
+        )
+    return overrides
+
+
+def _sql_writer_coordination(backpressure_fleet: dict[str, Any], storage_backpressure: dict[str, Any]) -> dict[str, Any]:
+    active_drainer = backpressure_fleet.get("active_drainer") if isinstance(backpressure_fleet.get("active_drainer"), dict) else {}
+    concentration = active_drainer.get("concentration") if isinstance(active_drainer.get("concentration"), dict) else {}
+    request = backpressure_fleet.get("service_request") if isinstance(backpressure_fleet.get("service_request"), dict) else {}
+    env = request.get("env_overrides") if isinstance(request.get("env_overrides"), dict) else {}
+    total_pending = _safe_int(concentration.get("total_pending_lines"), _safe_int(storage_backpressure.get("total_pending_lines"), 0))
+    top1_share = _safe_float(concentration.get("top1_share"), 0.0)
+    top3_share = _safe_float(concentration.get("top3_share"), 0.0)
+    concentrated = bool(concentration.get("concentrated", False)) or str(env.get("SQL_LINK_SERVICE_CONCENTRATED_CORE_DRAIN") or "").strip() == "1"
+    if not concentrated and total_pending >= 5000 and (top1_share >= 0.45 or top3_share >= 0.75):
+        concentrated = True
+    drain_overrides = _drain_friendly_sql_overrides(concentrated_core=concentrated)
+    return {
+        "source": "backpressure_drainer_fleet" if backpressure_fleet else "storage_backpressure",
+        "active_drainer": str(active_drainer.get("name") or ""),
+        "concentrated_core_drain": concentrated,
+        "total_pending_lines": total_pending,
+        "top1_share": round(top1_share, 6),
+        "top3_share": round(top3_share, 6),
+        "recommended_merge_max_seconds_per_cycle": _safe_int(drain_overrides.get("SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"), 25),
+        "recommended_shard_link_timeout_seconds": _safe_int(drain_overrides.get("SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS"), 0),
+        "recommended_aggressive_trading_max_lines_per_file": _safe_int(
+            drain_overrides.get("SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_LINES_PER_FILE"),
+            0,
+        ),
     }
 
 
@@ -607,11 +679,14 @@ def _runtime_env_overrides(
     cotenant_contract: dict[str, Any] | None = None,
     mlx_contract: dict[str, Any] | None = None,
     library_contract: dict[str, Any] | None = None,
+    sql_writer_coordination: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     paper_capacity_contract = paper_capacity_contract if isinstance(paper_capacity_contract, dict) else {}
     cotenant_contract = cotenant_contract if isinstance(cotenant_contract, dict) else {}
     mlx_contract = mlx_contract if isinstance(mlx_contract, dict) else {}
     library_contract = library_contract if isinstance(library_contract, dict) else {}
+    sql_writer_coordination = sql_writer_coordination if isinstance(sql_writer_coordination, dict) else {}
+    concentrated_core_drain = bool(sql_writer_coordination.get("concentrated_core_drain", False))
     full_force_paper = bool(paper_capacity_contract.get("full_force_stabilization_required", False))
 
     def _with_full_force_paper(overrides: dict[str, str]) -> dict[str, str]:
@@ -709,6 +784,16 @@ def _runtime_env_overrides(
             "RUNTIME_FEATURE_CACHE_MAX_ENTRIES": "48",
             "RUNTIME_TRAIN_BATCH_SIZE_CAP": "32",
             "RUNTIME_TRAIN_MAX_SAMPLES": "6000",
+            "RUNTIME_RESEARCH_TRAINING_THROTTLE_ENABLED": "1",
+            "RUNTIME_RESEARCH_TRAINING_CPU_THRESHOLD": "25",
+            "RUNTIME_SIMULATED_TRAINING_CPU_THRESHOLD": "10",
+            "SHADOW_LOOP_PRESSURE_INTERVAL_FLOOR_ENABLED": "1",
+            "SHADOW_LOOP_PROTECT_LIVE_EXTRA_INTERVAL_SECONDS": "30",
+            "SHADOW_LOOP_QUEUE_BACKPRESSURE_EXTRA_INTERVAL_SECONDS": "15",
+            "SHADOW_LOOP_HIGH_COMPUTE_EXTRA_INTERVAL_SECONDS": "20",
+            "SHADOW_LOOP_MAX_DYNAMIC_EXTRA_INTERVAL_SECONDS": "75",
+            "ADAPTIVE_INTERVAL_MAX_SECONDS": "90",
+            "MEMORY_THROTTLE_STEP_UP_SECONDS": "10",
             "DATA_COLLECTION_RESOURCE_GUARD_MODE": "protect_live",
             "DATA_COLLECTION_RESOURCE_SAMPLE_RATE": "0.15",
             "DATA_COLLECTION_RESOURCE_CAPTURE_MODE": "thin_sample",
@@ -718,7 +803,7 @@ def _runtime_env_overrides(
             "OPS_SUPPORT_HEAVY_COLLECTOR_MAX_CPU_PERCENT": "35",
         }
         if storage_drain_active:
-            overrides.update(_drain_friendly_sql_overrides())
+            overrides.update(_drain_friendly_sql_overrides(concentrated_core=concentrated_core_drain))
         return _with_library_utilization(_with_mlx_intelligence(_with_cotenant_awareness(_with_full_force_paper(overrides))))
     if throttle_profile == "sustain":
         overrides = {
@@ -735,6 +820,15 @@ def _runtime_env_overrides(
             "RUNTIME_FEATURE_CACHE_MAX_ENTRIES": "64",
             "RUNTIME_TRAIN_BATCH_SIZE_CAP": "48",
             "RUNTIME_TRAIN_MAX_SAMPLES": "8000",
+            "RUNTIME_RESEARCH_TRAINING_THROTTLE_ENABLED": "1",
+            "RUNTIME_RESEARCH_TRAINING_CPU_THRESHOLD": "35",
+            "RUNTIME_SIMULATED_TRAINING_CPU_THRESHOLD": "15",
+            "SHADOW_LOOP_PRESSURE_INTERVAL_FLOOR_ENABLED": "1",
+            "SHADOW_LOOP_PROTECT_LIVE_EXTRA_INTERVAL_SECONDS": "15",
+            "SHADOW_LOOP_QUEUE_BACKPRESSURE_EXTRA_INTERVAL_SECONDS": "10",
+            "SHADOW_LOOP_HIGH_COMPUTE_EXTRA_INTERVAL_SECONDS": "10",
+            "SHADOW_LOOP_MAX_DYNAMIC_EXTRA_INTERVAL_SECONDS": "45",
+            "ADAPTIVE_INTERVAL_MAX_SECONDS": "60",
             "DATA_COLLECTION_RESOURCE_GUARD_MODE": "sustain",
             "DATA_COLLECTION_RESOURCE_SAMPLE_RATE": "0.30",
             "DATA_COLLECTION_RESOURCE_CAPTURE_MODE": "sampled",
@@ -744,7 +838,7 @@ def _runtime_env_overrides(
             "OPS_SUPPORT_HEAVY_COLLECTOR_MAX_CPU_PERCENT": "45",
         }
         if storage_drain_active:
-            overrides.update(_drain_friendly_sql_overrides())
+            overrides.update(_drain_friendly_sql_overrides(concentrated_core=concentrated_core_drain))
         return _with_library_utilization(_with_mlx_intelligence(_with_cotenant_awareness(_with_full_force_paper(overrides))))
     overrides = {
         "BOT_RUNTIME_RESOURCE_GUARD_PROFILE": throttle_profile,
@@ -780,6 +874,47 @@ def _write_env_override(path: Path, overrides: dict[str, str], *, profile: str) 
         return False
     path.write_text(content, encoding="utf-8")
     return True
+
+
+def _is_simulated_shadow_training(row: dict[str, Any]) -> bool:
+    command = str(row.get("command") or "")
+    return "scripts/run_shadow_training_loop.py" in command and "--simulate" in command
+
+
+def _research_training_pressure_candidates(
+    top_processes: list[dict[str, Any]],
+    *,
+    profile: str,
+    compute_pressure_level: str,
+    memory_pressure_level: str,
+) -> list[dict[str, Any]]:
+    if os.getenv("RUNTIME_RESEARCH_TRAINING_THROTTLE_ENABLED", "1").strip() == "0":
+        return []
+    pressure_active = bool(
+        str(profile or "") == "protect_live"
+        or str(compute_pressure_level or "") == "high"
+        or str(memory_pressure_level or "") == "high"
+    )
+    if not pressure_active:
+        return []
+    out: list[dict[str, Any]] = []
+    for row in top_processes:
+        if str(row.get("category") or "") != "research_training":
+            continue
+        cpu = _safe_float(row.get("cpu_percent"), 0.0)
+        simulated = _is_simulated_shadow_training(row)
+        threshold = SIMULATED_RESEARCH_TRAINING_CPU_THRESHOLD if simulated else RESEARCH_TRAINING_CPU_THRESHOLD
+        if cpu < threshold:
+            continue
+        out.append(
+            {
+                **row,
+                "throttle_candidate": True,
+                "priority_tier": "throttle_first_when_protect_live" if simulated else "research_downshift_when_protect_live",
+                "throttle_reason": "simulated_training_loop_under_host_pressure" if simulated else "research_training_loop_under_host_pressure",
+            }
+        )
+    return out[:4]
 
 
 def _apply_process_throttle(candidates: list[dict[str, Any]], *, max_processes: int) -> dict[str, Any]:
@@ -916,6 +1051,7 @@ def apply_runtime_guard(
         cotenant_contract=payload.get("cotenant_awareness_contract") if isinstance(payload.get("cotenant_awareness_contract"), dict) else {},
         mlx_contract=payload.get("mlx_intelligence_contract") if isinstance(payload.get("mlx_intelligence_contract"), dict) else {},
         library_contract=payload.get("library_utilization_contract") if isinstance(payload.get("library_utilization_contract"), dict) else {},
+        sql_writer_coordination=(storage_stabilization.get("sql_writer_coordination") if isinstance(storage_stabilization.get("sql_writer_coordination"), dict) else {}),
     )
     if _safe_float(storage_pressure.get("pressure_index"), 0.0) >= 1.0:
         env_overrides = {
@@ -924,22 +1060,15 @@ def apply_runtime_guard(
             if not key.startswith("SQL_LINK_SERVICE_")
         }
     support_candidates = payload.get("support_trim_candidates") if isinstance(payload.get("support_trim_candidates"), list) else []
-    throttle_candidates = list(support_candidates)
-    if profile == "protect_live":
-        top_processes = payload.get("top_processes") if isinstance(payload.get("top_processes"), list) else []
-        throttle_candidates.extend(
-            row
-            for row in top_processes
-            if str(row.get("category") or "") == "research_training"
-            and _safe_float(row.get("cpu_percent"), 0.0) >= 50.0
-        )
+    research_candidates = payload.get("research_training_trim_candidates") if isinstance(payload.get("research_training_trim_candidates"), list) else []
+    throttle_candidates = list(support_candidates) + list(research_candidates)
     return {
         "applied": True,
         "override_path": str(override_path),
         "override_changed": _write_env_override(override_path, env_overrides, profile=profile),
         "env_override_count": len(env_overrides),
         "storage_drain_active": storage_drain_active,
-        "drain_friendly_sql_overrides": _drain_friendly_sql_overrides() if storage_drain_active else {},
+        "drain_friendly_sql_overrides": _drain_friendly_sql_overrides(concentrated_core=bool((storage_stabilization.get("sql_writer_coordination") or {}).get("concentrated_core_drain", False))) if storage_drain_active else {},
         "process_throttle": _apply_process_throttle(throttle_candidates, max_processes=max_renice_processes),
         "collector_guard": _apply_registry_collector_guard(project_root, payload, registry_path=registry_path),
     }
@@ -978,6 +1107,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, runtime_snapshot: dict[s
     portable_brain = load_json(health_root / "portable_brain_contract_latest.json")
     mlx_router = load_json(health_root / "mlx_intelligence_router_latest.json")
     library_router = load_json(health_root / "library_utilization_router_latest.json")
+    backpressure_fleet = load_json(health_root / "backpressure_drainer_fleet_latest.json")
 
     snapshot = runtime_snapshot if isinstance(runtime_snapshot, dict) else collect_runtime_snapshot()
     cpu_count = max(_safe_int(snapshot.get("cpu_count"), os.cpu_count() or 1), 1)
@@ -1038,6 +1168,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, runtime_snapshot: dict[s
         or storage_recommended_mode == "maintenance_drain_window"
         or storage_total_pending_lines > 0
     )
+    sql_writer_coordination = _sql_writer_coordination(backpressure_fleet, storage_backpressure)
     if storage_pressure_index >= 1.0 or (
         storage_severity in {"high", "critical", "blocked"}
         and storage_core_pending_lines >= 15000
@@ -1071,7 +1202,13 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, runtime_snapshot: dict[s
     support_trim_candidates = [
         row for row in top_processes if bool(row.get("throttle_candidate", False))
     ][:5]
-    upgrade_recommended = bool(overall_status in {"degraded", "blocked"} or support_trim_candidates)
+    research_training_trim_candidates = _research_training_pressure_candidates(
+        top_processes,
+        profile=throttle_profile,
+        compute_pressure_level=compute_pressure_level,
+        memory_pressure_level=memory_pressure_level,
+    )
+    upgrade_recommended = bool(overall_status in {"degraded", "blocked"} or support_trim_candidates or research_training_trim_candidates)
 
     host_contract = {}
     if isinstance(portable_brain.get("host_contract"), dict):
@@ -1086,6 +1223,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, runtime_snapshot: dict[s
             else "",
             "shift retention, timeline, report, and SQL maintenance jobs into off-hours throttle windows before touching the live lanes"
             if support_trim_candidates
+            else "",
+            "downshift simulated shadow training loops while protect-live pressure is active; keep live and paper collectors protected"
+            if research_training_trim_candidates
             else "",
             "treat Chrome, Codex, PyCharm, and other foreground apps as cotenants and downshift background support work instead of bouncing the stack"
             if interactive_cpu >= 60.0
@@ -1169,6 +1309,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, runtime_snapshot: dict[s
             "recommended_operating_mode": storage_recommended_mode,
             "total_pending_lines": storage_total_pending_lines,
             "core_pending_lines": storage_core_pending_lines,
+            "sql_writer_coordination": sql_writer_coordination,
             "policy": "keep_sql_writer_responsive_while_throttling_support_jobs" if storage_drain_active else "normal_runtime_throttle",
         },
         "paper_capacity_contract": paper_capacity_contract,
@@ -1181,6 +1322,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, runtime_snapshot: dict[s
             "top_processes": protected_processes,
         },
         "support_trim_candidates": support_trim_candidates,
+        "research_training_trim_candidates": research_training_trim_candidates,
         "top_processes": top_processes,
         "controller_contract": {
             "mode": "apply_capable",

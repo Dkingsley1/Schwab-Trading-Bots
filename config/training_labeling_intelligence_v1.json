@@ -1,0 +1,155 @@
+{
+  "generated_at_utc": "2026-05-07T17:22:16.539413+00:00",
+  "training_labeling_intelligence_version": "training_labeling_intelligence_v1",
+  "universal_label_contract_version": "universal_training_label_contract_v1",
+  "pack": {
+    "slug": "training_labeling_intelligence",
+    "display_name": "Training And Labeling Intelligence Pack",
+    "sleeve_family": "training_labeling_intelligence",
+    "objective": "Add a collect-only intelligence layer for label contracts, point-in-time labeling, lane-balanced retrain planning, coverage repair, schema lineage, and retrain outcome memory.",
+    "target_platform_total_bots": 1628,
+    "system_count": 6,
+    "bot_count": 24,
+    "bot_ids": [
+      "brain_refinery_v1614_training_labeling_label_contract_normalizer_telemetry_collector_bot",
+      "brain_refinery_v1615_training_labeling_label_contract_normalizer_quality_scorer_bot",
+      "brain_refinery_v1616_training_labeling_label_contract_normalizer_policy_guard_bot",
+      "brain_refinery_v1617_training_labeling_label_contract_normalizer_training_bridge_bot",
+      "brain_refinery_v1618_training_labeling_point_in_time_label_guard_telemetry_collector_bot",
+      "brain_refinery_v1619_training_labeling_point_in_time_label_guard_quality_scorer_bot",
+      "brain_refinery_v1620_training_labeling_point_in_time_label_guard_policy_guard_bot",
+      "brain_refinery_v1621_training_labeling_point_in_time_label_guard_training_bridge_bot",
+      "brain_refinery_v1622_training_labeling_lane_balance_scheduler_telemetry_collector_bot",
+      "brain_refinery_v1623_training_labeling_lane_balance_scheduler_quality_scorer_bot",
+      "brain_refinery_v1624_training_labeling_lane_balance_scheduler_policy_guard_bot",
+      "brain_refinery_v1625_training_labeling_lane_balance_scheduler_training_bridge_bot",
+      "brain_refinery_v1626_training_labeling_coverage_repair_orchestrator_telemetry_collector_bot",
+      "brain_refinery_v1627_training_labeling_coverage_repair_orchestrator_quality_scorer_bot",
+      "brain_refinery_v1628_training_labeling_coverage_repair_orchestrator_policy_guard_bot",
+      "brain_refinery_v1629_training_labeling_coverage_repair_orchestrator_training_bridge_bot",
+      "brain_refinery_v1630_training_labeling_schema_lineage_gatekeeper_telemetry_collector_bot",
+      "brain_refinery_v1631_training_labeling_schema_lineage_gatekeeper_quality_scorer_bot",
+      "brain_refinery_v1632_training_labeling_schema_lineage_gatekeeper_policy_guard_bot",
+      "brain_refinery_v1633_training_labeling_schema_lineage_gatekeeper_training_bridge_bot",
+      "brain_refinery_v1634_training_labeling_retrain_outcome_memory_telemetry_collector_bot",
+      "brain_refinery_v1635_training_labeling_retrain_outcome_memory_quality_scorer_bot",
+      "brain_refinery_v1636_training_labeling_retrain_outcome_memory_policy_guard_bot",
+      "brain_refinery_v1637_training_labeling_retrain_outcome_memory_training_bridge_bot"
+    ],
+    "intelligence_systems": [
+      {
+        "slug": "label_contract_normalizer",
+        "layer": "labeling",
+        "display_name": "Label Contract Normalizer",
+        "objective": "Give every bot a point-in-time label contract without erasing specialized existing contracts.",
+        "outputs": [
+          "label_contract_diff",
+          "missing_label_repair_packet",
+          "label_family_map"
+        ]
+      },
+      {
+        "slug": "point_in_time_label_guard",
+        "layer": "labeling",
+        "display_name": "Point-In-Time Label Guard",
+        "objective": "Block future leakage, lookahead joins, unbounded raw-feed joins, and unlabeled promotion packets.",
+        "outputs": [
+          "join_contract_verdict",
+          "leakage_risk_score",
+          "label_context_gap_list"
+        ]
+      },
+      {
+        "slug": "lane_balance_scheduler",
+        "layer": "training",
+        "display_name": "Lane Balance Scheduler",
+        "objective": "Turn lane dominance, symbol concentration, and coverage shortfall into narrow retrain plans.",
+        "outputs": [
+          "lane_balanced_retrain_plan",
+          "lookback_guidance",
+          "dominance_cap_vote"
+        ]
+      },
+      {
+        "slug": "coverage_repair_orchestrator",
+        "layer": "training",
+        "display_name": "Coverage Repair Orchestrator",
+        "objective": "Prefer coverage repair candidates when the normal targeted retrain shortlist is empty.",
+        "outputs": [
+          "coverage_repair_queue",
+          "runtime_input_repair_plan",
+          "walk_forward_cycle_budget"
+        ]
+      },
+      {
+        "slug": "schema_lineage_gatekeeper",
+        "layer": "lineage",
+        "display_name": "Schema Lineage Gatekeeper",
+        "objective": "Keep schema, feature-store, replay, experiment, and promotion lineage gates synchronized before retrain.",
+        "outputs": [
+          "schema_lineage_gate_status",
+          "missing_contract_repair_order",
+          "promotion_packet_readiness"
+        ]
+      },
+      {
+        "slug": "retrain_outcome_memory",
+        "layer": "learning",
+        "display_name": "Retrain Outcome Memory",
+        "objective": "Record which targeted retrains reduced coverage gaps, label errors, gate blockers, and runtime failures.",
+        "outputs": [
+          "retrain_effect_delta",
+          "retry_or_rotate_vote",
+          "training_playbook_reward"
+        ]
+      }
+    ],
+    "dedicated_data_intake": [
+      "training_quality_trace",
+      "training_runtime_trace",
+      "training_label_audit_trace",
+      "runtime_training_snapshot_trace",
+      "coverage_gap_closer_trace",
+      "feature_store_lineage_trace",
+      "promotion_gate_trace",
+      "whole_system_governor_trace",
+      "codex_handoff_trace"
+    ],
+    "storage_retention_rule": {
+      "retention_profile": "training_labeling_hot_3d_warm_120d_cold_540d",
+      "storage_targets": [
+        "governance/training_labeling_intelligence",
+        "governance/training_labeling_intelligence/label_contract_normalizer",
+        "governance/training_labeling_intelligence/point_in_time_label_guard",
+        "governance/training_labeling_intelligence/lane_balance_scheduler",
+        "governance/training_labeling_intelligence/coverage_repair_orchestrator",
+        "governance/training_labeling_intelligence/schema_lineage_gatekeeper",
+        "governance/training_labeling_intelligence/retrain_outcome_memory",
+        "governance/health/training_labeling_intelligence_latest.json"
+      ],
+      "max_daily_mb_per_bot": 1,
+      "capture_mode": "thin_digest_and_event_delta_only",
+      "sample_rate": 0.01,
+      "dedupe_required": true,
+      "self_accommodation": "heartbeat_when_whole_system_governor_is_protective"
+    },
+    "paper_only_floor": {
+      "paper_trade_lock_required": true,
+      "paper_trading_enabled": false,
+      "live_trading_enabled": false,
+      "execution_enabled": false,
+      "allocation_enabled": false,
+      "graduation_requires_minimum_observations": 70000,
+      "graduation_requires_collection_days": 180
+    },
+    "anchor_bot_ids": {
+      "label_contract_normalizer": "brain_refinery_v1614_training_labeling_label_contract_normalizer_telemetry_collector_bot",
+      "point_in_time_label_guard": "brain_refinery_v1618_training_labeling_point_in_time_label_guard_telemetry_collector_bot",
+      "lane_balance_scheduler": "brain_refinery_v1622_training_labeling_lane_balance_scheduler_telemetry_collector_bot",
+      "coverage_repair_orchestrator": "brain_refinery_v1626_training_labeling_coverage_repair_orchestrator_telemetry_collector_bot",
+      "schema_lineage_gatekeeper": "brain_refinery_v1630_training_labeling_schema_lineage_gatekeeper_telemetry_collector_bot",
+      "retrain_outcome_memory": "brain_refinery_v1634_training_labeling_retrain_outcome_memory_telemetry_collector_bot"
+    },
+    "universal_label_contract_version": "universal_training_label_contract_v1"
+  }
+}

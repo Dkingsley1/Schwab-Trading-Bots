@@ -318,12 +318,17 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     training_lineage_manifest = _load_json(health_root / "training_lineage_manifest_latest.json")
     promotion_packet = _load_json(project_root / "governance" / "champion_challenger" / "promotion_packet_latest.json")
 
-    active_bots = _safe_int(registry_audit.get("registry_active_bots"), 0)
+    raw_active_bots = _safe_int(registry_audit.get("registry_active_bots"), 0)
+    active_bots = _safe_int(registry_audit.get("registry_supportability_active_bots"), raw_active_bots)
     active_sample_starved = registry_audit.get("active_sample_starved") if isinstance(registry_audit.get("active_sample_starved"), list) else []
     active_quality_failed = registry_audit.get("active_quality_failed") if isinstance(registry_audit.get("active_quality_failed"), list) else []
     active_stale = registry_audit.get("active_stale_diagnostics") if isinstance(registry_audit.get("active_stale_diagnostics"), list) else []
     supportability_counts = registry_audit.get("supportability_counts") if isinstance(registry_audit.get("supportability_counts"), dict) else {}
     tier_counts = registry_audit.get("tier_counts") if isinstance(registry_audit.get("tier_counts"), dict) else {}
+    active_collection_only_bots = _safe_int(
+        registry_audit.get("active_collection_only_bots"),
+        _safe_int(tier_counts.get("active_collection_only"), 0),
+    )
     raw_top_actions = label_audit.get("top_actions") if isinstance(label_audit.get("top_actions"), list) else []
     top_actions = _label_specific_actions(raw_top_actions)
     recommendation_counts = label_audit.get("recommendation_counts") if isinstance(label_audit.get("recommendation_counts"), dict) else {}
@@ -842,7 +847,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             summary=(
                 f"Active supportability score={supportability_score:.2f} "
                 f"(strong_registry_backed={len(provisional_registry_backed_bot_ids)}, "
-                f"staged_recovery={len(staged_support_recovery_bot_ids)})"
+                f"staged_recovery={len(staged_support_recovery_bot_ids)}, "
+                f"collection_only_isolated={active_collection_only_bots})"
             ),
             recommendation=(
                 "keep converting staged-support recovery bots into fresh-diagnostic bots so supportability proof stops depending on stale metadata"
@@ -853,6 +859,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
                 "active_supportability_score": supportability_score,
                 "active_supportable_bots": active_supportable,
                 "active_bots": active_bots,
+                "raw_registry_active_bots": raw_active_bots,
+                "active_collection_only_bots": active_collection_only_bots,
                 "provisional_registry_backed_bot_count": len(provisional_registry_backed_bot_ids),
                 "staged_support_recovery_bot_count": len(staged_support_recovery_bot_ids),
             },
@@ -1357,6 +1365,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         "top_priorities": top_priorities,
         "supportability": {
             "active_bots": active_bots,
+            "raw_registry_active_bots": raw_active_bots,
+            "active_collection_only_bots": active_collection_only_bots,
             "active_supportable_bots": active_supportable,
             "active_supportability_score": supportability_score,
             "provisional_registry_backed_bot_count": len(provisional_registry_backed_bot_ids),

@@ -111,7 +111,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, limit: int = 8) -> dict[
         bot_role = str(row.get("bot_role") or "")
         queue_bucket = _queue_bucket(bot_role)
         actions = [str(raw or "").strip() for raw in list(row.get("actions") or []) if str(raw or "").strip()]
-        needs_repair = "repair_runtime_inputs" in actions or "refresh_training_diagnostics" in actions
+        needs_repair = "repair_runtime_inputs" in actions
+        needs_diagnostic_refresh = "refresh_training_diagnostics" in actions
         priority = _safe_float(row.get("priority"), 0.0)
         quality_score = _safe_float(row.get("quality_score"), 0.0)
         test_accuracy = _safe_float(row.get("test_accuracy"), 0.0)
@@ -141,6 +142,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, limit: int = 8) -> dict[
                 "test_accuracy": round(test_accuracy, 6),
                 "strong_seed_candidate": strong_seed_candidate,
                 "needs_runtime_input_repair": needs_repair,
+                "needs_diagnostic_refresh": needs_diagnostic_refresh,
                 "actions": _ordered_unique(
                     actions
                     + [
@@ -169,6 +171,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, limit: int = 8) -> dict[
             "total_recommended_runs": int(total_recommended_runs),
             "queue_bucket_counts": queue_counts,
             "repair_before_seed_count": sum(1 for row in seed_rows if bool(row.get("needs_runtime_input_repair", False))),
+            "diagnostic_refresh_before_seed_count": sum(1 for row in seed_rows if bool(row.get("needs_diagnostic_refresh", False))),
         },
         "seed_queue": seed_rows,
         "recommended_actions": _ordered_unique(

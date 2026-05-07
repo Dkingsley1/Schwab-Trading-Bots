@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "updated_utc": "2026-05-04T15:08:59.271000+00:00",
+  "layer": "platform_stabilization_quality_v1",
+  "section_keys": [
+    "backlog_drain_stabilizer",
+    "bot_data_quality_governor",
+    "duplicate_alpha_compression",
+    "paper_trade_realism_v2",
+    "provider_cooldown_failover_v2",
+    "ready_only_microtraining",
+    "expansion_rehearsal_gate"
+  ],
+  "controls": [
+    {
+      "id": "backlog_drain_stabilizer",
+      "title": "Backlog drain stabilizer",
+      "env_key": "PLATFORM_STABILIZER_BACKLOG_DRAIN_ENABLED"
+    },
+    {
+      "id": "bot_data_quality_governor",
+      "title": "Bot data quality governor",
+      "env_key": "PLATFORM_STABILIZER_BOT_QUALITY_ENABLED"
+    },
+    {
+      "id": "duplicate_alpha_compression",
+      "title": "Duplicate alpha compression",
+      "env_key": "PLATFORM_STABILIZER_DUPLICATE_ALPHA_ENABLED"
+    },
+    {
+      "id": "paper_trade_realism_v2",
+      "title": "Paper trade realism v2",
+      "env_key": "PLATFORM_STABILIZER_PAPER_REALISM_ENABLED"
+    },
+    {
+      "id": "provider_cooldown_failover_v2",
+      "title": "Provider cooldown failover v2",
+      "env_key": "PLATFORM_STABILIZER_PROVIDER_FAILOVER_ENABLED"
+    },
+    {
+      "id": "ready_only_microtraining",
+      "title": "Ready-only microtraining",
+      "env_key": "PLATFORM_STABILIZER_READY_ONLY_TRAINING_ENABLED"
+    },
+    {
+      "id": "expansion_rehearsal_gate",
+      "title": "Expansion rehearsal gate",
+      "env_key": "PLATFORM_STABILIZER_EXPANSION_REHEARSAL_ENABLED"
+    }
+  ],
+  "infra_assignments": {
+    "backlog_drain_stabilizer": [
+      "backpressure_drainer_fleet",
+      "storage_backpressure_autopilot",
+      "writer_cycle_coordinator"
+    ],
+    "bot_data_quality_governor": [
+      "bot_quality_autopilot",
+      "training_quality_control",
+      "data_collection_observation_rollup"
+    ],
+    "duplicate_alpha_compression": [
+      "duplicate_alpha_detector",
+      "correlation_governor",
+      "sleeve_master_rollup"
+    ],
+    "paper_trade_realism_v2": [
+      "execution_lab",
+      "paper_execution_calibration",
+      "paper_trade_lock_infrabot"
+    ],
+    "provider_cooldown_failover_v2": [
+      "provider_mesh",
+      "source_verification",
+      "collector_contracts"
+    ],
+    "ready_only_microtraining": [
+      "training_runtime_control",
+      "training_requalification_lane",
+      "retrain_lane_scheduler"
+    ],
+    "expansion_rehearsal_gate": [
+      "platform_brain_v5",
+      "expansion_capacity_planner",
+      "paper_400_ramp_control"
+    ]
+  },
+  "artifacts": {
+    "backlog_drain_stabilizer": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_stabilization_quality/backlog_drain_stabilizer_latest.json",
+    "bot_data_quality_governor": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_stabilization_quality/bot_data_quality_governor_latest.json",
+    "duplicate_alpha_compression": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_stabilization_quality/duplicate_alpha_compression_latest.json",
+    "paper_trade_realism_v2": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_stabilization_quality/paper_trade_realism_v2_latest.json",
+    "provider_cooldown_failover_v2": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_stabilization_quality/provider_cooldown_failover_v2_latest.json",
+    "ready_only_microtraining": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_stabilization_quality/ready_only_microtraining_latest.json",
+    "expansion_rehearsal_gate": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_stabilization_quality/expansion_rehearsal_gate_latest.json",
+    "infrabot_assignments": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_stabilization_quality/infrabot_assignments_latest.json"
+  }
+}

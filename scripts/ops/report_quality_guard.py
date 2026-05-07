@@ -15,6 +15,7 @@ CATALOG_PATH = PROJECT_ROOT / "governance" / "health" / "report_pdf_bundle_lates
 OUTPUT_PATH = PROJECT_ROOT / "governance" / "health" / "report_quality_guard_latest.json"
 MIN_PDF_BYTES = 10_000
 REPORT_READY_RENDERERS = {
+    "expansion_inventory": "report_ready_expansion_inventory_pdf",
     "framework_map_v2": "report_ready_framework_map_pdf",
     "paper_performance": "report_ready_paper_performance_pdf",
     "post_trade_analysis": "report_ready_post_trade_pdf",

@@ -1,0 +1,593 @@
+{
+  "generated_at_utc": "2026-05-06T20:25:20.763944+00:00",
+  "quant_operational_intelligence_version": "quant_operational_intelligence_v1",
+  "pack": {
+    "slug": "quant_operational_intelligence",
+    "display_name": "Quant And Operational Intelligence Pack",
+    "sleeve_family": "quant_operational_intelligence",
+    "objective": "Add 10 quant intelligence systems and 10 operational intelligence systems that score edge quality, action effects, causal routing, capacity, lineage, and safe command decisions.",
+    "target_platform_total_bots": 1548,
+    "system_count": 20,
+    "quant_system_count": 10,
+    "operational_system_count": 10,
+    "bot_count": 80,
+    "bot_ids": [
+      "brain_refinery_v1478_quant_operational_alpha_factor_court_telemetry_collector_bot",
+      "brain_refinery_v1479_quant_operational_alpha_factor_court_hypothesis_modeler_bot",
+      "brain_refinery_v1480_quant_operational_alpha_factor_court_policy_guard_bot",
+      "brain_refinery_v1481_quant_operational_alpha_factor_court_master_bridge_bot",
+      "brain_refinery_v1482_quant_operational_cross_asset_lead_lag_map_telemetry_collector_bot",
+      "brain_refinery_v1483_quant_operational_cross_asset_lead_lag_map_hypothesis_modeler_bot",
+      "brain_refinery_v1484_quant_operational_cross_asset_lead_lag_map_policy_guard_bot",
+      "brain_refinery_v1485_quant_operational_cross_asset_lead_lag_map_master_bridge_bot",
+      "brain_refinery_v1486_quant_operational_regime_conditional_edge_lab_telemetry_collector_bot",
+      "brain_refinery_v1487_quant_operational_regime_conditional_edge_lab_hypothesis_modeler_bot",
+      "brain_refinery_v1488_quant_operational_regime_conditional_edge_lab_policy_guard_bot",
+      "brain_refinery_v1489_quant_operational_regime_conditional_edge_lab_master_bridge_bot",
+      "brain_refinery_v1490_quant_operational_slippage_capacity_alpha_adjuster_telemetry_collector_bot",
+      "brain_refinery_v1491_quant_operational_slippage_capacity_alpha_adjuster_hypothesis_modeler_bot",
+      "brain_refinery_v1492_quant_operational_slippage_capacity_alpha_adjuster_policy_guard_bot",
+      "brain_refinery_v1493_quant_operational_slippage_capacity_alpha_adjuster_master_bridge_bot",
+      "brain_refinery_v1494_quant_operational_portfolio_risk_budget_optimizer_telemetry_collector_bot",
+      "brain_refinery_v1495_quant_operational_portfolio_risk_budget_optimizer_hypothesis_modeler_bot",
+      "brain_refinery_v1496_quant_operational_portfolio_risk_budget_optimizer_policy_guard_bot",
+      "brain_refinery_v1497_quant_operational_portfolio_risk_budget_optimizer_master_bridge_bot",
+      "brain_refinery_v1498_quant_operational_tail_hedge_convexity_lab_telemetry_collector_bot",
+      "brain_refinery_v1499_quant_operational_tail_hedge_convexity_lab_hypothesis_modeler_bot",
+      "brain_refinery_v1500_quant_operational_tail_hedge_convexity_lab_policy_guard_bot",
+      "brain_refinery_v1501_quant_operational_tail_hedge_convexity_lab_master_bridge_bot",
+      "brain_refinery_v1502_quant_operational_model_uncertainty_calibration_telemetry_collector_bot",
+      "brain_refinery_v1503_quant_operational_model_uncertainty_calibration_hypothesis_modeler_bot",
+      "brain_refinery_v1504_quant_operational_model_uncertainty_calibration_policy_guard_bot",
+      "brain_refinery_v1505_quant_operational_model_uncertainty_calibration_master_bridge_bot",
+      "brain_refinery_v1506_quant_operational_feature_decay_drift_watch_telemetry_collector_bot",
+      "brain_refinery_v1507_quant_operational_feature_decay_drift_watch_hypothesis_modeler_bot",
+      "brain_refinery_v1508_quant_operational_feature_decay_drift_watch_policy_guard_bot",
+      "brain_refinery_v1509_quant_operational_feature_decay_drift_watch_master_bridge_bot",
+      "brain_refinery_v1510_quant_operational_synthetic_scenario_alpha_lab_telemetry_collector_bot",
+      "brain_refinery_v1511_quant_operational_synthetic_scenario_alpha_lab_hypothesis_modeler_bot",
+      "brain_refinery_v1512_quant_operational_synthetic_scenario_alpha_lab_policy_guard_bot",
+      "brain_refinery_v1513_quant_operational_synthetic_scenario_alpha_lab_master_bridge_bot",
+      "brain_refinery_v1514_quant_operational_execution_microstructure_alpha_router_telemetry_collector_bot",
+      "brain_refinery_v1515_quant_operational_execution_microstructure_alpha_router_hypothesis_modeler_bot",
+      "brain_refinery_v1516_quant_operational_execution_microstructure_alpha_router_policy_guard_bot",
+      "brain_refinery_v1517_quant_operational_execution_microstructure_alpha_router_master_bridge_bot",
+      "brain_refinery_v1518_quant_operational_incident_causal_replay_router_telemetry_collector_bot",
+      "brain_refinery_v1519_quant_operational_incident_causal_replay_router_hypothesis_modeler_bot",
+      "brain_refinery_v1520_quant_operational_incident_causal_replay_router_policy_guard_bot",
+      "brain_refinery_v1521_quant_operational_incident_causal_replay_router_master_bridge_bot",
+      "brain_refinery_v1522_quant_operational_backlog_outcome_verifier_telemetry_collector_bot",
+      "brain_refinery_v1523_quant_operational_backlog_outcome_verifier_hypothesis_modeler_bot",
+      "brain_refinery_v1524_quant_operational_backlog_outcome_verifier_policy_guard_bot",
+      "brain_refinery_v1525_quant_operational_backlog_outcome_verifier_master_bridge_bot",
+      "brain_refinery_v1526_quant_operational_safe_command_router_telemetry_collector_bot",
+      "brain_refinery_v1527_quant_operational_safe_command_router_hypothesis_modeler_bot",
+      "brain_refinery_v1528_quant_operational_safe_command_router_policy_guard_bot",
+      "brain_refinery_v1529_quant_operational_safe_command_router_master_bridge_bot",
+      "brain_refinery_v1530_quant_operational_capacity_forecast_scheduler_telemetry_collector_bot",
+      "brain_refinery_v1531_quant_operational_capacity_forecast_scheduler_hypothesis_modeler_bot",
+      "brain_refinery_v1532_quant_operational_capacity_forecast_scheduler_policy_guard_bot",
+      "brain_refinery_v1533_quant_operational_capacity_forecast_scheduler_master_bridge_bot",
+      "brain_refinery_v1534_quant_operational_data_lineage_contract_enforcer_telemetry_collector_bot",
+      "brain_refinery_v1535_quant_operational_data_lineage_contract_enforcer_hypothesis_modeler_bot",
+      "brain_refinery_v1536_quant_operational_data_lineage_contract_enforcer_policy_guard_bot",
+      "brain_refinery_v1537_quant_operational_data_lineage_contract_enforcer_master_bridge_bot",
+      "brain_refinery_v1538_quant_operational_service_dependency_map_telemetry_collector_bot",
+      "brain_refinery_v1539_quant_operational_service_dependency_map_hypothesis_modeler_bot",
+      "brain_refinery_v1540_quant_operational_service_dependency_map_policy_guard_bot",
+      "brain_refinery_v1541_quant_operational_service_dependency_map_master_bridge_bot",
+      "brain_refinery_v1542_quant_operational_storage_memory_cotenant_balancer_telemetry_collector_bot",
+      "brain_refinery_v1543_quant_operational_storage_memory_cotenant_balancer_hypothesis_modeler_bot",
+      "brain_refinery_v1544_quant_operational_storage_memory_cotenant_balancer_policy_guard_bot",
+      "brain_refinery_v1545_quant_operational_storage_memory_cotenant_balancer_master_bridge_bot",
+      "brain_refinery_v1546_quant_operational_paper_live_separation_auditor_telemetry_collector_bot",
+      "brain_refinery_v1547_quant_operational_paper_live_separation_auditor_hypothesis_modeler_bot",
+      "brain_refinery_v1548_quant_operational_paper_live_separation_auditor_policy_guard_bot",
+      "brain_refinery_v1549_quant_operational_paper_live_separation_auditor_master_bridge_bot",
+      "brain_refinery_v1550_quant_operational_report_signal_freshness_sentinel_telemetry_collector_bot",
+      "brain_refinery_v1551_quant_operational_report_signal_freshness_sentinel_hypothesis_modeler_bot",
+      "brain_refinery_v1552_quant_operational_report_signal_freshness_sentinel_policy_guard_bot",
+      "brain_refinery_v1553_quant_operational_report_signal_freshness_sentinel_master_bridge_bot",
+      "brain_refinery_v1554_quant_operational_operator_decision_packet_builder_telemetry_collector_bot",
+      "brain_refinery_v1555_quant_operational_operator_decision_packet_builder_hypothesis_modeler_bot",
+      "brain_refinery_v1556_quant_operational_operator_decision_packet_builder_policy_guard_bot",
+      "brain_refinery_v1557_quant_operational_operator_decision_packet_builder_master_bridge_bot"
+    ],
+    "intelligence_systems": [
+      {
+        "slug": "alpha_factor_court",
+        "domain": "quant",
+        "display_name": "Alpha Factor Court",
+        "objective": "Judge factor candidates with evidence quality, regime dependency, turnover cost, duplication risk, and promotion readiness.",
+        "outputs": [
+          "factor_case_packet",
+          "alpha_evidence_verdict",
+          "promotion_readiness_vote"
+        ],
+        "peer_systems": [
+          "alpha_evidence_court",
+          "duplicate_alpha_novelty",
+          "model_governance_board"
+        ],
+        "data_intakes": [
+          "factor_candidate_trace",
+          "alpha_evidence_trace",
+          "promotion_gate_trace"
+        ]
+      },
+      {
+        "slug": "cross_asset_lead_lag_map",
+        "domain": "quant",
+        "display_name": "Cross-Asset Lead Lag Map",
+        "objective": "Map lead-lag edges across equities, rates, credit, FX, commodities, options, and crypto under changing regimes.",
+        "outputs": [
+          "lead_lag_graph",
+          "cross_asset_causality_score",
+          "regime_transfer_packet"
+        ],
+        "peer_systems": [
+          "cross_asset_risk_transfer_lab",
+          "regime_transition_engine",
+          "market_regime_router"
+        ],
+        "data_intakes": [
+          "cross_asset_return_trace",
+          "regime_label_trace",
+          "event_calendar_trace"
+        ]
+      },
+      {
+        "slug": "regime_conditional_edge_lab",
+        "domain": "quant",
+        "display_name": "Regime Conditional Edge Lab",
+        "objective": "Separate durable edge from regime-specific edge using volatility, liquidity, macro, event, and crowding states.",
+        "outputs": [
+          "regime_edge_matrix",
+          "conditional_alpha_vote",
+          "regime_overfit_alert"
+        ],
+        "peer_systems": [
+          "regime_router",
+          "uncertainty_risk_calibration",
+          "scenario_generation_synthetic_markets_v2"
+        ],
+        "data_intakes": [
+          "regime_transition_trace",
+          "alpha_outcome_trace",
+          "liquidity_state_trace"
+        ]
+      },
+      {
+        "slug": "slippage_capacity_alpha_adjuster",
+        "domain": "quant",
+        "display_name": "Slippage Capacity Alpha Adjuster",
+        "objective": "Haircut alpha by estimated fill quality, slippage, capacity, adverse selection, spread width, and market impact.",
+        "outputs": [
+          "alpha_after_cost_packet",
+          "capacity_haircut_curve",
+          "slippage_guard_vote"
+        ],
+        "peer_systems": [
+          "execution_quality_lab_v2",
+          "execution_realism_layer",
+          "liquidity_stress_market_impact_lab"
+        ],
+        "data_intakes": [
+          "paper_fill_trace",
+          "spread_cost_trace",
+          "market_impact_trace"
+        ]
+      },
+      {
+        "slug": "portfolio_risk_budget_optimizer",
+        "domain": "quant",
+        "display_name": "Portfolio Risk Budget Optimizer",
+        "objective": "Allocate research and paper attention by marginal utility, correlation crowding, capital pressure, and tail exposure.",
+        "outputs": [
+          "risk_budget_packet",
+          "marginal_utility_rank",
+          "crowding_rebalance_vote"
+        ],
+        "peer_systems": [
+          "portfolio_intelligence_layer",
+          "portfolio_brain",
+          "funding_collateral_margin_intelligence"
+        ],
+        "data_intakes": [
+          "portfolio_exposure_trace",
+          "correlation_governor_trace",
+          "margin_pressure_trace"
+        ]
+      },
+      {
+        "slug": "tail_hedge_convexity_lab",
+        "domain": "quant",
+        "display_name": "Tail Hedge Convexity Lab",
+        "objective": "Score hedges by convexity, carry drag, crash responsiveness, liquidity, basis risk, and scenario fit.",
+        "outputs": [
+          "tail_hedge_scorecard",
+          "convexity_cost_curve",
+          "crisis_response_packet"
+        ],
+        "peer_systems": [
+          "options_risk_intelligence_v2",
+          "macro_crisis_scenario_lab",
+          "formal_safety_verification"
+        ],
+        "data_intakes": [
+          "option_surface_trace",
+          "stress_replay_trace",
+          "tail_event_trace"
+        ]
+      },
+      {
+        "slug": "model_uncertainty_calibration",
+        "domain": "quant",
+        "display_name": "Model Uncertainty Calibration",
+        "objective": "Calibrate predictive confidence, ensemble disagreement, outcome variance, and drawdown risk before promotion.",
+        "outputs": [
+          "uncertainty_calibration_packet",
+          "confidence_reliability_curve",
+          "ensemble_disagreement_alert"
+        ],
+        "peer_systems": [
+          "ensemble_uncertainty",
+          "model_governance_board",
+          "training_quality_control"
+        ],
+        "data_intakes": [
+          "prediction_outcome_trace",
+          "ensemble_vote_trace",
+          "calibration_bucket_trace"
+        ]
+      },
+      {
+        "slug": "feature_decay_drift_watch",
+        "domain": "quant",
+        "display_name": "Feature Decay And Drift Watch",
+        "objective": "Track feature stability, label drift, missingness, provider drift, leakage risk, and decay before retraining.",
+        "outputs": [
+          "feature_decay_curve",
+          "label_drift_alert",
+          "retrain_or_retire_vote"
+        ],
+        "peer_systems": [
+          "feature_store_dataset_registry",
+          "data_quality_observatory",
+          "model_decay_detector"
+        ],
+        "data_intakes": [
+          "feature_lineage_trace",
+          "label_quality_trace",
+          "provider_drift_trace"
+        ]
+      },
+      {
+        "slug": "synthetic_scenario_alpha_lab",
+        "domain": "quant",
+        "display_name": "Synthetic Scenario Alpha Lab",
+        "objective": "Stress strategy ideas through synthetic market scenarios, bootstrapped paths, crash windows, and liquidity droughts.",
+        "outputs": [
+          "synthetic_scenario_result",
+          "path_robustness_score",
+          "stress_survival_vote"
+        ],
+        "peer_systems": [
+          "replay_scenario_lab_v2",
+          "scenario_generation_synthetic_markets_v2",
+          "golden_replay_regression"
+        ],
+        "data_intakes": [
+          "scenario_path_trace",
+          "replay_hash_trace",
+          "stress_driver_trace"
+        ]
+      },
+      {
+        "slug": "execution_microstructure_alpha_router",
+        "domain": "quant",
+        "display_name": "Execution Microstructure Alpha Router",
+        "objective": "Route candidate alpha to auction, passive, aggressive, spread, and event execution simulations before paper promotion.",
+        "outputs": [
+          "execution_route_vote",
+          "microstructure_fit_score",
+          "paper_route_contract"
+        ],
+        "peer_systems": [
+          "order_flow_market_microstructure",
+          "execution_realism_layer",
+          "passive_liquidity_provision_sim"
+        ],
+        "data_intakes": [
+          "auction_trace",
+          "order_book_proxy_trace",
+          "execution_sim_trace"
+        ]
+      },
+      {
+        "slug": "incident_causal_replay_router",
+        "domain": "operational",
+        "display_name": "Incident Causal Replay Router",
+        "objective": "Turn incidents, halts, auth decay, storage pressure, writer waits, and feed issues into replayable causal chains.",
+        "outputs": [
+          "incident_causal_chain",
+          "replay_command_packet",
+          "root_cause_confidence"
+        ],
+        "peer_systems": [
+          "system_self_intelligence",
+          "failure_memory",
+          "halt_recovery_intelligence"
+        ],
+        "data_intakes": [
+          "incident_timeline_trace",
+          "self_intelligence_memory_trace",
+          "global_halt_trace"
+        ]
+      },
+      {
+        "slug": "backlog_outcome_verifier",
+        "domain": "operational",
+        "display_name": "Backlog Outcome Verifier",
+        "objective": "Verify whether pressure relief, writer cycles, and drainer waves actually reduce pending lines and pressure index.",
+        "outputs": [
+          "drain_effect_verdict",
+          "backlog_clearance_delta",
+          "playbook_change_vote"
+        ],
+        "peer_systems": [
+          "backpressure_storage_brain_v2",
+          "drainer_intelligence_layer",
+          "system_self_intelligence"
+        ],
+        "data_intakes": [
+          "ingestion_storage_trace",
+          "writer_cycle_trace",
+          "drainer_wave_trace"
+        ]
+      },
+      {
+        "slug": "safe_command_router",
+        "domain": "operational",
+        "display_name": "Safe Command Router",
+        "objective": "Map each blocked surface to one bounded command, required prechecks, post-verifiers, and do-not-do constraints.",
+        "outputs": [
+          "safe_command_packet",
+          "precheck_contract",
+          "post_verify_sequence"
+        ],
+        "peer_systems": [
+          "codex_handoff",
+          "operator_cockpit",
+          "system_brain"
+        ],
+        "data_intakes": [
+          "codex_handoff_trace",
+          "opsctl_command_contract_trace",
+          "health_surface_trace"
+        ]
+      },
+      {
+        "slug": "capacity_forecast_scheduler",
+        "domain": "operational",
+        "display_name": "Capacity Forecast Scheduler",
+        "objective": "Forecast CPU, memory, swap, MLX, IO, writer, and report pressure so heavy work can move to safe windows.",
+        "outputs": [
+          "capacity_forecast",
+          "safe_work_window_vote",
+          "throttle_shape_recommendation"
+        ],
+        "peer_systems": [
+          "runtime_throttle_control",
+          "host_pressure_intelligence",
+          "mlx_intelligence_router"
+        ],
+        "data_intakes": [
+          "runtime_throttle_trace",
+          "memory_efficiency_trace",
+          "mlx_runtime_trace"
+        ]
+      },
+      {
+        "slug": "data_lineage_contract_enforcer",
+        "domain": "operational",
+        "display_name": "Data Lineage Contract Enforcer",
+        "objective": "Enforce point-in-time joins, label lineage, schema compatibility, retention class, and source confidence contracts.",
+        "outputs": [
+          "lineage_contract_status",
+          "schema_compatibility_alert",
+          "label_join_guard_vote"
+        ],
+        "peer_systems": [
+          "feature_store_dataset_registry",
+          "data_quality_v2",
+          "point_in_time_event_store"
+        ],
+        "data_intakes": [
+          "feature_store_lineage_trace",
+          "schema_migration_trace",
+          "label_contract_trace"
+        ]
+      },
+      {
+        "slug": "service_dependency_map",
+        "domain": "operational",
+        "display_name": "Service Dependency Map",
+        "objective": "Map health surfaces, launchers, writer lanes, collectors, reports, and storage paths into dependency edges.",
+        "outputs": [
+          "dependency_graph_delta",
+          "blocked_edge_packet",
+          "last_good_surface_map"
+        ],
+        "peer_systems": [
+          "system_self_model",
+          "dependency_memory",
+          "master_infrastructure_supervisor"
+        ],
+        "data_intakes": [
+          "dependency_memory_trace",
+          "process_watchdog_trace",
+          "artifact_freshness_trace"
+        ]
+      },
+      {
+        "slug": "storage_memory_cotenant_balancer",
+        "domain": "operational",
+        "display_name": "Storage Memory Cotenant Balancer",
+        "objective": "Balance storage drains, memory pressure, foreground apps, external volume state, and runtime throttle posture.",
+        "outputs": [
+          "cotenant_balance_packet",
+          "storage_memory_tradeoff_vote",
+          "pressure_relief_sequence"
+        ],
+        "peer_systems": [
+          "memory_efficiency_control",
+          "pressure_relief_control",
+          "storage_tier_policy"
+        ],
+        "data_intakes": [
+          "memory_pressure_trace",
+          "storage_pressure_trace",
+          "cotenant_awareness_trace"
+        ]
+      },
+      {
+        "slug": "paper_live_separation_auditor",
+        "domain": "operational",
+        "display_name": "Paper Live Separation Auditor",
+        "objective": "Continuously audit that expansion, quant, training, and reporting bots cannot add live execution authority.",
+        "outputs": [
+          "separation_contract_status",
+          "execution_authority_diff",
+          "unsafe_promotion_alert"
+        ],
+        "peer_systems": [
+          "live_runtime_separation",
+          "paper_trade_lock_guard",
+          "global_halt"
+        ],
+        "data_intakes": [
+          "registry_diff_trace",
+          "paper_lock_trace",
+          "execution_policy_trace"
+        ]
+      },
+      {
+        "slug": "report_signal_freshness_sentinel",
+        "domain": "operational",
+        "display_name": "Report Signal Freshness Sentinel",
+        "objective": "Watch reports, markdown, JSON health artifacts, PDF bundles, and dashboards for stale or conflicting signals.",
+        "outputs": [
+          "freshness_slo_packet",
+          "report_staleness_alert",
+          "surface_conflict_vote"
+        ],
+        "peer_systems": [
+          "artifact_freshness_slo",
+          "report_quality_guard",
+          "system_signal_bus"
+        ],
+        "data_intakes": [
+          "artifact_freshness_trace",
+          "report_quality_trace",
+          "signal_bus_trace"
+        ]
+      },
+      {
+        "slug": "operator_decision_packet_builder",
+        "domain": "operational",
+        "display_name": "Operator Decision Packet Builder",
+        "objective": "Compress causal root, effect memory, safe commands, blockers, capability gaps, and next actions into one operator packet.",
+        "outputs": [
+          "operator_decision_packet",
+          "attention_queue_rank",
+          "decision_reason_codes"
+        ],
+        "peer_systems": [
+          "operator_cockpit_v2",
+          "codex_handoff",
+          "system_self_model"
+        ],
+        "data_intakes": [
+          "operator_cockpit_trace",
+          "codex_handoff_trace",
+          "self_summary_trace"
+        ]
+      }
+    ],
+    "dedicated_data_intake": [
+      "system_self_intelligence_trace",
+      "whole_system_intelligence_trace",
+      "quant_model_control_trace",
+      "platform_organ_systems_trace",
+      "institutional_alpha_validation_trace",
+      "runtime_pressure_trace",
+      "backpressure_causal_trace",
+      "paper_live_safety_trace"
+    ],
+    "storage_retention_rule": {
+      "retention_profile": "quant_operational_intelligence_hot_3d_warm_120d_cold_540d",
+      "storage_targets": [
+        "governance/quant_operational_intelligence",
+        "governance/quant_operational_intelligence/alpha_factor_court",
+        "governance/quant_operational_intelligence/cross_asset_lead_lag_map",
+        "governance/quant_operational_intelligence/regime_conditional_edge_lab",
+        "governance/quant_operational_intelligence/slippage_capacity_alpha_adjuster",
+        "governance/quant_operational_intelligence/portfolio_risk_budget_optimizer",
+        "governance/quant_operational_intelligence/tail_hedge_convexity_lab",
+        "governance/quant_operational_intelligence/model_uncertainty_calibration",
+        "governance/quant_operational_intelligence/feature_decay_drift_watch",
+        "governance/quant_operational_intelligence/synthetic_scenario_alpha_lab",
+        "governance/quant_operational_intelligence/execution_microstructure_alpha_router",
+        "governance/quant_operational_intelligence/incident_causal_replay_router",
+        "governance/quant_operational_intelligence/backlog_outcome_verifier",
+        "governance/quant_operational_intelligence/safe_command_router",
+        "governance/quant_operational_intelligence/capacity_forecast_scheduler",
+        "governance/quant_operational_intelligence/data_lineage_contract_enforcer",
+        "governance/quant_operational_intelligence/service_dependency_map",
+        "governance/quant_operational_intelligence/storage_memory_cotenant_balancer",
+        "governance/quant_operational_intelligence/paper_live_separation_auditor",
+        "governance/quant_operational_intelligence/report_signal_freshness_sentinel",
+        "governance/quant_operational_intelligence/operator_decision_packet_builder",
+        "governance/health/quant_operational_intelligence_latest.json"
+      ],
+      "max_daily_mb_per_bot": 3,
+      "capture_mode": "thin_digest_first_quant_operational_trace",
+      "sample_rate": 0.018,
+      "dedupe_required": true,
+      "stale_deletion_policy": "retain_verdicts_routes_and_effect_scores_stage_raw_traces"
+    },
+    "paper_only_floor": {
+      "paper_trade_lock_required": true,
+      "paper_trading_enabled": false,
+      "live_trading_enabled": false,
+      "execution_enabled": false,
+      "allocation_enabled": false,
+      "graduation_requires_minimum_observations": 65000,
+      "graduation_requires_collection_days": 160
+    },
+    "runtime_capacity_floor": 1000,
+    "anchor_bot_ids": {
+      "alpha_factor_court": "brain_refinery_v1478_quant_operational_alpha_factor_court_telemetry_collector_bot",
+      "cross_asset_lead_lag_map": "brain_refinery_v1482_quant_operational_cross_asset_lead_lag_map_telemetry_collector_bot",
+      "regime_conditional_edge_lab": "brain_refinery_v1486_quant_operational_regime_conditional_edge_lab_telemetry_collector_bot",
+      "slippage_capacity_alpha_adjuster": "brain_refinery_v1490_quant_operational_slippage_capacity_alpha_adjuster_telemetry_collector_bot",
+      "portfolio_risk_budget_optimizer": "brain_refinery_v1494_quant_operational_portfolio_risk_budget_optimizer_telemetry_collector_bot",
+      "tail_hedge_convexity_lab": "brain_refinery_v1498_quant_operational_tail_hedge_convexity_lab_telemetry_collector_bot",
+      "model_uncertainty_calibration": "brain_refinery_v1502_quant_operational_model_uncertainty_calibration_telemetry_collector_bot",
+      "feature_decay_drift_watch": "brain_refinery_v1506_quant_operational_feature_decay_drift_watch_telemetry_collector_bot",
+      "synthetic_scenario_alpha_lab": "brain_refinery_v1510_quant_operational_synthetic_scenario_alpha_lab_telemetry_collector_bot",
+      "execution_microstructure_alpha_router": "brain_refinery_v1514_quant_operational_execution_microstructure_alpha_router_telemetry_collector_bot",
+      "incident_causal_replay_router": "brain_refinery_v1518_quant_operational_incident_causal_replay_router_telemetry_collector_bot",
+      "backlog_outcome_verifier": "brain_refinery_v1522_quant_operational_backlog_outcome_verifier_telemetry_collector_bot",
+      "safe_command_router": "brain_refinery_v1526_quant_operational_safe_command_router_telemetry_collector_bot",
+      "capacity_forecast_scheduler": "brain_refinery_v1530_quant_operational_capacity_forecast_scheduler_telemetry_collector_bot",
+      "data_lineage_contract_enforcer": "brain_refinery_v1534_quant_operational_data_lineage_contract_enforcer_telemetry_collector_bot",
+      "service_dependency_map": "brain_refinery_v1538_quant_operational_service_dependency_map_telemetry_collector_bot",
+      "storage_memory_cotenant_balancer": "brain_refinery_v1542_quant_operational_storage_memory_cotenant_balancer_telemetry_collector_bot",
+      "paper_live_separation_auditor": "brain_refinery_v1546_quant_operational_paper_live_separation_auditor_telemetry_collector_bot",
+      "report_signal_freshness_sentinel": "brain_refinery_v1550_quant_operational_report_signal_freshness_sentinel_telemetry_collector_bot",
+      "operator_decision_packet_builder": "brain_refinery_v1554_quant_operational_operator_decision_packet_builder_telemetry_collector_bot"
+    }
+  }
+}

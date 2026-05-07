@@ -14,6 +14,7 @@ from core.storage_mounts import resolve_external_storage_paths
 DEFAULT_EXTERNAL_MOUNT = "/Volumes/BOT_LOGS"
 DEFAULT_EXTERNAL_PROJECT = "schwab_trading_bot"
 DEFAULT_LOCAL_FALLBACK = "local_fallback_storage"
+DEFAULT_AUTO_SYNC_MIN_FREE_GB = 150.0
 DEFAULT_LINK_DIRS: tuple[str, ...] = (
     "logs",
     "decision_explanations",
@@ -35,6 +36,9 @@ class StorageRoutingResult:
     autosync_copy_errors: int = 0
     autosync_pruned_files: int = 0
     autosync_error_details: tuple[str, ...] = ()
+    autosync_skipped_reason: str = ""
+    autosync_free_bytes: int | None = None
+    autosync_min_free_bytes: int = 0
     split_brain_conflicts: int = 0
     ops_event_recorded: bool = False
     ops_event_error: str = ""
@@ -86,6 +90,24 @@ def _external_min_free_bytes() -> int:
     return 0
 
 
+def _auto_sync_min_free_bytes() -> int:
+    raw_bytes = os.getenv("BOT_LOGS_AUTO_SYNC_MIN_FREE_BYTES", "").strip()
+    if raw_bytes:
+        try:
+            return max(int(float(raw_bytes)), 0)
+        except Exception:
+            return 0
+
+    raw_gb = os.getenv("BOT_LOGS_AUTO_SYNC_MIN_FREE_GB", "").strip()
+    if raw_gb:
+        try:
+            return max(int(float(raw_gb) * (1024 ** 3)), 0)
+        except Exception:
+            return 0
+
+    return int(DEFAULT_AUTO_SYNC_MIN_FREE_GB * (1024 ** 3))
+
+
 def _available_free_bytes(path: Path) -> int | None:
     try:
         return int(shutil.disk_usage(path).free)
@@ -106,6 +128,23 @@ def _external_root_ready(path: Path) -> bool:
         return False
 
     return free_bytes >= min_free_bytes
+
+
+def _auto_sync_pressure_gate(external_root: Path) -> tuple[bool, str, int | None, int]:
+    min_free_bytes = _auto_sync_min_free_bytes()
+    free_bytes = _available_free_bytes(external_root)
+    if min_free_bytes <= 0:
+        return True, "", free_bytes, 0
+    if free_bytes is None:
+        return False, "autosync_skipped_external_free_space_unknown", free_bytes, min_free_bytes
+    if free_bytes < min_free_bytes:
+        return (
+            False,
+            f"autosync_skipped_external_low_space:free_bytes={free_bytes}:min_free_bytes={min_free_bytes}",
+            free_bytes,
+            min_free_bytes,
+        )
+    return True, "", free_bytes, min_free_bytes
 
 
 def _failback_skip_patterns() -> tuple[str, ...]:
@@ -322,6 +361,9 @@ def _record_route_event_safe(project_root: Path, result: StorageRoutingResult) -
                 split_brain_conflicts=result.split_brain_conflicts,
                 metadata={
                     "autosync_error_details": list(result.autosync_error_details),
+                    "autosync_skipped_reason": result.autosync_skipped_reason,
+                    "autosync_free_bytes": result.autosync_free_bytes,
+                    "autosync_min_free_bytes": result.autosync_min_free_bytes,
                 },
             )
     except Exception:
@@ -369,20 +411,28 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
     autosync_errors = 0
     autosync_pruned = 0
     autosync_error_details: list[str] = []
+    autosync_skipped_reason = ""
+    autosync_free_bytes: int | None = None
+    autosync_min_free_bytes = 0
     split_brain_conflicts = 0
 
     link_dirs_tuple = tuple(link_dirs)
 
     if mode == "external" and _env_flag("BOT_LOGS_AUTO_SYNC_ON_RECONNECT", "1"):
-        prune_local = _env_flag("BOT_LOGS_AUTO_SYNC_PRUNE_LOCAL", "1")
-        max_copy_files = max(int(os.getenv("BOT_LOGS_AUTO_SYNC_MAX_FILES", "50000") or 50000), 1)
-        autosync_copied, autosync_errors, autosync_pruned, autosync_error_details = _auto_sync_local_to_external(
-            local_root=local_root,
-            external_root=external_root,
-            link_dirs=link_dirs_tuple,
-            prune_local=prune_local,
-            max_copy_files=max_copy_files,
-        )
+        allowed, skipped_reason, autosync_free_bytes, autosync_min_free_bytes = _auto_sync_pressure_gate(external_root)
+        if allowed:
+            prune_local = _env_flag("BOT_LOGS_AUTO_SYNC_PRUNE_LOCAL", "1")
+            max_copy_files = max(int(os.getenv("BOT_LOGS_AUTO_SYNC_MAX_FILES", "50000") or 50000), 1)
+            autosync_copied, autosync_errors, autosync_pruned, autosync_error_details = _auto_sync_local_to_external(
+                local_root=local_root,
+                external_root=external_root,
+                link_dirs=link_dirs_tuple,
+                prune_local=prune_local,
+                max_copy_files=max_copy_files,
+            )
+        else:
+            autosync_skipped_reason = skipped_reason
+            autosync_error_details = [skipped_reason] if skipped_reason else []
 
     if mode == "external" and _env_flag("BOT_LOGS_BLOCK_SPLIT_BRAIN", "1"):
         scan_max_files = max(int(os.getenv("BOT_LOGS_SPLIT_BRAIN_SCAN_MAX_FILES", "5000") or 5000), 100)
@@ -431,6 +481,9 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
     os.environ["BOT_LOGS_AUTOSYNC_COPY_ERRORS"] = str(autosync_errors)
     os.environ["BOT_LOGS_AUTOSYNC_PRUNED_FILES"] = str(autosync_pruned)
     os.environ["BOT_LOGS_AUTOSYNC_ERROR_DETAILS"] = json.dumps(autosync_error_details, ensure_ascii=True)
+    os.environ["BOT_LOGS_AUTOSYNC_SKIPPED_REASON"] = str(autosync_skipped_reason)
+    os.environ["BOT_LOGS_AUTOSYNC_FREE_BYTES"] = "" if autosync_free_bytes is None else str(autosync_free_bytes)
+    os.environ["BOT_LOGS_AUTOSYNC_MIN_FREE_BYTES"] = str(autosync_min_free_bytes)
     os.environ["BOT_LOGS_SPLIT_BRAIN_CONFLICTS"] = str(split_brain_conflicts)
     provisional_result = StorageRoutingResult(
         mode=mode,
@@ -441,6 +494,9 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
         autosync_copy_errors=int(autosync_errors),
         autosync_pruned_files=int(autosync_pruned),
         autosync_error_details=tuple(autosync_error_details),
+        autosync_skipped_reason=str(autosync_skipped_reason),
+        autosync_free_bytes=autosync_free_bytes,
+        autosync_min_free_bytes=int(autosync_min_free_bytes),
         split_brain_conflicts=int(split_brain_conflicts),
     )
     ops_event_recorded, ops_event_error = _record_route_event_safe(root, provisional_result)
@@ -453,6 +509,9 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
         autosync_copy_errors=provisional_result.autosync_copy_errors,
         autosync_pruned_files=provisional_result.autosync_pruned_files,
         autosync_error_details=provisional_result.autosync_error_details,
+        autosync_skipped_reason=provisional_result.autosync_skipped_reason,
+        autosync_free_bytes=provisional_result.autosync_free_bytes,
+        autosync_min_free_bytes=provisional_result.autosync_min_free_bytes,
         split_brain_conflicts=provisional_result.split_brain_conflicts,
         ops_event_recorded=bool(ops_event_recorded),
         ops_event_error=str(ops_event_error or ""),
@@ -466,7 +525,8 @@ def describe_storage_routing(result: StorageRoutingResult) -> str:
     autosync = (
         f"copied={result.autosync_copied_files} "
         f"errors={result.autosync_copy_errors} "
-        f"pruned={result.autosync_pruned_files}"
+        f"pruned={result.autosync_pruned_files} "
+        f"skipped={result.autosync_skipped_reason or 'none'}"
     )
     return (
         f"[StorageRoute] mode={result.mode} active_root={result.active_root} "

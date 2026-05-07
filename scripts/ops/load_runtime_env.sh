@@ -74,6 +74,20 @@ for candidate in \
   "$PROJECT_ROOT/config/.env.host_profile_override" \
   "$PROJECT_ROOT/config/.env.memory_efficiency_override" \
   "$PROJECT_ROOT/config/.env.runtime_resource_guard_override" \
+  "$PROJECT_ROOT/config/.env.process_fanout_guard_override" \
+  "$PROJECT_ROOT/config/.env.pressure_relief_override" \
+  "$PROJECT_ROOT/config/.env.guard_intelligence_override" \
+  "$PROJECT_ROOT/config/.env.super_intelligence_override" \
+  "$PROJECT_ROOT/config/.env.platform_intelligence_override" \
+  "$PROJECT_ROOT/config/.env.platform_brain_v4_override" \
+  "$PROJECT_ROOT/config/.env.platform_brain_v5_override" \
+  "$PROJECT_ROOT/config/.env.platform_brain_v6_override" \
+  "$PROJECT_ROOT/config/.env.frontier_intelligence_override" \
+  "$PROJECT_ROOT/config/.env.platform_stabilization_quality_override" \
+  "$PROJECT_ROOT/config/.env.platform_settlement_stabilization_override" \
+  "$PROJECT_ROOT/config/.env.sleeve_ticker_universe_override" \
+  "$PROJECT_ROOT/config/.env.paper_live_data_standard_override" \
+  "$PROJECT_ROOT/config/.env.paper_400_ramp_override" \
   "$PROJECT_ROOT/config/.env.swap_pressure_override" \
   "$PROJECT_ROOT/config/.env.browser_quiet_override" \
   "$PROJECT_ROOT/config/.env.storage_pressure_override" \

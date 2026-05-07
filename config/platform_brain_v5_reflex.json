@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "updated_utc": "2026-05-04T13:34:40.179954+00:00",
+  "layer": "platform_brain_v5_reflex_cortex",
+  "section_keys": [
+    "temporal_self_model",
+    "reflex_action_router",
+    "regret_and_outcome_ledger",
+    "scenario_rehearsal_lab",
+    "adaptive_cadence_controller",
+    "safe_autonomy_boundary",
+    "critic_ensemble_fusion",
+    "resource_budget_market_maker",
+    "data_contract_negotiator",
+    "bot_curriculum_builder",
+    "dependency_reflex_map",
+    "strategic_roadmap_synthesizer"
+  ],
+  "controls": [
+    {
+      "id": "temporal_self_model",
+      "title": "Temporal self-model",
+      "env_key": "PLATFORM_BRAIN_V5_TEMPORAL_SELF_MODEL_ENABLED"
+    },
+    {
+      "id": "reflex_action_router",
+      "title": "Reflex action router",
+      "env_key": "PLATFORM_BRAIN_V5_REFLEX_ROUTER_ENABLED"
+    },
+    {
+      "id": "regret_and_outcome_ledger",
+      "title": "Regret and outcome ledger",
+      "env_key": "PLATFORM_BRAIN_V5_REGRET_LEDGER_ENABLED"
+    },
+    {
+      "id": "scenario_rehearsal_lab",
+      "title": "Scenario rehearsal lab",
+      "env_key": "PLATFORM_BRAIN_V5_SCENARIO_REHEARSAL_ENABLED"
+    },
+    {
+      "id": "adaptive_cadence_controller",
+      "title": "Adaptive cadence controller",
+      "env_key": "PLATFORM_BRAIN_V5_CADENCE_CONTROLLER_ENABLED"
+    },
+    {
+      "id": "safe_autonomy_boundary",
+      "title": "Safe autonomy boundary",
+      "env_key": "PLATFORM_BRAIN_V5_SAFE_AUTONOMY_ENABLED"
+    },
+    {
+      "id": "critic_ensemble_fusion",
+      "title": "Critic ensemble fusion",
+      "env_key": "PLATFORM_BRAIN_V5_CRITIC_FUSION_ENABLED"
+    },
+    {
+      "id": "resource_budget_market_maker",
+      "title": "Resource budget market maker",
+      "env_key": "PLATFORM_BRAIN_V5_RESOURCE_MARKET_ENABLED"
+    },
+    {
+      "id": "data_contract_negotiator",
+      "title": "Data contract negotiator",
+      "env_key": "PLATFORM_BRAIN_V5_DATA_CONTRACT_ENABLED"
+    },
+    {
+      "id": "bot_curriculum_builder",
+      "title": "Bot curriculum builder",
+      "env_key": "PLATFORM_BRAIN_V5_BOT_CURRICULUM_ENABLED"
+    },
+    {
+      "id": "dependency_reflex_map",
+      "title": "Dependency reflex map",
+      "env_key": "PLATFORM_BRAIN_V5_DEPENDENCY_REFLEX_ENABLED"
+    },
+    {
+      "id": "strategic_roadmap_synthesizer",
+      "title": "Strategic roadmap synthesizer",
+      "env_key": "PLATFORM_BRAIN_V5_ROADMAP_ENABLED"
+    }
+  ],
+  "artifacts": {
+    "temporal_self_model": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v5/temporal_self_model_latest.json",
+    "reflex_action_router": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v5/reflex_action_router_latest.json",
+    "regret_and_outcome_ledger": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v5/regret_and_outcome_ledger_latest.json",
+    "scenario_rehearsal_lab": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v5/scenario_rehearsal_lab_latest.json",
+    "adaptive_cadence_controller": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v5/adaptive_cadence_controller_latest.json",
+    "safe_autonomy_boundary": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v5/safe_autonomy_boundary_latest.json",
+    "critic_ensemble_fusion": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v5/critic_ensemble_fusion_latest.json",
+    "resource_budget_market_maker": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v5/resource_budget_market_maker_latest.json",
+    "data_contract_negotiator": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v5/data_contract_negotiator_latest.json",
+    "bot_curriculum_builder": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v5/bot_curriculum_builder_latest.json",
+    "dependency_reflex_map": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v5/dependency_reflex_map_latest.json",
+    "strategic_roadmap_synthesizer": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v5/strategic_roadmap_synthesizer_latest.json"
+  }
+}

@@ -441,7 +441,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         elif diag_age_hours is not None and diag_age_hours > 72.0:
             actions.append("refresh_training_diagnostics")
         sample_count = _safe_int(diag.get("sample_count"), 0)
-        if inferred_status == "deferred_sample_starved" or sample_count == 0:
+        if inferred_status == "deferred_sample_starved" or (bool(diag) and sample_count == 0) or (bootstrap_candidate and not diag):
             actions.append("repair_runtime_inputs")
         has_repair_pressure = "repair_runtime_inputs" in actions
         coverage_ready = quality_score >= TARGET_QUALITY_SCORE_FLOOR and bool(model_path) and (bool(log_path) or bootstrap_candidate)

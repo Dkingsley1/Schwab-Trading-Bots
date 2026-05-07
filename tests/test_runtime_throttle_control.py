@@ -179,6 +179,83 @@ def test_runtime_throttle_control_escalates_to_protect_live_when_thermal_pressur
     assert payload["release_contract"]["live_lane_should_be_read_only"] is True
 
 
+def test_runtime_throttle_does_not_call_memory_high_when_memory_efficiency_is_storage_blocked(tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {
+            "memory_pressure_state": "green",
+            "memory_pressure_kind": "none",
+            "swap_used_gb": 1.5,
+        },
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "recommended_profile": "constrained",
+            "reasons": ["storage_pressure_critical", "co_running_heavy_competition"],
+            "memory_snapshot": {
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "none",
+                "swap_used_gb": 1.5,
+            },
+            "cotenant_awareness": {
+                "memory_pressure_clear": True,
+                "storage_pressure_clear": False,
+            },
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        runtime_snapshot={
+            "cpu_count": 10,
+            "load_averages": {"one_minute": 4.0, "five_minutes": 4.0, "fifteen_minutes": 4.0},
+            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "vm_stat": {},
+            "top_processes": [],
+            "category_cpu": {},
+            "category_counts": {},
+        },
+    )
+
+    assert payload["memory_pressure_level"] == "normal"
+
+
+def test_runtime_throttle_counts_only_explicit_paper_live_data_capacity(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "sub_bots": [
+                {
+                    "bot_id": "collector_stability_only",
+                    "active": True,
+                    "lifecycle_state": "data_collection_only",
+                    "paper_runtime_stability_mode": "full_force_guarded",
+                },
+                {
+                    "bot_id": "legacy_paper_live_data",
+                    "active": True,
+                    "lifecycle_state": "active",
+                    "paper_live_data_enabled": True,
+                },
+                {
+                    "bot_id": "legacy_paper_execution",
+                    "active": True,
+                    "lifecycle_state": "active",
+                    "paper_execution_allowed": True,
+                },
+            ]
+        },
+    )
+
+    counts = src._registry_capacity_counts(tmp_path, registry_path=tmp_path / "master_bot_registry.json")
+
+    assert counts["active_bot_count"] == 3
+    assert counts["paper_tagged_count"] == 2
+
+
 def test_runtime_throttle_apply_keeps_sql_writer_drain_friendly(tmp_path: Path) -> None:
     health_root = tmp_path / "governance" / "health"
     _write_json(
@@ -235,6 +312,82 @@ def test_runtime_throttle_apply_keeps_sql_writer_drain_friendly(tmp_path: Path) 
     assert "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS=30" in override
     assert "SQL_LINK_SERVICE_QUEUE_MIN_INTERVAL_SECONDS=180" in override
     assert "SQL_LINK_SERVICE_INTERVAL_SECONDS=180" not in override
+
+
+def test_runtime_throttle_coordinates_concentrated_core_sql_drain(tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {
+            "memory_pressure_state": "red",
+            "memory_pressure_kind": "throttled",
+            "swap_used_gb": 24.0,
+        },
+    )
+    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "blocked"})
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "degraded",
+            "recommended_operating_mode": "maintenance_drain_window",
+            "pressure_index": 0.081,
+            "severity": "stable",
+            "storage": {"backlog_drain_status": "handoff_requested"},
+            "backpressure": {"core_pending_lines": 33631, "total_pending_lines": 33651},
+        },
+    )
+    _write_json(
+        health_root / "backpressure_drainer_fleet_latest.json",
+        {
+            "active_drainer": {
+                "name": "core_decision_drainer",
+                "concentration": {
+                    "total_pending_lines": 33623,
+                    "top1_share": 0.544806,
+                    "top3_share": 0.92871,
+                    "concentrated": True,
+                },
+            },
+            "service_request": {
+                "env_overrides": {"SQL_LINK_SERVICE_CONCENTRATED_CORE_DRAIN": "1"}
+            },
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        runtime_snapshot={
+            "cpu_count": 10,
+            "load_averages": {"one_minute": 3.0, "five_minutes": 3.0, "fifteen_minutes": 3.0},
+            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "vm_stat": {},
+            "top_processes": [],
+            "category_cpu": {},
+            "category_counts": {},
+        },
+    )
+    result = src.apply_runtime_guard(
+        tmp_path,
+        payload,
+        override_path=tmp_path / "config" / ".env.runtime_resource_guard_override",
+        registry_path=tmp_path / "master_bot_registry.json",
+        max_renice_processes=0,
+    )
+
+    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(encoding="utf-8")
+    coordination = payload["storage_stabilization"]["sql_writer_coordination"]
+
+    assert coordination["concentrated_core_drain"] is True
+    assert coordination["recommended_merge_max_seconds_per_cycle"] == 60
+    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"] == "60"
+    assert "SQL_LINK_SERVICE_CONCENTRATED_CORE_DRAIN=1" in override
+    assert "SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS=420" in override
+    assert "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE=60" in override
+    assert "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_LINES_PER_FILE=12000" in override
 
 
 def test_heavy_livefeed_is_operator_observability_not_support_trim() -> None:
@@ -693,3 +846,67 @@ def test_runtime_throttle_consumes_library_utilization_router_caps_and_keeps_mlx
     assert "PRIMARY_ML_RUNTIME_BACKEND=mlx" in override
     assert "PORTABLE_MODEL_REPLAY_POLICY=canary_or_off_hours_only" in override
     assert result["env_override_count"] >= 5
+
+
+
+def test_protect_live_downshifts_simulated_shadow_training_loops(tmp_path: Path, monkeypatch) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "yellow", "swap_used_gb": 9.0})
+    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "degraded"})
+    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "needs_work",
+            "recommended_operating_mode": "market_hours_backlog_protection",
+            "pressure_index": 2.0,
+            "severity": "high",
+            "storage": {"backlog_drain_status": "drain_active"},
+            "backpressure": {"core_pending_lines": 30000, "total_pending_lines": 30000},
+        },
+    )
+    runtime_snapshot = {
+        "cpu_count": 10,
+        "load_averages": {"one_minute": 13.5, "five_minutes": 12.0, "fifteen_minutes": 11.0},
+        "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+        "vm_stat": {},
+        "top_processes": [
+            {
+                "pid": 4242,
+                "cpu_percent": 13.0,
+                "mem_percent": 6.7,
+                "elapsed": "39:34",
+                "command": "python scripts/run_shadow_training_loop.py --broker schwab --interval-seconds 15 --max-iterations 0 --simulate",
+                "category": "research_training",
+                "priority_tier": "protected",
+                "throttle_candidate": False,
+            }
+        ],
+        "category_cpu": {"research_training": 13.0},
+        "category_counts": {"research_training": 1},
+    }
+    calls: list[list[str]] = []
+
+    def fake_run_apply(command: list[str]) -> dict:
+        calls.append(command)
+        return {"command": command, "returncode": 0, "ok": True, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(src, "_run_apply_command", fake_run_apply)
+    monkeypatch.setattr(src.os, "kill", lambda pid, sig: None)
+
+    payload = src.build_payload(tmp_path, runtime_snapshot=runtime_snapshot)
+    result = src.apply_runtime_guard(
+        tmp_path,
+        payload,
+        override_path=tmp_path / "config" / ".env.runtime_resource_guard_override",
+        registry_path=tmp_path / "master_bot_registry.json",
+        max_renice_processes=4,
+    )
+    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(encoding="utf-8")
+
+    assert payload["throttle_profile"] == "protect_live"
+    assert payload["research_training_trim_candidates"][0]["throttle_reason"] == "simulated_training_loop_under_host_pressure"
+    assert result["process_throttle"]["attempted_count"] == 1
+    assert any(cmd[:3] == ["renice", "-n", "15"] for cmd in calls)
+    assert "SHADOW_LOOP_PRESSURE_INTERVAL_FLOOR_ENABLED=1" in override
+    assert "SHADOW_LOOP_PROTECT_LIVE_EXTRA_INTERVAL_SECONDS=30" in override

@@ -196,16 +196,21 @@ def _coverage(statuses: dict[str, str]) -> dict[str, Any]:
 
 def _runtime_caps(memory: dict[str, Any], throttle: dict[str, Any], mlx_runtime: dict[str, Any]) -> dict[str, Any]:
     memory_snapshot = memory.get("memory_snapshot") if isinstance(memory.get("memory_snapshot"), dict) else {}
+    cpu_snapshot = memory.get("cpu_snapshot") if isinstance(memory.get("cpu_snapshot"), dict) else {}
     cotenant = memory.get("cotenant_awareness") if isinstance(memory.get("cotenant_awareness"), dict) else {}
     throttle_profile = str(throttle.get("throttle_profile") or "observe")
     memory_level = str(throttle.get("memory_pressure_level") or "").strip().lower()
     if not memory_level:
         state = str(memory_snapshot.get("memory_pressure_state") or "").strip().lower()
         memory_level = "high" if state in {"red", "critical"} else "elevated" if state in {"yellow", "orange"} else "normal"
+    host_saturation_score = _safe_float(throttle.get("host_saturation_score"), 0.0)
+    cpu_level = str(throttle.get("cpu_pressure_level") or cpu_snapshot.get("cpu_pressure_level") or "").strip().lower()
+    if not cpu_level:
+        cpu_level = "high" if host_saturation_score >= 85.0 else "elevated" if host_saturation_score >= 65.0 else "watch" if host_saturation_score >= 45.0 else "normal"
     compile_available = bool(((mlx_runtime.get("runtime") or {}).get("compile_available", False)))
     compile_smoke_ok = bool(((mlx_runtime.get("runtime") or {}).get("compile_smoke_ok", False)))
     metal_available = bool(((mlx_runtime.get("runtime") or {}).get("metal_available", False)))
-    cotenant_active = bool(cotenant.get("active", False) or cotenant.get("mode") in {"managed_cotenant", "guarded_cotenant"})
+    cotenant_active = bool(cotenant.get("active", False) or cotenant.get("mode") in {"managed_cotenant", "guarded_cotenant", "pressure_aware_cotenant"})
     pressure_profile = "max_throughput"
     max_jobs = 3
     tensor_batch_cap = 64
@@ -213,7 +218,7 @@ def _runtime_caps(memory: dict[str, Any], throttle: dict[str, Any], mlx_runtime:
     graph_node_cap = 12000
     audio_minutes_cap = 45
     heavy_vlm_enabled = True
-    if throttle_profile == "protect_live" or memory_level == "high":
+    if throttle_profile == "protect_live" or memory_level == "high" or cpu_level == "high" or host_saturation_score >= 85.0:
         pressure_profile = "protect_live"
         max_jobs = 1
         tensor_batch_cap = 16
@@ -221,7 +226,7 @@ def _runtime_caps(memory: dict[str, Any], throttle: dict[str, Any], mlx_runtime:
         graph_node_cap = 3000
         audio_minutes_cap = 12
         heavy_vlm_enabled = False
-    elif throttle_profile == "sustain" or memory_level == "elevated":
+    elif throttle_profile == "sustain" or memory_level == "elevated" or cpu_level == "elevated" or host_saturation_score >= 65.0:
         pressure_profile = "sustain"
         max_jobs = 1
         tensor_batch_cap = 32
@@ -229,7 +234,7 @@ def _runtime_caps(memory: dict[str, Any], throttle: dict[str, Any], mlx_runtime:
         graph_node_cap = 6000
         audio_minutes_cap = 20
         heavy_vlm_enabled = False
-    elif throttle_profile == "soft_cap" or cotenant_active:
+    elif throttle_profile == "soft_cap" or cotenant_active or cpu_level == "watch" or host_saturation_score >= 45.0:
         pressure_profile = "foreground_safe"
         max_jobs = 2
         tensor_batch_cap = 48
@@ -242,7 +247,12 @@ def _runtime_caps(memory: dict[str, Any], throttle: dict[str, Any], mlx_runtime:
         "profile": pressure_profile,
         "throttle_profile": throttle_profile,
         "memory_pressure_level": memory_level,
+        "cpu_pressure_level": cpu_level,
+        "host_saturation_score": round(host_saturation_score, 3),
+        "host_pressure_state": "constrained" if pressure_profile in {"protect_live", "sustain"} else ("foreground_safe" if pressure_profile == "foreground_safe" else "clear"),
         "cotenant_active": cotenant_active,
+        "open_app_count": _safe_int(cotenant.get("open_app_count"), 0),
+        "co_running_level": str(cotenant.get("co_running_level") or ""),
         "max_concurrent_mlx_jobs": max_jobs,
         "tensor_batch_cap": tensor_batch_cap,
         "embedding_batch_cap": embedding_batch_cap,
@@ -253,7 +263,7 @@ def _runtime_caps(memory: dict[str, Any], throttle: dict[str, Any], mlx_runtime:
         "compile_available": compile_available,
         "compile_smoke_ok": compile_smoke_ok,
         "metal_available": metal_available,
-        "policy": "maximize_library_coverage_without_maxing_shared_memory",
+        "policy": "maximize_library_coverage_without_maxing_cpu_or_shared_memory",
     }
 
 
@@ -358,8 +368,8 @@ def _recommended_actions(
             if str(caps.get("compile_mode") or "") == "canary_first"
             else "keep mlx.compile disabled for heavy jobs until the compile smoke and Metal checks are green",
             "treat 100 percent utilization as library coverage, not hardware saturation",
-            "thin VLM and long audio jobs while foreground apps or memory pressure are active"
-            if not bool(caps.get("heavy_vlm_enabled", True)) or bool(caps.get("cotenant_active", False))
+            "thin VLM, long audio, graph, and simulation jobs while CPU or memory pressure is elevated"
+            if not bool(caps.get("heavy_vlm_enabled", True)) or bool(caps.get("cotenant_active", False)) or str(caps.get("cpu_pressure_level") or "") in {"watch", "elevated", "high"}
             else "",
             "install or repair missing MLX packages before enabling the blocked lanes"
             if _safe_int(coverage.get("missing_count"), 0) or _safe_int(route_coverage.get("blocked_lane_count"), 0)
@@ -385,8 +395,13 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     env = _recommended_env(caps)
     missing_count = _safe_int(coverage.get("missing_count"), 0)
     blocked_lane_count = _safe_int(route_coverage.get("blocked_lane_count"), 0)
+    runtime_verified = bool(mlx_runtime.get("ok")) and missing_count == 0
+    runtime_status = _status(mlx_runtime)
+    library_status = _status(mlx_library)
     status = "ready"
-    if _status(mlx_runtime) == "blocked" or _status(mlx_library) == "blocked" or missing_count:
+    if runtime_status == "blocked" or missing_count:
+        status = "blocked"
+    elif library_status == "blocked" and not runtime_verified:
         status = "blocked"
     elif blocked_lane_count:
         status = "degraded"
@@ -407,7 +422,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "control_contract": {
             "uses_all_available_mlx_libraries": bool(library_matrix.get("mapped_library_ratio") == 1.0 and missing_count == 0),
             "hardware_saturation_goal": "no",
-            "safe_utilization_goal": "100_percent_library_coverage_with_memory_aware_caps",
+            "safe_utilization_goal": "100_percent_library_coverage_with_cpu_memory_aware_caps",
             "live_path_policy": "feature_enrichment_and_risk_context_only",
             "training_path_policy": "off_hours_or_runtime_throttle_cleared",
             "paper_path_policy": "respect_paper_trade_lock_and_runtime_caps",

@@ -35,6 +35,7 @@ def _seed_project(tmp_path: Path) -> None:
                     "global_halt_aware": True,
                     "direct_execution_allowed": False,
                     "no_improvement_streak": 4,
+                    "target_functions": ["breakout_execution", "market_regime_router"],
                     "correlation_dependencies": ["cross_sleeve_correlation_matrix"],
                     "correlation_peer_sleeves": ["aggressive", "futures"],
                 },
@@ -49,6 +50,7 @@ def _seed_project(tmp_path: Path) -> None:
                     "resource_throttle_aware": True,
                     "global_halt_aware": True,
                     "direct_execution_allowed": False,
+                    "target_functions": ["dividend_quality", "market_regime_router"],
                     "correlation_dependencies": ["cross_sleeve_correlation_matrix"],
                     "correlation_peer_sleeves": ["conservative"],
                 },
@@ -67,6 +69,7 @@ def _seed_project(tmp_path: Path) -> None:
                     "paper_trade_lock_required": True,
                     "resource_throttle_aware": True,
                     "global_halt_aware": True,
+                    "target_functions": ["runtime_capacity", "backpressure_prediction"],
                     "correlation_dependencies": ["resource_profile"],
                     "correlation_peer_sleeves": ["system_governor_expansion"],
                 },
@@ -84,7 +87,17 @@ def _seed_project(tmp_path: Path) -> None:
     )
     _write_json(
         health / "ingestion_storage_control_latest.json",
-        {"overall_status": "ready", "pressure_index": 0.01},
+        {
+            "overall_status": "ready",
+            "pressure_index": 0.01,
+            "backpressure": {
+                "total_pending_lines": 2500,
+                "pending_lines_threshold": 15000,
+                "oldest_pending_age_seconds": 120,
+                "oldest_age_threshold_seconds": 240,
+                "estimated_total_drain_minutes": 10,
+            },
+        },
     )
     _write_json(
         health / "memory_efficiency_control_latest.json",
@@ -110,29 +123,35 @@ def _seed_project(tmp_path: Path) -> None:
         tmp_path / "governance" / "research" / "decay_monitor_latest.json",
         {"overall_status": "needs_work", "weak_sleeves": [{"profile": "intraday_aggressive"}]},
     )
+    _write_json(
+        health / "data_ingress_latest_schwab_futures_equities_schwab.json",
+        {
+            "loop_state": "paused_market_data_provider_cooldown",
+            "pause_gate": "market_data_provider_cooldown",
+            "pause_reason": "provider_http_403_429",
+            "total_counts": {"api_ok": 0, "api_error": 4},
+        },
+    )
+    _write_json(health / "global_halt_auto_clear_latest.json", {"halt": False, "clear_ready": True})
+    _write_json(health / "process_watchdog_latest.json", {"alerts": []})
+    _write_json(health / "auth_lease_manager_latest.json", {"overall_status": "ready"})
+    _write_json(health / "paper_400_ramp_latest.json", {"overall_status": "planned"})
 
 
-def test_platform_intelligence_expansion_builds_all_ten_sections(tmp_path: Path) -> None:
+def test_platform_intelligence_expansion_builds_all_twelve_primary_sections(tmp_path: Path) -> None:
     _seed_project(tmp_path)
 
     payload = src.build_payload(tmp_path, max_rows=10)
 
-    assert payload["expansion_count"] == 10
-    assert set(payload["sections"]) == {
-        "bot_admission_controller",
-        "per_sleeve_master_bots",
-        "bot_quality_score_system",
-        "execution_realism_engine",
-        "market_regime_router",
-        "swap_cpu_capacity_planner",
-        "research_to_strategy_pipeline",
-        "cross_sleeve_correlation_governor",
-        "model_decay_detector",
-        "professional_system_dashboard",
-    }
+    assert payload["expansion_count"] == 12
+    assert set(payload["primary_section_keys"]) == set(src.PRIMARY_SECTION_KEYS)
+    assert set(payload["primary_sections"]) == set(src.PRIMARY_SECTION_KEYS)
     assert payload["sections"]["bot_admission_controller"]["overall_status"] == "protect_live"
     assert payload["sections"]["swap_cpu_capacity_planner"]["training_policy"] == "paused"
     assert payload["sections"]["swap_cpu_capacity_planner"]["max_new_collectors_now"] == 0
+    assert payload["sections"]["provider_rotation_failover_mesh"]["degraded_provider_count"] == 1
+    assert payload["sections"]["paper_trade_capacity_governor"]["live_execution_allowed"] is False
+    assert payload["recommended_env_overrides"]["PLATFORM_INTELLIGENCE_LAYER_VERSION"] == "2"
 
 
 def test_admission_downshifts_collection_and_blocks_training_under_swap(tmp_path: Path) -> None:
@@ -146,15 +165,18 @@ def test_admission_downshifts_collection_and_blocks_training_under_swap(tmp_path
     assert row["collection_mode"] == "thin_sample"
     assert row["train_allowed"] is False
     assert row["admission_state"] == "defer_training_until_resource_pressure_clears"
+    lifecycle = payload["sections"]["bot_lifecycle_manager"]["sampled_lifecycle"]
+    lifecycle_row = next(item for item in lifecycle if item["bot_id"] == "brain_refinery_intraday_aggressive_breakout_bot")
+    assert lifecycle_row["lifecycle_stage"] == "paper_ready_train_review"
 
 
-def test_sleeve_masters_research_pipeline_and_decay_are_written(tmp_path: Path) -> None:
+def test_sleeve_masters_research_pipeline_decay_and_black_box_are_written(tmp_path: Path) -> None:
     _seed_project(tmp_path)
 
     payload = src.build_payload(tmp_path, max_rows=10)
     written = src.write_section_artifacts(tmp_path, payload)
 
-    assert len(written) == 10
+    assert len(written) >= 20
     for path in written.values():
         assert Path(path).exists()
     masters = payload["sections"]["per_sleeve_master_bots"]["sleeve_masters"]
@@ -162,3 +184,4 @@ def test_sleeve_masters_research_pipeline_and_decay_are_written(tmp_path: Path) 
     assert payload["sections"]["research_to_strategy_pipeline"]["stage_counts"]["paper_only_collecting"] >= 1
     assert payload["sections"]["model_decay_detector"]["decaying_bot_count"] >= 1
     assert payload["sections"]["cross_sleeve_correlation_governor"]["overall_status"] == "needs_work"
+    assert payload["sections"]["system_black_box_recorder"]["captured_file_count"] > 0

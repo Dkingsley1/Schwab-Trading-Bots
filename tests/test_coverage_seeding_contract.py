@@ -56,6 +56,38 @@ def test_walk_forward_coverage_seed_marks_strong_candidates(tmp_path: Path) -> N
     assert rows[1]["strong_seed_candidate"] is False
 
 
+def test_walk_forward_coverage_seed_separates_diagnostic_refresh_from_runtime_repair(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "governance" / "walk_forward" / "promotion_readiness_latest.json",
+        {"considered_bots": 3, "coverage_shortfall_bots": 1, "thresholds": {"min_considered_bots": 4, "min_runs_per_bot": 12}},
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "training_requalification_latest.json",
+        {
+            "top_candidates": [
+                {
+                    "bot_id": "brain_refinery_v1",
+                    "bot_role": "signal_sub_bot",
+                    "quality_score": 0.0,
+                    "test_accuracy": 0.0,
+                    "walk_forward_runs": 0,
+                    "priority": 30.0,
+                    "actions": ["refresh_training_diagnostics"],
+                }
+            ]
+        },
+    )
+    _write_json(tmp_path / "governance" / "walk_forward" / "walk_forward_latest.json", {"bots": {}})
+
+    payload = walk_forward_coverage_seed.build_payload(tmp_path, limit=4)
+    row = payload["seed_queue"][0]
+
+    assert row["needs_runtime_input_repair"] is False
+    assert row["needs_diagnostic_refresh"] is True
+    assert payload["standing_queue"]["repair_before_seed_count"] == 0
+    assert payload["standing_queue"]["diagnostic_refresh_before_seed_count"] == 1
+
+
 def test_coverage_gap_closer_stages_strong_infra_before_weak_bootstrap(tmp_path: Path) -> None:
     _write_json(
         tmp_path / "governance" / "walk_forward" / "coverage_seed_latest.json",

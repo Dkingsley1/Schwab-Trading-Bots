@@ -125,7 +125,7 @@ if ! credentials_ready_for_watchdog; then
   WATCHDOG_ARGS=( "${WATCHDOG_ARGS[@]:0:4}" --schwab-futures-optional "${WATCHDOG_ARGS[@]:4}" )
 fi
 
-if [[ "${SHADOW_WATCHDOG_DIRECT_CHILD_SLEEVES:-0}" == "1" ]]; then
+if [[ "${SHADOW_WATCHDOG_DIRECT_CHILD_SLEEVES:-1}" == "1" ]]; then
   WATCHDOG_ARGS=( "${WATCHDOG_ARGS[@]:0:4}" --watch-aggressive-modes --watch-dividend --watch-bond --watch-fx "${WATCHDOG_ARGS[@]:4}" )
   if [[ "${DIVIDEND_CAPTURE_SHADOW_ENABLED:-1}" == "1" ]]; then
     WATCHDOG_ARGS=( "${WATCHDOG_ARGS[@]:0:8}" --watch-dividend-capture "${WATCHDOG_ARGS[@]:8}" )
@@ -146,11 +146,13 @@ cat > "$PLIST_PATH" <<PLIST
   <string>$LABEL</string>
 
   <key>Program</key>
-  <string>$(xml_escape "$PYTHON_PROGRAM")</string>
+  <string>/bin/zsh</string>
 
   <key>ProgramArguments</key>
   <array>
-$PROGRAM_ARGUMENTS_XML  </array>
+    <string>/bin/zsh</string>
+    <string>$(xml_escape "$RUNNER_SCRIPT")</string>
+  </array>
 
   <key>EnvironmentVariables</key>
   <dict>

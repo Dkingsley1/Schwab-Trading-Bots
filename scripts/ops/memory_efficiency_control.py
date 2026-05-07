@@ -24,6 +24,16 @@ DRAIN_FRIENDLY_SQL_OVERRIDES = {
     "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "25",
 }
 
+CONCENTRATED_DRAIN_SQL_OVERRIDES = {
+    **DRAIN_FRIENDLY_SQL_OVERRIDES,
+    "SQL_LINK_SERVICE_CONCENTRATED_CORE_DRAIN": "1",
+    "SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS": "420",
+    "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "60",
+    "SQL_LINK_SERVICE_SHARD_TRADING_STATE_CHECKPOINT_LINES": "1000",
+    "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_STATE_CHECKPOINT_LINES": "1000",
+    "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_LINES_PER_FILE": "12000",
+}
+
 FALLBACK_PRESETS: dict[str, dict[str, str]] = {
     "air_safe": {
         "COINBASE_SNAPSHOT_MAX_WORKERS": "2",
@@ -1066,6 +1076,41 @@ def _storage_drain_active(ingestion_storage: dict[str, Any]) -> bool:
     )
 
 
+def _sql_writer_coordination(backpressure_fleet: dict[str, Any], ingestion_storage: dict[str, Any]) -> dict[str, Any]:
+    storage_backpressure = ingestion_storage.get("backpressure") if isinstance(ingestion_storage.get("backpressure"), dict) else {}
+    active_drainer = backpressure_fleet.get("active_drainer") if isinstance(backpressure_fleet.get("active_drainer"), dict) else {}
+    concentration = active_drainer.get("concentration") if isinstance(active_drainer.get("concentration"), dict) else {}
+    request = backpressure_fleet.get("service_request") if isinstance(backpressure_fleet.get("service_request"), dict) else {}
+    env = request.get("env_overrides") if isinstance(request.get("env_overrides"), dict) else {}
+    total_pending = _safe_int(concentration.get("total_pending_lines"), _safe_int(storage_backpressure.get("total_pending_lines"), 0))
+    top1_share = _safe_float(concentration.get("top1_share"), 0.0)
+    top3_share = _safe_float(concentration.get("top3_share"), 0.0)
+    concentrated = bool(concentration.get("concentrated", False)) or str(env.get("SQL_LINK_SERVICE_CONCENTRATED_CORE_DRAIN") or "").strip() == "1"
+    if not concentrated and total_pending >= 5000 and (top1_share >= 0.45 or top3_share >= 0.75):
+        concentrated = True
+    overrides = CONCENTRATED_DRAIN_SQL_OVERRIDES if concentrated else DRAIN_FRIENDLY_SQL_OVERRIDES
+    return {
+        "source": "backpressure_drainer_fleet" if backpressure_fleet else "storage_backpressure",
+        "active_drainer": str(active_drainer.get("name") or ""),
+        "concentrated_core_drain": concentrated,
+        "total_pending_lines": total_pending,
+        "top1_share": round(top1_share, 6),
+        "top3_share": round(top3_share, 6),
+        "recommended_merge_max_seconds_per_cycle": _safe_int(overrides.get("SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"), 25),
+        "recommended_shard_link_timeout_seconds": _safe_int(overrides.get("SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS"), 0),
+        "recommended_aggressive_trading_max_lines_per_file": _safe_int(
+            overrides.get("SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_LINES_PER_FILE"),
+            0,
+        ),
+    }
+
+
+def _drain_friendly_sql_overrides(coordination: dict[str, Any]) -> dict[str, str]:
+    if bool(coordination.get("concentrated_core_drain", False)):
+        return dict(CONCENTRATED_DRAIN_SQL_OVERRIDES)
+    return dict(DRAIN_FRIENDLY_SQL_OVERRIDES)
+
+
 def _recommended_profile(
     base_tier: str,
     resource_guard: dict[str, Any],
@@ -1076,6 +1121,8 @@ def _recommended_profile(
     memory_state = str(resource_guard.get("memory_pressure_state") or "").strip().lower()
     memory_kind = str(resource_guard.get("memory_pressure_kind") or "").strip().lower()
     swap_used_gb = _safe_float(resource_guard.get("swap_used_gb"), 0.0)
+    compressed_store_gb = _safe_float(resource_guard.get("compressed_store_gb"), 0.0)
+    compressor_gb = _safe_float(resource_guard.get("compressor_gb"), 0.0)
     storage_severity = str(ingestion_storage.get("severity") or "").strip().lower()
     reasons: list[str] = []
     recommended = base_tier
@@ -1111,6 +1158,16 @@ def _recommended_profile(
         recommended = "constrained"
         status = "blocked"
         reasons.append("swap_usage_critical")
+
+    if compressed_store_gb >= 28.0 or compressor_gb >= 16.0:
+        recommended = _cap_profile(recommended, "constrained")
+        status = "blocked" if status == "blocked" else "needs_work"
+        reasons.append("compressed_memory_critical")
+    elif compressed_store_gb >= 18.0 or compressor_gb >= 9.0:
+        recommended = _cap_profile(recommended, "air_safe")
+        if status == "ready":
+            status = "needs_work"
+        reasons.append("compressed_memory_high")
 
     creative_level = str(creative_session.get("level") or "none")
     creative_key = _creative_session_key(creative_session)
@@ -1222,6 +1279,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
     resource_guard = _load_json(health_root / "resource_guard_latest.json")
     apple_profile = _load_json(health_root / "apple_silicon_profile_latest.json")
     ingestion_storage = _load_json(health_root / "ingestion_storage_control_latest.json")
+    backpressure_fleet = _load_json(health_root / "backpressure_drainer_fleet_latest.json")
     expansion_session = _expansion_session_summary(project_root)
     expansion_overlay = _expansion_pressure_overlay(expansion_session)
 
@@ -1256,8 +1314,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
         **expansion_overlay,
     }
     drain_friendly_sql_active = _storage_drain_active(ingestion_storage)
+    sql_writer_coordination = _sql_writer_coordination(backpressure_fleet, ingestion_storage)
     if drain_friendly_sql_active:
-        recommended_env.update(DRAIN_FRIENDLY_SQL_OVERRIDES)
+        recommended_env.update(_drain_friendly_sql_overrides(sql_writer_coordination))
     hardware = apple_profile.get("hardware") if isinstance(apple_profile.get("hardware"), dict) else {}
     unified_memory = apple_profile.get("unified_memory_telemetry") if isinstance(apple_profile.get("unified_memory_telemetry"), dict) else {}
     memory_gb = _safe_float(hardware.get("memory_gb"), 0.0)
@@ -1306,6 +1365,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
             "pressure_index": _safe_float(ingestion_storage.get("pressure_index"), 0.0),
             "estimated_core_drain_minutes": ((ingestion_storage.get("backpressure") or {}).get("estimated_core_drain_minutes") if isinstance(ingestion_storage.get("backpressure"), dict) else None),
             "drain_friendly_sql_active": drain_friendly_sql_active,
+            "sql_writer_coordination": sql_writer_coordination,
             "backlog_drain_status": str(((ingestion_storage.get("storage") or {}).get("backlog_drain_status")) if isinstance(ingestion_storage.get("storage"), dict) else ""),
             "recommended_operating_mode": str(ingestion_storage.get("recommended_operating_mode") or ""),
         },

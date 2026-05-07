@@ -1,0 +1,49 @@
+{
+  "generated_at_utc": "2026-05-06T21:07:13.012422+00:00",
+  "whole_system_governor_version": "whole_system_governor_v1",
+  "layers": [
+    {
+      "layer_id": "system_governor",
+      "title": "System Governor",
+      "objective": "Score every sleeve by health, evidence, cost, risk, freshness, and dependency posture.",
+      "primary_artifact": "governance/whole_system_governor/governor_decision_packet.json"
+    },
+    {
+      "layer_id": "evidence_court",
+      "title": "Evidence Court",
+      "objective": "Require point-in-time promotion packets before training, paper promotion, or budget expansion.",
+      "primary_artifact": "governance/whole_system_governor/evidence_court_packets.json"
+    },
+    {
+      "layer_id": "memory_storage_triage",
+      "title": "Memory And Storage Triage",
+      "objective": "Downgrade collection capture from raw trace to digest, heartbeat, or parked as pressure rises.",
+      "primary_artifact": "governance/whole_system_governor/memory_triage_policy.json"
+    },
+    {
+      "layer_id": "backlog_outcome_learning",
+      "title": "Backlog Intelligence",
+      "objective": "Track whether drainer and organizer actions reduce pressure instead of only moving backlog around.",
+      "primary_artifact": "governance/whole_system_governor/backlog_outcome_learning.json"
+    },
+    {
+      "layer_id": "sleeve_economy",
+      "title": "Sleeve Economy",
+      "objective": "Give sleeves pressure-aware CPU, memory, storage, freshness, and operator-attention budgets.",
+      "primary_artifact": "governance/whole_system_governor/sleeve_budgets.json"
+    },
+    {
+      "layer_id": "self_model_upgrade",
+      "title": "Self-Model Upgrade",
+      "objective": "Keep a living map of bots, surfaces, stale signals, dependency edges, and unknowns.",
+      "primary_artifact": "governance/whole_system_governor/self_model_upgrade.json"
+    },
+    {
+      "layer_id": "operator_interface",
+      "title": "Operator Interface",
+      "objective": "Compress blockers, safe actions, risk, evidence gaps, and next commands into one packet.",
+      "primary_artifact": "governance/whole_system_governor/operator_decision_packet.json"
+    }
+  ],
+  "authority_boundary": "advisory_budgeting_and_registry_summary_only_no_execution_no_allocation_no_halt_clearance"
+}

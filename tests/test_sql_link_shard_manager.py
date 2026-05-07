@@ -328,8 +328,12 @@ def test_build_shards_separates_fast_trading_streams() -> None:
         for row in shard_manager._build_shards(
                 [
                     "health_fast",
+                    "writer_progress",
                     "trading_fast",
                     "runtime",
+                    "predictive_stability",
+                    "self_healing",
+                    "hot_path_storage",
                     "crypto_api_ingress",
                     "aggressive_trading",
                     "trading",
@@ -339,8 +343,11 @@ def test_build_shards_separates_fast_trading_streams() -> None:
                     "governance",
                     "support_watchdog",
                     "schema_violations",
+                    "collector_utility",
+                    "admission_evidence",
                     "crypto_explanations",
                     "explanations",
+                    "reports",
                     "shadow_attribution",
                     "crypto_shadow_attribution",
                     "data",
@@ -373,6 +380,21 @@ def test_build_shards_separates_fast_trading_streams() -> None:
     assert shards["schema_violations"]["include_streams"] == "schema_violations"
     assert "channel_schema_violations_" in str(shards["schema_violations"]["path_contains"])
     assert shards["schema_violations"]["merge_to_primary"] is False
+    assert shards["writer_progress"]["skip_json_files"] is False
+    assert "writer_cycle_coordinator_" in str(shards["writer_progress"]["path_contains"])
+    assert shards["writer_progress"]["merge_max_json_file_rows"] == 96
+    assert shards["predictive_stability"]["skip_json_files"] is False
+    assert "pressure_trajectory" in str(shards["predictive_stability"]["path_contains"])
+    assert shards["self_healing"]["include_streams"] == "governance,governance_events,governance_watchdog"
+    assert "blackstart" in str(shards["self_healing"]["path_contains"])
+    assert shards["collector_utility"]["merge_to_primary"] is False
+    assert "collector_budget" in str(shards["collector_utility"]["path_contains"])
+    assert shards["hot_path_storage"]["merge_max_jsonl_rows"] == 3000
+    assert "write_budget" in str(shards["hot_path_storage"]["path_contains"])
+    assert shards["admission_evidence"]["merge_to_primary"] is False
+    assert "teacher_lineage" in str(shards["admission_evidence"]["path_contains"])
+    assert shards["reports"]["merge_to_primary"] is False
+    assert "exports/reports/" in str(shards["reports"]["path_contains"])
     assert shards["trading_fast"]["include_streams"] == "paper_broker_bridge,top_level_trade_links"
     assert shards["explanations"]["include_streams"] == "decision_explanations"
     assert shards["explanations"]["merge_hot_days"] == 3

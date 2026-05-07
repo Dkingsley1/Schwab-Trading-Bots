@@ -146,6 +146,16 @@ if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
   source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" "$PROFILE" --quiet
 fi
 
+if [[ "${PAPER_400_RAMP_AUTO_APPLY:-1}" != "0" && -f "$PROJECT_ROOT/scripts/ops/paper_400_ramp_control.py" ]]; then
+  "$PY" "$PROJECT_ROOT/scripts/ops/paper_400_ramp_control.py" --apply --json >/dev/null 2>&1 || true
+  if [[ -f "$PROJECT_ROOT/config/.env.paper_400_ramp_override" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$PROJECT_ROOT/config/.env.paper_400_ramp_override"
+    set +a
+  fi
+fi
+
 coinbase_spot_process_lines() {
   ps -axo pid,command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v " --profile crypto_futures" | grep -v grep || true
 }
@@ -176,6 +186,7 @@ if [[ "$FORCE_RESTART" == "1" ]]; then
   pkill -f "scripts/run_dividend_capture_shadow.py" || true
   pkill -f "scripts/run_bond_shadow.py" || true
   pkill -f "scripts/run_fx_shadow.py" || true
+  pkill -f "scripts/run_.*_shadow.py" || true
   pkill -f "scripts/run_shadow_training_loop.py --broker schwab" || true
   kill_coinbase_spot_loops
   pkill -f "scripts/run_shadow_training_loop.py --broker coinbase --profile crypto_futures" || true

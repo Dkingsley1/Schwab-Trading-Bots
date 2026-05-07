@@ -1,5 +1,6 @@
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -68,7 +69,7 @@ def test_training_runtime_control_prioritizes_sequence_timeout_retries(tmp_path:
     _write_json(
         project_root / "governance" / "health" / "runtime_training_snapshot_latest.json",
         {
-            "timestamp_utc": "2026-04-09T15:55:00+00:00",
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "sequence_count": 20,
             "row_count": 500,
             "rows_path": str(project_root / "exports" / "training" / "runtime_training_snapshot_latest.jsonl"),
@@ -190,3 +191,29 @@ def test_supportability_control_flags_uncovered_students(tmp_path: Path) -> None
     assert payload["overall_status"] == "blocked"
     assert payload["teacher_student"]["students_without_teachers"] == 2
     assert payload["teacher_student"]["teacher_gap_by_role"][0]["missing_assignments"] >= 1
+
+
+def test_supportability_control_treats_score_as_percent(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write_json(
+        project_root / "governance" / "health" / "training_quality_control_latest.json",
+        {"supportability": {"active_bots": 10, "active_supportable_bots": 4, "active_supportability_score": 40.0}},
+    )
+    _write_json(project_root / "governance" / "lifecycle" / "model_lifecycle_latest.json", {"repair": {"enabled": True}})
+    _write_json(
+        project_root / "governance" / "distillation" / "teacher_student_plan_latest.json",
+        {"summary": {"student_count": 0, "assignment_count": 0}, "teachers": [{"teacher_bot_id": "teacher"}], "assignments": []},
+    )
+    _write_json(
+        project_root / "governance" / "distillation" / "teacher_quality_latest.json",
+        {"summary": {"elite_teacher_count": 1, "qualified_teacher_count": 1}},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "training_requalification_latest.json",
+        {"candidate_count": 1, "reactivation_ready_count": 1, "top_candidates": []},
+    )
+
+    payload = supportability_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "needs_work"
+    assert "expand the supportable active roster" in payload["recommended_actions"][0]

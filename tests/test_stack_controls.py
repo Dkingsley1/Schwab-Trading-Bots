@@ -328,6 +328,14 @@ def test_opsctl_exposes_commands_hygiene() -> None:
     assert "collector-contracts" in text
     assert "scripts/collector_contracts.py" in text
     assert "runtime-throttle" in text
+    assert "guard-intelligence|guard-brain" in text
+    assert "guard_intelligence_layer.py" in text
+    assert "super-intelligence|system-super-intelligence" in text
+    assert "system_intelligence_coordinator.py" in text
+    assert "pressure-relief|pressure-relief-control|pressure-governor" in text
+    assert "pressure_relief_control.py" in text
+    assert "health-fast|fast-health" in text
+    assert "health_fast.py" in text
     assert "post-restart-settle" in text
     assert "post_restart_settlement.py" in text
     assert "alpha-intelligence-evolution|alpha-advancement" in text
@@ -336,6 +344,26 @@ def test_opsctl_exposes_commands_hygiene() -> None:
     assert "intelligence_layer_advancement_expansion.py" in text
     assert "apex-self-awareness-intelligence|thousand-bot-apex" in text
     assert "apex_self_awareness_intelligence_expansion.py" in text
+    assert "deep-recursive-awareness|recursive-awareness|platform-brain-v3" in text
+    assert "deep_recursive_awareness_expansion.py" in text
+    assert "paper-400-ramp|paper-ramp-400|paper-cap-400" in text
+    assert "paper_400_ramp_control.py" in text
+    assert ".env.paper_400_ramp_override" in _read(PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh")
+    assert "platform-intelligence|platform-intelligence-expansion|bot-admission|bot-lifecycle-manager" in text
+    assert "platform_intelligence_expansion.py" in text
+    assert ".env.platform_intelligence_override" in _read(PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh")
+    assert "platform-brain-v4|grande-brain" in text
+    assert "platform_brain_v4.py" in text
+    assert ".env.platform_brain_v4_override" in _read(PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh")
+    assert "platform-brain-v5|reflex-brain" in text
+    assert "platform_brain_v5.py" in text
+    assert ".env.platform_brain_v5_override" in _read(PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh")
+    assert "platform-stabilization|quality-stabilizer" in text
+    assert "platform_stabilization_quality.py" in text
+    assert ".env.platform_stabilization_quality_override" in _read(PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh")
+    assert "platform-settlement-stabilization|settlement-stabilization" in text
+    assert "platform_settlement_stabilization.py" in text
+    assert ".env.platform_settlement_stabilization_override" in _read(PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh")
 
 
 def test_macro_context_sync_does_not_pass_json_to_bls_helper() -> None:
@@ -513,6 +541,7 @@ def test_shadow_watchdog_defaults_cover_fx_and_dividend_capture() -> None:
     run_watchdog = _read(PROJECT_ROOT / "scripts" / "ops" / "run_shadow_watchdog_launchd.sh")
     run_all_sleeves = _read(PROJECT_ROOT / "scripts" / "ops" / "run_all_sleeves_launchd.sh")
 
+    assert "run_shadow_watchdog_launchd.sh" in watchdog
     assert "default,conservative,aggressive,intraday_aggressive,swing_aggressive,dividend,bond,fx" in watchdog
     assert "default,conservative,aggressive,intraday_aggressive,swing_aggressive,dividend,bond,fx" in run_watchdog
     assert "run_all_sleeves.py" in run_watchdog
@@ -520,7 +549,7 @@ def test_shadow_watchdog_defaults_cover_fx_and_dividend_capture() -> None:
     assert "RUN_ALL_SLEEVES_WITH_FX" in run_all_sleeves
     assert "RUN_ALL_SLEEVES_WITH_DIVIDEND_CAPTURE" in run_all_sleeves
     assert "SHADOW_WATCHDOG_DIRECT_CHILD_SLEEVES" in run_watchdog
-    assert 'SHADOW_WATCHDOG_DIRECT_CHILD_SLEEVES:-0' in run_watchdog
+    assert 'SHADOW_WATCHDOG_DIRECT_CHILD_SLEEVES:-1' in run_watchdog
     assert "--watch-dividend-capture" in run_watchdog
 
 

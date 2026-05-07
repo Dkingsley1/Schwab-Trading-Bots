@@ -532,6 +532,82 @@ def test_build_payload_credits_provisional_registry_backed_active_bots(tmp_path:
     assert payload["rollout"]["exact_replay_ready"] is False
 
 
+def test_build_payload_uses_supportability_active_denominator_when_collection_bots_are_isolated(tmp_path: Path) -> None:
+    now = datetime.now(timezone.utc)
+    health_root = tmp_path / "governance" / "health"
+    walk_root = tmp_path / "governance" / "walk_forward"
+
+    _write_json(
+        health_root / "training_registry_audit_latest.json",
+        {
+            "registry_active_bots": 104,
+            "registry_supportability_active_bots": 4,
+            "active_collection_only_bots": 100,
+            "supportability_counts": {"supportable_active": 4, "collection_only_active": 100},
+            "tier_counts": {"active_collection_only": 100, "active_stale": 0},
+            "active_sample_starved": [],
+            "active_quality_failed": [],
+            "active_stale_diagnostics": [],
+        },
+    )
+    _write_json(health_root / "training_label_audit_latest.json", {"top_actions": [], "recommendation_counts": {}})
+    _write_json(
+        health_root / "runtime_training_snapshot_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "row_count": 2000,
+            "sequence_count": 30,
+            "coverage": {
+                "top_modes": [{"mode": "shadow_dividend_equities", "row_count": 300}],
+                "top_symbols": [{"symbol": "SPY", "row_count": 30}],
+            },
+        },
+    )
+    _write_json(
+        walk_root / "promotion_readiness_latest.json",
+        {"promote_ok": True, "considered_bots": 4, "thresholds": {"min_considered_bots": 4}},
+    )
+    _write_json(health_root / "promotion_quality_gate_latest.json", {"ok": True})
+    _write_json(
+        tmp_path / "governance" / "feature_store" / "latest.json",
+        {
+            "ok": True,
+            "lineage_schema_version": 1,
+            "dataset_contract": {"rows_sha256": "rows-hash"},
+            "point_in_time_contract": {"dataset_join_keys": ["snapshot_id", "symbol"]},
+            "lane_partitions": [{"lane": "dividend", "row_count": 300}],
+        },
+    )
+    _write_json(tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json", {"ok": True, "overall_status": "ready", "family_size": 8, "correction_method": "bonferroni"})
+    _write_json(tmp_path / "governance" / "research" / "decay_monitor_latest.json", {"ok": True, "overall_status": "ready", "weak_sleeve_count": 0})
+    _write_json(health_root / "replay_hash_registry_guard_latest.json", {"ok": True})
+    _write_json(
+        health_root / "training_lineage_manifest_latest.json",
+        {
+            "lineage_contract_ready": True,
+            "promotion_bundle_ready": True,
+            "hash_bundle_complete": True,
+            "feature_store_lineage_ok": True,
+            "exact_replay_ready": True,
+            "replay_hash_registry_ok": True,
+            "lineage_score": 100.0,
+        },
+    )
+    _write_json(health_root / "ingestion_storage_control_latest.json", {"overall_status": "ready", "storage": {"retention_debt_gb": 0.0}})
+    _write_json(health_root / "training_report_latest.json", {"overall_status": "ready", "summary": {"confirmed_training_success": True}})
+    _write_json(health_root / "health_gates_latest.json", {"hard_gate_triggered": False})
+    _write_json(health_root / "paper_performance_latest.json", {"sleeve_latest": []})
+    _write_json(health_root / "roster_resilience_planner_latest.json", {"bench": {"bench_depth": 4}, "a_plus_contract": {"a_plus_ready": True}})
+    _write_json(health_root / "calibration_abstention_control_latest.json", {"overall_status": "ready"})
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["supportability"]["active_bots"] == 4
+    assert payload["supportability"]["raw_registry_active_bots"] == 104
+    assert payload["supportability"]["active_collection_only_bots"] == 100
+    assert payload["supportability"]["active_supportability_score"] == 100.0
+
+
 def test_build_payload_rewards_launch_ready_coverage_and_stronger_provisional_lineage(tmp_path: Path) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"

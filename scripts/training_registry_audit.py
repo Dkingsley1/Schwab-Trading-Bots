@@ -26,6 +26,11 @@ DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "governance" / "health" / "training_registr
 
 STRONG_QUALITY_SCORE_FLOOR = 0.20
 STAGED_SUPPORT_RECOVERY_QUALITY_FLOOR = 0.15
+COLLECTION_ONLY_LIFECYCLE_STATES = {
+    "data_collection_only",
+    "shadow_candidate",
+    "collection_only",
+}
 
 
 def _safe_json_load(path: Path) -> dict[str, Any]:
@@ -101,6 +106,13 @@ def _support_recovery_reason(row: dict[str, Any]) -> bool:
     )
 
 
+def _is_collection_only_active(row: dict[str, Any]) -> bool:
+    if not bool(row.get("active")):
+        return False
+    lifecycle_state = str(row.get("lifecycle_state") or "").strip().lower()
+    return lifecycle_state in COLLECTION_ONLY_LIFECYCLE_STATES
+
+
 def _infer_cause(diag: dict[str, Any], registry_row: dict[str, Any]) -> str:
     status = str(diag.get("status") or "").strip().lower()
     if not diag:
@@ -137,6 +149,8 @@ def _infer_cause(diag: dict[str, Any], registry_row: dict[str, Any]) -> str:
 
 def _tier_for_row(row: dict[str, Any]) -> str:
     if bool(row.get("active")):
+        if _is_collection_only_active(row):
+            return "active_collection_only"
         if not bool(row.get("diagnostic_fresh", False)):
             return "active_stale"
         cause = str(row.get("inferred_cause") or "")
@@ -157,6 +171,8 @@ def _tier_for_row(row: dict[str, Any]) -> str:
 def _supportability_for_row(row: dict[str, Any], *, snapshot_ready: bool = False) -> str:
     if not bool(row.get("active")):
         return "inactive"
+    if _is_collection_only_active(row):
+        return "collection_only_active"
     best_quality_score = _best_score(row.get("registry_quality_score"), row.get("candidate_quality_score"))
     best_test_accuracy = _best_score(row.get("registry_test_accuracy"), row.get("candidate_test_accuracy"))
     if not bool(row.get("diagnostic_fresh", False)):
@@ -209,6 +225,8 @@ def _audit_row(registry_row: dict[str, Any], diagnostics_dir: Path) -> dict[str,
         "bot_role": str(registry_row.get("bot_role") or ""),
         "active": bool(registry_row.get("active", False)),
         "lifecycle_state": str(registry_row.get("lifecycle_state") or ""),
+        "data_collection_active": bool(registry_row.get("data_collection_active", False)),
+        "training_excluded": bool(registry_row.get("training_excluded", False)),
         "registry_reason": str(registry_row.get("reason") or ""),
         "promotion_reason": str(registry_row.get("promotion_reason") or ""),
         "deleted_from_rotation": bool(registry_row.get("deleted_from_rotation", False)),
@@ -240,7 +258,7 @@ def _audit_row(registry_row: dict[str, Any], diagnostics_dir: Path) -> dict[str,
 
 
 def _recommendations(rows: list[dict[str, Any]], snapshot: dict[str, Any]) -> list[str]:
-    active_rows = [row for row in rows if bool(row.get("active"))]
+    active_rows = [row for row in rows if bool(row.get("active")) and not bool(row.get("collection_only_active", False))]
     active_counter = Counter(str(row.get("inferred_cause") or "") for row in active_rows)
     active_stale = sum(1 for row in active_rows if not bool(row.get("diagnostic_fresh", False)))
     recs: list[str] = []
@@ -285,6 +303,7 @@ def build_audit_payload(
     for row in audits:
         age = row.get("diagnostic_age_hours")
         row["diagnostic_fresh"] = bool(age is not None and float(age) <= max(float(max_diagnostic_age_hours), 0.0))
+        row["collection_only_active"] = _is_collection_only_active(row)
         row["tier"] = _tier_for_row(row)
         row["supportability_status"] = _supportability_for_row(row, snapshot_ready=snapshot_ready)
     status_counts = Counter(str(row.get("status") or "") for row in audits)
@@ -292,6 +311,8 @@ def build_audit_payload(
     tier_counts = Counter(str(row.get("tier") or "") for row in audits)
     supportability_counts = Counter(str(row.get("supportability_status") or "") for row in audits)
     active_rows = [row for row in audits if bool(row.get("active"))]
+    collection_only_active_rows = [row for row in active_rows if bool(row.get("collection_only_active", False))]
+    supportability_active_rows = [row for row in active_rows if not bool(row.get("collection_only_active", False))]
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "registry_path": str(registry_path),
@@ -302,25 +323,28 @@ def build_audit_payload(
         "runtime_snapshot_age_hours": round(float(snapshot_age_hours), 3) if snapshot_age_hours is not None else None,
         "registry_total_bots": len(audits),
         "registry_active_bots": sum(1 for row in audits if bool(row.get("active"))),
+        "registry_supportability_active_bots": len(supportability_active_rows),
+        "active_collection_only_bots": len(collection_only_active_rows),
         "status_counts": dict(sorted(status_counts.items())),
         "inferred_cause_counts": dict(sorted(cause_counts.items())),
         "tier_counts": dict(sorted(tier_counts.items())),
         "supportability_counts": dict(sorted(supportability_counts.items())),
         "runtime_snapshot": snapshot,
         "active_sample_starved": [
-            row for row in active_rows if str(row.get("status")) == "deferred_sample_starved"
+            row for row in supportability_active_rows if str(row.get("status")) == "deferred_sample_starved"
         ][:25],
         "active_quality_failed": [
-            row for row in active_rows if str(row.get("inferred_cause")) == "quality_guard_failure"
+            row for row in supportability_active_rows if str(row.get("inferred_cause")) == "quality_guard_failure"
         ][:25],
         "active_stale_diagnostics": [
-            row for row in active_rows if not bool(row.get("diagnostic_fresh", False))
+            row for row in supportability_active_rows if not bool(row.get("diagnostic_fresh", False))
         ][:25],
+        "active_collection_only": collection_only_active_rows[:25],
         "active_registry_seeded": [
-            row for row in active_rows if str(row.get("supportability_status") or "") == "registry_seeded_active"
+            row for row in supportability_active_rows if str(row.get("supportability_status") or "") == "registry_seeded_active"
         ][:25],
         "active_staged_support_recovery": [
-            row for row in active_rows if str(row.get("supportability_status") or "") == "staged_support_recovery"
+            row for row in supportability_active_rows if str(row.get("supportability_status") or "") == "staged_support_recovery"
         ][:25],
         "tiers": {
             "active_production": [row for row in audits if str(row.get("tier")) == "active_production"][:25],
@@ -330,7 +354,7 @@ def build_audit_payload(
             "retired": [row for row in audits if str(row.get("tier")) == "retired"][:25],
         },
         "inactive_new_candidates": [
-            row for row in audits if str(row.get("inferred_cause")) == "new_runtime_candidate"
+            row for row in audits if str(row.get("inferred_cause")) == "new_runtime_candidate" and not bool(row.get("active", False))
         ][:25],
         "recommendations": [],
     }

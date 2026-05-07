@@ -11,6 +11,7 @@ from scripts.shadow_watchdog import (
     _find_matching_rows,
     _heartbeat_health,
     _parse_reason_set,
+    _schwab_live_heartbeat_exclude_matches,
 )
 
 
@@ -154,6 +155,15 @@ def test_build_default_schwab_cmd_uses_all_sleeves_parent() -> None:
     assert "run_all_sleeves.py" in cmd
     assert "--with-aggressive-modes" in cmd
     assert "run_parallel_shadows.py" not in cmd
+
+
+def test_live_schwab_watchdog_excludes_simulated_heartbeat_coverage_by_default() -> None:
+    assert _schwab_live_heartbeat_exclude_matches(simulate_schwab=False) == ("--simulate",)
+    assert _schwab_live_heartbeat_exclude_matches(simulate_schwab=True) == ()
+    assert _schwab_live_heartbeat_exclude_matches(
+        simulate_schwab=False,
+        allow_simulated_heartbeats=True,
+    ) == ()
 
 
 def test_decode_start_cmd_recovers_legacy_unquoted_space_path() -> None:

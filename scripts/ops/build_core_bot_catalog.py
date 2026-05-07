@@ -47,6 +47,70 @@ def _core_file_for(bot_id: str, core_files: set[str]) -> str:
 
 def _category_for(bot_id: str, role: str) -> str:
     text = bot_id.lower()
+    if any(
+        token in text
+        for token in (
+            "trading_muscle",
+            "intraday_momentum_muscle",
+            "mean_reversion_muscle",
+            "swing_trend_muscle",
+            "options_convexity_muscle",
+            "options_income_muscle",
+            "futures_macro_muscle",
+            "crypto_basis_muscle",
+            "volatility_arbitrage_muscle",
+            "event_driven_muscle",
+            "relative_value_pairs_muscle",
+            "portfolio_hedging_muscle",
+            "execution_timing_muscle",
+            "position_sizing_muscle",
+            "exit_rebalance_muscle",
+        )
+    ):
+        return "trading_muscle_systems"
+    if any(
+        token in text
+        for token in (
+            "platform_organ",
+            "data_quality_v2",
+            "feature_store_dataset",
+            "replay_scenario_lab",
+            "execution_realism_layer",
+            "portfolio_brain",
+            "alpha_decay_tracker",
+            "regime_router",
+            "research_assimilation",
+            "bot_promotion_court",
+            "operator_cockpit_v2",
+            "resource_metabolism",
+            "memory_lymphatic",
+            "backpressure_circulatory",
+            "audit_immune",
+        )
+    ):
+        return "platform_organ_systems"
+    if any(
+        token in text
+        for token in (
+            "strategy_gap",
+            "convertible_bond",
+            "capital_structure",
+            "merger_event",
+            "etf_basket",
+            "index_rebalance",
+            "volatility_risk_premium",
+            "cross_asset_carry",
+            "cointegration_ou",
+            "auction_imbalance",
+            "short_borrow",
+            "dealer_opex",
+            "tax_loss",
+            "adr_cross",
+            "corporate_bond_etf",
+            "sector_pair_rotation",
+        )
+    ):
+        return "quant_strategy_gap"
     if "infrastructure" in role or any(token in text for token in ("guard", "sentinel", "allocator", "router", "controller", "pruner")):
         return "infrastructure"
     if "option" in text or "gamma" in text or "iv_" in text or "straddle" in text or "strangle" in text:

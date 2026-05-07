@@ -89,3 +89,35 @@ def test_expansion_capacity_blocks_new_runtime_when_halt_or_swap_pressure_active
     assert payload["capacity_contract"]["rollout_mode"] == "protect_live_no_new_runtime_loops"
     assert "global_halt_active" in payload["pressure_snapshot"]["blocking_reasons"]
     assert "clear new-bot admission contracts before allowing any of the expanded roster into training" in payload["recommended_actions"]
+
+
+def test_expansion_capacity_blocks_when_queue_or_green_room_gate_is_closed(tmp_path: Path) -> None:
+    _seed_registry(tmp_path)
+    _seed_health(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "high",
+            "pressure_index": 1.4,
+            "backpressure": {"total_pending_lines": 22000, "pending_lines_threshold": 15000},
+        },
+    )
+    _write_json(health / "ingestion_backpressure_latest.json", {"pending_lines_total": 22000})
+    _write_json(
+        health / "platform_stabilization_quality_latest.json",
+        {"sections": {"expansion_rehearsal_gate": {"expansion_allowed_now": False}}},
+    )
+    _write_json(
+        health / "platform_settlement_stabilization_latest.json",
+        {"sections": {"queue_decay_meter": {"queue_backpressure_active": True}}},
+    )
+
+    payload = src.build_payload(tmp_path, requested_wave_size=20)
+
+    assert payload["overall_status"] == "blocked"
+    assert payload["capacity_contract"]["max_new_collectors_now"] == 0
+    assert "queue_backpressure_active" in payload["pressure_snapshot"]["blocking_reasons"]
+    assert "pre_expansion_stabilization_gate_closed" in payload["pressure_snapshot"]["blocking_reasons"]
+    assert payload["pressure_snapshot"]["pending_ratio"] > 1.0

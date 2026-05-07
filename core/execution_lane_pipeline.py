@@ -383,6 +383,72 @@ def _extract_bot_id(intent: Dict[str, Any]) -> str:
     return ""
 
 
+def _paper_standard_virtual_allowed(bot_id: str, intent: Dict[str, Any]) -> bool:
+    metadata = intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
+    lowered = str(bot_id or "").strip().lower()
+    if lowered.startswith(("futures_specialist_", "options_specialist_")):
+        return True
+    reason = str(metadata.get("reason") or intent.get("reason") or "").strip().lower()
+    if reason.startswith("virtual_"):
+        return True
+    return str(metadata.get("bot_role") or intent.get("bot_role") or "").strip().lower() in {
+        "futures_sub_bot",
+        "options_sub_bot",
+    } and lowered.endswith("_specialist")
+
+
+def _paper_registry_row_allowed(row: Dict[str, Any]) -> bool:
+    if not row or bool(row.get("deleted_from_rotation", False)):
+        return False
+    if bool(row.get("direct_execution_allowed", False)) or bool(row.get("live_trading_enabled", False)):
+        return False
+    return any(
+        bool(row.get(key, False))
+        for key in (
+            "paper_live_data_enabled",
+            "paper_trading_enabled",
+            "paper_trade_enabled",
+            "paper_execution_allowed",
+        )
+    )
+
+
+def evaluate_paper_standard_gateway(*, project_root: str, intent: Dict[str, Any]) -> Dict[str, Any]:
+    enabled = _env_flag("PAPER_LIVE_DATA_STANDARD_ENABLED", "0")
+    bot_id = _extract_bot_id(intent)
+    if not enabled:
+        return {
+            "enabled": False,
+            "allow_execute": True,
+            "bot_id": bot_id,
+            "reasons": [],
+        }
+
+    reasons: list[str] = []
+    registry_row: Dict[str, Any] = {}
+    virtual_allowed = _paper_standard_virtual_allowed(bot_id, intent)
+    if not bot_id:
+        reasons.append("paper_standard_missing_bot_id")
+    elif virtual_allowed:
+        pass
+    else:
+        registry_row = _registry_rows(project_root).get(bot_id, {})
+        if not registry_row:
+            reasons.append("paper_standard_bot_missing_from_registry")
+        elif not _paper_registry_row_allowed(registry_row):
+            reasons.append("paper_standard_bot_not_in_explicit_paper_cohort")
+
+    return {
+        "enabled": True,
+        "allow_execute": len(reasons) == 0,
+        "bot_id": bot_id,
+        "virtual_allowed": bool(virtual_allowed),
+        "paper_standard_cohort": str(registry_row.get("paper_standard_cohort") or "") if registry_row else "",
+        "paper_live_data_enabled": bool(registry_row.get("paper_live_data_enabled", False)) if registry_row else None,
+        "reasons": reasons,
+    }
+
+
 def evaluate_live_promotion(
     *,
     project_root: str,
@@ -518,12 +584,24 @@ def process_execution_intent(
 ) -> Dict[str, Any]:
     intent = dict(message.payload or {})
     kwargs = intent_to_decision_kwargs(intent)
+    paper_standard_gateway: Dict[str, Any] = {}
+    if str(mode).strip().lower() == "paper":
+        paper_standard_gateway = evaluate_paper_standard_gateway(
+            project_root=project_root,
+            intent=intent,
+        )
     gateway = evaluate_execution_gateway(
         project_root=project_root,
         intent=intent,
         mode=mode,
     )
-    if str(mode).strip().lower() == "live" and not bool(gateway.get("allow_execute", False)):
+    if str(mode).strip().lower() == "paper" and not bool(paper_standard_gateway.get("allow_execute", True)):
+        result = {
+            "status": "PAPER_STANDARD_BLOCKED",
+            "reason": "paper_live_data_standard_blocked",
+            "paper_standard_gateway": paper_standard_gateway,
+        }
+    elif str(mode).strip().lower() == "live" and not bool(gateway.get("allow_execute", False)):
         result = {
             "status": "LIVE_GATEWAY_BLOCKED",
             "reason": "execution_gateway_blocked",
@@ -543,6 +621,7 @@ def process_execution_intent(
         "result_status": str(result.get("status") or ""),
         "result": result,
         "execution_gateway": gateway,
+        "paper_standard_gateway": paper_standard_gateway,
     }
     publish_execution_result(
         project_root=project_root,

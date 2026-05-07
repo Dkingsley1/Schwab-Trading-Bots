@@ -39,6 +39,14 @@ def test_exotic_proxy_features_use_public_and_listed_inputs() -> None:
         "cliquet_global_floor_local_cap_norm": 0.55,
         "signature_trend_follower_options_norm": 0.60,
         "esg_contingent_cds_norm": 0.52,
+        "forward_start_skew_reset_norm": 0.56,
+        "chooser_option_switch_value_norm": 0.54,
+        "asian_path_average_deviation_norm": 0.51,
+        "digital_binary_event_risk_norm": 0.57,
+        "corridor_variance_realized_range_norm": 0.59,
+        "quanto_fx_equity_beta_norm": 0.55,
+        "overnight_gap_option_jump_norm": 0.58,
+        "recovery_lock_credit_note_norm": 0.53,
     }
     out = summarize_exotic_derivative_proxy_features(
         sleeve="structured_products",
@@ -68,6 +76,14 @@ def test_exotic_proxy_features_use_public_and_listed_inputs() -> None:
     assert out["exotic_proxy_cliquet_floor_cap_norm"] > 0.0
     assert out["exotic_proxy_signature_trend_follower_norm"] > 0.0
     assert out["exotic_proxy_esg_ccds_norm"] > 0.0
+    assert out["exotic_proxy_forward_start_option_norm"] > 0.0
+    assert out["exotic_proxy_chooser_option_norm"] > 0.0
+    assert out["exotic_proxy_asian_path_average_norm"] > 0.0
+    assert out["exotic_proxy_digital_binary_norm"] > 0.0
+    assert out["exotic_proxy_corridor_variance_norm"] > 0.0
+    assert out["exotic_proxy_quanto_fx_beta_norm"] > 0.0
+    assert out["exotic_proxy_jump_gap_risk_norm"] > 0.0
+    assert out["exotic_proxy_recovery_lock_norm"] > 0.0
     assert out["exotic_data_confidence_norm"] > 0.0
 
 

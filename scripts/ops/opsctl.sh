@@ -11,7 +11,13 @@ shift || true
 
 PROFILE="${BOT_RUNTIME_PROFILE:-live}"
 case "$cmd" in
-  status|start|start-sim|start-live|restart-sanity|post-restart-settle|post-restart-settlement|restart-settlement|sql-sync|tradingeconomics-sync|macro-context-sync|market-micro-sync|sec-edgar-sync|extended-quant-sync|quant-model-control|quant-engine-control|quant-models|pricing-grad|gpu-mc-sim|kalman-parallel|options-flow-sync|tastytrade-sync|options-flow-export-hygiene|options-flow-efficiency|bot-stack-report|active-bot-report|core-bot-catalog|bot-catalog|core-bot-materialize|materialize-core-bots|core-bot-materialization-guard|core-bot-file-guard|core-bot-materialization-infrabot|core-bot-file-infrabot|core-bot-tier-organizer|organize-core-bot-tiers|bot-tier-organizer|crypto-market-sync|market-correlation-sync|fx-market-sync|dividend-drip-sync|showcase-refresh|system-explainers|system-explainer-docs|system-summary|executive-summary|system-summary-autopilot|master-infra-supervisor|master-infrastructure-supervisor|infra-supervisor|macro-crosscheck|source-verification|collector-contracts|sleeve-strategy-coverage|sleeve-coverage|strategy-coverage|mlx-audit|mlx-library-upgrade|mlx-upgrade|mlx-audio-audit|mlx-intelligence-router|mlx-compute-brain|mlx-utilization|library-utilization-router|library-router|non-mlx-library-router|dependency-utilization|onnx-audit|pytorch-audit|torch-audit|pytorch-replay-canary|torch-replay-canary|sql-audit|training-registry-audit|training-label-audit|training-quality|feature-store|multiple-testing-guard|decay-monitor|security-audit|security-evidence-autofix|secret-scan|schema-migration|ingestion-storage-control|ingestion-storage-governor|external-backlog-drain|backpressure-drainer-fleet|backpressure-drainers|drainer-fleet|external-backlog-retry-bot|storage-backpressure-autopilot|storage-pressure-clearance|storage-pressure-clear|storage-pressure-supervisor|storage-clearance|storage-reconnect-regression-guard|storage-reconnect-guard|storage-reconnect-infrabot|storage-recovery-infrabot|storage-auto-recovery-bot|stateful-storage-regression-guard|stateful-storage-guard|local-stateful-guard|data-retention|retention-policy|data-retention-policy|stale-sweeper|stale-artifact-sweeper|stale-stage-bot|stale-reaper|stale-artifact-reaper|stale-delete-bot|data-collection-storage-guard|collector-storage-guard|data-collection-observation-rollup|collector-observation-rollup|writer-cycle-coordinator|retention-debt-sheriff|backpressure-slo-bot|backlog-quarantine|ingestion-priority-queue|content-store|split-brain-reconcile|storage-resilience|storage-tier-policy|runtime-training-snapshot|training-runtime-control|training-requalification|coverage-seed|coverage-gap-closer|regime-control|supportability-control|teacher-quality|bot-quality-autopilot|commands-hygiene|runbook-hygiene|command-validity|commands-verify|codex-project-guard|codex-guard|infrastructure-autofix|system-cleanliness-autopilot|cleanliness-autopilot|system-cleanliness-infrabot|cleanliness-infrabot|report-quality-guard|reporter-quality|reporter-infrabot|report-infrabot|system-drift-guard|drift-guard|drift-mesh|system-drift-autopilot|drift-autopilot|drift-mesh-autopilot|global-halt|global-halt-status|halt-status|global-halt-refresh|global-halt-clear-blockers|halt-clear-blockers|global-halt-auto-clear|halt-auto-clear|clear-all-halts|clear-global-halts|global-halt-force-clear|halt-force-clear|operator-control|operator-release|operator-stop-status|live-runtime-separation|live-canary-control|rolling-restart|schwab-auth-supervisor|schwab-auth-guard|auth-supervisor|auth-lease|incident-timeline|incident-closeout|incident-review-packet|incident-packet|promotion-autopilot|autonomy-control|runtime-throttle|throttle-control|throttle-bot|mode-switchboard|mode-switchboard-mission-control|decision-provenance|decision-provenance-cards|blackstart-recovery|sleeve-isolation|artifact-freshness-slo|runtime-snapshot-cache|remote-alert-control|storage-quota-guard|release-freeze|legacy-bot-harmonizer|legacy-bot-harmonize|legacy-v107-harmonizer|roster-expansion|roster-resilience|chaos-drills|calibration-control|portfolio-allocator|portfolio-capacity-curves|capacity-curves|risk-service|execution-lab|operator-cockpit|daily-verify-remediation|memory-efficiency|creative-cotenant-guard|creative-cotenant|cotenant-guard|model-lifecycle|grade-lift-hardening|a-grade-hardening|grade-up|grade-regression-guard|regression-guard|grade-regression-autopilot|grade-regression-bot|regression-upgrade|section-grade-guard|section-floor-guard|grade-floor-guard|section-grade-autopilot|section-floor-autopilot|grade-floor-autopilot|chrome-headless-guard|chrome-guard|chrome-pdf-guard|cost-telemetry|cross-host-parity|parity-report|experiment-ledger|immutable-experiment-ledger|one-numbers-regression-guard|one-numbers-guard|point-in-time-event-store|pit-event-store|replay-hash-registry|replay-hash-guard|golden-replay-regression|golden-replay-guard|paper-trade-lock-infrabot|paper-lock-infrabot|paper-trade-lock-guard|paper-lock|coinbase-api-health|coinbase-health|coinbase-start|coinbase-futures-start|schwab-futures-start|fx-start|feed-refresh|livefeed-refresh|live-feed-refresh|feed|phone-feed|schwab-tail|coinbase-tail|main-tail|futures-tail|schwab-futures-tail|coinbase-futures-tail|fx-tail|infra-tail|storage-switch-local|storage-switch-external|storage-safe-eject|storage-prune-standby|storage-standby-prune|storage-transition-coordinator|storage-transition-bots|storage-disaster-recovery|storage-recovery-bot|storage-maintenance|ops-coordinator|platform-control-plane|institutional-readiness|intelligence-capability-expansion|capability-expansion|platform-intelligence|platform-intelligence-expansion|bot-admission|new-bot-admission|new-bot-admission-guard|admission-guard|sleeve-masters|quality-score-system|market-regime-router|capacity-planner|expansion-capacity|expansion-capacity-planner|growth-capacity|research-pipeline|correlation-governor|model-decay-detector|system-dashboard|big-platform-brain|platform-brain|system-self-model|self-model|self-awareness|metacognition|self-awareness-infrabots|system-self-awareness|alpha-intelligence-evolution|alpha-advancement|alpha-evolution|alpha-intelligence|training-readiness-brain|execution-reality-lab|portfolio-exposure-brain|data-source-confidence-engine|research-intake-pipeline|duplicate-alpha-novelty|professional-dashboard-v2|broker-adapter-mesh|adapter-mesh|cleanup-governor|intelligence-layer-advancement|intelligence-layer-v2|intelligence-upgrade|meta-intelligence-v2|metacognitive-routing-v2|world-model-lab|alpha-benchmark-suite|memory-retrieval-v2|critic-board|active-learning-v2|ensemble-uncertainty|tool-intelligence-router|safety-invariants-v2|self-improvement-backlog|apex-self-awareness-intelligence|apex-intelligence|thousand-bot-apex|self-awareness-apex|intelligence-apex|meta-cognition-apex|adaptive-intelligence-kernel|intelligence-kernel|meta-learning-kernel|bot-founder-dna|founder-dna|bot-genome|lineage-dna|retrain-force-full|retrain-force-targeted|token-refresh|token-refresh-interactive|macro-bulletin|macro-auto-start|macro-replay|macro-media-ingest|macro-auto-stop|macro-auto-status|access-status|apple-profile|apple-silicon-profile)
+  status|start|start-sim|start-live|restart-sanity|post-restart-settle|post-restart-settlement|restart-settlement|sql-sync|tradingeconomics-sync|macro-context-sync|market-micro-sync|sec-edgar-sync|extended-quant-sync|quant-model-control|quant-engine-control|quant-models|pricing-grad|gpu-mc-sim|kalman-parallel|options-flow-sync|tastytrade-sync|options-flow-export-hygiene|options-flow-efficiency|bot-stack-report|active-bot-report|core-bot-catalog|bot-catalog|core-bot-materialize|materialize-core-bots|core-bot-materialization-guard|core-bot-file-guard|core-bot-materialization-infrabot|core-bot-file-infrabot|core-bot-tier-organizer|organize-core-bot-tiers|bot-tier-organizer|crypto-market-sync|market-correlation-sync|fx-market-sync|dividend-drip-sync|showcase-refresh|system-explainers|system-explainer-docs|system-summary|executive-summary|system-summary-autopilot|master-infra-supervisor|master-infrastructure-supervisor|infra-supervisor|macro-crosscheck|source-verification|collector-contracts|sleeve-strategy-coverage|sleeve-coverage|strategy-coverage|sleeve-mechanics|sleeve-how-it-works|sleeve-map|mlx-audit|mlx-library-upgrade|mlx-upgrade|mlx-audio-audit|mlx-intelligence-router|mlx-compute-brain|mlx-utilization|library-utilization-router|library-router|non-mlx-library-router|dependency-utilization|onnx-audit|pytorch-audit|torch-audit|pytorch-replay-canary|torch-replay-canary|sql-audit|training-registry-audit|training-label-audit|training-labeling-intelligence|training-process-intelligence|labeling-intelligence|training-quality|feature-store|multiple-testing-guard|decay-monitor|security-audit|security-evidence-autofix|secret-scan|schema-migration|ingestion-storage-control|ingestion-storage-governor|external-backlog-drain|backpressure-drainer-fleet|backpressure-drainers|drainer-fleet|drainer-intelligence|drainer-intelligence-layer|backpressure-drainer-intelligence|backpressure-super-drainer|super-drainer|super-drain|backlog-organizer|backlog-organizers|organize-backlog|weak-point-organizer|external-backlog-retry-bot|storage-backpressure-autopilot|storage-pressure-clearance|storage-pressure-clear|storage-pressure-supervisor|storage-clearance|storage-reconnect-regression-guard|storage-reconnect-guard|storage-reconnect-infrabot|storage-recovery-infrabot|storage-auto-recovery-bot|stateful-storage-regression-guard|stateful-storage-guard|local-stateful-guard|data-retention|retention-policy|data-retention-policy|stale-sweeper|stale-artifact-sweeper|stale-stage-bot|stale-reaper|stale-artifact-reaper|stale-delete-bot|data-collection-storage-guard|collector-storage-guard|data-collection-observation-rollup|collector-observation-rollup|writer-cycle-coordinator|writer-process-intelligence|writer-intelligence|writer-process-brain|sql-writer-brain|system-intelligence|whole-system-intelligence|system-intelligence-coordinator|system-signal-bus|system-brain|process-contracts|self-intelligence|system-self-intelligence|self-intelligence-layer|codex-handoff|codex-attention|retention-debt-sheriff|backpressure-slo-bot|backlog-quarantine|ingestion-priority-queue|content-store|split-brain-reconcile|storage-resilience|storage-tier-policy|runtime-training-snapshot|training-runtime-control|training-requalification|coverage-seed|coverage-gap-closer|regime-control|supportability-control|teacher-quality|bot-quality-autopilot|commands-hygiene|runbook-hygiene|command-validity|commands-verify|codex-project-guard|codex-guard|infrastructure-autofix|system-cleanliness-autopilot|cleanliness-autopilot|system-cleanliness-infrabot|cleanliness-infrabot|report-quality-guard|reporter-quality|reporter-infrabot|report-infrabot|system-drift-guard|drift-guard|drift-mesh|system-drift-autopilot|drift-autopilot|drift-mesh-autopilot|global-halt|global-halt-status|halt-status|global-halt-refresh|global-halt-clear-blockers|halt-clear-blockers|global-halt-auto-clear|halt-auto-clear|clear-all-halts|clear-global-halts|global-halt-force-clear|halt-force-clear|operator-control|operator-release|operator-stop-status|live-runtime-separation|live-canary-control|rolling-restart|schwab-auth-supervisor|schwab-auth-guard|auth-supervisor|auth-lease|incident-timeline|incident-closeout|incident-review-packet|incident-packet|promotion-autopilot|promotion-quality-gate|promotion-gate|quality-gate|autonomy-control|paper-400-ramp|paper-ramp-400|paper-cap-400|paper-400-readiness|paper-live-data-standard|paper-standard|bot-paper-standard|standard-paper-live-data|runtime-throttle|throttle-control|throttle-bot|process-fanout-guard|process-fanout|fanout-guard|guard-intelligence|guard-brain|guard-intelligence-layer|guards-intelligence|adaptive-guard-intelligence|pressure-relief|pressure-relief-control|pressure-governor|pressure-infrabot|health-fast|fast-health|runtime-gate-dashboard|gate-dashboard|runtime-gates|mode-switchboard|mode-switchboard-mission-control|decision-provenance|decision-provenance-cards|blackstart-recovery|sleeve-isolation|artifact-freshness-slo|runtime-snapshot-cache|remote-alert-control|storage-quota-guard|release-freeze|legacy-bot-harmonizer|legacy-bot-harmonize|legacy-v107-harmonizer|roster-expansion|roster-resilience|chaos-drills|calibration-control|portfolio-allocator|portfolio-capacity-curves|capacity-curves|risk-service|execution-lab|operator-cockpit|daily-verify-remediation|memory-efficiency|creative-cotenant-guard|creative-cotenant|cotenant-guard|model-lifecycle|grade-lift-hardening|a-grade-hardening|grade-up|grade-regression-guard|regression-guard|grade-regression-autopilot|grade-regression-bot|regression-upgrade|section-grade-guard|section-floor-guard|grade-floor-guard|section-grade-autopilot|section-floor-autopilot|grade-floor-autopilot|chrome-headless-guard|chrome-guard|chrome-pdf-guard|cost-telemetry|cross-host-parity|parity-report|experiment-ledger|immutable-experiment-ledger|one-numbers-regression-guard|one-numbers-guard|point-in-time-event-store|pit-event-store|replay-hash-registry|replay-hash-guard|golden-replay-regression|golden-replay-guard|paper-trade-lock-infrabot|paper-lock-infrabot|paper-trade-lock-guard|paper-lock|coinbase-api-health|coinbase-health|coinbase-start|coinbase-futures-start|schwab-futures-start|fx-start|feed-refresh|livefeed-refresh|live-feed-refresh|feed|phone-feed|schwab-tail|coinbase-tail|main-tail|futures-tail|schwab-futures-tail|coinbase-futures-tail|fx-tail|infra-tail|storage-switch-local|storage-switch-external|storage-safe-eject|storage-prune-standby|storage-standby-prune|storage-transition-coordinator|storage-transition-bots|storage-disaster-recovery|storage-recovery-bot|storage-maintenance|ops-coordinator|platform-control-plane|institutional-readiness|intelligence-capability-expansion|capability-expansion|platform-intelligence|platform-intelligence-expansion|bot-admission|new-bot-admission|new-bot-admission-guard|admission-guard|sleeve-masters|quality-score-system|market-regime-router|capacity-planner|expansion-capacity|expansion-capacity-planner|growth-capacity|research-pipeline|correlation-governor|model-decay-detector|system-dashboard|big-platform-brain|platform-brain|system-self-model|self-model|self-awareness|metacognition|self-awareness-infrabots|system-self-awareness|alpha-intelligence-evolution|alpha-advancement|alpha-evolution|alpha-intelligence|training-readiness-brain|execution-reality-lab|portfolio-exposure-brain|data-source-confidence-engine|research-intake-pipeline|duplicate-alpha-novelty|professional-dashboard-v2|broker-adapter-mesh|adapter-mesh|cleanup-governor|intelligence-layer-advancement|intelligence-layer-v2|intelligence-upgrade|meta-intelligence-v2|metacognitive-routing-v2|world-model-lab|alpha-benchmark-suite|memory-retrieval-v2|critic-board|active-learning-v2|ensemble-uncertainty|tool-intelligence-router|safety-invariants-v2|self-improvement-backlog|apex-self-awareness-intelligence|apex-intelligence|thousand-bot-apex|self-awareness-apex|intelligence-apex|meta-cognition-apex|deep-recursive-awareness|recursive-awareness|platform-brain-v3|causal-self-diagnosis|predictive-runtime-oracle|experience-memory-core|self-upgrade-critic-board|operator-context-governor|recursive-platform-map|platform-brain-v6|foresight-brain|foresight-cortex|counterfactual-world-model|causal-intervention-planner|hierarchical-memory-router|multi-agent-debate|uncertainty-risk-calibrator|adaptive-resource-governor|frontier-intelligence-expansion|frontier-intelligence|frontier-brain|adult-grande-brain-v3|institutional-alpha-validation|institutional-validation|alpha-evidence-court|execution-quality-lab-v2|portfolio-intelligence-layer|regime-transition-engine|options-risk-intelligence-v2|futures-basis-lab|data-quality-observatory|crisis-simulation-factory|model-governance-board|operator-copilot-v2|backpressure-storage-brain-v2|grandmaster-decision-quality|whole-system-governor|system-governor|governance-brain|sleeve-economy|evidence-court|memory-storage-triage|operator-decision-packet|quant-operational-intelligence|quant-ops-intelligence|quant-and-operational-intelligence|operational-intelligence-expansion|quant-intelligence-expansion|alpha-factor-court|backlog-outcome-verifier|safe-command-router|capacity-forecast-scheduler|autonomic-governance-mesh|governance-mesh|system-governance-expansion|autonomic-mesh|quant-strategy-gap|strategy-gap-expansion|tradable-alpha-gap|expansion-list-report|expansion-inventory|expansion-list|expansion-report|adaptive-intelligence-kernel|intelligence-kernel|meta-learning-kernel|bot-founder-dna|founder-dna|bot-genome|lineage-dna|retrain-force-full|retrain-force-targeted|pycharm-active-bot-highlights|pycharm-bot-highlights|active-bot-highlights|token-refresh|token-refresh-interactive|macro-bulletin|macro-auto-start|macro-replay|macro-media-ingest|macro-auto-stop|macro-auto-status|access-status|apple-profile|apple-silicon-profile)
+    if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
+      # shellcheck disable=SC1091
+      source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" "$PROFILE" --quiet
+    fi
+    ;;
+  super-intelligence|system-super-intelligence|super-intelligence-layer|super-brain)
     if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
       # shellcheck disable=SC1091
       source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" "$PROFILE" --quiet
@@ -25,6 +31,7 @@ load_runtime_profile() {
     # shellcheck disable=SC1091
     source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" "$profile_name" --quiet
   fi
+  refresh_paper_400_ramp_quietly
   export BOT_RUNTIME_PROFILE="$profile_name"
   export MARKET_DATA_ONLY="${MARKET_DATA_ONLY:-1}"
   export ALLOW_ORDER_EXECUTION="${ALLOW_ORDER_EXECUTION:-0}"
@@ -38,6 +45,21 @@ load_runtime_profile() {
   export LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"
   export LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"
   export LOG_FUTURES_MASTER_DECISIONS="${LOG_FUTURES_MASTER_DECISIONS:-1}"
+}
+
+refresh_paper_400_ramp_quietly() {
+  if [[ "${PAPER_400_RAMP_AUTO_APPLY:-1}" == "0" ]]; then
+    return 0
+  fi
+  if [[ -f "$PROJECT_ROOT/scripts/ops/paper_400_ramp_control.py" ]]; then
+    "$PY" "$PROJECT_ROOT/scripts/ops/paper_400_ramp_control.py" --apply --json >/dev/null 2>&1 || true
+  fi
+  if [[ -f "$PROJECT_ROOT/config/.env.paper_400_ramp_override" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$PROJECT_ROOT/config/.env.paper_400_ramp_override"
+    set +a
+  fi
 }
 
 STORAGE_OVERRIDE_FILE="$PROJECT_ROOT/config/.env.storage_override"
@@ -223,6 +245,7 @@ kill_schwab_live_loops() {
   pkill -f "scripts/run_dividend_capture_shadow.py" || true
   pkill -f "scripts/run_bond_shadow.py" || true
   pkill -f "scripts/run_fx_shadow.py" || true
+  pkill -f "scripts/run_.*_shadow.py" || true
   pkill -f "scripts/run_specialized_sleeve_shadow.py" || true
   pkill -f "scripts/run_execution_lane.py" || true
   pkill -f "scripts/run_shadow_training_loop.py --broker schwab" || true
@@ -594,11 +617,17 @@ case "$cmd" in
   source-verification)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/source_verification_report.py" "$@"
     ;;
+  provider-mesh|provider-failover-mesh|provider-cooldown-mesh)
+    exec "$PY" "$PROJECT_ROOT/scripts/provider_mesh_control.py" "$@"
+    ;;
   collector-contracts|collector-contract)
     exec "$PY" "$PROJECT_ROOT/scripts/collector_contracts.py" "$@"
     ;;
   sleeve-strategy-coverage|sleeve-coverage|strategy-coverage)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/sleeve_strategy_coverage_guard.py" "$@"
+    ;;
+  sleeve-mechanics|sleeve-how-it-works|sleeve-map)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/sleeve_mechanics_report.py" "$@"
     ;;
   global-halt|global-halt-status|halt-status)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/global_risk_killswitch.py" --status-only --exit-zero "$@"
@@ -651,6 +680,9 @@ case "$cmd" in
   training-label-audit|label-audit)
     exec "$PY" "$PROJECT_ROOT/scripts/training_label_audit.py" "$@"
     ;;
+  training-labeling-intelligence|training-labeling|training-process-intelligence|labeling-intelligence)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/training_labeling_intelligence.py" "$@"
+    ;;
   training-quality|training-quality-control)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/training_quality_control.py" "$@"
     ;;
@@ -685,7 +717,16 @@ case "$cmd" in
     exec "$PY" "$PROJECT_ROOT/scripts/ops/external_backlog_drain.py" "$@"
     ;;
   backpressure-drainer-fleet|backpressure-drainers|drainer-fleet)
-    exec "$PY" "$PROJECT_ROOT/scripts/ops/backpressure_drainer_fleet.py" "$@"
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/backpressure_drainer_fleet.py" "$@"
+    ;;
+  drainer-intelligence|drainer-intelligence-layer|backpressure-drainer-intelligence)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/drainer_intelligence_layer.py" "$@"
+    ;;
+  backpressure-super-drainer|super-drainer|super-drain)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/backpressure_super_drainer.py" "$@"
+    ;;
+  backlog-organizer|backlog-organizers|organize-backlog|weak-point-organizer)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/backlog_organizer.py" "$@"
     ;;
   external-backlog-retry-bot|backlog-retry-bot|external-backlog-bot)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/external_backlog_retry_bot.py" "$@"
@@ -715,7 +756,16 @@ case "$cmd" in
     exec "$PY" "$PROJECT_ROOT/scripts/ops/data_collection_observation_rollup.py" "$@"
     ;;
   writer-cycle-coordinator|writer-handoff|writer-cycle-bot)
-    exec "$PY" "$PROJECT_ROOT/scripts/ops/writer_cycle_coordinator.py" "$@"
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/writer_cycle_coordinator.py" "$@"
+    ;;
+  writer-process-intelligence|writer-intelligence|writer-process-brain|sql-writer-brain)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/writer_process_intelligence.py" "$@"
+    ;;
+  system-intelligence|whole-system-intelligence|system-intelligence-coordinator|system-signal-bus|system-brain|process-contracts|self-intelligence|system-self-intelligence|self-intelligence-layer|super-intelligence|system-super-intelligence|super-intelligence-layer|super-brain|codex-handoff|codex-attention|documentation-reporting-intelligence|docs-reporting-intelligence|readme-commands-reporting-intelligence)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/system_intelligence_coordinator.py" "$@"
+    ;;
+  pycharm-active-bot-highlights|pycharm-bot-highlights|active-bot-highlights)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/pycharm_active_bot_highlights.py" "$@"
     ;;
   retention-debt-sheriff|retention-sheriff|explanation-retention-bot)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/retention_debt_sheriff.py" "$@"
@@ -825,14 +875,35 @@ case "$cmd" in
   promotion-autopilot|promotion-packet-autopilot|promotion-autopilot-packet)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/promotion_autopilot_packet.py" "$@"
     ;;
+  promotion-quality-gate|promotion-gate|quality-gate)
+    exec "$PY" "$PROJECT_ROOT/scripts/promotion_quality_gate.py" "$@"
+    ;;
   autonomy-control|autonomy-control-plane|autonomy-plane)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/autonomy_control_plane.py" "$@"
     ;;
   live-canary-control|canary-control|supervised-canary)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_canary_control.py" "$@"
     ;;
+  paper-400-ramp|paper-ramp-400|paper-cap-400|paper-400-readiness)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/paper_400_ramp_control.py" "$@"
+    ;;
+  paper-live-data-standard|paper-standard|bot-paper-standard|standard-paper-live-data)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/paper_live_data_standard.py" "$@"
+    ;;
+  sleeve-ticker-universe|ticker-universe|expand-tickers|sleeve-tickers)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/sleeve_ticker_universe_expansion.py" "$@"
+    ;;
   runtime-throttle|throttle-control|throttle-bot)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/runtime_throttle_control.py" "$@"
+    ;;
+  process-fanout-guard|process-fanout|fanout-guard)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/process_fanout_guard.py" "$@"
+    ;;
+  guard-intelligence|guard-brain|guard-intelligence-layer|guards-intelligence|adaptive-guard-intelligence)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/guard_intelligence_layer.py" "$@"
+    ;;
+  pressure-relief|pressure-relief-control|pressure-governor|pressure-infrabot)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/pressure_relief_control.py" "$@"
     ;;
   mode-switchboard|mode-switchboard-mission-control)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/mode_switchboard_mission_control.py" "$@"
@@ -857,6 +928,9 @@ case "$cmd" in
     ;;
   storage-quota-guard|storage-quotas|quota-guard)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_quota_guard.py" "$@"
+    ;;
+  bot-logs-cleanup-intelligence|bot-logs-cleanup|tiered-storage-cleanup|storage-cleanup-intelligence)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/bot_logs_cleanup_intelligence.py" "$@"
     ;;
   release-freeze|freeze-window|runtime-freeze)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/release_freeze_guard.py" "$@"
@@ -895,8 +969,12 @@ case "$cmd" in
     exec "$PY" "$PROJECT_ROOT/scripts/ops/daily_verify_auto_remediation_bot.py" "$@"
     ;;
   memory-efficiency|memory-efficiency-control)
-    subcmd="${1:-status}"
-    shift || true
+    if [ $# -eq 0 ] || [[ "${1:-}" == --* ]]; then
+      subcmd="status"
+    else
+      subcmd="$1"
+      shift || true
+    fi
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/memory_efficiency_control.py" "$subcmd" "$@"
     ;;
   swap-pressure-governor|swap-pressure|swap-governor)
@@ -915,7 +993,7 @@ case "$cmd" in
   new-bot-admission|new-bot-admission-guard|admission-guard)
     exec "$PY" "$PROJECT_ROOT/scripts/new_bot_admission_guard.py" "$@"
     ;;
-  intelligence-capability-expansion|capability-expansion|platform-intelligence|platform-intelligence-expansion|bot-admission|sleeve-masters|quality-score-system|market-regime-router|capacity-planner|research-pipeline|correlation-governor|model-decay-detector|system-dashboard)
+  intelligence-capability-expansion|capability-expansion|platform-intelligence|platform-intelligence-expansion|bot-admission|bot-lifecycle-manager|lifecycle-manager|sleeve-masters|quality-score-system|data-quality-score|provider-failover|provider-rotation|backpressure-predictor|duplicate-alpha-detector|paper-capacity-governor|self-healing-playbooks|incident-playbooks|training-readiness-board|market-regime-router|capacity-planner|research-pipeline|correlation-governor|model-decay-detector|black-box-recorder|system-dashboard)
     if [[ "$cmd" == "intelligence-capability-expansion" || "$cmd" == "capability-expansion" ]]; then
       run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/intelligence_capability_expansion.py" "$@"
     fi
@@ -939,6 +1017,21 @@ case "$cmd" in
   adaptive-intelligence-kernel|intelligence-kernel|meta-learning-kernel)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/adaptive_intelligence_kernel_expansion.py" "$@"
     ;;
+  platform-brain-v4|grande-brain|adult-grande-brain|mcdeluxe-brain|super-giant-brain|executive-meta-orchestrator|causal-world-model|experience-memory-v2|expansion-simulator|priority-ranker|self-upgrade-planner|critic-council|outcome-verification|bot-portfolio-economist|data-value-engine|training-scheduler-brain|operator-intent-model)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/platform_brain_v4.py" "$@"
+    ;;
+  platform-brain-v5|reflex-brain|reflex-cortex|grande-brain-v5|mcdeluxe-brain-v2|super-giant-brain-v2|temporal-self-model|reflex-action-router|regret-ledger|scenario-rehearsal|adaptive-cadence|safe-autonomy-boundary|critic-fusion|resource-budget-brain|data-contract-negotiator|bot-curriculum|dependency-reflex-map|strategic-roadmap)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/platform_brain_v5.py" "$@"
+    ;;
+  platform-brain-v6|foresight-brain|foresight-cortex|counterfactual-world-model|causal-intervention-planner|hierarchical-memory-router|multi-agent-debate|uncertainty-risk-calibrator|adaptive-resource-governor|operator-narrative)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/platform_brain_v6.py" "$@"
+    ;;
+  platform-stabilization|quality-stabilizer|growth-stabilizer|stabilization-quality|stability-quality|pressure-quality-stabilizer)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/platform_stabilization_quality.py" "$@"
+    ;;
+  platform-settlement-stabilization|settlement-stabilization|market-hours-stabilization|queue-settlement-stabilizer|post-expansion-stabilizer)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/platform_settlement_stabilization.py" "$@"
+    ;;
   big-platform-brain|platform-brain|system-self-model|self-model|self-awareness|metacognition)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/system_self_model.py" "$@"
     ;;
@@ -953,6 +1046,36 @@ case "$cmd" in
     ;;
   apex-self-awareness-intelligence|apex-intelligence|thousand-bot-apex|self-awareness-apex|intelligence-apex|meta-cognition-apex)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/apex_self_awareness_intelligence_expansion.py" "$@"
+    ;;
+  deep-recursive-awareness|recursive-awareness|platform-brain-v3|causal-self-diagnosis|predictive-runtime-oracle|experience-memory-core|self-upgrade-critic-board|operator-context-governor|recursive-platform-map)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/deep_recursive_awareness_expansion.py" "$@"
+    ;;
+  frontier-intelligence-expansion|frontier-intelligence|frontier-brain|adult-grande-brain-v3|counterfactual-causal-lab|multi-agent-debate-critique|uncertainty-risk-calibration|active-learning-data-value|alpha-thesis-factory|execution-microstructure-sandbox)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/frontier_intelligence_expansion.py" "$@"
+    ;;
+  institutional-alpha-validation|institutional-validation|alpha-evidence-court|execution-quality-lab-v2|portfolio-intelligence-layer|regime-transition-engine|options-risk-intelligence-v2|futures-basis-lab|data-quality-observatory|crisis-simulation-factory|model-governance-board|operator-copilot-v2|backpressure-storage-brain-v2|grandmaster-decision-quality)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/institutional_alpha_validation_expansion.py" "$@"
+    ;;
+  trading-muscle-systems|trading-muscles|muscle-systems|trading-muscles-v1|intraday-momentum-muscle|mean-reversion-muscle|swing-trend-muscle|options-convexity-muscle|options-income-muscle|futures-macro-muscle|crypto-basis-muscle|vol-arb-muscle|event-driven-muscle|relative-value-muscle|portfolio-hedging-muscle|execution-timing-muscle|position-sizing-muscle|exit-rebalance-muscle)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/trading_muscle_systems_expansion.py" "$@"
+    ;;
+  platform-organ-systems|platform-organs|organ-systems|platform-organs-v1|data-quality-v2|feature-store-registry|scenario-lab-v2|execution-realism-layer|portfolio-brain-organ|alpha-decay-tracker|regime-router-organ|research-assimilation|bot-promotion-court|operator-cockpit-v2|resource-metabolism|memory-lymphatic|backpressure-circulatory|audit-immune-system)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/platform_organ_systems_expansion.py" "$@"
+    ;;
+  whole-system-governor|system-governor|governance-brain|sleeve-economy|evidence-court|memory-storage-triage|operator-decision-packet)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/whole_system_governor.py" "$@"
+    ;;
+  quant-operational-intelligence|quant-ops-intelligence|quant-and-operational-intelligence|operational-intelligence-expansion|quant-intelligence-expansion|alpha-factor-court|backlog-outcome-verifier|safe-command-router|capacity-forecast-scheduler)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/quant_operational_intelligence_expansion.py" "$@"
+    ;;
+  autonomic-governance-mesh|governance-mesh|system-governance-expansion|autonomic-mesh)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/autonomic_governance_mesh_expansion.py" "$@"
+    ;;
+  quant-strategy-gap|strategy-gap-expansion|tradable-alpha-gap|convertible-bond-arb|capital-structure-arb|merger-event-arb|etf-basket-arb|index-rebalance-arb|vol-risk-premium|cross-asset-carry)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/quant_strategy_gap_expansion.py" "$@"
+    ;;
+  expansion-list-report|expansion-inventory|expansion-list|expansion-report)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/expansion_list_report.py" "$@"
     ;;
   bot-founder-dna|founder-dna|bot-genome|lineage-dna)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/bot_founder_dna_lineage.py" "$@"
@@ -1027,6 +1150,12 @@ case "$cmd" in
   health)
     exec "$PY" "$PROJECT_ROOT/scripts/daily_auto_verify.py" --json "$@"
     ;;
+  health-fast|fast-health)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/health_fast.py" "$@"
+    ;;
+  runtime-gate-dashboard|gate-dashboard|runtime-gates)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/runtime_gate_dashboard.py" "$@"
+    ;;
   dashboard-refresh|runtime-artifact-refresh|runtime-contract-refresh)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/runtime_artifact_refresh.py" --json "$@"
     ;;
@@ -1058,6 +1187,7 @@ case "$cmd" in
     exec "$PY" "$PROJECT_ROOT/scripts/ops/doctor.py" "$@"
     ;;
   schwab-futures-start)
+    refresh_paper_400_ramp_quietly
     FORCE_RESTART=0
     SCHWAB_SIMULATE="${SCHWAB_FUTURES_SIMULATE:-0}"
     PAPER_MODE=1
@@ -1101,8 +1231,8 @@ case "$cmd" in
       --broker schwab
       --profile "$FUTURES_PROFILE"
       --domain equities
-      --symbols "${SCHWAB_FUTURES_WATCH_SYMBOLS:-/ES,/NQ,/YM,/RTY,/CL,/GC,/ZN}"
-      --context-symbols "${SCHWAB_FUTURES_CONTEXT_SYMBOLS:-SPY,UUP,GLD}"
+      --symbols "${SCHWAB_FUTURES_WATCH_SYMBOLS:-SPY,QQQ,DIA,IWM,USO,GLD,TLT}"
+      --context-symbols "${SCHWAB_FUTURES_CONTEXT_SYMBOLS:-SPY,QQQ,DIA,IWM,UUP,GLD,TLT}"
       --interval-seconds "${SCHWAB_FUTURES_WATCH_INTERVAL_SECONDS:-12}"
       --max-iterations 0
     )
@@ -1135,6 +1265,7 @@ case "$cmd" in
     echo "schwab futures loop stopped profile=$FUTURES_PROFILE"
     ;;
   coinbase-start)
+    refresh_paper_400_ramp_quietly
     FORCE_RESTART=0
     COINBASE_SIMULATE="${COINBASE_START_SIMULATE:-0}"
     PAPER_MODE=1
@@ -1204,6 +1335,7 @@ case "$cmd" in
     fi
     ;;
   coinbase-futures-start)
+    refresh_paper_400_ramp_quietly
     FORCE_RESTART=0
     COINBASE_SIMULATE="${COINBASE_FUTURES_SIMULATE:-0}"
     PAPER_MODE=1
@@ -1288,6 +1420,7 @@ case "$cmd" in
     echo "coinbase futures loop stopped profile=$FUTURES_PROFILE"
     ;;
   fx-start)
+    refresh_paper_400_ramp_quietly
     FORCE_RESTART=0
     FX_SIMULATE="${FX_START_SIMULATE:-0}"
     PAPER_MODE=1
@@ -1893,6 +2026,7 @@ opsctl commands:
   source-verification [--json]
   collector-contracts [--json]
   sleeve-strategy-coverage [--json]
+  sleeve-mechanics|sleeve-how-it-works|sleeve-map [--json]
   mlx-audit [--json]
   mlx-library-upgrade [--apply] [--json]
   mlx-audio-audit [--json]
@@ -1904,6 +2038,7 @@ opsctl commands:
   sql-audit [--json]
   training-registry-audit [--json]
   training-label-audit [--json]
+  training-labeling-intelligence [--apply] [--json]
   training-quality [--json]
   feature-store [--json]
   multiple-testing-guard [--json]
@@ -1915,8 +2050,13 @@ opsctl commands:
   ingestion-storage-governor [status|apply] [--json]
   external-backlog-drain [--apply] [--follow-through] [--poll-seconds N] [--wait-timeout-seconds N] [--force-live-window] [--json]
   backpressure-drainer-fleet [--apply] [--force-live-window] [--ttl-seconds N] [--json]
+  drainer-intelligence-layer [--apply] [--target-pending-lines N] [--json]
+  backpressure-super-drainer [--apply] [--max-waves N] [--target-pending-lines N] [--include-maintenance] [--json]
   external-backlog-retry-bot [--apply] [--poll-seconds N] [--wait-timeout-seconds N] [--command-timeout-seconds N] [--json]
   writer-cycle-coordinator [--apply] [--skip-drain] [--skip-maintenance] [--maintenance-force] [--maintenance-vacuum] [--poll-seconds N] [--wait-timeout-seconds N] [--command-timeout-seconds N] [--json]
+  writer-process-intelligence [--apply] [--json]
+  system-intelligence|super-intelligence|docs-reporting-intelligence [--apply] [--json] [--pycharm-index-file PATH]
+  pycharm-active-bot-highlights [--apply] [--json]
   retention-debt-sheriff [--apply] [--force] [--poll-seconds N] [--wait-timeout-seconds N] [--command-timeout-seconds N] [--json]
   backpressure-slo-bot [--apply] [--command-timeout-seconds N] [--json]
   backlog-quarantine [--apply] [--max-move-files N] [--json]
@@ -1973,8 +2113,18 @@ opsctl commands:
   auth-lease [--min-lease-seconds N] [--critical-lease-seconds N] [--json]
   incident-timeline [--files-per-pattern N] [--rows-per-file N] [--recent-limit N] [--json]
   promotion-autopilot [--json]
+  promotion-quality-gate|promotion-gate [--json]
   autonomy-control [--json]
+  paper-400-ramp|paper-ramp-400|paper-cap-400 [--apply] [--today YYYY-MM-DD] [--json]
+  paper-live-data-standard|paper-standard [--apply] [--json]
+  sleeve-ticker-universe|expand-tickers [--apply] [--json]
   runtime-throttle|throttle-control|throttle-bot [--apply] [--max-renice-processes N] [--json]
+  process-fanout-guard|process-fanout|fanout-guard [--apply] [--json]
+  guard-intelligence|guard-brain [--apply] [--json]
+  pressure-relief|pressure-governor [--apply] [--json]
+  backlog-organizer|organize-backlog [--apply] [--json]
+  health-fast|fast-health [--json]
+  runtime-gate-dashboard|gate-dashboard [--json]
   mode-switchboard|mode-switchboard-mission-control [--json]
   decision-provenance|decision-provenance-cards [--limit N] [--json]
   grade-regression-guard|regression-guard [--json]
@@ -1987,6 +2137,7 @@ opsctl commands:
   runtime-snapshot-cache [--fresh-minutes N] [--stale-minutes N] [--json]
   remote-alert-control [--hours N] [--ack-event NAME] [--ack-all-critical] [--json]
   storage-quota-guard [--json]
+  bot-logs-cleanup-intelligence [--apply] [--target-free-gb N] [--max-tier N] [--json]
   release-freeze [--activate-days N | --clear-window] [--reason TEXT] [--json]
   legacy-bot-harmonizer|legacy-v107-harmonizer [--apply] [--json]
   roster-expansion [--apply-registry] [--json]
@@ -2004,7 +2155,12 @@ opsctl commands:
   creative-cotenant-guard|creative-cotenant|cotenant-guard [status|apply] [--json]
   platform-control-plane [--max-rows N] [--json]
   intelligence-capability-expansion|capability-expansion [--apply] [--json]
-  platform-intelligence [--max-rows N] [--json]
+  platform-intelligence [--apply] [--max-rows N] [--json]
+  platform-brain-v4|grande-brain [--apply] [--json]
+  platform-brain-v5|reflex-brain [--apply] [--json]
+  platform-brain-v6|foresight-brain [--apply] [--json]
+  platform-stabilization|quality-stabilizer [--apply] [--json]
+  platform-settlement-stabilization|settlement-stabilization [--apply] [--json]
   expansion-capacity [--wave-size N] [--json]
   advanced-intelligence-mesh|intelligence-mesh [--apply] [--json]
   cognitive-control-plane|cognitive-control [--apply] [--json]
@@ -2018,6 +2174,16 @@ opsctl commands:
   alpha-intelligence-evolution|alpha-advancement [--apply] [--json]
   intelligence-layer-advancement|intelligence-layer-v2 [--apply] [--json]
   apex-self-awareness-intelligence|thousand-bot-apex [--apply] [--json]
+  deep-recursive-awareness|platform-brain-v3 [--apply] [--json]
+  frontier-intelligence-expansion|frontier-intelligence [--apply] [--json]
+  institutional-alpha-validation|institutional-validation [--apply] [--json]
+  trading-muscle-systems|trading-muscles [--apply] [--json]
+  platform-organ-systems|platform-organs [--apply] [--json]
+  whole-system-governor|system-governor [--apply] [--json]
+  quant-operational-intelligence|quant-ops-intelligence [--apply] [--json]
+  autonomic-governance-mesh|governance-mesh [--apply] [--json]
+  quant-strategy-gap|strategy-gap-expansion [--apply] [--json]
+  expansion-list-report|expansion-inventory [--no-render-pdf] [--json]
   new-bot-admission|new-bot-admission-guard [--json]
   bot-founder-dna|founder-dna [--apply-registry] [--json]
   cross-host-parity [--json]

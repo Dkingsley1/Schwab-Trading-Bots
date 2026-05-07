@@ -12,6 +12,11 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.accountability import write_registry_mutation_journal
 
 _LOG_ARTIFACT_SUFFIXES = (".json", ".jsonl", ".log", ".txt")
+COLLECTION_ONLY_LIFECYCLE_STATES = {
+    "data_collection_only",
+    "shadow_candidate",
+    "collection_only",
+}
 
 
 def _load(path: Path) -> dict:
@@ -138,6 +143,11 @@ def _artifact_state(*, model_ok: bool, log_ok: bool) -> str:
     if (not model_ok) and log_ok:
         return "missing_model_only"
     return "missing_both"
+
+
+def _is_collection_only_row(row: dict) -> bool:
+    lifecycle_state = str(row.get("lifecycle_state") or "").strip().lower()
+    return lifecycle_state in COLLECTION_ONLY_LIFECYCLE_STATES
 
 
 def _diag_int(diag: dict, key: str) -> int:
@@ -280,6 +290,8 @@ def main() -> int:
     sub_bots = reg.get("sub_bots") if isinstance(reg.get("sub_bots"), list) else []
 
     active_rows = [r for r in sub_bots if isinstance(r, dict) and bool(r.get("active", False))]
+    collection_only_active_rows = [r for r in active_rows if _is_collection_only_row(r)]
+    supportability_active_rows = [r for r in active_rows if not _is_collection_only_row(r)]
     missing_active_hard = []
     missing_log_only = []
     stale_diagnostics = []
@@ -289,7 +301,7 @@ def main() -> int:
     runtime_input_downgraded_rows = []
     registry_before = json.loads(json.dumps(reg)) if isinstance(reg, dict) else {}
 
-    for row in active_rows:
+    for row in supportability_active_rows:
         bot_id = str(row.get("bot_id", "")).strip()
         model_path = _as_path(row.get("model_path"))
         log_path = _as_path(row.get("log_file"))
@@ -498,6 +510,8 @@ def main() -> int:
     manifest_payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "active_bots": len(active_rows),
+        "supportability_active_bots": len(supportability_active_rows),
+        "active_collection_only_bots": len(collection_only_active_rows),
         "rows": manifest_rows,
     }
     Path(args.manifest_file).write_text(json.dumps(manifest_payload, ensure_ascii=True, indent=2), encoding="utf-8")
@@ -520,6 +534,8 @@ def main() -> int:
         },
         "disk": {"free_gb": round(free_gb, 2)},
         "active_bots": len(active_rows),
+        "supportability_active_bots": len(supportability_active_rows),
+        "active_collection_only_bots": len(collection_only_active_rows),
         "missing_active_artifacts": len(missing_active_hard),
         "missing_active_artifacts_total": len(missing_active_hard) + len(missing_log_only),
         "missing_log_only_artifacts": len(missing_log_only),

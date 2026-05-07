@@ -23,6 +23,12 @@ DEFAULT_QUEUE_PATH = PROJECT_ROOT / "governance" / "walk_forward" / "coverage_ga
 LOCAL_TZ = ZoneInfo("America/New_York") if ZoneInfo is not None else timezone.utc
 OFF_HOURS_START = dt_time(16, 15)
 OFF_HOURS_END = dt_time(9, 20)
+PREFLIGHT_REPAIR_ACTIONS = {
+    "rebuild_model_artifact",
+    "recover_training_log",
+    "refresh_training_diagnostics",
+    "targeted_retrain",
+}
 
 
 def _iso_now() -> str:
@@ -63,6 +69,11 @@ def _ordered_unique(items: list[str]) -> list[str]:
     return out
 
 
+def _needs_coverage_preflight_repair(row: dict[str, Any]) -> bool:
+    actions = {str(raw or "").strip() for raw in list(row.get("actions") or []) if str(raw or "").strip()}
+    return bool(actions.intersection(PREFLIGHT_REPAIR_ACTIONS))
+
+
 def _off_hours_window(now_utc: datetime | None = None) -> dict[str, Any]:
     current = (now_utc or datetime.now(timezone.utc)).astimezone(LOCAL_TZ)
     local_clock = current.timetz().replace(tzinfo=None)
@@ -99,6 +110,7 @@ def _autopilot_contract(
     backup_count = len(backup_candidates)
     inflight_retrain_count = len(in_flight)
     repair_required_count = sum(1 for row in active_stage if bool(row.get("needs_runtime_input_repair", False)))
+    preflight_repair_required_count = sum(1 for row in active_stage if _needs_coverage_preflight_repair(row))
     remaining_run_budget = sum(max(_safe_int(row.get("runs_remaining"), 0), 0) for row in active_stage)
     snapshot_ready = bool(training_runtime.get("snapshot_ready", False))
     training_runtime_blocked = str(training_runtime.get("overall_status") or "").strip().lower() == "blocked"
@@ -115,6 +127,7 @@ def _autopilot_contract(
         shortfall > 0
         and stage_count > 0
         and repair_required_count <= 0
+        and preflight_repair_required_count <= 0
         and inflight_retrain_count <= 0
         and snapshot_ready
         and (coverage_repair_ready or not training_runtime_blocked)
@@ -141,6 +154,7 @@ def _autopilot_contract(
             "coverage_cleared" if shortfall <= 0 else "",
             "awaiting_candidates" if shortfall > 0 and stage_count <= 0 else "",
             "runtime_input_repair_required" if shortfall > 0 and stage_count > 0 and repair_required_count > 0 else "",
+            "coverage_preflight_repair_required" if shortfall > 0 and stage_count > 0 and preflight_repair_required_count > 0 else "",
             "waiting_for_idle" if inflight_retrain_count > 0 else "",
             "training_runtime_blocked" if training_runtime_blocked and not coverage_repair_ready else "",
             "swap_pressure_elevated" if swap_pressure_elevated else "",
@@ -156,6 +170,7 @@ def _autopilot_contract(
         shortfall > 0
         and stage_count > 0
         and repair_required_count <= 0
+        and preflight_repair_required_count <= 0
         and inflight_retrain_count <= 0
         and snapshot_ready
         and (coverage_repair_ready or not training_runtime_blocked)
@@ -177,6 +192,10 @@ def _autopilot_contract(
         launch_state = "runtime_input_repair_required"
         overall_status = "degraded"
         next_action = "repair runtime inputs for staged candidates before launching coverage cycles"
+    elif preflight_repair_required_count > 0:
+        launch_state = "coverage_preflight_repair_required"
+        overall_status = "degraded"
+        next_action = "repair model/log/diagnostic preflight gaps for staged candidates before launching coverage cycles"
     elif inflight_retrain_count > 0:
         launch_state = "waiting_for_idle"
         overall_status = "degraded"
@@ -204,6 +223,7 @@ def _autopilot_contract(
         "stage_candidate_count": stage_count,
         "backup_candidate_count": backup_count,
         "repair_required_count": repair_required_count,
+        "preflight_repair_required_count": preflight_repair_required_count,
         "remaining_run_budget": remaining_run_budget,
         "inflight_retrain_count": inflight_retrain_count,
         "snapshot_ready": snapshot_ready,
@@ -228,6 +248,7 @@ def _autopilot_contract(
             "window_end_local": str(off_hours.get("window_end_local") or ""),
             "launch_guard": ("off_hours_only" if off_hours_preferred else "runtime_clear"),
             "coverage_repair_ready": coverage_repair_ready,
+            "preflight_repair_required_count": preflight_repair_required_count,
         },
         "recommended_commands": {
             "stage_only": [
@@ -484,7 +505,11 @@ def _candidate_pool(project_root: Path, *, candidate_limit: int, stage_count: in
                 continue
             if len(promoted_backups) < max(int(stage_count), 1):
                 promoted = dict(row)
-                promoted["coverage_stage_kind"] = "runtime_input_repair_required"
+                promoted["coverage_stage_kind"] = (
+                    "runtime_input_repair_required"
+                    if bool(promoted.get("needs_runtime_input_repair", False))
+                    else "coverage_preflight_repair_required"
+                )
                 promoted_backups.append(promoted)
             else:
                 remaining_backups.append(row)

@@ -76,6 +76,7 @@ fi
 [[ -x "$PROJECT_ROOT/scripts/install_failover_watch_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_failover_watch_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/install_premarket_token_guard_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_premarket_token_guard_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/install_reboot_resilience_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_reboot_resilience_launchd.sh"
+[[ -x "$PROJECT_ROOT/scripts/install_process_fanout_guard_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_process_fanout_guard_launchd.sh"
 
 echo "Installed infra launchd stack"
 if [[ "$ORCHESTRATOR_MODE" == "all_sleeves" ]]; then

@@ -258,6 +258,14 @@ EXOTIC_DERIVATIVE_FEATURE_KEYS = [
     "exotic_proxy_cliquet_floor_cap_norm",
     "exotic_proxy_signature_trend_follower_norm",
     "exotic_proxy_esg_ccds_norm",
+    "exotic_proxy_forward_start_option_norm",
+    "exotic_proxy_chooser_option_norm",
+    "exotic_proxy_asian_path_average_norm",
+    "exotic_proxy_digital_binary_norm",
+    "exotic_proxy_corridor_variance_norm",
+    "exotic_proxy_quanto_fx_beta_norm",
+    "exotic_proxy_jump_gap_risk_norm",
+    "exotic_proxy_recovery_lock_norm",
     "exotic_data_confidence_norm",
     "exotic_proxy_only_guard_norm",
 ]
@@ -497,6 +505,56 @@ def summarize_exotic_derivative_proxy_features(
         _feature(features, "issuer_esg_event_norm"),
         _feature(features, "esg_controversy_stress_norm"),
     )
+    forward_start_option = max(
+        options_surface,
+        _feature(features, "forward_start_vol_start_norm"),
+        _feature(features, "forward_start_moneyness_reset_norm"),
+        _feature(features, "forward_start_skew_reset_norm"),
+    )
+    chooser_option = max(
+        options_surface,
+        structured_payoff,
+        _feature(features, "chooser_option_switch_value_norm"),
+        _feature(features, "event_optionality_choice_norm"),
+    )
+    asian_path_average = max(
+        barrier_path,
+        _feature(features, "asian_path_average_deviation_norm"),
+        _feature(features, "path_average_realized_vol_norm"),
+        _feature(features, "twap_vwap_path_dependency_norm"),
+    )
+    digital_binary = max(
+        options_surface,
+        _feature(features, "digital_binary_event_risk_norm"),
+        _feature(features, "binary_payoff_gap_probability_norm"),
+        _feature(features, "calendar_event_window_norm"),
+    )
+    corridor_variance = max(
+        variance_vol_swap,
+        _feature(features, "corridor_variance_realized_range_norm"),
+        _feature(features, "realized_range_occupancy_norm"),
+        _feature(features, "variance_corridor_breach_norm"),
+    )
+    quanto_fx_beta = max(
+        correlation_dispersion,
+        _feature(features, "quanto_fx_equity_beta_norm"),
+        _feature(features, "fx_equity_vol_correlation_norm"),
+        _feature(features, "cross_currency_underlier_beta_norm"),
+    )
+    jump_gap_risk = max(
+        tail_risk,
+        barrier_path,
+        _feature(features, "overnight_gap_option_jump_norm"),
+        _feature(features, "jump_diffusion_tail_gap_norm"),
+        _feature(features, "event_gap_discontinuity_norm"),
+    )
+    recovery_lock = max(
+        credit_stress,
+        structured_payoff,
+        _feature(features, "recovery_lock_credit_note_norm"),
+        _feature(features, "capital_protection_participation_ratchet_norm"),
+        _feature(features, "base_correlation_convexity_norm"),
+    )
 
     public_source_score = 0.0
     snapshots = external_snapshots if isinstance(external_snapshots, Mapping) else {}
@@ -553,6 +611,14 @@ def summarize_exotic_derivative_proxy_features(
             "exotic_proxy_cliquet_floor_cap_norm": cliquet_floor_cap,
             "exotic_proxy_signature_trend_follower_norm": signature_trend_follower,
             "exotic_proxy_esg_ccds_norm": esg_ccds,
+            "exotic_proxy_forward_start_option_norm": forward_start_option,
+            "exotic_proxy_chooser_option_norm": chooser_option,
+            "exotic_proxy_asian_path_average_norm": asian_path_average,
+            "exotic_proxy_digital_binary_norm": digital_binary,
+            "exotic_proxy_corridor_variance_norm": corridor_variance,
+            "exotic_proxy_quanto_fx_beta_norm": quanto_fx_beta,
+            "exotic_proxy_jump_gap_risk_norm": jump_gap_risk,
+            "exotic_proxy_recovery_lock_norm": recovery_lock,
             "exotic_proxy_only_guard_norm": 1.0,
         }
     )
@@ -586,6 +652,14 @@ def summarize_exotic_derivative_proxy_features(
         cliquet_floor_cap,
         signature_trend_follower,
         esg_ccds,
+        forward_start_option,
+        chooser_option,
+        asian_path_average,
+        digital_binary,
+        corridor_variance,
+        quanto_fx_beta,
+        jump_gap_risk,
+        recovery_lock,
     ]
     out["exotic_data_confidence_norm"] = _clamp01(sum(relevant_proxy_values) / max(len(relevant_proxy_values), 1))
     return out

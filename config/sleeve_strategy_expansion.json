@@ -2300,7 +2300,12 @@
         "duration_regime",
         "credit_spread_rotation",
         "yield_curve_shock",
-        "flight_to_quality"
+        "flight_to_quality",
+        "real_yield_breakout",
+        "breakeven_inflation_rotation",
+        "belly_curve_butterfly_watch",
+        "credit_quality_migration_proxy",
+        "treasury_auction_tail_risk"
       ]
     },
     {
@@ -2310,7 +2315,12 @@
         "dollar_stress",
         "rates_differential_proxy",
         "safe_haven_rotation",
-        "commodity_fx_feedback"
+        "commodity_fx_feedback",
+        "cross_currency_basis_stress",
+        "dollar_smile_regime_switch",
+        "carry_unwind_alert",
+        "reserve_currency_rotation",
+        "commodity_terms_of_trade_fx"
       ]
     },
     {
@@ -2322,7 +2332,12 @@
         "put_wall_breakdown",
         "iv_skew_dislocation",
         "earnings_straddle_decay",
-        "calendar_iv_reset"
+        "calendar_iv_reset",
+        "zero_dte_dealer_inventory_flip",
+        "put_call_skew_surge",
+        "unusual_sweep_confirmation",
+        "iv_rank_event_filter",
+        "gamma_expiry_pin_break"
       ]
     },
     {
@@ -2332,7 +2347,12 @@
         "liquidity_beta",
         "risk_off_bridge",
         "exchange_status_guard",
-        "cross_asset_crypto_correlation"
+        "cross_asset_crypto_correlation",
+        "spot_etf_flow_impulse",
+        "stablecoin_liquidity_expansion",
+        "exchange_reserve_drawdown",
+        "bitcoin_dominance_rotation",
+        "onchain_risk_appetite_proxy"
       ]
     },
     {
@@ -2342,7 +2362,12 @@
         "perp_basis",
         "funding_stress",
         "event_followthrough",
-        "liquidity_throttle_reentry"
+        "liquidity_throttle_reentry",
+        "funding_term_structure_kink",
+        "open_interest_liquidation_ladder",
+        "perp_spot_basis_compression",
+        "weekend_gap_risk_premium",
+        "options_expiry_max_pain_crypto"
       ]
     },
     {
@@ -2351,7 +2376,12 @@
       "strategies": [
         "index_futures_lead_lag",
         "macro_event_followthrough",
-        "overnight_gap_risk"
+        "overnight_gap_risk",
+        "futures_opening_drive_context",
+        "futures_vwap_acceptance_rejection",
+        "futures_basis_spread_watch",
+        "futures_globex_range_breakout",
+        "futures_macro_liquidity_sweep"
       ]
     },
     {
@@ -2407,7 +2437,12 @@
       "strategies": [
         "energy_shock",
         "supply_chain_margin_pressure",
-        "commodity_currency_feedback"
+        "commodity_currency_feedback",
+        "refinery_crack_margin_proxy",
+        "grains_weather_shock_rotation",
+        "copper_growth_inflation_divergence",
+        "uranium_supply_squeeze_watch",
+        "shipping_freight_inflation_proxy"
       ]
     },
     {
@@ -2416,7 +2451,12 @@
       "strategies": [
         "country_etf_rotation",
         "usd_translation_pressure",
-        "em_risk_on_off"
+        "em_risk_on_off",
+        "japan_yen_equity_feedback",
+        "china_credit_impulse_proxy",
+        "europe_energy_margin_rotation",
+        "em_fx_reserve_stress",
+        "global_real_rate_dispersion"
       ]
     },
     {
@@ -2426,7 +2466,12 @@
         "spread_capture_watch",
         "quote_fade_detection",
         "auction_imbalance_followthrough",
-        "liquidity_pocket_reversal"
+        "liquidity_pocket_reversal",
+        "queue_position_decay_watch",
+        "spread_regime_shift_detector",
+        "dark_pool_print_absorption",
+        "lit_venue_depth_imbalance",
+        "microprice_reversion_quality"
       ]
     },
     {
@@ -2436,7 +2481,12 @@
         "index_inverse_hedge",
         "sector_breakdown_confirmation",
         "volatility_spike_defense",
-        "credit_stress_de_risk"
+        "credit_stress_de_risk",
+        "crowded_long_unwind_detector",
+        "negative_revision_breakdown",
+        "weak_balance_sheet_momentum_short",
+        "beta_hedge_rebalance_trigger",
+        "bear_flag_failure_continuation"
       ]
     },
     {
@@ -2446,7 +2496,12 @@
         "earnings_iv_event_watch",
         "single_name_gamma_squeeze",
         "post_event_vol_reset",
-        "catalyst_gap_followthrough"
+        "catalyst_gap_followthrough",
+        "analyst_day_volatility_setup",
+        "fda_adcom_event_convexity",
+        "product_launch_gap_continuation",
+        "activist_stake_disclosure_followthrough",
+        "litigation_ruling_vol_reset"
       ]
     },
     {
@@ -2456,7 +2511,12 @@
         "yield_curve_credit_stress",
         "bank_funding_pressure",
         "duration_credit_rotation",
-        "dollar_liquidity_tightening"
+        "dollar_liquidity_tightening",
+        "ig_hy_dispersion_stress",
+        "swap_spread_dislocation_watch",
+        "sofr_futures_policy_path_shift",
+        "bank_cds_equity_divergence",
+        "credit_curve_inversion_alert"
       ]
     },
     {
@@ -2466,7 +2526,12 @@
         "risk_off_cash_parking",
         "t_bill_proxy_rotation",
         "low_edge_no_trade_filter",
-        "defensive_reentry_timing"
+        "defensive_reentry_timing",
+        "ultra_short_duration_yield_switch",
+        "cash_to_quality_reentry_ladder",
+        "treasury_bill_auction_yield_capture",
+        "liquidity_stress_cash_buffer",
+        "defensive_cash_drag_optimizer"
       ]
     },
     {
@@ -2492,7 +2557,12 @@
         "index_open_drive",
         "nq_es_relative_strength",
         "rty_risk_appetite",
-        "cash_futures_lead_lag"
+        "cash_futures_lead_lag",
+        "index_futures_liquidity_vacuum",
+        "opening_imbalance_futures_confirmation",
+        "cash_session_breakout_alignment",
+        "overnight_inventory_unwind",
+        "futures_close_auction_positioning"
       ]
     },
     {
@@ -2502,7 +2572,12 @@
         "curve_shock_relay",
         "duration_breakout",
         "auction_risk_window",
-        "fed_repricing_followthrough"
+        "fed_repricing_followthrough",
+        "two_ten_curve_repricing_scout",
+        "sofr_roll_yield_watch",
+        "duration_convexity_squeeze",
+        "fed_speaker_curve_impulse",
+        "treasury_refunding_steepener_watch"
       ]
     },
     {
@@ -2512,7 +2587,12 @@
         "energy_inflation_impulse",
         "gold_dollar_real_yield",
         "term_structure_roll_pressure",
-        "commodity_to_equity_transmission"
+        "commodity_to_equity_transmission",
+        "crude_inventory_surprise_reaction",
+        "natural_gas_weather_delta",
+        "gold_real_yield_divergence",
+        "copper_dollar_growth_proxy",
+        "commodity_curve_backwardation_watch"
       ]
     },
     {
@@ -2522,7 +2602,12 @@
         "perp_basis_divergence",
         "funding_stress",
         "liquidation_cascade_watch",
-        "etf_spot_future_confirmation"
+        "etf_spot_future_confirmation",
+        "crypto_calendar_basis_ladder",
+        "perp_funding_crowding_score",
+        "etf_premium_basis_bridge",
+        "liquidation_heatmap_reversal",
+        "cross_exchange_basis_dislocation"
       ]
     },
     {
@@ -2532,7 +2617,12 @@
         "macro_event_first_reaction",
         "post_event_fade",
         "post_event_followthrough",
-        "halt_reopen_liquidity_guard"
+        "halt_reopen_liquidity_guard",
+        "cpi_release_futures_impulse",
+        "fomc_press_conference_second_move",
+        "nfp_whipsaw_reversion",
+        "treasury_auction_tail_followthrough",
+        "geopolitical_gap_fade_or_follow"
       ]
     },
     {
@@ -2541,7 +2631,12 @@
       "strategies": [
         "sector_master_rotation",
         "sector_breadth_confirmation",
-        "cross_sector_risk_budget"
+        "cross_sector_risk_budget",
+        "sector_volatility_risk_budget",
+        "sector_earnings_revision_breadth",
+        "sector_factor_crowding_unwind",
+        "sector_defensive_cyclical_barbell",
+        "sector_liquidity_lead_lag"
       ]
     },
     {
@@ -2551,7 +2646,12 @@
         "trim_add_hold_decisioning",
         "tax_aware_holding_period",
         "edge_decay_position_review",
-        "risk_budget_rebalance"
+        "risk_budget_rebalance",
+        "partial_profit_ladder_optimizer",
+        "trailing_stop_volatility_band",
+        "position_age_decay_exit",
+        "add_on_pullback_quality",
+        "rebalance_tax_lot_priority"
       ]
     },
     {
@@ -2561,7 +2661,12 @@
         "slippage_venue_quality",
         "quote_fade_penalty",
         "spread_realism_score",
-        "paper_to_live_execution_gap"
+        "paper_to_live_execution_gap",
+        "venue_fill_quality_ranker",
+        "order_type_slippage_attribution",
+        "partial_fill_patience_model",
+        "spread_crossing_cost_guard",
+        "queue_delay_execution_penalty"
       ]
     },
     {
@@ -2608,7 +2713,9 @@
         "event_window_nested_convexity",
         "skew_reset_compound_valuation",
         "calendar_roll_exercise_tree",
-        "hedge_cost_guardrail"
+        "hedge_cost_guardrail",
+        "forward_start_skew_reset",
+        "chooser_event_optionality"
       ]
     },
     {
@@ -2631,7 +2738,10 @@
         "reverse_convertible_income_risk",
         "principal_protection_rate_context",
         "correlation_coupon_guard",
-        "cliquet_global_floor_local_cap"
+        "cliquet_global_floor_local_cap",
+        "worst_of_airbag_autocall",
+        "recovery_lock_credit_note_guard",
+        "capital_protection_participation_ratchet"
       ]
     },
     {
@@ -2655,7 +2765,8 @@
         "fx_equity_commodity_basket",
         "correlation_breakout_hedge",
         "relative_vol_surface",
-        "signature_trend_follower_options"
+        "signature_trend_follower_options",
+        "quanto_fx_equity_vol_beta"
       ]
     },
     {
@@ -2666,7 +2777,8 @@
         "credit_spread_waterfall",
         "issuer_sector_contagion",
         "macro_funding_trigger",
-        "tail_attachment_detachment_guard"
+        "tail_attachment_detachment_guard",
+        "base_correlation_convexity"
       ]
     },
     {
@@ -2677,7 +2789,8 @@
         "recursive_correlation_break",
         "credit_vol_tail_stack",
         "liquidity_freeze_ladder",
-        "black_swan_credit_cascade_guard"
+        "black_swan_credit_cascade_guard",
+        "nth_to_default_contagion_ladder"
       ]
     },
     {
@@ -2689,7 +2802,8 @@
         "risk_premium_regime",
         "vol_of_vol_convexity",
         "corridor_variance_event_guard",
-        "rough_volatility_vvix_exotics"
+        "rough_volatility_vvix_exotics",
+        "corridor_variance_realized_range"
       ]
     },
     {
@@ -2701,7 +2815,10 @@
         "lookback_path_extreme",
         "barrier_gap_risk",
         "path_dependency_hedge_cost",
-        "quantum_barrier_path_amplitude_options"
+        "quantum_barrier_path_amplitude_options",
+        "asian_path_average_option_proxy",
+        "digital_binary_event_risk",
+        "overnight_gap_option_jump_risk"
       ]
     },
     {

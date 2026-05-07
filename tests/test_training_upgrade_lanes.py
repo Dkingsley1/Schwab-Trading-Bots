@@ -48,6 +48,35 @@ def test_training_requalification_lane_surfaces_ready_candidate(tmp_path: Path) 
     assert payload["top_candidates"][0]["actions"] == ["seed_walk_forward_coverage"]
 
 
+def test_training_requalification_lane_does_not_label_missing_diagnostic_as_runtime_input_gap(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write_json(
+        project_root / "master_bot_registry.json",
+        {
+            "sub_bots": [
+                {
+                    "bot_id": "brain_refinery_v35_dmi_state_machine",
+                    "active": False,
+                    "lifecycle_state": "inactive_backlog",
+                    "quality_score": 0.99,
+                    "test_accuracy": 0.85,
+                    "bot_role": "signal_sub_bot",
+                }
+            ]
+        },
+    )
+    (project_root / "models").mkdir(parents=True, exist_ok=True)
+    (project_root / "logs").mkdir(parents=True, exist_ok=True)
+    (project_root / "models" / "brain_refinery_v35_dmi_state_machine_20260401.npz").write_text("model", encoding="utf-8")
+    (project_root / "logs" / "brain_refinery_v35_dmi_state_machine_20260401.json").write_text("{}", encoding="utf-8")
+
+    payload = requal_src.build_payload(project_root)
+
+    actions = payload["top_candidates"][0]["actions"]
+    assert "refresh_training_diagnostics" in actions
+    assert "repair_runtime_inputs" not in actions
+
+
 def test_training_requalification_lane_keeps_high_quality_probation_candidates_in_coverage_pool(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     _write_json(
@@ -460,6 +489,59 @@ def test_coverage_gap_closer_stages_repair_needed_backups_without_launching(tmp_
     assert payload["autopilot_contract"]["repair_required_count"] == 3
     assert payload["autopilot_contract"]["launch_state"] == "runtime_input_repair_required"
     assert "runtime_input_repair_required" in payload["autopilot_contract"]["blocking_reasons"]
+
+
+def test_coverage_gap_closer_blocks_launch_for_preflight_repairs_even_without_runtime_input_gap(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    preflight_actions = [
+        "rebuild_model_artifact",
+        "recover_training_log",
+        "refresh_training_diagnostics",
+        "generate_walk_forward_runs",
+    ]
+    _write_json(
+        project_root / "governance" / "walk_forward" / "coverage_seed_latest.json",
+        {
+            "seed_queue": [
+                {
+                    "bot_id": "brain_refinery_v35_dmi_state_machine",
+                    "bot_role": "signal_sub_bot",
+                    "priority": 100.0,
+                    "current_runs": 0,
+                    "runs_remaining": 12,
+                    "needs_runtime_input_repair": False,
+                    "actions": preflight_actions,
+                }
+            ]
+        },
+    )
+    _write_json(
+        project_root / "governance" / "walk_forward" / "promotion_readiness_latest.json",
+        {"coverage_shortfall_bots": 1, "considered_bots": 3, "thresholds": {"min_considered_bots": 4}},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "training_runtime_control_latest.json",
+        {"overall_status": "ready", "snapshot_ready": True, "coverage_repair_ready": True},
+    )
+    _write_json(project_root / "governance" / "health" / "resource_guard_latest.json", {"swap_used_gb": 0.1})
+    _write_json(
+        project_root / "governance" / "health" / "live_runtime_separation_control_latest.json",
+        {"overall_status": "ready", "release_contract": {"live_lane_should_be_read_only": False}},
+    )
+
+    payload = gap_closer_src._build_payload(
+        project_root,
+        candidate_limit=4,
+        stage_count=1,
+        retrain_profile="coverage_canary",
+    )
+
+    assert payload["active_stage_candidates"][0]["coverage_stage_kind"] == "coverage_preflight_repair_required"
+    assert payload["autopilot_contract"]["repair_required_count"] == 0
+    assert payload["autopilot_contract"]["preflight_repair_required_count"] == 1
+    assert payload["autopilot_contract"]["can_launch_now"] is False
+    assert payload["autopilot_contract"]["launch_state"] == "coverage_preflight_repair_required"
+    assert "coverage_preflight_repair_required" in payload["autopilot_contract"]["blocking_reasons"]
 
 
 def test_coverage_gap_closer_prefers_sample_viable_candidates_over_recent_failed_bot(tmp_path: Path) -> None:

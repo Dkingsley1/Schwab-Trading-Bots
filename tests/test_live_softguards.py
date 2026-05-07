@@ -391,6 +391,8 @@ def test_live_place_order_does_not_retry_non_retryable_http(monkeypatch):
 
 
 def test_account_snapshot_api_circuit_is_debounced_before_global_halt(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
+    monkeypatch.setenv("MARKET_DATA_ONLY", "0")
     monkeypatch.setenv("LIVE_API_FAIL_LIMIT", "1")
     monkeypatch.setenv("LIVE_API_COOLDOWN_SECONDS", "120")
     monkeypatch.setenv("LIVE_API_RETRY_ATTEMPTS", "1")
@@ -416,6 +418,33 @@ def test_account_snapshot_api_circuit_is_debounced_before_global_halt(monkeypatc
 
     assert third.get("error") == "api_circuit_open"
     assert Path(trader.global_halt_flag_path).exists()
+
+
+def test_account_snapshot_api_circuit_suppresses_global_halt_in_collection_mode(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "0")
+    monkeypatch.setenv("MARKET_DATA_ONLY", "1")
+    monkeypatch.setenv("LIVE_API_FAIL_LIMIT", "1")
+    monkeypatch.setenv("LIVE_API_COOLDOWN_SECONDS", "120")
+    monkeypatch.setenv("LIVE_API_RETRY_ATTEMPTS", "1")
+    monkeypatch.setenv("LIVE_ACCOUNTS_SNAPSHOT_SOFT_FAIL_GRACE", "1")
+    monkeypatch.setenv("LIVE_ACCOUNTS_SNAPSHOT_HALT_MIN_FAILURES", "2")
+    monkeypatch.setenv("LIVE_SOFTGUARD_AUTO_HALT_ON_API_CIRCUIT", "1")
+    monkeypatch.setenv("SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER", "0")
+
+    trader = _mk_trader("paper")
+    trader.project_root = str(tmp_path)
+    trader.global_halt_flag_path = str(tmp_path / "governance" / "health" / "GLOBAL_TRADING_HALT.flag")
+    trader.live_account_hash = ""
+    trader.client = _UnauthorizedAccountSnapshotClient()
+
+    first = trader._live_fetch_accounts_payload()
+    second = trader._live_fetch_accounts_payload()
+    third = trader._live_fetch_accounts_payload()
+
+    assert first.get("soft_failure") is True
+    assert second.get("circuit_opened") is True
+    assert third.get("error") == "api_circuit_open"
+    assert not Path(trader.global_halt_flag_path).exists()
 
 
 def test_build_live_order_spec_supports_multi_leg_options_plan():

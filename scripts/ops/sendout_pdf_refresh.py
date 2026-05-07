@@ -7,6 +7,7 @@ import html
 import json
 import math
 import re
+import sys
 import textwrap
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,6 +22,8 @@ from matplotlib.ticker import FuncFormatter
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 REPORTS_DIR = PROJECT_ROOT / "exports" / "reports"
 SQL_REPORTS_DIR = PROJECT_ROOT / "exports" / "sql_reports"
 GOVERNANCE_DIR = PROJECT_ROOT / "governance" / "health"
@@ -1193,6 +1196,7 @@ def _specs() -> list[ReportSpec]:
         ReportSpec("state_snapshot_drills", "State Snapshot Drills", PROJECT_ROOT / "exports" / "state_snapshot_drills" / "state_snapshot_drills_latest.pdf", (REPORTS_DIR / "pdf_render_sources" / "state_snapshot_drills_latest.html", PROJECT_ROOT / "exports" / "state_snapshot_drills" / "latest.json")),
         ReportSpec("strategy_attribution", "Strategy Attribution", REPORTS_DIR / "strategy_attribution_latest.pdf", (REPORTS_DIR / "strategy_attribution_latest.md", REPORTS_DIR / "pdf_render_sources" / "strategy_attribution_latest.html", GOVERNANCE_DIR / "strategy_attribution_latest.json")),
         ReportSpec("strategy_inventory", "Strategy Inventory", REPORTS_DIR / "strategy_inventory" / "strategy_inventory_latest.pdf", (REPORTS_DIR / "strategy_inventory" / "strategy_inventory_latest.md", GOVERNANCE_DIR / "strategy_inventory_latest.json")),
+        ReportSpec("expansion_inventory", "Expansion Inventory", REPORTS_DIR / "expansion_inventory" / "expansion_inventory_latest.pdf", (REPORTS_DIR / "expansion_inventory" / "expansion_inventory_latest.md", GOVERNANCE_DIR / "expansion_inventory_latest.json")),
         ReportSpec("system_overview", "System Overview Weekly Platform History", REPORTS_DIR / "system_overview" / "system_overview_weekly_platform_history_latest.pdf", (REPORTS_DIR / "system_overview" / "system_overview_weekly_platform_history_latest.md",)),
         ReportSpec("system_summary", "Compiled System Summary", REPORTS_DIR / "system_summary" / "system_summary_latest.pdf", (REPORTS_DIR / "system_summary" / "system_summary_latest.html", GOVERNANCE_DIR / "system_summary_report_latest.json")),
         ReportSpec("training_report", "Training Report", REPORTS_DIR / "training_reports" / "training_report_latest.pdf", (REPORTS_DIR / "training_reports" / "training_report_print_latest.html", REPORTS_DIR / "training_reports" / "training_report_latest.md")),
@@ -1257,6 +1261,10 @@ def refresh_pdfs(slugs: set[str] | None = None) -> dict[str, object]:
             entry = render_project_timeline_ready_pdf(source, spec.pdf_path)
         elif spec.slug == "framework_map_v2" and source and source.suffix.lower() in {".html", ".htm"}:
             entry = render_framework_map_ready_pdf(source, spec.pdf_path)
+        elif spec.slug == "expansion_inventory":
+            from scripts.ops.expansion_list_report import render_expansion_inventory_ready_pdf
+
+            entry = render_expansion_inventory_ready_pdf(source, spec.pdf_path)
         else:
             entry = render_text_pdf(spec.title, source, spec.pdf_path)
         entry["slug"] = spec.slug

@@ -10,11 +10,16 @@ SLOT="$1"
 shift
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+PRESSURE_OVERRIDE_FILE="$PROJECT_ROOT/config/.env.pressure_relief_override"
+if [[ -f "$PRESSURE_OVERRIDE_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$PRESSURE_OVERRIDE_FILE"
+fi
 PYTHON_BIN="$("$PROJECT_ROOT/scripts/ops/runtime_python.sh")"
 GUARD="$PROJECT_ROOT/scripts/ops/maintenance_slot_guard.py"
 SKIP_RC="${MAINTENANCE_SLOT_SKIP_EXIT_CODE:-75}"
 JITTER_MAX_SECONDS="${MAINTENANCE_SLOT_JITTER_MAX_SECONDS:-90}"
-NICE_LEVEL="${MAINTENANCE_SLOT_NICE_LEVEL:-15}"
+NICE_LEVEL="${MAINTENANCE_SLOT_NICE_LEVEL:-${OPS_SUPPORT_JOB_NICE:-15}}"
 
 if [[ "${MAINTENANCE_SLOT_DISABLE_JITTER:-0}" != "1" ]] && [[ "$JITTER_MAX_SECONDS" == <-> ]] && (( JITTER_MAX_SECONDS > 0 )); then
   sleep $(( RANDOM % (JITTER_MAX_SECONDS + 1) ))

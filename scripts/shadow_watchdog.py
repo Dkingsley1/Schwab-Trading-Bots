@@ -39,6 +39,7 @@ HALT_RECOVERY_EVENTS = WATCHDOG_DIR / "shadow_watchdog_halt_recovery_events.json
 HEALTH_PRUNE_LATEST = HEALTH_DIR / "shadow_watchdog_health_prune_latest.json"
 TRIPWIRE_LATEST = HEALTH_DIR / "shadow_watchdog_tripwire_latest.json"
 TRIPWIRE_EVENTS = WATCHDOG_DIR / "shadow_watchdog_tripwire_events.jsonl"
+PROCESS_FANOUT_OVERRIDE = PROJECT_ROOT / "config" / ".env.process_fanout_guard_override"
 
 
 @dataclass
@@ -59,6 +60,31 @@ class Target:
     suppress_tripwire_when_parent_live: bool = False
     unhealthy_streak: int = 0
     tripwire_open: bool = False
+
+
+
+
+def _process_fanout_guard_active() -> bool:
+    try:
+        text = PROCESS_FANOUT_OVERRIDE.read_text(encoding="utf-8")
+    except Exception:
+        text = ""
+    active_markers = (
+        "PROCESS_FANOUT_GUARD_ACTIVE=1",
+        "PROCESS_FANOUT_GUARD_ACTIVE='1'",
+        'PROCESS_FANOUT_GUARD_ACTIVE="1"',
+        "TRAINING_RUNTIME_PAUSED_FOR_FANOUT=1",
+        "TRAINING_RUNTIME_PAUSED_FOR_FANOUT='1'",
+        'TRAINING_RUNTIME_PAUSED_FOR_FANOUT="1"',
+    )
+    return any(marker in text for marker in active_markers)
+
+
+def _target_suppressed_by_fanout_guard(target: Target) -> bool:
+    if target.name in {"all_sleeves", "aggressive_modes"}:
+        return True
+    command = _format_start_cmd(target.start_cmd)
+    return "scripts/run_all_sleeves.py" in command or "scripts/run_parallel_aggressive_modes.py" in command
 
 
 def _now_utc() -> datetime:
@@ -432,6 +458,16 @@ def _build_default_schwab_cmd(simulate: bool) -> str:
     if simulate:
         return base + " --simulate"
     return base
+
+
+def _schwab_live_heartbeat_exclude_matches(
+    *,
+    simulate_schwab: bool,
+    allow_simulated_heartbeats: bool = False,
+) -> tuple[str, ...]:
+    if simulate_schwab or allow_simulated_heartbeats:
+        return ()
+    return ("--simulate",)
 
 
 def _build_default_aggressive_modes_cmd(simulate: bool) -> str:
@@ -936,6 +972,9 @@ def _run_iteration(
             overall_rc = 1
             entry["action"] = "error"
             entry["note"] = entry["note"] + ",missing_start_command"
+        elif _process_fanout_guard_active() and _target_suppressed_by_fanout_guard(target):
+            entry["action"] = "suppressed"
+            entry["note"] = entry["note"] + ",process_fanout_guard_active"
         elif not _can_restart(target, now_ts, max_restarts_per_window, restart_window_seconds):
             overall_rc = 1
             entry["action"] = "throttled"
@@ -1037,7 +1076,13 @@ def main() -> int:
         "--allow-schwab-standby-heartbeats",
         action="store_true",
         default=_env_flag("SHADOW_WATCHDOG_ALLOW_SCHWAB_STANDBY_HEARTBEATS", "0"),
-        help="Count fresh Schwab hot-standby simulate heartbeats as processless coverage while keeping live restart commands.",
+        help="Allow non-parent Schwab child heartbeats to cover the sleeve parent; simulated rows remain excluded unless explicitly allowed.",
+    )
+    parser.add_argument(
+        "--allow-schwab-simulate-heartbeats",
+        action="store_true",
+        default=_env_flag("SHADOW_WATCHDOG_ALLOW_SCHWAB_SIMULATE_HEARTBEATS", "0"),
+        help="Explicitly allow --simulate Schwab heartbeats to satisfy the Schwab watchdog target.",
     )
     parser.add_argument("--schwab-start-cmd", default=None)
     parser.add_argument("--schwab-futures-start-cmd", default=None)
@@ -1213,10 +1258,12 @@ def main() -> int:
             heartbeat_stale_seconds=max(args.schwab_heartbeat_stale_seconds, 30),
             min_healthy_heartbeats=max(args.schwab_min_heartbeats, 1),
             heartbeat_profiles=("conservative", "aggressive"),
-            heartbeat_exclude_matches=(() if args.allow_schwab_standby_heartbeats else None),
             allow_processless_heartbeat_live=True,
             suppress_tripwire_when_parent_live=True,
-            exclude_matches=(() if args.simulate_schwab else ("--simulate",)),
+            exclude_matches=_schwab_live_heartbeat_exclude_matches(
+                simulate_schwab=bool(args.simulate_schwab),
+                allow_simulated_heartbeats=bool(args.allow_schwab_simulate_heartbeats),
+            ),
         )
     ]
 

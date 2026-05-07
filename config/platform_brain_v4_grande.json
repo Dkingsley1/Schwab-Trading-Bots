@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "updated_utc": "2026-05-04T13:34:34.420231+00:00",
+  "layer": "platform_brain_v4_grande",
+  "section_keys": [
+    "executive_meta_orchestrator",
+    "causal_world_model",
+    "experience_memory_core_v2",
+    "predictive_expansion_simulator",
+    "autonomous_priority_ranker",
+    "self_upgrade_planner",
+    "critic_council",
+    "outcome_verification_loop",
+    "bot_portfolio_economist",
+    "data_value_engine",
+    "training_scheduler_brain",
+    "operator_intent_model"
+  ],
+  "controls": [
+    {
+      "id": "executive_meta_orchestrator",
+      "title": "Executive meta-orchestrator",
+      "env_key": "PLATFORM_BRAIN_EXECUTIVE_ORCHESTRATOR_ENABLED"
+    },
+    {
+      "id": "causal_world_model",
+      "title": "Causal world model",
+      "env_key": "PLATFORM_BRAIN_CAUSAL_WORLD_MODEL_ENABLED"
+    },
+    {
+      "id": "experience_memory_core_v2",
+      "title": "Experience memory core v2",
+      "env_key": "PLATFORM_BRAIN_EXPERIENCE_MEMORY_V2_ENABLED"
+    },
+    {
+      "id": "predictive_expansion_simulator",
+      "title": "Predictive expansion simulator",
+      "env_key": "PLATFORM_BRAIN_EXPANSION_SIMULATOR_ENABLED"
+    },
+    {
+      "id": "autonomous_priority_ranker",
+      "title": "Autonomous priority ranker",
+      "env_key": "PLATFORM_BRAIN_PRIORITY_RANKER_ENABLED"
+    },
+    {
+      "id": "self_upgrade_planner",
+      "title": "Self-upgrade planner",
+      "env_key": "PLATFORM_BRAIN_SELF_UPGRADE_PLANNER_ENABLED"
+    },
+    {
+      "id": "critic_council",
+      "title": "Critic council",
+      "env_key": "PLATFORM_BRAIN_CRITIC_COUNCIL_ENABLED"
+    },
+    {
+      "id": "outcome_verification_loop",
+      "title": "Outcome verification loop",
+      "env_key": "PLATFORM_BRAIN_OUTCOME_VERIFICATION_ENABLED"
+    },
+    {
+      "id": "bot_portfolio_economist",
+      "title": "Bot portfolio economist",
+      "env_key": "PLATFORM_BRAIN_BOT_PORTFOLIO_ECONOMIST_ENABLED"
+    },
+    {
+      "id": "data_value_engine",
+      "title": "Data value engine",
+      "env_key": "PLATFORM_BRAIN_DATA_VALUE_ENGINE_ENABLED"
+    },
+    {
+      "id": "training_scheduler_brain",
+      "title": "Training scheduler brain",
+      "env_key": "PLATFORM_BRAIN_TRAINING_SCHEDULER_ENABLED"
+    },
+    {
+      "id": "operator_intent_model",
+      "title": "Operator intent model",
+      "env_key": "PLATFORM_BRAIN_OPERATOR_INTENT_MODEL_ENABLED"
+    }
+  ],
+  "artifacts": {
+    "executive_meta_orchestrator": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v4/executive_meta_orchestrator_latest.json",
+    "causal_world_model": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v4/causal_world_model_latest.json",
+    "experience_memory_core_v2": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v4/experience_memory_core_v2_latest.json",
+    "predictive_expansion_simulator": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v4/predictive_expansion_simulator_latest.json",
+    "autonomous_priority_ranker": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v4/autonomous_priority_ranker_latest.json",
+    "self_upgrade_planner": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v4/self_upgrade_planner_latest.json",
+    "critic_council": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v4/critic_council_latest.json",
+    "outcome_verification_loop": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v4/outcome_verification_loop_latest.json",
+    "bot_portfolio_economist": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v4/bot_portfolio_economist_latest.json",
+    "data_value_engine": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v4/data_value_engine_latest.json",
+    "training_scheduler_brain": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v4/training_scheduler_brain_latest.json",
+    "operator_intent_model": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v4/operator_intent_model_latest.json"
+  },
+  "recommended_commands": [
+    [
+      "./scripts/ops/opsctl.sh",
+      "platform-brain-v4",
+      "--apply",
+      "--json"
+    ],
+    [
+      "./scripts/ops/opsctl.sh",
+      "platform-intelligence",
+      "--apply",
+      "--json"
+    ],
+    [
+      "./scripts/ops/opsctl.sh",
+      "health-fast",
+      "--json"
+    ],
+    [
+      "./scripts/ops/opsctl.sh",
+      "pressure-relief",
+      "--apply",
+      "--json"
+    ]
+  ]
+}

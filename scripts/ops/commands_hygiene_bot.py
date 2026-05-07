@@ -260,6 +260,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
     sentiment_pdf_path = project_root / "exports" / "reports" / "sentiment_report_latest.pdf"
     strategy_attribution_pdf_path = project_root / "exports" / "reports" / "strategy_attribution_latest.pdf"
     strategy_inventory_pdf_path = project_root / "exports" / "reports" / "strategy_inventory" / "strategy_inventory_latest.pdf"
+    expansion_inventory_pdf_path = project_root / "exports" / "reports" / "expansion_inventory" / "expansion_inventory_latest.pdf"
     quant_model_control_pdf_path = project_root / "exports" / "reports" / "quant_model_control" / "quant_model_control_latest.pdf"
     post_trade_analysis_pdf_path = project_root / "exports" / "reports" / "post_trade_analysis_latest.pdf"
     crash_report_pdf_path = project_root / "exports" / "reports" / "crash_reports" / "crash_report_digest_latest.pdf"
@@ -309,6 +310,15 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             notes=[
                 f"Latest PDF path: `{strategy_inventory_pdf_path}`.",
                 "This regenerates the complete sleeve/strategy inventory from the system config, renders the PDF bundle, and opens the report-ready PDF.",
+            ],
+        ),
+        _command_entry(
+            project_root,
+            "Open the expansion inventory PDF",
+            ["./scripts/ops/open_report_artifact.sh expansions"],
+            notes=[
+                f"Latest PDF path: `{expansion_inventory_pdf_path}`.",
+                "This regenerates the expansion list from registry-backed packs and control-plane config files, then opens the report-ready PDF.",
             ],
         ),
         _command_entry(
@@ -629,6 +639,22 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                     "This rechecks restart sanity, auth lease, global halt blockers, collector contracts, process watchdog coverage, and runtime throttle after a restart.",
                 ],
             ),
+            _command_entry(
+                project_root,
+                "Fast read-only health check",
+                ["./scripts/ops/opsctl.sh health-fast --json"],
+                notes=[
+                    "This reads the latest health artifacts without starting report refreshes, daily verification, or PDF/report jobs.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply pressure relief controls",
+                ["./scripts/ops/opsctl.sh pressure-relief --apply --json"],
+                notes=[
+                    "This writes the pressure-relief override used by runtime loading, maintenance guards, heavy feed TTL, SQL cadence, foreground-app awareness, macro capture niceness, MLX/quant caps, report caps, and quiet-window behavior.",
+                ],
+            ),
             _command_entry(project_root, "Validate documented commands", ["./scripts/ops/opsctl.sh command-validity --json"]),
         ),
         _section(
@@ -807,6 +833,22 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Docs, commands, and reporting intelligence",
+                ["./scripts/ops/opsctl.sh docs-reporting-intelligence --apply --json"],
+                notes=[
+                    "This refreshes the README, COMMANDS.md, report-quality, and PyCharm visibility intelligence layer, including blue active-bot rows in `docs/pycharm/intelligence_layers_latest.md`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "PyCharm active bot blue highlights",
+                ["./scripts/ops/opsctl.sh pycharm-active-bot-highlights --apply --json"],
+                notes=[
+                    "This writes the JetBrains `Active Bots` scope and blue file-color mapping so active `core/brain_refinery_*.py` files get a durable Project-pane scope background. PyCharm's bright blue filename text remains reserved for VCS-modified files.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Reporter quality infrabot",
                 ["./scripts/ops/opsctl.sh report-quality-guard --repair --json"],
                 notes=[
@@ -895,6 +937,14 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/ops/opsctl.sh retrain-orchestrate --json"],
                 notes=[
                     "This is the safer manual retrain entrypoint because it refreshes stale artifacts and honors freshness checks before launching weekly retrain.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Training and labeling intelligence",
+                ["./scripts/ops/opsctl.sh training-labeling-intelligence --apply --json"],
+                notes=[
+                    "Normalizes label contracts, writes training-process intelligence, and keeps targeted retrain candidates behind schema, feature-store, coverage, runtime, and lineage gates.",
                 ],
             ),
             _command_entry(
@@ -999,6 +1049,91 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             "Platform Expansion",
             _command_entry(
                 project_root,
+                "Apply the 12-layer platform intelligence control plane",
+                ["./scripts/ops/opsctl.sh platform-intelligence --apply --json"],
+                notes=[
+                    "Adds the operational layer for bot lifecycle, data quality scoring, provider failover, backpressure prediction, duplicate-alpha detection, paper capacity, self-healing playbooks, sleeve masters, training readiness, regime routing, execution realism, and black-box recording.",
+                    "This writes the platform-intelligence override while keeping the layer advisory/read-only and MLX-first.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview the 12-layer platform intelligence control plane",
+                ["./scripts/ops/opsctl.sh platform-intelligence --json"],
+                notes=[
+                    "Use this to inspect all 12 platform sections and their latest artifacts without changing runtime overrides.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply Platform Brain v4 Grande",
+                ["./scripts/ops/opsctl.sh platform-brain-v4 --apply --json"],
+                notes=[
+                    "Adds the decision-brain layer: executive meta-orchestration, causal world modeling, experience memory v2, expansion simulation, priority ranking, self-upgrade planning, critic council, outcome verification, bot economics, data value scoring, training scheduling, and operator intent modeling.",
+                    "The layer is advisory/read-only, keeps MLX as default, and preserves paper-trade lock and live-execution separation.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview Platform Brain v4 Grande",
+                ["./scripts/ops/opsctl.sh platform-brain-v4 --json"],
+                notes=[
+                    "Use this to inspect the 12 brain sections, next-best command, ranked priorities, expansion simulations, and verification plan without writing overrides.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply Platform Brain v5 Reflex Cortex",
+                ["./scripts/ops/opsctl.sh platform-brain-v5 --apply --json"],
+                notes=[
+                    "Adds the reflex layer: temporal self-modeling, safe reflex routing, regret and outcome ledgering, scenario rehearsal, adaptive cadence, safe autonomy boundary, critic fusion, resource budgeting, data contract negotiation, bot curriculum, dependency mapping, and strategic roadmap synthesis.",
+                    "The layer stays advisory/read-only, keeps MLX as default, and preserves paper-trade lock with live execution disabled.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview Platform Brain v5 Reflex Cortex",
+                ["./scripts/ops/opsctl.sh platform-brain-v5 --json"],
+                notes=[
+                    "Use this to inspect the reflex queue, safe-vs-operator-reviewed actions, scenario rehearsal, resource budgets, and roadmap without writing overrides.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply the seven-part stabilization and quality layer",
+                ["./scripts/ops/opsctl.sh platform-stabilization --apply --json"],
+                notes=[
+                    "Adds the guarded pre-expansion layer for backlog drainage, bot data quality, duplicate-alpha compression, paper-trade realism, provider cooldown/failover, ready-only microtraining, and expansion rehearsal.",
+                    "This writes the stabilization override, assigns infrastructure bots to each lane, keeps MLX as default, and keeps live execution disabled.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview the seven-part stabilization and quality layer",
+                ["./scripts/ops/opsctl.sh platform-stabilization --json"],
+                notes=[
+                    "Use this before another expansion to see the backlog, quality, duplicate-alpha, paper realism, provider, training, and rehearsal gates in one place.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply the settlement stabilization layer",
+                ["./scripts/ops/opsctl.sh platform-settlement-stabilization --apply --json"],
+                notes=[
+                    "Adds the post-expansion settlement layer for queue decay, single-writer protection, market-hours cadence, global-halt clear readiness, paper collection floors, off-hours drain planning, and stabilization memory.",
+                    "This layer keeps MLX as default, leaves live execution disabled, and records whether each stabilization pass actually reduces pressure.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview the settlement stabilization layer",
+                ["./scripts/ops/opsctl.sh platform-settlement-stabilization --json"],
+                notes=[
+                    "Use this after a large expansion or during market hours to see whether the system is settling cleanly before adding more bots or training load.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Apply the coordination intelligence control-plane pack",
                 ["./scripts/ops/opsctl.sh coordination-intelligence --apply --json"],
                 notes=[
@@ -1063,6 +1198,91 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/ops/opsctl.sh apex-self-awareness-intelligence --json"],
                 notes=[
                     "Use the dry run to see the 46 planned apex bots, 1000-bot target contract, storage limits, and paper-only guardrails without changing the registry.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply the deep recursive awareness pack",
+                ["./scripts/ops/opsctl.sh deep-recursive-awareness --apply --json"],
+                notes=[
+                    "Adds the guarded recursive awareness layer: causal self-diagnosis, predictive runtime oracle, experience memory core, self-upgrade critic board, operator context governor, internal critic board, and living platform map.",
+                    "The bots are collection-only with live execution, allocation, and training blocked until 150 days, 36000 observations, and causal/runtime/memory/critic/operator-context gates clear.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview the deep recursive awareness pack",
+                ["./scripts/ops/opsctl.sh deep-recursive-awareness --json"],
+                notes=[
+                    "Use the dry run to see the 28 planned recursive-awareness bots, data intakes, storage limits, and paper-only guardrails without changing the registry.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply the 24-sleeve quant strategy gap pack",
+                ["./scripts/ops/opsctl.sh quant-strategy-gap --apply --json"],
+                notes=[
+                    "Adds 24 practical tradable-alpha strategy sleeves with five collect-only bots each: event arb, relative value, carry, ETF/NAV, auction flow, dealer expiry, rates/credit/crypto basis, and liquidity simulation.",
+                    "The pack is zero-weight, training-excluded, paper-disabled, live-disabled, and thin-sampled until 120 days, 45000 observations, and strategy evidence gates clear.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview the 24-sleeve quant strategy gap pack",
+                ["./scripts/ops/opsctl.sh quant-strategy-gap --json"],
+                notes=[
+                    "Use this dry run to inspect planned strategy sleeves, bot IDs, storage guardrails, and paper-only floors without changing the registry.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply the 14-organ platform organ systems pack",
+                ["./scripts/ops/opsctl.sh platform-organs --apply --json"],
+                notes=[
+                    "Adds 70 collect-only platform organ bots across data quality, feature registry, replay lab, execution realism, portfolio brain, alpha decay, regime routing, research assimilation, promotion court, cockpit, resource metabolism, memory lymphatics, backpressure circulation, and audit immunity.",
+                    "The pack stays zero-weight, training-excluded, paper-disabled, live-disabled, and thin-sampled until 150 days, 60000 observations, and runtime/regression/operator gates clear.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview the 14-organ platform organ systems pack",
+                ["./scripts/ops/opsctl.sh platform-organs --json"],
+                notes=[
+                    "Use this dry run to inspect the organ systems, bot IDs, storage guardrails, and paper-only floors without changing the registry.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply the 14-muscle trading action systems pack",
+                ["./scripts/ops/opsctl.sh trading-muscles --apply --json"],
+                notes=[
+                    "Adds 70 collect-only trading muscle bots across intraday momentum, mean reversion, swing trend, options convexity, options income, futures macro, crypto basis, volatility arbitrage, events, relative value, portfolio hedging, execution timing, position sizing, and exits/rebalancing.",
+                    "The pack generates trade-candidate, sizing, hedge, exit, and execution-rehearsal evidence only; training, paper trading, live trading, allocation, and execution stay blocked until 180 days, 75000 observations, and quality/risk/halts gates clear.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview the 14-muscle trading action systems pack",
+                ["./scripts/ops/opsctl.sh trading-muscles --json"],
+                notes=[
+                    "Use this dry run to inspect the trading muscles, bot IDs, storage guardrails, and trade-candidate-only floor without changing the registry.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Arm the guarded 400 bot paper ramp",
+                ["./scripts/ops/opsctl.sh paper-400-ramp --apply --json"],
+                notes=[
+                    "Plans the 400-bot paper target now and only writes the high paper caps after Monday 2026-05-11 when global halt, memory, runtime, and ingestion gates are clean.",
+                    "The controller keeps live execution blocked, paper-trade lock enabled, and explains any blocker in `governance/health/paper_400_ramp_latest.json`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview the guarded 400 bot paper ramp",
+                ["./scripts/ops/opsctl.sh paper-400-ramp --json"],
+                notes=[
+                    "Use this to see whether the ramp is planned, armed, or blocked before changing runtime overrides.",
                 ],
             ),
         ),

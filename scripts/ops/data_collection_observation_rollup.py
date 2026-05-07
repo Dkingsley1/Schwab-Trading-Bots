@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import re
 from collections import Counter, defaultdict, deque
@@ -24,6 +25,7 @@ DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "data_collection_obs
 DEFAULT_STATE_PATH = PROJECT_ROOT / "governance" / "health" / "data_collection_observation_rollup_state.json"
 BOT_ID_RE = re.compile(r"brain_refinery_v\d+_[A-Za-z0-9_]+")
 STATUS_RE = re.compile(r'"status"\s*:\s*"([^"]+)"|status=([A-Z_]+)')
+MAX_ARTIFACT_OBSERVATION_KEYS = 20000
 
 
 def _safe_int(raw: Any, default: int = 0) -> int:
@@ -79,11 +81,27 @@ def _decision_files(project_root: Path, *, days: int) -> list[Path]:
     files: list[Path] = []
     for stamp in _day_stamps(days):
         files.extend(root.glob(f"*/decision_explanations_{stamp}.jsonl"))
+        files.extend(root.glob(f"*/decision_explanations_{stamp}.jsonl.gz"))
     return sorted({path for path in files if path.is_file()})
+
+
+def _is_gzip_path(path: Path) -> bool:
+    return path.suffix == ".gz" or path.name.endswith(".jsonl.gz")
+
+
+def _read_gzip_lines(path: Path) -> list[str]:
+    try:
+        with gzip.open(path, "rt", encoding="utf-8", errors="ignore") as handle:
+            return handle.readlines()
+    except Exception:
+        return []
 
 
 def _iter_tail_lines(path: Path, *, limit: int) -> list[str]:
     max_lines = max(int(limit), 1)
+    if _is_gzip_path(path):
+        return _read_gzip_lines(path)[-max_lines:]
+
     block_size = 64 * 1024
     chunks: deque[bytes] = deque()
     try:
@@ -104,11 +122,19 @@ def _iter_tail_lines(path: Path, *, limit: int) -> list[str]:
     return text.splitlines(keepends=True)[-max_lines:]
 
 
-def _iter_new_lines(path: Path, *, offset: int) -> tuple[list[str], int]:
+def _iter_new_lines(path: Path, *, offset: int, line_offset: int = 0) -> tuple[list[str], int, int]:
     try:
         size = path.stat().st_size
     except Exception:
-        return [], offset
+        return [], offset, line_offset
+
+    if _is_gzip_path(path):
+        if int(offset) == size and int(line_offset) > 0:
+            return [], size, int(line_offset)
+        lines = _read_gzip_lines(path)
+        start_line = int(line_offset) if 0 <= int(line_offset) <= len(lines) and int(offset) <= size else 0
+        return lines[start_line:], size, len(lines)
+
     start = offset if 0 <= int(offset) <= size else 0
     out: list[str] = []
     try:
@@ -117,8 +143,8 @@ def _iter_new_lines(path: Path, *, offset: int) -> tuple[list[str], int]:
             out = handle.readlines()
             end = handle.tell()
     except Exception:
-        return [], offset
-    return out, int(end)
+        return [], offset, 0
+    return out, int(end), 0
 
 
 def _count_lines(lines: list[str], bot_ids: set[str]) -> tuple[Counter[str], dict[str, Counter[str]]]:
@@ -136,6 +162,60 @@ def _count_lines(lines: list[str], bot_ids: set[str]) -> tuple[Counter[str], dic
             status = str(status_match.group(1) or status_match.group(2) or "unknown")
         statuses[bot_id][status] += 1
     return counts, statuses
+
+
+def _iter_artifact_bot_ids(payload: dict[str, Any]) -> set[str]:
+    out: set[str] = set()
+    direct = payload.get("added_bot_ids")
+    if isinstance(direct, list):
+        out.update(str(item).strip() for item in direct if str(item or "").strip())
+    pack = payload.get("pack") if isinstance(payload.get("pack"), dict) else {}
+    pack_ids = pack.get("bot_ids") if isinstance(pack.get("bot_ids"), list) else []
+    out.update(str(item).strip() for item in pack_ids if str(item or "").strip())
+    for key in ("sleeve_master_bot_id", "regression_guard_bot_id", "alpha_admission_guard_bot_id", "self_awareness_bridge_bot_id"):
+        value = pack.get(key)
+        if str(value or "").strip():
+            out.add(str(value).strip())
+    return out
+
+
+def _artifact_observations(
+    project_root: Path,
+    *,
+    bot_ids: set[str],
+    seen_keys: set[str],
+) -> tuple[Counter[str], dict[str, Counter[str]], list[str], int]:
+    health_root = project_root / "governance" / "health"
+    counts: Counter[str] = Counter()
+    statuses: dict[str, Counter[str]] = defaultdict(Counter)
+    new_keys: list[str] = []
+    files_scanned = 0
+    if not health_root.exists():
+        return counts, statuses, new_keys, files_scanned
+
+    for path in sorted(health_root.glob("*_latest.json")):
+        payload = load_json(path)
+        if not isinstance(payload, dict) or payload.get("ok") is False:
+            continue
+        artifact_bot_ids = _iter_artifact_bot_ids(payload) & bot_ids
+        if not artifact_bot_ids:
+            continue
+        files_scanned += 1
+        stamp = str(payload.get("generated_at_utc") or payload.get("timestamp_utc") or "")
+        if not stamp:
+            try:
+                stamp = str(path.stat().st_mtime_ns)
+            except Exception:
+                stamp = "unknown"
+        source_key = f"{path.relative_to(project_root)}:{stamp}"
+        for bot_id in sorted(artifact_bot_ids):
+            obs_key = f"{source_key}:{bot_id}"
+            if obs_key in seen_keys:
+                continue
+            counts[bot_id] += 1
+            statuses[bot_id]["artifact_reference"] += 1
+            new_keys.append(obs_key)
+    return counts, statuses, new_keys, files_scanned
 
 
 def _collection_age_days(row: dict[str, Any]) -> float | None:
@@ -177,14 +257,23 @@ def build_payload(
     state = load_json(state_path)
     state_counts = Counter({str(k): _safe_int(v, 0) for k, v in (state.get("counts") if isinstance(state.get("counts"), dict) else {}).items()})
     file_offsets = state.get("file_offsets") if isinstance(state.get("file_offsets"), dict) else {}
+    file_line_counts = state.get("file_line_counts") if isinstance(state.get("file_line_counts"), dict) else {}
+    artifact_observation_keys = [
+        str(item)
+        for item in (state.get("artifact_observation_keys") if isinstance(state.get("artifact_observation_keys"), list) else [])
+        if str(item or "").strip()
+    ]
 
     bootstrap = not bool(state.get("initialized", False))
     files = _decision_files(project_root, days=days)
     observed_counts: Counter[str] = Counter()
     status_counts: dict[str, Counter[str]] = defaultdict(Counter)
     new_offsets: dict[str, int] = {}
+    new_line_counts: dict[str, int] = {}
     files_scanned = 0
     lines_scanned = 0
+    artifact_files_scanned = 0
+    new_artifact_keys: list[str] = []
 
     for path in files:
         key = str(path.relative_to(project_root))
@@ -194,15 +283,32 @@ def build_payload(
                 new_offsets[key] = int(path.stat().st_size)
             except Exception:
                 new_offsets[key] = 0
+            if _is_gzip_path(path):
+                new_line_counts[key] = len(_read_gzip_lines(path))
         else:
-            lines, offset = _iter_new_lines(path, offset=_safe_int(file_offsets.get(key), 0))
+            lines, offset, line_count = _iter_new_lines(
+                path,
+                offset=_safe_int(file_offsets.get(key), 0),
+                line_offset=_safe_int(file_line_counts.get(key), 0),
+            )
             new_offsets[key] = offset
+            if _is_gzip_path(path):
+                new_line_counts[key] = line_count
         counts, statuses = _count_lines(lines, bot_ids)
         observed_counts.update(counts)
         for bot_id, counter in statuses.items():
             status_counts[bot_id].update(counter)
         files_scanned += 1
         lines_scanned += len(lines)
+
+    artifact_counts, artifact_statuses, new_artifact_keys, artifact_files_scanned = _artifact_observations(
+        project_root,
+        bot_ids=bot_ids,
+        seen_keys=set(artifact_observation_keys),
+    )
+    observed_counts.update(artifact_counts)
+    for bot_id, counter in artifact_statuses.items():
+        status_counts[bot_id].update(counter)
 
     if bootstrap:
         merged_counts = Counter({bot_id: max(_safe_int(row.get("data_collection_observations"), 0), observed_counts.get(bot_id, 0)) for bot_id, row in ((_bot_id(row), row) for row in collectors)})
@@ -252,6 +358,8 @@ def build_payload(
             "initialized": True,
             "counts": {bot_id: int(merged_counts.get(bot_id, 0)) for bot_id in sorted(bot_ids)},
             "file_offsets": {**file_offsets, **new_offsets},
+            "file_line_counts": {**file_line_counts, **new_line_counts},
+            "artifact_observation_keys": list(dict.fromkeys([*artifact_observation_keys, *new_artifact_keys]))[-MAX_ARTIFACT_OBSERVATION_KEYS:],
             "last_files_scanned": [str(path.relative_to(project_root)) for path in files],
         }
         write_payload(state_path, state_payload)
@@ -270,6 +378,8 @@ def build_payload(
         "zero_observation_count": max(len(bot_ids) - bots_with_observations, 0),
         "files_scanned": files_scanned,
         "lines_scanned": lines_scanned,
+        "artifact_files_scanned": artifact_files_scanned,
+        "new_artifact_observations_counted": len(new_artifact_keys),
         "new_rows_counted": int(sum(observed_counts.values())),
         "total_observations": int(sum(merged_counts.get(bot_id, 0) for bot_id in bot_ids)),
         "training_ready_count": len(training_ready),

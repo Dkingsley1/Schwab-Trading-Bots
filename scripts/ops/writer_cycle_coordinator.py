@@ -19,8 +19,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.runtime_python import resolve_runtime_python
+from scripts.ops import backpressure_drainer_fleet as drainer_src
 from scripts.ops import external_backlog_drain as drain_src
 from scripts.ops import storage_maintenance_lane as maintenance_src
+from scripts.ops import writer_process_intelligence as writer_intelligence_src
 
 
 PY = resolve_runtime_python(PROJECT_ROOT)
@@ -425,6 +427,31 @@ def _writer_progress_summary(before: dict[str, Any], after: dict[str, Any]) -> d
     }
 
 
+def _live_safe_drainer_ready(preview: dict[str, Any]) -> bool:
+    active = preview.get("active_drainer") if isinstance(preview.get("active_drainer"), dict) else {}
+    return bool(
+        str(preview.get("overall_status") or "") in {"ready", "handoff_requested"}
+        and str(active.get("status") or "") == "ready"
+        and bool(active.get("live_window_safe", False))
+        and not list(preview.get("blocked_reasons") or [])
+    )
+
+
+def _drainer_active_name(preview: dict[str, Any]) -> str:
+    active = preview.get("active_drainer") if isinstance(preview.get("active_drainer"), dict) else {}
+    return str(active.get("name") or "")
+
+
+def _drainer_service_request_ok(payload: dict[str, Any]) -> bool:
+    request = payload.get("service_request") if isinstance(payload.get("service_request"), dict) else {}
+    overrides = request.get("env_overrides") if isinstance(request.get("env_overrides"), dict) else {}
+    return bool(
+        str(payload.get("overall_status") or "") in {"handoff_requested", "ready"}
+        and bool(request.get("active", False))
+        and str(overrides.get("SQL_LINK_SERVICE_SHARDS") or "").strip()
+    )
+
+
 def build_payload(
     project_root: Path = PROJECT_ROOT,
     *,
@@ -439,14 +466,17 @@ def build_payload(
     maintenance_vacuum: bool = False,
 ) -> dict[str, Any]:
     drain_preview = drain_src.build_payload(project_root, apply=False)
+    drainer_preview = drainer_src.build_payload(project_root, apply=False)
     maintenance_focus = maintenance_src._priority_retention_focus(project_root, {})
+    live_drainer_ready = bool(not skip_drain and _live_safe_drainer_ready(drainer_preview))
     drain_ready = bool(
-        not skip_drain
+        not live_drainer_ready
+        and not skip_drain
         and bool(drain_preview.get("recommended_now", False))
         and not list(drain_preview.get("blocked_reasons") or [])
     )
     maintenance_ready = bool(not skip_maintenance and maintenance_focus.get("enabled", False))
-    actionable = bool(drain_ready or maintenance_ready)
+    actionable = bool(live_drainer_ready or drain_ready or maintenance_ready)
     writer_before = writer_state_snapshot(project_root)
     stale_writer_remediation = {
         "attempted": False,
@@ -488,7 +518,45 @@ def build_payload(
     maintenance_followup_needed = False
 
     if apply and actionable:
-        if drain_ready:
+        if live_drainer_ready:
+            drainer_apply = _run_json_command(
+                [
+                    str(PY),
+                    str(project_root / "scripts" / "ops" / "backpressure_drainer_fleet.py"),
+                    "--apply",
+                    "--ttl-seconds",
+                    str(max(int(wait_timeout_seconds), 900)),
+                    "--json",
+                ],
+                cwd=project_root,
+                payload_path=project_root / "governance" / "health" / "backpressure_drainer_fleet_latest.json",
+                timeout_sec=120,
+            )
+            steps["backpressure_drainer_fleet"] = _step_record(drainer_apply)
+            drainer_payload = drainer_apply.get("payload") if isinstance(drainer_apply.get("payload"), dict) else {}
+            drainer_handoff_ok = int(drainer_apply.get("rc", 1)) == 0 and _drainer_service_request_ok(drainer_payload)
+            if drainer_handoff_ok and not bool(writer_after.get("active", False)):
+                shard_manager = _run_json_command(
+                    [
+                        str(PY),
+                        str(project_root / "scripts" / "ops" / "sql_link_shard_manager.py"),
+                        "--once",
+                        "--json",
+                    ],
+                    cwd=project_root,
+                    payload_path=project_root / "governance" / "health" / "sql_link_service_latest.json",
+                    timeout_sec=max(int(command_timeout_seconds), int(wait_timeout_seconds) + 120),
+                )
+                steps["sql_link_shard_manager"] = _step_record(shard_manager, nonfatal_reasons={"writer_lock_busy"})
+                drain_payload = shard_manager.get("payload") if isinstance(shard_manager.get("payload"), dict) else {}
+                if str(steps["sql_link_shard_manager"].get("status") or "") == "error" and _safe_int(drain_payload.get("merged_rows_this_cycle"), 0) > 0:
+                    steps["sql_link_shard_manager"]["status"] = "partial_progress"
+                drain_applied = str(steps["sql_link_shard_manager"].get("status") or "") in {"ok", "partial_progress"}
+                writer_after = writer_state_snapshot(project_root)
+            else:
+                drain_payload = drainer_payload
+                drain_applied = drainer_handoff_ok
+        elif drain_ready:
             drain = _run_json_command(
                 [
                     str(PY),
@@ -510,7 +578,11 @@ def build_payload(
             drain_applied = int(drain.get("rc", 1)) == 0
 
         maintenance_can_run = not bool(writer_after.get("active", False))
-        if drain_ready:
+        if live_drainer_ready:
+            maintenance_can_run = maintenance_can_run and drain_applied
+            if not maintenance_can_run and maintenance_ready:
+                maintenance_followup_needed = True
+        elif drain_ready:
             follow_through = drain_payload.get("follow_through") if isinstance(drain_payload.get("follow_through"), dict) else {}
             maintenance_can_run = (
                 maintenance_can_run
@@ -543,13 +615,16 @@ def build_payload(
 
     step_statuses = [str((row or {}).get("status") or "") for row in steps.values() if isinstance(row, dict)]
     has_error = any(status == "error" or status == "timed_out" for status in step_statuses)
+    partial_progress = any(status == "partial_progress" for status in step_statuses)
     drain_follow_through_status = str((((drain_payload.get("follow_through") or {}).get("status")) or ""))
     applied_with_followups = bool(
         apply
         and steps
         and not has_error
         and (
-            (drain_ready and bool(drain_payload.get("writer_busy", False)))
+            partial_progress
+            or (live_drainer_ready and not drain_applied)
+            or (drain_ready and bool(drain_payload.get("writer_busy", False)))
             or (drain_ready and drain_follow_through_status == "timed_out")
             or (maintenance_ready and not maintenance_applied)
             or maintenance_followup_needed
@@ -589,7 +664,9 @@ def build_payload(
 
     recommended_actions = _ordered_unique(
         list(drain_preview.get("top_actions") or [])[:3]
+        + list(drainer_preview.get("recommended_actions") or [])[:3]
         + list(maintenance_focus.get("top_actions") or [])[:3]
+        + ([f"run live-safe drainer handoff now: {_drainer_active_name(drainer_preview)}"] if live_drainer_ready else [])
         + (
             ["stale SQL writer was restarted so the next drain handoff can be picked up cleanly"]
             if bool(stale_writer_remediation.get("terminated", False)) or bool(stale_writer_remediation.get("lock_released", False))
@@ -626,6 +703,7 @@ def build_payload(
         "maintenance_vacuum": bool(maintenance_vacuum),
         "actionable": actionable,
         "drain_ready": drain_ready,
+        "live_drainer_ready": live_drainer_ready,
         "maintenance_ready": maintenance_ready,
         "writer_state_before": writer_before,
         "writer_state_after_remediation": writer_after_remediation,
@@ -640,6 +718,13 @@ def build_payload(
             "blocked_reasons": list(drain_preview.get("blocked_reasons") or []),
             "aged_candidate_files": _safe_int(drain_preview.get("aged_candidate_files"), 0),
             "off_hours_window": drain_preview.get("off_hours_window") if isinstance(drain_preview.get("off_hours_window"), dict) else {},
+        },
+        "drainer_preview": {
+            "overall_status": str(drainer_preview.get("overall_status") or ""),
+            "ready_drainer_count": _safe_int(drainer_preview.get("ready_drainer_count"), 0),
+            "active_drainer": _drainer_active_name(drainer_preview),
+            "live_window_safe": bool((drainer_preview.get("active_drainer") if isinstance(drainer_preview.get("active_drainer"), dict) else {}).get("live_window_safe", False)),
+            "blocked_reasons": list(drainer_preview.get("blocked_reasons") or []),
         },
         "maintenance_focus": maintenance_focus,
         "steps": steps,
@@ -660,12 +745,20 @@ def build_payload(
             "writer_merged_rows_delta": _safe_int(writer_progress.get("merged_rows_delta"), 0),
             "writer_merge_count_delta": _safe_int(writer_progress.get("merge_count_delta"), 0),
             "drain_applied": bool(drain_applied),
+            "partial_progress": bool(partial_progress),
+            "live_drainer_applied": bool(live_drainer_ready and drain_applied),
+            "active_drainer": _drainer_active_name(drainer_preview),
             "drain_follow_through_status": drain_follow_through_status,
             "maintenance_applied": bool(maintenance_applied),
             "priority_retention_focus_shards": list(maintenance_focus.get("focus_shards") or []),
             "priority_retention_targeted_debt_gb": round(_safe_float(maintenance_focus.get("targeted_retention_debt_gb"), 0.0), 3),
         },
     }
+    writer_intelligence = writer_intelligence_src.build_payload(project_root, writer_cycle=payload)
+    payload["writer_process_intelligence"] = writer_intelligence
+    writer_decision = writer_intelligence.get("decision_packet") if isinstance(writer_intelligence.get("decision_packet"), dict) else {}
+    payload["summary"]["writer_process_action"] = str(writer_decision.get("action") or "")
+    payload["summary"]["expanded_writer_lane_count"] = _safe_int(writer_decision.get("expanded_writer_lane_count"), 0)
     return payload
 
 

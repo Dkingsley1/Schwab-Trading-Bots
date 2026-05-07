@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import scripts.run_shadow_training_loop as loop
@@ -138,3 +139,34 @@ def test_paper_options_profile_allowlist_honors_override(monkeypatch) -> None:
     assert loop._paper_options_profile_allowed("conservative") is True
     assert loop._paper_options_profile_allowed("dividend") is True
     assert loop._paper_options_profile_allowed("aggressive") is False
+
+
+
+def test_external_interval_floor_uses_runtime_and_settlement_pressure(tmp_path, monkeypatch) -> None:
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    (health / "runtime_throttle_control_latest.json").write_text(
+        json.dumps({"throttle_profile": "protect_live", "compute_pressure_level": "high"}),
+        encoding="utf-8",
+    )
+    (health / "platform_settlement_stabilization_latest.json").write_text(
+        json.dumps({"sections": {"queue_decay_meter": {"queue_backpressure_active": True}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SHADOW_LOOP_PROTECT_LIVE_EXTRA_INTERVAL_SECONDS", "32")
+    monkeypatch.setenv("SHADOW_LOOP_QUEUE_BACKPRESSURE_EXTRA_INTERVAL_SECONDS", "11")
+    monkeypatch.setenv("SHADOW_LOOP_MAX_DYNAMIC_EXTRA_INTERVAL_SECONDS", "40")
+
+    assert loop._external_ingestion_extra_interval_seconds(str(tmp_path)) == 32
+
+
+def test_external_interval_floor_can_be_disabled(tmp_path, monkeypatch) -> None:
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    (health / "runtime_throttle_control_latest.json").write_text(
+        json.dumps({"throttle_profile": "protect_live", "compute_pressure_level": "high"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SHADOW_LOOP_PRESSURE_INTERVAL_FLOOR_ENABLED", "0")
+
+    assert loop._external_ingestion_extra_interval_seconds(str(tmp_path)) == 0

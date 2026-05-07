@@ -36,10 +36,23 @@ DEFAULT_MAINTENANCE_TIMEOUT_SECONDS = max(
     float(os.getenv('OPS_WATCHDOG_MAINTENANCE_TIMEOUT_SECONDS', '45') or 45.0),
     1.0,
 )
+PROCESS_WRAPPER_MATCH_EXCLUDES = (
+    'scripts/shadow_watchdog.py',
+    'scripts/failover_hot_standby.py',
+    'scripts/ops/master_infrastructure_supervisor.py',
+    'scripts/ops/process_watchdog.py',
+)
 
 
 def _env_flag(name: str, default: str = '0') -> bool:
     return os.getenv(name, default).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _safe_int(raw: Any, default: int = 0) -> int:
+    try:
+        return int(float(raw))
+    except Exception:
+        return int(default)
 
 
 def _split_csv(raw: str) -> List[str]:
@@ -74,10 +87,25 @@ def _safety_pause_state() -> Dict[str, Any]:
     }
 
 
+def _effective_process_excludes(exclude_patterns: List[str] | None = None) -> List[str]:
+    excludes: List[str] = []
+    for marker in [*PROCESS_WRAPPER_MATCH_EXCLUDES, *(exclude_patterns or [])]:
+        if marker and marker not in excludes:
+            excludes.append(marker)
+    return excludes
+
+
+def _live_data_excludes(simulate: bool, extra: List[str] | None = None) -> List[str]:
+    excludes = [x for x in (extra or []) if x]
+    if not simulate:
+        excludes.append('--simulate')
+    return excludes
+
+
 def _proc_running(pattern: str, exclude_patterns: List[str] | None = None) -> int:
     p = subprocess.run(['ps', '-axo', 'command'], capture_output=True, text=True, check=False)
     out = p.stdout or ''
-    excludes = [x for x in (exclude_patterns or []) if x]
+    excludes = _effective_process_excludes(exclude_patterns)
     return sum(
         1
         for line in out.splitlines()
@@ -88,7 +116,7 @@ def _proc_running(pattern: str, exclude_patterns: List[str] | None = None) -> in
 def _proc_elapsed_seconds(pattern: str, exclude_patterns: List[str] | None = None) -> float | None:
     p = subprocess.run(['ps', '-axo', 'etimes,command'], capture_output=True, text=True, check=False)
     out = p.stdout or ''
-    excludes = [x for x in (exclude_patterns or []) if x]
+    excludes = _effective_process_excludes(exclude_patterns)
     matched: list[float] = []
     for line in out.splitlines():
         raw = line.strip()
@@ -171,6 +199,14 @@ def _load_state(path: Path, fallback: Path) -> Dict[str, Any]:
         except Exception:
             continue
     return {'events': []}
+
+
+def _load_json_payload(path: Path) -> Dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _save_state(path: Path, fallback: Path, state: Dict[str, Any]) -> Path:
@@ -518,7 +554,30 @@ def _refresh_runtime_reports(
     return out
 
 
+def _fanout_guard_allows_core_sleeve_restart() -> Tuple[bool, str]:
+    if not (_env_flag('PROCESS_FANOUT_GUARD_ACTIVE', '0') or _env_flag('TRAINING_RUNTIME_PAUSED_FOR_FANOUT', '0')):
+        return True, 'fanout_guard_inactive'
+    if _env_flag('PROCESS_FANOUT_GUARD_CORE_SLEEVE_RESTART_ALLOWED', '0'):
+        return True, 'process_fanout_guard_core_sleeve_pressure_mode'
+
+    payload = _load_json_payload(HEALTH_DIR / 'process_fanout_guard_latest.json')
+    if not payload:
+        return False, 'process_fanout_guard_active'
+    startup_policy = payload.get('startup_policy') if isinstance(payload.get('startup_policy'), dict) else {}
+    if bool(startup_policy.get('core_sleeve_restart_allowed', False)):
+        return True, 'process_fanout_guard_core_sleeve_pressure_mode'
+    fanout = payload.get('fanout') if isinstance(payload.get('fanout'), dict) else {}
+    kill_plan = payload.get('kill_plan') if isinstance(payload.get('kill_plan'), list) else []
+    if _safe_int(fanout.get('targetable_count'), 0) <= 0 and not kill_plan:
+        return True, 'process_fanout_guard_core_sleeve_pressure_mode'
+    return False, 'process_fanout_guard_active'
+
+
 def _all_sleeves_start_ready(broker: str, simulate: bool) -> Tuple[bool, str]:
+    fanout_ready, fanout_reason = _fanout_guard_allows_core_sleeve_restart()
+    if not fanout_ready:
+        return False, fanout_reason
+
     missing = []
     if not _split_csv(os.getenv('SHADOW_SYMBOLS_CORE', '')):
         missing.append('SHADOW_SYMBOLS_CORE')
@@ -536,7 +595,7 @@ def _all_sleeves_start_ready(broker: str, simulate: bool) -> Tuple[bool, str]:
         if key in invalid or secret in invalid:
             return False, 'missing_schwab_credentials'
 
-    return True, 'ready'
+    return True, fanout_reason if fanout_reason != 'fanout_guard_inactive' else 'ready'
 
 
 def _build_all_sleeves_target(heartbeat_max_age_seconds: int) -> Dict[str, Any]:
@@ -575,6 +634,7 @@ def _build_all_sleeves_target(heartbeat_max_age_seconds: int) -> Dict[str, Any]:
             'scripts/run_bond_shadow.py',
             'scripts/run_parallel_aggressive_modes.py',
         ],
+        'exclude_patterns': _live_data_excludes(simulate),
         'cmd': cmd,
         'log': PROJECT_ROOT / 'logs' / 'watchdog_all_sleeves.log',
         'broker': broker,
@@ -1043,13 +1103,14 @@ def main() -> int:
             '--max-iterations',
             '0',
         ]
-        if _env_flag('OPS_WATCHDOG_COINBASE_SIMULATE', '0'):
+        coinbase_simulate = _env_flag('OPS_WATCHDOG_COINBASE_SIMULATE', '0')
+        if coinbase_simulate:
             coinbase_cmd.append('--simulate')
         targets.append(
             {
                 'name': 'coinbase_loop',
                 'pattern': 'scripts/run_shadow_training_loop.py --broker coinbase',
-                'exclude_patterns': ['--profile crypto_futures'],
+                'exclude_patterns': _live_data_excludes(coinbase_simulate, ['--profile crypto_futures']),
                 'cmd': coinbase_cmd,
                 'log': PROJECT_ROOT / 'logs' / 'watchdog_coinbase_loop.log',
                 'alt_patterns': [],
@@ -1078,13 +1139,14 @@ def main() -> int:
             '--max-iterations',
             '0',
         ]
-        if _env_flag('OPS_WATCHDOG_COINBASE_FUTURES_SIMULATE', '0'):
+        coinbase_futures_simulate = _env_flag('OPS_WATCHDOG_COINBASE_FUTURES_SIMULATE', '0')
+        if coinbase_futures_simulate:
             coinbase_futures_cmd.append('--simulate')
         targets.append(
             {
                 'name': 'coinbase_futures_loop',
                 'pattern': f'scripts/run_shadow_training_loop.py --broker coinbase --profile {futures_profile}',
-                'exclude_patterns': [],
+                'exclude_patterns': _live_data_excludes(coinbase_futures_simulate),
                 'cmd': coinbase_futures_cmd,
                 'log': PROJECT_ROOT / 'logs' / 'watchdog_coinbase_futures_loop.log',
                 'alt_patterns': [],

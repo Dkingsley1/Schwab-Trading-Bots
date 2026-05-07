@@ -78,7 +78,8 @@ def main() -> int:
     runtime = _load(root / "governance" / "health" / "live_runtime_separation_control_latest.json")
 
     paper_lane_fresh = not bool(paper_lane.get("stale", False)) if paper_lane else False
-    live_lane_running = bool(live_lane) and not bool(live_lane.get("stale", False))
+    live_lane_file_running = bool(live_lane) and not bool(live_lane.get("stale", False))
+    live_lane_running = bool(live_lane_file_running)
     broker_ready = bool(broker.get("ready_for_open", False))
     session_ready = bool(session.get("ready", session.get("ok", False)))
     storage_ok = bool(storage.get("ok", True))
@@ -106,15 +107,20 @@ def main() -> int:
     watchdog_age_seconds = _payload_age_seconds(watchdog)
     watchdog_unhealthy_targets = 0
     watchdog_running_targets = 0
+    watchdog_live_lane_running = False
     for row in watchdog_targets:
         if not isinstance(row, dict):
             continue
+        target_name = str(row.get("name") or "").strip().lower()
         running_count = int(row.get("running", 0) or 0) + int(row.get("alt_running", 0) or 0)
         heartbeat_ok = bool(row.get("heartbeat_ok", False))
         if running_count > 0 and heartbeat_ok:
             watchdog_running_targets += 1
+            if target_name in {"all_sleeves", "live_lane"}:
+                watchdog_live_lane_running = True
         else:
             watchdog_unhealthy_targets += 1
+    live_lane_running = bool(live_lane_file_running or watchdog_live_lane_running)
     restart_rows = watchdog.get("restart_storms") if isinstance(watchdog.get("restart_storms"), list) else []
     alert_rows = watchdog.get("alerts") if isinstance(watchdog.get("alerts"), list) else []
     storage_recovery = storage_control.get("bounded_recovery_contract") if isinstance(storage_control.get("bounded_recovery_contract"), dict) else {}

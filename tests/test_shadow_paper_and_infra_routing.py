@@ -1,7 +1,13 @@
 import scripts.run_shadow_training_loop as loop
 
 
-def _bot(bot_id: str, *, role: str = "signal_sub_bot", acc: float = 0.60) -> loop.SubBot:
+def _bot(
+    bot_id: str,
+    *,
+    role: str = "signal_sub_bot",
+    acc: float = 0.60,
+    paper_live_data_enabled: bool = False,
+) -> loop.SubBot:
     return loop.SubBot(
         bot_id=bot_id,
         weight=0.10,
@@ -10,6 +16,7 @@ def _bot(bot_id: str, *, role: str = "signal_sub_bot", acc: float = 0.60) -> loo
         test_accuracy=acc,
         promoted=False,
         bot_role=role,
+        paper_live_data_enabled=paper_live_data_enabled,
     )
 
 
@@ -48,6 +55,24 @@ def test_top_paper_mirror_bots_all_active_derivatives_ignore_caps() -> None:
     )
 
     assert {b.bot_id for b in selected} == {"options_a", "options_b", "options_c"}
+
+
+def test_top_paper_mirror_bots_standard_filters_to_explicit_paper_cohort(monkeypatch) -> None:
+    monkeypatch.setenv("PAPER_LIVE_DATA_STANDARD_ENABLED", "1")
+    bots = [
+        _bot("collector_high_score", acc=0.99, paper_live_data_enabled=False),
+        _bot("paper_allowed_lower_score", acc=0.51, paper_live_data_enabled=True),
+    ]
+
+    selected = loop._top_paper_mirror_bots(
+        bots,
+        top_n=2,
+        min_accuracy=0.0,
+        segment="core",
+        mirror_all_active=False,
+    )
+
+    assert [b.bot_id for b in selected] == ["paper_allowed_lower_score"]
 
 
 def test_infrastructure_observer_kind_maps_live_registry_infra_ids() -> None:

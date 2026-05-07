@@ -92,6 +92,7 @@ def _write_ready_fixture(project_root: Path, *, one_numbers_start: str = "202604
     _write_json(health / "storage_resilience_control_latest.json", {"overall_status": "ready", "ok": True})
     _write_json(health / "operator_cockpit_latest.json", {"overall_status": "ready", "ok": True})
     _write_json(health / "runtime_gate_dashboard_latest.json", {"overall_status": "ready", "ok": True})
+    _write_json(health / "backlog_organizer_latest.json", {"timestamp_utc": ready_stamp, "overall_status": "ready", "ok": True})
     _write_json(health / "platform_control_plane_latest.json", {"overall_status": "ready", "ok": True})
     _write_json(health / "cold_lane_refresh_latest.json", {"overall_status": "ready", "ok": True})
     _write_json(project_root / "governance" / "walk_forward" / "coverage_gap_closer_latest.json", {"overall_status": "ready", "ok": True})

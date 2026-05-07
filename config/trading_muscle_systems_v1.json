@@ -1,0 +1,450 @@
+{
+  "generated_at_utc": "2026-05-04T18:52:53.458621+00:00",
+  "trading_muscle_systems_version": "trading_muscle_systems_v1",
+  "pack": {
+    "slug": "trading_muscle_systems",
+    "display_name": "Trading Muscle Systems Pack",
+    "sleeve_family": "trading_muscles",
+    "objective": "Add 14 trading muscle systems that turn platform intelligence into safe trade candidates, sizing plans, hedge plans, exits, and execution rehearsals without live or paper authority until gates clear.",
+    "target_platform_total_bots": 1456,
+    "muscle_count": 14,
+    "bot_count": 70,
+    "bot_ids": [
+      "brain_refinery_v1396_trading_muscle_intraday_momentum_muscle_signal_collector_bot",
+      "brain_refinery_v1397_trading_muscle_intraday_momentum_muscle_candidate_modeler_bot",
+      "brain_refinery_v1398_trading_muscle_intraday_momentum_muscle_risk_sizer_bot",
+      "brain_refinery_v1399_trading_muscle_intraday_momentum_muscle_execution_rehearsal_guard_bot",
+      "brain_refinery_v1400_trading_muscle_intraday_momentum_muscle_master_bridge_bot",
+      "brain_refinery_v1401_trading_muscle_intraday_mean_reversion_muscle_signal_collector_bot",
+      "brain_refinery_v1402_trading_muscle_intraday_mean_reversion_muscle_candidate_modeler_bot",
+      "brain_refinery_v1403_trading_muscle_intraday_mean_reversion_muscle_risk_sizer_bot",
+      "brain_refinery_v1404_trading_muscle_intraday_mean_reversion_muscle_execution_rehearsal_guard_bot",
+      "brain_refinery_v1405_trading_muscle_intraday_mean_reversion_muscle_master_bridge_bot",
+      "brain_refinery_v1406_trading_muscle_swing_trend_muscle_signal_collector_bot",
+      "brain_refinery_v1407_trading_muscle_swing_trend_muscle_candidate_modeler_bot",
+      "brain_refinery_v1408_trading_muscle_swing_trend_muscle_risk_sizer_bot",
+      "brain_refinery_v1409_trading_muscle_swing_trend_muscle_execution_rehearsal_guard_bot",
+      "brain_refinery_v1410_trading_muscle_swing_trend_muscle_master_bridge_bot",
+      "brain_refinery_v1411_trading_muscle_options_convexity_muscle_signal_collector_bot",
+      "brain_refinery_v1412_trading_muscle_options_convexity_muscle_candidate_modeler_bot",
+      "brain_refinery_v1413_trading_muscle_options_convexity_muscle_risk_sizer_bot",
+      "brain_refinery_v1414_trading_muscle_options_convexity_muscle_execution_rehearsal_guard_bot",
+      "brain_refinery_v1415_trading_muscle_options_convexity_muscle_master_bridge_bot",
+      "brain_refinery_v1416_trading_muscle_options_income_muscle_signal_collector_bot",
+      "brain_refinery_v1417_trading_muscle_options_income_muscle_candidate_modeler_bot",
+      "brain_refinery_v1418_trading_muscle_options_income_muscle_risk_sizer_bot",
+      "brain_refinery_v1419_trading_muscle_options_income_muscle_execution_rehearsal_guard_bot",
+      "brain_refinery_v1420_trading_muscle_options_income_muscle_master_bridge_bot",
+      "brain_refinery_v1421_trading_muscle_futures_macro_muscle_signal_collector_bot",
+      "brain_refinery_v1422_trading_muscle_futures_macro_muscle_candidate_modeler_bot",
+      "brain_refinery_v1423_trading_muscle_futures_macro_muscle_risk_sizer_bot",
+      "brain_refinery_v1424_trading_muscle_futures_macro_muscle_execution_rehearsal_guard_bot",
+      "brain_refinery_v1425_trading_muscle_futures_macro_muscle_master_bridge_bot",
+      "brain_refinery_v1426_trading_muscle_crypto_basis_muscle_signal_collector_bot",
+      "brain_refinery_v1427_trading_muscle_crypto_basis_muscle_candidate_modeler_bot",
+      "brain_refinery_v1428_trading_muscle_crypto_basis_muscle_risk_sizer_bot",
+      "brain_refinery_v1429_trading_muscle_crypto_basis_muscle_execution_rehearsal_guard_bot",
+      "brain_refinery_v1430_trading_muscle_crypto_basis_muscle_master_bridge_bot",
+      "brain_refinery_v1431_trading_muscle_volatility_arbitrage_muscle_signal_collector_bot",
+      "brain_refinery_v1432_trading_muscle_volatility_arbitrage_muscle_candidate_modeler_bot",
+      "brain_refinery_v1433_trading_muscle_volatility_arbitrage_muscle_risk_sizer_bot",
+      "brain_refinery_v1434_trading_muscle_volatility_arbitrage_muscle_execution_rehearsal_guard_bot",
+      "brain_refinery_v1435_trading_muscle_volatility_arbitrage_muscle_master_bridge_bot",
+      "brain_refinery_v1436_trading_muscle_event_driven_muscle_signal_collector_bot",
+      "brain_refinery_v1437_trading_muscle_event_driven_muscle_candidate_modeler_bot",
+      "brain_refinery_v1438_trading_muscle_event_driven_muscle_risk_sizer_bot",
+      "brain_refinery_v1439_trading_muscle_event_driven_muscle_execution_rehearsal_guard_bot",
+      "brain_refinery_v1440_trading_muscle_event_driven_muscle_master_bridge_bot",
+      "brain_refinery_v1441_trading_muscle_relative_value_pairs_muscle_signal_collector_bot",
+      "brain_refinery_v1442_trading_muscle_relative_value_pairs_muscle_candidate_modeler_bot",
+      "brain_refinery_v1443_trading_muscle_relative_value_pairs_muscle_risk_sizer_bot",
+      "brain_refinery_v1444_trading_muscle_relative_value_pairs_muscle_execution_rehearsal_guard_bot",
+      "brain_refinery_v1445_trading_muscle_relative_value_pairs_muscle_master_bridge_bot",
+      "brain_refinery_v1446_trading_muscle_portfolio_hedging_muscle_signal_collector_bot",
+      "brain_refinery_v1447_trading_muscle_portfolio_hedging_muscle_candidate_modeler_bot",
+      "brain_refinery_v1448_trading_muscle_portfolio_hedging_muscle_risk_sizer_bot",
+      "brain_refinery_v1449_trading_muscle_portfolio_hedging_muscle_execution_rehearsal_guard_bot",
+      "brain_refinery_v1450_trading_muscle_portfolio_hedging_muscle_master_bridge_bot",
+      "brain_refinery_v1451_trading_muscle_execution_timing_muscle_signal_collector_bot",
+      "brain_refinery_v1452_trading_muscle_execution_timing_muscle_candidate_modeler_bot",
+      "brain_refinery_v1453_trading_muscle_execution_timing_muscle_risk_sizer_bot",
+      "brain_refinery_v1454_trading_muscle_execution_timing_muscle_execution_rehearsal_guard_bot",
+      "brain_refinery_v1455_trading_muscle_execution_timing_muscle_master_bridge_bot",
+      "brain_refinery_v1456_trading_muscle_position_sizing_muscle_signal_collector_bot",
+      "brain_refinery_v1457_trading_muscle_position_sizing_muscle_candidate_modeler_bot",
+      "brain_refinery_v1458_trading_muscle_position_sizing_muscle_risk_sizer_bot",
+      "brain_refinery_v1459_trading_muscle_position_sizing_muscle_execution_rehearsal_guard_bot",
+      "brain_refinery_v1460_trading_muscle_position_sizing_muscle_master_bridge_bot",
+      "brain_refinery_v1461_trading_muscle_exit_rebalance_muscle_signal_collector_bot",
+      "brain_refinery_v1462_trading_muscle_exit_rebalance_muscle_candidate_modeler_bot",
+      "brain_refinery_v1463_trading_muscle_exit_rebalance_muscle_risk_sizer_bot",
+      "brain_refinery_v1464_trading_muscle_exit_rebalance_muscle_execution_rehearsal_guard_bot",
+      "brain_refinery_v1465_trading_muscle_exit_rebalance_muscle_master_bridge_bot"
+    ],
+    "muscles": [
+      {
+        "slug": "intraday_momentum_muscle",
+        "display_name": "Intraday Momentum Muscle",
+        "objective": "Learn opening-range, VWAP reclaim, relative-volume, tape-confirmed continuation, and power-hour candidate behavior without execution authority.",
+        "outputs": [
+          "intraday_momentum_candidate",
+          "momentum_entry_quality_score",
+          "momentum_exhaustion_flag"
+        ],
+        "peer_sleeves": [
+          "intraday_aggressive",
+          "day_trading",
+          "order_flow_market_microstructure"
+        ],
+        "data_intakes": [
+          "rvol_trace",
+          "vwap_reclaim_trace",
+          "opening_range_trace",
+          "tape_momentum_trace"
+        ]
+      },
+      {
+        "slug": "intraday_mean_reversion_muscle",
+        "display_name": "Intraday Mean Reversion Muscle",
+        "objective": "Learn failed-break, VWAP snapback, liquidity-refill, overextension fade, and auction-reversion candidates with strict volatility and liquidity filters.",
+        "outputs": [
+          "mean_reversion_candidate",
+          "snapback_quality_score",
+          "fade_invalidation_level"
+        ],
+        "peer_sleeves": [
+          "intraday_aggressive",
+          "market_microstructure",
+          "auction_imbalance"
+        ],
+        "data_intakes": [
+          "failed_break_trace",
+          "vwap_deviation_trace",
+          "liquidity_refill_trace"
+        ]
+      },
+      {
+        "slug": "swing_trend_muscle",
+        "display_name": "Swing Trend Muscle",
+        "objective": "Learn multi-day trend, pullback-to-support, relative-strength, volatility-contraction, and earnings-drift continuation candidates.",
+        "outputs": [
+          "swing_trend_candidate",
+          "trend_quality_score",
+          "multi_day_exit_plan"
+        ],
+        "peer_sleeves": [
+          "swing_aggressive",
+          "earnings_drift_quality",
+          "sector_rotation"
+        ],
+        "data_intakes": [
+          "swing_setup_trace",
+          "relative_strength_trace",
+          "volatility_contraction_trace"
+        ]
+      },
+      {
+        "slug": "options_convexity_muscle",
+        "display_name": "Options Convexity Muscle",
+        "objective": "Learn gamma, vega, skew, event-vol, and spread-structured convexity candidates while tracking greeks, assignment, and liquidity risk.",
+        "outputs": [
+          "options_convexity_candidate",
+          "greeks_risk_packet",
+          "convexity_payoff_map"
+        ],
+        "peer_sleeves": [
+          "options_risk_intelligence_v2",
+          "gamma_scalping",
+          "second_third_order_greeks"
+        ],
+        "data_intakes": [
+          "options_chain_trace",
+          "greeks_surface_trace",
+          "event_vol_trace",
+          "opra_nbbo_trace"
+        ]
+      },
+      {
+        "slug": "options_income_muscle",
+        "display_name": "Options Income Muscle",
+        "objective": "Learn conservative premium, covered-call, cash-secured-put, vertical-spread, and theta candidate behavior with assignment and drawdown guardrails.",
+        "outputs": [
+          "options_income_candidate",
+          "theta_risk_reward_score",
+          "assignment_risk_packet"
+        ],
+        "peer_sleeves": [
+          "dividend_income",
+          "covered_call_income",
+          "options_risk_intelligence_v2"
+        ],
+        "data_intakes": [
+          "theta_decay_trace",
+          "assignment_risk_trace",
+          "covered_call_trace"
+        ]
+      },
+      {
+        "slug": "futures_macro_muscle",
+        "display_name": "Futures Macro Muscle",
+        "objective": "Learn ES, NQ, RTY, rates, energy, metals, and macro-event futures candidates using regime-aware risk and overnight-session context.",
+        "outputs": [
+          "futures_macro_candidate",
+          "macro_contract_risk_score",
+          "overnight_session_plan"
+        ],
+        "peer_sleeves": [
+          "schwab_futures",
+          "futures_cross_asset_basis_lab",
+          "sovereign_debt_macro"
+        ],
+        "data_intakes": [
+          "futures_curve_trace",
+          "macro_event_trace",
+          "overnight_liquidity_trace"
+        ]
+      },
+      {
+        "slug": "crypto_basis_muscle",
+        "display_name": "Crypto Basis Muscle",
+        "objective": "Learn crypto spot, futures, perp-basis, funding, liquidation-ladder, cross-exchange divergence, and weekend-liquidity candidates.",
+        "outputs": [
+          "crypto_basis_candidate",
+          "funding_basis_score",
+          "liquidation_risk_packet"
+        ],
+        "peer_sleeves": [
+          "crypto",
+          "crypto_futures",
+          "crypto_funding_basis_rv_v2"
+        ],
+        "data_intakes": [
+          "crypto_funding_trace",
+          "liquidation_ladder_trace",
+          "cross_exchange_trace"
+        ]
+      },
+      {
+        "slug": "volatility_arbitrage_muscle",
+        "display_name": "Volatility Arbitrage Muscle",
+        "objective": "Learn IV/RV, term-structure, skew, dispersion, variance, and volatility-risk-premium candidates with hedge-cost realism.",
+        "outputs": [
+          "vol_arb_candidate",
+          "iv_rv_edge_score",
+          "hedge_cost_packet"
+        ],
+        "peer_sleeves": [
+          "volatility_arbitrage",
+          "volatility_risk_premium_harvesting",
+          "dispersion_trading"
+        ],
+        "data_intakes": [
+          "vol_surface_trace",
+          "realized_vol_trace",
+          "dispersion_trace"
+        ]
+      },
+      {
+        "slug": "event_driven_muscle",
+        "display_name": "Event-Driven Muscle",
+        "objective": "Learn earnings, FOMC, CPI, corporate-action, deal-spread, and regulatory-event candidates with pre/post-event decay maps.",
+        "outputs": [
+          "event_driven_candidate",
+          "event_probability_packet",
+          "post_event_decay_score"
+        ],
+        "peer_sleeves": [
+          "event_intelligence",
+          "merger_event_arbitrage",
+          "macro_context"
+        ],
+        "data_intakes": [
+          "event_calendar_trace",
+          "earnings_reaction_trace",
+          "macro_release_trace"
+        ]
+      },
+      {
+        "slug": "relative_value_pairs_muscle",
+        "display_name": "Relative Value And Pairs Muscle",
+        "objective": "Learn cointegration, residualized pairs, ETF/NAV, ADR parity, sector spread, and cross-listing relative-value candidates.",
+        "outputs": [
+          "relative_value_candidate",
+          "spread_reversion_score",
+          "hedge_ratio_packet"
+        ],
+        "peer_sleeves": [
+          "statistical_arbitrage",
+          "cointegration_ou_pairs",
+          "etf_basket_nav_arbitrage"
+        ],
+        "data_intakes": [
+          "pairs_spread_trace",
+          "hedge_ratio_trace",
+          "nav_parity_trace"
+        ]
+      },
+      {
+        "slug": "portfolio_hedging_muscle",
+        "display_name": "Portfolio Hedging Muscle",
+        "objective": "Learn hedge candidates for drawdown control, beta offsets, collar structures, tail protection, correlation spikes, and sleeve crowding.",
+        "outputs": [
+          "portfolio_hedge_candidate",
+          "tail_hedge_efficiency_score",
+          "exposure_offset_packet"
+        ],
+        "peer_sleeves": [
+          "portfolio_brain",
+          "tail_risk_parity",
+          "black_swan_hedging"
+        ],
+        "data_intakes": [
+          "portfolio_exposure_trace",
+          "tail_risk_trace",
+          "correlation_spike_trace"
+        ]
+      },
+      {
+        "slug": "execution_timing_muscle",
+        "display_name": "Execution Timing Muscle",
+        "objective": "Learn order timing, order type, queue, spread, auction, venue, and broker-state plans that reduce slippage in paper rehearsals.",
+        "outputs": [
+          "execution_timing_plan",
+          "slippage_reduction_score",
+          "order_type_vote"
+        ],
+        "peer_sleeves": [
+          "execution_realism_layer",
+          "execution_quality_lab_v2",
+          "broker_venue_reliability_lab"
+        ],
+        "data_intakes": [
+          "paper_fill_trace",
+          "spread_cost_trace",
+          "queue_position_trace",
+          "venue_health_trace"
+        ]
+      },
+      {
+        "slug": "position_sizing_muscle",
+        "display_name": "Position Sizing Muscle",
+        "objective": "Learn confidence, volatility, liquidity, correlation, margin, Kelly-capped, and drawdown-aware sizing plans before any paper allocation can occur.",
+        "outputs": [
+          "position_size_plan",
+          "risk_budget_score",
+          "margin_safe_size_cap"
+        ],
+        "peer_sleeves": [
+          "portfolio_intelligence_layer",
+          "funding_collateral_margin_intelligence",
+          "capital_simulator"
+        ],
+        "data_intakes": [
+          "risk_budget_trace",
+          "margin_guard_trace",
+          "liquidity_capacity_trace"
+        ]
+      },
+      {
+        "slug": "exit_rebalance_muscle",
+        "display_name": "Exit And Rebalance Muscle",
+        "objective": "Learn stop, trim, profit-taking, thesis-decay, time-stop, rebalance, and de-risk plans for every candidate family.",
+        "outputs": [
+          "exit_plan",
+          "rebalance_trigger_score",
+          "thesis_decay_alert"
+        ],
+        "peer_sleeves": [
+          "position_lifecycle",
+          "alpha_decay_tracker",
+          "portfolio_brain"
+        ],
+        "data_intakes": [
+          "exit_outcome_trace",
+          "rebalance_trace",
+          "thesis_decay_trace"
+        ]
+      }
+    ],
+    "dedicated_data_intake": [
+      "trading_muscle_signal_trace",
+      "trade_candidate_lifecycle_trace",
+      "paper_trade_lock_trace",
+      "execution_realism_trace",
+      "position_sizing_trace",
+      "portfolio_exposure_trace",
+      "regime_router_trace",
+      "alpha_decay_trace",
+      "global_halt_status_trace",
+      "data_quality_contract_trace"
+    ],
+    "storage_retention_rule": {
+      "retention_profile": "trading_muscles_hot_5d_warm_120d_cold_540d",
+      "storage_targets": [
+        "governance/trading_muscle_systems",
+        "governance/trading_muscle_systems/intraday_momentum_muscle",
+        "governance/trading_muscle_systems/intraday_mean_reversion_muscle",
+        "governance/trading_muscle_systems/swing_trend_muscle",
+        "governance/trading_muscle_systems/options_convexity_muscle",
+        "governance/trading_muscle_systems/options_income_muscle",
+        "governance/trading_muscle_systems/futures_macro_muscle",
+        "governance/trading_muscle_systems/crypto_basis_muscle",
+        "governance/trading_muscle_systems/volatility_arbitrage_muscle",
+        "governance/trading_muscle_systems/event_driven_muscle",
+        "governance/trading_muscle_systems/relative_value_pairs_muscle",
+        "governance/trading_muscle_systems/portfolio_hedging_muscle",
+        "governance/trading_muscle_systems/execution_timing_muscle",
+        "governance/trading_muscle_systems/position_sizing_muscle",
+        "governance/trading_muscle_systems/exit_rebalance_muscle",
+        "governance/health/trading_muscle_systems_latest.json"
+      ],
+      "max_daily_mb_per_bot": 5,
+      "capture_mode": "thin_digest_first_trade_candidate_trace",
+      "sample_rate": 0.025,
+      "dedupe_required": true,
+      "stale_deletion_policy": "retain_candidate_scores_and_execution_digests_stage_raw_trade_traces"
+    },
+    "paper_only_floor": {
+      "paper_trade_lock_required": true,
+      "paper_trading_enabled": false,
+      "live_trading_enabled": false,
+      "execution_enabled": false,
+      "allocation_enabled": false,
+      "graduation_requires_minimum_observations": 75000,
+      "graduation_requires_collection_days": 180
+    },
+    "runtime_capacity_floor": 1000,
+    "muscle_systems": [
+      "intraday_momentum_muscle",
+      "intraday_mean_reversion_muscle",
+      "swing_trend_muscle",
+      "options_convexity_muscle",
+      "options_income_muscle",
+      "futures_macro_muscle",
+      "crypto_basis_muscle",
+      "volatility_arbitrage_muscle",
+      "event_driven_muscle",
+      "relative_value_pairs_muscle",
+      "portfolio_hedging_muscle",
+      "execution_timing_muscle",
+      "position_sizing_muscle",
+      "exit_rebalance_muscle"
+    ],
+    "anchor_bot_ids": {
+      "intraday_momentum_muscle": "brain_refinery_v1396_trading_muscle_intraday_momentum_muscle_signal_collector_bot",
+      "intraday_mean_reversion_muscle": "brain_refinery_v1401_trading_muscle_intraday_mean_reversion_muscle_signal_collector_bot",
+      "swing_trend_muscle": "brain_refinery_v1406_trading_muscle_swing_trend_muscle_signal_collector_bot",
+      "options_convexity_muscle": "brain_refinery_v1411_trading_muscle_options_convexity_muscle_signal_collector_bot",
+      "options_income_muscle": "brain_refinery_v1416_trading_muscle_options_income_muscle_signal_collector_bot",
+      "futures_macro_muscle": "brain_refinery_v1421_trading_muscle_futures_macro_muscle_signal_collector_bot",
+      "crypto_basis_muscle": "brain_refinery_v1426_trading_muscle_crypto_basis_muscle_signal_collector_bot",
+      "volatility_arbitrage_muscle": "brain_refinery_v1431_trading_muscle_volatility_arbitrage_muscle_signal_collector_bot",
+      "event_driven_muscle": "brain_refinery_v1436_trading_muscle_event_driven_muscle_signal_collector_bot",
+      "relative_value_pairs_muscle": "brain_refinery_v1441_trading_muscle_relative_value_pairs_muscle_signal_collector_bot",
+      "portfolio_hedging_muscle": "brain_refinery_v1446_trading_muscle_portfolio_hedging_muscle_signal_collector_bot",
+      "execution_timing_muscle": "brain_refinery_v1451_trading_muscle_execution_timing_muscle_signal_collector_bot",
+      "position_sizing_muscle": "brain_refinery_v1456_trading_muscle_position_sizing_muscle_signal_collector_bot",
+      "exit_rebalance_muscle": "brain_refinery_v1461_trading_muscle_exit_rebalance_muscle_signal_collector_bot"
+    }
+  }
+}

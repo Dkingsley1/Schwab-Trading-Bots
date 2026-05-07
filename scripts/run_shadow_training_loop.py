@@ -374,6 +374,10 @@ class SubBot:
     slot_kind: str = ""
     sleeve_profile: str = ""
     training_excluded: bool = False
+    paper_live_data_enabled: bool = False
+    paper_trading_enabled: bool = False
+    paper_trade_enabled: bool = False
+    paper_execution_allowed: bool = False
 
 
 def _bot_master_vote_eligible(bot: SubBot) -> bool:
@@ -385,6 +389,23 @@ def _bot_master_vote_eligible(bot: SubBot) -> bool:
     if float(bot.weight or 0.0) <= 0.0:
         return False
     return True
+
+
+def _paper_live_data_standard_enabled() -> bool:
+    return os.getenv("PAPER_LIVE_DATA_STANDARD_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _bot_paper_live_data_allowed(bot: SubBot) -> bool:
+    if not _paper_live_data_standard_enabled():
+        return True
+    if str(bot.reason or "").startswith("virtual_"):
+        return True
+    return bool(
+        bot.paper_live_data_enabled
+        or bot.paper_trading_enabled
+        or bot.paper_trade_enabled
+        or bot.paper_execution_allowed
+    )
 
 
 def _row_master_vote_eligible(row: Dict[str, Any]) -> bool:
@@ -717,6 +738,10 @@ def _parse_sub_bots(registry: Dict[str, Any]) -> List[SubBot]:
                 slot_kind=str(row.get("slot_kind", "")),
                 sleeve_profile=str(row.get("sleeve_profile", "")),
                 training_excluded=bool(row.get("training_excluded", False)),
+                paper_live_data_enabled=bool(row.get("paper_live_data_enabled", False)),
+                paper_trading_enabled=bool(row.get("paper_trading_enabled", False)),
+                paper_trade_enabled=bool(row.get("paper_trade_enabled", False)),
+                paper_execution_allowed=bool(row.get("paper_execution_allowed", False)),
             )
         )
     if not bots:
@@ -8008,22 +8033,26 @@ def _top_paper_mirror_bots(
     if segment_name == "options":
         eligible = [
             b for b in active_bots
-            if b.active and _is_options_sub_bot(b)
+            if b.active and _is_options_sub_bot(b) and _bot_paper_live_data_allowed(b)
         ]
     elif segment_name == "futures":
         eligible = [
             b for b in active_bots
-            if b.active and _is_futures_sub_bot(b)
+            if b.active and _is_futures_sub_bot(b) and _bot_paper_live_data_allowed(b)
         ]
     elif segment_name == "all_active":
         eligible = [
             b for b in active_bots
-            if b.active and b.bot_role != "infrastructure_sub_bot"
+            if b.active and b.bot_role != "infrastructure_sub_bot" and _bot_paper_live_data_allowed(b)
         ]
     else:
         eligible = [
             b for b in active_bots
-            if b.active and b.bot_role != "infrastructure_sub_bot" and (not _is_options_sub_bot(b)) and (not _is_futures_sub_bot(b))
+            if b.active
+            and b.bot_role != "infrastructure_sub_bot"
+            and (not _is_options_sub_bot(b))
+            and (not _is_futures_sub_bot(b))
+            and _bot_paper_live_data_allowed(b)
         ]
     ranked = sorted(
         eligible,
@@ -8048,16 +8077,58 @@ def _sub_bot_signal_batch(bots: List[SubBot], features: Dict[str, float]) -> Lis
     return out
 
 
-def _external_ingestion_extra_interval_seconds(project_root: str) -> int:
-    path = os.path.join(project_root, "governance", "health", "ingestion_backpressure_latest.json")
+def _safe_env_int(name: str, default: int) -> int:
+    try:
+        return int(float(os.getenv(name, str(default)) or default))
+    except Exception:
+        return int(default)
+
+
+def _load_health_payload(project_root: str, name: str) -> Dict[str, Any]:
+    path = os.path.join(project_root, "governance", "health", name)
     try:
         with open(path, "r", encoding="utf-8") as f:
             payload = json.load(f)
-        if bool(payload.get("overload", False)):
-            return max(int(payload.get("recommended_extra_interval_seconds", 0) or 0), 0)
     except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _external_ingestion_extra_interval_seconds(project_root: str) -> int:
+    if os.getenv("SHADOW_LOOP_PRESSURE_INTERVAL_FLOOR_ENABLED", "1").strip() == "0":
         return 0
-    return 0
+
+    max_extra = max(_safe_env_int("SHADOW_LOOP_MAX_DYNAMIC_EXTRA_INTERVAL_SECONDS", 75), 0)
+    protect_live_extra = max(_safe_env_int("SHADOW_LOOP_PROTECT_LIVE_EXTRA_INTERVAL_SECONDS", 30), 0)
+    queue_extra = max(_safe_env_int("SHADOW_LOOP_QUEUE_BACKPRESSURE_EXTRA_INTERVAL_SECONDS", 15), 0)
+    high_compute_extra = max(_safe_env_int("SHADOW_LOOP_HIGH_COMPUTE_EXTRA_INTERVAL_SECONDS", 20), 0)
+    extra = 0
+
+    backpressure = _load_health_payload(project_root, "ingestion_backpressure_latest.json")
+    if bool(backpressure.get("overload", False)):
+        extra = max(extra, max(int(backpressure.get("recommended_extra_interval_seconds", 0) or 0), 0))
+
+    runtime = _load_health_payload(project_root, "runtime_throttle_control_latest.json")
+    profile = str(runtime.get("throttle_profile") or "").strip().lower()
+    compute_level = str(runtime.get("compute_pressure_level") or "").strip().lower()
+    if profile == "protect_live":
+        extra = max(extra, protect_live_extra)
+    if compute_level == "high":
+        extra = max(extra, high_compute_extra)
+
+    storage = _load_health_payload(project_root, "ingestion_storage_control_latest.json")
+    storage_bp = storage.get("backpressure") if isinstance(storage.get("backpressure"), dict) else {}
+    if str(storage.get("severity") or "").strip().lower() in {"high", "critical", "blocked"}:
+        extra = max(extra, queue_extra)
+    if int(float(storage_bp.get("total_pending_lines", 0) or 0)) >= int(float(storage_bp.get("pending_lines_threshold", 15000) or 15000)):
+        extra = max(extra, queue_extra)
+
+    settlement = _load_health_payload(project_root, "platform_settlement_stabilization_latest.json")
+    queue = (settlement.get("sections") or {}).get("queue_decay_meter") if isinstance(settlement.get("sections"), dict) else {}
+    if isinstance(queue, dict) and bool(queue.get("queue_backpressure_active", False)):
+        extra = max(extra, queue_extra)
+
+    return min(extra, max_extra)
 
 
 
@@ -13087,12 +13158,56 @@ def run_loop(
     swing_strategy_state: Dict[str, Any] = {"weekly_trend_ema_by_symbol": {}}
     anomaly_fail_streak = 0
     anomaly_kill_switch_until_ts = 0.0
+    market_data_provider_cooldown_until_ts = 0.0
     blackout_windows = _event_blackout_windows()
     regime_cooldown_iters = max(int(os.getenv("REGIME_COOLDOWN_ITERS", "3")), 0)
     exposure_cap_long = max(int(os.getenv("CROSS_SYMBOL_MAX_LONG", "8")), 1)
     exposure_cap_short = max(int(os.getenv("CROSS_SYMBOL_MAX_SHORT", "8")), 1)
     anomaly_kill_threshold = max(int(os.getenv("ANOMALY_KILL_THRESHOLD", "10")), 1)
     anomaly_kill_cooldown_seconds = max(int(os.getenv("ANOMALY_KILL_COOLDOWN_SECONDS", "300")), 30)
+    anomaly_suppression_log_cooldown_seconds = max(int(os.getenv("ANOMALY_SUPPRESSION_LOG_COOLDOWN_SECONDS", "60")), 5)
+    last_anomaly_suppressed_log: Dict[str, float] = {}
+
+    def _record_anomaly_failure(reason: str, *, counts_as_anomaly: bool = True, symbol: str = "") -> None:
+        nonlocal anomaly_fail_streak, anomaly_kill_switch_until_ts
+        reason_token = str(reason or "unknown").strip() or "unknown"
+        symbol_token = str(symbol or "*").strip() or "*"
+        if not counts_as_anomaly:
+            now_s = time.time()
+            log_key = f"{reason_token}:{symbol_token}"
+            last_logged = float(last_anomaly_suppressed_log.get(log_key, 0.0) or 0.0)
+            if (now_s - last_logged) >= anomaly_suppression_log_cooldown_seconds:
+                print(
+                    f"[KillSwitch] anomaly_suppressed reason={reason_token} "
+                    f"symbol={symbol_token} profile={_shadow_profile_name() or 'default'}"
+                )
+                last_anomaly_suppressed_log[log_key] = now_s
+            return
+        anomaly_fail_streak += 1
+        if anomaly_fail_streak >= anomaly_kill_threshold:
+            anomaly_kill_switch_until_ts = time.time() + anomaly_kill_cooldown_seconds
+            print(f"[KillSwitch] tripped reason={reason_token} cooldown_s={anomaly_kill_cooldown_seconds}")
+            anomaly_fail_streak = 0
+
+    def _market_data_error_counts_as_anomaly(exc: Exception, *, default: bool) -> bool:
+        if broker != "schwab":
+            return bool(default)
+        text = str(exc)
+        match = re.search(r"status=([0-9]{3})", text)
+        status_code = match.group(1) if match else ""
+        if status_code in {"403", "429"} and not _env_flag("SCHWAB_QUOTE_HTTP_403_429_COUNT_AS_ANOMALY", "0"):
+            return False
+        return bool(default)
+
+    def _provider_cooldown_seconds_for_market_data_error(exc: Exception) -> int:
+        if broker != "schwab":
+            return 0
+        text = str(exc)
+        match = re.search(r"status=([0-9]{3})", text)
+        status_code = match.group(1) if match else ""
+        if status_code not in {"403", "429"}:
+            return 0
+        return max(int(os.getenv("SCHWAB_QUOTE_HTTP_403_429_COOLDOWN_SECONDS", "180")), 15)
 
     # Runtime layers: cache, circuit breaker, telemetry, checkpoint, backpressure, canary rollout.
     state_cache = StateCache(default_ttl_seconds=float(os.getenv("RUNTIME_CACHE_TTL_SECONDS", "2.0")))
@@ -14010,6 +14125,51 @@ def run_loop(
             time.sleep(max(min(rem, effective_interval_seconds), 5))
             continue
 
+        provider_cooldown_active = bool(time.time() < market_data_provider_cooldown_until_ts)
+        _log_gate("*", "market_data_provider_cooldown", not provider_cooldown_active, reason=("provider_http_403_429" if provider_cooldown_active else "clear"))
+        if provider_cooldown_active:
+            rem = int(market_data_provider_cooldown_until_ts - time.time())
+            print(f"[MarketDataProvider] paused reason=provider_http_403_429 remaining_s={max(rem, 0)}")
+            _record_snapshot_debug('*', 'market_data_provider_cooldown', remaining_seconds=max(rem, 0))
+            _set_loop_state("paused_market_data_provider_cooldown", reason="provider_http_403_429", remaining_seconds=max(rem, 0))
+            _publish_ingress_state(pause_gate="market_data_provider_cooldown", pause_reason="provider_http_403_429")
+            time.sleep(max(min(rem, effective_interval_seconds), 10))
+            continue
+
+        regular_market_open_for_anomaly, anomaly_session_reason = _in_market_window(
+            now_et,
+            session_start_hour,
+            session_end_hour,
+        )
+        schwab_off_hours_anomaly_suppression = bool(
+            broker == "schwab"
+            and _shadow_domain_name(broker=broker) == "equities"
+            and (not regular_market_open_for_anomaly)
+            and _env_flag("SCHWAB_OFF_HOURS_ANOMALY_SUPPRESSION_ENABLED", "1")
+        )
+        market_data_errors_count_as_anomaly = bool(
+            (not schwab_off_hours_anomaly_suppression)
+            or _env_flag("SCHWAB_OFF_HOURS_MARKET_DATA_ERRORS_COUNT_AS_ANOMALY", "0")
+        )
+        invalid_snapshots_count_as_anomaly = bool(
+            (not schwab_off_hours_anomaly_suppression)
+            or _env_flag("SCHWAB_OFF_HOURS_INVALID_SNAPSHOTS_COUNT_AS_ANOMALY", "0")
+        )
+        stale_prices_count_as_anomaly = bool(
+            (not schwab_off_hours_anomaly_suppression)
+            or _env_flag("SCHWAB_OFF_HOURS_STALE_PRICES_COUNT_AS_ANOMALY", "0")
+        )
+        _log_gate(
+            "*",
+            "off_hours_anomaly_suppression",
+            True,
+            reason=("active" if schwab_off_hours_anomaly_suppression else "inactive"),
+            market_session_reason=anomaly_session_reason,
+            market_data_errors_count_as_anomaly=market_data_errors_count_as_anomaly,
+            invalid_snapshots_count_as_anomaly=invalid_snapshots_count_as_anomaly,
+            stale_prices_count_as_anomaly=stale_prices_count_as_anomaly,
+        )
+
         if iter_count == 1 or iter_count % 10 == 0:
             registry, bots = _fresh_registry(registry_path)
             bots = _apply_canary_rollout_to_bots(bots, canary_rollout.max_weight)
@@ -14775,11 +14935,24 @@ def run_loop(
                 mkt = _fetch_symbol_snapshot(symbol)
             except Exception as exc:
                 symbol_fail_counts[symbol] = symbol_fail_counts.get(symbol, 0) + 1
-                anomaly_fail_streak += 1
-                if anomaly_fail_streak >= anomaly_kill_threshold:
-                    anomaly_kill_switch_until_ts = time.time() + anomaly_kill_cooldown_seconds
-                    print(f"[KillSwitch] tripped reason=market_data_errors cooldown_s={anomaly_kill_cooldown_seconds}")
-                    anomaly_fail_streak = 0
+                provider_cooldown_seconds = _provider_cooldown_seconds_for_market_data_error(exc)
+                if provider_cooldown_seconds > 0:
+                    market_data_provider_cooldown_until_ts = max(
+                        market_data_provider_cooldown_until_ts,
+                        time.time() + provider_cooldown_seconds,
+                    )
+                    print(
+                        f"[MarketDataProvider] cooldown reason=schwab_http_403_429 "
+                        f"symbol={symbol} cooldown_s={provider_cooldown_seconds}"
+                    )
+                _record_anomaly_failure(
+                    "market_data_errors",
+                    counts_as_anomaly=_market_data_error_counts_as_anomaly(
+                        exc,
+                        default=market_data_errors_count_as_anomaly,
+                    ),
+                    symbol=symbol,
+                )
                 opened = circuit_breaker.record_failure(f"md:{symbol}")
                 if opened:
                     print(f"[CircuitBreaker] opened symbol={symbol} layer=market_data")
@@ -14809,11 +14982,11 @@ def run_loop(
             )
             if not snapshot_usable:
                 symbol_fail_counts[symbol] = symbol_fail_counts.get(symbol, 0) + 1
-                anomaly_fail_streak += 1
-                if anomaly_fail_streak >= anomaly_kill_threshold:
-                    anomaly_kill_switch_until_ts = time.time() + anomaly_kill_cooldown_seconds
-                    print(f"[KillSwitch] tripped reason=invalid_snapshot cooldown_s={anomaly_kill_cooldown_seconds}")
-                    anomaly_fail_streak = 0
+                _record_anomaly_failure(
+                    "invalid_snapshot",
+                    counts_as_anomaly=invalid_snapshots_count_as_anomaly,
+                    symbol=symbol,
+                )
                 print(
                     f"[SymbolGuard] invalid_snapshot symbol={symbol} "
                     f"count={symbol_fail_counts[symbol]}"
@@ -14844,7 +15017,7 @@ def run_loop(
             )
             if not outlier_guard_ok:
                 symbol_fail_counts[symbol] = symbol_fail_counts.get(symbol, 0) + 1
-                anomaly_fail_streak += 1
+                _record_anomaly_failure("outlier_return", counts_as_anomaly=True, symbol=symbol)
                 print(
                     f"[SymbolGuard] outlier_return symbol={symbol} ret_1m={symbol_return_1m:.3f} "
                     f"prev={prev_px:.4f} px={px:.4f} limit={max_abs_return_1m:.3f} "
@@ -14885,11 +15058,11 @@ def run_loop(
                 stale_limit=stale_limit,
             )
             if not stale_guard_ok:
-                anomaly_fail_streak += 1
-                if anomaly_fail_streak >= anomaly_kill_threshold:
-                    anomaly_kill_switch_until_ts = time.time() + anomaly_kill_cooldown_seconds
-                    print(f"[KillSwitch] tripped reason=stale_prices cooldown_s={anomaly_kill_cooldown_seconds}")
-                    anomaly_fail_streak = 0
+                _record_anomaly_failure(
+                    "stale_prices",
+                    counts_as_anomaly=stale_prices_count_as_anomaly,
+                    symbol=symbol,
+                )
                 symbol_quarantine_until[symbol] = now_ts + max(bad_symbol_retry_minutes, 1) * 60
                 print(
                     f"[SymbolGuard] stale_price symbol={symbol} count={symbol_stale_counts[symbol]} "

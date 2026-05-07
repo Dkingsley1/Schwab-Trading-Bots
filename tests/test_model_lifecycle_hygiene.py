@@ -193,6 +193,60 @@ def test_main_downgrades_runtime_input_gap_bot(tmp_path, monkeypatch) -> None:
     assert row["runtime_input_gap_cause"] == "shared_runtime_input_gap"
 
 
+def test_main_excludes_collection_only_active_rows_from_artifact_hygiene(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "project"
+    monkeypatch.setattr(hygiene, "PROJECT_ROOT", root)
+    registry_path = root / "master_bot_registry.json"
+    out_file = root / "governance" / "lifecycle" / "model_lifecycle_latest.json"
+    manifest_file = root / "governance" / "lifecycle" / "model_manifest_latest.json"
+    registry_path.parent.mkdir(parents=True, exist_ok=True)
+    registry_path.write_text(
+        json.dumps(
+            {
+                "summary": {"active_bots": 1, "inactive_bots": 0},
+                "sub_bots": [
+                    {
+                        "bot_id": "brain_refinery_v900_collection_seed",
+                        "active": True,
+                        "data_collection_active": True,
+                        "lifecycle_state": "data_collection_only",
+                        "model_path": "",
+                        "log_file": "",
+                    }
+                ],
+            },
+            ensure_ascii=True,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "model_lifecycle_hygiene.py",
+            "--registry",
+            str(registry_path),
+            "--out-file",
+            str(out_file),
+            "--manifest-file",
+            str(manifest_file),
+            "--json",
+        ],
+    )
+
+    rc = hygiene.main()
+
+    payload = json.loads(out_file.read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert payload["active_bots"] == 1
+    assert payload["supportability_active_bots"] == 0
+    assert payload["active_collection_only_bots"] == 1
+    assert payload["missing_active_artifacts_total"] == 0
+    assert payload["stale_active_training_diagnostics"] == 0
+
+
 def test_main_repairs_stale_active_diagnostic_from_latest_training_artifact(tmp_path, monkeypatch) -> None:
     root = tmp_path / "project"
     monkeypatch.setattr(hygiene, "PROJECT_ROOT", root)

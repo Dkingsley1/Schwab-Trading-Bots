@@ -89,3 +89,37 @@ def test_mlx_intelligence_router_apply_writes_capped_env(tmp_path: Path) -> None
     assert result["applied"] is True
     assert "MLX_INTELLIGENCE_ROUTER_ENABLED='1'" in override
     assert "MLX_INTELLIGENCE_PROFILE='protect_live'" in override
+
+
+def test_failed_installer_artifact_does_not_block_verified_runtime(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "mlx_runtime_audit_latest.json",
+        {
+            "ok": True,
+            "package_rows": _package_rows(),
+            "runtime": {
+                "compile_available": True,
+                "compile_smoke_ok": True,
+                "metal_available": True,
+            },
+        },
+    )
+    _write_json(
+        health / "mlx_library_upgrade_latest.json",
+        {
+            "ok": False,
+            "install_result": {
+                "ok": False,
+                "stderr_tail": "ResolutionImpossible: optional mlx-graphs pin conflict",
+            },
+        },
+    )
+    _write_json(health / "memory_efficiency_control_latest.json", {"overall_status": "ready", "memory_snapshot": {"memory_pressure_state": "green"}})
+    _write_json(health / "runtime_throttle_control_latest.json", {"overall_status": "ready", "throttle_profile": "observe", "memory_pressure_level": "normal"})
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["ok"] is True
+    assert payload["overall_status"] == "ready"
+    assert payload["library_coverage"]["missing_count"] == 0

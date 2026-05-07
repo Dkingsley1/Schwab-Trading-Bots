@@ -1175,11 +1175,15 @@ class BaseTrader:
         context: Optional[Dict[str, Any]] = None,
     ) -> tuple[bool, Dict[str, Any]]:
         details = dict(context or {})
+        execution_expected = bool(self.execution_enabled and not self.market_data_only)
         details.update(
             {
                 "operation": operation,
                 "attempts_made": int(attempts_made or 0),
                 "max_attempts": int(max_attempts or 1),
+                "execution_expected": execution_expected,
+                "execution_enabled": bool(self.execution_enabled),
+                "market_data_only": bool(self.market_data_only),
             }
         )
         if operation != "get_accounts_snapshot":
@@ -1194,6 +1198,15 @@ class BaseTrader:
                 "account_snapshot_halt_debounced": fail_streak < min_failures,
             }
         )
+        halt_in_data_only = os.getenv("LIVE_ACCOUNTS_SNAPSHOT_HALT_IN_MARKET_DATA_ONLY", "0").strip() == "1"
+        if not execution_expected and not halt_in_data_only:
+            details.update(
+                {
+                    "account_snapshot_halt_suppressed": True,
+                    "suppressed_reason": "market_data_only_or_paper_collection",
+                }
+            )
+            return False, details
         if fail_streak < min_failures:
             return False, details
         return True, details

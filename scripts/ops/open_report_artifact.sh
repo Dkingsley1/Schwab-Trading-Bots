@@ -34,6 +34,7 @@ Reports:
   correlation
   botstack
   strategy-inventory
+  expansions
   sendout
 EOF
 }
@@ -108,7 +109,7 @@ while [[ $# -gt 0 ]]; do
     --print-only)
       PRINT_ONLY=1
       ;;
-    summary|crash|framework|special|posttrade|training|timeline|incident|incident-packet|paper|calibration|daily-auto-verify|modelcard|sentiment|macro|source|replay|unified|explainability|bundle|correlation|botstack|strategy-inventory|sendout)
+    summary|crash|framework|special|posttrade|training|timeline|incident|incident-packet|paper|calibration|daily-auto-verify|modelcard|sentiment|macro|source|replay|unified|explainability|bundle|correlation|botstack|strategy-inventory|expansions|sendout)
       REPORT_KIND="$1"
       ;;
     -h|--help)
@@ -290,6 +291,14 @@ case "$REPORT_KIND" in
       "$PROJECT_ROOT/exports/reports/strategy_inventory/strategy_inventory_latest.pdf" \
       "$PROJECT_ROOT/exports/reports/strategy_inventory/strategy_inventory_latest.md" \
       "$PROJECT_ROOT/governance/health/strategy_inventory_latest.json")"
+    ;;
+  expansions)
+    run_opsctl expansion-list-report --json
+    run_opsctl report-pdfs --only expansion_inventory --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/reports/expansion_inventory/expansion_inventory_latest.pdf" \
+      "$PROJECT_ROOT/exports/reports/expansion_inventory/expansion_inventory_latest.md" \
+      "$PROJECT_ROOT/governance/health/expansion_inventory_latest.json")"
     ;;
   sendout)
     run_opsctl report-pdfs --json

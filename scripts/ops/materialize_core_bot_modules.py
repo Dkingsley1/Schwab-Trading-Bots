@@ -37,11 +37,16 @@ def _row_is_materializable(row: dict[str, Any]) -> bool:
     bot_id = str(row.get("bot_id") or "").strip()
     if not bot_id.startswith("brain_refinery_v"):
         return False
+    has_registry_identity = bool(str(row.get("slot_label") or "").strip()) and bool(str(row.get("slot_kind") or "").strip())
     return (
         bool(row.get("active"))
         and bool(row.get("data_collection_active"))
-        and str(row.get("reason") or "") == "planned_roster_expansion_slot"
         and str(row.get("lifecycle_state") or "") == "data_collection_only"
+        and has_registry_identity
+        and not bool(row.get("trading_enabled"))
+        and not bool(row.get("live_trading_enabled"))
+        and not bool(row.get("execution_enabled"))
+        and not bool(row.get("allocation_enabled"))
     )
 
 
@@ -98,6 +103,14 @@ def _compact_spec(row: dict[str, Any]) -> dict[str, Any]:
         "capability_pack_display_name",
         "capability_pack_contract",
         "advanced_intelligence_layer_contract",
+        "apex_self_awareness_intelligence_contract",
+        "deep_recursive_awareness_contract",
+        "frontier_intelligence_contract",
+        "institutional_alpha_validation_contract",
+        "quant_strategy_gap_contract",
+        "platform_organ_systems_contract",
+        "trading_muscle_systems_contract",
+        "platform_brain_v6_contract",
     ]
     return {key: row.get(key) for key in keys if key in row}
 

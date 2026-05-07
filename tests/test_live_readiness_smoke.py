@@ -331,3 +331,42 @@ def test_live_readiness_smoke_softens_paper_lane_watchdog_under_bounded_storage_
     assert "watchdog_targets_missing" not in payload["hard_blocks"]
     assert "bounded_paper_lane_watchdog_pressure" in payload["warnings"]
     assert payload["process_watchdog"]["bounded_paper_lane_watchdog"] is True
+
+
+def test_live_readiness_smoke_treats_all_sleeves_watchdog_as_live_lane(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+
+    (health / "broker_readiness_latest.json").write_text(json.dumps({"ready_for_open": True, "network_ok": True, "auth_ok": True}), encoding="utf-8")
+    (health / "premarket_token_guard_latest.json").write_text(json.dumps({"ok": True}), encoding="utf-8")
+    (health / "session_ready_latest.json").write_text(json.dumps({"ready": True}), encoding="utf-8")
+    (health / "execution_lane_paper_latest.json").write_text(json.dumps({"stale": False}), encoding="utf-8")
+    (health / "execution_lane_live_latest.json").write_text(json.dumps({"stale": True}), encoding="utf-8")
+    (health / "storage_route_status_latest.json").write_text(json.dumps({"ok": True, "mode": "external"}), encoding="utf-8")
+    (health / "resource_guard_latest.json").write_text(json.dumps({"resource_guard_ok": True}), encoding="utf-8")
+    (health / "process_watchdog_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "status": [{"name": "all_sleeves", "running": 1, "heartbeat_ok": True}],
+                "restart_storms": [],
+                "alerts": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "live_readiness_watchdog_lane.json"
+    old_root = smoke.PROJECT_ROOT
+    try:
+        smoke.PROJECT_ROOT = project_root
+        sys.argv = ["live_readiness_smoke.py", "--project-root", str(project_root), "--out-file", str(out), "--json"]
+        rc = smoke.main()
+    finally:
+        smoke.PROJECT_ROOT = old_root
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert rc == 0
+    assert payload["live_lane_running"] is True
+    assert payload["preopen_dashboard"]["live_lane_running"] is True

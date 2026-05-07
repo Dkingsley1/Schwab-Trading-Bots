@@ -88,9 +88,21 @@ def _swap_research_pause_state() -> dict:
 
 
 
-def _proc_alive(match: str) -> bool:
+def _proc_alive(match: str, exclude_matches: tuple[str, ...] = ()) -> bool:
     p = subprocess.run(['ps', '-ax', '-o', 'command='], capture_output=True, text=True, check=False)
-    return any(match in line for line in (p.stdout or '').splitlines())
+    excludes = tuple(item for item in exclude_matches if item)
+    return any(
+        match in line and not any(ex in line for ex in excludes)
+        for line in (p.stdout or '').splitlines()
+    )
+
+
+def _default_standby_cmd() -> str:
+    return f"{PROJECT_ROOT}/scripts/ops/opsctl.sh feed-refresh --source schwab --paper"
+
+
+def _simulate_disallowed(cmd: str, allow_simulate: bool) -> bool:
+    return (not allow_simulate) and "--simulate" in shlex.split(cmd)
 
 
 
@@ -142,34 +154,53 @@ def main() -> int:
     parser.add_argument('--primary-heartbeat', default=DEFAULT_HEARTBEAT_GLOB)
     parser.add_argument('--max-heartbeat-age-sec', type=float, default=150.0)
     parser.add_argument('--standby-start-cmd', default='')
+    parser.add_argument(
+        '--live-parent-match',
+        default=os.getenv('FAILOVER_LIVE_PARENT_MATCH', 'scripts/run_all_sleeves.py'),
+        help='A live-data parent process that should suppress fallback standby starts while healthy.',
+    )
+    parser.add_argument(
+        '--allow-simulate-standby',
+        action='store_true',
+        default=os.getenv('FAILOVER_ALLOW_SIMULATE_STANDBY', '0').strip().lower() in {'1', 'true', 'yes', 'on'},
+        help='Permit --simulate standby commands. Default is off so failover preserves live-data sleeves.',
+    )
     parser.add_argument('--once', action='store_true')
     parser.add_argument('--interval-seconds', type=int, default=20)
     args = parser.parse_args()
 
-    standby_cmd = args.standby_start_cmd.strip()
-    if not standby_cmd:
-        standby_cmd = f"{RUNTIME_PY} {PROJECT_ROOT}/scripts/run_parallel_shadows.py --simulate"
+    standby_cmd = args.standby_start_cmd.strip() or _default_standby_cmd()
 
     while True:
-        alive = _proc_alive(args.primary_match)
+        primary_excludes = () if args.allow_simulate_standby else ('--simulate',)
+        alive = _proc_alive(args.primary_match, primary_excludes)
+        live_parent_alive = _proc_alive(args.live_parent_match, ('--simulate',)) if args.live_parent_match else False
         hb_age = _heartbeat_age_sec(args.primary_heartbeat)
         stale = hb_age > args.max_heartbeat_age_sec
         swap_pause = _swap_research_pause_state()
         event = {
             'timestamp_utc': _now_iso(),
             'primary_alive': alive,
+            'live_parent_alive': live_parent_alive,
             'heartbeat_age_sec': hb_age,
             'stale': stale,
             'action': 'none',
             'swap_pause_active': bool(swap_pause.get('active', False)),
+            'simulate_standby_allowed': bool(args.allow_simulate_standby),
         }
 
-        if (not alive) or stale:
+        if live_parent_alive and not stale:
+            event['action'] = 'live_parent_healthy'
+        elif (not alive) or stale:
             if swap_pause.get('active', False):
                 event['action'] = 'standby_start_skipped_swap_pause'
                 event['standby_ok'] = False
                 event['standby_cmd'] = standby_cmd
                 event['swap_pause'] = swap_pause
+            elif _simulate_disallowed(standby_cmd, bool(args.allow_simulate_standby)):
+                event['action'] = 'standby_start_skipped_simulate_disallowed'
+                event['standby_ok'] = False
+                event['standby_cmd'] = standby_cmd
             else:
                 ok = _start_cmd(standby_cmd)
                 event['action'] = 'standby_start_attempt'

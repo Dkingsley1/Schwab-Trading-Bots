@@ -360,3 +360,138 @@ def test_writer_cycle_coordinator_recovers_stale_writer_before_drain(tmp_path: P
     assert payload["summary"]["stale_writer_detected"] is True
     assert payload["summary"]["stale_writer_terminated"] is True
     assert payload["steps"]["external_backlog_drain"]["status"] == "ok"
+
+
+
+def test_writer_cycle_coordinator_runs_live_safe_drainer_handoff(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    (project_root / "governance" / "health").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(
+        src,
+        "writer_state_snapshot",
+        lambda *args, **kwargs: {"active": False, "running": False, "current_step": "complete"},
+    )
+    monkeypatch.setattr(
+        src.drain_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "blocked",
+            "recommended_now": False,
+            "blocked_reasons": ["market_hours_guard"],
+            "top_actions": [],
+            "writer_busy": False,
+        },
+    )
+    monkeypatch.setattr(
+        src.drainer_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "ready",
+            "ready_drainer_count": 1,
+            "blocked_reasons": [],
+            "recommended_actions": ["keep one SQL writer active"],
+            "active_drainer": {
+                "name": "core_decision_drainer",
+                "status": "ready",
+                "live_window_safe": True,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        src.maintenance_src,
+        "_priority_retention_focus",
+        lambda *args, **kwargs: {"enabled": False, "focus_shards": [], "top_actions": []},
+    )
+
+    def _fake_run(cmd: list[str], *, cwd: Path, payload_path: Path | None = None, timeout_sec: int) -> dict:
+        joined = " ".join(cmd)
+        if "backpressure_drainer_fleet.py" in joined:
+            payload = {
+                "ok": True,
+                "overall_status": "handoff_requested",
+                "service_request": {
+                    "active": True,
+                    "env_overrides": {"SQL_LINK_SERVICE_SHARDS": "trading,health_fast"},
+                },
+            }
+        elif "sql_link_shard_manager.py" in joined:
+            payload = {"ok": True, "rc": 0, "merged_rows_this_cycle": 1200}
+        elif "ingestion_storage_control.py" in joined:
+            payload = {"overall_status": "needs_work"}
+        elif "runtime_gate_dashboard.py" in joined:
+            payload = {"overall": {"status": "ready"}}
+        elif "operator_cockpit.py" in joined:
+            payload = {"overall_status": "ready"}
+        else:
+            raise AssertionError(f"unexpected command: {cmd}")
+        if payload_path is not None:
+            _write_json(payload_path, payload)
+        return {"cmd": cmd, "rc": 0, "duration_ms": 5.0, "payload": payload, "stdout_tail": "", "stderr_tail": "", "timed_out": False}
+
+    monkeypatch.setattr(src, "_run_json_command", _fake_run)
+
+    payload = src.build_payload(project_root, apply=True, poll_seconds=0.0, wait_timeout_seconds=30.0)
+
+    assert payload["overall_status"] == "applied"
+    assert payload["live_drainer_ready"] is True
+    assert payload["summary"]["live_drainer_applied"] is True
+    assert payload["summary"]["active_drainer"] == "core_decision_drainer"
+    assert "backpressure_drainer_fleet" in payload["steps"]
+    assert "sql_link_shard_manager" in payload["steps"]
+    assert "external_backlog_drain" not in payload["steps"]
+
+
+
+def test_writer_cycle_coordinator_treats_bounded_shard_timeout_as_partial_progress(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    (project_root / "governance" / "health").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(src, "writer_state_snapshot", lambda *args, **kwargs: {"active": False, "running": False, "current_step": "complete"})
+    monkeypatch.setattr(
+        src.drain_src,
+        "build_payload",
+        lambda *args, **kwargs: {"overall_status": "blocked", "recommended_now": False, "blocked_reasons": ["market_hours_guard"], "top_actions": []},
+    )
+    monkeypatch.setattr(
+        src.drainer_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "ready",
+            "ready_drainer_count": 1,
+            "blocked_reasons": [],
+            "active_drainer": {"name": "core_decision_drainer", "status": "ready", "live_window_safe": True},
+        },
+    )
+    monkeypatch.setattr(src.maintenance_src, "_priority_retention_focus", lambda *args, **kwargs: {"enabled": False, "focus_shards": [], "top_actions": []})
+
+    def _fake_run(cmd: list[str], *, cwd: Path, payload_path: Path | None = None, timeout_sec: int) -> dict:
+        joined = " ".join(cmd)
+        if "backpressure_drainer_fleet.py" in joined:
+            payload = {"ok": True, "overall_status": "handoff_requested", "service_request": {"active": True, "env_overrides": {"SQL_LINK_SERVICE_SHARDS": "trading"}}}
+            rc = 0
+        elif "sql_link_shard_manager.py" in joined:
+            payload = {"ok": False, "rc": 1, "merged_rows_this_cycle": 40106}
+            rc = 1
+        elif "ingestion_storage_control.py" in joined:
+            payload = {"overall_status": "needs_work"}
+            rc = 0
+        elif "runtime_gate_dashboard.py" in joined:
+            payload = {"overall": {"status": "degraded"}}
+            rc = 0
+        elif "operator_cockpit.py" in joined:
+            payload = {"overall_status": "degraded"}
+            rc = 0
+        else:
+            raise AssertionError(f"unexpected command: {cmd}")
+        return {"cmd": cmd, "rc": rc, "duration_ms": 5.0, "payload": payload, "stdout_tail": "", "stderr_tail": "", "timed_out": False}
+
+    monkeypatch.setattr(src, "_run_json_command", _fake_run)
+
+    payload = src.build_payload(project_root, apply=True, poll_seconds=0.0, wait_timeout_seconds=30.0)
+
+    assert payload["overall_status"] == "applied_with_followups"
+    assert payload["ok"] is False
+    assert payload["steps"]["sql_link_shard_manager"]["status"] == "partial_progress"
+    assert payload["summary"]["partial_progress"] is True
+    assert payload["summary"]["drain_applied"] is True

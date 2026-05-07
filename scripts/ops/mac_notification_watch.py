@@ -28,6 +28,7 @@ PREFLIGHT_CRITICAL_PATH = ALERTS_DIR / "preflight_critical_latest.json"
 INCIDENT_TIMELINE_PATH = HEALTH_DIR / "incident_timeline_latest.json"
 INCIDENT_REVIEW_PATH = HEALTH_DIR / "incident_review_packet_latest.json"
 GLOBAL_KILLSWITCH_JSON_PATH = HEALTH_DIR / "global_killswitch_latest.json"
+CODEX_HANDOFF_PATH = HEALTH_DIR / "codex_handoff_latest.json"
 DATA_INGRESS_LATEST_GLOB = "data_ingress_latest_*.json"
 IMESSAGE_ENABLED_ENV = "MAC_NOTIFICATION_WATCH_IMESSAGE_ENABLED"
 IMESSAGE_RECIPIENT_ENV = "MAC_NOTIFICATION_WATCH_IMESSAGE_RECIPIENT"
@@ -113,6 +114,8 @@ def _event_family(key: str) -> str:
         return "creative_mode"
     if normalized_key.startswith("swap_pressure:"):
         return "swap_pressure"
+    if normalized_key.startswith("system_talk:"):
+        return "system_talk"
     return normalized_key
 
 
@@ -162,6 +165,8 @@ def _event_severity(key: str, message: str) -> str:
         if "survival" in normalized_key:
             return "critical"
         return "info"
+    if normalized_key.startswith("system_talk:"):
+        return "critical" if ":blocked:" in normalized_key else "warn"
     if normalized_key in {"tripwire", "all_sleeves_down", "global_halt", "incident_auto_halt", "preflight_critical", "storage_mount_missing"}:
         return "critical"
     return "warn"
@@ -202,6 +207,10 @@ def _notification_heading(key: str, message: str) -> Tuple[str, str]:
         if severity == "warn":
             return ("Trading Bot Warning", "Swap Pressure")
         return ("Trading Bot Incident", "Swap Pressure")
+    if key.startswith("system_talk:"):
+        if severity == "critical":
+            return ("Trading Bot Critical", "System Intelligence")
+        return ("Trading Bot Update", "System Intelligence")
     if key == "preflight_critical":
         return ("Trading Bot Critical", "Preflight")
     if key == "storage_mount_missing":
@@ -250,6 +259,8 @@ def _notification_action_hint(key: str, message: str) -> str:
         if "restart_advisory" in normalized_key:
             return "Action: restart the listed foreground app when convenient; automation will not force-quit it."
         return "Action: bot stack downshifted automatically; keep live collection running calm."
+    if normalized_key.startswith("system_talk:"):
+        return "Action: run the suggested safe command or ask Codex to inspect."
     return ""
 
 
@@ -279,6 +290,8 @@ def _notification_inspect_target(key: str, message: str) -> Path | None:
         return CREATIVE_COTENANT_PATH
     if normalized_key.startswith("swap_pressure:"):
         return SWAP_PRESSURE_GOVERNOR_PATH
+    if normalized_key.startswith("system_talk:"):
+        return CODEX_HANDOFF_PATH
     return INCIDENT_TIMELINE_PATH if INCIDENT_TIMELINE_PATH.exists() else None
 
 
@@ -680,6 +693,40 @@ def _critical_alert_events(max_age_seconds: float) -> List[Tuple[str, str]]:
     return out
 
 
+def _compact_command(value: Any) -> str:
+    if isinstance(value, list):
+        return " ".join(str(part).strip() for part in value if str(part).strip())
+    return str(value or "").strip()
+
+
+def _codex_handoff_event(payload: Dict[str, Any], max_age_seconds: float) -> Tuple[str, str] | None:
+    if not payload or not _is_recent(payload, max_age_seconds):
+        return None
+    status = str(payload.get("overall_status") or payload.get("status") or "").strip().lower()
+    if status in {"", "ok", "ready"}:
+        return None
+    packet = payload.get("attention_packet") if isinstance(payload.get("attention_packet"), dict) else {}
+    top_risk = str(packet.get("top_risk") or "system").strip().lower() or "system"
+    super_action = str(packet.get("super_action") or packet.get("recommended_action") or "inspect").strip().lower() or "inspect"
+    super_mode = str(packet.get("super_mode") or "observe").strip().lower() or "observe"
+    safe_next = _compact_command(packet.get("safe_next_command"))
+    why_rows = [str(item).strip() for item in packet.get("why", []) if str(item).strip()] if isinstance(packet.get("why"), list) else []
+    key_status = re.sub(r"[^a-z0-9]+", "_", status).strip("_") or "status"
+    key_risk = re.sub(r"[^a-z0-9]+", "_", top_risk).strip("_") or "system"
+    key_mode = re.sub(r"[^a-z0-9]+", "_", super_mode).strip("_") or "observe"
+    key_action = re.sub(r"[^a-z0-9]+", "_", super_action).strip("_") or "inspect"
+    message_lines = [
+        f"System intelligence [{_title_token(super_mode)}]",
+        f"Top: {top_risk}",
+        f"Action: {super_action}",
+    ]
+    if safe_next:
+        message_lines.append(f"Next: {safe_next}")
+    if why_rows:
+        message_lines.append("Why: " + "; ".join(why_rows[:2]))
+    return (f"system_talk:{key_status}:{key_risk}:{key_mode}:{key_action}", "\n".join(message_lines))
+
+
 def _incident_auto_halt_event(payload: Dict[str, Any], max_age_seconds: float) -> Tuple[str, str] | None:
     if not payload or not _is_recent(payload, max_age_seconds):
         return None
@@ -739,6 +786,7 @@ def _event_candidates(max_age_seconds: float) -> List[Tuple[str, str]]:
         _storage_event(_read_json(STORAGE_GUARD_PATH)),
         _creative_mode_event(_read_json(CREATIVE_COTENANT_PATH), max_age_seconds),
         _swap_pressure_event(_read_json(SWAP_PRESSURE_GOVERNOR_PATH), max_age_seconds),
+        _codex_handoff_event(_read_json(CODEX_HANDOFF_PATH), max_age_seconds),
         _incident_auto_halt_event(_read_json(INCIDENT_AUTO_HALT_PATH), max_age_seconds),
         _preflight_critical_event(_read_json(PREFLIGHT_CRITICAL_PATH), max_age_seconds),
     ):

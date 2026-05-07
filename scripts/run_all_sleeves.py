@@ -144,6 +144,20 @@ SPECIALIZED_SLEEVE_PROFILES = (
     "feature_quality_data_confidence",
     "liquidity_regime",
     "system_governor_expansion",
+    "collateral_margin_liquidity",
+    "dealer_positioning_gamma_inventory",
+    "etf_flow_creation_redemption",
+    "signal_governance_integrity",
+    "runtime_capacity_governance",
+    "data_plane_backpressure_resilience",
+    "halt_recovery_stability",
+    "expansion_quality_governance",
+    "neural_operator_surrogates",
+    "uncertainty_robust_control",
+    "causal_regime_discovery",
+    "martingale_flow_pricing",
+    "alpha_research_os",
+    "research_meta_governance",
 )
 
 

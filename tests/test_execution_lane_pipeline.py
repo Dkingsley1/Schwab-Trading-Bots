@@ -10,6 +10,7 @@ from core.execution_lane_pipeline import (
     EXECUTION_PROMOTION_CHANNEL,
     EXECUTION_RESULT_CHANNEL,
     configure_trader_for_lane,
+    evaluate_paper_standard_gateway,
     evaluate_live_promotion,
     process_execution_intent,
     publish_execution_intent,
@@ -281,6 +282,102 @@ def test_process_execution_intent_paper_emits_result_and_promoted_message(tmp_pa
     assert promotion_rows[0].payload["promotion"]["promote_ok"] is True
     assert len(promoted_rows) == 1
     assert promoted_rows[0].payload["target_mode"] == "live"
+
+
+def test_paper_standard_gateway_blocks_collection_only_intent(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("PAPER_LIVE_DATA_STANDARD_ENABLED", "1")
+    _seed_gates(tmp_path, promote_ok=True, quality_ok=True)
+    _write_json(
+        tmp_path / "governance" / "allocator" / "portfolio_allocator_service_latest.json",
+        {"ok": True, "approved_intents": [{"symbol": "SPY", "side": "BUY", "approved_qty": 1.0}]},
+    )
+    _write_json(
+        tmp_path / "governance" / "risk" / "risk_service_boundary_latest.json",
+        {"ok": True, "pre_trade_decisions": [{"symbol": "SPY", "requested_action": "BUY", "approved_action": "BUY", "risk_limit_ok": True}]},
+    )
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "sub_bots": [
+                {
+                    "bot_id": "brain_refinery_v167_intraday_opening_range_momentum_burst",
+                    "active": True,
+                    "data_collection_active": True,
+                    "paper_standard_cohort": "collection_until_standard_met",
+                    "paper_live_data_enabled": False,
+                    "direct_execution_allowed": False,
+                    "live_trading_enabled": False,
+                }
+            ],
+        },
+    )
+
+    trader = BaseTrader("dummy_key", "dummy_secret", "https://127.0.0.1:8182", mode="paper")
+    trader.project_root = str(tmp_path)
+    trader.set_mode("paper")
+    configure_trader_for_lane(trader, "paper")
+
+    message = ChannelMessage(
+        id=1,
+        channel=EXECUTION_INTENT_CHANNEL,
+        message_id="intent-standard-block",
+        parent_message_id="",
+        run_id="run-1",
+        iter_id="iter-1",
+        source_path="",
+        payload={
+            "message_id": "intent-standard-block",
+            "intent_kind": "paper_mirror",
+            "symbol": "SPY",
+            "action": "BUY",
+            "quantity": 1.0,
+            "model_score": 0.64,
+            "threshold": 0.55,
+            "strategy": "paper_mirror::brain_refinery_v167_intraday_opening_range_momentum_burst",
+            "metadata": {"allow_live_promotion": False},
+        },
+        created_at="2026-03-31T20:00:00+00:00",
+    )
+
+    out = process_execution_intent(
+        project_root=str(tmp_path),
+        trader=trader,
+        mode="paper",
+        message=message,
+    )
+
+    gateway = evaluate_paper_standard_gateway(project_root=str(tmp_path), intent=message.payload)
+    assert gateway["allow_execute"] is False
+    assert out["result"]["result_status"] == "PAPER_STANDARD_BLOCKED"
+    assert out["result"]["paper_standard_gateway"]["reasons"] == ["paper_standard_bot_not_in_explicit_paper_cohort"]
+
+
+def test_paper_standard_gateway_allows_explicit_paper_bot(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("PAPER_LIVE_DATA_STANDARD_ENABLED", "1")
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "sub_bots": [
+                {
+                    "bot_id": "brain_refinery_v26_restored_probation",
+                    "active": True,
+                    "paper_standard_cohort": "legacy_bootstrap",
+                    "paper_live_data_enabled": True,
+                    "paper_execution_allowed": True,
+                    "direct_execution_allowed": False,
+                    "live_trading_enabled": False,
+                }
+            ],
+        },
+    )
+
+    gateway = evaluate_paper_standard_gateway(
+        project_root=str(tmp_path),
+        intent={"strategy": "paper_mirror::brain_refinery_v26_restored_probation"},
+    )
+
+    assert gateway["allow_execute"] is True
+    assert gateway["paper_standard_cohort"] == "legacy_bootstrap"
 
 
 def test_update_lane_health_marks_stale_consumer_with_backlog(tmp_path: Path, monkeypatch) -> None:

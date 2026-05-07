@@ -313,6 +313,66 @@ def test_memory_efficiency_control_keeps_sql_writer_drain_friendly_when_backlog_
     assert payload["recommended_env_overrides"]["SQL_LINK_SERVICE_HOT_BATCH_SIZE"] == "240000"
 
 
+def test_memory_efficiency_control_uses_concentrated_sql_drain_contract(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "governance" / "health" / "resource_guard_latest.json",
+        {
+            "memory_pressure_state": "green",
+            "memory_pressure_kind": "none",
+            "memory_free_pct": 83.0,
+            "swap_used_gb": 0.02,
+            "co_running_apps_active": True,
+            "co_running_class_count": 2,
+            "co_running_classes": ["browser", "developer"],
+            "co_running_session_level": "heavy_competition",
+            "co_running_cpu_sum": 208.0,
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "apple_silicon_profile_latest.json",
+        {
+            "applied_tier": "max_throughput",
+            "env_overrides": {"SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "25"},
+            "hardware": {"memory_gb": 64.0},
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "ingestion_storage_control_latest.json",
+        {
+            "severity": "stable",
+            "pressure_index": 0.08,
+            "recommended_operating_mode": "maintenance_drain_window",
+            "storage": {"backlog_drain_status": "handoff_requested"},
+            "backpressure": {"core_pending_lines": 33631, "total_pending_lines": 33651},
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "backpressure_drainer_fleet_latest.json",
+        {
+            "active_drainer": {
+                "name": "core_decision_drainer",
+                "concentration": {
+                    "total_pending_lines": 33623,
+                    "top1_share": 0.544806,
+                    "top3_share": 0.92871,
+                    "concentrated": True,
+                },
+            },
+            "service_request": {"env_overrides": {"SQL_LINK_SERVICE_CONCENTRATED_CORE_DRAIN": "1"}},
+        },
+    )
+
+    payload = src.build_payload(tmp_path, action="status", override_path=tmp_path / "config" / ".env.memory_efficiency_override")
+    coordination = payload["storage_snapshot"]["sql_writer_coordination"]
+
+    assert coordination["concentrated_core_drain"] is True
+    assert coordination["recommended_merge_max_seconds_per_cycle"] == 60
+    assert payload["recommended_env_overrides"]["SQL_LINK_SERVICE_CONCENTRATED_CORE_DRAIN"] == "1"
+    assert payload["recommended_env_overrides"]["SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS"] == "420"
+    assert payload["recommended_env_overrides"]["SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"] == "60"
+    assert payload["recommended_env_overrides"]["SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_LINES_PER_FILE"] == "12000"
+
+
 def test_memory_efficiency_control_massive_expansion_enables_sleeve_rollups(tmp_path: Path) -> None:
     _write_json(
         tmp_path / "governance" / "health" / "resource_guard_latest.json",

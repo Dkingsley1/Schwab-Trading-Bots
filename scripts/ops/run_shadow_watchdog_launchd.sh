@@ -132,7 +132,7 @@ if ! schwab_credentials_ready_for_watchdog; then
   WATCH_ARGS+=(--schwab-futures-optional)
 fi
 
-if [[ "${SHADOW_WATCHDOG_DIRECT_CHILD_SLEEVES:-0}" == "1" ]]; then
+if [[ "${SHADOW_WATCHDOG_DIRECT_CHILD_SLEEVES:-1}" == "1" ]]; then
   WATCH_ARGS+=(
     --watch-aggressive-modes
     --watch-dividend

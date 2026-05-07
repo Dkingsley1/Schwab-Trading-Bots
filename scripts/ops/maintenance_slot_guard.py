@@ -207,6 +207,26 @@ def _host_pressure(max_load_ratio: float, max_five_min_load_ratio: float, max_on
     }
 
 
+def _in_quiet_window(start_hour: int, end_hour: int) -> tuple[bool, dict[str, Any]]:
+    now = datetime.now()
+    hour = int(now.hour)
+    start = max(min(int(start_hour), 23), 0)
+    end = max(min(int(end_hour), 23), 0)
+    if start == end:
+        in_window = True
+    elif start > end:
+        in_window = bool(hour >= start or hour < end)
+    else:
+        in_window = bool(start <= hour < end)
+    return in_window, {
+        "enabled": True,
+        "local_hour": hour,
+        "start_hour": start,
+        "end_hour": end,
+        "in_window": in_window,
+    }
+
+
 def _begin(args: argparse.Namespace) -> int:
     LOCK_ROOT.mkdir(parents=True, exist_ok=True)
     STATE_ROOT.mkdir(parents=True, exist_ok=True)
@@ -224,6 +244,11 @@ def _begin(args: argparse.Namespace) -> int:
         float(args.max_five_min_load_ratio),
         None if args.max_one_min_load <= 0 else float(args.max_one_min_load),
     )
+    quiet_enabled = bool(args.quiet_windows_enabled)
+    quiet_allowed = True
+    quiet_payload: dict[str, Any] = {"enabled": False}
+    if quiet_enabled:
+        quiet_allowed, quiet_payload = _in_quiet_window(int(args.quiet_start_hour), int(args.quiet_end_hour))
     macro_status = _load_macro_status()
     macro_blocked, macro_reason = _macro_event_protected(
         macro_status,
@@ -235,6 +260,8 @@ def _begin(args: argparse.Namespace) -> int:
     reasons: list[str] = []
     if pressure_blocked:
         reasons.append("host_pressure")
+    if quiet_enabled and (not quiet_allowed) and bool(args.defer_outside_quiet_window) and args.slot != "sql_link_writer":
+        reasons.append("outside_quiet_window")
     if macro_blocked and not args.allow_during_macro_event:
         reasons.append(macro_reason)
     if cooldown_blocked:
@@ -253,6 +280,7 @@ def _begin(args: argparse.Namespace) -> int:
         "allowed": not reasons,
         "reasons": reasons,
         "pressure": pressure,
+        "quiet_window": quiet_payload,
         "macro": {
             "protected": macro_blocked,
             "reason": macro_reason,
@@ -347,6 +375,10 @@ def main() -> int:
     parser.add_argument("--protect-macro-after-minutes", type=float, default=_safe_float(os.getenv("MAINTENANCE_SLOT_PROTECT_MACRO_AFTER_MINUTES"), 75.0))
     parser.add_argument("--allow-during-macro-event", action="store_true")
     parser.add_argument("--defer-while-sql-link-active", action=argparse.BooleanOptionalAction, default=os.getenv("MAINTENANCE_SLOT_DEFER_WHILE_SQL_LINK_ACTIVE", "1").strip().lower() not in {"0", "false", "no", "off"})
+    parser.add_argument("--quiet-windows-enabled", action=argparse.BooleanOptionalAction, default=os.getenv("MAINTENANCE_SLOT_QUIET_WINDOWS_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"})
+    parser.add_argument("--defer-outside-quiet-window", action=argparse.BooleanOptionalAction, default=os.getenv("MAINTENANCE_SLOT_DEFER_OUTSIDE_QUIET_WINDOW", "0").strip().lower() in {"1", "true", "yes", "on"})
+    parser.add_argument("--quiet-start-hour", type=int, default=_safe_int(os.getenv("MAINTENANCE_SLOT_QUIET_LOCAL_START_HOUR"), 21))
+    parser.add_argument("--quiet-end-hour", type=int, default=_safe_int(os.getenv("MAINTENANCE_SLOT_QUIET_LOCAL_END_HOUR"), 6))
     parser.add_argument("--skip-exit-code", type=int, default=_safe_int(os.getenv("MAINTENANCE_SLOT_SKIP_EXIT_CODE"), 75))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()

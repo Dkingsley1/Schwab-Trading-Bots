@@ -2,8 +2,52 @@ import json
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from scripts.ops import process_watchdog as pw
+
+
+def test_live_process_matching_ignores_watchdog_wrapper_commands(monkeypatch) -> None:
+    ps_out = "\n".join(
+        [
+            "python scripts/shadow_watchdog.py --schwab-match scripts/run_all_sleeves.py",
+            "python scripts/failover_hot_standby.py --primary-match scripts/run_all_sleeves.py --standby-cmd scripts/run_parallel_shadows.py --simulate",
+            "python scripts/run_all_sleeves.py --broker schwab",
+        ]
+    )
+
+    monkeypatch.setattr(
+        pw.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout=ps_out),
+    )
+
+    assert pw._proc_running("scripts/run_all_sleeves.py") == 1
+    assert pw._proc_running("scripts/run_parallel_shadows.py") == 0
+
+
+def test_live_data_target_excludes_simulated_alt_coverage_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("OPS_WATCHDOG_ALL_SLEEVES_SIMULATE", raising=False)
+
+    target = pw._build_all_sleeves_target(heartbeat_max_age_seconds=300)
+
+    assert "--simulate" in target["exclude_patterns"]
+    assert "--simulate" not in target["cmd"]
+
+    monkeypatch.setenv("OPS_WATCHDOG_ALL_SLEEVES_SIMULATE", "1")
+
+    simulated_target = pw._build_all_sleeves_target(heartbeat_max_age_seconds=300)
+
+    assert "--simulate" not in simulated_target["exclude_patterns"]
+    assert "--simulate" in simulated_target["cmd"]
+
+
+def test_live_data_excludes_preserve_profile_exclusions() -> None:
+    assert pw._live_data_excludes(False, ["--profile crypto_futures"]) == [
+        "--profile crypto_futures",
+        "--simulate",
+    ]
+    assert pw._live_data_excludes(True, ["--profile crypto_futures"]) == ["--profile crypto_futures"]
 
 
 def test_refresh_runtime_reports_uses_full_one_numbers_command(tmp_path, monkeypatch) -> None:
@@ -181,6 +225,57 @@ def test_default_require_paper_executor_honors_explicit_override(monkeypatch) ->
     monkeypatch.setenv("RUN_ALL_SLEEVES_WITH_PAPER_EXECUTOR", "1")
 
     assert pw._default_require_paper_executor() is True
+
+
+def test_all_sleeves_start_ready_allows_core_restart_when_fanout_guard_has_no_targetable_workers(tmp_path, monkeypatch) -> None:
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    (health / "process_fanout_guard_latest.json").write_text(
+        json.dumps(
+            {
+                "triggered": True,
+                "fanout": {"targetable_count": 0},
+                "kill_plan": [],
+                "startup_policy": {"core_sleeve_restart_allowed": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pw, "HEALTH_DIR", health)
+    monkeypatch.setenv("PROCESS_FANOUT_GUARD_ACTIVE", "1")
+    monkeypatch.setenv("TRAINING_RUNTIME_PAUSED_FOR_FANOUT", "1")
+    monkeypatch.setenv("SHADOW_SYMBOLS_CORE", "SPY")
+    monkeypatch.setenv("SHADOW_SYMBOLS_VOLATILE", "QQQ")
+    monkeypatch.setenv("SHADOW_SYMBOLS_DEFENSIVE", "TLT")
+
+    ready, reason = pw._all_sleeves_start_ready("schwab", True)
+
+    assert ready is True
+    assert reason == "process_fanout_guard_core_sleeve_pressure_mode"
+
+
+def test_all_sleeves_start_ready_blocks_when_fanout_guard_has_targetable_workers(tmp_path, monkeypatch) -> None:
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    (health / "process_fanout_guard_latest.json").write_text(
+        json.dumps(
+            {
+                "triggered": True,
+                "fanout": {"targetable_count": 1},
+                "kill_plan": [{"pid": 101}],
+                "startup_policy": {"core_sleeve_restart_allowed": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pw, "HEALTH_DIR", health)
+    monkeypatch.setenv("PROCESS_FANOUT_GUARD_ACTIVE", "1")
+    monkeypatch.setenv("TRAINING_RUNTIME_PAUSED_FOR_FANOUT", "1")
+
+    ready, reason = pw._all_sleeves_start_ready("schwab", True)
+
+    assert ready is False
+    assert reason == "process_fanout_guard_active"
 
 
 def test_resolved_restart_storms_drop_healthy_settled_services() -> None:

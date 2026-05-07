@@ -113,11 +113,15 @@ def _pressure_snapshot(project_root: Path) -> dict[str, Any]:
     runtime = load_json(health_root / "runtime_throttle_control_latest.json")
     memory = load_json(health_root / "memory_efficiency_control_latest.json")
     storage = load_json(health_root / "ingestion_storage_control_latest.json")
+    backpressure = load_json(health_root / "ingestion_backpressure_latest.json")
     data_storage = load_json(health_root / "data_collection_storage_guard_latest.json")
     halt = load_json(health_root / "global_killswitch_latest.json")
+    halt_auto_clear = load_json(health_root / "global_halt_auto_clear_latest.json")
     admission = load_json(health_root / "new_bot_admission_guard_latest.json")
     dashboard = load_json(health_root / "runtime_gate_dashboard_latest.json")
     platform_capacity = load_json(platform_root / "capacity_planner_latest.json")
+    platform_stabilization = load_json(health_root / "platform_stabilization_quality_latest.json")
+    settlement = load_json(health_root / "platform_settlement_stabilization_latest.json")
 
     swap_pressure = swap.get("swap_pressure") if isinstance(swap.get("swap_pressure"), dict) else {}
     swap_tier = _status(swap_pressure.get("tier") or swap.get("tier"), "normal")
@@ -130,22 +134,48 @@ def _pressure_snapshot(project_root: Path) -> dict[str, Any]:
     platform_capacity_status = _status(platform_capacity.get("overall_status"), "missing")
     storage_pressure = _safe_float(storage.get("pressure_index"), 0.0)
     host_saturation = _safe_float(runtime.get("host_saturation_score"), 0.0)
+    compute_level = _status(runtime.get("compute_pressure_level"), "unknown")
+    memory_pressure_level = _status(runtime.get("memory_pressure_level"), "unknown")
+    storage_backpressure = storage.get("backpressure") if isinstance(storage.get("backpressure"), dict) else {}
+    total_pending_lines = max(
+        _safe_int(storage_backpressure.get("total_pending_lines"), 0),
+        _safe_int(backpressure.get("pending_lines_total"), 0),
+        _safe_int(backpressure.get("pending_lines"), 0),
+    )
+    pending_threshold = max(_safe_int(storage_backpressure.get("pending_lines_threshold"), 15000), 1)
+    pending_ratio = total_pending_lines / float(pending_threshold)
+    queue_backpressure_active = total_pending_lines >= pending_threshold or _status(storage.get("severity"), "unknown") in {"high", "critical", "blocked"}
     admission_blocking = _safe_int(admission.get("blocking_candidate_count"), 0)
     admission_candidates = _safe_int(admission.get("candidate_bot_count"), 0)
     global_halt_active = any(
         _bool(halt.get(key))
         for key in ("global_halt_active", "halt_active", "hard_halt_active", "blocked", "killswitch_active")
-    )
+    ) or _bool(halt_auto_clear.get("halt"))
+    clear_blockers = halt_auto_clear.get("clear_blockers") if isinstance(halt_auto_clear.get("clear_blockers"), list) else []
+    stabilization_sections = platform_stabilization.get("sections") if isinstance(platform_stabilization.get("sections"), dict) else {}
+    stabilization_gate = stabilization_sections.get("expansion_rehearsal_gate") if isinstance(stabilization_sections.get("expansion_rehearsal_gate"), dict) else {}
+    stabilization_says_no = bool(stabilization_gate) and not _bool(stabilization_gate.get("expansion_allowed_now"))
+    settlement_sections = settlement.get("sections") if isinstance(settlement.get("sections"), dict) else {}
+    settlement_queue = settlement_sections.get("queue_decay_meter") if isinstance(settlement_sections.get("queue_decay_meter"), dict) else {}
+    settlement_queue_active = _bool(settlement_queue.get("queue_backpressure_active"))
 
     blocking_reasons: list[str] = []
     if global_halt_active:
         blocking_reasons.append("global_halt_active")
     if swap_tier in {"survival", "critical"} or swap_gb >= 20.0:
         blocking_reasons.append("swap_pressure_too_high_for_new_runtime")
-    if runtime_status in {"blocked", "critical"} or host_saturation >= 90.0:
+    if runtime_status in {"blocked", "critical"} or host_saturation >= 85.0 or compute_level in {"high", "critical"}:
         blocking_reasons.append("runtime_pressure_too_high")
     if storage_status in {"blocked", "critical"} or data_storage_status in {"blocked", "critical"}:
         blocking_reasons.append("storage_pressure_too_high")
+    if queue_backpressure_active:
+        blocking_reasons.append("queue_backpressure_active")
+    if clear_blockers:
+        blocking_reasons.append("global_clear_blockers_present")
+    if stabilization_says_no:
+        blocking_reasons.append("pre_expansion_stabilization_gate_closed")
+    if settlement_queue_active:
+        blocking_reasons.append("settlement_queue_backpressure_active")
 
     watch_reasons: list[str] = []
     if memory_status in {"needs_work", "degraded", "blocked", "critical"}:
@@ -154,6 +184,10 @@ def _pressure_snapshot(project_root: Path) -> dict[str, Any]:
         watch_reasons.append("swap_pressure_elevated")
     if storage_pressure >= 0.40:
         watch_reasons.append("storage_pressure_index_elevated")
+    if pending_ratio >= 0.50:
+        watch_reasons.append("queue_pending_ratio_elevated")
+    if host_saturation >= 65.0 or compute_level == "elevated" or memory_pressure_level == "elevated":
+        watch_reasons.append("runtime_not_calm_enough_for_expansion")
     if admission_blocking > 0:
         watch_reasons.append("new_bot_admission_contracts_not_clear")
     if dashboard_status in {"warn", "needs_work", "degraded", "blocked", "critical"}:
@@ -180,7 +214,16 @@ def _pressure_snapshot(project_root: Path) -> dict[str, Any]:
         "platform_capacity_status": platform_capacity_status,
         "storage_pressure_index": round(storage_pressure, 6),
         "host_saturation_score": round(host_saturation, 3),
+        "compute_pressure_level": compute_level,
+        "memory_pressure_level": memory_pressure_level,
+        "queue_backpressure_active": queue_backpressure_active,
+        "total_pending_lines": total_pending_lines,
+        "pending_lines_threshold": pending_threshold,
+        "pending_ratio": round(pending_ratio, 6),
         "global_halt_active": global_halt_active,
+        "global_clear_blockers": [str(item) for item in clear_blockers],
+        "pre_expansion_stabilization_gate_closed": stabilization_says_no,
+        "settlement_queue_backpressure_active": settlement_queue_active,
         "admission_candidate_count": admission_candidates,
         "admission_blocking_candidate_count": admission_blocking,
         "source_files": {
@@ -193,6 +236,8 @@ def _pressure_snapshot(project_root: Path) -> dict[str, Any]:
             "new_bot_admission_guard": str(health_root / "new_bot_admission_guard_latest.json"),
             "runtime_gate_dashboard": str(health_root / "runtime_gate_dashboard_latest.json"),
             "platform_capacity_planner": str(platform_root / "capacity_planner_latest.json"),
+            "platform_stabilization_quality": str(health_root / "platform_stabilization_quality_latest.json"),
+            "platform_settlement_stabilization": str(health_root / "platform_settlement_stabilization_latest.json"),
         },
     }
 
@@ -321,7 +366,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, requested_wave_size: int
             "new bots enter as data_collection_only",
             "new bots are excluded from training until minimum observations and days are met",
             "new bots keep zero allocation weight and live execution disabled",
-            "future waves must pass storage, swap, runtime, global halt, and admission gates",
+            "future waves must pass storage, queue, swap, runtime, global halt, settlement, and admission gates",
+            "pre-expansion stabilization must explicitly allow the wave before any roster growth",
             "registry sync and core materialization must run after each accepted wave",
         ],
         "recommended_actions": recommended_actions,

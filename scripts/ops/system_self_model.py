@@ -24,10 +24,18 @@ SELF_MODEL_VERSION = "system_self_model_v2"
 STATUS_ORDER = {
     "missing": 0,
     "ready": 1,
+    "idle": 1,
+    "applied": 1,
+    "baseline": 1,
+    "steady_state": 1,
     "advisory": 2,
     "thin": 2,
+    "applied_with_followups": 2,
+    "waiting_for_writer": 2,
     "needs_work": 3,
     "degraded": 4,
+    "stalled": 4,
+    "apply_failed": 4,
     "blocked": 5,
     "critical": 6,
 }
@@ -135,7 +143,15 @@ def _safe_float(raw: Any, default: float = 0.0) -> float:
 def _status(payload: dict[str, Any], default: str = "missing") -> str:
     if not payload:
         return default
-    explicit = str(payload.get("overall_status") or payload.get("status") or "").strip()
+    explicit_raw = payload.get("overall_status")
+    if explicit_raw is None:
+        explicit_raw = payload.get("status")
+    if isinstance(explicit_raw, str):
+        explicit = explicit_raw.strip()
+    elif explicit_raw is None:
+        explicit = ""
+    else:
+        explicit = ""
     if explicit:
         return explicit
     if "ok" in payload:
@@ -202,12 +218,28 @@ def _surface_matrix(health_root: Path, project_root: Path, *, now: datetime | No
         "memory_efficiency": health_root / "memory_efficiency_control_latest.json",
         "runtime_throttle": health_root / "runtime_throttle_control_latest.json",
         "ingestion_storage": health_root / "ingestion_storage_control_latest.json",
+        "backpressure_drainer_fleet": health_root / "backpressure_drainer_fleet_latest.json",
+        "backpressure_super_drainer": health_root / "backpressure_super_drainer_latest.json",
+        "backpressure_super_drainer_memory": health_root / "backpressure_super_drainer_memory_latest.json",
+        "writer_cycle_coordinator": health_root / "writer_cycle_coordinator_latest.json",
+        "writer_process_intelligence": health_root / "writer_process_intelligence_latest.json",
+        "whole_system_intelligence": health_root / "whole_system_intelligence_latest.json",
+        "system_signal_bus": health_root / "system_signal_bus_latest.json",
+        "system_brain": health_root / "system_brain_latest.json",
+        "system_process_contracts": health_root / "system_process_contracts_latest.json",
+        "system_self_intelligence": health_root / "system_self_intelligence_latest.json",
+        "codex_handoff": health_root / "codex_handoff_latest.json",
+        "storage_backpressure_autopilot": health_root / "storage_backpressure_autopilot_latest.json",
         "mlx_runtime": health_root / "mlx_runtime_audit_latest.json",
         "mlx_library": health_root / "mlx_library_upgrade_latest.json",
         "mlx_intelligence_router": health_root / "mlx_intelligence_router_latest.json",
         "library_utilization_router": health_root / "library_utilization_router_latest.json",
         "quant_model_control": health_root / "quant_model_control_latest.json",
         "global_halt": health_root / "global_killswitch_latest.json",
+        "process_watchdog": health_root / "process_watchdog_latest.json",
+        "auth_lease_manager": health_root / "auth_lease_manager_latest.json",
+        "data_plane_recovery": health_root / "data_plane_recovery_controller_latest.json",
+        "live_runtime_separation": health_root / "live_runtime_separation_control_latest.json",
         "master_infra": health_root / "master_infrastructure_supervisor_latest.json",
         "artifact_freshness": health_root / "artifact_freshness_slo_latest.json",
         "training_quality": health_root / "training_quality_control_latest.json",
@@ -228,6 +260,12 @@ def _surface_matrix(health_root: Path, project_root: Path, *, now: datetime | No
             status = "ready"
         if name == "global_halt" and payload:
             status = "blocked" if bool(payload.get("halt", False)) else "ready"
+        if name == "process_watchdog" and payload:
+            alerts = payload.get("alerts") if isinstance(payload.get("alerts"), list) else []
+            rows = payload.get("status") if isinstance(payload.get("status"), list) else []
+            watched_rows = [row for row in rows if isinstance(row, dict)]
+            any_down = any(not bool(row.get("process_live", row.get("running", 0))) for row in watched_rows)
+            status = "degraded" if alerts or any_down else "ready"
         timestamp, age_minutes = _payload_timestamp(payload, path, current) if payload else ("", None)
         matrix[name] = {
             "status": status,
@@ -270,6 +308,73 @@ def _resource_awareness(memory: dict[str, Any], throttle: dict[str, Any], storag
     }
 
 
+def _host_pressure_intelligence(
+    memory: dict[str, Any],
+    throttle: dict[str, Any],
+    mlx_router: dict[str, Any],
+    library_router: dict[str, Any],
+) -> dict[str, Any]:
+    memory_snapshot = memory.get("memory_snapshot") if isinstance(memory.get("memory_snapshot"), dict) else {}
+    cpu_snapshot = memory.get("cpu_snapshot") if isinstance(memory.get("cpu_snapshot"), dict) else {}
+    cotenant = memory.get("cotenant_awareness") if isinstance(memory.get("cotenant_awareness"), dict) else {}
+    mlx_caps = mlx_router.get("runtime_caps") if isinstance(mlx_router.get("runtime_caps"), dict) else {}
+    library_caps = library_router.get("runtime_caps") if isinstance(library_router.get("runtime_caps"), dict) else {}
+
+    memory_level = str(throttle.get("memory_pressure_level") or mlx_caps.get("memory_pressure_level") or "").strip().lower()
+    if not memory_level:
+        memory_state = str(memory_snapshot.get("memory_pressure_state") or "").strip().lower()
+        memory_level = "high" if memory_state in {"red", "critical"} else "elevated" if memory_state in {"yellow", "orange"} else "normal"
+
+    host_saturation_score = _safe_float(
+        throttle.get("host_saturation_score"),
+        _safe_float(mlx_caps.get("host_saturation_score"), _safe_float(cpu_snapshot.get("host_saturation_score"), 0.0)),
+    )
+    cpu_level = str(throttle.get("cpu_pressure_level") or mlx_caps.get("cpu_pressure_level") or cpu_snapshot.get("cpu_pressure_level") or "").strip().lower()
+    if not cpu_level:
+        cpu_level = "high" if host_saturation_score >= 85.0 else "elevated" if host_saturation_score >= 65.0 else "watch" if host_saturation_score >= 45.0 else "normal"
+
+    throttle_profile = str(throttle.get("throttle_profile") or mlx_caps.get("throttle_profile") or library_caps.get("throttle_profile") or "observe").strip().lower()
+    open_apps = cotenant.get("open_apps") if isinstance(cotenant.get("open_apps"), list) else []
+    open_app_count = _safe_int(cotenant.get("open_app_count"), len(open_apps))
+    cotenant_active = bool(cotenant.get("active", False) or cotenant.get("mode") in {"managed_cotenant", "guarded_cotenant", "pressure_aware_cotenant"})
+
+    posture = "max_throughput"
+    status = "ready"
+    if memory_level == "high" or cpu_level == "high" or host_saturation_score >= 85.0:
+        status = "blocked"
+        posture = "protect_live"
+    elif memory_level == "elevated" or cpu_level == "elevated" or host_saturation_score >= 65.0 or throttle_profile == "protect_live":
+        status = "degraded"
+        posture = "protect_live" if throttle_profile == "protect_live" else "sustain"
+    elif cpu_level == "watch" or host_saturation_score >= 45.0 or throttle_profile in {"soft_cap", "sustain"} or cotenant_active:
+        status = "advisory"
+        posture = "foreground_safe"
+
+    return {
+        "status": status,
+        "memory_pressure_level": memory_level,
+        "memory_pressure_state": str(memory_snapshot.get("memory_pressure_state") or ""),
+        "memory_free_pct": _safe_float(memory_snapshot.get("memory_free_pct"), 0.0),
+        "swap_used_gb": _safe_float(memory_snapshot.get("swap_used_gb"), 0.0),
+        "compressed_store_gb": _safe_float(memory_snapshot.get("compressed_store_gb"), _safe_float(memory_snapshot.get("compressor_gb"), 0.0)),
+        "cpu_pressure_level": cpu_level,
+        "host_saturation_score": round(float(host_saturation_score), 3),
+        "throttle_profile": throttle_profile,
+        "recommended_intelligence_posture": posture,
+        "mlx_runtime_profile": str(mlx_caps.get("profile") or ""),
+        "mlx_max_concurrent_jobs": _safe_int(mlx_caps.get("max_concurrent_mlx_jobs"), 0),
+        "mlx_heavy_vlm_enabled": bool(mlx_caps.get("heavy_vlm_enabled", False)),
+        "library_runtime_profile": str(library_caps.get("profile") or ""),
+        "library_max_report_render_jobs": _safe_int(library_caps.get("max_report_render_jobs"), 0),
+        "cotenant_active": cotenant_active,
+        "open_app_count": open_app_count,
+        "open_apps": [str(app) for app in open_apps[:12]],
+        "co_running_level": str(cotenant.get("co_running_level") or ""),
+        "live_data_priority": "protect_live_collection_and_paper_trade_before_heavy_training_or_reporting",
+        "control_contract": "cpu_memory_pressure_states_feed_intelligence_routing_mlx_caps_drainers_and_training_cadence",
+    }
+
+
 def _mlx_intelligence_awareness(router: dict[str, Any]) -> dict[str, Any]:
     coverage = router.get("library_coverage") if isinstance(router.get("library_coverage"), dict) else {}
     route_coverage = router.get("route_coverage") if isinstance(router.get("route_coverage"), dict) else {}
@@ -287,6 +392,10 @@ def _mlx_intelligence_awareness(router: dict[str, Any]) -> dict[str, Any]:
         "max_concurrent_mlx_jobs": _safe_int(caps.get("max_concurrent_mlx_jobs"), 0),
         "compile_mode": str(caps.get("compile_mode") or ""),
         "heavy_vlm_enabled": bool(caps.get("heavy_vlm_enabled", False)),
+        "cpu_pressure_level": str(caps.get("cpu_pressure_level") or ""),
+        "memory_pressure_level": str(caps.get("memory_pressure_level") or ""),
+        "host_saturation_score": _safe_float(caps.get("host_saturation_score"), 0.0),
+        "host_pressure_state": str(caps.get("host_pressure_state") or ""),
         "utilization_contract": str(((router.get("control_contract") or {}).get("safe_utilization_goal")) or ""),
     }
 
@@ -308,6 +417,242 @@ def _library_utilization_awareness(router: dict[str, Any]) -> dict[str, Any]:
         "default_ml_backend": str(contract.get("default_ml_backend") or ""),
         "portable_ml_policy": str(contract.get("portable_ml_policy") or ""),
         "utilization_contract": str(contract.get("safe_utilization_goal") or ""),
+    }
+
+
+def _drainer_intelligence_awareness(
+    fleet: dict[str, Any],
+    super_drainer: dict[str, Any],
+    coordinator: dict[str, Any],
+    storage_autopilot: dict[str, Any],
+) -> dict[str, Any]:
+    fleet_active = fleet.get("active_drainer") if isinstance(fleet.get("active_drainer"), dict) else {}
+    super_summary = super_drainer.get("summary") if isinstance(super_drainer.get("summary"), dict) else {}
+    super_guardrails = super_drainer.get("guardrails") if isinstance(super_drainer.get("guardrails"), dict) else {}
+    super_settings = super_drainer.get("settings") if isinstance(super_drainer.get("settings"), dict) else {}
+    intelligence_layer = (
+        super_drainer.get("drainer_intelligence_layer")
+        if isinstance(super_drainer.get("drainer_intelligence_layer"), dict)
+        else {}
+    )
+    intelligence_decision = (
+        intelligence_layer.get("decision_packet")
+        if isinstance(intelligence_layer.get("decision_packet"), dict)
+        else {}
+    )
+    coordinator_summary = coordinator.get("summary") if isinstance(coordinator.get("summary"), dict) else {}
+    coordinator_writer = coordinator.get("writer_state_after_wait") if isinstance(coordinator.get("writer_state_after_wait"), dict) else {}
+    autopilot_metrics = storage_autopilot.get("metrics") if isinstance(storage_autopilot.get("metrics"), dict) else {}
+
+    single_writer_guard = bool(super_guardrails.get("single_writer_only", False)) and not bool(
+        super_guardrails.get("starts_parallel_sql_writers", True)
+    )
+    super_status = _status(super_drainer)
+    intelligence_status = _status(intelligence_layer)
+    fleet_status = _status(fleet)
+    coordinator_status = _status(coordinator)
+    active_drainer = str(super_drainer.get("active_drainer") or fleet_active.get("name") or "")
+    target_met = bool(super_drainer.get("target_met_final", False) or super_drainer.get("target_met_initially", False))
+    waves_run = _safe_int(super_summary.get("waves_run"), 0)
+    final_pending = _safe_int(super_summary.get("final_pending_lines"), 0)
+    progress_waves = _safe_int(super_summary.get("progress_waves"), 0)
+    writer_active = bool(coordinator_writer.get("active", False) or coordinator_summary.get("writer_active_after_wait", False))
+
+    status = "ready"
+    if super_drainer and not single_writer_guard:
+        status = "blocked"
+    elif intelligence_layer and intelligence_status in {"blocked", "critical", "degraded"} and not target_met:
+        status = "degraded"
+    elif super_status in {"apply_failed", "stalled", "blocked", "critical"}:
+        status = "degraded"
+    elif coordinator_status in {"apply_failed", "timed_out_waiting_for_writer", "blocked", "critical"}:
+        status = "degraded"
+    elif fleet_status == "blocked" and not target_met:
+        status = "degraded"
+    elif writer_active and not bool(coordinator_summary.get("writer_progress_observed", False)):
+        status = "advisory"
+    elif target_met or final_pending <= _safe_int(super_settings.get("target_pending_lines"), 5000):
+        status = "ready"
+    elif waves_run and progress_waves:
+        status = "advisory"
+
+    return {
+        "status": status,
+        "fleet_status": fleet_status,
+        "super_drainer_status": super_status,
+        "intelligence_layer_status": intelligence_status,
+        "writer_cycle_status": coordinator_status,
+        "storage_autopilot_status": _status(storage_autopilot),
+        "active_drainer": active_drainer,
+        "ready_drainer_count": _safe_int(fleet.get("ready_drainer_count"), 0),
+        "ready_drainer_names": list(super_drainer.get("ready_drainer_names") or []),
+        "target_met": target_met,
+        "target_pending_lines": _safe_int(super_settings.get("target_pending_lines"), 5000),
+        "final_pending_lines": final_pending,
+        "planned_wave_count": _safe_int(super_settings.get("planned_wave_count"), 0),
+        "waves_run": waves_run,
+        "progress_waves": progress_waves,
+        "stop_reason": str(super_drainer.get("stop_reason") or super_summary.get("stop_reason") or ""),
+        "intelligence_action": str(intelligence_decision.get("action") or ""),
+        "intelligence_confidence": _safe_float(intelligence_decision.get("confidence"), 0.0),
+        "intelligence_risk_flags": list(intelligence_decision.get("risk_flags") or []),
+        "intelligence_next_ready_drainer": str(intelligence_decision.get("next_ready_drainer") or ""),
+        "single_writer_guard": single_writer_guard,
+        "writer_active": writer_active,
+        "writer_progress_observed": bool(coordinator_summary.get("writer_progress_observed", False)),
+        "backpressure_actionable": bool(autopilot_metrics.get("backpressure_actionable", False)),
+        "assigned_infrabots": list(super_drainer.get("assigned_infrabots") or []),
+        "grandmaster_context_packet": super_drainer.get("grandmaster_context_packet") if isinstance(super_drainer.get("grandmaster_context_packet"), dict) else {},
+        "control_contract": "drainer_stack_is_part_of_self_model_resource_awareness_and_uses_single_writer_wave_coordination",
+    }
+
+
+def _writer_process_awareness(
+    writer_intelligence: dict[str, Any],
+    coordinator: dict[str, Any],
+    process_watchdog: dict[str, Any],
+    process_fanout: dict[str, Any],
+) -> dict[str, Any]:
+    decision = writer_intelligence.get("decision_packet") if isinstance(writer_intelligence.get("decision_packet"), dict) else {}
+    writer_health = writer_intelligence.get("writer_health") if isinstance(writer_intelligence.get("writer_health"), dict) else {}
+    topology = writer_intelligence.get("process_topology") if isinstance(writer_intelligence.get("process_topology"), dict) else {}
+    safety = writer_intelligence.get("safety_envelope") if isinstance(writer_intelligence.get("safety_envelope"), dict) else {}
+    coordinator_summary = coordinator.get("summary") if isinstance(coordinator.get("summary"), dict) else {}
+    status = _status(writer_intelligence)
+    if status == "missing":
+        status = "degraded" if coordinator or process_watchdog else "missing"
+    if bool(topology.get("duplicate_sql_writer_processes", False)):
+        status = "blocked"
+    elif str(writer_health.get("state") or "") == "stalled":
+        status = "degraded"
+    elif str(writer_health.get("state") or "") == "stale_progress":
+        status = "advisory"
+
+    return {
+        "status": status,
+        "intelligence_layer_status": _status(writer_intelligence),
+        "writer_cycle_status": _status(coordinator),
+        "process_watchdog_status": _status(process_watchdog),
+        "process_fanout_status": _status(process_fanout),
+        "action": str(decision.get("action") or ""),
+        "confidence": _safe_float(decision.get("confidence"), 0.0),
+        "writer_state": str(writer_health.get("state") or ""),
+        "writer_active": bool(writer_health.get("active", coordinator_summary.get("writer_active_after_wait", False))),
+        "writer_progress_age_minutes": _safe_float(writer_health.get("progress_age_minutes"), 0.0),
+        "expanded_writer_lane_count": _safe_int(decision.get("expanded_writer_lane_count"), 0),
+        "hot_lane_count": _safe_int(decision.get("hot_lane_count"), 0),
+        "warm_lane_count": _safe_int(decision.get("warm_lane_count"), 0),
+        "cold_lane_count": _safe_int(decision.get("cold_lane_count"), 0),
+        "risk_flags": list(decision.get("risk_flags") or []),
+        "single_writer_guard": bool(safety.get("single_writer_only", False))
+        and not bool(safety.get("starts_parallel_sql_writers", True)),
+        "max_parallel_sql_writers": _safe_int(safety.get("max_parallel_sql_writers"), 1),
+        "process_trim_before_expansion": bool(safety.get("process_trim_before_expansion", False)),
+        "writer_recovery_required": bool(safety.get("writer_recovery_required", False)),
+        "playbook": writer_intelligence.get("process_playbook") if isinstance(writer_intelligence.get("process_playbook"), list) else [],
+        "control_contract": "writer_process_intelligence_expands_shard_lanes_and_process_diagnostics_while_preserving_one_sql_writer",
+    }
+
+
+def _whole_system_intelligence_awareness(whole_system: dict[str, Any]) -> dict[str, Any]:
+    signal_bus = whole_system.get("system_signal_bus") if isinstance(whole_system.get("system_signal_bus"), dict) else {}
+    system_brain = whole_system.get("system_brain") if isinstance(whole_system.get("system_brain"), dict) else {}
+    process_contracts = (
+        whole_system.get("system_process_contracts")
+        if isinstance(whole_system.get("system_process_contracts"), dict)
+        else {}
+    )
+    self_intelligence = (
+        whole_system.get("system_self_intelligence")
+        if isinstance(whole_system.get("system_self_intelligence"), dict)
+        else {}
+    )
+    codex_handoff = whole_system.get("codex_handoff") if isinstance(whole_system.get("codex_handoff"), dict) else {}
+    signal_summary = signal_bus.get("summary") if isinstance(signal_bus.get("summary"), dict) else {}
+    decision = system_brain.get("decision_packet") if isinstance(system_brain.get("decision_packet"), dict) else {}
+    attention = codex_handoff.get("attention_packet") if isinstance(codex_handoff.get("attention_packet"), dict) else {}
+    self_reflex = self_intelligence.get("reflex") if isinstance(self_intelligence.get("reflex"), dict) else {}
+    self_uncertainty = self_intelligence.get("uncertainty") if isinstance(self_intelligence.get("uncertainty"), dict) else {}
+    self_causal = self_intelligence.get("causal_diagnosis") if isinstance(self_intelligence.get("causal_diagnosis"), dict) else {}
+    self_effect = self_intelligence.get("action_effectiveness") if isinstance(self_intelligence.get("action_effectiveness"), dict) else {}
+    self_routing = self_intelligence.get("integration_routing") if isinstance(self_intelligence.get("integration_routing"), dict) else {}
+    status = _status(whole_system)
+    if status == "missing":
+        status = "missing"
+    elif str(system_brain.get("overall_status") or "") == "blocked":
+        status = "blocked"
+    elif str(system_brain.get("overall_status") or "") == "degraded":
+        status = "degraded"
+    elif str(system_brain.get("overall_status") or "") == "advisory":
+        status = "advisory"
+    return {
+        "status": status,
+        "signal_bus_status": _status(signal_bus),
+        "system_brain_status": _status(system_brain),
+        "process_contract_status": _status(process_contracts),
+        "self_intelligence_status": _status(self_intelligence),
+        "codex_handoff_status": _status(codex_handoff),
+        "signal_count": _safe_int(signal_summary.get("signal_count"), 0),
+        "loaded_signal_count": _safe_int(signal_summary.get("loaded_signal_count"), 0),
+        "top_risk": str(decision.get("top_risk") or signal_summary.get("top_risk") or ""),
+        "action": str(decision.get("action") or ""),
+        "operating_mode": str(decision.get("operating_mode") or ""),
+        "confidence": _safe_float(decision.get("confidence"), 0.0),
+        "safe_next_command": decision.get("safe_next_command") if isinstance(decision.get("safe_next_command"), list) else [],
+        "do_not_do": list(decision.get("do_not_do") or []),
+        "risk_flags": list(decision.get("risk_flags") or []),
+        "contract_count": _safe_int(process_contracts.get("contract_count"), 0),
+        "blocked_contract_count": _safe_int(process_contracts.get("blocked_contract_count"), 0),
+        "self_reflex_action": str(self_reflex.get("action") or ""),
+        "self_uncertainty_level": str(self_uncertainty.get("level") or ""),
+        "self_uncertainty_score": _safe_int(self_uncertainty.get("score"), 0),
+        "self_causal_root": str(self_causal.get("primary_root_cause") or ""),
+        "self_causal_confidence": _safe_float(self_causal.get("confidence"), 0.0),
+        "self_action_effect_verdict": str(self_effect.get("verdict") or ""),
+        "self_integration_route": str(self_routing.get("route_mode") or ""),
+        "self_integration_owner": str(self_routing.get("primary_owner") or ""),
+        "codex_needs": list(attention.get("needs_codex") or []),
+        "codex_handoff_channel": "artifact_handoff",
+        "proactive_codex_delivery": bool(
+            ((codex_handoff.get("communication_contract") or {}).get("proactive_delivery_to_codex"))
+        )
+        if isinstance(codex_handoff.get("communication_contract"), dict)
+        else False,
+        "control_contract": "whole_system_intelligence_normalizes_signals_selects_next_safe_infrastructure_action_enforces_process_contracts_reads_self_causal_effect_routing_and_writes_codex_handoff",
+    }
+
+
+def _system_self_intelligence_awareness(self_intelligence: dict[str, Any]) -> dict[str, Any]:
+    trend = self_intelligence.get("trend") if isinstance(self_intelligence.get("trend"), dict) else {}
+    uncertainty = self_intelligence.get("uncertainty") if isinstance(self_intelligence.get("uncertainty"), dict) else {}
+    memory = self_intelligence.get("learning_memory") if isinstance(self_intelligence.get("learning_memory"), dict) else {}
+    action_effect = self_intelligence.get("action_effectiveness") if isinstance(self_intelligence.get("action_effectiveness"), dict) else {}
+    causal = self_intelligence.get("causal_diagnosis") if isinstance(self_intelligence.get("causal_diagnosis"), dict) else {}
+    routing = self_intelligence.get("integration_routing") if isinstance(self_intelligence.get("integration_routing"), dict) else {}
+    reflex = self_intelligence.get("reflex") if isinstance(self_intelligence.get("reflex"), dict) else {}
+    return {
+        "status": _status(self_intelligence),
+        "trajectory": str(trend.get("trajectory") or ""),
+        "pending_lines_delta": _safe_int(trend.get("pending_lines_delta"), 0),
+        "pressure_index_delta": _safe_float(trend.get("pressure_index_delta"), 0.0),
+        "uncertainty_level": str(uncertainty.get("level") or ""),
+        "uncertainty_score": _safe_int(uncertainty.get("score"), 0),
+        "missing_signal_count": len(list(uncertainty.get("missing_signals") or [])),
+        "stale_signal_count": len(list(uncertainty.get("stale_signals") or [])),
+        "conflict_count": len(list(uncertainty.get("conflicting_signals") or [])),
+        "contract_violation_count": len(list(uncertainty.get("contract_violations") or [])),
+        "same_action_repeat_count": _safe_int(memory.get("same_action_repeat_count"), 0),
+        "action_effect_verdict": str(action_effect.get("verdict") or ""),
+        "same_action_run_length": _safe_int(action_effect.get("same_action_run_length"), 0),
+        "causal_root": str(causal.get("primary_root_cause") or ""),
+        "causal_confidence": _safe_float(causal.get("confidence"), 0.0),
+        "integration_route_mode": str(routing.get("route_mode") or ""),
+        "primary_owner": str(routing.get("primary_owner") or ""),
+        "capability_gap_count": len(list(self_intelligence.get("capability_gaps") or [])),
+        "reflex_action": str(reflex.get("action") or ""),
+        "reflex_blocks_brain_action": bool(reflex.get("blocks_brain_action_until_refreshed", False)),
+        "self_questions": list(self_intelligence.get("self_questions") or []),
+        "control_contract": "system_self_intelligence_compares_prior_runs_tracks_uncertainty_scores_action_effects_diagnoses_causes_routes_consumers_and_can_request_pre_action_refreshes_before_the_brain_acts",
     }
 
 
@@ -353,10 +698,173 @@ def _failure_memory(global_halt: dict[str, Any], incident: dict[str, Any], cockp
     }
 
 
+def _halt_recovery_intelligence(
+    global_halt: dict[str, Any],
+    process_watchdog: dict[str, Any],
+    auth_lease: dict[str, Any],
+    data_plane: dict[str, Any],
+    live_runtime: dict[str, Any],
+    storage: dict[str, Any],
+) -> dict[str, Any]:
+    clear_blockers = global_halt.get("clear_blockers") if isinstance(global_halt.get("clear_blockers"), list) else []
+    degraded_clear_blockers = global_halt.get("degraded_clear_blockers") if isinstance(global_halt.get("degraded_clear_blockers"), list) else []
+    halt_payload = global_halt.get("global_halt_payload") if isinstance(global_halt.get("global_halt_payload"), dict) else {}
+    halt_details = halt_payload.get("details") if isinstance(halt_payload.get("details"), dict) else {}
+    halt_active = bool(global_halt.get("halt", False))
+    clear_ready = bool(global_halt.get("clear_ready", False) or (halt_active and not clear_blockers))
+    halt_reason = str(halt_payload.get("reason") or ",".join(str(x) for x in (global_halt.get("reasons") or []) if str(x).strip()) or global_halt.get("action") or "none")
+
+    auth_status = _status(auth_lease, "missing")
+    lease_state = str(auth_lease.get("lease_state") or "")
+    lease_budget = auth_lease.get("lease_budget") if isinstance(auth_lease.get("lease_budget"), dict) else {}
+    expires_in = _safe_float(lease_budget.get("expires_in_seconds"), 0.0)
+    min_lease = _safe_float(lease_budget.get("min_lease_seconds"), 1200.0)
+    broker_state = auth_lease.get("broker_state") if isinstance(auth_lease.get("broker_state"), dict) else {}
+    auth_reason = str(broker_state.get("auth_reason") or "")
+    fallback_ladder = auth_lease.get("fallback_ladder") if isinstance(auth_lease.get("fallback_ladder"), list) else []
+    auth_ok = bool(broker_state.get("auth_ok", False) or broker_state.get("broker_ready", False))
+    broker_operable = bool(broker_state.get("broker_operable", False))
+    auth_refresh_needed = bool(
+        auth_status in {"blocked", "critical", "degraded", "needs_work"}
+        or lease_state in {"warning", "critical", "expired"}
+        or (expires_in and min_lease and expires_in < min_lease)
+        or "softguard" in halt_reason
+        or "account" in halt_reason
+    )
+    operator_auth_required = bool(
+        auth_refresh_needed
+        and (
+            lease_state in {"critical", "expired"}
+            or auth_status in {"blocked", "critical"}
+            or "auth_succeeded_but_token_not_ready" in auth_reason
+            or (expires_in and expires_in < _safe_float(lease_budget.get("critical_lease_seconds"), 600.0))
+        )
+    )
+
+    process_rows = process_watchdog.get("status") if isinstance(process_watchdog.get("status"), list) else []
+    watched_names = {"all_sleeves", "coinbase_loop", "coinbase_futures_loop"}
+    down_targets = [
+        str(row.get("name"))
+        for row in process_rows
+        if str(row.get("name")) in watched_names and not bool(row.get("process_live", False))
+    ]
+    paused_by_global_halt = any(bool(row.get("global_halt_active", False)) for row in process_rows if str(row.get("name")) in watched_names)
+    restarted_targets = [
+        str(row.get("name"))
+        for row in process_rows
+        if str(row.get("name")) in watched_names and row.get("restarted_pid")
+    ]
+
+    data_status = _status(data_plane, "missing")
+    data_recovery = str(data_plane.get("recovery_state") or "")
+    global_metrics = global_halt.get("metrics") if isinstance(global_halt.get("metrics"), dict) else {}
+    runtime_clearance = str(data_plane.get("runtime_clearance_state") or global_metrics.get("runtime_clearance_state") or "")
+    storage_backpressure = storage.get("backpressure") if isinstance(storage.get("backpressure"), dict) else {}
+    queue_depth = _safe_int(data_plane.get("queue_depth"), _safe_int(storage_backpressure.get("total_pending_lines", storage.get("total_pending_lines")), 0))
+    live_plane = live_runtime.get("live_plane") if isinstance(live_runtime.get("live_plane"), dict) else {}
+    all_sleeves_running = any(
+        str(row.get("name")) == "all_sleeves" and bool(row.get("process_live", row.get("running", 0)))
+        for row in process_rows
+    )
+    live_lane_running = bool(live_plane.get("live_lane_running", False) or all_sleeves_running)
+
+    needs = []
+    if operator_auth_required:
+        needs.append("operator_interactive_schwab_auth_refresh")
+    elif auth_refresh_needed:
+        needs.append("refresh_or_confirm_broker_auth_lease")
+    if clear_blockers:
+        needs.append("clear_hard_halt_blockers")
+    if data_status in {"blocked", "critical", "degraded", "needs_work"} or runtime_clearance:
+        needs.append("let_data_plane_recovery_and_runtime_clearance_settle")
+    if halt_active and down_targets:
+        needs.append("clear_halt_before_relaunching_live_sleeves")
+    elif (not halt_active) and down_targets:
+        needs.append("relaunch_and_verify_live_sleeves")
+
+    recovery_sequence: list[list[str]] = [["./scripts/ops/opsctl.sh", "global-halt-refresh", "--json"]]
+    if auth_refresh_needed:
+        recovery_sequence.append(["./scripts/ops/opsctl.sh", "token-refresh", "--json"])
+    if operator_auth_required:
+        recovery_sequence.append(["./scripts/ops/opsctl.sh", "token-refresh-interactive", "--force", "--json"])
+    if halt_active and clear_ready and not clear_blockers:
+        recovery_sequence.append(["./scripts/ops/opsctl.sh", "global-halt-auto-clear", "--json"])
+    if (not halt_active) or clear_ready:
+        recovery_sequence.append(["./scripts/ops/opsctl.sh", "livefeed-refresh"])
+    if queue_depth or data_status in {"blocked", "critical", "degraded", "needs_work"}:
+        recovery_sequence.append(["./scripts/ops/opsctl.sh", "backpressure-drainers", "--apply", "--ttl-seconds", "900", "--json"])
+    recovery_sequence.extend([
+        ["./scripts/ops/opsctl.sh", "health-fast", "--json"],
+        ["./scripts/ops/opsctl.sh", "system-self-model", "--json"],
+    ])
+
+    if operator_auth_required:
+        next_safe_command = ["./scripts/ops/opsctl.sh", "token-refresh-interactive", "--force", "--json"]
+    elif halt_active and auth_refresh_needed:
+        next_safe_command = ["./scripts/ops/opsctl.sh", "token-refresh", "--json"]
+    elif halt_active and clear_ready and not clear_blockers:
+        next_safe_command = ["./scripts/ops/opsctl.sh", "global-halt-auto-clear", "--json"]
+    elif halt_active:
+        next_safe_command = ["./scripts/ops/opsctl.sh", "global-halt-refresh", "--json"]
+    elif down_targets:
+        next_safe_command = ["./scripts/ops/opsctl.sh", "livefeed-refresh"]
+    elif queue_depth or data_status in {"blocked", "critical", "degraded", "needs_work"}:
+        next_safe_command = ["./scripts/ops/opsctl.sh", "backpressure-drainers", "--apply", "--ttl-seconds", "900", "--json"]
+    else:
+        next_safe_command = ["./scripts/ops/opsctl.sh", "health-fast", "--json"]
+
+    status = "ready"
+    if halt_active or operator_auth_required:
+        status = "blocked"
+    elif down_targets or data_status in {"blocked", "critical", "degraded", "needs_work"} or runtime_clearance or auth_refresh_needed:
+        status = "advisory"
+
+    return {
+        "status": status,
+        "halt_active": halt_active,
+        "clear_ready": clear_ready,
+        "halt_reason": halt_reason,
+        "halt_source": str(halt_payload.get("source") or ""),
+        "halt_details": halt_details,
+        "clear_blockers": clear_blockers,
+        "degraded_clear_blockers": degraded_clear_blockers,
+        "auth_status": auth_status,
+        "lease_state": lease_state,
+        "lease_expires_in_seconds": expires_in,
+        "auth_ok": auth_ok,
+        "broker_operable": broker_operable,
+        "auth_reason": auth_reason,
+        "auth_fallback_ladder": [str(item) for item in fallback_ladder],
+        "auth_refresh_needed": auth_refresh_needed,
+        "operator_auth_required": operator_auth_required,
+        "data_plane_status": data_status,
+        "data_recovery_state": data_recovery,
+        "runtime_clearance_state": runtime_clearance,
+        "queue_depth": queue_depth,
+        "live_lane_running": live_lane_running,
+        "paused_by_global_halt": paused_by_global_halt,
+        "down_targets": down_targets,
+        "restarted_targets": restarted_targets,
+        "needs": needs,
+        "next_safe_command": next_safe_command,
+        "recovery_sequence": recovery_sequence,
+        "post_clear_verifiers": [
+            ["./scripts/ops/opsctl.sh", "health-fast", "--json"],
+            ["./scripts/ops/opsctl.sh", "global-halt-status", "--json"],
+        ],
+        "control_contract": "active_halts_are_converted_into_auth_data_plane_clearance_relaunch_and_verification_steps_before_the_grandmaster_resumes_live_sleeves",
+    }
+
+
 def _dependency_edges() -> list[dict[str, str]]:
     return [
         {"from": "resource_guard", "to": "memory_efficiency", "reason": "memory and co-tenant context"},
         {"from": "memory_efficiency", "to": "runtime_throttle", "reason": "host profile and pressure caps"},
+        {"from": "runtime_throttle", "to": "host_pressure_intelligence", "reason": "CPU, memory, swap, and open-app pressure state"},
+        {"from": "memory_efficiency", "to": "host_pressure_intelligence", "reason": "memory pressure, compression, swap, and co-tenant awareness"},
+        {"from": "host_pressure_intelligence", "to": "mlx_intelligence_router", "reason": "caps MLX jobs from CPU and unified-memory state"},
+        {"from": "host_pressure_intelligence", "to": "library_utilization_router", "reason": "caps non-MLX support lanes from CPU and foreground app state"},
+        {"from": "host_pressure_intelligence", "to": "backpressure_super_drainer", "reason": "drain waves respect CPU, memory, and foreground app pressure"},
         {"from": "runtime_throttle", "to": "mlx_runtime", "reason": "shared CPU/GPU memory and MLX batch pressure"},
         {"from": "mlx_runtime", "to": "mlx_intelligence_router", "reason": "MLX package and runtime readiness"},
         {"from": "mlx_library", "to": "mlx_intelligence_router", "reason": "pinned MLX library bundle coverage"},
@@ -364,6 +872,26 @@ def _dependency_edges() -> list[dict[str, str]]:
         {"from": "runtime_throttle", "to": "library_utilization_router", "reason": "non-MLX library worker caps and backend defaults"},
         {"from": "library_utilization_router", "to": "operator_cockpit", "reason": "library lane coverage and runtime support posture"},
         {"from": "ingestion_storage", "to": "operator_cockpit", "reason": "backpressure readiness"},
+        {"from": "ingestion_storage", "to": "backpressure_drainer_fleet", "reason": "queue pressure and lane scoring"},
+        {"from": "backpressure_drainer_fleet", "to": "backpressure_super_drainer", "reason": "focused lane candidate selection"},
+        {"from": "backpressure_super_drainer", "to": "writer_cycle_coordinator", "reason": "bounded wave execution through one SQL writer"},
+        {"from": "writer_process_intelligence", "to": "writer_cycle_coordinator", "reason": "writer health, process topology, and shard-lane expansion advice"},
+        {"from": "process_fanout_guard", "to": "writer_process_intelligence", "reason": "writer expansion waits when host process fanout is over budget"},
+        {"from": "writer_cycle_coordinator", "to": "ingestion_storage", "reason": "post-wave storage refresh and drain progress"},
+        {"from": "backpressure_super_drainer", "to": "system_self_model", "reason": "drainer state vector for platform awareness"},
+        {"from": "memory_efficiency", "to": "system_signal_bus", "reason": "resource signal normalized for whole-system decisions"},
+        {"from": "runtime_throttle", "to": "system_signal_bus", "reason": "host pressure signal normalized for whole-system decisions"},
+        {"from": "ingestion_storage", "to": "system_signal_bus", "reason": "storage and backpressure signal normalized for whole-system decisions"},
+        {"from": "writer_process_intelligence", "to": "system_signal_bus", "reason": "writer state feeds the whole-system signal bus"},
+        {"from": "drainer_intelligence", "to": "system_signal_bus", "reason": "drainer action feeds the whole-system signal bus"},
+        {"from": "system_signal_bus", "to": "system_brain", "reason": "ranked signals drive the next safe infrastructure action"},
+        {"from": "system_process_contracts", "to": "system_brain", "reason": "authority boundaries and concurrency limits constrain system decisions"},
+        {"from": "system_brain", "to": "system_self_intelligence", "reason": "self-intelligence evaluates repeated actions, action effects, uncertainty, and trend before action"},
+        {"from": "system_signal_bus", "to": "system_self_intelligence", "reason": "self-intelligence compares normalized signals against prior runs, causal diagnosis, and memory"},
+        {"from": "system_self_intelligence", "to": "system_brain", "reason": "pre-action reflexes, action-effect verdicts, and causal routes can request refreshes before the brain action is trusted"},
+        {"from": "system_brain", "to": "codex_handoff", "reason": "safe next action and do-not-do rules become a Codex attention packet"},
+        {"from": "system_self_intelligence", "to": "codex_handoff", "reason": "uncertainty, causal root, action effect, route owner, and self-questions sharpen the Codex attention packet"},
+        {"from": "whole_system_intelligence", "to": "system_self_model", "reason": "whole-system brain becomes a first-class self-model awareness domain"},
         {"from": "global_halt", "to": "operator_cockpit", "reason": "live collection clearance"},
         {"from": "master_infra", "to": "operator_cockpit", "reason": "process lane ownership"},
         {"from": "system_self_model", "to": "grand_master", "reason": "compressed self-state packet"},
@@ -416,8 +944,16 @@ def _growth_awareness(identity: dict[str, Any], memory: dict[str, Any], cockpit:
 def _surface_status(surface_matrix: dict[str, dict[str, Any]], name: str) -> str:
     aliases = {
         "resource_guard": "memory_efficiency",
+        "host_pressure_intelligence": "runtime_throttle",
         "grand_master": "operator_cockpit",
         "system_self_model": "system_self_model",
+        "drainer_intelligence": "backpressure_super_drainer",
+        "system_signal_bus": "system_signal_bus",
+        "system_brain": "system_brain",
+        "system_process_contracts": "system_process_contracts",
+        "system_self_intelligence": "system_self_intelligence",
+        "codex_handoff": "codex_handoff",
+        "whole_system_intelligence": "whole_system_intelligence",
     }
     key = aliases.get(name, name)
     if key == "system_self_model":
@@ -778,6 +1314,25 @@ def _runtime_throttle_cotenant_wired(project_root: Path = PROJECT_ROOT) -> bool:
     return all(marker in text for marker in required_markers)
 
 
+def _host_pressure_intelligence_wired(project_root: Path = PROJECT_ROOT) -> bool:
+    self_path = project_root / "scripts" / "ops" / "system_self_model.py"
+    router_path = project_root / "scripts" / "ops" / "mlx_intelligence_router.py"
+    try:
+        self_text = self_path.read_text(encoding="utf-8")
+        router_text = router_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    required_markers = [
+        "_host_pressure_intelligence",
+        "cpu_pressure_level",
+        "host_pressure_state",
+        "host_saturation_score",
+        "100_percent_library_coverage_with_cpu_memory_aware_caps",
+    ]
+    combined = f"{self_text}\n{router_text}"
+    return all(marker in combined for marker in required_markers)
+
+
 def _mlx_intelligence_router_wired(project_root: Path = PROJECT_ROOT) -> bool:
     router_path = project_root / "scripts" / "ops" / "mlx_intelligence_router.py"
     opsctl_path = project_root / "scripts" / "ops" / "opsctl.sh"
@@ -812,16 +1367,88 @@ def _library_utilization_router_wired(project_root: Path = PROJECT_ROOT) -> bool
     return all(marker in f"{router_text}\n{opsctl_text}" for marker in required_markers)
 
 
+def _drainer_intelligence_wired(project_root: Path = PROJECT_ROOT) -> bool:
+    super_path = project_root / "scripts" / "ops" / "backpressure_super_drainer.py"
+    opsctl_path = project_root / "scripts" / "ops" / "opsctl.sh"
+    try:
+        super_text = super_path.read_text(encoding="utf-8")
+        opsctl_text = opsctl_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    required_markers = [
+        "self_intelligence_contract",
+        "drainer_strategy",
+        "grandmaster_context_packet",
+        "backpressure-super-drainer",
+        "run_then_refresh_self_model",
+        "writer_cycle_coordinator.py",
+    ]
+    return all(marker in f"{super_text}\n{opsctl_text}" for marker in required_markers)
+
+
+def _writer_process_intelligence_wired(project_root: Path = PROJECT_ROOT) -> bool:
+    writer_path = project_root / "scripts" / "ops" / "writer_process_intelligence.py"
+    coordinator_path = project_root / "scripts" / "ops" / "writer_cycle_coordinator.py"
+    opsctl_path = project_root / "scripts" / "ops" / "opsctl.sh"
+    shard_path = project_root / "scripts" / "ops" / "sql_link_shard_manager.py"
+    try:
+        writer_text = writer_path.read_text(encoding="utf-8")
+        coordinator_text = coordinator_path.read_text(encoding="utf-8")
+        opsctl_text = opsctl_path.read_text(encoding="utf-8")
+        shard_text = shard_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    required_markers = [
+        "writer_expansion_contract",
+        "writer_process_intelligence",
+        "writer-process-intelligence",
+        "single_writer_only",
+        "writer_progress",
+        "admission_evidence",
+    ]
+    return all(marker in f"{writer_text}\n{coordinator_text}\n{opsctl_text}\n{shard_text}" for marker in required_markers)
+
+
+def _whole_system_intelligence_wired(project_root: Path = PROJECT_ROOT) -> bool:
+    coordinator_path = project_root / "scripts" / "ops" / "system_intelligence_coordinator.py"
+    opsctl_path = project_root / "scripts" / "ops" / "opsctl.sh"
+    try:
+        coordinator_text = coordinator_path.read_text(encoding="utf-8")
+        opsctl_text = opsctl_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    required_markers = [
+        "system_signal_bus",
+        "system_brain",
+        "system_process_contracts",
+        "system_self_intelligence",
+        "self_intelligence_contract",
+        "causal_diagnosis",
+        "action_effectiveness",
+        "integration_routing",
+        "codex_handoff",
+        "global_safety_contract",
+        "system-intelligence",
+    ]
+    return all(marker in f"{coordinator_text}\n{opsctl_text}" for marker in required_markers)
+
+
 def _implementation_flags(project_root: Path = PROJECT_ROOT) -> dict[str, bool]:
     return {
         "self_model_cadence": _opsctl_self_model_refresh_wired(project_root),
         "dependency_graph": True,
         "failure_memory": True,
+        "halt_recovery_intelligence": True,
         "resource_awareness": _runtime_throttle_cotenant_wired(project_root),
+        "host_pressure_intelligence": _host_pressure_intelligence_wired(project_root),
         "bot_awareness": True,
         "self_reporting": True,
         "mlx_compute_brain": _mlx_intelligence_router_wired(project_root),
         "library_utilization_brain": _library_utilization_router_wired(project_root),
+        "drainer_intelligence": _drainer_intelligence_wired(project_root),
+        "writer_process_intelligence": _writer_process_intelligence_wired(project_root),
+        "whole_system_intelligence": _whole_system_intelligence_wired(project_root),
+        "system_self_intelligence": _whole_system_intelligence_wired(project_root),
     }
 
 
@@ -858,6 +1485,14 @@ def _optimization_plan(
         },
         {
             "rank": 4,
+            "lane": "halt_recovery_intelligence",
+            "priority": "critical",
+            "upgrade": "convert active global halts into a safe precheck, clearance, relaunch, and verification plan",
+            "benefit": "lets the intelligence layer know why the halt happened, what it needs, and which bounded command should run next",
+            "implemented": bool(implementation_flags.get("halt_recovery_intelligence", False)),
+        },
+        {
+            "rank": 5,
             "lane": "resource_awareness",
             "priority": "high",
             "upgrade": "teach runtime-throttle to consume cotenant_awareness mode directly instead of inferring from status alone",
@@ -865,7 +1500,15 @@ def _optimization_plan(
             "implemented": bool(implementation_flags.get("resource_awareness", False)),
         },
         {
-            "rank": 5,
+            "rank": 6,
+            "lane": "host_pressure_intelligence",
+            "priority": "critical",
+            "upgrade": "join CPU pressure, memory pressure, swap, host saturation, and open-app co-tenancy into one intelligence routing state",
+            "benefit": "lets the platform brain downshift MLX, reporting, training, and drainer work before foreground apps or live collection feel pressure",
+            "implemented": bool(implementation_flags.get("host_pressure_intelligence", False)),
+        },
+        {
+            "rank": 7,
             "lane": "bot_awareness",
             "priority": "medium",
             "upgrade": "add a registry diff memory that records what changed between bot expansions",
@@ -873,7 +1516,7 @@ def _optimization_plan(
             "implemented": bool(implementation_flags.get("bot_awareness", False)),
         },
         {
-            "rank": 6,
+            "rank": 8,
             "lane": "self_reporting",
             "priority": "medium",
             "upgrade": "generate a daily natural-language self-brief with posture, changes, blockers, and safe next commands",
@@ -881,20 +1524,52 @@ def _optimization_plan(
             "implemented": bool(implementation_flags.get("self_reporting", False)),
         },
         {
-            "rank": 7,
+            "rank": 9,
             "lane": "mlx_compute_brain",
             "priority": "high",
             "upgrade": "route MLX language, embedding, graph, audio, VLM, SNN, data, rough-path, and quant workloads through one capped intelligence router",
-            "benefit": "uses the installed MLX library stack broadly without letting shared-memory jobs starve collectors or foreground apps",
+            "benefit": "uses the installed MLX library stack broadly without letting CPU or shared-memory work starve collectors or foreground apps",
             "implemented": bool(implementation_flags.get("mlx_compute_brain", False)),
         },
         {
-            "rank": 8,
+            "rank": 10,
             "lane": "library_utilization_brain",
             "priority": "high",
             "upgrade": "route non-MLX libraries through owner lanes while keeping MLX as the default live intelligence backend",
             "benefit": "turns the rest of the dependency stack into governed support lanes instead of idle or competing backends",
             "implemented": bool(implementation_flags.get("library_utilization_brain", False)),
+        },
+        {
+            "rank": 11,
+            "lane": "drainer_intelligence",
+            "priority": "critical",
+            "upgrade": "make the drainer fleet, super-drainer, writer coordinator, and storage autopilot part of the self-model state vector",
+            "benefit": "lets the platform brain reason about backlog pressure, active drain lanes, wave progress, and single-writer safety before halts or expansions",
+            "implemented": bool(implementation_flags.get("drainer_intelligence", False)),
+        },
+        {
+            "rank": 12,
+            "lane": "writer_process_intelligence",
+            "priority": "critical",
+            "upgrade": "give the SQL writer layer its own health, process-topology, shard-lane, and recovery decision packet",
+            "benefit": "expands writer throughput with targeted shard lanes while preserving the single-writer lock and process fanout guardrails",
+            "implemented": bool(implementation_flags.get("writer_process_intelligence", False)),
+        },
+        {
+            "rank": 13,
+            "lane": "whole_system_intelligence",
+            "priority": "critical",
+            "upgrade": "join signal bus, system brain, process contracts, and Codex handoff into one whole-system intelligence coordinator",
+            "benefit": "lets the platform select one safe next infrastructure move and hand Codex a concise attention packet",
+            "implemented": bool(implementation_flags.get("whole_system_intelligence", False)),
+        },
+        {
+            "rank": 14,
+            "lane": "system_self_intelligence",
+            "priority": "critical",
+            "upgrade": "add trend memory, action-effect scoring, causal diagnosis, integration routing, contract checks, and pre-action reflexes to the whole-system brain",
+            "benefit": "keeps the brain from acting on stale or contradictory signals, teaches it when repeated actions are not clearing pressure, and routes the next move to the right consumer",
+            "implemented": bool(implementation_flags.get("system_self_intelligence", False)),
         },
     ]
     degraded = [
@@ -928,6 +1603,11 @@ def _advanced_upgrade_backlog(
     stale_sources = _safe_int(dependency_memory.get("stale_source_count"), 0)
     mlx_router_status = str((surface_matrix.get("mlx_intelligence_router") or {}).get("status") or "missing")
     library_router_status = str((surface_matrix.get("library_utilization_router") or {}).get("status") or "missing")
+    drainer = domains.get("drainer_intelligence") if isinstance(domains.get("drainer_intelligence"), dict) else {}
+    drainer_status = str(drainer.get("status") or "missing")
+    drainer_target_met = bool(drainer.get("target_met", False))
+    host_pressure = domains.get("host_pressure_intelligence") if isinstance(domains.get("host_pressure_intelligence"), dict) else {}
+    host_pressure_status = str(host_pressure.get("status") or "missing")
     return [
         {
             "rank": 1,
@@ -955,48 +1635,62 @@ def _advanced_upgrade_backlog(
         },
         {
             "rank": 4,
+            "lane": "drainer_self_intelligence",
+            "upgrade": "feed super-drainer strategy, memory, active lane, target clearance, and writer safety into the self-model and Grand Master packet",
+            "triggered": bool(drainer_status not in {"ready", "advisory"} or not drainer_target_met),
+            "benefit": "lets the platform choose drain, wait, throttle, or expand based on queue physiology instead of raw backlog files",
+        },
+        {
+            "rank": 5,
+            "lane": "host_pressure_reflex_layer",
+            "upgrade": "feed CPU, memory, swap, host saturation, and co-running apps into MLX caps, library caps, drainer waves, and training cadence",
+            "triggered": bool(host_pressure_status in {"advisory", "degraded", "blocked"}),
+            "benefit": "keeps live data and paper trading smooth while still using the intelligence layer aggressively when the Mac is clear",
+        },
+        {
+            "rank": 6,
             "lane": "self_healing_router",
             "upgrade": "map each blocked surface to its safest recovery command, required prechecks, and post-refresh verifier",
             "triggered": bool(blocked_or_degraded),
             "benefit": "turns cockpit red rows into bounded recovery playbooks instead of manual hunting",
         },
         {
-            "rank": 5,
+            "rank": 7,
             "lane": "collector_utility_budget",
             "upgrade": "score each collector by freshness value, storage cost, downstream use, and overlap so low-value collectors thin first",
             "triggered": bool(active_bots >= 700),
             "benefit": "keeps data breadth high while reducing CPU, storage, and writer pressure",
         },
         {
-            "rank": 6,
+            "rank": 8,
             "lane": "hot_path_storage_budget",
             "upgrade": "assign per-surface hot/warm/cold storage budgets and degrade report/explanation writes before trading-path writes",
             "triggered": bool("storage_tier_policy" in blocked_or_degraded or "artifact_freshness" in blocked_or_degraded),
             "benefit": "protects paper/live collection when reports, artifacts, or explainers grow too fast",
         },
         {
-            "rank": 7,
+            "rank": 9,
             "lane": "stale_surface_autofix",
             "upgrade": "auto-refresh stale required surfaces, compare last-good hashes, then suppress stale-only blockers when the dependency chain is otherwise healthy",
             "triggered": bool(stale_sources),
             "benefit": "prevents stale dashboards from causing unnecessary halt pressure",
         },
         {
-            "rank": 8,
+            "rank": 10,
             "lane": "grandmaster_safe_mode",
             "upgrade": "feed a compressed self-state packet into Grand Master routing so it can choose observe, sample, buffer, or pause per sleeve",
             "triggered": bool(active_bots >= 700),
             "benefit": "lets the brain downshift specific sleeves instead of using blunt global controls",
         },
         {
-            "rank": 9,
+            "rank": 11,
             "lane": "registry_growth_governance",
             "upgrade": "require every new bot wave to emit expected storage, CPU, labels, training horizon, teacher lineage, and rollback metadata",
             "triggered": bool(registry_diff.get("fingerprint_changed") or registry_diff.get("diff_status") == "baseline"),
             "benefit": "keeps future expansion clean and auditable",
         },
         {
-            "rank": 10,
+            "rank": 12,
             "lane": "self_brief_learning",
             "upgrade": "turn daily self-briefs into a rolling operator memory with what changed, what helped, and what failed",
             "triggered": True,
@@ -1105,8 +1799,12 @@ def _render_self_brief(payload: dict[str, Any]) -> str:
         "## What Is Stable",
         "",
         f"- Memory/resource guard: `{((domains.get('resource_awareness') or {}).get('memory_guard_status') or '')}`",
+        f"- Host pressure intelligence: `{((domains.get('host_pressure_intelligence') or {}).get('status') or '')}` cpu `{((domains.get('host_pressure_intelligence') or {}).get('cpu_pressure_level') or '')}` memory `{((domains.get('host_pressure_intelligence') or {}).get('memory_pressure_level') or '')}`",
         f"- MLX intelligence router: `{((domains.get('mlx_intelligence_awareness') or {}).get('status') or '')}`",
         f"- Non-MLX library router: `{((domains.get('library_utilization_awareness') or {}).get('status') or '')}`",
+        f"- Drainer intelligence: `{((domains.get('drainer_intelligence') or {}).get('status') or '')}` active lane `{((domains.get('drainer_intelligence') or {}).get('active_drainer') or 'none')}`",
+        f"- Whole-system brain: `{((domains.get('whole_system_intelligence') or {}).get('status') or '')}` action `{((domains.get('whole_system_intelligence') or {}).get('action') or 'none')}`",
+        f"- Self-intelligence: `{((domains.get('system_self_intelligence') or {}).get('status') or '')}` reflex `{((domains.get('system_self_intelligence') or {}).get('reflex_action') or 'none')}` uncertainty `{((domains.get('system_self_intelligence') or {}).get('uncertainty_level') or '')}` root `{((domains.get('system_self_intelligence') or {}).get('causal_root') or 'none')}` effect `{((domains.get('system_self_intelligence') or {}).get('action_effect_verdict') or 'none')}` route `{((domains.get('system_self_intelligence') or {}).get('integration_route_mode') or 'none')}`",
         f"- Core materialization: `{((domains.get('bot_awareness') or {}).get('materialization_status') or '')}`",
         f"- Global halt active: `{global_halt_active}`",
         f"- Registry diff memory: `{registry_diff.get('diff_status', '')}`",
@@ -1149,9 +1847,21 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     memory = _load_json(health_root / "memory_efficiency_control_latest.json")
     throttle = _load_json(health_root / "runtime_throttle_control_latest.json")
     storage = _load_json(health_root / "ingestion_storage_control_latest.json")
+    drainer_fleet = _load_json(health_root / "backpressure_drainer_fleet_latest.json")
+    super_drainer = _load_json(health_root / "backpressure_super_drainer_latest.json")
+    writer_cycle = _load_json(health_root / "writer_cycle_coordinator_latest.json")
+    writer_process = _load_json(health_root / "writer_process_intelligence_latest.json")
+    whole_system = _load_json(health_root / "whole_system_intelligence_latest.json")
+    system_self_intelligence = _load_json(health_root / "system_self_intelligence_latest.json")
+    storage_autopilot = _load_json(health_root / "storage_backpressure_autopilot_latest.json")
     mlx_router = _load_json(health_root / "mlx_intelligence_router_latest.json")
     library_router = _load_json(health_root / "library_utilization_router_latest.json")
     global_halt = _load_json(health_root / "global_killswitch_latest.json")
+    process_watchdog = _load_json(health_root / "process_watchdog_latest.json")
+    process_fanout = _load_json(health_root / "process_fanout_guard_latest.json")
+    auth_lease = _load_json(health_root / "auth_lease_manager_latest.json")
+    data_plane = _load_json(health_root / "data_plane_recovery_controller_latest.json")
+    live_runtime = _load_json(health_root / "live_runtime_separation_control_latest.json")
     incident = _load_json(project_root / "governance" / "alerts" / "incident_auto_halt_latest.json")
     core_materialization = _load_json(health_root / "core_bot_materialization_guard_latest.json")
     tripwire = _load_json(health_root / "shadow_watchdog_tripwire_latest.json")
@@ -1176,10 +1886,16 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     registry_diff = _compact_registry_diff_memory(registry_diff_full)
     domains = {
         "resource_awareness": _resource_awareness(memory, throttle, storage),
+        "host_pressure_intelligence": _host_pressure_intelligence(memory, throttle, mlx_router, library_router),
         "mlx_intelligence_awareness": _mlx_intelligence_awareness(mlx_router),
         "library_utilization_awareness": _library_utilization_awareness(library_router),
+        "drainer_intelligence": _drainer_intelligence_awareness(drainer_fleet, super_drainer, writer_cycle, storage_autopilot),
+        "writer_process_intelligence": _writer_process_awareness(writer_process, writer_cycle, process_watchdog, process_fanout),
+        "whole_system_intelligence": _whole_system_intelligence_awareness(whole_system),
+        "system_self_intelligence": _system_self_intelligence_awareness(system_self_intelligence),
         "bot_awareness": _bot_awareness(identity, core_materialization),
         "failure_memory": _failure_memory(global_halt, incident, cockpit),
+        "halt_recovery_intelligence": _halt_recovery_intelligence(global_halt, process_watchdog, auth_lease, data_plane, live_runtime, storage),
         "dependency_awareness": _dependency_awareness(surface_matrix, cockpit),
         "growth_awareness": _growth_awareness(identity, memory, cockpit),
         "self_reporting": _self_reporting_awareness(cockpit, surface_matrix),
@@ -1201,8 +1917,24 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         f"System self-model sees {identity['active_bots']} active bots, "
         f"{identity['data_collection_active_bots']} collection-active bots, "
         f"resource mode {domains['resource_awareness']['status']}, "
+        f"host pressure mode {domains['host_pressure_intelligence']['status']} "
+        f"(cpu={domains['host_pressure_intelligence']['cpu_pressure_level']} "
+        f"memory={domains['host_pressure_intelligence']['memory_pressure_level']}), "
         f"MLX intelligence mode {domains['mlx_intelligence_awareness']['status']}, "
         f"library utilization mode {domains['library_utilization_awareness']['status']}, "
+        f"drainer intelligence mode {domains['drainer_intelligence']['status']} "
+        f"with active lane {domains['drainer_intelligence']['active_drainer'] or 'none'}, "
+        f"writer process mode {domains['writer_process_intelligence']['status']} "
+        f"action {domains['writer_process_intelligence']['action'] or 'none'}, "
+        f"whole-system brain mode {domains['whole_system_intelligence']['status']} "
+        f"action {domains['whole_system_intelligence']['action'] or 'none'}, "
+        f"self-intelligence mode {domains['system_self_intelligence']['status']} "
+        f"reflex {domains['system_self_intelligence']['reflex_action'] or 'none'} "
+        f"root {domains['system_self_intelligence']['causal_root'] or 'none'} "
+        f"effect {domains['system_self_intelligence']['action_effect_verdict'] or 'none'} "
+        f"route {domains['system_self_intelligence']['integration_route_mode'] or 'none'}, "
+        f"halt recovery mode {domains['halt_recovery_intelligence']['status']} "
+        f"next={ ' '.join(domains['halt_recovery_intelligence']['next_safe_command']) if domains['halt_recovery_intelligence'].get('next_safe_command') else 'none' }, "
         f"growth pressure {domains['growth_awareness']['pressure_level']}, "
         f"and {len(blocked_or_degraded)} blocked/degraded watched surfaces."
     )
@@ -1232,11 +1964,23 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "memory_surfaces": [
                 "dependency_memory",
                 "failure_memory_index",
+                "halt_recovery_intelligence",
                 "registry_diff_memory",
                 "upgrade_optimizer",
                 "self_brief",
+                "host_pressure_intelligence",
                 "mlx_intelligence_router",
                 "library_utilization_router",
+                "drainer_intelligence",
+                "writer_process_intelligence",
+                "whole_system_intelligence",
+                "system_signal_bus",
+                "system_brain",
+                "system_process_contracts",
+                "system_self_intelligence",
+                "system_self_intelligence_memory",
+                "codex_handoff",
+                "backpressure_super_drainer_memory",
             ],
         },
         "source_files": {
@@ -1245,12 +1989,30 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "memory_efficiency": str(health_root / "memory_efficiency_control_latest.json"),
             "runtime_throttle": str(health_root / "runtime_throttle_control_latest.json"),
             "ingestion_storage": str(health_root / "ingestion_storage_control_latest.json"),
+            "backpressure_drainer_fleet": str(health_root / "backpressure_drainer_fleet_latest.json"),
+            "backpressure_super_drainer": str(health_root / "backpressure_super_drainer_latest.json"),
+            "backpressure_super_drainer_memory": str(health_root / "backpressure_super_drainer_memory_latest.json"),
+            "writer_cycle_coordinator": str(health_root / "writer_cycle_coordinator_latest.json"),
+            "writer_process_intelligence": str(health_root / "writer_process_intelligence_latest.json"),
+            "whole_system_intelligence": str(health_root / "whole_system_intelligence_latest.json"),
+            "system_signal_bus": str(health_root / "system_signal_bus_latest.json"),
+            "system_brain": str(health_root / "system_brain_latest.json"),
+            "system_process_contracts": str(health_root / "system_process_contracts_latest.json"),
+            "system_self_intelligence": str(health_root / "system_self_intelligence_latest.json"),
+            "system_self_intelligence_memory": str(project_root / "governance" / "system_intelligence" / "self_intelligence_memory.jsonl"),
+            "codex_handoff": str(health_root / "codex_handoff_latest.json"),
+            "storage_backpressure_autopilot": str(health_root / "storage_backpressure_autopilot_latest.json"),
             "mlx_runtime": str(health_root / "mlx_runtime_audit_latest.json"),
             "mlx_library": str(health_root / "mlx_library_upgrade_latest.json"),
             "mlx_intelligence_router": str(health_root / "mlx_intelligence_router_latest.json"),
             "library_utilization_router": str(health_root / "library_utilization_router_latest.json"),
             "quant_model_control": str(health_root / "quant_model_control_latest.json"),
             "global_halt": str(health_root / "global_killswitch_latest.json"),
+            "process_watchdog": str(health_root / "process_watchdog_latest.json"),
+            "process_fanout_guard": str(health_root / "process_fanout_guard_latest.json"),
+            "auth_lease_manager": str(health_root / "auth_lease_manager_latest.json"),
+            "data_plane_recovery": str(health_root / "data_plane_recovery_controller_latest.json"),
+            "live_runtime_separation": str(health_root / "live_runtime_separation_control_latest.json"),
         },
         "_registry_diff_memory_full": registry_diff_full,
     }

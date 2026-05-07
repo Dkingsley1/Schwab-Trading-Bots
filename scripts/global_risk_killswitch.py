@@ -81,6 +81,31 @@ def _current_backpressure_is_clear(payload: dict[str, Any]) -> bool:
     )
 
 
+def _watchdog_restart_storm_recovered(payload: dict[str, Any]) -> bool:
+    storms = payload.get("restart_storms")
+    if not isinstance(storms, list) or not storms:
+        return True
+    rows = payload.get("status")
+    if not isinstance(rows, list):
+        return False
+    by_name = {str(row.get("name") or "").strip(): row for row in rows if isinstance(row, dict)}
+    for storm in storms:
+        if not isinstance(storm, dict):
+            return False
+        if bool(storm.get("resolved", False)):
+            continue
+        name = str(storm.get("name") or "").strip()
+        row = by_name.get(name)
+        if not isinstance(row, dict):
+            return False
+        running_count = int(row.get("running", 0) or 0) + int(row.get("alt_running", 0) or 0)
+        process_live = bool(row.get("process_live", False))
+        heartbeat_ok = bool(row.get("heartbeat_ok", row.get("heartbeat_fresh", False)))
+        if running_count <= 0 or not process_live or not heartbeat_ok:
+            return False
+    return True
+
+
 def _backpressure_pressure_ratio(payload: dict[str, Any]) -> float:
     if not payload:
         return 0.0
@@ -288,15 +313,19 @@ def main() -> int:
     snapshot_failures = int(data_plane.get('account_snapshot_failure_count', 0) or 0)
     queue_depth = int(data_plane.get('queue_depth', 0) or 0)
     restart_storms = len(watchdog.get('restart_storms') or [])
+    restart_storm_recovered = _watchdog_restart_storm_recovered(watchdog)
     clearance_state = _clearance_state(runtime)
     clear_blockers = []
     if operator_stop_active:
         clear_blockers.append('operator_stop_active')
     if auth_state == 'critical':
         clear_blockers.append('auth_lease_critical')
-    if restart_storms > 0:
-        clear_blockers.append('restart_storm_active')
     degraded_clear_blockers = []
+    if restart_storms > 0:
+        if restart_storm_recovered:
+            degraded_clear_blockers.append('restart_storm_recovered_waiting_settle')
+        else:
+            clear_blockers.append('restart_storm_active')
     if snapshot_failures > 0:
         if execution_expected:
             clear_blockers.append('account_snapshot_recovery_pending')
@@ -308,7 +337,7 @@ def main() -> int:
         clear_blockers.append('queue_backpressure_active')
     if clearance_state and clearance_state not in THAW_SAFE_RUNTIME_STATES:
         runtime_blocker = f'runtime_clearance={clearance_state}'
-        if execution_expected or live_lane_running:
+        if execution_expected:
             clear_blockers.append(runtime_blocker)
         else:
             degraded_clear_blockers.append(runtime_blocker)
@@ -407,6 +436,7 @@ def main() -> int:
             'stale_windows': stale,
             'watchdog_restarts': restarts,
             'restart_storms': restart_storms,
+            'restart_storm_recovered': restart_storm_recovered,
             'operator_stop_active': operator_stop_active,
             'auth_state': auth_state,
             'write_failure_count': write_failures,
@@ -428,10 +458,11 @@ def main() -> int:
                 'run expansion pressure in degraded/throttled collection mode while recoverable health gates clear' if degraded_hard_gates or stale_hard_gates or degraded_clear_blockers else '',
                 'reduce sleeve fanout or collector cadence until expansion pressure score falls below 0.35' if expansion_pressure_score >= 0.35 and not reasons else '',
                 'run quant-model-control and memory-efficiency before clearing if quant resource pressure is elevated' if quant_resource_pressure >= 0.80 else '',
-                'do not clear the halt while restart storms are still active' if restart_storms > 0 else '',
+                'allow halt clear while recovered restart storms settle; keep watching process heartbeats' if restart_storms > 0 and restart_storm_recovered else '',
+                'do not clear the halt while restart storms are still active' if restart_storms > 0 and not restart_storm_recovered else '',
                 'release OPERATOR_STOP before attempting a safe global halt clear' if operator_stop_active else '',
                 'refresh broker auth before clearing if auth lease is critical' if auth_state == 'critical' else '',
-                'wait for runtime clearance to return to a thaw-safe state before clearing the halt' if clearance_state and clearance_state not in THAW_SAFE_RUNTIME_STATES and (execution_expected or live_lane_running) else '',
+                'wait for runtime clearance to return to a thaw-safe state before clearing the halt' if clearance_state and clearance_state not in THAW_SAFE_RUNTIME_STATES and execution_expected else '',
             ]
             if action_text
         ],

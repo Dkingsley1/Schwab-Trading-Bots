@@ -8,6 +8,21 @@ from scripts.ops import roster_expansion_slots
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
+MORE_EXOTIC_BOT_INTAKES = {
+    "brain_refinery_v1466_exotic_forward_start_skew_reset_bot": "forward_start_option_surface",
+    "brain_refinery_v1467_exotic_chooser_option_event_optionality_bot": "chooser_option_switch_value",
+    "brain_refinery_v1468_exotic_asian_path_average_option_bot": "asian_path_average_surface",
+    "brain_refinery_v1469_exotic_digital_binary_event_risk_bot": "digital_binary_event_risk",
+    "brain_refinery_v1470_exotic_corridor_variance_realized_range_bot": "corridor_variance_realized_range",
+    "brain_refinery_v1471_exotic_quanto_fx_equity_vol_beta_bot": "quanto_fx_equity_beta",
+    "brain_refinery_v1472_exotic_worst_of_airbag_autocall_bot": "airbag_autocall_barrier_ladder",
+    "brain_refinery_v1473_exotic_recovery_lock_credit_note_guard_bot": "recovery_lock_credit_note",
+    "brain_refinery_v1474_exotic_participation_ratchet_protection_bot": "capital_protection_participation_ratchet",
+    "brain_refinery_v1475_exotic_base_correlation_convexity_bot": "base_correlation_convexity",
+    "brain_refinery_v1476_exotic_nth_to_default_contagion_ladder_bot": "nth_to_default_contagion_ladder",
+    "brain_refinery_v1477_exotic_gap_option_jump_risk_bot": "overnight_gap_option_jump",
+}
+
 EXOTIC_SLEEVES = {
     "compound_options",
     "swaptions",
@@ -84,6 +99,25 @@ def test_exotic_derivative_bots_are_collection_first_and_correlated() -> None:
     assert "strategy_inventory_report_guard" in guard["data_intake_collections"]
 
 
+def test_more_exotic_bots_are_proxy_only_collection_slots() -> None:
+    specs = {str(row.get("bot_id")): row for row in roster_expansion_slots.DEFAULT_SLOT_SPECS}
+
+    for bot_id, intake in MORE_EXOTIC_BOT_INTAKES.items():
+        spec = specs[bot_id]
+        row = roster_expansion_slots._slot_registry_row(spec)
+        assert row["lifecycle_state"] == "data_collection_only"
+        assert row["training_excluded"] is True
+        assert row["paper_trading_enabled"] is False
+        assert row["live_trading_enabled"] is False
+        assert row["direct_market_data_available"] is False
+        assert row["direct_execution_allowed"] is False
+        assert row["minimum_training_observations"] >= 2500
+        assert row["sleeve_profile"] in EXOTIC_SLEEVES
+        assert intake in row["data_intake_collections"]
+        assert "cross_sleeve_correlation_matrix" in row["data_intake_collections"]
+        assert "governance/exotic_derivatives" in row["storage_targets"]
+
+
 def test_exotic_derivative_launchers_are_visible() -> None:
     for script_name in [
         "run_compound_options_shadow.py",
@@ -123,8 +157,20 @@ def test_exotic_derivative_sleeves_are_in_strategy_coverage_config() -> None:
         assert len(sleeves[sleeve]["strategies"]) >= 5
 
     assert "rough_volatility_vvix_exotics" in sleeves["variance_volatility_swaps"]["strategies"]
+    assert "corridor_variance_realized_range" in sleeves["variance_volatility_swaps"]["strategies"]
     assert "quantum_barrier_path_amplitude_options" in sleeves["barrier_lookback_options"]["strategies"]
+    assert "asian_path_average_option_proxy" in sleeves["barrier_lookback_options"]["strategies"]
+    assert "digital_binary_event_risk" in sleeves["barrier_lookback_options"]["strategies"]
+    assert "overnight_gap_option_jump_risk" in sleeves["barrier_lookback_options"]["strategies"]
     assert "cross_asset_correlation_heat_swaps" in sleeves["dispersion_trading"]["strategies"]
     assert "cliquet_global_floor_local_cap" in sleeves["structured_products"]["strategies"]
+    assert "worst_of_airbag_autocall" in sleeves["structured_products"]["strategies"]
+    assert "recovery_lock_credit_note_guard" in sleeves["structured_products"]["strategies"]
+    assert "capital_protection_participation_ratchet" in sleeves["structured_products"]["strategies"]
     assert "signature_trend_follower_options" in sleeves["rainbow_options"]["strategies"]
+    assert "quanto_fx_equity_vol_beta" in sleeves["rainbow_options"]["strategies"]
+    assert "forward_start_skew_reset" in sleeves["compound_options"]["strategies"]
+    assert "chooser_event_optionality" in sleeves["compound_options"]["strategies"]
+    assert "base_correlation_convexity" in sleeves["cdo_squared"]["strategies"]
+    assert "nth_to_default_contagion_ladder" in sleeves["cdo_cubed"]["strategies"]
     assert "esg_linked_contingent_credit_default_swaps" in sleeves["synthetic_cdo"]["strategies"]

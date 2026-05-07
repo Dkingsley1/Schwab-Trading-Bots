@@ -51,6 +51,8 @@ The important generated artifacts are:
 - `governance/health/schwab_auth_refresh_latest.json`: browser handoff, token readiness, and account-probe outcome.
 - `governance/health/schwab_auth_supervisor_latest.json`: token lease, callback-port, and broker-readiness posture.
 - `governance/health/codex_project_guard_latest.json`: Codex source-of-truth and scope-drift guard result.
+- `governance/health/documentation_reporting_intelligence_latest.json`: README, COMMANDS.md, report-quality, and PyCharm visibility intelligence layer.
+- `docs/pycharm/intelligence_layers_latest.md`: PyCharm-facing intelligence index with blue active-bot rows and operator-open paths.
 - `exports/reports/incident_report_latest.pdf`: decision-oriented incident report opened through the resilient report helper.
 
 ## Showcase Projects
@@ -64,17 +66,17 @@ The important generated artifacts are:
 ## Auto-Refreshed Highlights
 
 <!-- SHOWCASE_HIGHLIGHTS_START -->
-_Generated at 2026-05-04 00:21 UTC_
+_Generated at 2026-05-07 17:10 UTC_
 
-- Active registry lineup: `899` of `954` bots are active.
-- Live collection snapshot: `3/94` lane artifacts are reporting `running`.
-- Institutional readiness: `98.27/100` with status `industry_leaning`.
-- Live/runtime posture: live readiness `degraded` at `100.00/100`, runtime separation `degraded`.
-- Autonomy posture: `77.34/100` with status `blocked`, playbooks `1`, open incidents `0`.
-- Architecture upgrades: `9/12` ready proof surfaces, host profile `max_throughput`, portable proof `ready`.
+- Active registry lineup: `1580` of `1628` bots are active.
+- Live collection snapshot: `1/82` lane artifacts are reporting `running`.
+- Institutional readiness: `94.13/100` with status `industry_leaning`.
+- Live/runtime posture: live readiness `degraded` at `100.00/100`, runtime separation `blocked`.
+- Autonomy posture: `80.43/100` with status `degraded`, playbooks `2`, open incidents `0`.
+- Architecture upgrades: `5/12` ready proof surfaces, host profile ``, portable proof ``.
 - Crypto context: `14/14` healthy sources and `7/7` healthy news feeds.
 - Correlation overlay: mode `exact`, aligned pairs `0`.
-- PyTorch sidecar: `disabled` so live collection stays MLX-primary.
+- PyTorch sidecar: `0` active assist candidates across `0` tracked runs.
 - Top active lineup by test accuracy: `brain_refinery_v95_rates_regime_bond_bot` (100.0%), `brain_refinery_v99_defensive_dividend_concentration` (100.0%), `brain_refinery_v10_seasonal` (93.8%).
 
 Full generated detail lives in [docs/showcase/generated/highlights_latest.md](docs/showcase/generated/highlights_latest.md).

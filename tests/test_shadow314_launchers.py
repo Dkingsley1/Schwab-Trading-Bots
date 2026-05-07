@@ -69,6 +69,17 @@ def test_shadow_launchers_honor_explicit_portable_override(monkeypatch) -> None:
     assert ".venv314/bin/python" in str(module.VENV_PY)
 
 
+def test_failover_hot_standby_defaults_to_live_data_standby() -> None:
+    module = _load_module(PROJECT_ROOT / "scripts" / "failover_hot_standby.py")
+
+    cmd = module._default_standby_cmd()
+
+    assert "opsctl.sh feed-refresh --source schwab --paper" in cmd
+    assert "--simulate" not in cmd
+    assert module._simulate_disallowed("python scripts/run_parallel_shadows.py --simulate", False) is True
+    assert module._simulate_disallowed("python scripts/run_parallel_shadows.py --simulate", True) is False
+
+
 def test_failover_hot_standby_respects_swap_research_pause(monkeypatch, tmp_path: Path) -> None:
     module = _load_module(PROJECT_ROOT / "scripts" / "failover_hot_standby.py")
     swap_override = tmp_path / ".env.swap_pressure_override"

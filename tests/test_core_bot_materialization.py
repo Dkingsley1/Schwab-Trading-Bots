@@ -86,6 +86,22 @@ def test_materializer_does_not_overwrite_hand_built_file(tmp_path: Path) -> None
     assert custom_file.read_text(encoding="utf-8") == "# hand built\nBOT_ID = 'custom'\n"
 
 
+def test_materializer_accepts_new_collect_only_pack_reasons(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v1037_recursive_awareness_example_bot"
+    _write_registry(project_root, bot_id)
+    registry = json.loads((project_root / "master_bot_registry.json").read_text(encoding="utf-8"))
+    registry["sub_bots"][0]["reason"] = "deep_recursive_awareness_expansion_slot"
+    registry["sub_bots"][0]["allocation_enabled"] = False
+    registry["sub_bots"][0]["execution_enabled"] = False
+    (project_root / "master_bot_registry.json").write_text(json.dumps(registry), encoding="utf-8")
+
+    payload = materializer.materialize(project_root)
+
+    assert payload["created_count"] == 1
+    assert (project_root / "core" / f"{bot_id}.py").exists()
+
+
 def test_guard_flags_duplicate_core_versions(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     core_dir = project_root / "core"

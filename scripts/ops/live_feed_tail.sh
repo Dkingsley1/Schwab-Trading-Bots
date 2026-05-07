@@ -4,12 +4,17 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WATCHDOG_LOG_DIR="$HOME/Library/Logs/schwab_trading_bot"
 MEMORY_OVERRIDE_FILE="$PROJECT_ROOT/config/.env.memory_efficiency_override"
+PRESSURE_OVERRIDE_FILE="$PROJECT_ROOT/config/.env.pressure_relief_override"
 HEALTH_DIR="$PROJECT_ROOT/governance/health"
 HEAVY_MARKER_FILE="$HEALTH_DIR/live_feed_heavy_view_latest.json"
 
 if [[ -f "$MEMORY_OVERRIDE_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$MEMORY_OVERRIDE_FILE"
+fi
+if [[ -f "$PRESSURE_OVERRIDE_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$PRESSURE_OVERRIDE_FILE"
 fi
 
 SOURCE="schwab"
@@ -190,6 +195,8 @@ HEAVY_TAIL_BYTES="${LIVE_FEED_HEAVY_TAIL_BYTES:-262144}"
 HEAVY_BOOTSTRAP_SNAPSHOT="${LIVE_FEED_HEAVY_BOOTSTRAP_SNAPSHOT:-1}"
 HEAVY_BOOTSTRAP_MAX_LINES="${LIVE_FEED_HEAVY_BOOTSTRAP_MAX_LINES:-80}"
 HEAVY_SNAPSHOT_MAX_LINES="${LIVE_FEED_HEAVY_SNAPSHOT_MAX_LINES:-180}"
+HEAVY_TTL_ENABLED="${LIVE_FEED_HEAVY_TTL_ENABLED:-0}"
+HEAVY_TTL_SECONDS="${LIVE_FEED_HEAVY_TTL_SECONDS:-0}"
 MAX_LINE_CHARS="${LIVE_FEED_MAX_LINE_CHARS:-1400}"
 DECISION_MAX_AGE_HOURS="${LIVE_FEED_DECISION_MAX_AGE_HOURS:-48}"
 PRESSURE_OPTIMIZED="0"
@@ -228,6 +235,9 @@ if ! [[ "$HEAVY_BOOTSTRAP_MAX_LINES" =~ ^[0-9]+$ ]]; then
 fi
 if ! [[ "$HEAVY_SNAPSHOT_MAX_LINES" =~ ^[0-9]+$ ]]; then
   HEAVY_SNAPSHOT_MAX_LINES="180"
+fi
+if ! [[ "$HEAVY_TTL_SECONDS" =~ ^[0-9]+$ ]]; then
+  HEAVY_TTL_SECONDS="0"
 fi
 if ! [[ "$DECISION_MAX_AGE_HOURS" =~ ^[0-9]+$ ]]; then
   DECISION_MAX_AGE_HOURS="48"
@@ -441,6 +451,9 @@ write_heavy_marker() {
     printf '"active":%s,' "$active"
     printf '"mode":"%s",' "$([[ "$SNAPSHOT" == "1" ]] && printf snapshot || printf live_tail)"
     printf '"pid":%s,' "$$"
+    printf '"started_epoch":%s,' "$(date +%s)"
+    printf '"ttl_enabled":%s,' "$([[ "$HEAVY_TTL_ENABLED" == "1" ]] && printf true || printf false)"
+    printf '"ttl_seconds":%s,' "$HEAVY_TTL_SECONDS"
     printf '"source":"%s",' "$SOURCE"
     printf '"lines":%s,' "$LINES"
     printf '"include_decisions":%s,' "$INCLUDE_DECISIONS"
@@ -470,6 +483,38 @@ write_heavy_marker() {
 
 write_heavy_marker
 
+mark_heavy_inactive() {
+  [[ "$HEAVY_REQUESTED" == "1" ]] || return 0
+  mkdir -p "$HEALTH_DIR"
+  {
+    printf '{'
+    printf '"timestamp_utc":"%s",' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '"schema_version":1,'
+    printf '"active":false,'
+    printf '"mode":"expired_or_closed",'
+    printf '"pid":%s,' "$$"
+    printf '"source":"%s",' "$SOURCE"
+    printf '"ttl_enabled":%s,' "$([[ "$HEAVY_TTL_ENABLED" == "1" ]] && printf true || printf false)"
+    printf '"ttl_seconds":%s,' "$HEAVY_TTL_SECONDS"
+    printf '"contract":"operator_requested_heavy_observability_view"'
+    printf '}\n'
+  } > "$HEAVY_MARKER_FILE"
+}
+
+start_heavy_ttl_guard() {
+  [[ "$HEAVY_REQUESTED" == "1" ]] || return 0
+  [[ "$SNAPSHOT" != "1" ]] || return 0
+  [[ "$HEAVY_TTL_ENABLED" == "1" ]] || return 0
+  [[ "$HEAVY_TTL_SECONDS" -gt 0 ]] || return 0
+  (
+    sleep "$HEAVY_TTL_SECONDS"
+    printf 'live_feed_heavy_ttl_expired ttl_seconds=%s source=%s\n' "$HEAVY_TTL_SECONDS" "$SOURCE" >&2
+    kill -TERM $$ >/dev/null 2>&1 || true
+  ) &
+  HEAVY_TTL_PID=$!
+  trap '[[ -n "${HEAVY_TTL_PID:-}" ]] && kill "$HEAVY_TTL_PID" >/dev/null 2>&1 || true; mark_heavy_inactive' EXIT INT TERM
+}
+
 echo "live_feed source=$SOURCE local_day=$DAY_LOCAL utc_day=$DAY_UTC symbol=${SYMBOL:-ALL} lines=$LINES heavy=$HEAVY_REQUESTED include_decisions=$INCLUDE_DECISIONS include_watchdog_log=$INCLUDE_WATCHDOG_LOG memory_profile=${MEMORY_PROFILE:-default} memory_aware=$MEMORY_AWARE highlight=$COLOR_ENABLED highlight_palette=$COLOR_PALETTE decision_mode=$DECISION_FILE_MODE pressure_optimized=$PRESSURE_OPTIMIZED file_count=${#files[@]} tail_start_mode=$TAIL_START_MODE tail_start_bytes=$HEAVY_TAIL_BYTES max_line_chars=$MAX_LINE_CHARS"
 for f in "${files[@]}"; do
   echo " - $f"
@@ -480,7 +525,9 @@ if [[ "$RAW" == "1" ]]; then
     tail -n "$LINES" "${files[@]}"
     exit $?
   fi
-  exec tail -n "$LINES" -F "${files[@]}"
+  start_heavy_ttl_guard
+  tail -n "$LINES" -F "${files[@]}"
+  exit $?
 fi
 
 tail_source_snapshot() {
@@ -688,4 +735,5 @@ if [[ "$HEAVY_REQUESTED" == "1" && "$HEAVY_BOOTSTRAP_SNAPSHOT" == "1" ]]; then
   run_filtered_snapshot "$filter_pat" "$HEAVY_BOOTSTRAP_MAX_LINES" || true
   echo "live_feed_following=1 interrupt=ctrl-c"
 fi
+start_heavy_ttl_guard
 run_filtered_tail "$filter_pat"

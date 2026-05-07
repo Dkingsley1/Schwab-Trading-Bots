@@ -72,13 +72,13 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, limit: int = 8) -> dict[
 
     overall_status = "ready"
     active_supportability_score = _safe_float(supportability.get("active_supportability_score"), 0.0)
-    if active_supportability_score < 0.5 or students_without_teachers:
+    if active_supportability_score < 50.0 or students_without_teachers:
         overall_status = "needs_work"
     if active_supportability_score <= 0.0 and not teachers and students_without_teachers:
         overall_status = "blocked"
 
     recommended_actions: list[str] = []
-    if active_supportability_score < 0.5:
+    if active_supportability_score < 50.0:
         recommended_actions.append("expand the supportable active roster before promotion or retrain work depends on a single fragile champion")
     if students_without_teachers:
         recommended_actions.append("assign qualified teachers for student bots or relax teacher thresholds so distillation can actually contribute signal")

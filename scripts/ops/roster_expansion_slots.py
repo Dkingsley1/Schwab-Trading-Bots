@@ -3040,6 +3040,18 @@ EXOTIC_DERIVATIVE_KIND_TOKENS = (
     "signature_based_trend_follower",
     "ccds",
     "contingent_credit_default_swap",
+    "forward_start",
+    "chooser_option",
+    "asian_option",
+    "digital_binary",
+    "corridor_variance",
+    "quanto",
+    "airbag_autocall",
+    "recovery_lock",
+    "participation_ratchet",
+    "base_correlation",
+    "nth_to_default",
+    "gap_option",
 )
 
 EXOTIC_DERIVATIVE_CORRELATION_COLLECTIONS = [
@@ -5667,6 +5679,181 @@ ADDITIONAL_ADVANCED_STRATEGY_SLOT_ROWS: list[dict[str, Any]] = [
 
 for _additional_advanced_slot in ADDITIONAL_ADVANCED_STRATEGY_SLOT_ROWS:
     DEFAULT_SLOT_SPECS.append(_exotic_slot(**_additional_advanced_slot))
+
+
+MORE_EXOTIC_SLOT_ROWS: list[dict[str, Any]] = [
+    {
+        "bot_id": "brain_refinery_v1466_exotic_forward_start_skew_reset_bot",
+        "sleeve_profile": "compound_options",
+        "slot_label": "Exotic Forward-Start Skew Reset Bot",
+        "slot_kind": "compound_options_forward_start_skew_reset",
+        "priority": "high",
+        "objective": "Collect forward-start option skew-reset labels where volatility start dates, moneyness reset, and event windows change nested option value.",
+        "preferred_regimes": ["event_volatility", "macro_repricing", "mixed_transition"],
+        "bootstrap_teacher_bot_ids": ["brain_refinery_v335_compound_options_skew_reset_bot", "brain_refinery_v433_volatility_arbitrage_iv_rv_spread_bot"],
+        "data_intake_extra": ["forward_start_option_surface", "forward_start_skew_reset", "moneyness_reset_ladder"],
+        "storage_extra": ["governance/compound_options", "exports/compound_options"],
+        "correlation_peers": ["compound_options", "variance_volatility_swaps", "volatility_arbitrage"],
+        "rationale": "Forward-start structures teach the system how future volatility-start dates change convexity instead of treating all options as spot-starting.",
+    },
+    {
+        "bot_id": "brain_refinery_v1467_exotic_chooser_option_event_optionality_bot",
+        "sleeve_profile": "compound_options",
+        "slot_label": "Exotic Chooser Option Event Optionality Bot",
+        "slot_kind": "compound_options_chooser_option_event_optionality",
+        "priority": "medium",
+        "objective": "Observe chooser-option style decision value around Fed, CPI, earnings, and gap-risk windows without enabling execution.",
+        "preferred_regimes": ["event_volatility", "open_drive_stress", "fragile_transition"],
+        "bootstrap_teacher_bot_ids": ["brain_refinery_v334_compound_options_event_window_convexity_bot", "brain_refinery_v118_earnings_convexity_event_overlay"],
+        "data_intake_extra": ["chooser_option_switch_value", "event_optionality_choice_grid", "exercise_choice_tree"],
+        "storage_extra": ["governance/compound_options", "exports/compound_options"],
+        "correlation_peers": ["compound_options", "single_name_options_event", "options_on_futures"],
+        "rationale": "Chooser optionality gives the platform a way to label the value of waiting to choose direction after binary events.",
+    },
+    {
+        "bot_id": "brain_refinery_v1468_exotic_asian_path_average_option_bot",
+        "sleeve_profile": "barrier_lookback_options",
+        "slot_label": "Exotic Asian Path-Average Option Bot",
+        "slot_kind": "barrier_lookback_options_asian_option_path_average",
+        "priority": "medium",
+        "objective": "Collect path-average payoff labels using TWAP/VWAP, realized range, and path dependency proxies.",
+        "preferred_regimes": ["mixed_transition", "low_volatility", "macro_repricing"],
+        "bootstrap_teacher_bot_ids": ["brain_refinery_v383_barrier_lookback_options_lookback_path_extreme_bot", "brain_refinery_v751_least_squares_monte_carlo_optimal_stopping_bot"],
+        "data_intake_extra": ["asian_path_average_surface", "path_average_realized_vol", "twap_vwap_path_dependency"],
+        "storage_extra": ["governance/barrier_lookback_options", "exports/barrier_lookback_options"],
+        "correlation_peers": ["barrier_lookback_options", "statistical_arbitrage", "market_making_liquidity"],
+        "rationale": "Asian-style path averaging helps the system distinguish stable path quality from one-print gap or spike behavior.",
+    },
+    {
+        "bot_id": "brain_refinery_v1469_exotic_digital_binary_event_risk_bot",
+        "sleeve_profile": "barrier_lookback_options",
+        "slot_label": "Exotic Digital/Binary Event Risk Bot",
+        "slot_kind": "barrier_lookback_options_digital_binary_event_risk",
+        "priority": "high",
+        "objective": "Collect binary payoff and gap-probability labels around threshold, strike-wall, and event-window conditions.",
+        "preferred_regimes": ["event_volatility", "open_drive_stress", "risk_off_shock"],
+        "bootstrap_teacher_bot_ids": ["brain_refinery_v384_barrier_lookback_options_barrier_gap_risk_bot", "brain_refinery_v146_intraday_fed_press_conference_whipsaw"],
+        "data_intake_extra": ["digital_binary_event_risk", "binary_payoff_gap_probability", "calendar_event_window"],
+        "storage_extra": ["governance/barrier_lookback_options", "exports/barrier_lookback_options"],
+        "correlation_peers": ["barrier_lookback_options", "gamma_scalping", "black_swan_hedging"],
+        "rationale": "Digital/binary payoff labels sharpen threshold-risk awareness when a small move changes payoff behavior sharply.",
+    },
+    {
+        "bot_id": "brain_refinery_v1470_exotic_corridor_variance_realized_range_bot",
+        "sleeve_profile": "variance_volatility_swaps",
+        "slot_label": "Exotic Corridor Variance Realized Range Bot",
+        "slot_kind": "variance_volatility_swaps_corridor_variance_realized_range",
+        "priority": "high",
+        "objective": "Collect variance only-inside-range labels so realized volatility is separated into corridor, breach, and tail components.",
+        "preferred_regimes": ["mixed_transition", "event_volatility", "risk_off_shock"],
+        "bootstrap_teacher_bot_ids": ["brain_refinery_v370_variance_volatility_swaps_risk_premium_regime_bot", "brain_refinery_v433_volatility_arbitrage_iv_rv_spread_bot"],
+        "data_intake_extra": ["corridor_variance_realized_range", "variance_corridor_breach", "realized_range_occupancy"],
+        "storage_extra": ["governance/variance_volatility_swaps", "exports/variance_volatility_swaps"],
+        "correlation_peers": ["variance_volatility_swaps", "volatility_arbitrage", "dispersion_trading"],
+        "rationale": "Corridor variance teaches the vol sleeve whether realized volatility is controlled churn or true tail-range expansion.",
+    },
+    {
+        "bot_id": "brain_refinery_v1471_exotic_quanto_fx_equity_vol_beta_bot",
+        "sleeve_profile": "rainbow_options",
+        "slot_label": "Exotic Quanto FX/Equity Vol Beta Bot",
+        "slot_kind": "rainbow_options_quanto_fx_equity_vol_beta",
+        "priority": "medium",
+        "objective": "Observe quanto-style FX/equity volatility beta where currency moves change the effective payoff and hedge behavior.",
+        "preferred_regimes": ["macro_repricing", "risk_off_shock", "fragile_transition"],
+        "bootstrap_teacher_bot_ids": ["brain_refinery_v355_rainbow_options_fx_equity_commodity_basket_bot", "brain_refinery_v127_dollar_funding_fx_stress_relay"],
+        "data_intake_extra": ["quanto_fx_equity_beta", "fx_equity_vol_correlation", "cross_currency_underlier_beta"],
+        "storage_extra": ["governance/rainbow_options", "exports/rainbow_options"],
+        "correlation_peers": ["rainbow_options", "fx_macro", "cross_asset_basis_training"],
+        "rationale": "Quanto labels help the system understand cross-currency payoff distortion instead of treating FX as only background context.",
+    },
+    {
+        "bot_id": "brain_refinery_v1472_exotic_worst_of_airbag_autocall_bot",
+        "sleeve_profile": "structured_products",
+        "slot_label": "Exotic Worst-Of Airbag Autocall Bot",
+        "slot_kind": "structured_products_airbag_autocall_worst_of_basket",
+        "priority": "high",
+        "objective": "Collect worst-of basket, airbag protection, autocall trigger, coupon barrier, and correlation stress labels.",
+        "preferred_regimes": ["fragile_transition", "risk_off_shock", "mixed_transition"],
+        "bootstrap_teacher_bot_ids": ["brain_refinery_v343_structured_products_autocall_barrier_monitor_bot", "brain_refinery_v354_rainbow_options_cross_asset_correlation_skew_bot"],
+        "data_intake_extra": ["airbag_autocall_barrier_ladder", "worst_of_basket_drawdown", "coupon_observation_calendar"],
+        "storage_extra": ["governance/structured_products", "exports/structured_products"],
+        "correlation_peers": ["structured_products", "rainbow_options", "pairs_correlation"],
+        "rationale": "Worst-of airbag notes connect structured-product payoff risk directly to basket correlation and drawdown concentration.",
+    },
+    {
+        "bot_id": "brain_refinery_v1473_exotic_recovery_lock_credit_note_guard_bot",
+        "sleeve_profile": "structured_products",
+        "slot_label": "Exotic Recovery-Lock Credit Note Guard Bot",
+        "slot_kind": "structured_products_recovery_lock_credit_note_guard",
+        "priority": "medium",
+        "objective": "Observe recovery-lock, issuer-credit, coupon step, and downside participation labels for defensive structured notes.",
+        "preferred_regimes": ["risk_off_shock", "credit_stress", "low_volatility"],
+        "bootstrap_teacher_bot_ids": ["brain_refinery_v344_structured_products_buffer_note_risk_bot", "brain_refinery_v224_conservative_credit_stress_derisk_bot"],
+        "data_intake_extra": ["recovery_lock_credit_note", "issuer_credit_proxy", "structured_payoff_ladder"],
+        "storage_extra": ["governance/structured_products", "exports/structured_products"],
+        "correlation_peers": ["structured_products", "rates_credit_macro", "synthetic_cdo"],
+        "rationale": "Recovery-lock labels make structured notes sensitive to issuer and credit health instead of payoff math alone.",
+    },
+    {
+        "bot_id": "brain_refinery_v1474_exotic_participation_ratchet_protection_bot",
+        "sleeve_profile": "structured_products",
+        "slot_label": "Exotic Participation Ratchet Protection Bot",
+        "slot_kind": "structured_products_participation_ratchet_capital_protection",
+        "priority": "medium",
+        "objective": "Collect participation-ratchet, cap, floor, and capital-protection path labels across index and sector baskets.",
+        "preferred_regimes": ["mixed_transition", "low_volatility", "macro_repricing"],
+        "bootstrap_teacher_bot_ids": ["brain_refinery_v621_cliquet_global_floor_local_cap_bot", "brain_refinery_v346_structured_products_principal_protection_rate_bot"],
+        "data_intake_extra": ["capital_protection_participation_ratchet", "floor_cap_distance", "structured_payoff_ladder"],
+        "storage_extra": ["governance/structured_products", "exports/structured_products"],
+        "correlation_peers": ["structured_products", "cash_rotation_tactical", "compound_options"],
+        "rationale": "Participation-ratchet labels give the platform a conservative structured-payoff lens that still reacts to path and rate changes.",
+    },
+    {
+        "bot_id": "brain_refinery_v1475_exotic_base_correlation_convexity_bot",
+        "sleeve_profile": "cdo_squared",
+        "slot_label": "Exotic Base-Correlation Convexity Bot",
+        "slot_kind": "cdo_squared_base_correlation_convexity",
+        "priority": "high",
+        "objective": "Collect base-correlation convexity and tranche attachment/detachment labels from credit-index proxy stress.",
+        "preferred_regimes": ["credit_stress", "risk_off_shock", "macro_repricing"],
+        "bootstrap_teacher_bot_ids": ["brain_refinery_v363_cdo_squared_mezzanine_tranche_correlation_bot", "brain_refinery_v545_credit_derivatives_cdx_cds_regression_guard_bot"],
+        "data_intake_extra": ["base_correlation_convexity", "tranche_attachment_detachment_grid", "credit_index_spread_surface"],
+        "storage_extra": ["governance/cdo_squared", "exports/cdo_squared"],
+        "correlation_peers": ["cdo_squared", "synthetic_cdo", "rates_credit_macro"],
+        "rationale": "Base-correlation convexity helps the credit sleeve see tranche stress before it shows up as plain ETF spread widening.",
+    },
+    {
+        "bot_id": "brain_refinery_v1476_exotic_nth_to_default_contagion_ladder_bot",
+        "sleeve_profile": "cdo_cubed",
+        "slot_label": "Exotic Nth-to-Default Contagion Ladder Bot",
+        "slot_kind": "cdo_cubed_nth_to_default_contagion_ladder",
+        "priority": "high",
+        "objective": "Observe nth-to-default, contagion ladder, issuer cluster, and recursive credit correlation labels.",
+        "preferred_regimes": ["credit_stress", "risk_off_shock", "fragile_transition"],
+        "bootstrap_teacher_bot_ids": ["brain_refinery_v367_cdo_cubed_black_swan_credit_cascade_guard_bot", "brain_refinery_v350_synthetic_cdo_default_correlation_bot"],
+        "data_intake_extra": ["nth_to_default_contagion_ladder", "default_correlation_surface", "credit_contagion_ladder"],
+        "storage_extra": ["governance/cdo_cubed", "exports/cdo_cubed"],
+        "correlation_peers": ["cdo_cubed", "synthetic_cdo", "black_swan_hedging"],
+        "rationale": "Nth-to-default labels give the system a more realistic contagion ladder for clustered credit failures.",
+    },
+    {
+        "bot_id": "brain_refinery_v1477_exotic_gap_option_jump_risk_bot",
+        "sleeve_profile": "barrier_lookback_options",
+        "slot_label": "Exotic Gap Option Jump Risk Bot",
+        "slot_kind": "barrier_lookback_options_gap_option_jump_risk",
+        "priority": "high",
+        "objective": "Collect overnight jump, discontinuity, barrier breach, and gap-risk labels across index, futures, and mega-cap event windows.",
+        "preferred_regimes": ["open_drive_stress", "event_volatility", "risk_off_shock"],
+        "bootstrap_teacher_bot_ids": ["brain_refinery_v154_after_hours_gap_risk_mega_cap_chain", "brain_refinery_v395_black_swan_hedging_vol_spike_liquidity_bot"],
+        "data_intake_extra": ["overnight_gap_option_jump", "jump_diffusion_tail_gap", "event_gap_discontinuity"],
+        "storage_extra": ["governance/barrier_lookback_options", "exports/barrier_lookback_options"],
+        "correlation_peers": ["barrier_lookback_options", "black_swan_hedging", "single_name_options_event"],
+        "rationale": "Gap-option labels make the path-dependent sleeve aware of discontinuous jumps that normal realized-vol features understate.",
+    },
+]
+
+for _more_exotic_slot in MORE_EXOTIC_SLOT_ROWS:
+    DEFAULT_SLOT_SPECS.append(_exotic_slot(**_more_exotic_slot))
 
 QUANT_MODEL_SLOT_ROWS = [
     {
@@ -10525,6 +10712,28 @@ def _slot_data_intake_collections(slot: dict[str, Any]) -> list[str]:
             collections.extend(["signature_trend_follower_options_trace", "signature_path_dna_trace", "trend_persistence_context"])
         if "ccds" in kind or "contingent_credit_default_swap" in kind:
             collections.extend(["esg_contingent_cds_trace", "issuer_esg_event_context", "credit_index_spread_surface"])
+        if "forward_start" in kind:
+            collections.extend(["forward_start_option_surface", "forward_start_skew_reset", "moneyness_reset_ladder"])
+        if "chooser_option" in kind:
+            collections.extend(["chooser_option_switch_value", "event_optionality_choice_grid", "exercise_choice_tree"])
+        if "asian_option" in kind:
+            collections.extend(["asian_path_average_surface", "path_average_realized_vol", "twap_vwap_path_dependency"])
+        if "digital_binary" in kind:
+            collections.extend(["digital_binary_event_risk", "binary_payoff_gap_probability", "calendar_event_window"])
+        if "corridor_variance" in kind:
+            collections.extend(["corridor_variance_realized_range", "variance_corridor_breach", "realized_range_occupancy"])
+        if "quanto" in kind:
+            collections.extend(["quanto_fx_equity_beta", "fx_equity_vol_correlation", "cross_currency_underlier_beta"])
+        if "airbag_autocall" in kind:
+            collections.extend(["airbag_autocall_barrier_ladder", "worst_of_basket_drawdown", "coupon_observation_calendar"])
+        if "recovery_lock" in kind or "participation_ratchet" in kind:
+            collections.extend(["recovery_lock_credit_note", "capital_protection_participation_ratchet", "issuer_credit_proxy"])
+        if "base_correlation" in kind:
+            collections.extend(["base_correlation_convexity", "tranche_attachment_detachment_grid", "credit_index_spread_surface"])
+        if "nth_to_default" in kind:
+            collections.extend(["nth_to_default_contagion_ladder", "default_correlation_surface", "credit_contagion_ladder"])
+        if "gap_option" in kind:
+            collections.extend(["overnight_gap_option_jump", "jump_diffusion_tail_gap", "event_gap_discontinuity"])
     if _is_quant_model_kind(kind) or sleeve_profile in QUANT_MODEL_SLEEVE_PROFILES:
         collections.extend(QUANT_MODEL_COLLECTIONS)
         if sleeve_profile == "institutional_data_plumbing":

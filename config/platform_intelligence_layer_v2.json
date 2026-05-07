@@ -1,0 +1,128 @@
+{
+  "schema_version": 2,
+  "updated_utc": "2026-05-04T13:34:24.190968+00:00",
+  "layer": "platform_intelligence_12_part_control_plane",
+  "primary_section_keys": [
+    "bot_lifecycle_manager",
+    "bot_data_quality_scores",
+    "provider_rotation_failover_mesh",
+    "backpressure_prediction_engine",
+    "duplicate_alpha_overlap_detector",
+    "paper_trade_capacity_governor",
+    "self_healing_incident_playbooks",
+    "per_sleeve_master_bots",
+    "training_readiness_board",
+    "market_regime_router",
+    "execution_paper_trade_realism_layer",
+    "system_black_box_recorder"
+  ],
+  "controls": [
+    {
+      "id": "bot_lifecycle_manager",
+      "title": "Bot lifecycle manager",
+      "env_key": "BOT_LIFECYCLE_MANAGER_ENABLED"
+    },
+    {
+      "id": "bot_data_quality_scores",
+      "title": "Data quality score per bot",
+      "env_key": "BOT_DATA_QUALITY_SCORE_ENABLED"
+    },
+    {
+      "id": "provider_rotation_failover_mesh",
+      "title": "Provider rotation and failover",
+      "env_key": "PROVIDER_FAILOVER_MESH_ENABLED"
+    },
+    {
+      "id": "backpressure_prediction_engine",
+      "title": "Backpressure prediction",
+      "env_key": "BACKPRESSURE_PREDICTOR_ENABLED"
+    },
+    {
+      "id": "duplicate_alpha_overlap_detector",
+      "title": "Duplicate alpha overlap detector",
+      "env_key": "DUPLICATE_ALPHA_DETECTOR_ENABLED"
+    },
+    {
+      "id": "paper_trade_capacity_governor",
+      "title": "Paper trade capacity governor",
+      "env_key": "PAPER_TRADE_CAPACITY_GOVERNOR_ENABLED"
+    },
+    {
+      "id": "self_healing_incident_playbooks",
+      "title": "Self-healing incident playbooks",
+      "env_key": "SELF_HEALING_PLAYBOOKS_ENABLED"
+    },
+    {
+      "id": "per_sleeve_master_bots",
+      "title": "Master bot per sleeve rollups",
+      "env_key": "SLEEVE_MASTER_ROLLUP_ENABLED"
+    },
+    {
+      "id": "training_readiness_board",
+      "title": "Training readiness board",
+      "env_key": "TRAINING_READINESS_BOARD_ENABLED"
+    },
+    {
+      "id": "market_regime_router",
+      "title": "Market regime router",
+      "env_key": "MARKET_REGIME_ROUTER_ENABLED"
+    },
+    {
+      "id": "execution_paper_trade_realism_layer",
+      "title": "Execution and paper trade realism",
+      "env_key": "PAPER_EXECUTION_REALISM_ENABLED"
+    },
+    {
+      "id": "system_black_box_recorder",
+      "title": "System black box recorder",
+      "env_key": "BLACK_BOX_RECORDER_ENABLED"
+    }
+  ],
+  "artifacts": {
+    "bot_lifecycle_manager": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/bot_lifecycle_manager_latest.json",
+    "bot_data_quality_scores": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/bot_data_quality_scores_latest.json",
+    "provider_rotation_failover_mesh": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/provider_rotation_failover_latest.json",
+    "backpressure_prediction_engine": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/backpressure_prediction_latest.json",
+    "duplicate_alpha_overlap_detector": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/duplicate_alpha_overlap_latest.json",
+    "paper_trade_capacity_governor": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/paper_trade_capacity_governor_latest.json",
+    "self_healing_incident_playbooks": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/self_healing_incident_playbooks_latest.json",
+    "training_readiness_board": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/training_readiness_board_latest.json",
+    "execution_paper_trade_realism_layer": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/execution_paper_trade_realism_latest.json",
+    "system_black_box_recorder": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/black_box_recorder_latest.json",
+    "bot_admission_controller": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/bot_admission_controller_latest.json",
+    "per_sleeve_master_bots": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/sleeve_masters_latest.json",
+    "bot_quality_score_system": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/bot_quality_scores_latest.json",
+    "execution_realism_engine": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/execution_realism_latest.json",
+    "market_regime_router": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/market_regime_router_latest.json",
+    "swap_cpu_capacity_planner": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/capacity_planner_latest.json",
+    "research_to_strategy_pipeline": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/research_pipeline_latest.json",
+    "cross_sleeve_correlation_governor": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/correlation_governor_latest.json",
+    "model_decay_detector": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/model_decay_detector_latest.json",
+    "professional_system_dashboard": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/system_dashboard_latest.json"
+  },
+  "recommended_commands": [
+    [
+      "./scripts/ops/opsctl.sh",
+      "platform-intelligence",
+      "--apply",
+      "--json"
+    ],
+    [
+      "./scripts/ops/opsctl.sh",
+      "health-fast",
+      "--json"
+    ],
+    [
+      "./scripts/ops/opsctl.sh",
+      "pressure-relief",
+      "--apply",
+      "--json"
+    ],
+    [
+      "./scripts/ops/opsctl.sh",
+      "storage-backpressure-autopilot",
+      "--apply",
+      "--json"
+    ]
+  ]
+}

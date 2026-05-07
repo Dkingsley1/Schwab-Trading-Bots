@@ -181,6 +181,22 @@ def _write_simple_pdf(path: Path, *, title: str, lines: list[str]) -> None:
     path.write_bytes(b"".join(chunks))
 
 
+def _safe_write_text(path: Path, text: str) -> tuple[bool, str]:
+    try:
+        path.write_text(text, encoding="utf-8")
+        return True, "ok"
+    except PermissionError as exc:
+        return False, f"permission_error:{exc}"
+
+
+def _safe_write_json(path: Path, payload: dict[str, Any]) -> tuple[bool, str]:
+    try:
+        path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+        return True, "ok"
+    except PermissionError as exc:
+        return False, f"permission_error:{exc}"
+
+
 def _render_framework_map_pdf(source: Path, pdf_path: Path) -> tuple[bool, str]:
     renderer = PROJECT_ROOT / "scripts" / "ops" / "framework_map_pdf.py"
     json_out = PROJECT_ROOT / "governance" / "health" / "framework_map_pdf_latest.json"
@@ -255,6 +271,10 @@ def _build_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
     strategy_inventory_kind, strategy_inventory_source = _preferred_markdown_or_json(
         reports_dir / "strategy_inventory" / "strategy_inventory_latest.md",
         governance_health_dir / "strategy_inventory_latest.json",
+    )
+    expansion_inventory_kind, expansion_inventory_source = _preferred_markdown_or_json(
+        reports_dir / "expansion_inventory" / "expansion_inventory_latest.md",
+        governance_health_dir / "expansion_inventory_latest.json",
     )
     post_trade_kind, post_trade_source = _preferred_markdown_or_json(
         reports_dir / "post_trade_analysis_latest.md",
@@ -394,6 +414,13 @@ def _build_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "kind": strategy_inventory_kind,
             "source_path": strategy_inventory_source,
             "pdf_path": reports_dir / "strategy_inventory" / "strategy_inventory_latest.pdf",
+        },
+        {
+            "slug": "expansion_inventory",
+            "title": "Expansion Inventory",
+            "kind": expansion_inventory_kind,
+            "source_path": expansion_inventory_source,
+            "pdf_path": reports_dir / "expansion_inventory" / "expansion_inventory_latest.pdf",
         },
         {
             "slug": "post_trade_analysis",
@@ -753,54 +780,77 @@ def main() -> int:
 
         pdf_path.parent.mkdir(parents=True, exist_ok=True)
         if pdf_path.exists():
-            pdf_path.unlink()
+            try:
+                pdf_path.unlink()
+            except PermissionError:
+                # Some report artifacts can be locked or carry restrictive flags.
+                # Let the renderer overwrite in place instead of failing early.
+                pass
 
         html_source = source
         if spec["kind"] != "html":
             support_html = RENDER_SUPPORT_DIR / f"{spec['slug']}_latest.html"
-            support_html.write_text(_render_entry_html(spec, generated_utc=generated_utc), encoding="utf-8")
-            html_source = support_html
-            entry["support_html"] = str(support_html)
+            support_ok, support_detail = _safe_write_text(support_html, _render_entry_html(spec, generated_utc=generated_utc))
+            if support_ok:
+                html_source = support_html
+                entry["support_html"] = str(support_html)
+            else:
+                entry["status"] = "error"
+                entry["detail"] = support_detail
+                entry["bytes"] = 0
+                entries.append(entry)
+                continue
 
         if spec["slug"] == "framework_map_v2":
             ok, detail = _render_framework_map_pdf(source, pdf_path)
         else:
             ok, detail = _render_pdf_from_html(html_source, pdf_path, allow_gui_renderer=allow_gui_pdf_renderer)
         if not ok:
-            _write_simple_pdf(
-                pdf_path,
-                title=str(spec["title"]),
-                lines=[
-                    "Fallback PDF generated because the headless renderer did not complete.",
-                    f"Renderer detail: {detail}",
-                    f"Source: {source}",
-                    f"Generated UTC: {generated_utc}",
-                ],
-            )
-            ok = True
-            detail = f"fallback_pdf:{detail}"
+            try:
+                _write_simple_pdf(
+                    pdf_path,
+                    title=str(spec["title"]),
+                    lines=[
+                        "Fallback PDF generated because the headless renderer did not complete.",
+                        f"Renderer detail: {detail}",
+                        f"Source: {source}",
+                        f"Generated UTC: {generated_utc}",
+                    ],
+                )
+                ok = True
+                detail = f"fallback_pdf:{detail}"
+            except PermissionError as exc:
+                ok = False
+                detail = f"permission_error:{exc}"
         entry["status"] = "ok" if ok else "error"
         entry["detail"] = detail
         entry["bytes"] = int(pdf_path.stat().st_size) if ok and pdf_path.exists() else 0
         entries.append(entry)
 
-    INDEX_HTML_PATH.write_text(_render_index_html(entries, generated_utc=generated_utc), encoding="utf-8")
+    index_html_ok, index_html_detail = _safe_write_text(INDEX_HTML_PATH, _render_index_html(entries, generated_utc=generated_utc))
     if INDEX_PDF_PATH.exists():
-        INDEX_PDF_PATH.unlink()
+        try:
+            INDEX_PDF_PATH.unlink()
+        except PermissionError:
+            pass
     index_ok, index_detail = _render_pdf_from_html(INDEX_HTML_PATH, INDEX_PDF_PATH, allow_gui_renderer=allow_gui_pdf_renderer)
     if not index_ok:
-        _write_simple_pdf(
-            INDEX_PDF_PATH,
-            title="Trading System PDF Bundle",
-            lines=[
-                "Fallback index PDF generated because the headless renderer did not complete.",
-                f"Renderer detail: {index_detail}",
-                f"Source: {INDEX_HTML_PATH}",
-                f"Generated UTC: {generated_utc}",
-            ],
-        )
-        index_ok = True
-        index_detail = f"fallback_pdf:{index_detail}"
+        try:
+            _write_simple_pdf(
+                INDEX_PDF_PATH,
+                title="Trading System PDF Bundle",
+                lines=[
+                    "Fallback index PDF generated because the headless renderer did not complete.",
+                    f"Renderer detail: {index_detail}",
+                    f"Source: {INDEX_HTML_PATH}",
+                    f"Generated UTC: {generated_utc}",
+                ],
+            )
+            index_ok = True
+            index_detail = f"fallback_pdf:{index_detail}"
+        except PermissionError as exc:
+            index_ok = False
+            index_detail = f"permission_error:{exc}"
 
     payload = {
         "generated_utc": generated_utc,
@@ -811,6 +861,8 @@ def main() -> int:
         "index_pdf": str(INDEX_PDF_PATH) if INDEX_PDF_PATH.exists() else "",
         "index_ok": bool(index_ok),
         "index_detail": str(index_detail),
+        "index_html_ok": bool(index_html_ok),
+        "index_html_detail": str(index_html_detail),
         "entries": entries,
         "ok_count": sum(1 for row in entries if row.get("status") == "ok"),
         "missing_count": sum(1 for row in entries if row.get("status") == "missing_source"),
@@ -823,7 +875,9 @@ def main() -> int:
     )
     payload["ok"] = overall_status == "ready"
     payload["overall_status"] = overall_status
-    LATEST_METADATA_PATH.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    metadata_ok, metadata_detail = _safe_write_json(LATEST_METADATA_PATH, payload)
+    payload["metadata_ok"] = bool(metadata_ok)
+    payload["metadata_detail"] = metadata_detail
 
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))

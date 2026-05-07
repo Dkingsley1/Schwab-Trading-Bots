@@ -232,3 +232,60 @@ def test_build_audit_payload_counts_staged_support_recovery_for_bounded_stale_ac
 
     assert payload["supportability_counts"]["staged_support_recovery"] == 1
     assert payload["active_staged_support_recovery"][0]["bot_id"] == "brain_refinery_v31_defensive_rotation"
+
+
+def test_build_audit_payload_isolates_collection_only_active_from_supportability_denominator(tmp_path: Path) -> None:
+    registry_path = tmp_path / "master_bot_registry.json"
+    diagnostics_dir = tmp_path / "governance" / "training_diagnostics"
+    snapshot_path = tmp_path / "governance" / "health" / "runtime_training_snapshot_latest.json"
+    model_path = tmp_path / "models" / "brain_refinery_v10_seasonal.npz"
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    model_path.write_text("model", encoding="utf-8")
+    _write_json(
+        registry_path,
+        {
+            "sub_bots": [
+                {
+                    "bot_id": "brain_refinery_v10_seasonal",
+                    "bot_role": "signal_sub_bot",
+                    "active": True,
+                    "lifecycle_state": "active",
+                    "model_path": str(model_path),
+                    "quality_score": 0.91,
+                    "test_accuracy": 0.77,
+                },
+                {
+                    "bot_id": "brain_refinery_v900_collection_seed",
+                    "bot_role": "signal_sub_bot",
+                    "active": True,
+                    "lifecycle_state": "data_collection_only",
+                    "data_collection_active": True,
+                    "reason": "planned_roster_expansion_slot",
+                    "promotion_reason": "planned_roster_expansion_slot",
+                },
+            ]
+        },
+    )
+    _write_json(
+        snapshot_path,
+        {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "sequence_count": 100,
+            "row_count": 1000,
+        },
+    )
+
+    payload = src.build_audit_payload(
+        registry_path=registry_path,
+        diagnostics_dir=diagnostics_dir,
+        snapshot_health_path=snapshot_path,
+    )
+
+    assert payload["registry_active_bots"] == 2
+    assert payload["registry_supportability_active_bots"] == 1
+    assert payload["active_collection_only_bots"] == 1
+    assert payload["tier_counts"]["active_collection_only"] == 1
+    assert payload["supportability_counts"]["collection_only_active"] == 1
+    assert payload["supportability_counts"]["artifact_backed_active"] == 1
+    assert payload["active_stale_diagnostics"][0]["bot_id"] == "brain_refinery_v10_seasonal"
+    assert payload["active_collection_only"][0]["bot_id"] == "brain_refinery_v900_collection_seed"

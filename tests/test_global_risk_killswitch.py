@@ -192,6 +192,73 @@ def test_global_risk_killswitch_softens_snapshot_and_runtime_when_not_executing(
     assert payload["operating_mode"] == "degraded_collection"
 
 
+
+def test_global_risk_killswitch_softens_runtime_coverage_debt_for_live_data_only_lane(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    halt_flag = health / "GLOBAL_TRADING_HALT.flag"
+    halt_flag.parent.mkdir(parents=True, exist_ok=True)
+    halt_flag.write_text(json.dumps({"reason": "coverage_debt"}), encoding="utf-8")
+
+    _write_json(health / "one_numbers_latest.json", {"combined_blocked_rate": 0.0, "combined_pnl_proxy": 0.0, "decision_stale_windows_4h": 0, "watchdog_restarts": 0})
+    _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": False})
+    _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
+    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0, "queue_depth": 245})
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "awaiting_coverage_cycles"}, "live_plane": {"live_lane_running": True}})
+
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "0")
+    monkeypatch.setenv("MARKET_DATA_ONLY", "1")
+    monkeypatch.setattr(kill_src, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--auto-clear"])
+
+    rc = kill_src.main()
+    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert payload["action"] == "halt_cleared"
+    assert payload["clear_blockers"] == []
+    assert payload["degraded_clear_blockers"] == ["runtime_clearance=awaiting_coverage_cycles"]
+    assert payload["metrics"]["live_lane_running"] is True
+    assert payload["metrics"]["execution_expected"] is False
+
+
+def test_global_risk_killswitch_softens_recovered_restart_storm(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    halt_flag = health / "GLOBAL_TRADING_HALT.flag"
+    halt_flag.parent.mkdir(parents=True, exist_ok=True)
+    halt_flag.write_text(json.dumps({"reason": "planned_livefeed_refresh"}), encoding="utf-8")
+
+    _write_json(health / "one_numbers_latest.json", {"combined_blocked_rate": 0.0, "combined_pnl_proxy": 0.0, "decision_stale_windows_4h": 0, "watchdog_restarts": 0})
+    _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": False})
+    _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
+    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0, "queue_depth": 0})
+    _write_json(
+        health / "process_watchdog_latest.json",
+        {
+            "restart_storms": [{"name": "all_sleeves", "count": 4, "resolved": False}],
+            "status": [{"name": "all_sleeves", "running": 1, "alt_running": 3, "heartbeat_ok": True, "process_live": True}],
+        },
+    )
+    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "ready"}, "live_plane": {"live_lane_running": True}})
+
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "0")
+    monkeypatch.setenv("MARKET_DATA_ONLY", "1")
+    monkeypatch.setattr(kill_src, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--auto-clear"])
+
+    rc = kill_src.main()
+    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert payload["action"] == "halt_cleared"
+    assert payload["clear_blockers"] == []
+    assert payload["degraded_clear_blockers"] == ["restart_storm_recovered_waiting_settle"]
+    assert payload["metrics"]["restart_storm_recovered"] is True
+    assert not halt_flag.exists()
+
+
 def test_global_risk_killswitch_escalates_recoverable_gates_when_live_execution_expected(
     tmp_path: Path,
     monkeypatch,

@@ -153,6 +153,43 @@ class StorageRouterTests(unittest.TestCase):
             self.assertEqual(len(details), 1)
             self.assertIn('logs/state.json', details[0])
 
+    def test_route_runtime_storage_skips_autosync_under_free_space_floor(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'repo'
+            root.mkdir()
+            external_root = Path(td) / 'external'
+            external_root.mkdir(parents=True, exist_ok=True)
+            local_root = root / 'local_fallback_storage'
+            self._write_text(local_root / 'logs' / 'state.json', 'local-backlog')
+            usage = shutil.disk_usage(td)
+
+            previous = self._set_env(
+                {
+                    'BOT_LOGS_EXTERNAL_PROJECT_ROOT': str(external_root),
+                    'BOT_LOGS_LOCAL_FALLBACK_ROOT': str(local_root),
+                    'BOT_LOGS_AUTO_SYNC_ON_RECONNECT': '1',
+                    'BOT_LOGS_AUTO_SYNC_MIN_FREE_BYTES': '100',
+                    'BOT_LOGS_BLOCK_SPLIT_BRAIN': '0',
+                }
+            )
+            try:
+                with mock.patch.object(
+                    storage_router.shutil,
+                    'disk_usage',
+                    return_value=type(usage)(usage.total, usage.used, 50),
+                ):
+                    result = storage_router.route_runtime_storage(root, link_dirs=('logs',))
+            finally:
+                self._restore_env(previous)
+
+            self.assertEqual(result.mode, 'external')
+            self.assertEqual(result.autosync_copied_files, 0)
+            self.assertEqual(result.autosync_free_bytes, 50)
+            self.assertEqual(result.autosync_min_free_bytes, 100)
+            self.assertIn('autosync_skipped_external_low_space', result.autosync_skipped_reason)
+            self.assertTrue((local_root / 'logs' / 'state.json').exists())
+            self.assertFalse((external_root / 'logs' / 'state.json').exists())
+
     def test_auto_sync_skips_sqlite_sidecars_for_failback_paths(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

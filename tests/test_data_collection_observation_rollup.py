@@ -1,3 +1,4 @@
+import gzip
 import json
 import sys
 from pathlib import Path
@@ -42,7 +43,8 @@ def test_observation_rollup_bootstraps_and_updates_registry(tmp_path: Path) -> N
     registry_path = project_root / "master_bot_registry.json"
     state_path = project_root / "governance" / "health" / "state.json"
     _write_json(registry_path, _registry(bot_id))
-    decision_file = project_root / "decision_explanations" / "shadow_intraday_aggressive_equities" / "decision_explanations_20260430.jsonl"
+    stamp = src._day_stamps(1)[0]
+    decision_file = project_root / "decision_explanations" / "shadow_intraday_aggressive_equities" / f"decision_explanations_{stamp}.jsonl"
     decision_file.parent.mkdir(parents=True, exist_ok=True)
     decision_file.write_text(
         "\n".join(
@@ -84,7 +86,8 @@ def test_observation_rollup_counts_only_new_lines_after_bootstrap(tmp_path: Path
     registry_path = project_root / "master_bot_registry.json"
     state_path = project_root / "governance" / "health" / "state.json"
     _write_json(registry_path, _registry(bot_id))
-    decision_file = project_root / "decision_explanations" / "shadow_intraday_aggressive_equities" / "decision_explanations_20260430.jsonl"
+    stamp = src._day_stamps(1)[0]
+    decision_file = project_root / "decision_explanations" / "shadow_intraday_aggressive_equities" / f"decision_explanations_{stamp}.jsonl"
     decision_file.parent.mkdir(parents=True, exist_ok=True)
     decision_file.write_text(json.dumps({"status": "DATA_ONLY_BLOCKED", "reasons": [f"bot_id={bot_id}"]}) + "\n", encoding="utf-8")
 
@@ -112,3 +115,75 @@ def test_observation_rollup_counts_only_new_lines_after_bootstrap(tmp_path: Path
     assert payload["mode"] == "incremental"
     assert payload["new_rows_counted"] == 1
     assert registry["sub_bots"][0]["data_collection_observations"] == 2
+
+
+def test_observation_rollup_reads_compressed_decision_files(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v188_crypto_breakout_liquidity_rotation"
+    registry_path = project_root / "master_bot_registry.json"
+    state_path = project_root / "governance" / "health" / "state.json"
+    _write_json(registry_path, _registry(bot_id))
+    stamp = src._day_stamps(1)[0]
+    decision_file = project_root / "decision_explanations" / "shadow_crypto" / f"decision_explanations_{stamp}.jsonl.gz"
+    decision_file.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(decision_file, "wt", encoding="utf-8") as handle:
+        handle.write(json.dumps({"status": "DATA_ONLY_BLOCKED", "strategy": bot_id}) + "\n")
+        handle.write(json.dumps({"status": "SHADOW_ONLY", "reasons": [f"bot_id={bot_id}"]}) + "\n")
+
+    payload = src.build_payload(
+        project_root=project_root,
+        registry_path=registry_path,
+        state_path=state_path,
+        days=1,
+        bootstrap_tail_lines=20,
+        apply=True,
+    )
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+
+    assert payload["files_scanned"] == 1
+    assert payload["bots_with_observations"] == 1
+    assert payload["total_observations"] == 2
+    assert registry["sub_bots"][0]["data_collection_observations"] == 2
+    assert state["file_line_counts"][str(decision_file.relative_to(project_root))] == 2
+
+
+def test_observation_rollup_credits_governance_artifact_references_once(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v1010_recursive_awareness_causal_incident_root_cause_builder_bot"
+    registry_path = project_root / "master_bot_registry.json"
+    state_path = project_root / "governance" / "health" / "state.json"
+    _write_json(registry_path, _registry(bot_id))
+    artifact_path = project_root / "governance" / "health" / "deep_recursive_awareness_latest.json"
+    _write_json(
+        artifact_path,
+        {
+            "ok": True,
+            "generated_at_utc": "2026-05-04T10:00:00+00:00",
+            "pack": {"bot_ids": [bot_id]},
+        },
+    )
+
+    payload = src.build_payload(
+        project_root=project_root,
+        registry_path=registry_path,
+        state_path=state_path,
+        days=1,
+        bootstrap_tail_lines=20,
+        apply=True,
+    )
+    second_payload = src.build_payload(
+        project_root=project_root,
+        registry_path=registry_path,
+        state_path=state_path,
+        days=1,
+        bootstrap_tail_lines=20,
+        apply=True,
+    )
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+
+    assert payload["artifact_files_scanned"] == 1
+    assert payload["new_artifact_observations_counted"] == 1
+    assert registry["sub_bots"][0]["data_collection_observations"] == 1
+    assert second_payload["new_artifact_observations_counted"] == 0
+    assert second_payload["total_observations"] == 1

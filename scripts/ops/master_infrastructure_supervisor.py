@@ -42,6 +42,7 @@ DEGRADED_STATUSES = {
 BLOCKED_STATUSES = {"blocked", "critical", "failed", "apply_failed", "missing", "unknown"}
 LAUNCHD_JOB_SPECS = (
     ("com.dankingsley.ops.command_validity", "scripts/ops/run_command_validity_launchd.sh"),
+    ("com.dankingsley.ops.process_fanout_guard", "scripts/install_process_fanout_guard_launchd.sh"),
     ("com.dankingsley.ops.system_drift_guard", "scripts/ops/run_system_drift_guard_launchd.sh"),
     ("com.dankingsley.ops.system_drift_autopilot", "scripts/ops/run_system_drift_autopilot_launchd.sh"),
     ("com.dankingsley.ops.infrastructure_autofix", "scripts/ops/run_infrastructure_autofix_launchd.sh"),
@@ -901,6 +902,7 @@ def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
         ("schwab_auth_supervisor", "governance/health/schwab_auth_supervisor_latest.json"),
         ("command_validity", "governance/health/command_validity_latest.json"),
         ("chrome_headless_guard", "governance/health/chrome_headless_guard_latest.json"),
+        ("backlog_organizer", "governance/health/backlog_organizer_latest.json"),
     ]
     rows: list[dict[str, Any]] = []
     status = "ready"
