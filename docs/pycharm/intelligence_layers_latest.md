@@ -1,9 +1,9 @@
 # Intelligence Layers PyCharm Index
 
-- Updated UTC: `2026-05-07T17:01:10.826452+00:00`
+- Updated UTC: `2026-05-07T18:07:23.381394+00:00`
 - Whole-System Status: `degraded`
 - Top Risk: `ingestion_storage`
-- Safe Next Command: `./scripts/ops/opsctl.sh pressure-relief --apply --json`
+- Safe Next Command: `./scripts/ops/opsctl.sh guard-intelligence --apply --json`
 
 ## Bot Activity Snapshot
 
@@ -37,13 +37,13 @@
 - Runtime Pressure High: `True`
 - Storage Critical: `True`
 - Writer Active: `False`
-- Guard Policy Mode: `full_schwab_observe`
+- Guard Policy Mode: `protective_throttle`
 
 ## Docs Commands Reporting
 
 - Layer Status: `ready`
 - Action: `observe_docs_reporting_contract`
-- Command Contract Entries: `151`
+- Command Contract Entries: `152`
 - Command Issues: `0`
 - Report Bundle Entries: `38`
 - Report Bundle Errors: `0`
@@ -58,14 +58,15 @@
 
 ## Intelligence Layers
 
-- `super_intelligence`: status `degraded`, mode `drain`, action `relieve_pressure_then_micro_drain`
+- `super_intelligence`: status `degraded`, mode `stabilize`, action `stabilize_guard_and_process_budget`
 - `outcome_learning`: status `degraded`, verdict `monitoring`
 - `paper_lane_governor`: status `ready`, mode `standard_30_50_active`, score `35`
 - `symbol_universe_intelligence`: status `ready`, score `84.05`
 - `cognitive_twin_counterfactuals`: status `advisory`, score `46`, next `pressure_relief_success`
 - `recursive_policy_evolution`: status `degraded`, score `54.0`, next `cognitive_twin_counterfactual_simulator`
+- `deeper_self_awareness_layers`: status `advisory`, mode `advisory_control_plane_with_constitutional_lockout_attestation`, score `6`, next `causal_world_model,belief_ledger_confidence,adversarial_market_infra_simulator`
 - `codex_handoff`: status `degraded`
-- `documentation_reporting_intelligence`: status `ready`, action `observe_docs_reporting_contract`, score `151`
+- `documentation_reporting_intelligence`: status `ready`, action `observe_docs_reporting_contract`, score `152`
 
 ## PyCharm Open Paths
 
@@ -77,6 +78,7 @@
 - `super_intelligence`: `governance/health/system_super_intelligence_latest.json`
 - `outcome_learning`: `governance/health/super_intelligence_outcome_learning_latest.json`
 - `recursive_intelligence`: `governance/health/system_recursive_intelligence_latest.json`
+- `deeper_intelligence_layers`: `governance/health/deeper_intelligence_layers_latest.json`
 - `codex_handoff_json`: `governance/health/codex_handoff_latest.json`
 - `codex_handoff_markdown`: `exports/reports/operator/codex_handoff_latest.md`
 - `super_override`: `config/.env.super_intelligence_override`

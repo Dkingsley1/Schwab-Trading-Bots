@@ -841,6 +841,14 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Deeper self-awareness intelligence layers",
+                ["./scripts/ops/opsctl.sh deeper-intelligence-layers --apply --json"],
+                notes=[
+                    "This installs and scores the 10 deeper self-awareness layers: causal world model, belief ledger, digital twin replay, adversarial simulator, self-scientific method, resource economist, promotion court, living ontology, operator dialogue, and constitutional risk.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "PyCharm active bot blue highlights",
                 ["./scripts/ops/opsctl.sh pycharm-active-bot-highlights --apply --json"],
                 notes=[

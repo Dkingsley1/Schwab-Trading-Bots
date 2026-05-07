@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `1c623766cbdacab30214e27ef541d399dc4eb7d9d7d2e5ee2198d8c8be5f2220`.
+Command contract hash: `11a16cf93df61bbfb89a2cbcf0633d29097ff9397bae98fcebbe627aee5b010b`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -1041,6 +1041,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 This checks Coinbase public market-data endpoints and reports only credential presence booleans, never secret values.
+
+### Deeper self-awareness intelligence layers
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh deeper-intelligence-layers --apply --json
+```
+
+This installs and scores the 10 deeper self-awareness layers: causal world model, belief ledger, digital twin replay, adversarial simulator, self-scientific method, resource economist, promotion court, living ontology, operator dialogue, and constitutional risk.
 
 ### Docs, commands, and reporting intelligence
 ```bash

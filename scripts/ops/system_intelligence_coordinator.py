@@ -25,6 +25,7 @@ DEFAULT_SELF_INTELLIGENCE_PATH = PROJECT_ROOT / "governance" / "health" / "syste
 DEFAULT_SUPER_INTELLIGENCE_PATH = PROJECT_ROOT / "governance" / "health" / "system_super_intelligence_latest.json"
 DEFAULT_OUTCOME_LEARNING_PATH = PROJECT_ROOT / "governance" / "health" / "super_intelligence_outcome_learning_latest.json"
 DEFAULT_RECURSIVE_INTELLIGENCE_PATH = PROJECT_ROOT / "governance" / "health" / "system_recursive_intelligence_latest.json"
+DEFAULT_DEEPER_INTELLIGENCE_PATH = PROJECT_ROOT / "governance" / "health" / "deeper_intelligence_layers_latest.json"
 DEFAULT_HANDOFF_PATH = PROJECT_ROOT / "governance" / "health" / "codex_handoff_latest.json"
 DEFAULT_HANDOFF_MARKDOWN_PATH = PROJECT_ROOT / "exports" / "reports" / "operator" / "codex_handoff_latest.md"
 DEFAULT_PYCHARM_INDEX_PATH = PROJECT_ROOT / "docs" / "pycharm" / "intelligence_layers_latest.md"
@@ -84,6 +85,7 @@ SIGNAL_SOURCES: tuple[dict[str, str], ...] = (
     {"name": "core_materialization", "category": "quality", "path": "governance/health/core_bot_materialization_guard_latest.json"},
     {"name": "system_self_model", "category": "self_model", "path": "governance/health/system_self_model_latest.json"},
     {"name": "platform_brain_v6", "category": "brain", "path": "governance/health/platform_brain_v6_latest.json"},
+    {"name": "deeper_intelligence_layers", "category": "brain", "path": "governance/health/deeper_intelligence_layers_latest.json"},
 )
 
 SAFE_REFLEX_PREFIXES = (
@@ -472,6 +474,22 @@ def _metrics_for_signal(name: str, project_root: Path, payload: dict[str, Any]) 
             "gate_blockers": [str(item) for item in _as_list(payload.get("gate_blockers"))],
             "next_best_command": str((_as_dict(_as_dict(payload.get("sections")).get("operator_narrative_synthesizer"))).get("next_best_command") or ""),
         }
+    if name == "deeper_intelligence_layers":
+        operator = _as_dict(payload.get("operator_dialogue_packet"))
+        surface = _as_dict(payload.get("surface_snapshot"))
+        return {
+            "layer_count": _safe_int(payload.get("layer_count"), 0),
+            "ready_count": _safe_int(payload.get("ready_count"), 0),
+            "advisory_count": _safe_int(payload.get("advisory_count"), 0),
+            "degraded_count": _safe_int(payload.get("degraded_count"), 0),
+            "blocked_count": _safe_int(payload.get("blocked_count"), 0),
+            "top_attention": [str(item) for item in _as_list(operator.get("top_attention"))],
+            "safe_next_command": [str(item) for item in _as_list(operator.get("safe_next_command"))],
+            "storage_pending_ratio": _safe_float(_as_dict(surface.get("storage")).get("pending_ratio"), 0.0),
+            "runtime_pressure_high": bool(_as_dict(surface.get("runtime")).get("pressure_high", False)),
+            "missing_surface_count": _safe_int(payload.get("missing_surfaces") and len(_as_list(payload.get("missing_surfaces"))), 0),
+            "authority_boundary": "advisory_control_plane_with_constitutional_lockout_attestation",
+        }
     if name == "operator_cockpit":
         adaptive = _as_dict(payload.get("adaptive_posture"))
         return {
@@ -574,6 +592,13 @@ def _severity_for_signal(name: str, status: str, metrics: dict[str, Any], loaded
     elif name == "core_materialization":
         if _safe_int(metrics.get("missing_core_module_count"), 0) or _safe_int(metrics.get("duplicate_core_version_count"), 0):
             score = max(score, 65)
+    elif name == "deeper_intelligence_layers":
+        if _safe_int(metrics.get("blocked_count"), 0) > 0:
+            score = max(score, 95)
+        elif _safe_int(metrics.get("degraded_count"), 0) > 0:
+            score = max(score, 70)
+        elif _safe_int(metrics.get("advisory_count"), 0) > 0:
+            score = max(score, 35)
     return int(max(0, min(100, score)))
 
 
@@ -633,6 +658,8 @@ def _signal_summary(name: str, metrics: dict[str, Any]) -> str:
         return f"paper={metrics.get('paper_live_data_enabled_bots', 0)} target={metrics.get('minimum', 30)}-{metrics.get('maximum', 50)}"
     if name == "sleeve_ticker_universe":
         return f"core={metrics.get('core_symbol_count', 0)} crypto={metrics.get('crypto_symbol_count', 0)} groups={metrics.get('sleeve_group_count', 0)}"
+    if name == "deeper_intelligence_layers":
+        return f"layers={metrics.get('layer_count', 0)} blocked={metrics.get('blocked_count', 0)} degraded={metrics.get('degraded_count', 0)}"
     return ""
 
 
@@ -3285,6 +3312,8 @@ def build_pycharm_index_payload(payload: dict[str, Any]) -> dict[str, Any]:
     paper_lane = _as_dict(super_layer.get("paper_lane_governor_layer"))
     symbol_universe = _as_dict(super_layer.get("symbol_universe_intelligence_layer"))
     cognitive_twin = _as_dict(super_layer.get("cognitive_twin_counterfactual_layer"))
+    deeper_signal = _signal_by_name(signal_bus, "deeper_intelligence_layers")
+    deeper_metrics = _as_dict(deeper_signal.get("metrics"))
     handoff = _as_dict(payload.get("codex_handoff"))
     packet = _as_dict(handoff.get("attention_packet"))
     artifacts = {
@@ -3296,6 +3325,7 @@ def build_pycharm_index_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "super_intelligence": DEFAULT_SUPER_INTELLIGENCE_PATH,
         "outcome_learning": DEFAULT_OUTCOME_LEARNING_PATH,
         "recursive_intelligence": DEFAULT_RECURSIVE_INTELLIGENCE_PATH,
+        "deeper_intelligence_layers": DEFAULT_DEEPER_INTELLIGENCE_PATH,
         "codex_handoff_json": DEFAULT_HANDOFF_PATH,
         "codex_handoff_markdown": DEFAULT_HANDOFF_MARKDOWN_PATH,
         "super_override": DEFAULT_SUPER_OVERRIDE_PATH,
@@ -3373,6 +3403,14 @@ def build_pycharm_index_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "score": _safe_float(recursive_layer.get("recursive_score"), 0.0),
                 "next_layer": str(recursive_next.get("name") or ""),
                 "artifact": str(DEFAULT_RECURSIVE_INTELLIGENCE_PATH),
+            },
+            {
+                "name": "deeper_self_awareness_layers",
+                "status": str(deeper_signal.get("status") or ""),
+                "mode": str(deeper_metrics.get("authority_boundary") or ""),
+                "score": _safe_int(deeper_metrics.get("ready_count"), 0),
+                "next_layer": ",".join(str(item) for item in _as_list(deeper_metrics.get("top_attention"))[:3]),
+                "artifact": str(DEFAULT_DEEPER_INTELLIGENCE_PATH),
             },
             {
                 "name": "codex_handoff",

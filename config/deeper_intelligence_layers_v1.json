@@ -1,0 +1,194 @@
+{
+  "schema_version": 1,
+  "deeper_intelligence_layers_version": "deeper_intelligence_layers_v1",
+  "authority_boundary": "advisory_control_plane_with_constitutional_lockout_attestation",
+  "applies_to": [
+    "trainers",
+    "drainers",
+    "data_collectors",
+    "storage_routing",
+    "ingestion",
+    "sleeves",
+    "launchers",
+    "reporting",
+    "operator_dialogue"
+  ],
+  "layers": [
+    {
+      "layer_id": "causal_world_model",
+      "title": "Causal World Model Layer",
+      "purpose": "Explain why market, broker, storage, auth, memory, backlog, launcher, and sleeve states changed before the system acts.",
+      "inputs": [
+        "system_signal_bus",
+        "process_contracts",
+        "storage_backpressure",
+        "runtime_pressure",
+        "auth_lease",
+        "watchdog"
+      ],
+      "outputs": [
+        "root_cause_graph",
+        "causal_blocker_rank",
+        "intervention_order"
+      ]
+    },
+    {
+      "layer_id": "belief_ledger_confidence",
+      "title": "Belief Ledger And Confidence Layer",
+      "purpose": "Attach confidence, freshness, uncertainty, regime fit, and evidence age to every decision surface.",
+      "inputs": [
+        "signal_bus",
+        "artifact_freshness",
+        "training_quality",
+        "model_lifecycle",
+        "source_verification"
+      ],
+      "outputs": [
+        "belief_ledger",
+        "confidence_floor",
+        "abstention_reason_codes"
+      ]
+    },
+    {
+      "layer_id": "digital_twin_replay",
+      "title": "Digital Twin Replay Layer",
+      "purpose": "Compare current code, last-known-good code, and proposed policies against replay and shadow evidence before promotion.",
+      "inputs": [
+        "golden_replay",
+        "pytorch_replay_canary",
+        "platform_brain_v6",
+        "decision_provenance"
+      ],
+      "outputs": [
+        "twin_replay_packet",
+        "before_after_delta",
+        "rollback_trigger"
+      ]
+    },
+    {
+      "layer_id": "adversarial_market_infra_simulator",
+      "title": "Adversarial Market And Infrastructure Simulator",
+      "purpose": "Stress market assumptions and infrastructure assumptions against bad ticks, queue floods, broker delays, route failures, and hostile liquidity.",
+      "inputs": [
+        "guard_intelligence",
+        "storage_route",
+        "live_runtime_separation",
+        "global_halt",
+        "process_fanout"
+      ],
+      "outputs": [
+        "stress_scenarios",
+        "survival_score",
+        "fragility_watchlist"
+      ]
+    },
+    {
+      "layer_id": "self_scientific_method",
+      "title": "Self Scientific Method Layer",
+      "purpose": "Turn upgrades into hypotheses with expected benefit, evidence windows, proof artifacts, and rollback rules.",
+      "inputs": [
+        "experiment_ledger",
+        "commands_contract",
+        "test_results",
+        "promotion_autopilot"
+      ],
+      "outputs": [
+        "hypothesis_packet",
+        "proof_window",
+        "rollback_rule"
+      ]
+    },
+    {
+      "layer_id": "resource_economist",
+      "title": "Resource Economist Layer",
+      "purpose": "Allocate CPU, memory, disk, SQLite writes, training slots, paper slots, and operator attention by value and pressure.",
+      "inputs": [
+        "memory_efficiency",
+        "runtime_throttle",
+        "storage_quota",
+        "paper_live_data_standard",
+        "sleeve_budgets"
+      ],
+      "outputs": [
+        "resource_budget_curve",
+        "earned_budget",
+        "downgrade_or_parking_queue"
+      ]
+    },
+    {
+      "layer_id": "promotion_court",
+      "title": "Promotion Court Layer",
+      "purpose": "Control collect-only to shadow to paper to live-read-only to live-eligible transitions with evidence gates.",
+      "inputs": [
+        "paper_live_data_standard",
+        "training_quality",
+        "promotion_quality_gate",
+        "risk_service",
+        "execution_lane_pipeline"
+      ],
+      "outputs": [
+        "promotion_verdict",
+        "missing_evidence",
+        "next_safe_lifecycle_state"
+      ]
+    },
+    {
+      "layer_id": "living_ontology_memory_graph",
+      "title": "Living Ontology And System Memory Graph",
+      "purpose": "Maintain a searchable graph of bots, sleeves, launchers, reports, commands, drainers, trainers, guards, tickers, and dependencies.",
+      "inputs": [
+        "master_bot_registry",
+        "core_bot_catalog",
+        "system_self_model",
+        "commands_contract",
+        "pycharm_index"
+      ],
+      "outputs": [
+        "system_graph",
+        "dependency_edges",
+        "unknown_inventory"
+      ]
+    },
+    {
+      "layer_id": "operator_dialogue",
+      "title": "Operator Dialogue Layer",
+      "purpose": "Summarize what changed, what is blocked, what is safe next, and what needs human approval in plain operator language.",
+      "inputs": [
+        "codex_handoff",
+        "operator_cockpit",
+        "documentation_reporting",
+        "notification_ladder"
+      ],
+      "outputs": [
+        "operator_brief",
+        "approval_queue",
+        "daily_degradation_explainer"
+      ]
+    },
+    {
+      "layer_id": "constitutional_risk",
+      "title": "Constitutional Risk Layer",
+      "purpose": "Enforce non-negotiable invariants that no model, bot, drainer, trainer, or launcher may override.",
+      "inputs": [
+        "global_halt",
+        "live_runtime_separation",
+        "paper_live_data_standard",
+        "risk_service",
+        "auth_lease"
+      ],
+      "outputs": [
+        "invariant_attestation",
+        "hard_lockouts",
+        "risk_constitution"
+      ]
+    }
+  ],
+  "hard_invariants": {
+    "live_trade_authority_added": false,
+    "parallel_sql_writers_allowed": false,
+    "models_may_override_global_halt": false,
+    "new_bots_start_live_enabled": false,
+    "collect_only_until_promotion_court": true,
+    "operator_approval_required_for_destructive_cleanup": true
+  }
+}
