@@ -38,4 +38,3 @@ def test_mark_twelve_data_cooldown_uses_next_reset(monkeypatch, tmp_path) -> Non
     assert state["remaining_seconds"] > 0
     persisted = twelve_data_cooldown_status(tmp_path, now_ts=now_dt.timestamp())
     assert persisted["active"] is True
-

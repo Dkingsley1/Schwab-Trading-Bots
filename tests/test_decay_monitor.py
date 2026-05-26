@@ -45,4 +45,3 @@ def test_decay_monitor_flags_weak_sleeves_and_negative_slope(tmp_path: Path) -> 
     assert payload["overall_status"] == "needs_work"
     assert payload["weak_sleeve_count"] == 1
     assert payload["pnl_slope"] == -8.0
-

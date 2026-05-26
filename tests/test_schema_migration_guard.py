@@ -27,4 +27,3 @@ def test_schema_migration_guard_counts_missing_and_legacy_contracts(tmp_path: Pa
     assert payload["overall_status"] == "blocked"
     assert payload["summary"]["missing_contracts"] == 1
     assert payload["summary"]["legacy_unversioned_contracts"] >= 2
-
