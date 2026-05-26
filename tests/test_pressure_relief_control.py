@@ -53,6 +53,37 @@ def test_pressure_relief_enables_twenty_eight_pressure_controls(tmp_path: Path) 
     assert env["TRAINING_RESEARCH_PAUSE_ON_PRESSURE"] == "1"
 
 
+def test_pressure_relief_freezes_support_maintenance_when_system_cotenant_is_hot(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health_root = project_root / "governance" / "health"
+    _write_json(
+        health_root / "runtime_throttle_control_latest.json",
+        {
+            "host_saturation_score": 61.0,
+            "compute_pressure_level": "normal",
+            "memory_pressure_level": "normal",
+            "host_pressure_attribution": {
+                "system_cotenant_hot": True,
+                "external_pressure_dominant": True,
+                "support_jobs_hot": True,
+            },
+        },
+    )
+    _write_json(health_root / "memory_efficiency_control_latest.json", {"co_running_session": {"level": "idle"}})
+    _write_json(health_root / "swap_pressure_governor_latest.json", {"swap_pressure": {"tier": "normal", "swap_used_gb": 0.5}})
+    _write_json(health_root / "global_halt_auto_clear_latest.json", {"halt": False})
+    _write_json(health_root / "ingestion_storage_control_latest.json", {"severity": "stable", "pressure_index": 0.02})
+
+    payload = pressure_relief_control.build_payload(project_root)
+    env = payload["recommended_env_overrides"]
+
+    assert payload["support_maintenance_stabilization"]["active"] is True
+    assert env["OPS_SUPPORT_MAINTENANCE_STABILIZER_ACTIVE"] == "1"
+    assert env["OPS_SUPPORT_MAINTENANCE_FREEZE"] == "1"
+    assert env["OPS_SUPPORT_JOB_NICE"] == "16"
+    assert float(env["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"]) <= 0.35
+
+
 def test_pressure_relief_keeps_concentrated_sql_drain_fast_under_deep_relief(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health_root = project_root / "governance" / "health"

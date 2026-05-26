@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from collections import deque
-from datetime import datetime, time, timezone
+from datetime import date, datetime, timedelta, time, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -126,6 +126,62 @@ def bool_status(ok: bool) -> str:
     return "ready" if ok else "blocked"
 
 
+def _observed_fixed_holiday(year: int, month: int, day: int) -> date:
+    holiday = date(year, month, day)
+    if holiday.weekday() == 5:
+        return holiday - timedelta(days=1)
+    if holiday.weekday() == 6:
+        return holiday + timedelta(days=1)
+    return holiday
+
+
+def _nth_weekday(year: int, month: int, weekday: int, nth: int) -> date:
+    current = date(year, month, 1)
+    offset = (weekday - current.weekday()) % 7
+    return current + timedelta(days=offset + (nth - 1) * 7)
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    current = date(year, month + 1, 1) - timedelta(days=1) if month < 12 else date(year, 12, 31)
+    return current - timedelta(days=(current.weekday() - weekday) % 7)
+
+
+def _easter_date(year: int) -> date:
+    # Meeus/Jones/Butcher Gregorian computus.
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def us_equity_market_holiday(day: date) -> str:
+    year = day.year
+    holidays = {
+        _observed_fixed_holiday(year, 1, 1): "new_years_day",
+        _nth_weekday(year, 1, 0, 3): "martin_luther_king_jr_day",
+        _nth_weekday(year, 2, 0, 3): "washingtons_birthday",
+        _easter_date(year) - timedelta(days=2): "good_friday",
+        _last_weekday(year, 5, 0): "memorial_day",
+        _observed_fixed_holiday(year, 6, 19): "juneteenth",
+        _observed_fixed_holiday(year, 7, 4): "independence_day",
+        _nth_weekday(year, 9, 0, 1): "labor_day",
+        _nth_weekday(year, 11, 3, 4): "thanksgiving_day",
+        _observed_fixed_holiday(year, 12, 25): "christmas_day",
+    }
+    return holidays.get(day, "")
+
+
 def eastern_off_hours_window(
     *,
     now: datetime | None = None,
@@ -135,10 +191,14 @@ def eastern_off_hours_window(
     current = (now or utc_now()).astimezone(LOCAL_TZ)
     local_clock = current.timetz().replace(tzinfo=None)
     is_weekend = current.weekday() >= 5
-    active = bool(is_weekend or local_clock >= start_local or local_clock < end_local)
+    holiday_name = us_equity_market_holiday(current.date())
+    market_holiday = bool(holiday_name)
+    active = bool(is_weekend or market_holiday or local_clock >= start_local or local_clock < end_local)
     return {
         "active": active,
         "is_weekend": is_weekend,
+        "market_holiday": market_holiday,
+        "market_holiday_name": holiday_name,
         "timezone": "America/New_York",
         "local_time": current.isoformat(),
         "window_start_local": start_local.strftime("%H:%M"),

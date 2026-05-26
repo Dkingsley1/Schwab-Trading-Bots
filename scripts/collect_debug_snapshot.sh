@@ -1,5 +1,6 @@
 #!/bin/zsh
 set -euo pipefail
+setopt NULL_GLOB
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_ROOT="$PROJECT_ROOT/exports/debug_snapshots"

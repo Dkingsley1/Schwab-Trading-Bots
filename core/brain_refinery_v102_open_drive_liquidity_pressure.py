@@ -15,6 +15,11 @@ _MODES = [
     "shadow_aggressive_equities",
     "shadow_intraday_aggressive_equities",
     "shadow_swing_aggressive_equities",
+    "shadow_conservative_equities",
+    "shadow_dividend_equities",
+    "shadow_bond_equities",
+    "shadow_crypto",
+    "shadow_crypto_futures_crypto",
     "shadow_schwab_futures_equities",
 ]
 
@@ -73,6 +78,8 @@ def _runtime_feature_vector(sequence, idx):
             price_change(sequence, idx, 6),
             feature_ema(sequence, idx, "market_micro_relative_volume_norm", 4),
             feature_ema(sequence, idx, "market_micro_order_flow_imbalance_norm", 4),
+            _liquidity_pressure(obs),
+            _bias(obs),
         ],
         dtype=np.float32,
     )
@@ -81,9 +88,9 @@ def _runtime_feature_vector(sequence, idx):
 def _runtime_sample_filter(sequence, idx, horizon):
     obs = sequence[idx]
     return (
-        base_runtime_gate(obs, min_quote_agreement=0.78, max_quote_deviation=0.26, max_spread_bps=24.0, min_queue_depth=0.0, max_latency_ms=2400.0)
-        and _liquidity_pressure(obs) >= 0.16
-        and abs(_bias(obs)) >= 0.06
+        base_runtime_gate(obs, min_quote_agreement=0.74, max_quote_deviation=0.30, max_spread_bps=32.0, min_queue_depth=0.0, max_latency_ms=3200.0)
+        and _liquidity_pressure(obs) >= 0.10
+        and abs(_bias(obs)) >= 0.025
     )
 
 
@@ -106,12 +113,13 @@ def _runtime_open_drive_label(sequence, idx, horizon):
         horizon,
         bias=_bias(obs),
         support=_liquidity_pressure(obs),
-        min_support=0.16,
-        min_abs_bias=0.06,
-        move_base=0.00090,
-        move_scale=0.00050,
-        success_floor=0.00018,
-        failure_floor=0.00038,
+        min_support=0.10,
+        min_abs_bias=0.025,
+        move_base=0.00080,
+        move_scale=0.00048,
+        move_floor=0.00022,
+        success_floor=0.00025,
+        failure_floor=0.00024,
     )
 
 
@@ -141,20 +149,22 @@ def train_brain():
             "ret_6",
             "relative_volume_ema_4",
             "order_flow_ema_4",
+            "liquidity_pressure",
+            "open_drive_bias",
         ],
         runtime_feature_builder=_runtime_feature_vector,
         runtime_label_builder=_runtime_open_drive_label,
         sample_filter=_runtime_sample_filter,
         confidence_builder=_runtime_confidence,
-        min_confidence=0.28,
-        lookback_days=45,
+        min_confidence=0.20,
+        lookback_days=90,
         mode_allowlist=_MODES,
-        window=20,
-        horizon=4,
-        min_samples=192,
+        window=14,
+        horizon=3,
+        min_samples=160,
         min_sequences=3,
-        min_positive_samples=32,
-        min_negative_samples=32,
+        min_positive_samples=20,
+        min_negative_samples=20,
         max_best_val_loss=0.692,
         max_final_val_loss=0.704,
         min_long_precision=0.52,
@@ -163,8 +173,8 @@ def train_brain():
         min_acted_accuracy=0.60,
         min_long_acted_count=6,
         min_short_acted_count=6,
-        min_accuracy_lift_over_majority=0.03,
-        min_precision_balance_score=0.35,
+        min_accuracy_lift_over_majority=0.02,
+        min_precision_balance_score=0.28,
         allow_fallback_on_insufficient_data=False,
     )
 

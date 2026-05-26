@@ -52,8 +52,13 @@ def _int(raw: Any, default: int = 0) -> int:
 
 
 def _label_contract_for_row(registry_row: dict[str, Any]) -> dict[str, Any]:
-    explicit = registry_row.get("label_contract") or registry_row.get("training_label_contract")
-    if isinstance(explicit, dict) and explicit:
+    for explicit in (
+        registry_row.get("label_contract"),
+        registry_row.get("training_label_contract"),
+        registry_row.get("universal_label_contract"),
+    ):
+        if not isinstance(explicit, dict) or not explicit:
+            continue
         label_family = str(explicit.get("label_family") or explicit.get("family") or "").strip()
         primary = str(explicit.get("primary_horizon") or explicit.get("primary_label_horizon") or "").strip()
         if label_family and primary:

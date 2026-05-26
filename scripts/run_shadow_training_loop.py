@@ -139,6 +139,16 @@ _PAPER_RUNTIME_CONTROLS_CACHE: Dict[str, Any] = {
     "snapshot": {
         "profile_symbol_penalties": {},
         "profile_drag": {},
+        "profitability_profile_controls": {},
+        "profitability_strategy_controls": {},
+        "profitability_global_policy": {},
+        "profitability_upgrade_lanes": [],
+        "master_grandmaster_training_contract": {},
+        "profit_harvest_strategy_controls": {},
+        "profit_harvest_position_ledger": {},
+        "profit_harvest_report_card": {},
+        "profit_harvest_aplus_campaign": {},
+        "grand_master_profit_harvest_awareness_contract": {},
     },
 }
 
@@ -1037,6 +1047,10 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(float(low), min(float(value), float(high)))
+
+
 def _clamp01(value: float) -> float:
     return max(0.0, min(float(value), 1.0))
 
@@ -1739,11 +1753,12 @@ def _paper_runtime_controls_snapshot() -> Dict[str, Any]:
     refresh_seconds = max(float(os.getenv("PAPER_RUNTIME_CONTROL_REFRESH_SECONDS", "180") or 180.0), 30.0)
     project_root = Path(PROJECT_ROOT)
     perf_path = project_root / "governance" / "health" / "paper_performance_latest.json"
+    profitability_control_path = project_root / "governance" / "health" / "paper_runtime_profitability_controls_latest.json"
     bridge_files = sorted(
         (project_root / "exports" / "paper_broker_bridge" / "paper").glob("paper_bridge_orders_*.jsonl")
     )[-3:]
     cache_parts: list[str] = []
-    for path in [perf_path, *bridge_files]:
+    for path in [perf_path, profitability_control_path, *bridge_files]:
         try:
             cache_parts.append(f"{path}:{int(path.stat().st_mtime)}:{int(path.stat().st_size)}")
         except Exception:
@@ -1847,9 +1862,171 @@ def _paper_runtime_controls_snapshot() -> Dict[str, Any]:
                 "win_rate": (round(float(win_rate), 6) if win_rate is not None else None),
             }
 
+    profitability_profile_controls: Dict[str, Dict[str, Any]] = {}
+    profitability_strategy_controls: Dict[str, Dict[str, Any]] = {}
+    profitability_global_policy: Dict[str, Any] = {}
+    profitability_upgrade_lanes: List[Dict[str, Any]] = []
+    profitability_hardening_contract: Dict[str, Any] = {}
+    profitability_scout_collection_contract: Dict[str, Any] = {}
+    profit_harvest_profile_controls: Dict[str, Dict[str, Any]] = {}
+    profit_harvest_strategy_controls: Dict[str, Dict[str, Any]] = {}
+    profit_harvest_position_ledger: Dict[str, Any] = {}
+    daily_sleeve_harvest_goal_contract: Dict[str, Any] = {}
+    daily_target_adaptation_contract: Dict[str, Any] = {}
+    paper_harvest_execution_contract: Dict[str, Any] = {}
+    paper_harvest_infrabot_contract: Dict[str, Any] = {}
+    profit_harvest_regret_replay_contract: Dict[str, Any] = {}
+    aggressive_harvest_mode_contract: Dict[str, Any] = {}
+    runner_protection_contract: Dict[str, Any] = {}
+    profit_rotation_contract: Dict[str, Any] = {}
+    profit_harvest_report_card: Dict[str, Any] = {}
+    profit_harvest_aplus_campaign: Dict[str, Any] = {}
+    grand_master_profit_harvest_awareness_contract: Dict[str, Any] = {}
+    profit_realization_contract: Dict[str, Any] = {}
+    max_grade_push_contract: Dict[str, Any] = {}
+    master_grandmaster_training_contract: Dict[str, Any] = {}
+    if profitability_control_path.exists():
+        try:
+            profitability_payload = json.loads(profitability_control_path.read_text(encoding="utf-8"))
+        except Exception:
+            profitability_payload = {}
+        raw_policy = profitability_payload.get("global_runtime_policy") if isinstance(profitability_payload, dict) else {}
+        if isinstance(raw_policy, dict):
+            profitability_global_policy = raw_policy
+        raw_lanes = profitability_payload.get("profitability_upgrade_lanes") if isinstance(profitability_payload, dict) else []
+        if isinstance(raw_lanes, list):
+            profitability_upgrade_lanes = [row for row in raw_lanes if isinstance(row, dict)]
+        raw_hardening_contract = (
+            profitability_payload.get("paper_profitability_hardening_contract")
+            if isinstance(profitability_payload, dict)
+            else {}
+        )
+        if isinstance(raw_hardening_contract, dict):
+            profitability_hardening_contract = raw_hardening_contract
+        raw_scout_collection_contract = (
+            profitability_payload.get("scout_collection_contract")
+            if isinstance(profitability_payload, dict)
+            else {}
+        )
+        if isinstance(raw_scout_collection_contract, dict):
+            profitability_scout_collection_contract = raw_scout_collection_contract
+        raw_profit_harvest_profiles = (
+            profitability_payload.get("profit_harvest_profile_controls")
+            if isinstance(profitability_payload, dict)
+            else {}
+        )
+        if isinstance(raw_profit_harvest_profiles, dict):
+            for raw_profile, raw_control in raw_profit_harvest_profiles.items():
+                profile = str(raw_profile or "").strip().lower()
+                if profile and isinstance(raw_control, dict):
+                    profit_harvest_profile_controls[profile] = raw_control
+        raw_profit_harvest_strategies = (
+            profitability_payload.get("profit_harvest_strategy_controls")
+            if isinstance(profitability_payload, dict)
+            else {}
+        )
+        if isinstance(raw_profit_harvest_strategies, dict):
+            for raw_key, raw_control in raw_profit_harvest_strategies.items():
+                key = str(raw_key or "").strip().lower()
+                if key and isinstance(raw_control, dict):
+                    profit_harvest_strategy_controls[key] = raw_control
+        for key_name, target_name in (
+            ("profit_harvest_position_ledger", "profit_harvest_position_ledger"),
+            ("daily_sleeve_harvest_goal_contract", "daily_sleeve_harvest_goal_contract"),
+            ("daily_target_adaptation_contract", "daily_target_adaptation_contract"),
+            ("paper_harvest_execution_contract", "paper_harvest_execution_contract"),
+            ("paper_harvest_infrabot_contract", "paper_harvest_infrabot_contract"),
+            ("profit_harvest_regret_replay_contract", "profit_harvest_regret_replay_contract"),
+            ("aggressive_harvest_mode_contract", "aggressive_harvest_mode_contract"),
+            ("runner_protection_contract", "runner_protection_contract"),
+            ("profit_rotation_contract", "profit_rotation_contract"),
+            ("profit_harvest_report_card", "profit_harvest_report_card"),
+            ("profit_harvest_aplus_campaign", "profit_harvest_aplus_campaign"),
+            ("grand_master_profit_harvest_awareness_contract", "grand_master_profit_harvest_awareness_contract"),
+            ("max_grade_push_contract", "max_grade_push_contract"),
+        ):
+            raw_contract = profitability_payload.get(key_name) if isinstance(profitability_payload, dict) else {}
+            if not isinstance(raw_contract, dict):
+                continue
+            if target_name == "profit_harvest_position_ledger":
+                profit_harvest_position_ledger = raw_contract
+            elif target_name == "daily_sleeve_harvest_goal_contract":
+                daily_sleeve_harvest_goal_contract = raw_contract
+            elif target_name == "daily_target_adaptation_contract":
+                daily_target_adaptation_contract = raw_contract
+            elif target_name == "paper_harvest_execution_contract":
+                paper_harvest_execution_contract = raw_contract
+            elif target_name == "paper_harvest_infrabot_contract":
+                paper_harvest_infrabot_contract = raw_contract
+            elif target_name == "profit_harvest_regret_replay_contract":
+                profit_harvest_regret_replay_contract = raw_contract
+            elif target_name == "aggressive_harvest_mode_contract":
+                aggressive_harvest_mode_contract = raw_contract
+            elif target_name == "runner_protection_contract":
+                runner_protection_contract = raw_contract
+            elif target_name == "profit_rotation_contract":
+                profit_rotation_contract = raw_contract
+            elif target_name == "profit_harvest_report_card":
+                profit_harvest_report_card = raw_contract
+            elif target_name == "profit_harvest_aplus_campaign":
+                profit_harvest_aplus_campaign = raw_contract
+            elif target_name == "grand_master_profit_harvest_awareness_contract":
+                grand_master_profit_harvest_awareness_contract = raw_contract
+            elif target_name == "max_grade_push_contract":
+                max_grade_push_contract = raw_contract
+        raw_profit_realization_contract = (
+            profitability_payload.get("profit_realization_contract")
+            if isinstance(profitability_payload, dict)
+            else {}
+        )
+        if isinstance(raw_profit_realization_contract, dict):
+            profit_realization_contract = raw_profit_realization_contract
+        raw_training_contract = (
+            profitability_payload.get("master_grandmaster_training_contract")
+            if isinstance(profitability_payload, dict)
+            else {}
+        )
+        if isinstance(raw_training_contract, dict):
+            master_grandmaster_training_contract = raw_training_contract
+        raw_profiles = profitability_payload.get("profile_controls") if isinstance(profitability_payload, dict) else {}
+        if isinstance(raw_profiles, dict):
+            for raw_profile, raw_control in raw_profiles.items():
+                profile = str(raw_profile or "").strip().lower()
+                if profile and isinstance(raw_control, dict):
+                    profitability_profile_controls[profile] = raw_control
+        raw_strategies = profitability_payload.get("strategy_controls") if isinstance(profitability_payload, dict) else {}
+        if isinstance(raw_strategies, dict):
+            for raw_key, raw_control in raw_strategies.items():
+                key = str(raw_key or "").strip().lower()
+                if key and isinstance(raw_control, dict):
+                    profitability_strategy_controls[key] = raw_control
+
     snapshot = {
         "profile_symbol_penalties": profile_symbol_penalties,
         "profile_drag": profile_drag,
+        "profitability_profile_controls": profitability_profile_controls,
+        "profitability_strategy_controls": profitability_strategy_controls,
+        "profitability_global_policy": profitability_global_policy,
+        "profitability_upgrade_lanes": profitability_upgrade_lanes,
+        "profitability_hardening_contract": profitability_hardening_contract,
+        "profitability_scout_collection_contract": profitability_scout_collection_contract,
+        "profit_harvest_profile_controls": profit_harvest_profile_controls,
+        "profit_harvest_strategy_controls": profit_harvest_strategy_controls,
+        "profit_harvest_position_ledger": profit_harvest_position_ledger,
+        "daily_sleeve_harvest_goal_contract": daily_sleeve_harvest_goal_contract,
+        "daily_target_adaptation_contract": daily_target_adaptation_contract,
+        "paper_harvest_execution_contract": paper_harvest_execution_contract,
+        "paper_harvest_infrabot_contract": paper_harvest_infrabot_contract,
+        "profit_harvest_regret_replay_contract": profit_harvest_regret_replay_contract,
+        "aggressive_harvest_mode_contract": aggressive_harvest_mode_contract,
+        "runner_protection_contract": runner_protection_contract,
+        "profit_rotation_contract": profit_rotation_contract,
+        "profit_harvest_report_card": profit_harvest_report_card,
+        "profit_harvest_aplus_campaign": profit_harvest_aplus_campaign,
+        "grand_master_profit_harvest_awareness_contract": grand_master_profit_harvest_awareness_contract,
+        "profit_realization_contract": profit_realization_contract,
+        "max_grade_push_contract": max_grade_push_contract,
+        "master_grandmaster_training_contract": master_grandmaster_training_contract,
     }
     cache["loaded_at"] = now_ts
     cache["cache_key"] = cache_key
@@ -1871,6 +2048,444 @@ def _profile_drag_snapshot(profile: str) -> Dict[str, Any]:
     drag_map = snapshot.get("profile_drag") if isinstance(snapshot.get("profile_drag"), dict) else {}
     row = drag_map.get(str(profile or "").strip().lower(), {}) if isinstance(drag_map, dict) else {}
     return row if isinstance(row, dict) else {}
+
+
+def _profile_profitability_control(profile: str) -> Dict[str, Any]:
+    snapshot = _paper_runtime_controls_snapshot()
+    controls = snapshot.get("profitability_profile_controls") if isinstance(snapshot.get("profitability_profile_controls"), dict) else {}
+    row = controls.get(str(profile or "").strip().lower(), {}) if isinstance(controls, dict) else {}
+    return row if isinstance(row, dict) else {}
+
+
+def _profitability_global_policy() -> Dict[str, Any]:
+    snapshot = _paper_runtime_controls_snapshot()
+    policy = snapshot.get("profitability_global_policy") if isinstance(snapshot.get("profitability_global_policy"), dict) else {}
+    return policy if isinstance(policy, dict) else {}
+
+
+def _profile_profit_harvest_control(profile: str) -> Dict[str, Any]:
+    snapshot = _paper_runtime_controls_snapshot()
+    controls = snapshot.get("profit_harvest_profile_controls") if isinstance(snapshot.get("profit_harvest_profile_controls"), dict) else {}
+    row = controls.get(str(profile or "").strip().lower(), {}) if isinstance(controls, dict) else {}
+    return row if isinstance(row, dict) else {}
+
+
+def _strategy_profit_harvest_control(profile: str, strategy: str) -> Dict[str, Any]:
+    snapshot = _paper_runtime_controls_snapshot()
+    controls = snapshot.get("profit_harvest_strategy_controls") if isinstance(snapshot.get("profit_harvest_strategy_controls"), dict) else {}
+    if not isinstance(controls, dict):
+        return {}
+    prof = str(profile or "default").strip().lower()
+    strat = str(strategy or "").strip().lower()
+    if not prof or not strat:
+        return {}
+    bot_id = strat.split("::", 1)[1] if "::" in strat else strat
+    for key in (
+        f"{prof}::{strat}",
+        f"{prof}::{bot_id}",
+    ):
+        row = controls.get(key)
+        if isinstance(row, dict):
+            return row
+    return {}
+
+
+def _profit_harvest_report_card_snapshot() -> Dict[str, Any]:
+    snapshot = _paper_runtime_controls_snapshot()
+    report = snapshot.get("profit_harvest_report_card") if isinstance(snapshot.get("profit_harvest_report_card"), dict) else {}
+    return report if isinstance(report, dict) else {}
+
+
+def _profit_harvest_aplus_campaign_snapshot() -> Dict[str, Any]:
+    snapshot = _paper_runtime_controls_snapshot()
+    campaign = snapshot.get("profit_harvest_aplus_campaign") if isinstance(snapshot.get("profit_harvest_aplus_campaign"), dict) else {}
+    if isinstance(campaign, dict) and campaign:
+        return campaign
+    report = snapshot.get("profit_harvest_report_card") if isinstance(snapshot.get("profit_harvest_report_card"), dict) else {}
+    nested = report.get("a_plus_campaign") if isinstance(report, dict) and isinstance(report.get("a_plus_campaign"), dict) else {}
+    return nested if isinstance(nested, dict) else {}
+
+
+def _profit_realization_contract_snapshot() -> Dict[str, Any]:
+    snapshot = _paper_runtime_controls_snapshot()
+    contract = snapshot.get("profit_realization_contract") if isinstance(snapshot.get("profit_realization_contract"), dict) else {}
+    return contract if isinstance(contract, dict) else {}
+
+
+def _profit_rotation_contract_snapshot() -> Dict[str, Any]:
+    snapshot = _paper_runtime_controls_snapshot()
+    contract = snapshot.get("profit_rotation_contract") if isinstance(snapshot.get("profit_rotation_contract"), dict) else {}
+    return contract if isinstance(contract, dict) else {}
+
+
+def _master_grandmaster_training_contract() -> Dict[str, Any]:
+    snapshot = _paper_runtime_controls_snapshot()
+    contract = (
+        snapshot.get("master_grandmaster_training_contract")
+        if isinstance(snapshot.get("master_grandmaster_training_contract"), dict)
+        else {}
+    )
+    return contract if isinstance(contract, dict) else {}
+
+
+def _strategy_profitability_control(profile: str, strategy: str) -> Dict[str, Any]:
+    snapshot = _paper_runtime_controls_snapshot()
+    controls = snapshot.get("profitability_strategy_controls") if isinstance(snapshot.get("profitability_strategy_controls"), dict) else {}
+    if not isinstance(controls, dict):
+        return {}
+    prof = str(profile or "default").strip().lower()
+    strat = str(strategy or "").strip().lower()
+    if not prof or not strat:
+        return {}
+    bot_id = strat.split("::", 1)[1] if "::" in strat else strat
+    for key in (
+        f"{prof}::{strat}",
+        f"{prof}::{bot_id}",
+    ):
+        row = controls.get(key)
+        if isinstance(row, dict):
+            return row
+    for key, row in controls.items():
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("profile") or "").strip().lower() != prof:
+            continue
+        row_bot = str(row.get("bot_id") or "").strip().lower()
+        row_strategy = str(row.get("strategy") or "").strip().lower()
+        if bot_id and bot_id == row_bot:
+            return row
+        if strat and strat == row_strategy:
+            return row
+    return {}
+
+
+def _profile_profitability_upper_layer_features(profile: str) -> Dict[str, float]:
+    control = _profile_profitability_control(profile)
+    training_contract = _master_grandmaster_training_contract()
+    harvest_control = _profile_profit_harvest_control(profile)
+    realization_contract = _profit_realization_contract_snapshot()
+    report_card = _profit_harvest_report_card_snapshot()
+    rotation_contract = _profit_rotation_contract_snapshot()
+    harvest_intelligence = (
+        harvest_control.get("harvest_intelligence")
+        if isinstance(harvest_control.get("harvest_intelligence"), dict)
+        else {}
+    )
+    realized_share = _clamp01(_to_float(realization_contract.get("realized_profit_share_norm"), 0.0))
+    unrealized_share = _clamp01(_to_float(realization_contract.get("unrealized_profit_share_norm"), 0.0))
+    target_share = _clamp01(_to_float(realization_contract.get("target_realized_profit_share_norm"), 0.35))
+    report_score = _clamp01(_to_float(report_card.get("score_norm"), 0.0))
+    rotation_pressure = 0.0
+    for row in rotation_contract.get("donors") if isinstance(rotation_contract.get("donors"), list) else []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("profile") or "").strip().lower() != str(profile or "").strip().lower():
+            continue
+        rotation_pressure = max(rotation_pressure, _clamp01(_to_float(row.get("harvest_pressure_norm"), 0.0)))
+    harvest_active = 1.0 if bool(harvest_control.get("active", False)) else 0.0
+    harvest_features = {
+        "paper_profit_harvest_master_awareness_active_norm": harvest_active,
+        "paper_profit_harvest_grandmaster_awareness_active_norm": harvest_active,
+        "paper_profit_harvest_realized_share_norm": realized_share,
+        "paper_profit_harvest_unrealized_share_norm": unrealized_share,
+        "paper_profit_harvest_target_gap_norm": _clamp01(max(target_share - realized_share, 0.0) / max(target_share, 0.01)),
+        "paper_profit_harvest_regret_risk_norm": _clamp01(_to_float(harvest_intelligence.get("harvest_regret_risk_norm"), 0.0)),
+        "paper_profit_harvest_trend_continuation_norm": _clamp01(_to_float(harvest_intelligence.get("trend_continuation_score_norm"), 0.0)),
+        "paper_profit_harvest_conversion_skill_norm": _clamp01(_to_float(harvest_intelligence.get("realized_conversion_skill_norm"), 0.0)),
+        "paper_profit_harvest_rotation_pressure_norm": rotation_pressure,
+        "paper_profit_harvest_report_score_norm": report_score,
+    }
+    if not control:
+        return {
+            "paper_profitability_master_awareness_active_norm": 0.0,
+            "paper_profitability_grandmaster_awareness_active_norm": 0.0,
+            "paper_profitability_master_profit_score_norm": 0.5,
+            "paper_profitability_grandmaster_profit_score_norm": 0.5,
+            "paper_profitability_master_drag_norm": 0.0,
+            "paper_profitability_grandmaster_drag_norm": 0.0,
+            "paper_profitability_master_training_weight_norm": 0.0,
+            "paper_profitability_grandmaster_training_weight_norm": 0.0,
+            "paper_profitability_master_size_multiplier_norm": 1.0,
+            "paper_profitability_grandmaster_size_multiplier_norm": 1.0,
+            "paper_profitability_master_risk_norm": 0.0,
+            "paper_profitability_grandmaster_risk_norm": 0.0,
+            "paper_profitability_grandmaster_exit_pressure_norm": 0.0,
+            "paper_profitability_grandmaster_execution_discount_norm": 0.0,
+            "paper_profitability_grandmaster_conflict_cap_norm": 1.0,
+            **harvest_features,
+        }
+
+    outcome_training = control.get("outcome_weighted_training") if isinstance(control.get("outcome_weighted_training"), dict) else {}
+    exit_contract = control.get("exit_intelligence") if isinstance(control.get("exit_intelligence"), dict) else {}
+    execution_contract = control.get("execution_aware_alpha") if isinstance(control.get("execution_aware_alpha"), dict) else {}
+    portfolio_contract = control.get("portfolio_conflict_control") if isinstance(control.get("portfolio_conflict_control"), dict) else {}
+    active = 1.0 if bool(control.get("active", False)) else 0.0
+    profit_score = _clamp01(float(control.get("profit_score", 0.5) or 0.5))
+    drag = _clamp01(float(control.get("drag_score", 0.0) or 0.0))
+    size_multiplier = _clamp01(float(control.get("position_size_multiplier", 1.0) or 1.0))
+    sample_weight = _clamp01(float(outcome_training.get("sample_weight_multiplier", 1.0) or 1.0) / 3.0)
+    exit_pressure = _clamp01(float(exit_contract.get("tighten_exit_bias_norm", 0.0) or 0.0))
+    execution_discount = _clamp01(float(execution_contract.get("unknown_fill_score_discount_norm", 0.0) or 0.0))
+    conflict_cap = _clamp01(float(portfolio_contract.get("max_overlap_pressure_norm", 1.0) or 1.0))
+    contract_drag = _clamp01(float(training_contract.get("max_drag_score_norm", drag) or drag))
+    risk = _clamp01(
+        active
+        * (
+            0.34 * drag
+            + 0.18 * contract_drag
+            + 0.16 * (1.0 - profit_score)
+            + 0.14 * (1.0 - size_multiplier)
+            + 0.10 * exit_pressure
+            + 0.08 * execution_discount
+        )
+    )
+    return {
+        "paper_profitability_master_awareness_active_norm": active,
+        "paper_profitability_grandmaster_awareness_active_norm": active,
+        "paper_profitability_master_profit_score_norm": profit_score,
+        "paper_profitability_grandmaster_profit_score_norm": profit_score,
+        "paper_profitability_master_drag_norm": drag,
+        "paper_profitability_grandmaster_drag_norm": drag,
+        "paper_profitability_master_training_weight_norm": sample_weight,
+        "paper_profitability_grandmaster_training_weight_norm": sample_weight,
+        "paper_profitability_master_size_multiplier_norm": size_multiplier,
+        "paper_profitability_grandmaster_size_multiplier_norm": size_multiplier,
+        "paper_profitability_master_risk_norm": risk,
+        "paper_profitability_grandmaster_risk_norm": risk,
+        "paper_profitability_grandmaster_exit_pressure_norm": exit_pressure,
+        "paper_profitability_grandmaster_execution_discount_norm": execution_discount,
+        "paper_profitability_grandmaster_conflict_cap_norm": conflict_cap,
+        **harvest_features,
+    }
+
+
+def _profitability_quality_gate_norm(features: Dict[str, float]) -> float:
+    tradeability = _clamp01(float(features.get("market_micro_tradeability_score_norm", features.get("tradeability_score", 0.5)) or 0.5))
+    execution_fitness = _clamp01(float(features.get("execution_fitness_norm", tradeability) or tradeability))
+    source_quality = _clamp01(float(features.get("news_source_quality_norm", features.get("source_quality_norm", 0.5)) or 0.5))
+    catalyst = _clamp01(float(features.get("calendar_event_proximity_norm", features.get("event_proximity_norm", 0.5)) or 0.5))
+    confirmation = _clamp01(float(features.get("core_cross_asset_confirmation_norm", features.get("cross_asset_confirmation_norm", 0.5)) or 0.5))
+    conflict_pressure = _clamp01(float(features.get("cross_bot_conflict_norm", features.get("allocation_conflict_norm", 0.0)) or 0.0))
+    return _clamp01(
+        0.24 * tradeability
+        + 0.24 * execution_fitness
+        + 0.20 * source_quality
+        + 0.14 * catalyst
+        + 0.12 * confirmation
+        + 0.06 * (1.0 - conflict_pressure)
+    )
+
+
+def _profitability_confirmation_evidence(
+    features: Dict[str, float],
+    contract: Optional[Dict[str, Any]] = None,
+) -> tuple[float, int, Dict[str, float]]:
+    contract = contract if isinstance(contract, dict) else {}
+    tradeability = _clamp01(float(features.get("market_micro_tradeability_score_norm", features.get("tradeability_score", 0.5)) or 0.5))
+    execution_fitness = _clamp01(float(features.get("execution_fitness_norm", tradeability) or tradeability))
+    source_quality = _clamp01(float(features.get("news_source_quality_norm", features.get("source_quality_norm", 0.5)) or 0.5))
+    spread_quality = _clamp01(
+        float(
+            features.get(
+                "market_micro_spread_quality_norm",
+                features.get("bid_ask_spread_quality_norm", features.get("spread_quality_norm", execution_fitness)),
+            )
+            or execution_fitness
+        )
+    )
+    catalyst = _clamp01(float(features.get("calendar_event_proximity_norm", features.get("event_proximity_norm", 0.5)) or 0.5))
+    confirmation = _clamp01(float(features.get("core_cross_asset_confirmation_norm", features.get("cross_asset_confirmation_norm", 0.5)) or 0.5))
+    conflict_clearance = 1.0 - _clamp01(float(features.get("cross_bot_conflict_norm", features.get("allocation_conflict_norm", 0.0)) or 0.0))
+    channel_scores = {
+        "source_quality": source_quality,
+        "execution_quality": execution_fitness,
+        "spread_quality": spread_quality,
+        "cross_asset_confirmation": confirmation,
+        "event_catalyst_confirmation": catalyst,
+        "portfolio_conflict_clearance": conflict_clearance,
+    }
+    channel_floor = _clamp01(float(contract.get("independent_evidence_channel_floor_norm", 0.55) or 0.55))
+    channel_count = sum(1 for value in channel_scores.values() if value >= channel_floor)
+    quality = _clamp01(
+        0.19 * source_quality
+        + 0.19 * execution_fitness
+        + 0.16 * spread_quality
+        + 0.18 * confirmation
+        + 0.14 * catalyst
+        + 0.14 * conflict_clearance
+    )
+    return quality, channel_count, channel_scores
+
+
+def _apply_paper_mirror_profitability_control(
+    *,
+    profile: str,
+    strategy: str,
+    action: str,
+    score: float,
+    threshold: float,
+    reasons: List[str],
+    features: Dict[str, float],
+) -> tuple[str, float, List[str], Dict[str, float]]:
+    new_action = str(action or "HOLD").upper()
+    new_score = float(score)
+    new_reasons = list(reasons)
+    out_features = dict(features)
+    global_policy = _profitability_global_policy()
+    harvest_control = _strategy_profit_harvest_control(profile, strategy)
+    if (
+        bool(harvest_control.get("active", False))
+        and str(global_policy.get("apply_strategy_profit_harvest", "true")).strip().lower() != "false"
+    ):
+        harvest_pressure = _clamp01(float(harvest_control.get("profile_harvest_pressure_norm", 0.0) or 0.0))
+        trim_fraction = _clamp01(float(harvest_control.get("recommended_trim_fraction_norm", 0.0) or 0.0))
+        protect_floor = _clamp01(float(harvest_control.get("protect_runner_when_trend_continuation_above_norm", 0.74) or 0.74))
+        harvest_campaign = _profit_harvest_aplus_campaign_snapshot()
+        campaign_directives = (
+            harvest_campaign.get("profile_directives")
+            if isinstance(harvest_campaign.get("profile_directives"), dict)
+            else {}
+        )
+        prof = str(profile or "default").strip().lower()
+        campaign_directive = campaign_directives.get(prof, {}) if isinstance(campaign_directives, dict) else {}
+        campaign_enabled = (
+            bool(harvest_campaign.get("active", False))
+            and bool(campaign_directive.get("active", False))
+            and str(global_policy.get("apply_harvest_report_card_a_plus_campaign", "true")).strip().lower() != "false"
+            and str(global_policy.get("apply_harvest_report_card_a_plus_plus_campaign", "true")).strip().lower() != "false"
+        )
+        trend_continuation = _clamp01(
+            float(
+                out_features.get(
+                    "paper_profit_harvest_trend_continuation_norm",
+                    out_features.get("core_cross_asset_confirmation_norm", harvest_control.get("profile_trend_continuation_norm", 0.5)),
+                )
+                or harvest_control.get("profile_trend_continuation_norm", 0.5)
+            )
+        )
+        exit_quality = _profitability_quality_gate_norm(out_features)
+        force_pressure = _clamp01(float(harvest_control.get("force_trim_when_harvest_pressure_above_norm", 0.72) or 0.72))
+        if campaign_enabled:
+            trim_fraction = _clamp(
+                trim_fraction + _clamp01(float(campaign_directive.get("trim_fraction_boost_norm", 0.0) or 0.0)),
+                0.05,
+                0.78,
+            )
+            protect_floor = _clamp01(
+                protect_floor + _clamp01(float(campaign_directive.get("holdback_trend_floor_boost_norm", 0.0) or 0.0))
+            )
+            force_pressure = _clamp01(
+                force_pressure - _clamp01(float(campaign_directive.get("force_pressure_floor_relief_norm", 0.0) or 0.0))
+            )
+            exit_quality = _clamp01(
+                exit_quality + _clamp01(float(campaign_directive.get("exit_quality_floor_relief_norm", 0.0) or 0.0))
+            )
+        runner_protected = trend_continuation >= protect_floor and harvest_pressure < force_pressure
+        out_features["paper_strategy_profit_harvest_active_norm"] = 1.0
+        out_features["paper_strategy_profit_harvest_pressure_norm"] = harvest_pressure
+        out_features["paper_strategy_profit_harvest_trim_fraction_norm"] = trim_fraction
+        out_features["paper_strategy_profit_harvest_exit_quality_norm"] = exit_quality
+        out_features["paper_strategy_profit_harvest_runner_protected_norm"] = 1.0 if runner_protected else 0.0
+        out_features["paper_strategy_harvest_aplus_campaign_active_norm"] = 1.0 if campaign_enabled else 0.0
+        out_features["paper_strategy_harvest_aplusplus_campaign_active_norm"] = (
+            1.0 if campaign_enabled and bool(campaign_directive.get("a_plus_plus_mode_active", False)) else 0.0
+        )
+        out_features["paper_strategy_harvest_aplusplus_pressure_norm"] = (
+            _clamp01(float(campaign_directive.get("a_plus_plus_pressure_norm", 0.0) or 0.0)) if campaign_enabled else 0.0
+        )
+        if new_action == "BUY" and bool(harvest_control.get("block_new_adds", False)):
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [
+                f"paper_strategy_harvest_block_add tier={harvest_control.get('tier', '')}",
+                f"trim_fraction={trim_fraction:.3f}",
+            ]
+        elif new_action == "BUY" and campaign_enabled:
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [
+                f"paper_strategy_harvest_aplus_block_add pressure={float(campaign_directive.get('campaign_pressure_norm', 0.0) or 0.0):.3f}",
+                f"raw_grade={harvest_campaign.get('raw_outcome_grade', '')}",
+            ]
+        elif new_action == "HOLD" and runner_protected:
+            new_reasons = new_reasons + [
+                f"paper_strategy_harvest_hold_runner trend={trend_continuation:.3f}",
+                f"protect_floor={protect_floor:.3f}",
+            ]
+        elif new_action == "HOLD" and bool(harvest_control.get("promote_partial_trim", False)) and exit_quality >= 0.58:
+            new_action, new_score = _force_action_score("SELL", max(new_score, threshold), threshold)
+            new_reasons = new_reasons + [
+                f"paper_strategy_harvest_trim tier={harvest_control.get('tier', '')}",
+                f"trim_fraction={trim_fraction:.3f}",
+            ]
+        elif new_action == "HOLD" and harvest_pressure >= force_pressure and not runner_protected:
+            new_action, new_score = _force_action_score("SELL", max(new_score, threshold), threshold)
+            new_reasons = new_reasons + [
+                f"paper_strategy_harvest_force_trim pressure={harvest_pressure:.3f}",
+                f"trim_fraction={trim_fraction:.3f}",
+            ]
+        elif new_action == "SELL":
+            new_reasons = new_reasons + [
+                f"paper_strategy_harvest_sell_ok tier={harvest_control.get('tier', '')}",
+                f"trim_fraction={trim_fraction:.3f}",
+            ]
+    else:
+        out_features.setdefault("paper_strategy_profit_harvest_active_norm", 0.0)
+    if new_action not in {"BUY", "SELL"}:
+        return new_action, new_score, new_reasons, out_features
+
+    if str(global_policy.get("apply_loser_quarantine", "true")).strip().lower() == "false":
+        return new_action, new_score, new_reasons, out_features
+
+    control = _strategy_profitability_control(profile, strategy)
+    if not control:
+        return new_action, new_score, new_reasons, out_features
+
+    mode = str(control.get("mode") or "").strip().lower()
+    penalty = _clamp01(float(control.get("score_penalty_norm", 0.0) or 0.0))
+    size_multiplier = _clamp01(float(control.get("position_size_multiplier", 1.0) or 1.0))
+    confirmation_contract = (
+        control.get("confirmation_bias_control")
+        if isinstance(control.get("confirmation_bias_control"), dict)
+        else (
+            control.get("upgrade_contracts", {}).get("confirmation_bias_control")
+            if isinstance(control.get("upgrade_contracts"), dict)
+            and isinstance(control.get("upgrade_contracts", {}).get("confirmation_bias_control"), dict)
+            else {}
+        )
+    )
+    confirmation_quality, confirmation_channels, _ = _profitability_confirmation_evidence(out_features, confirmation_contract)
+    confirmation_bias_score = _clamp01(float(control.get("confirmation_bias_score_norm", confirmation_contract.get("confirmation_bias_score_norm", 0.0)) or 0.0))
+    min_confirmation_channels = max(int(float(confirmation_contract.get("min_independent_evidence_channels", 0) or 0)), 0)
+    confirmation_block_floor = _clamp01(float(confirmation_contract.get("block_when_quality_gate_below_norm", 0.0) or 0.0))
+    confirmation_dampen_floor = _clamp01(float(confirmation_contract.get("score_dampen_when_quality_below_norm", 0.0) or 0.0))
+    out_features["paper_profitability_strategy_control_active_norm"] = 1.0
+    out_features["paper_profitability_strategy_penalty_norm"] = penalty
+    out_features["paper_profitability_strategy_size_multiplier_norm"] = size_multiplier
+    out_features["paper_profitability_confirmation_bias_active_norm"] = (
+        1.0 if bool(confirmation_contract.get("active", False)) else 0.0
+    )
+    out_features["paper_profitability_confirmation_bias_score_norm"] = confirmation_bias_score
+    out_features["paper_profitability_strategy_confirmation_quality_norm"] = confirmation_quality
+    out_features["paper_profitability_strategy_confirmation_channels_norm"] = _clamp01(confirmation_channels / 6.0)
+    if mode == "paper_quarantine":
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"paper_strategy_quarantine penalty={penalty:.3f}"]
+    elif bool(confirmation_contract.get("active", False)) and (
+        (confirmation_block_floor > 0.0 and confirmation_quality < confirmation_block_floor)
+        or (min_confirmation_channels > 0 and confirmation_channels < min_confirmation_channels)
+    ):
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [
+            f"confirmation_bias_guard quality={confirmation_quality:.3f}",
+            f"channels={confirmation_channels}/{min_confirmation_channels}",
+        ]
+    elif bool(confirmation_contract.get("active", False)) and confirmation_dampen_floor > 0.0 and confirmation_quality < confirmation_dampen_floor:
+        dampen = max(0.18, 1.0 - (0.45 * max(confirmation_bias_score, penalty)))
+        new_score = 0.5 + ((new_score - 0.5) * dampen)
+        new_reasons = new_reasons + [f"confirmation_bias_dampen quality={confirmation_quality:.3f}"]
+    elif penalty > 0.0:
+        new_score = 0.5 + ((new_score - 0.5) * max(0.20, 1.0 - (0.65 * penalty)))
+        new_reasons = new_reasons + [f"paper_strategy_deweight penalty={penalty:.3f}"]
+    return new_action, new_score, new_reasons, out_features
 
 
 def _symbol_cooldown_memory_norm(
@@ -4900,6 +5515,114 @@ def _pnl_attribution_path(project_root: str, broker: Optional[str] = None) -> st
     return os.path.join(project_root, "governance", _shadow_profile_subdir(broker=broker), f"shadow_pnl_attribution_{day}.jsonl")
 
 
+_DECISION_DRIVER_FEATURE_KEYS = (
+    "mom_1m",
+    "mom_5m",
+    "pct_from_close",
+    "volatility_1m",
+    "vol",
+    "flow_direction_signed",
+    "flow_conviction_norm",
+    "flow_stress_norm",
+    "lead_lag_signal_signed",
+    "lead_lag_confidence_norm",
+    "lead_lag_break_norm",
+    "market_micro_order_flow_imbalance_norm",
+    "market_micro_tradeability_score_norm",
+    "execution_fitness_norm",
+    "quant_kelly_fraction_norm",
+    "quant_strategy_carry_edge_norm",
+    "quant_strategy_mean_reversion_edge_norm",
+    "quant_strategy_volatility_rv_edge_norm",
+    "quant_strategy_microstructure_edge_norm",
+    "quant_strategy_tail_hedge_edge_norm",
+    "quant_strategy_crypto_basis_edge_norm",
+    "quant_strategy_kelly_sizing_readiness_norm",
+    "quant_strategy_portfolio_fit_norm",
+    "quant_strategy_execution_alignment_norm",
+    "quant_strategy_risk_adjusted_conviction_norm",
+    "quant_strategy_allocation_bias_norm",
+    "quant_cvar_tail_risk_norm",
+    "quant_copula_dependency_norm",
+    "quant_heston_vol_risk_norm",
+    "quant_merton_jump_risk_norm",
+    "allocation_confidence_norm",
+    "allocation_confidence_scale",
+    "duplicate_alpha_pressure_norm",
+    "strategy_overlap_pressure_norm",
+    "paper_profitability_master_awareness_active_norm",
+    "paper_profitability_master_profit_score_norm",
+    "paper_profitability_master_drag_norm",
+    "paper_profitability_master_training_weight_norm",
+    "paper_profitability_master_size_multiplier_norm",
+    "paper_profitability_master_risk_norm",
+    "paper_profitability_grandmaster_awareness_active_norm",
+    "paper_profitability_grandmaster_profit_score_norm",
+    "paper_profitability_grandmaster_drag_norm",
+    "paper_profitability_grandmaster_risk_norm",
+    "paper_profitability_grandmaster_exit_pressure_norm",
+    "paper_profitability_grandmaster_execution_discount_norm",
+)
+
+
+def _decision_driver_feature_snapshot(
+    features: Dict[str, Any],
+    grand_master_meta: Optional[Dict[str, Any]] = None,
+    *,
+    action: str = "HOLD",
+    score: float = 0.5,
+    threshold: float = 0.55,
+    return_1m: float = 0.0,
+) -> Dict[str, float]:
+    meta = dict(grand_master_meta or {})
+    out: Dict[str, float] = {
+        "return_1m": float(return_1m),
+        "decision_action_norm": 1.0 if str(action).upper() == "BUY" else (-1.0 if str(action).upper() == "SELL" else 0.0),
+        "decision_score_norm": _clamp01(float(score)),
+        "decision_threshold_norm": _clamp01(float(threshold)),
+    }
+    for key in _DECISION_DRIVER_FEATURE_KEYS:
+        if key in features and features.get(key) is not None:
+            out[key] = float(_to_float(features.get(key), 0.0))
+
+    meta_aliases = {
+        "quant_strategy_conviction": "quant_strategy_risk_adjusted_conviction_norm",
+        "quant_strategy_fit": "quant_strategy_portfolio_fit_norm",
+        "quant_strategy_execution_alignment": "quant_strategy_execution_alignment_norm",
+        "quant_strategy_allocation_bias": "quant_strategy_allocation_bias_norm",
+        "directional_alignment": "grand_master_directional_alignment",
+        "deployability": "grand_master_deployability_norm",
+        "vote": "grand_master_vote",
+        "paper_profitability_grandmaster_risk": "paper_profitability_grandmaster_risk_norm",
+        "paper_profitability_grandmaster_profit_score": "paper_profitability_grandmaster_profit_score_norm",
+        "paper_profitability_grandmaster_drag": "paper_profitability_grandmaster_drag_norm",
+    }
+    for meta_key, feature_key in meta_aliases.items():
+        if meta_key in meta and meta.get(meta_key) is not None:
+            out[feature_key] = float(_to_float(meta.get(meta_key), 0.0))
+
+    flow = _clamp(float(out.get("flow_direction_signed", 0.0) or 0.0), -1.0, 1.0)
+    micro = _clamp01(float(out.get("market_micro_order_flow_imbalance_norm", 0.5) or 0.5))
+    momentum = _clamp(float(out.get("mom_5m", out.get("return_1m", 0.0)) or 0.0), -1.0, 1.0)
+    tail = max(
+        _clamp01(float(out.get("quant_cvar_tail_risk_norm", 0.0) or 0.0)),
+        _clamp01(float(out.get("quant_copula_dependency_norm", 0.0) or 0.0)),
+        _clamp01(float(out.get("quant_merton_jump_risk_norm", 0.0) or 0.0)),
+    )
+    out["decision_driver_sell_pressure_norm"] = _clamp01(
+        max(-flow, 0.0) * 0.34
+        + max(0.5 - micro, 0.0) * 0.52
+        + max(-momentum, 0.0) * 18.0
+        + tail * 0.12
+    )
+    out["decision_driver_buy_pressure_norm"] = _clamp01(
+        max(flow, 0.0) * 0.34
+        + max(micro - 0.5, 0.0) * 0.52
+        + max(momentum, 0.0) * 18.0
+    )
+    return {key: round(float(value), 8) for key, value in out.items()}
+
+
 def _derive_flash_aux_features(sub_rows: List[Dict[str, Any]]) -> Dict[str, float]:
     flash_rows = [r for r in sub_rows if "flash_crash" in str(r.get("bot_id", ""))]
     if not flash_rows:
@@ -4974,6 +5697,11 @@ def _master_vote_variant(
     infra_conf_scale = _clamp01(float(features.get("infra_confidence_calibrator_scale_norm", 0.5) or 0.5))
     infra_risk = _clamp01(float(features.get("infra_risk_throttle_norm", 0.0) or 0.0))
     infra_veto = _clamp01(float(features.get("infra_veto_active", 0.0) or 0.0))
+    paper_master_active = _clamp01(float(features.get("paper_profitability_master_awareness_active_norm", 0.0) or 0.0))
+    paper_master_profit = _clamp01(float(features.get("paper_profitability_master_profit_score_norm", 0.5) or 0.5))
+    paper_master_drag = _clamp01(float(features.get("paper_profitability_master_drag_norm", 0.0) or 0.0))
+    paper_master_risk = _clamp01(float(features.get("paper_profitability_master_risk_norm", 0.0) or 0.0))
+    paper_master_size = _clamp01(float(features.get("paper_profitability_master_size_multiplier_norm", 1.0) or 1.0))
     micro_open = _clamp01(float(features.get("market_micro_opening_auction_norm", 0.0) or 0.0))
     micro_close = _clamp01(float(features.get("market_micro_closing_auction_norm", 0.0) or 0.0))
     micro_rel_vol = _clamp01(float(features.get("market_micro_relative_volume_norm", 0.0) or 0.0))
@@ -5031,6 +5759,19 @@ def _master_vote_variant(
     vote *= infra_damp
     if infra_veto > 0.0:
         vote *= 0.75
+    if paper_master_active > 0.0:
+        paper_scale = min(max(1.0 - 0.30 * paper_master_risk - 0.12 * paper_master_drag, 0.45), 1.0)
+        if paper_master_profit >= 0.68 and paper_master_risk <= 0.22:
+            paper_scale = min(1.08, paper_scale + 0.04)
+        vote *= paper_scale
+        if paper_master_size < 0.50 and abs(vote) < 0.30:
+            vote *= max(0.50, paper_master_size + 0.35)
+        reasons = reasons + [
+            f"paper_profitability_master_profit={paper_master_profit:.3f}",
+            f"paper_profitability_master_drag={paper_master_drag:.3f}",
+            f"paper_profitability_master_risk={paper_master_risk:.3f}",
+            f"paper_profitability_master_scale={paper_scale:.3f}",
+        ]
 
     if _derivatives_super_trader_mode():
         reasons = reasons + [
@@ -5060,7 +5801,14 @@ def _master_vote_variant(
     else:
         action = "HOLD"
 
-    return action, score, threshold, reasons, {"vote": vote}
+    return action, score, threshold, reasons, {
+        "vote": vote,
+        "paper_profitability_master_awareness": float(paper_master_active),
+        "paper_profitability_master_profit_score": float(paper_master_profit),
+        "paper_profitability_master_drag": float(paper_master_drag),
+        "paper_profitability_master_risk": float(paper_master_risk),
+        "paper_profitability_master_size_multiplier": float(paper_master_size),
+    }
 
 
 def _grand_master_weights(features: Dict[str, float]) -> Dict[str, float]:
@@ -5079,6 +5827,12 @@ def _grand_master_weights(features: Dict[str, float]) -> Dict[str, float]:
     shock_strength += 0.16 * float(features.get("quant_copula_dependency_norm", 0.0) or 0.0)
     shock_strength += 0.14 * float(features.get("quant_heston_vol_risk_norm", 0.0) or 0.0)
     shock_strength += 0.12 * float(features.get("quant_merton_jump_risk_norm", 0.0) or 0.0)
+    trend_strength += 0.10 * float(features.get("quant_strategy_carry_edge_norm", 0.0) or 0.0)
+    trend_strength += 0.08 * float(features.get("quant_strategy_crypto_basis_edge_norm", 0.0) or 0.0)
+    trend_strength += 0.08 * float(features.get("quant_strategy_microstructure_edge_norm", 0.0) or 0.0)
+    chop_strength += 0.16 * float(features.get("quant_strategy_mean_reversion_edge_norm", 0.0) or 0.0)
+    shock_strength += 0.16 * float(features.get("quant_strategy_volatility_rv_edge_norm", 0.0) or 0.0)
+    shock_strength += 0.14 * float(features.get("quant_strategy_tail_hedge_edge_norm", 0.0) or 0.0)
     flow_direction = abs(float(features.get("flow_direction_signed", 0.0) or 0.0))
     flow_risk_on = float(features.get("flow_risk_on_norm", 0.0) or 0.0)
     flow_risk_off = float(features.get("flow_risk_off_norm", 0.0) or 0.0)
@@ -5223,6 +5977,27 @@ def _grand_master_vote(
         _clamp01(float(features.get("quant_merton_jump_risk_norm", 0.0) or 0.0)),
     )
     quant_state_conf = 0.5 * _clamp01(float(features.get("quant_kalman_filter_confidence_norm", 0.0) or 0.0)) + 0.5 * _clamp01(float(features.get("quant_particle_filter_confidence_norm", 0.0) or 0.0))
+    quant_strategy_selection = _clamp01(float(features.get("quant_strategy_selection_confidence_norm", 0.0) or 0.0))
+    quant_strategy_fit = _clamp01(float(features.get("quant_strategy_portfolio_fit_norm", 0.0) or 0.0))
+    quant_strategy_exec = _clamp01(float(features.get("quant_strategy_execution_alignment_norm", 0.0) or 0.0))
+    quant_strategy_conviction = _clamp01(float(features.get("quant_strategy_risk_adjusted_conviction_norm", 0.0) or 0.0))
+    quant_strategy_allocation = _clamp01(float(features.get("quant_strategy_allocation_bias_norm", 0.0) or 0.0))
+    paper_grandmaster_active = _clamp01(float(features.get("paper_profitability_grandmaster_awareness_active_norm", 0.0) or 0.0))
+    paper_grandmaster_profit = _clamp01(float(features.get("paper_profitability_grandmaster_profit_score_norm", 0.5) or 0.5))
+    paper_grandmaster_drag = _clamp01(float(features.get("paper_profitability_grandmaster_drag_norm", 0.0) or 0.0))
+    paper_grandmaster_risk = _clamp01(float(features.get("paper_profitability_grandmaster_risk_norm", 0.0) or 0.0))
+    paper_grandmaster_exit = _clamp01(float(features.get("paper_profitability_grandmaster_exit_pressure_norm", 0.0) or 0.0))
+    paper_grandmaster_execution_discount = _clamp01(
+        float(features.get("paper_profitability_grandmaster_execution_discount_norm", 0.0) or 0.0)
+    )
+    paper_grandmaster_size = _clamp01(float(features.get("paper_profitability_grandmaster_size_multiplier_norm", 1.0) or 1.0))
+    quant_strategy_available = max(
+        quant_strategy_selection,
+        quant_strategy_fit,
+        quant_strategy_exec,
+        quant_strategy_conviction,
+        quant_strategy_allocation,
+    )
     sleeve_guard_vote = _clamp11(
         0.35 * market_neutral_vote
         + 0.25 * volatility_regime_vote
@@ -5232,6 +6007,11 @@ def _grand_master_vote(
     specialist_consensus = _clamp11(0.42 * options_vote + 0.34 * futures_vote + 0.16 * sleeve_consensus + 0.08 * sleeve_guard_vote)
     directional_alignment = _clamp11(
         0.50 * flow_direction + 0.30 * lead_lag_signal + 0.20 * micro_order_flow
+    )
+    quant_strategy_vote = _clamp11(
+        directional_alignment
+        * quant_strategy_allocation
+        * (0.45 + 0.55 * quant_strategy_conviction)
     )
     sum_abs_master_votes = sum(abs(v) for v in master_votes)
     master_disagreement = _clamp01(
@@ -5247,11 +6027,17 @@ def _grand_master_vote(
         + 0.08 * flow_conviction
         + 0.05 * quant_data_conf
         + 0.04 * quant_state_conf
+        + 0.06 * quant_strategy_conviction
+        + 0.04 * quant_strategy_exec
+        + 0.04 * quant_strategy_fit
+        + (0.05 * paper_grandmaster_profit * paper_grandmaster_active)
         - 0.14 * (1.0 - label_contract_quality)
         - 0.08 * sleeve_collect_pressure
         - 0.16 * infra_risk
         - 0.14 * quant_resource_pressure
         - 0.12 * quant_tail_pressure
+        - 0.16 * paper_grandmaster_risk * paper_grandmaster_active
+        - 0.06 * paper_grandmaster_execution_discount * paper_grandmaster_active
         - 0.12 * flow_stress
         - 0.12 * lead_lag_break
         - 0.12 * cross_bot_conflict
@@ -5268,6 +6054,9 @@ def _grand_master_vote(
     vote += 0.06 * sleeve_consensus
     vote += 0.04 * sleeve_guard_vote
     vote += 0.08 * directional_alignment
+    vote += 0.09 * quant_strategy_vote
+    if paper_grandmaster_active > 0.0 and paper_grandmaster_profit >= 0.68 and paper_grandmaster_risk <= 0.22:
+        vote += 0.03 * vote_sign * paper_grandmaster_profit
     vote -= 0.16 * specialist_conflict + 0.14 * directional_conflict + 0.10 * master_disagreement
     deploy_scale = min(max(0.40 + 0.85 * deployability, 0.25), 1.05)
     risk_damp = min(
@@ -5279,13 +6068,18 @@ def _grand_master_vote(
             - 0.18 * flow_stress
             - 0.16 * lead_lag_break
             - 0.14 * cross_bot_conflict
+            - 0.18 * paper_grandmaster_risk * paper_grandmaster_active
+            - 0.06 * (1.0 - paper_grandmaster_size) * paper_grandmaster_active
             - 0.10 * (1.0 - label_contract_quality)
-            - 0.08 * sleeve_collect_pressure,
+            - 0.08 * sleeve_collect_pressure
+            - 0.08 * quant_strategy_available * max(0.45 - quant_strategy_fit, 0.0),
             0.20,
         ),
         1.0,
     )
     vote *= deploy_scale * risk_damp
+    if paper_grandmaster_active > 0.0 and paper_grandmaster_risk > 0.0:
+        vote *= min(max(1.0 - 0.22 * paper_grandmaster_risk - 0.08 * paper_grandmaster_exit, 0.35), 1.0)
     vote = _calibrate_vote(vote, scale=0.82)
     score = _vote_to_score(vote)
     directional_trigger = min(
@@ -5295,7 +6089,9 @@ def _grand_master_vote(
             + 0.06 * infra_risk
             + 0.04 * quant_tail_pressure
             + 0.03 * quant_resource_pressure
-            + 0.05 * master_disagreement,
+            + 0.06 * paper_grandmaster_risk * paper_grandmaster_active
+            + 0.05 * master_disagreement
+            - 0.04 * quant_strategy_conviction * quant_strategy_fit,
             0.18,
         ),
         0.42,
@@ -5308,7 +6104,9 @@ def _grand_master_vote(
                 + 0.04 * infra_risk
                 + 0.03 * quant_tail_pressure
                 + 0.02 * quant_resource_pressure
-                + 0.03 * master_disagreement,
+                + 0.04 * paper_grandmaster_risk * paper_grandmaster_active
+                + 0.03 * master_disagreement
+                - 0.02 * quant_strategy_conviction * quant_strategy_fit,
                 0.56,
             ),
             0.74,
@@ -5322,6 +6120,10 @@ def _grand_master_vote(
     elif quant_resource_pressure >= 0.82 and deployability < 0.64:
         action = "HOLD"
     elif quant_tail_pressure >= 0.88 and abs(vote) < (directional_trigger + 0.14):
+        action = "HOLD"
+    elif quant_strategy_available >= 0.50 and quant_strategy_fit < 0.20 and abs(vote) < (directional_trigger + 0.08):
+        action = "HOLD"
+    elif paper_grandmaster_active > 0.0 and paper_grandmaster_risk >= 0.72 and abs(vote) < (directional_trigger + 0.10):
         action = "HOLD"
     elif master_disagreement >= 0.72 and abs(vote) < (directional_trigger + 0.08):
         action = "HOLD"
@@ -5342,6 +6144,13 @@ def _grand_master_vote(
         f"quant_resource_pressure={quant_resource_pressure:.3f}",
         f"quant_tail_pressure={quant_tail_pressure:.3f}",
         f"quant_data_confidence={quant_data_conf:.3f}",
+        f"quant_strategy_conviction={quant_strategy_conviction:.3f}",
+        f"quant_strategy_fit={quant_strategy_fit:.3f}",
+        f"quant_strategy_exec={quant_strategy_exec:.3f}",
+        f"quant_strategy_vote={quant_strategy_vote:+.3f}",
+        f"paper_profitability_grandmaster_profit={paper_grandmaster_profit:.3f}",
+        f"paper_profitability_grandmaster_risk={paper_grandmaster_risk:.3f}",
+        f"paper_profitability_grandmaster_drag={paper_grandmaster_drag:.3f}",
         f"specialist_consensus={specialist_consensus:.3f}",
         f"sleeve_consensus={sleeve_consensus:.3f}",
         f"sleeve_master_consensus={sleeve_master_consensus:.3f}",
@@ -5359,6 +6168,20 @@ def _grand_master_vote(
         "quant_tail_pressure": float(quant_tail_pressure),
         "quant_data_confidence": float(quant_data_conf),
         "quant_state_confidence": float(quant_state_conf),
+        "quant_strategy_available": float(quant_strategy_available),
+        "quant_strategy_selection": float(quant_strategy_selection),
+        "quant_strategy_fit": float(quant_strategy_fit),
+        "quant_strategy_execution_alignment": float(quant_strategy_exec),
+        "quant_strategy_conviction": float(quant_strategy_conviction),
+        "quant_strategy_allocation_bias": float(quant_strategy_allocation),
+        "quant_strategy_vote": float(quant_strategy_vote),
+        "paper_profitability_grandmaster_awareness": float(paper_grandmaster_active),
+        "paper_profitability_grandmaster_profit_score": float(paper_grandmaster_profit),
+        "paper_profitability_grandmaster_drag": float(paper_grandmaster_drag),
+        "paper_profitability_grandmaster_risk": float(paper_grandmaster_risk),
+        "paper_profitability_grandmaster_exit_pressure": float(paper_grandmaster_exit),
+        "paper_profitability_grandmaster_execution_discount": float(paper_grandmaster_execution_discount),
+        "paper_profitability_grandmaster_size_multiplier": float(paper_grandmaster_size),
         "directional_trigger": float(directional_trigger),
         "specialist_consensus": float(specialist_consensus),
         "sleeve_consensus": float(sleeve_consensus),
@@ -10244,6 +11067,9 @@ def _apply_core_sleeve_strategy_overlay(
     bot_concentration = _bot_concentration_norm(rows)
     profile_symbol_drag = _profile_symbol_drag_penalty_norm(prof, symbol)
     profile_drag = _profile_drag_snapshot(prof)
+    profitability_control = _profile_profitability_control(prof)
+    profit_harvest_control = _profile_profit_harvest_control(prof)
+    profitability_global_policy = _profitability_global_policy()
     profile_kill_switch_norm = _clamp01(float(profile_drag.get("drag_norm", 0.0) or 0.0))
     lead_signal = _clamp11(float(features.get("lead_lag_signal_signed", 0.0) or 0.0))
     flow_direction = _clamp11(float(features.get("flow_direction_signed", 0.0) or 0.0))
@@ -10275,6 +11101,14 @@ def _apply_core_sleeve_strategy_overlay(
     live_macro_tailwind = _clamp01(float(features.get("live_macro_tailwind_norm", 0.0) or 0.0))
     live_macro_alignment = _clamp01(float(features.get("live_macro_event_alignment_norm", 0.5) or 0.5))
     live_macro_confidence = _clamp01(float(features.get("live_macro_gate_confidence_norm", 0.0) or 0.0))
+    profitability_features = {**features, **out_features}
+    profitability_quality_gate = _profitability_quality_gate_norm(profitability_features)
+    profitability_thresholds = profitability_control.get("thresholds") if isinstance(profitability_control.get("thresholds"), dict) else {}
+    profitability_source_quality = _clamp01(float(profitability_features.get("news_source_quality_norm", profitability_features.get("source_quality_norm", 0.5)) or 0.5))
+    profitability_tradeability = tradeability
+    profitability_execution = execution_fitness
+    profitability_catalyst = _clamp01(float(profitability_features.get("calendar_event_proximity_norm", profitability_features.get("event_proximity_norm", 0.5)) or 0.5))
+    profitability_confirmation = cross_asset_confirmation
 
     requested_action = str(action).upper()
     new_action = requested_action
@@ -10301,6 +11135,316 @@ def _apply_core_sleeve_strategy_overlay(
     if new_action in {"BUY", "SELL"} and bool(profile_drag.get("active", False)):
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"profile_kill_switch_drag={profile_kill_switch_norm:.3f}"]
+    if new_action in {"BUY", "SELL"} and bool(profitability_control.get("active", False)):
+        action_mode = str(profitability_control.get("action") or "").strip().lower()
+        min_source = _clamp01(float(profitability_thresholds.get("min_source_quality_norm", 0.0) or 0.0))
+        min_tradeability = _clamp01(float(profitability_thresholds.get("min_tradeability_norm", 0.0) or 0.0))
+        min_execution = _clamp01(float(profitability_thresholds.get("min_execution_fitness_norm", 0.0) or 0.0))
+        min_confirmation = _clamp01(float(profitability_thresholds.get("min_cross_asset_confirmation_norm", 0.0) or 0.0))
+        min_catalyst = _clamp01(float(profitability_thresholds.get("min_event_proximity_norm", 0.0) or 0.0))
+        breaches: List[str] = []
+        if profitability_source_quality < min_source:
+            breaches.append(f"source={profitability_source_quality:.3f}<{min_source:.3f}")
+        if profitability_tradeability < min_tradeability:
+            breaches.append(f"tradeability={profitability_tradeability:.3f}<{min_tradeability:.3f}")
+        if profitability_execution < min_execution:
+            breaches.append(f"execution={profitability_execution:.3f}<{min_execution:.3f}")
+        if profitability_confirmation < min_confirmation:
+            breaches.append(f"confirmation={profitability_confirmation:.3f}<{min_confirmation:.3f}")
+        if min_catalyst > 0.0 and profitability_catalyst < min_catalyst:
+            breaches.append(f"catalyst={profitability_catalyst:.3f}<{min_catalyst:.3f}")
+        runtime_policy = profitability_control.get("runtime_policy") if isinstance(profitability_control.get("runtime_policy"), dict) else {}
+        exit_contract = profitability_control.get("exit_intelligence") if isinstance(profitability_control.get("exit_intelligence"), dict) else {}
+        portfolio_contract = profitability_control.get("portfolio_conflict_control") if isinstance(profitability_control.get("portfolio_conflict_control"), dict) else {}
+        confirmation_contract = profitability_control.get("confirmation_bias_control") if isinstance(profitability_control.get("confirmation_bias_control"), dict) else {}
+        if (
+            str(profitability_global_policy.get("apply_exit_intelligence", "true")).strip().lower() != "false"
+            and bool(exit_contract.get("active", False))
+            and requested_action == "BUY"
+        ):
+            exit_bias = _clamp01(float(exit_contract.get("tighten_exit_bias_norm", 0.0) or 0.0))
+            reduce_only = str(exit_contract.get("drag_reduction_mode") or "").strip().lower() == "reduce_only"
+            block_adds = bool(exit_contract.get("block_adds_while_unrealized_negative", False)) or bool(exit_contract.get("block_adds_while_drag_active", False))
+            prefer_reduce = bool(exit_contract.get("prefer_reduce_over_add", False))
+            if exit_bias >= 0.55:
+                breaches.append(f"exit_drag_bias={exit_bias:.3f}")
+            elif reduce_only or block_adds or prefer_reduce:
+                breaches.append(f"exit_drag_reduce_only={exit_bias:.3f}")
+        if (
+            str(profitability_global_policy.get("apply_portfolio_conflict_control", "true")).strip().lower() != "false"
+            and bool(portfolio_contract.get("active", False))
+        ):
+            max_overlap = _clamp01(float(portfolio_contract.get("max_overlap_pressure_norm", 1.0) or 1.0))
+            min_conf = _clamp01(float(portfolio_contract.get("block_when_confirmation_below_norm", 0.58) or 0.58))
+            if overlap_pressure > max_overlap and profitability_confirmation < min_conf:
+                breaches.append(f"portfolio_conflict={overlap_pressure:.3f}>{max_overlap:.3f}")
+        if (
+            str(profitability_global_policy.get("apply_confirmation_bias_control", "true")).strip().lower() != "false"
+            and bool(confirmation_contract.get("active", False))
+        ):
+            confirm_quality, confirm_channels, _ = _profitability_confirmation_evidence(
+                profitability_features,
+                confirmation_contract,
+            )
+            min_channels = max(int(float(confirmation_contract.get("min_independent_evidence_channels", 0) or 0)), 0)
+            block_floor = _clamp01(float(confirmation_contract.get("block_when_quality_gate_below_norm", 0.0) or 0.0))
+            if block_floor > 0.0 and confirm_quality < block_floor:
+                breaches.append(f"confirmation_quality={confirm_quality:.3f}<{block_floor:.3f}")
+            if min_channels > 0 and confirm_channels < min_channels:
+                breaches.append(f"confirmation_channels={confirm_channels}/{min_channels}")
+        if action_mode == "quarantine_new_entries":
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [f"paper_profitability_quarantine drag={float(profitability_control.get('drag_score', 0.0) or 0.0):.3f}"]
+        elif breaches:
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [f"paper_profitability_gate {';'.join(breaches[:4])}"]
+        elif profitability_quality_gate < 0.58 and str(runtime_policy.get("dampen_score_when_quality_is_borderline", "")).lower() != "false":
+            new_score = 0.5 + ((new_score - 0.5) * 0.74)
+            new_reasons = new_reasons + [f"paper_profitability_dampen quality={profitability_quality_gate:.3f}"]
+
+    if (
+        bool(profit_harvest_control.get("active", False))
+        and str(profitability_global_policy.get("apply_profit_realization", "true")).strip().lower() != "false"
+    ):
+        harvest_pressure = _clamp01(float(profit_harvest_control.get("harvest_pressure_norm", 0.0) or 0.0))
+        unrealized_share = _clamp01(float(profit_harvest_control.get("unrealized_profit_share_norm", 0.0) or 0.0))
+        trim_fraction = _clamp01(float(profit_harvest_control.get("recommended_trim_fraction_norm", 0.0) or 0.0))
+        block_add_share = _clamp01(float(profit_harvest_control.get("block_new_adds_when_unrealized_share_above_norm", 0.70) or 0.70))
+        trim_floor = _clamp01(float(profit_harvest_control.get("promote_trim_when_exit_quality_above_norm", 0.58) or 0.58))
+        trim_pressure_floor = _clamp01(float(profit_harvest_control.get("promote_trim_when_harvest_pressure_above_norm", 0.52) or 0.52))
+        force_pressure = _clamp01(float(profit_harvest_control.get("force_trim_when_harvest_pressure_above_norm", 0.72) or 0.72))
+        force_share = _clamp01(float(profit_harvest_control.get("force_trim_when_unrealized_share_above_norm", 0.86) or 0.86))
+        harvest_campaign = _profit_harvest_aplus_campaign_snapshot()
+        campaign_directives = (
+            harvest_campaign.get("profile_directives")
+            if isinstance(harvest_campaign.get("profile_directives"), dict)
+            else {}
+        )
+        campaign_directive = campaign_directives.get(prof, {}) if isinstance(campaign_directives, dict) else {}
+        campaign_enabled = (
+            bool(harvest_campaign.get("active", False))
+            and bool(campaign_directive.get("active", False))
+            and str(profitability_global_policy.get("apply_harvest_report_card_a_plus_campaign", "true")).strip().lower() != "false"
+            and str(profitability_global_policy.get("apply_harvest_report_card_a_plus_plus_campaign", "true")).strip().lower() != "false"
+        )
+        harvest_intelligence = (
+            profit_harvest_control.get("harvest_intelligence")
+            if isinstance(profit_harvest_control.get("harvest_intelligence"), dict)
+            else {}
+        )
+        intelligence_enabled = (
+            bool(harvest_intelligence.get("active", False))
+            and str(profitability_global_policy.get("apply_profit_harvest_intelligence", "true")).strip().lower() != "false"
+        )
+        flow_continuation = max(
+            0.0,
+            lead_signal,
+            flow_direction,
+            order_flow_signed,
+            futures_order_signed,
+            futures_basis_signed,
+            crypto_basis_signed,
+            futures_curve_alignment,
+            aggressive_burst,
+        )
+        runtime_trend_continuation = _clamp01(
+            0.22 * cross_asset_confirmation
+            + 0.18 * tradeability
+            + 0.16 * execution_fitness
+            + 0.16 * flow_continuation
+            + 0.12 * (1.0 - chop_norm)
+            + 0.08 * max(aggressive_burst, options_structure_edge)
+            + 0.08 * max(0.0, event_reaction)
+        )
+        contract_trend_continuation = _clamp01(
+            float(harvest_intelligence.get("trend_continuation_score_norm", runtime_trend_continuation) or runtime_trend_continuation)
+        )
+        conversion_skill = _clamp01(float(harvest_intelligence.get("realized_conversion_skill_norm", 0.50) or 0.50))
+        contract_regret_risk = _clamp01(float(harvest_intelligence.get("harvest_regret_risk_norm", 0.0) or 0.0))
+        trend_continuation = (
+            _clamp01(0.58 * runtime_trend_continuation + 0.42 * contract_trend_continuation)
+            if intelligence_enabled
+            else runtime_trend_continuation
+        )
+        regret_risk = (
+            _clamp01(0.58 * contract_regret_risk + 0.42 * trend_continuation)
+            if intelligence_enabled
+            else 0.0
+        )
+        trim_multiplier = _clamp(
+            float(harvest_intelligence.get("trim_aggressiveness_multiplier_norm", 1.0) or 1.0),
+            0.45,
+            1.35,
+        )
+        dynamic_exit_floor = _clamp01(
+            float(harvest_intelligence.get("dynamic_exit_quality_floor_norm", trim_floor) or trim_floor)
+        )
+        hold_winner_floor = _clamp01(
+            float(harvest_intelligence.get("hold_winner_when_trend_continuation_above_norm", 0.78) or 0.78)
+        )
+        force_pressure_floor = _clamp01(
+            float(harvest_intelligence.get("force_trim_only_when_harvest_pressure_above_norm", force_pressure) or force_pressure)
+        )
+        if intelligence_enabled:
+            trim_fraction = _clamp(trim_fraction * trim_multiplier, 0.05, 0.65)
+            trim_floor = _clamp01(max(trim_floor, dynamic_exit_floor) + (0.08 * regret_risk) - (0.04 * conversion_skill))
+            trim_pressure_floor = _clamp01(trim_pressure_floor + (0.10 * regret_risk) - (0.06 * conversion_skill))
+            force_pressure = _clamp01(max(force_pressure, force_pressure_floor) + (0.06 * regret_risk))
+            force_share = _clamp01(force_share + (0.04 * regret_risk))
+        holdback_regret_floor = 0.62
+        if campaign_enabled:
+            trim_fraction = _clamp(
+                trim_fraction + _clamp01(float(campaign_directive.get("trim_fraction_boost_norm", 0.0) or 0.0)),
+                0.05,
+                0.78,
+            )
+            trim_floor = _clamp01(
+                trim_floor - _clamp01(float(campaign_directive.get("exit_quality_floor_relief_norm", 0.0) or 0.0))
+            )
+            trim_pressure_floor = _clamp01(
+                trim_pressure_floor - _clamp01(float(campaign_directive.get("trim_pressure_floor_relief_norm", 0.0) or 0.0))
+            )
+            force_pressure = _clamp01(
+                force_pressure - _clamp01(float(campaign_directive.get("force_pressure_floor_relief_norm", 0.0) or 0.0))
+            )
+            force_share = _clamp01(
+                force_share - _clamp01(float(campaign_directive.get("force_unrealized_share_relief_norm", 0.0) or 0.0))
+            )
+            hold_winner_floor = _clamp01(
+                hold_winner_floor + _clamp01(float(campaign_directive.get("holdback_trend_floor_boost_norm", 0.0) or 0.0))
+            )
+            holdback_regret_floor = _clamp01(float(campaign_directive.get("holdback_regret_floor_norm", holdback_regret_floor) or holdback_regret_floor))
+        daily_goal = (
+            profit_harvest_control.get("daily_harvest_goal")
+            if isinstance(profit_harvest_control.get("daily_harvest_goal"), dict)
+            else {}
+        )
+        daily_goal_enabled = (
+            bool(daily_goal.get("active", False))
+            and str(profitability_global_policy.get("apply_daily_sleeve_harvest_targets", "true")).strip().lower() != "false"
+        )
+        daily_goal_progress = _clamp01(float(daily_goal.get("daily_goal_progress_norm", 1.0) or 1.0))
+        daily_goal_pressure = _clamp01(float(daily_goal.get("daily_harvest_pressure_norm", 0.0) or 0.0))
+        daily_goal_target_pnl = max(float(daily_goal.get("daily_harvest_pnl_target_total", 0.0) or 0.0), 0.0)
+        previous_daily_target_met = bool(daily_goal.get("previous_daily_target_met", False))
+        daily_target_raise_active = str(daily_goal.get("target_adaptation_action") or "") == "raise_daily_target_and_expand_collection"
+        daily_goal_block_adds = (
+            daily_goal_enabled
+            and bool(daily_goal.get("block_new_adds_until_daily_goal", False))
+            and str(profitability_global_policy.get("block_new_adds_until_daily_realization_goal", "true")).strip().lower() != "false"
+            and daily_goal_progress < 1.0
+        )
+        if daily_goal_enabled:
+            trim_fraction = _clamp(
+                trim_fraction + _clamp01(float(daily_goal.get("daily_trim_boost_norm", 0.0) or 0.0)),
+                0.05,
+                0.78,
+            )
+            trim_floor = _clamp01(trim_floor - (0.04 * daily_goal_pressure))
+            trim_pressure_floor = _clamp01(trim_pressure_floor - (0.08 * daily_goal_pressure))
+            force_pressure = _clamp01(force_pressure - (0.06 * daily_goal_pressure))
+            force_share = _clamp01(force_share - (0.05 * daily_goal_pressure))
+            if daily_goal_block_adds:
+                block_add_share = min(block_add_share, _clamp01(force_share - (0.04 * daily_goal_pressure)))
+        exit_quality = _clamp01(
+            0.34 * exit_persistence
+            + 0.24 * execution_fitness
+            + 0.18 * tradeability
+            + 0.14 * (1.0 - overlap_pressure)
+            + 0.10 * cross_asset_confirmation
+        )
+        continuation_holdback = (
+            intelligence_enabled
+            and str(profitability_global_policy.get("apply_trend_continuation_holdback", "true")).strip().lower() != "false"
+            and trend_continuation >= hold_winner_floor
+            and regret_risk >= holdback_regret_floor
+            and harvest_pressure < force_pressure
+            and unrealized_share < force_share
+        )
+        out_features["paper_profit_harvest_active_norm"] = 1.0
+        out_features["paper_profit_harvest_pressure_norm"] = harvest_pressure
+        out_features["paper_profit_harvest_unrealized_share_norm"] = unrealized_share
+        out_features["paper_profit_harvest_trim_fraction_norm"] = trim_fraction
+        out_features["paper_profit_harvest_exit_quality_norm"] = exit_quality
+        out_features["paper_profit_harvest_intelligence_active_norm"] = 1.0 if intelligence_enabled else 0.0
+        out_features["paper_profit_harvest_regret_risk_norm"] = regret_risk
+        out_features["paper_profit_harvest_trend_continuation_norm"] = trend_continuation
+        out_features["paper_profit_harvest_conversion_skill_norm"] = conversion_skill
+        out_features["paper_profit_harvest_dynamic_trim_floor_norm"] = trim_floor
+        out_features["paper_profit_harvest_holdback_active_norm"] = 1.0 if continuation_holdback else 0.0
+        out_features["paper_daily_harvest_goal_active_norm"] = 1.0 if daily_goal_enabled else 0.0
+        out_features["paper_daily_harvest_goal_progress_norm"] = daily_goal_progress if daily_goal_enabled else 0.0
+        out_features["paper_daily_harvest_pressure_norm"] = daily_goal_pressure if daily_goal_enabled else 0.0
+        out_features["paper_daily_harvest_target_pnl_norm"] = _clamp01(daily_goal_target_pnl / 10_000.0) if daily_goal_enabled else 0.0
+        out_features["paper_daily_harvest_block_adds_norm"] = 1.0 if daily_goal_block_adds else 0.0
+        out_features["paper_daily_previous_target_met_norm"] = 1.0 if daily_goal_enabled and previous_daily_target_met else 0.0
+        out_features["paper_daily_target_raise_active_norm"] = 1.0 if daily_goal_enabled and daily_target_raise_active else 0.0
+        out_features["paper_harvest_aplus_campaign_active_norm"] = 1.0 if campaign_enabled else 0.0
+        out_features["paper_harvest_aplus_campaign_pressure_norm"] = (
+            _clamp01(float(campaign_directive.get("campaign_pressure_norm", 0.0) or 0.0)) if campaign_enabled else 0.0
+        )
+        out_features["paper_harvest_aplusplus_campaign_active_norm"] = (
+            1.0 if campaign_enabled and bool(campaign_directive.get("a_plus_plus_mode_active", False)) else 0.0
+        )
+        out_features["paper_harvest_aplusplus_campaign_pressure_norm"] = (
+            _clamp01(float(campaign_directive.get("a_plus_plus_pressure_norm", 0.0) or 0.0)) if campaign_enabled else 0.0
+        )
+        if new_action == "BUY" and unrealized_share >= block_add_share:
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [
+                f"paper_profit_harvest_block_add unrealized_share={unrealized_share:.3f}",
+                f"harvest_pressure={harvest_pressure:.3f}",
+            ]
+            if daily_goal_block_adds:
+                new_reasons = new_reasons + [
+                    f"paper_daily_harvest_goal progress={daily_goal_progress:.3f}",
+                    f"daily_target_pnl={daily_goal_target_pnl:.2f}",
+                ]
+        elif new_action == "BUY" and campaign_enabled:
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [
+                f"paper_harvest_aplus_campaign_block_add pressure={float(campaign_directive.get('campaign_pressure_norm', 0.0) or 0.0):.3f}",
+                f"raw_grade={harvest_campaign.get('raw_outcome_grade', '')}",
+            ]
+        elif new_action == "HOLD" and continuation_holdback:
+            new_reasons = new_reasons + [
+                f"paper_profit_harvest_hold_winner trend={trend_continuation:.3f}",
+                f"regret_risk={regret_risk:.3f}",
+            ]
+        elif (
+            new_action == "HOLD"
+            and exit_quality >= trim_floor
+            and (harvest_pressure >= trim_pressure_floor or unrealized_share >= block_add_share)
+        ):
+            new_action, new_score = _force_action_score("SELL", max(new_score, threshold), threshold)
+            new_reasons = new_reasons + [
+                f"paper_profit_harvest_trim pressure={harvest_pressure:.3f}",
+                f"trim_fraction={trim_fraction:.3f}",
+            ]
+        elif (
+            new_action in {"BUY", "HOLD"}
+            and exit_quality >= max(0.50, trim_floor - 0.08)
+            and (harvest_pressure >= force_pressure or unrealized_share >= force_share)
+        ):
+            new_action, new_score = _force_action_score("SELL", max(new_score, threshold), threshold)
+            new_reasons = new_reasons + [
+                f"paper_profit_harvest_force_trim pressure={harvest_pressure:.3f}",
+                f"unrealized_share={unrealized_share:.3f}",
+            ]
+        elif new_action == "SELL" and harvest_pressure > 0.0:
+            new_reasons = new_reasons + [
+                f"paper_profit_harvest_sell_ok pressure={harvest_pressure:.3f}",
+                f"trim_fraction={trim_fraction:.3f}",
+            ]
+    else:
+        out_features.setdefault("paper_profit_harvest_active_norm", 0.0)
+        out_features.setdefault("paper_daily_harvest_goal_active_norm", 0.0)
+        out_features.setdefault("paper_daily_harvest_goal_progress_norm", 0.0)
+        out_features.setdefault("paper_daily_harvest_pressure_norm", 0.0)
+        out_features.setdefault("paper_daily_harvest_target_pnl_norm", 0.0)
+        out_features.setdefault("paper_daily_harvest_block_adds_norm", 0.0)
+        out_features.setdefault("paper_daily_previous_target_met_norm", 0.0)
+        out_features.setdefault("paper_daily_target_raise_active_norm", 0.0)
 
     if prof in {"", "default"}:
         dependency = default_dependency
@@ -10348,6 +11492,24 @@ def _apply_core_sleeve_strategy_overlay(
                 new_reasons = new_reasons + [f"conservative_high_quality_entry={quality_gate:.3f}"]
     elif prof == "aggressive":
         breakout = float(out_features["core_aggressive_breakout_conviction_norm"])
+        aggressive_confirmation = _clamp01(
+            (0.24 * cross_asset_confirmation)
+            + (0.20 * execution_fitness)
+            + (0.16 * tradeability)
+            + (0.14 * regime_specialist_blend)
+            + (0.12 * exit_persistence)
+            + (0.08 * max(1.0 - overlap_pressure, 0.0))
+            + (0.06 * max(1.0 - profile_symbol_drag, 0.0))
+        )
+        aggressive_reversal_quality = _clamp01(
+            (0.24 * options_skew_dislocation)
+            + (0.18 * options_gamma_wall)
+            + (0.16 * event_reaction)
+            + (0.14 * aggressive_burst)
+            + (0.12 * tradeability)
+            + (0.10 * max(1.0 - cross_conflict, 0.0))
+            + (0.06 * champion_gap)
+        )
         aggressive_identity = _clamp01(
             0.38 * breakout
             + 0.14 * aggressive_burst
@@ -10361,10 +11523,13 @@ def _apply_core_sleeve_strategy_overlay(
             + 0.04 * (1.0 - cross_conflict)
         )
         out_features["core_aggressive_identity_norm"] = aggressive_identity
+        out_features["aggressive_confirmation_stack_norm"] = aggressive_confirmation
+        out_features["aggressive_reversal_quality_norm"] = aggressive_reversal_quality
         if new_action in {"BUY", "SELL"} and (
             breakout < 0.62
             or aggressive_identity < 0.58
             or options_structure_edge < 0.34
+            or aggressive_confirmation < 0.52
             or default_dependency >= 0.62
             or tradeability < 0.48
             or cross_conflict >= 0.64
@@ -10372,11 +11537,15 @@ def _apply_core_sleeve_strategy_overlay(
             or champion_gap < 0.10
         ):
             new_action, new_score = _force_action_score("HOLD", new_score, threshold)
-            new_reasons = new_reasons + [f"aggressive_identity_filter breakout={breakout:.3f} identity={aggressive_identity:.3f}"]
+            new_reasons = new_reasons + [
+                f"aggressive_identity_filter breakout={breakout:.3f} identity={aggressive_identity:.3f}",
+                f"aggressive_confirmation={aggressive_confirmation:.3f}",
+            ]
         elif (
             new_action == "HOLD"
             and breakout >= 0.74
             and aggressive_identity >= 0.70
+            and aggressive_confirmation >= 0.62
             and default_dependency < 0.60
             and execution_fitness >= 0.55
             and tradeability >= 0.55
@@ -10389,6 +11558,25 @@ def _apply_core_sleeve_strategy_overlay(
                 new_reasons = new_reasons + [
                     f"aggressive_breakout_conviction={breakout:.3f}",
                     f"aggressive_relative_strength_burst={aggressive_burst:.3f}",
+                    f"aggressive_confirmation_stack={aggressive_confirmation:.3f}",
+                ]
+        elif (
+            new_action == "HOLD"
+            and aggressive_reversal_quality >= 0.70
+            and aggressive_confirmation >= 0.58
+            and options_structure_edge >= 0.42
+            and default_dependency < 0.64
+            and execution_fitness >= 0.58
+            and tradeability >= 0.56
+            and cross_conflict < 0.58
+            and overlap_pressure < 0.68
+        ):
+            direct = _directional_action_from_value((0.34 * order_flow_signed) + (0.28 * lead_signal) + (0.22 * flow_direction) + (0.16 * (options_gamma_wall - options_skew_dislocation)))
+            if direct in {"BUY", "SELL"}:
+                new_action, new_score = _force_action_score(direct, new_score, threshold)
+                new_reasons = new_reasons + [
+                    f"aggressive_confirmed_reversal quality={aggressive_reversal_quality:.3f}",
+                    f"aggressive_confirmation_stack={aggressive_confirmation:.3f}",
                 ]
     elif prof == "fx":
         macro_confirmation = float(out_features["core_fx_macro_confirmation_norm"])
@@ -10472,6 +11660,26 @@ def _apply_core_sleeve_strategy_overlay(
     out_features["core_bot_concentration_norm"] = bot_concentration
     out_features["profile_symbol_drag_penalty_norm"] = profile_symbol_drag
     out_features["profile_kill_switch_norm"] = profile_kill_switch_norm
+    out_features["paper_profitability_control_active_norm"] = 1.0 if bool(profitability_control.get("active", False)) else 0.0
+    out_features["paper_profitability_quality_gate_norm"] = profitability_quality_gate
+    out_features["paper_profitability_size_multiplier_norm"] = _clamp01(float(profitability_control.get("position_size_multiplier", 1.0) or 1.0))
+    outcome_training = profitability_control.get("outcome_weighted_training") if isinstance(profitability_control.get("outcome_weighted_training"), dict) else {}
+    exit_contract = profitability_control.get("exit_intelligence") if isinstance(profitability_control.get("exit_intelligence"), dict) else {}
+    execution_contract = profitability_control.get("execution_aware_alpha") if isinstance(profitability_control.get("execution_aware_alpha"), dict) else {}
+    portfolio_contract = profitability_control.get("portfolio_conflict_control") if isinstance(profitability_control.get("portfolio_conflict_control"), dict) else {}
+    confirmation_contract = profitability_control.get("confirmation_bias_control") if isinstance(profitability_control.get("confirmation_bias_control"), dict) else {}
+    confirmation_quality, confirmation_channels, _ = _profitability_confirmation_evidence({**features, **out_features}, confirmation_contract)
+    out_features["paper_profitability_profit_score_norm"] = _clamp01(float(profitability_control.get("profit_score", 0.5) or 0.5))
+    out_features["paper_profitability_outcome_weight_norm"] = _clamp01(float(outcome_training.get("sample_weight_multiplier", 1.0) or 1.0) / 3.0)
+    out_features["paper_profitability_exit_pressure_norm"] = _clamp01(float(exit_contract.get("tighten_exit_bias_norm", 0.0) or 0.0))
+    out_features["paper_profitability_execution_discount_norm"] = _clamp01(float(execution_contract.get("unknown_fill_score_discount_norm", 0.0) or 0.0))
+    out_features["paper_profitability_conflict_cap_norm"] = _clamp01(float(portfolio_contract.get("max_overlap_pressure_norm", 1.0) or 1.0))
+    out_features["paper_profitability_confirmation_bias_active_norm"] = 1.0 if bool(confirmation_contract.get("active", False)) else 0.0
+    out_features["paper_profitability_confirmation_bias_score_norm"] = _clamp01(
+        float(confirmation_contract.get("confirmation_bias_score_norm", profitability_control.get("confirmation_bias_score", 0.0)) or 0.0)
+    )
+    out_features["paper_profitability_confirmation_quality_norm"] = confirmation_quality
+    out_features["paper_profitability_confirmation_channels_norm"] = _clamp01(confirmation_channels / 6.0)
     return new_action, new_score, new_reasons, out_features
 
 
@@ -10590,6 +11798,25 @@ def _apply_day_strategy_overlay(
         + 0.06 * regime_alignment
         - 0.12 * paper_drag_penalty
     )
+    intraday_profit_quality = _clamp01(
+        (0.20 * execution_fitness)
+        + (0.18 * tradeability)
+        + (0.16 * open_drive_conviction)
+        + (0.12 * micro_relative_volume)
+        + (0.12 * max(1.0 - execution_cost_risk, 0.0))
+        + (0.10 * max(1.0 - liquidity_vacuum_risk, 0.0))
+        + (0.08 * regime_alignment)
+        + (0.04 * max(1.0 - paper_drag_penalty, 0.0))
+    )
+    trapped_breakout_reversal = _clamp01(
+        (0.28 * failed_breakout_risk)
+        + (0.18 * micro_reversal)
+        + (0.16 * micro_quote_fade)
+        + (0.14 * micro_queue_decay)
+        + (0.10 * micro_relative_volume)
+        + (0.08 * tradeability)
+        + (0.06 * max(1.0 - execution_cost_risk, 0.0))
+    )
 
     if new_action in {"BUY", "SELL"} and now_ts < current_halt_until:
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
@@ -10603,6 +11830,9 @@ def _apply_day_strategy_overlay(
     elif profile == "intraday_aggressive" and new_action in {"BUY", "SELL"} and intraday_allowlist_score < 0.60:
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"intraday_allowlist_score={intraday_allowlist_score:.3f}"]
+    elif profile == "intraday_aggressive" and new_action in {"BUY", "SELL"} and intraday_profit_quality < 0.58:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"intraday_profit_quality={intraday_profit_quality:.3f}"]
     elif profile == "intraday_aggressive" and new_action in {"BUY", "SELL"} and execution_fitness < 0.56:
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"day_execution_fitness_guard={execution_fitness:.3f}"]
@@ -10635,6 +11865,24 @@ def _apply_day_strategy_overlay(
                 f"day_opening_auction_imbalance signal={auction_signal:.3f}",
                 f"day_open_drive_conviction={open_drive_conviction:.3f}",
                 f"day_auction_imbalance={imbalance:+.3f}",
+            ]
+    elif (
+        profile == "intraday_aggressive"
+        and new_action == "HOLD"
+        and trapped_breakout_reversal >= 0.74
+        and intraday_profit_quality >= 0.64
+        and open_norm >= 0.20
+        and midday_norm < 0.70
+        and liquidity_vacuum_risk < 0.66
+        and execution_cost_risk < 0.62
+        and regime_alignment >= 0.44
+    ):
+        direct = _directional_action_from_value((-0.55 * mom) + (-0.30 * pct) + (0.15 * imbalance))
+        if direct in {"BUY", "SELL"}:
+            new_action, new_score = _force_action_score(direct, new_score, threshold)
+            new_reasons = new_reasons + [
+                f"day_trapped_breakout_reversal={trapped_breakout_reversal:.3f}",
+                f"intraday_profit_quality={intraday_profit_quality:.3f}",
             ]
     elif new_action in {"BUY", "SELL"} and midday_norm >= 0.72 and max(abs(mom) < 0.003, regime_chop >= 0.64, micro_lunch_chop >= 0.66):
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
@@ -10691,6 +11939,8 @@ def _apply_day_strategy_overlay(
         "day_failed_breakout_risk_norm": failed_breakout_risk,
         "day_closing_squeeze_norm": closing_squeeze,
         "intraday_allowlist_score_norm": intraday_allowlist_score,
+        "intraday_profit_quality_norm": intraday_profit_quality,
+        "intraday_trapped_breakout_reversal_norm": trapped_breakout_reversal,
         "profile_symbol_drag_penalty_norm": paper_drag_penalty,
         "profile_kill_switch_norm": profile_kill_switch_norm,
     }
@@ -10773,6 +12023,16 @@ def _apply_swing_strategy_overlay(
         + (0.18 * sector_rs)
         + (0.12 * regime_alignment)
     )
+    swing_profit_quality = _clamp01(
+        (0.20 * weekly_confirm)
+        + (0.18 * sector_rs)
+        + (0.16 * regime_alignment)
+        + (0.14 * continuation_norm)
+        + (0.12 * max(1.0 - gap_fade_norm, 0.0))
+        + (0.10 * max(1.0 - event_blackout, 0.0))
+        + (0.06 * max(1.0 - micro_overnight_event_hazard, 0.0))
+        + (0.04 * max(1.0 - micro_reversal, 0.0))
+    )
     weekly_pullback_quality = _clamp01(
         (0.32 * max(-pct, 0.0) / 0.02)
         + (0.24 * weekly_confirm)
@@ -10799,6 +12059,9 @@ def _apply_swing_strategy_overlay(
     elif new_action in {"BUY", "SELL"} and paper_drag_penalty >= 0.78:
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"swing_symbol_drag_guard={paper_drag_penalty:.3f}"]
+    elif profile == "swing_aggressive" and new_action in {"BUY", "SELL"} and swing_profit_quality < 0.56:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons = new_reasons + [f"swing_profit_quality={swing_profit_quality:.3f}"]
     elif new_action == "HOLD" and regime_trend >= 0.72 and regime_alignment >= 0.52 and weekly_confirm >= 0.48 and sector_rs >= 0.48:
         direct = _directional_action_from_value((0.45 * pct) + (0.35 * mom) + (0.20 * rel))
         if direct in {"BUY", "SELL"}:
@@ -10819,13 +12082,34 @@ def _apply_swing_strategy_overlay(
         and new_action == "HOLD"
         and continuation_norm >= 0.72
         and overnight_confirmation >= 0.64
+        and swing_profit_quality >= 0.62
         and gap_fade_norm < 0.56
         and event_blackout < 0.64
     ):
         direct = _directional_action_from_value((0.55 * pct) + (0.45 * mom))
         if direct in {"BUY", "SELL"}:
             new_action, new_score = _force_action_score(direct, new_score, threshold)
-            new_reasons = new_reasons + [f"swing_overnight_confirmation={overnight_confirmation:.3f}"]
+            new_reasons = new_reasons + [
+                f"swing_overnight_confirmation={overnight_confirmation:.3f}",
+                f"swing_profit_quality={swing_profit_quality:.3f}",
+            ]
+    elif (
+        profile == "swing_aggressive"
+        and new_action == "HOLD"
+        and weekly_pullback_quality >= 0.72
+        and swing_profit_quality >= 0.64
+        and weekly_confirm >= 0.58
+        and sector_rs >= 0.54
+        and gap_fade_norm < 0.52
+        and event_blackout < 0.58
+    ):
+        direct = _directional_action_from_value((0.50 * rel) + (0.30 * mom) + (0.20 * pct))
+        if direct in {"BUY", "SELL"}:
+            new_action, new_score = _force_action_score(direct, new_score, threshold)
+            new_reasons = new_reasons + [
+                f"swing_aggressive_pullback_reclaim={weekly_pullback_quality:.3f}",
+                f"swing_profit_quality={swing_profit_quality:.3f}",
+            ]
     elif new_action == "HOLD" and squeeze_breakout >= 0.66 and weekly_confirm >= 0.52 and regime_chop <= 0.62:
         direct = _directional_action_from_value(mom if abs(mom) >= 0.001 else pct)
         if direct in {"BUY", "SELL"}:
@@ -10895,6 +12179,7 @@ def _apply_swing_strategy_overlay(
         "swing_regime_alignment_norm": regime_alignment,
         "swing_overnight_event_hazard_norm": micro_overnight_event_hazard,
         "swing_event_blackout_norm": event_blackout,
+        "swing_profit_quality_norm": swing_profit_quality,
         "profile_symbol_drag_penalty_norm": paper_drag_penalty,
         "profile_kill_switch_norm": profile_kill_switch_norm,
     }
@@ -13550,6 +14835,17 @@ def run_loop(
         'PREOPEN_REPLAY_SANITY_ENABLED',
         '0' if broker == 'coinbase' else '1',
     ).strip() == '1'
+    preopen_replay_sanity_paused_for_pressure = (
+        _env_flag("PROCESS_FANOUT_GUARD_ACTIVE", "0")
+        or _env_flag("TRAINING_RUNTIME_PAUSED_FOR_FANOUT", "0")
+        or _env_flag("SHADOW_RESEARCH_PAUSED_FOR_FANOUT", "0")
+        or _env_flag("TRAINING_RUNTIME_PAUSED_BY_OPERATOR_MODE", "0")
+        or _env_flag("SHADOW_RESEARCH_PAUSED_BY_OPERATOR_MODE", "0")
+        or _env_flag("TRAINING_RUNTIME_PAUSED_FOR_COMPUTER_TASK", "0")
+        or _env_flag("SHADOW_RESEARCH_PAUSED_FOR_COMPUTER_TASK", "0")
+    )
+    if preopen_replay_sanity_paused_for_pressure:
+        preopen_replay_sanity_enabled = False
     preopen_replay_sanity_timeout_seconds = max(
         int(os.getenv('PREOPEN_REPLAY_SANITY_TIMEOUT_SECONDS', '30')),
         5,
@@ -13587,6 +14883,7 @@ def run_loop(
         "log_options_master_decisions": log_options_master_decisions,
         "gate_logging_enabled": gate_logging_enabled,
         "gate_log_passes": gate_log_passes,
+        "preopen_replay_sanity_paused_for_pressure": preopen_replay_sanity_paused_for_pressure,
         "data_ingress_logging_enabled": data_ingress_logging_enabled,
         "derivatives_specialists_enabled": derivatives_specialists_enabled,
         "derivatives_super_trader_mode": derivatives_super_mode,
@@ -13804,18 +15101,21 @@ def run_loop(
     volatile_every_n = max(int(os.getenv('VOLATILE_SYMBOL_EVERY_N_ITERS', '1')), 1)
     defensive_every_n = max(int(os.getenv('DEFENSIVE_SYMBOL_EVERY_N_ITERS', '2')), 1)
 
-    def _record_snapshot_debug(symbol: str, reason: str, **extra: Any) -> None:
+    def _record_snapshot_debug(symbol: str, event_reason: str, **extra: Any) -> None:
         if not snapshot_debug_mode:
             return
+        detail_reason = extra.pop("reason", None)
         row: Dict[str, Any] = {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "iter": int(iter_count),
             "symbol": symbol,
-            "reason": reason,
+            "reason": event_reason,
             "broker": broker,
             "profile": _shadow_profile_name() or "default",
             "domain": _shadow_domain_name(broker=broker),
         }
+        if detail_reason is not None:
+            row["detail_reason"] = detail_reason
         if extra:
             row.update(extra)
         _append_jsonl(_snapshot_debug_path(PROJECT_ROOT, broker=broker), row)
@@ -15581,7 +16881,19 @@ def run_loop(
                 for row in sub_rows:
                     bot_id = str(row.get("bot_id", ""))
                     action = str(row.get("action", "HOLD")).upper()
-                    if bot_id not in paper_selected_ids or action not in {"BUY", "SELL"}:
+                    if bot_id not in paper_selected_ids:
+                        continue
+                    mirror_strategy = f"paper_mirror::{bot_id}"
+                    paper_action, paper_score, paper_reasons, paper_features = _apply_paper_mirror_profitability_control(
+                        profile=_shadow_profile_name() or "default",
+                        strategy=mirror_strategy,
+                        action=action,
+                        score=float(row.get("score", 0.5)),
+                        threshold=float(row.get("threshold", 0.55)),
+                        reasons=list(row.get("reasons", [])),
+                        features=shared_features,
+                    )
+                    if paper_action not in {"BUY", "SELL"}:
                         continue
                     metadata = {
                         "layer": "sub_bot_paper_mirror",
@@ -15598,13 +16910,13 @@ def run_loop(
                         _publish_execution_lane_intent(
                             broker=broker,
                             symbol=symbol,
-                            action=action,
+                            action=paper_action,
                             quantity=1.0,
-                            model_score=float(row.get("score", 0.5)),
+                            model_score=paper_score,
                             threshold=float(row.get("threshold", 0.55)),
-                            features=shared_features,
+                            features=paper_features,
                             gates=gates,
-                            reasons=list(row.get("reasons", [])) + [
+                            reasons=paper_reasons + [
                                 (
                                     "paper_mirror_all_active=1"
                                     if paper_mirror_all_active
@@ -15612,7 +16924,7 @@ def run_loop(
                                 ),
                                 f"bot_id={bot_id}",
                             ],
-                            strategy=f"paper_mirror::{bot_id}",
+                            strategy=mirror_strategy,
                             metadata=metadata,
                             intent_kind="paper_mirror",
                             target_mode="paper",
@@ -15621,13 +16933,13 @@ def run_loop(
                         try:
                             paper_trader.execute_decision(
                                 symbol=symbol,
-                                action=action,
+                                action=paper_action,
                                 quantity=1,
-                                model_score=float(row.get("score", 0.5)),
+                                model_score=paper_score,
                                 threshold=float(row.get("threshold", 0.55)),
-                                features=shared_features,
+                                features=paper_features,
                                 gates=gates,
-                                reasons=list(row.get("reasons", [])) + [
+                                reasons=paper_reasons + [
                                     (
                                         "paper_mirror_all_active=1"
                                         if paper_mirror_all_active
@@ -15635,7 +16947,7 @@ def run_loop(
                                     ),
                                     f"bot_id={bot_id}",
                                 ],
-                                strategy=f"paper_mirror::{bot_id}",
+                                strategy=mirror_strategy,
                                 metadata=metadata,
                             )
                         except Exception as exc:
@@ -15677,54 +16989,41 @@ def run_loop(
                         "promoted": bool(b.promoted),
                     }
                     options_specialist_rows.append(row)
-                    if paper_selected_option_ids and str(b.bot_id) in paper_selected_option_ids and action in {"BUY", "SELL"}:
-                        option_metadata = {
-                            "layer": "options_sub_bot_paper_mirror",
-                            "snapshot_id": snapshot_id,
-                            "source_profile": _shadow_profile_name() or "default",
-                            "shadow_domain": _shadow_domain_name(broker=broker),
-                            "bot_weight": row["weight"],
-                            "test_accuracy": b.test_accuracy,
-                            "bot_role": "options_sub_bot",
-                            "bot_id": b.bot_id,
-                            "bot_promoted": bool(b.promoted),
-                            "allow_live_promotion": False,
-                        }
-                        if execution_lane_enabled:
-                            _publish_execution_lane_intent(
-                                broker=broker,
-                                symbol=symbol,
-                                action=action,
-                                quantity=1.0,
-                                model_score=score,
-                                threshold=threshold,
-                                features=shared_features,
-                                gates=gates,
-                                reasons=row_reasons + [
-                                    (
-                                        "paper_mirror_all_active=1"
-                                        if paper_mirror_all_active
-                                        else f"paper_mirror_options_top_n={paper_mirror_options_top_n}"
-                                    ),
-                                    f"bot_id={b.bot_id}",
-                                    "bot_role=options_sub_bot",
-                                ],
-                                strategy=f"paper_mirror_options::{b.bot_id}",
-                                metadata=option_metadata,
-                                intent_kind="paper_mirror_options",
-                                target_mode="paper",
-                            )
-                        elif paper_trader is not None:
-                            try:
-                                paper_trader.execute_decision(
+                    if paper_selected_option_ids and str(b.bot_id) in paper_selected_option_ids:
+                        mirror_strategy = f"paper_mirror_options::{b.bot_id}"
+                        paper_action, paper_score, paper_reasons, paper_features = _apply_paper_mirror_profitability_control(
+                            profile=_shadow_profile_name() or "default",
+                            strategy=mirror_strategy,
+                            action=action,
+                            score=score,
+                            threshold=threshold,
+                            reasons=row_reasons,
+                            features=shared_features,
+                        )
+                        if paper_action in {"BUY", "SELL"}:
+                            option_metadata = {
+                                "layer": "options_sub_bot_paper_mirror",
+                                "snapshot_id": snapshot_id,
+                                "source_profile": _shadow_profile_name() or "default",
+                                "shadow_domain": _shadow_domain_name(broker=broker),
+                                "bot_weight": row["weight"],
+                                "test_accuracy": b.test_accuracy,
+                                "bot_role": "options_sub_bot",
+                                "bot_id": b.bot_id,
+                                "bot_promoted": bool(b.promoted),
+                                "allow_live_promotion": False,
+                            }
+                            if execution_lane_enabled:
+                                _publish_execution_lane_intent(
+                                    broker=broker,
                                     symbol=symbol,
-                                    action=action,
-                                    quantity=1,
-                                    model_score=score,
+                                    action=paper_action,
+                                    quantity=1.0,
+                                    model_score=paper_score,
                                     threshold=threshold,
-                                    features=shared_features,
+                                    features=paper_features,
                                     gates=gates,
-                                    reasons=row_reasons + [
+                                    reasons=paper_reasons + [
                                         (
                                             "paper_mirror_all_active=1"
                                             if paper_mirror_all_active
@@ -15733,11 +17032,35 @@ def run_loop(
                                         f"bot_id={b.bot_id}",
                                         "bot_role=options_sub_bot",
                                     ],
-                                    strategy=f"paper_mirror_options::{b.bot_id}",
+                                    strategy=mirror_strategy,
                                     metadata=option_metadata,
+                                    intent_kind="paper_mirror_options",
+                                    target_mode="paper",
                                 )
-                            except Exception as exc:
-                                print(f"[PaperMirrorOptions] order_failed symbol={symbol} bot_id={b.bot_id} err={exc}")
+                            elif paper_trader is not None:
+                                try:
+                                    paper_trader.execute_decision(
+                                        symbol=symbol,
+                                        action=paper_action,
+                                        quantity=1,
+                                        model_score=paper_score,
+                                        threshold=threshold,
+                                        features=paper_features,
+                                        gates=gates,
+                                        reasons=paper_reasons + [
+                                            (
+                                                "paper_mirror_all_active=1"
+                                                if paper_mirror_all_active
+                                                else f"paper_mirror_options_top_n={paper_mirror_options_top_n}"
+                                            ),
+                                            f"bot_id={b.bot_id}",
+                                            "bot_role=options_sub_bot",
+                                        ],
+                                        strategy=mirror_strategy,
+                                        metadata=option_metadata,
+                                    )
+                                except Exception as exc:
+                                    print(f"[PaperMirrorOptions] order_failed symbol={symbol} bot_id={b.bot_id} err={exc}")
                     if _dynamic_storage_flag("LOG_SUB_BOT_DECISIONS", log_sub_bot_decisions):
                         trader.execute_decision(
                             symbol=symbol,
@@ -15789,54 +17112,41 @@ def run_loop(
                         "test_accuracy": b.test_accuracy,
                     }
                     futures_specialist_rows.append(row)
-                    if paper_selected_futures_ids and str(b.bot_id) in paper_selected_futures_ids and action in {"BUY", "SELL"}:
-                        futures_metadata = {
-                            "layer": "futures_sub_bot_paper_mirror",
-                            "snapshot_id": snapshot_id,
-                            "source_profile": _shadow_profile_name() or "default",
-                            "shadow_domain": _shadow_domain_name(broker=broker),
-                            "bot_weight": row["weight"],
-                            "test_accuracy": b.test_accuracy,
-                            "bot_role": "futures_sub_bot",
-                            "bot_id": b.bot_id,
-                            "bot_promoted": bool(b.promoted),
-                            "allow_live_promotion": False,
-                        }
-                        if execution_lane_enabled:
-                            _publish_execution_lane_intent(
-                                broker=broker,
-                                symbol=symbol,
-                                action=action,
-                                quantity=1.0,
-                                model_score=score,
-                                threshold=threshold,
-                                features=shared_features,
-                                gates=gates,
-                                reasons=row_reasons + [
-                                    (
-                                        "paper_mirror_all_active=1"
-                                        if paper_mirror_all_active
-                                        else f"paper_mirror_futures_top_n={paper_mirror_top_n}"
-                                    ),
-                                    f"bot_id={b.bot_id}",
-                                    "bot_role=futures_sub_bot",
-                                ],
-                                strategy=f"paper_mirror_futures::{b.bot_id}",
-                                metadata=futures_metadata,
-                                intent_kind="paper_mirror_futures",
-                                target_mode="paper",
-                            )
-                        elif paper_trader is not None:
-                            try:
-                                paper_trader.execute_decision(
+                    if paper_selected_futures_ids and str(b.bot_id) in paper_selected_futures_ids:
+                        mirror_strategy = f"paper_mirror_futures::{b.bot_id}"
+                        paper_action, paper_score, paper_reasons, paper_features = _apply_paper_mirror_profitability_control(
+                            profile=_shadow_profile_name() or "default",
+                            strategy=mirror_strategy,
+                            action=action,
+                            score=score,
+                            threshold=threshold,
+                            reasons=row_reasons,
+                            features=shared_features,
+                        )
+                        if paper_action in {"BUY", "SELL"}:
+                            futures_metadata = {
+                                "layer": "futures_sub_bot_paper_mirror",
+                                "snapshot_id": snapshot_id,
+                                "source_profile": _shadow_profile_name() or "default",
+                                "shadow_domain": _shadow_domain_name(broker=broker),
+                                "bot_weight": row["weight"],
+                                "test_accuracy": b.test_accuracy,
+                                "bot_role": "futures_sub_bot",
+                                "bot_id": b.bot_id,
+                                "bot_promoted": bool(b.promoted),
+                                "allow_live_promotion": False,
+                            }
+                            if execution_lane_enabled:
+                                _publish_execution_lane_intent(
+                                    broker=broker,
                                     symbol=symbol,
-                                    action=action,
-                                    quantity=1,
-                                    model_score=score,
+                                    action=paper_action,
+                                    quantity=1.0,
+                                    model_score=paper_score,
                                     threshold=threshold,
-                                    features=shared_features,
+                                    features=paper_features,
                                     gates=gates,
-                                    reasons=row_reasons + [
+                                    reasons=paper_reasons + [
                                         (
                                             "paper_mirror_all_active=1"
                                             if paper_mirror_all_active
@@ -15845,11 +17155,35 @@ def run_loop(
                                         f"bot_id={b.bot_id}",
                                         "bot_role=futures_sub_bot",
                                     ],
-                                    strategy=f"paper_mirror_futures::{b.bot_id}",
+                                    strategy=mirror_strategy,
                                     metadata=futures_metadata,
+                                    intent_kind="paper_mirror_futures",
+                                    target_mode="paper",
                                 )
-                            except Exception as exc:
-                                print(f"[PaperMirrorFutures] order_failed symbol={symbol} bot_id={b.bot_id} err={exc}")
+                            elif paper_trader is not None:
+                                try:
+                                    paper_trader.execute_decision(
+                                        symbol=symbol,
+                                        action=paper_action,
+                                        quantity=1,
+                                        model_score=paper_score,
+                                        threshold=threshold,
+                                        features=paper_features,
+                                        gates=gates,
+                                        reasons=paper_reasons + [
+                                            (
+                                                "paper_mirror_all_active=1"
+                                                if paper_mirror_all_active
+                                                else f"paper_mirror_futures_top_n={paper_mirror_top_n}"
+                                            ),
+                                            f"bot_id={b.bot_id}",
+                                            "bot_role=futures_sub_bot",
+                                        ],
+                                        strategy=mirror_strategy,
+                                        metadata=futures_metadata,
+                                    )
+                                except Exception as exc:
+                                    print(f"[PaperMirrorFutures] order_failed symbol={symbol} bot_id={b.bot_id} err={exc}")
                     if _dynamic_storage_flag("LOG_SUB_BOT_DECISIONS", log_sub_bot_decisions):
                         trader.execute_decision(
                             symbol=symbol,
@@ -15988,6 +17322,12 @@ def run_loop(
                     **shared_features,
                     "advanced_sleeve_overlays_enabled": 0.0,
                 }
+            profitability_upper_features = _profile_profitability_upper_layer_features(profile_name)
+            if profitability_upper_features:
+                shared_features = {
+                    **shared_features,
+                    **profitability_upper_features,
+                }
             master_decision_started_at = time.perf_counter()
 
             master_outputs: Dict[str, Dict[str, Any]] = {}
@@ -16003,6 +17343,7 @@ def run_loop(
                     "threshold": m_threshold,
                     "reasons": m_reasons,
                     "vote": m_vote["vote"],
+                    "master_meta": dict(m_vote),
                 }
                 if _dynamic_storage_flag("LOG_MASTER_VARIANT_DECISIONS", log_master_variant_decisions):
                     trader.execute_decision(
@@ -16015,7 +17356,7 @@ def run_loop(
                         gates={"ensemble_has_members": active_sub_bots_total > 0, "market_data_ok": mkt["last_price"] > 0},
                         reasons=m_reasons,
                         strategy=f"master_{master_name}_bot",
-                        metadata={"layer": "master_bot", "master_name": master_name, "snapshot_id": snapshot_id},
+                        metadata={"layer": "master_bot", "master_name": master_name, "snapshot_id": snapshot_id, "master_meta": dict(m_vote)},
                     )
 
             gm_weights = _grand_master_weights(shared_features)
@@ -16530,6 +17871,30 @@ def run_loop(
                     float(shared_features.get("execution_fitness_norm", 0.5) or 0.5),
                 )
             )
+            sizing_kelly_signal_norm = None
+            sizing_quant_strategy_fit_norm = None
+            sizing_quant_strategy_conviction_norm = None
+            if float(shared_features.get("quant_model_engine_available", 0.0) or 0.0) >= 0.5:
+                raw_kelly_signal = shared_features.get("quant_kelly_fraction_norm", 0.5)
+                kelly_signal_base = _clamp01(float(raw_kelly_signal if raw_kelly_signal is not None else 0.5))
+                kelly_readiness = _clamp01(
+                    float(shared_features.get("quant_strategy_kelly_sizing_readiness_norm", kelly_signal_base) or kelly_signal_base)
+                )
+                sizing_quant_strategy_fit_norm = _clamp01(
+                    float(shared_features.get("quant_strategy_portfolio_fit_norm", 0.5) or 0.5)
+                )
+                sizing_kelly_signal_norm = _clamp01(
+                    0.60 * kelly_signal_base + 0.25 * kelly_readiness + 0.15 * sizing_quant_strategy_fit_norm
+                )
+                sizing_quant_strategy_conviction_norm = _clamp01(
+                    float(
+                        shared_features.get(
+                            "quant_strategy_risk_adjusted_conviction_norm",
+                            shared_features.get("quant_strategy_selection_confidence_norm", sizing_kelly_signal_norm),
+                        )
+                        or sizing_kelly_signal_norm
+                    )
+                )
             raw_qty = size_from_action(
                 action=gm_action,
                 score=gm_score,
@@ -16543,6 +17908,8 @@ def run_loop(
                 overlap_pressure=sizing_overlap_pressure,
                 correlation_pressure=sizing_correlation_pressure,
                 profile_multiplier=sizing_profile_multiplier,
+                kelly_signal_norm=sizing_kelly_signal_norm,
+                strategy_conviction_norm=sizing_quant_strategy_conviction_norm,
             )
             if gm_action in {"BUY", "SELL"} and raw_qty > 0.0:
                 raw_qty = round(
@@ -16553,6 +17920,18 @@ def run_loop(
                     f"allocation_confidence={float(shared_features.get('allocation_confidence_norm', 0.0) or 0.0):.3f}",
                     f"allocation_scale={float(shared_features.get('allocation_confidence_scale', 0.0) or 0.0):.3f}",
                 ]
+                if sizing_kelly_signal_norm is not None:
+                    gm_reasons.append(f"kelly_signal={sizing_kelly_signal_norm:.3f}")
+                if sizing_quant_strategy_fit_norm is not None:
+                    gm_reasons.append(f"quant_strategy_fit={sizing_quant_strategy_fit_norm:.3f}")
+                if sizing_quant_strategy_conviction_norm is not None:
+                    gm_reasons.append(f"quant_strategy_conviction={sizing_quant_strategy_conviction_norm:.3f}")
+                paper_profitability_size_multiplier = _clamp01(
+                    float(shared_features.get("paper_profitability_size_multiplier_norm", 1.0) or 1.0)
+                )
+                if paper_profitability_size_multiplier < 0.999:
+                    raw_qty = round(raw_qty * paper_profitability_size_multiplier, 6)
+                    gm_reasons.append(f"paper_profitability_size_multiplier={paper_profitability_size_multiplier:.3f}")
             alloc_qty = allocate_quantity(
                 raw_qty=raw_qty,
                 symbol=symbol,
@@ -17223,8 +18602,20 @@ def run_loop(
                         "layer": "grand_master",
                         "action": gm_action,
                         "quantity": dispatch_qty,
+                        "score": gm_score,
+                        "threshold": gm_threshold,
                         "return_1m": ret_1m,
                         "pnl_proxy": exec_sim.adjusted_return_1m,
+                        "reasons": gm_reasons[:24],
+                        "features": _decision_driver_feature_snapshot(
+                            grand_features,
+                            dict(gm_vote),
+                            action=gm_action,
+                            score=gm_score,
+                            threshold=gm_threshold,
+                            return_1m=ret_1m,
+                        ),
+                        "grand_master_meta": dict(gm_vote),
                         "slippage_bps": exec_sim.slippage_bps,
                         "latency_ms": exec_sim.latency_ms,
                         "expected_fill_price": exec_sim.expected_fill_price,
@@ -17480,7 +18871,13 @@ def run_loop(
                 )
                 order_idempotency_dirty = False
 
-        if auto_retrain and latest_recs:
+        operator_retrain_paused = (
+            _env_flag("TRAINING_RUNTIME_PAUSED_BY_OPERATOR_MODE", "0")
+            or _env_flag("TRAINING_RUNTIME_PAUSED_FOR_BACKLOG", "0")
+            or _env_flag("TRAINING_RUNTIME_PAUSED_FOR_FOREGROUND", "0")
+            or _env_flag("TRAINING_RUNTIME_PAUSED_FOR_COMPUTER_TASK", "0")
+        )
+        if auto_retrain and latest_recs and not operator_retrain_paused:
             underperformers = _count_underperformers(latest_recs)
             cooldown_seconds = max(retrain_cooldown_minutes, 1) * 60
             cooldown_ok = (time.time() - last_retrain_started_at) >= cooldown_seconds
@@ -17550,6 +18947,18 @@ def run_loop(
                     }
                     _append_jsonl(_auto_retrain_log_path(PROJECT_ROOT, broker=broker), event)
                     print(f"[AutoRetrain] skipped reason=memory_guard details={memory_reason}")
+        elif auto_retrain and latest_recs and operator_retrain_paused:
+            auto_retrain_healthy_streak = 0
+            if iter_count % max(int(os.getenv("AUTO_RETRAIN_OPERATOR_PAUSE_LOG_EVERY_ITERS", "30")), 1) == 0:
+                event = {
+                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                    "event": "retrain_skipped_operator_mode",
+                    "training_paused_by_operator_mode": _env_flag("TRAINING_RUNTIME_PAUSED_BY_OPERATOR_MODE", "0"),
+                    "training_paused_for_backlog": _env_flag("TRAINING_RUNTIME_PAUSED_FOR_BACKLOG", "0"),
+                    "training_paused_for_foreground": _env_flag("TRAINING_RUNTIME_PAUSED_FOR_FOREGROUND", "0"),
+                    "training_paused_for_computer_task": _env_flag("TRAINING_RUNTIME_PAUSED_FOR_COMPUTER_TASK", "0"),
+                }
+                _append_jsonl(_auto_retrain_log_path(PROJECT_ROOT, broker=broker), event)
 
         loop_seconds = time.time() - loop_started_at
         bp = backpressure.evaluate(loop_seconds=loop_seconds, interval_seconds=current_interval_seconds)

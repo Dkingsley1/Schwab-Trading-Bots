@@ -83,6 +83,206 @@ def test_grand_master_vote_uses_specialist_alignment_when_conditions_support_dep
     assert any("specialist_consensus=" in reason for reason in reasons)
 
 
+def test_grand_master_vote_integrates_quant_strategy_conviction_router() -> None:
+    master_outputs = {
+        "trend": _master_output(0.34, score=0.67),
+        "mean_revert": _master_output(0.12, action="HOLD", score=0.56),
+        "shock": _master_output(0.08, score=0.56),
+    }
+    weights = {"trend": 0.52, "mean_revert": 0.18, "shock": 0.30}
+    base_features = {
+        "infra_vote": 0.08,
+        "infra_risk_throttle_norm": 0.10,
+        "infra_veto_active": 0.0,
+        "infra_confidence_calibrator_scale_norm": 0.78,
+        "options_specialist_vote": 0.25,
+        "futures_specialist_vote": 0.22,
+        "flow_direction_signed": 0.50,
+        "flow_conviction_norm": 0.68,
+        "flow_stress_norm": 0.10,
+        "lead_lag_signal_signed": 0.45,
+        "lead_lag_confidence_norm": 0.72,
+        "lead_lag_break_norm": 0.08,
+        "market_micro_order_flow_imbalance_norm": 0.73,
+        "execution_fitness_norm": 0.75,
+        "market_micro_tradeability_score_norm": 0.77,
+        "cross_bot_conflict_norm": 0.05,
+        "quant_model_data_confidence_norm": 0.70,
+        "quant_model_resource_pressure_norm": 0.08,
+        "quant_cvar_tail_risk_norm": 0.12,
+        "quant_copula_dependency_norm": 0.10,
+    }
+
+    _base_action, base_score, _base_threshold, _base_reasons, base_meta = loop._grand_master_vote(
+        master_outputs,
+        weights,
+        base_features,
+    )
+    action, score, threshold, reasons, meta = loop._grand_master_vote(
+        master_outputs,
+        weights,
+        {
+            **base_features,
+            "quant_strategy_selection_confidence_norm": 0.78,
+            "quant_strategy_portfolio_fit_norm": 0.80,
+            "quant_strategy_execution_alignment_norm": 0.82,
+            "quant_strategy_risk_adjusted_conviction_norm": 0.74,
+            "quant_strategy_allocation_bias_norm": 0.76,
+        },
+    )
+
+    assert action in {"BUY", "HOLD"}
+    assert score > base_score
+    assert threshold > 0.0
+    assert meta["quant_strategy_conviction"] == 0.74
+    assert meta["quant_strategy_vote"] > 0.20
+    assert meta["directional_trigger"] <= base_meta["directional_trigger"]
+    assert any("quant_strategy_conviction=" in reason for reason in reasons)
+    assert any("quant_strategy_vote=" in reason for reason in reasons)
+
+
+def test_master_vote_variant_uses_paper_profitability_awareness() -> None:
+    rows = [
+        {
+            "bot_id": "brain_refinery_v10",
+            "action": "BUY",
+            "direction": 1.0,
+            "weight": 0.7,
+            "eligible_for_master_vote": True,
+        },
+        {
+            "bot_id": "brain_refinery_v50",
+            "action": "BUY",
+            "direction": 1.0,
+            "weight": 0.3,
+            "eligible_for_master_vote": True,
+        },
+    ]
+    base_action, base_score, _base_threshold, _base_reasons, base_meta = loop._master_vote_variant(
+        "trend",
+        rows,
+        {
+            "mom_5m": 0.004,
+            "pct_from_close": 0.006,
+            "market_micro_tradeability_score_norm": 0.75,
+            "execution_fitness_norm": 0.74,
+        },
+    )
+    action, score, _threshold, reasons, meta = loop._master_vote_variant(
+        "trend",
+        rows,
+        {
+            "mom_5m": 0.004,
+            "pct_from_close": 0.006,
+            "market_micro_tradeability_score_norm": 0.75,
+            "execution_fitness_norm": 0.74,
+            "paper_profitability_master_awareness_active_norm": 1.0,
+            "paper_profitability_master_profit_score_norm": 0.24,
+            "paper_profitability_master_drag_norm": 0.82,
+            "paper_profitability_master_risk_norm": 0.78,
+            "paper_profitability_master_size_multiplier_norm": 0.18,
+        },
+    )
+
+    assert base_action in {"BUY", "HOLD"}
+    assert action in {"BUY", "HOLD"}
+    assert score < base_score
+    assert abs(meta["vote"]) < abs(base_meta["vote"])
+    assert meta["paper_profitability_master_awareness"] == 1.0
+    assert any("paper_profitability_master_risk=" in reason for reason in reasons)
+
+
+def test_grand_master_vote_uses_paper_profitability_risk() -> None:
+    master_outputs = {
+        "trend": _master_output(0.44, score=0.70),
+        "mean_revert": _master_output(0.18, action="HOLD", score=0.57),
+        "shock": _master_output(0.14, score=0.56),
+    }
+    weights = {"trend": 0.55, "mean_revert": 0.20, "shock": 0.25}
+    clean_features = {
+        "infra_vote": 0.08,
+        "infra_risk_throttle_norm": 0.08,
+        "infra_confidence_calibrator_scale_norm": 0.80,
+        "options_specialist_vote": 0.30,
+        "futures_specialist_vote": 0.24,
+        "flow_direction_signed": 0.34,
+        "flow_conviction_norm": 0.62,
+        "flow_stress_norm": 0.08,
+        "lead_lag_signal_signed": 0.30,
+        "lead_lag_confidence_norm": 0.70,
+        "lead_lag_break_norm": 0.06,
+        "market_micro_order_flow_imbalance_norm": 0.68,
+        "execution_fitness_norm": 0.76,
+        "market_micro_tradeability_score_norm": 0.76,
+        "cross_bot_conflict_norm": 0.08,
+    }
+    _clean_action, clean_score, _clean_threshold, _clean_reasons, clean_meta = loop._grand_master_vote(
+        master_outputs,
+        weights,
+        clean_features,
+    )
+    action, score, threshold, reasons, meta = loop._grand_master_vote(
+        master_outputs,
+        weights,
+        {
+            **clean_features,
+            "paper_profitability_grandmaster_awareness_active_norm": 1.0,
+            "paper_profitability_grandmaster_profit_score_norm": 0.18,
+            "paper_profitability_grandmaster_drag_norm": 0.88,
+            "paper_profitability_grandmaster_risk_norm": 0.86,
+            "paper_profitability_grandmaster_exit_pressure_norm": 0.76,
+            "paper_profitability_grandmaster_execution_discount_norm": 0.42,
+            "paper_profitability_grandmaster_size_multiplier_norm": 0.12,
+        },
+    )
+
+    assert action == "HOLD"
+    assert score < clean_score
+    assert threshold >= _clean_threshold
+    assert meta["paper_profitability_grandmaster_awareness"] == 1.0
+    assert meta["paper_profitability_grandmaster_risk"] == 0.86
+    assert meta["deployability"] < clean_meta["deployability"]
+    assert any("paper_profitability_grandmaster_risk=" in reason for reason in reasons)
+
+
+def test_decision_driver_feature_snapshot_carries_market_move_explainer_inputs() -> None:
+    snapshot = loop._decision_driver_feature_snapshot(
+        {
+            "mom_5m": -0.006,
+            "flow_direction_signed": -0.52,
+            "market_micro_order_flow_imbalance_norm": 0.31,
+            "market_micro_tradeability_score_norm": 0.78,
+            "quant_strategy_crypto_basis_edge_norm": 0.69,
+            "quant_cvar_tail_risk_norm": 0.44,
+            "paper_profitability_grandmaster_risk_norm": 0.62,
+            "paper_profitability_master_training_weight_norm": 0.71,
+        },
+        {
+            "quant_strategy_conviction": 0.74,
+            "quant_strategy_fit": 0.80,
+            "quant_strategy_execution_alignment": 0.82,
+            "vote": -0.36,
+            "paper_profitability_grandmaster_profit_score": 0.33,
+        },
+        action="SELL",
+        score=0.38,
+        threshold=0.58,
+        return_1m=-0.004,
+    )
+
+    assert snapshot["decision_action_norm"] == -1.0
+    assert snapshot["return_1m"] == -0.004
+    assert snapshot["quant_strategy_crypto_basis_edge_norm"] == 0.69
+    assert snapshot["quant_strategy_risk_adjusted_conviction_norm"] == 0.74
+    assert snapshot["quant_strategy_portfolio_fit_norm"] == 0.80
+    assert snapshot["quant_strategy_execution_alignment_norm"] == 0.82
+    assert snapshot["grand_master_vote"] == -0.36
+    assert snapshot["paper_profitability_grandmaster_risk_norm"] == 0.62
+    assert snapshot["paper_profitability_grandmaster_profit_score_norm"] == 0.33
+    assert snapshot["paper_profitability_master_training_weight_norm"] == 0.71
+    assert snapshot["decision_driver_sell_pressure_norm"] > snapshot["decision_driver_buy_pressure_norm"]
+
+
 def test_publish_master_plan_intent_emits_options_plan(monkeypatch) -> None:
     calls = []
 

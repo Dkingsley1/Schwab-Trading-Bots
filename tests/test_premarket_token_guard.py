@@ -1,6 +1,7 @@
 import json
 import sys
 import tempfile
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -72,6 +73,55 @@ def test_token_needs_refresh_uses_configurable_expiry_floor() -> None:
     needs_refresh, reason = ptg._token_needs_refresh(status, max_age_seconds=3600.0, min_expires_seconds=600.0)
     assert needs_refresh is True
     assert reason.startswith("token_expiring_soon:")
+
+
+def test_direct_refresh_token_grant_extends_and_writes_atomically(monkeypatch, tmp_path: Path) -> None:
+    token_path = tmp_path / "token.json"
+    token_path.write_text(
+        json.dumps(
+            {
+                "creation_timestamp": int(time.time()) - 100,
+                "token": {
+                    "access_token": "old-access",
+                    "refresh_token": "refresh-token",
+                    "expires_at": time.time() + 120,
+                    "expires_in": 1800,
+                    "scope": "api",
+                    "token_type": "Bearer",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SCHWAB_API_KEY", "real_key")
+    monkeypatch.setenv("SCHWAB_SECRET", "real_secret")
+
+    class FakeOAuth2Client:
+        def __init__(self, *args, **kwargs) -> None:
+            self.args = args
+            self.kwargs = kwargs
+
+        def refresh_token(self, *_args, **_kwargs):
+            return {
+                "access_token": "new-access",
+                "refresh_token": "refresh-token",
+                "expires_at": time.time() + 1800,
+                "expires_in": 1800,
+                "scope": "api",
+                "token_type": "Bearer",
+            }
+
+    import authlib.integrations.httpx_client as httpx_client
+
+    monkeypatch.setattr(httpx_client, "OAuth2Client", FakeOAuth2Client)
+
+    result = ptg._direct_refresh_token_grant(token_path, min_extension_seconds=300.0)
+
+    assert result["ok"] is True
+    assert result["reason"] == "refresh_token_grant_success"
+    refreshed = json.loads(token_path.read_text(encoding="utf-8"))
+    assert refreshed["token"]["access_token"] == "new-access"
+    assert refreshed["token"]["refresh_token"] == "refresh-token"
 
 
 def test_token_warning_level_scales_with_age() -> None:

@@ -231,6 +231,33 @@ class IngestionBackpressureGuardTests(unittest.TestCase):
 
             self.assertGreater(total, 0)
 
+    def test_large_sparse_line_file_does_not_fall_back_to_tiny_rows(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "sparse.jsonl"
+            path.write_bytes(b"x" * 16384)
+            st = path.stat()
+
+            total = module._estimated_total_lines(
+                path,
+                st,
+                {},
+                max_exact_bytes=16,
+                sample_bytes=1024,
+            )
+
+            self.assertEqual(total, 1)
+
+            detail = module._estimated_total_lines_detail(
+                path,
+                st,
+                {},
+                max_exact_bytes=16,
+                sample_bytes=1024,
+            )
+            self.assertTrue(detail["sparse_large_line"])
+            self.assertEqual(detail["line_estimate_method"], "sparse_no_newline_sample")
+
     def test_load_journal_progress_tracks_highest_checkpoint(self) -> None:
         module = _load_module()
         with tempfile.TemporaryDirectory() as td:
@@ -292,6 +319,27 @@ class IngestionBackpressureGuardTests(unittest.TestCase):
             self.assertTrue(used)
             self.assertEqual(reconciled_last_line, 3200)
 
+    def test_last_line_for_state_tolerates_subsecond_mtime_rounding(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "trade_decisions_20260519.jsonl"
+            path.write_text("row\n" * 10, encoding="utf-8")
+            st = path.stat()
+
+            last_line = module._last_line_for_state(
+                "decisions/shadow_swing_aggressive_equities/trade_decisions_20260519.jsonl",
+                st,
+                {
+                    "last_line": 10,
+                    "last_offset_bytes": st.st_size,
+                    "mtime": float(st.st_mtime) + 0.25,
+                    "file_inode": st.st_ino,
+                    "file_size_bytes": st.st_size,
+                },
+            )
+
+            self.assertEqual(last_line, 10)
+
     def test_resolve_sqlite_state_prefers_newer_inode_progress_over_stale_higher_line_count(self) -> None:
         module = _load_module()
         with tempfile.TemporaryDirectory() as td:
@@ -335,6 +383,56 @@ class IngestionBackpressureGuardTests(unittest.TestCase):
 
             self.assertEqual(sqlite_state[rel]["last_line"], 1590)
             self.assertEqual(sqlite_state[rel]["file_inode"], 265434204)
+
+    def test_resolve_sqlite_state_prefers_current_file_inode_over_stale_newer_inode(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            project_root = Path(td)
+            shard_root = project_root / "governance" / "sql_link_shards"
+            shard_root.mkdir(parents=True)
+
+            rel = "decisions/shadow_swing_aggressive_equities/trade_decisions_20260519.jsonl"
+            source = project_root / rel
+            source.parent.mkdir(parents=True)
+            source.write_text("row\n" * 10, encoding="utf-8")
+            st = source.stat()
+            (shard_root / "jsonl_sql_link_state_aggressive_trading.json").write_text(
+                json.dumps(
+                    {
+                        "sqlite": {
+                            rel: {
+                                "last_line": 10,
+                                "last_offset_bytes": st.st_size,
+                                "mtime": st.st_mtime,
+                                "file_inode": st.st_ino,
+                                "file_size_bytes": st.st_size,
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (shard_root / "jsonl_sql_link_state_crypto_trading.json").write_text(
+                json.dumps(
+                    {
+                        "sqlite": {
+                            rel: {
+                                "last_line": 11310,
+                                "last_offset_bytes": 583807461,
+                                "mtime": st.st_mtime + 1000.0,
+                                "file_inode": st.st_ino + 99,
+                                "file_size_bytes": 583807461,
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            sqlite_state, _, _ = module._resolve_sqlite_state(project_root, None)
+
+            self.assertEqual(sqlite_state[rel]["last_line"], 10)
+            self.assertEqual(sqlite_state[rel]["file_inode"], st.st_ino)
 
 
 if __name__ == "__main__":

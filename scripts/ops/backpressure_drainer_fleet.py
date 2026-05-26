@@ -27,8 +27,21 @@ MIN_MATERIAL_PENDING_LINES = 100
 MICRO_STALE_READY_AGE_SECONDS = 1_800.0
 CORE_HARD_PENDING_LINES = 50_000
 DEFAULT_AGE_PRESSURE_THRESHOLD_SECONDS = 240.0
+SPARSE_LARGE_LINE_BYTES_PER_LINE = 64 * 1024
+SPARSE_LARGE_DECISION_MAX_BYTES_PER_FILE = 128 * 1024 * 1024
+SPARSE_LARGE_DECISION_SQLITE_BATCH_MAX_BYTES = 32 * 1024 * 1024
+STALE_DECISION_CATCH_UP_MERGE_MAX_JSONL_ROWS = 8_000
 
 DRAINER_OWNERS: dict[str, dict[str, Any]] = {
+    "stale_decision_log_drainer": {
+        "owner_bot_id": "brain_refinery_v602_system_governor_cpu_memory_backlog_pressure_bot",
+        "backup_bot_ids": [
+            "brain_refinery_v187_data_collection_storage_budget_guard",
+            "brain_refinery_v316_collection_halt_pressure_preemption_guard",
+        ],
+        "pressure_lane": "stale_decision_log_backpressure",
+        "ops_infrabots": ["backpressure_slo_bot", "storage_backpressure_autopilot", "writer_cycle_coordinator"],
+    },
     "core_decision_drainer": {
         "owner_bot_id": "brain_refinery_v602_system_governor_cpu_memory_backlog_pressure_bot",
         "backup_bot_ids": [
@@ -91,6 +104,15 @@ DRAINER_OWNERS: dict[str, dict[str, Any]] = {
         ],
         "pressure_lane": "support_watchdog_backpressure",
         "ops_infrabots": ["backpressure_slo_bot", "storage_pressure_clearance_bot"],
+    },
+    "risk_support_drainer": {
+        "owner_bot_id": "brain_refinery_v602_system_governor_cpu_memory_backlog_pressure_bot",
+        "backup_bot_ids": [
+            "brain_refinery_v316_collection_halt_pressure_preemption_guard",
+            "brain_refinery_v187_data_collection_storage_budget_guard",
+        ],
+        "pressure_lane": "risk_support_backpressure",
+        "ops_infrabots": ["backpressure_drainer_fleet", "storage_backpressure_autopilot", "training_runtime_control"],
     },
     "fast_trade_bridge_drainer": {
         "owner_bot_id": "brain_refinery_v602_system_governor_cpu_memory_backlog_pressure_bot",
@@ -316,6 +338,307 @@ def _safe_float(raw: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _performance_core_target() -> int:
+    for name in (
+        "BOT_PERFORMANCE_CORE_TARGET",
+        "BOT_PERFORMANCE_CORE_PRIMARY_COUNT",
+        "BACKLOG_PCORE_TARGET",
+    ):
+        value = _safe_int(os.getenv(name), 0)
+        if value > 0:
+            return value
+    return min(max(os.cpu_count() or 1, 1), 8)
+
+
+def _text_in(raw: str, tokens: tuple[str, ...]) -> bool:
+    text = str(raw or "").strip().lower()
+    return any(token in text for token in tokens)
+
+
+def _env_enabled(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def _p_core_foreground_reserve(*, p_cores: int, host_context: dict[str, Any] | None = None) -> int:
+    explicit_reserve = _safe_int(os.getenv("BACKLOG_PCORE_FOREGROUND_RESERVE"), 0)
+    if explicit_reserve > 0:
+        return min(explicit_reserve, max(p_cores - 1, 1))
+    context = host_context if isinstance(host_context, dict) else {}
+    resource = context.get("resource_guard") if isinstance(context.get("resource_guard"), dict) else {}
+    computer = context.get("computer_task") if isinstance(context.get("computer_task"), dict) else {}
+    intent = str(os.getenv("COMPUTER_RESOURCE_INTENT") or "").strip().lower()
+    primary_task = str(computer.get("primary_task") or os.getenv("COMPUTER_PRIMARY_TASK") or "").strip().lower()
+    creative_kind = str(resource.get("creative_session_kind") or "").strip().lower()
+    if any(
+        _text_in(value, ("logic", "final", "video", "audio_production", "video_editing", "virtualization"))
+        for value in (intent, primary_task, creative_kind)
+    ):
+        return 3
+    if any(_text_in(value, ("yield", "foreground", "music", "developer", "browser")) for value in (intent, primary_task, creative_kind)):
+        return 2
+    return 1
+
+
+def _p_core_burst_intelligence(
+    *,
+    p_core_count: int,
+    foreground_reserve: int,
+    writer_reserve: int,
+    critical: bool,
+    backlog_ratio: float,
+    sparse_active: bool,
+    host_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    context = host_context if isinstance(host_context, dict) else {}
+    runtime = context.get("runtime_throttle") if isinstance(context.get("runtime_throttle"), dict) else {}
+    resource = context.get("resource_guard") if isinstance(context.get("resource_guard"), dict) else {}
+    computer = context.get("computer_task") if isinstance(context.get("computer_task"), dict) else {}
+    throttle_profile = str(runtime.get("throttle_profile") or "").strip().lower()
+    compute_pressure = str(runtime.get("compute_pressure_level") or "").strip().lower()
+    memory_pressure = str(runtime.get("memory_pressure_level") or resource.get("memory_pressure_state") or "").strip().lower()
+    memory_pressure_kind = str(runtime.get("memory_pressure_kind") or resource.get("memory_pressure_kind") or "").strip().lower()
+    swap_used_gb = _safe_float(runtime.get("swap_used_gb"), _safe_float(resource.get("swap_used_gb"), 0.0))
+    compressed_store_gb = _safe_float(resource.get("compressed_store_gb"), 0.0)
+    pages_throttled = _safe_float(resource.get("pages_throttled"), 0.0)
+    host_saturation = _safe_float(runtime.get("host_saturation_score"), _safe_float(resource.get("load1_per_core"), 0.0) * 100.0)
+    creative_level = str(resource.get("creative_session_level") or "").strip().lower()
+    creative_kind = str(resource.get("creative_session_kind") or "").strip().lower()
+    co_running_level = str(resource.get("co_running_session_level") or "").strip().lower()
+    primary_task = str(computer.get("primary_task") or os.getenv("COMPUTER_PRIMARY_TASK") or "").strip().lower()
+    off_hours_active = bool(context.get("off_hours_active", False))
+    explicit = _safe_int(os.getenv("BACKLOG_PCORE_PREPROCESS_WORKERS_OVERRIDE"), 0)
+    base_budget = max(min(int(p_core_count) - int(foreground_reserve) - int(writer_reserve), 6), 1)
+    creative_heavy = bool(
+        _text_in(primary_task, ("audio_production", "video_editing", "logic", "final", "virtualization"))
+        or _text_in(creative_kind, ("audio_production", "video_editing", "logic", "final"))
+        or creative_level in {"hot", "dual_pro"}
+    )
+    high_pressure = bool(
+        throttle_profile in {"protect_live"}
+        or compute_pressure in {"high", "blocked", "critical"}
+        or memory_pressure in {"yellow", "red", "high", "critical", "blocked"}
+        or host_saturation >= 70.0
+        or (co_running_level in {"heavy_competition"} and host_saturation >= 55.0)
+    )
+    memory_critical = bool(
+        memory_pressure in {"red", "critical", "blocked"}
+        or memory_pressure_kind in {"throttled", "swap_exhaustion"}
+        or pages_throttled > 0
+        or swap_used_gb >= 18.0
+    )
+    memory_elevated = bool(
+        memory_critical
+        or memory_pressure in {"yellow", "high"}
+        or memory_pressure_kind in {"swap_only", "swap_only_with_headroom"}
+        or swap_used_gb >= 12.0
+        or compressed_store_gb >= 16.0
+    )
+    background_task_clear = primary_task in {"", "idle", "none", "background", "backlog", "backlog_drain"}
+    deep_memory_clear = bool(
+        memory_pressure in {"", "normal", "green", "none", "clear"}
+        and memory_pressure_kind in {"", "none", "normal", "clear"}
+        and swap_used_gb < 2.0
+        and compressed_store_gb < 8.0
+        and pages_throttled <= 0.0
+    )
+    deep_host_cool = bool(
+        host_saturation < 42.0
+        and compute_pressure in {"", "normal", "green", "none", "clear", "watch"}
+        and throttle_profile not in {"protect_live", "sustain"}
+    )
+    seventh_core_allowed = bool(
+        _env_enabled("BACKLOG_PCORE_ENABLE_SEVENTH", True)
+        and critical
+        and p_core_count >= 8
+        and (off_hours_active or backlog_ratio >= 4.0 or sparse_active)
+        and background_task_clear
+        and not creative_heavy
+        and not high_pressure
+        and deep_memory_clear
+        and deep_host_cool
+    )
+    max_budget = max(base_budget, min(int(p_core_count) - int(writer_reserve), 7)) if seventh_core_allowed else base_budget
+    burst_allowed = bool(
+        critical
+        and max_budget >= 6
+        and (off_hours_active or backlog_ratio >= 2.0 or sparse_active)
+        and not creative_heavy
+        and not high_pressure
+        and host_saturation < 50.0
+        and memory_pressure in {"", "normal", "green", "none", "clear"}
+    )
+    if explicit > 0:
+        selected = max(1, min(explicit, max_budget))
+        mode = "operator_override"
+        reason = "explicit BACKLOG_PCORE_PREPROCESS_WORKERS_OVERRIDE applied"
+    elif memory_critical:
+        selected = min(max_budget, 2)
+        mode = "memory_relief_2"
+        reason = "memory pressure is critical, so backlog preprocessing is capped to preserve headroom"
+    elif memory_elevated:
+        selected = min(max_budget, 3)
+        mode = "memory_relief_3"
+        reason = "memory pressure is elevated, so backlog preprocessing is narrowed before swap gets worse"
+    elif creative_heavy:
+        selected = min(max_budget, 3)
+        mode = "creative_foreground_protect_3"
+        reason = "creative or foreground work is active, so backlog preprocessing leaves extra interactive headroom"
+    elif high_pressure:
+        if host_saturation >= 85.0 or compute_pressure in {"blocked", "critical"} or throttle_profile == "protect_live":
+            selected = min(max_budget, 2)
+            mode = "host_pressure_relief_2"
+            reason = "host pressure is high enough that backlog preprocessing must cool before widening again"
+        else:
+            selected = min(max_budget, 3)
+            mode = "host_pressure_relief_3"
+            reason = "host pressure is elevated, so backlog preprocessing is narrowed while the writer catches up"
+    elif seventh_core_allowed:
+        selected = min(max_budget, 7)
+        mode = "burst_7"
+        reason = "deep-green background backlog pressure can safely borrow the seventh P-core"
+    elif burst_allowed:
+        selected = min(max_budget, 6)
+        mode = "burst_6"
+        reason = "host is cool enough and backlog pressure can use a wider preprocessing burst"
+    else:
+        selected = min(max_budget, 5)
+        mode = "daily_driver_5"
+        reason = "normal daily-driver headroom with single-writer backlog acceleration"
+    return {
+        "mode": mode,
+        "selected_workers": int(max(selected, 1)),
+        "max_budget": int(max_budget),
+        "reason": reason,
+        "inputs": {
+            "host_saturation_score": round(float(host_saturation), 3),
+            "compute_pressure_level": compute_pressure,
+            "memory_pressure_level": memory_pressure,
+            "memory_pressure_kind": memory_pressure_kind,
+            "swap_used_gb": round(float(swap_used_gb), 3),
+            "compressed_store_gb": round(float(compressed_store_gb), 3),
+            "pages_throttled": round(float(pages_throttled), 3),
+            "throttle_profile": throttle_profile,
+            "creative_session_level": creative_level,
+            "creative_session_kind": creative_kind,
+            "co_running_session_level": co_running_level,
+            "primary_task": primary_task,
+            "off_hours_active": bool(off_hours_active),
+            "backlog_ratio": round(float(backlog_ratio), 3),
+            "sparse_active": bool(sparse_active),
+        },
+        "seventh_core_burst": {
+            "enabled": _env_enabled("BACKLOG_PCORE_ENABLE_SEVENTH", True),
+            "allowed": bool(seventh_core_allowed),
+            "base_budget": int(base_budget),
+            "deep_host_cool": bool(deep_host_cool),
+            "deep_memory_clear": bool(deep_memory_clear),
+            "background_task_clear": bool(background_task_clear),
+            "policy": "use_pcore_7_only_for_deep_green_background_backlog_bursts",
+        },
+        "rules": {
+            "memory_critical_relief": 2,
+            "memory_elevated_relief": 3,
+            "creative_or_foreground_pressure": 3,
+            "host_pressure_relief": "2-3",
+            "normal_daily_driver": 5,
+            "cool_host_backlog_burst": 6,
+            "deep_green_pcore7_burst": 7,
+        },
+    }
+
+
+def _p_core_preprocess_workers(*, critical: bool, backpressure: dict[str, Any] | None = None, host_context: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
+    p_cores = max(_performance_core_target(), 1)
+    foreground_reserve = _p_core_foreground_reserve(p_cores=p_cores, host_context=host_context)
+    writer_reserve = 1
+    pressure = backpressure if isinstance(backpressure, dict) else {}
+    core = _safe_int(pressure.get("pending_lines"), 0)
+    total = _safe_int(pressure.get("pending_lines_total"), core)
+    oldest = _safe_float(pressure.get("oldest_pending_age_seconds"), 0.0)
+    threshold = max(_safe_int(pressure.get("pending_lines_threshold"), 15000), 1)
+    age_threshold = max(_safe_float(pressure.get("oldest_age_threshold_seconds"), 240.0), 1.0)
+    line_estimation = pressure.get("line_estimation") if isinstance(pressure.get("line_estimation"), dict) else {}
+    backlog_ratio = max(core / max(threshold, 1), total / max(threshold, 1), oldest / age_threshold)
+    sparse_active = bool(line_estimation.get("sparse_large_line_active", False))
+    intelligence = _p_core_burst_intelligence(
+        p_core_count=p_cores,
+        foreground_reserve=foreground_reserve,
+        writer_reserve=writer_reserve,
+        critical=bool(critical),
+        backlog_ratio=float(backlog_ratio),
+        sparse_active=bool(sparse_active),
+        host_context=host_context,
+    )
+    return _safe_int(intelligence.get("selected_workers"), 1), intelligence
+
+
+def _p_core_backlog_allocation_contract(env: dict[str, str], sparse_pressure: dict[str, Any] | None = None) -> dict[str, Any]:
+    sparse = sparse_pressure if isinstance(sparse_pressure, dict) else {}
+    workers = _safe_int(env.get("BACKLOG_PCORE_PREPROCESS_WORKERS"), _safe_int(env.get("SQL_LINK_SERVICE_PREPROCESS_WORKERS"), 1))
+    return {
+        "active": str(env.get("BACKLOG_PCORE_ALLOCATION_ACTIVE") or "") == "1",
+        "policy": "p_core_preprocess_single_sql_writer",
+        "sqlite_writer_count": 1,
+        "preprocess_worker_budget": int(max(workers, 1)),
+        "burst_worker_budget": int(max(workers, 1)),
+        "reserve_policy": "adaptive_4_5_6_7_foreground_first",
+        "p_core_burst_intelligence": {
+            "mode": str(env.get("BACKLOG_PCORE_BURST_MODE") or ""),
+            "selected_workers": int(max(workers, 1)),
+            "reason": str(env.get("BACKLOG_PCORE_BURST_REASON") or ""),
+            "rules": {
+                "memory_critical_relief": 2,
+                "memory_elevated_relief": 3,
+                "creative_or_foreground_pressure": 3,
+                "host_pressure_relief": "2-3",
+                "normal_daily_driver": 5,
+                "cool_host_backlog_burst": 6,
+                "deep_green_pcore7_burst": 7,
+            },
+        },
+        "single_writer_only": str(env.get("BACKLOG_DRAIN_SINGLE_WRITER_ONLY") or "") == "1",
+        "avoid_background_taskpolicy": str(env.get("RUNTIME_THROTTLE_USE_TASKPOLICY_BACKGROUND") or "0") != "1",
+        "training_pcore_gate": {
+            "allowed_when_backlog_green": str(env.get("TRAINING_PCORE_ALLOWED_WHEN_BACKLOG_GREEN") or "") == "1",
+            "max_workers": _safe_int(env.get("TRAINING_PCORE_MAX_WORKERS"), 1),
+            "nice_target": _safe_int(env.get("TRAINING_PCORE_NICE"), 8),
+        },
+        "sparse_huge_jsonl": {
+            "active": bool(sparse.get("active", False)),
+            "estimated_pending_bytes": _safe_int(sparse.get("estimated_pending_bytes"), 0),
+            "max_bytes_per_file": _safe_int(env.get("INGEST_MAX_BYTES_PER_FILE"), 0),
+            "sqlite_batch_max_bytes": _safe_int(env.get("SQLITE_BATCH_MAX_BYTES"), 0),
+        },
+        "control_env": {
+            key: str(value)
+            for key, value in env.items()
+            if key
+            in {
+                "BACKLOG_PCORE_ALLOCATION_ACTIVE",
+                "BACKLOG_DRAIN_SINGLE_WRITER_ONLY",
+                "SQL_LINK_SERVICE_SINGLE_WRITER_ONLY",
+                "BACKLOG_PCORE_PREPROCESS_WORKERS",
+                "BACKLOG_PCORE_BURST_MODE",
+                "BACKLOG_PCORE_BURST_REASON",
+                "BACKLOG_MEMORY_PRESSURE_CORE_OPTIMIZER",
+                "SQL_LINK_SERVICE_PREPROCESS_WORKERS",
+                "BOT_COLLECTION_DUTY_CYCLE_ENABLED",
+                "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO",
+                "RUNTIME_THROTTLE_USE_TASKPOLICY_BACKGROUND",
+                "RUNTIME_THROTTLE_RESEARCH_NICE",
+                "TRAINING_RUNTIME_PAUSED_FOR_BACKLOG",
+                "TRAINING_PCORE_ALLOWED_WHEN_BACKLOG_GREEN",
+                "TRAINING_PCORE_MAX_WORKERS",
+                "TRAINING_PCORE_NICE",
+                "WRITER_CYCLE_MAX_CATCH_UP_WAVES",
+            }
+        },
+    }
+
+
 def _acquire_nonblocking_lock(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = path.open("a+", encoding="utf-8")
@@ -359,6 +682,47 @@ def _rows_from(backpressure: dict[str, Any], key: str) -> list[dict[str, Any]]:
     return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
+def _pending_source_row(source_rel: str, row: dict[str, Any], *, pending_lines: int, age_seconds: float) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "source_rel": source_rel,
+        "pending_lines": int(pending_lines),
+        "oldest_pending_age_seconds": round(age_seconds, 3),
+    }
+    for key in (
+        "file_size_bytes",
+        "estimated_avg_bytes_per_line",
+        "estimated_pending_bytes",
+        "sample_bytes",
+        "sample_newlines",
+        "line_estimate_method",
+        "sparse_large_line",
+    ):
+        if key in row:
+            out[key] = row.get(key)
+    return out
+
+
+def _merge_pending_source_metadata(current: dict[str, Any], row: dict[str, Any]) -> None:
+    for key in (
+        "file_size_bytes",
+        "estimated_avg_bytes_per_line",
+        "estimated_pending_bytes",
+        "sample_bytes",
+        "sample_newlines",
+        "line_estimate_method",
+        "sparse_large_line",
+    ):
+        if key in row and key not in current:
+            current[key] = row.get(key)
+    if bool(row.get("sparse_large_line", False)):
+        current["sparse_large_line"] = True
+    current["file_size_bytes"] = max(_safe_int(current.get("file_size_bytes"), 0), _safe_int(row.get("file_size_bytes"), 0))
+    current["estimated_avg_bytes_per_line"] = max(
+        _safe_float(current.get("estimated_avg_bytes_per_line"), 0.0),
+        _safe_float(row.get("estimated_avg_bytes_per_line"), 0.0),
+    )
+
+
 def _collect_sources(backpressure: dict[str, Any], prefixes: tuple[str, ...], *, keys: tuple[str, ...]) -> list[dict[str, Any]]:
     by_source: dict[str, dict[str, Any]] = {}
     for key in keys:
@@ -372,17 +736,14 @@ def _collect_sources(backpressure: dict[str, Any], prefixes: tuple[str, ...], *,
             age_seconds = max(_safe_float(row.get("oldest_pending_age_seconds"), 0.0), 0.0)
             current = by_source.get(source_rel)
             if current is None:
-                by_source[source_rel] = {
-                    "source_rel": source_rel,
-                    "pending_lines": pending_lines,
-                    "oldest_pending_age_seconds": round(age_seconds, 3),
-                }
+                by_source[source_rel] = _pending_source_row(source_rel, row, pending_lines=pending_lines, age_seconds=age_seconds)
                 continue
             current["pending_lines"] = max(_safe_int(current.get("pending_lines"), 0), pending_lines)
             current["oldest_pending_age_seconds"] = round(
                 max(_safe_float(current.get("oldest_pending_age_seconds"), 0.0), age_seconds),
                 3,
             )
+            _merge_pending_source_metadata(current, row)
     return sorted(
         by_source.values(),
         key=lambda row: (_safe_int(row.get("pending_lines"), 0), _safe_float(row.get("oldest_pending_age_seconds"), 0.0)),
@@ -414,17 +775,96 @@ def _collect_sources_by_contains(
             age_seconds = max(_safe_float(row.get("oldest_pending_age_seconds"), 0.0), 0.0)
             current = by_source.get(source_rel)
             if current is None:
-                by_source[source_rel] = {
-                    "source_rel": source_rel,
-                    "pending_lines": pending_lines,
-                    "oldest_pending_age_seconds": round(age_seconds, 3),
-                }
+                by_source[source_rel] = _pending_source_row(source_rel, row, pending_lines=pending_lines, age_seconds=age_seconds)
                 continue
             current["pending_lines"] = max(_safe_int(current.get("pending_lines"), 0), pending_lines)
             current["oldest_pending_age_seconds"] = round(
                 max(_safe_float(current.get("oldest_pending_age_seconds"), 0.0), age_seconds),
                 3,
             )
+            _merge_pending_source_metadata(current, row)
+    return sorted(
+        by_source.values(),
+        key=lambda row: (_safe_int(row.get("pending_lines"), 0), _safe_float(row.get("oldest_pending_age_seconds"), 0.0)),
+        reverse=True,
+    )
+
+
+def _stale_decision_rows_from_storage_control(storage_control: dict[str, Any]) -> list[dict[str, Any]]:
+    locator = storage_control.get("stale_pending_locator") if isinstance(storage_control.get("stale_pending_locator"), dict) else {}
+    rows = locator.get("oldest_sources") if isinstance(locator.get("oldest_sources"), list) else []
+    by_source: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        source_rel = str(row.get("source_rel") or "").strip()
+        if not (source_rel.startswith("decisions/") or source_rel.startswith("governance/channels/decision/")):
+            continue
+        pending_lines = max(_safe_int(row.get("pending_lines"), 0), 0)
+        age_seconds = max(_safe_float(row.get("oldest_pending_age_seconds"), 0.0), 0.0)
+        if pending_lines <= 0 or age_seconds <= 0.0:
+            continue
+        current = by_source.get(source_rel)
+        if current is None:
+            by_source[source_rel] = _pending_source_row(source_rel, row, pending_lines=pending_lines, age_seconds=age_seconds)
+        else:
+            current["pending_lines"] = max(_safe_int(current.get("pending_lines"), 0), pending_lines)
+            current["oldest_pending_age_seconds"] = round(max(_safe_float(current.get("oldest_pending_age_seconds"), 0.0), age_seconds), 3)
+            _merge_pending_source_metadata(current, row)
+    return sorted(
+        by_source.values(),
+        key=lambda row: (
+            _safe_float(row.get("oldest_pending_age_seconds"), 0.0),
+            _safe_int(row.get("pending_lines"), 0),
+        ),
+        reverse=True,
+    )
+
+
+def _overlay_rows_from_storage_control(storage_control: dict[str, Any], prefixes: tuple[str, ...]) -> list[dict[str, Any]]:
+    overlay = storage_control.get("sql_ingestion_pending_overlay") if isinstance(storage_control.get("sql_ingestion_pending_overlay"), dict) else {}
+    rows = overlay.get("top_pending_files") if isinstance(overlay.get("top_pending_files"), list) else []
+    by_source: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        source_rel = str(row.get("source_rel") or "").strip()
+        if not source_rel or not source_rel.startswith(prefixes):
+            continue
+        pending_lines = max(_safe_int(row.get("pending_lines"), 0), 0)
+        if pending_lines <= 0:
+            continue
+        age_seconds = max(_safe_float(row.get("oldest_pending_age_seconds"), 0.0), 0.0)
+        current = by_source.get(source_rel)
+        if current is None:
+            by_source[source_rel] = _pending_source_row(source_rel, row, pending_lines=pending_lines, age_seconds=age_seconds)
+            continue
+        current["pending_lines"] = max(_safe_int(current.get("pending_lines"), 0), pending_lines)
+        current["oldest_pending_age_seconds"] = round(max(_safe_float(current.get("oldest_pending_age_seconds"), 0.0), age_seconds), 3)
+        _merge_pending_source_metadata(current, row)
+    return sorted(
+        by_source.values(),
+        key=lambda row: (_safe_int(row.get("pending_lines"), 0), _safe_float(row.get("oldest_pending_age_seconds"), 0.0)),
+        reverse=True,
+    )
+
+
+def _merge_source_rows(*row_groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_source: dict[str, dict[str, Any]] = {}
+    for rows in row_groups:
+        for row in rows:
+            source_rel = str(row.get("source_rel") or "").strip()
+            if not source_rel:
+                continue
+            pending_lines = max(_safe_int(row.get("pending_lines"), 0), 0)
+            age_seconds = max(_safe_float(row.get("oldest_pending_age_seconds"), 0.0), 0.0)
+            current = by_source.get(source_rel)
+            if current is None:
+                by_source[source_rel] = _pending_source_row(source_rel, row, pending_lines=pending_lines, age_seconds=age_seconds)
+                continue
+            current["pending_lines"] = max(_safe_int(current.get("pending_lines"), 0), pending_lines)
+            current["oldest_pending_age_seconds"] = round(max(_safe_float(current.get("oldest_pending_age_seconds"), 0.0), age_seconds), 3)
+            _merge_pending_source_metadata(current, row)
     return sorted(
         by_source.values(),
         key=lambda row: (_safe_int(row.get("pending_lines"), 0), _safe_float(row.get("oldest_pending_age_seconds"), 0.0)),
@@ -450,17 +890,78 @@ def _concentration_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _base_env(*, critical: bool) -> dict[str, str]:
+def _sparse_large_line_pressure(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    sparse_rows: list[dict[str, Any]] = []
+    for row in rows:
+        avg_bytes = _safe_float(row.get("estimated_avg_bytes_per_line"), 0.0)
+        if bool(row.get("sparse_large_line", False)) or avg_bytes >= SPARSE_LARGE_LINE_BYTES_PER_LINE:
+            sparse_rows.append(row)
+    pending_lines = sum(max(_safe_int(row.get("pending_lines"), 0), 0) for row in sparse_rows)
+    file_bytes = sum(max(_safe_int(row.get("file_size_bytes"), 0), 0) for row in sparse_rows)
+    pending_bytes = sum(max(_safe_int(row.get("estimated_pending_bytes"), 0), 0) for row in sparse_rows)
+    top = sorted(
+        sparse_rows,
+        key=lambda row: (
+            max(_safe_int(row.get("file_size_bytes"), 0), 0),
+            max(_safe_int(row.get("pending_lines"), 0), 0),
+        ),
+        reverse=True,
+    )
+    return {
+        "active": bool(sparse_rows),
+        "file_count": len(sparse_rows),
+        "pending_lines": int(pending_lines),
+        "file_size_bytes": int(file_bytes),
+        "estimated_pending_bytes": int(pending_bytes),
+        "top_files": [
+            {
+                "source_rel": str(row.get("source_rel") or ""),
+                "pending_lines": _safe_int(row.get("pending_lines"), 0),
+                "file_size_bytes": _safe_int(row.get("file_size_bytes"), 0),
+                "estimated_pending_bytes": _safe_int(row.get("estimated_pending_bytes"), 0),
+                "estimated_avg_bytes_per_line": round(_safe_float(row.get("estimated_avg_bytes_per_line"), 0.0), 3),
+            }
+            for row in top[:5]
+        ],
+    }
+
+
+def _base_env(*, critical: bool, backpressure: dict[str, Any] | None = None, host_context: dict[str, Any] | None = None) -> dict[str, str]:
+    p_core_workers, burst_intelligence = _p_core_preprocess_workers(
+        critical=critical,
+        backpressure=backpressure,
+        host_context=host_context,
+    )
+    training_workers = max(1, min(2, p_core_workers // 2 or 1))
+    nice_target = str(_safe_int(os.getenv("SLEEVE_NICE_SPECIALIZED"), 8))
     return {
         "INGEST_MAX_DEFERRED_FILES": "6" if critical else "4",
         "JSONL_SQL_MAX_COLD_LANE_FILES": "2" if critical else "1",
+        "INGEST_TOP_PENDING_FILES": "24" if critical else "16",
+        "BACKLOG_PCORE_ALLOCATION_ACTIVE": "1",
+        "BACKLOG_DRAIN_SINGLE_WRITER_ONLY": "1",
+        "BACKLOG_PCORE_PREPROCESS_WORKERS": str(p_core_workers),
+        "BACKLOG_PCORE_BURST_MODE": str(burst_intelligence.get("mode") or ""),
+        "BACKLOG_PCORE_BURST_REASON": str(burst_intelligence.get("reason") or ""),
+        "BACKLOG_MEMORY_PRESSURE_CORE_OPTIMIZER": "1"
+        if str(burst_intelligence.get("mode") or "").startswith("memory_relief")
+        else "0",
+        "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "1",
+        "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": "0.20" if critical else "0.30",
         "LOG_DATA_INGRESS": "0",
         "LOG_API_CALLS": "0",
         "LOG_LOOP_STATE": "0",
         "LOG_SHADOW_PNL_ATTRIBUTION": "0",
+        "SQL_LINK_SERVICE_SINGLE_WRITER_ONLY": "1",
+        "SQL_LINK_SERVICE_PREPROCESS_WORKERS": str(p_core_workers),
         "SQL_LINK_SERVICE_INTERVAL_SECONDS": "12" if critical else "15",
         "SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS": "120" if critical else "150",
-        "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "25" if critical else "45",
+        "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "90" if critical else "60",
+        "SQL_LINK_SERVICE_CATCH_UP_WAVE": "1",
+        "WRITER_CYCLE_MAX_CATCH_UP_WAVES": "3" if critical else "2",
+        "SQL_LINK_SERVICE_SQLITE_TIMEOUT": "420" if critical else "300",
+        "SQL_LINK_SERVICE_LOCK_RETRIES": "360" if critical else "240",
+        "SQL_LINK_SERVICE_LOCK_RETRY_DELAY_SECONDS": "0.35",
         "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS": "30",
         "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "240000" if critical else "200000",
         "SQL_LINK_SERVICE_HOT_MAX_ROWS": "2400000" if critical else "1800000",
@@ -469,6 +970,20 @@ def _base_env(*, critical: bool) -> dict[str, str]:
         "SQL_LINK_SERVICE_AUTO_LOCAL_FALLBACK_PRUNE": "0",
         "SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB": "0.25" if critical else "0.5",
         "SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_GROWTH_GB": "0.25" if critical else "0.5",
+        "SQLITE_CACHE_SIZE_KB": "32768" if critical else "24576",
+        "SQLITE_MMAP_SIZE_MB": "512" if critical else "256",
+        "SQLITE_WAL_AUTOCHECKPOINT_PAGES": "4000",
+        "BOT_OPS_SQLITE_CACHE_SIZE_KB": "8192" if critical else "6144",
+        "BOT_OPS_SQLITE_MMAP_SIZE_MB": "96" if critical else "64",
+        "BOT_OPS_SQLITE_BUSY_TIMEOUT_MS": "420000" if critical else "300000",
+        "RUNTIME_THROTTLE_USE_TASKPOLICY_BACKGROUND": "0",
+        "RUNTIME_THROTTLE_RESEARCH_NICE": nice_target,
+        "TRAINING_RUNTIME_PAUSED_FOR_BACKLOG": "1",
+        "HEAVY_COLLECTORS_PAUSED_FOR_BACKLOG": "1" if critical else "0",
+        "REPORT_REFRESH_PAUSED_FOR_BACKLOG": "1" if critical else "0",
+        "TRAINING_PCORE_ALLOWED_WHEN_BACKLOG_GREEN": "1",
+        "TRAINING_PCORE_MAX_WORKERS": str(training_workers),
+        "TRAINING_PCORE_NICE": nice_target,
     }
 
 
@@ -518,6 +1033,7 @@ def _profile(
     stale_ready_age_seconds: float = 0.0,
 ) -> dict[str, Any]:
     concentration = _concentration_summary(rows)
+    sparse_pressure = _sparse_large_line_pressure(rows)
     pending_lines = _safe_int(concentration.get("total_pending_lines"), 0)
     oldest_age = max([_safe_float(row.get("oldest_pending_age_seconds"), 0.0) for row in rows] or [0.0])
     path_focus = [str(row.get("source_rel") or "").strip() for row in rows[:8] if str(row.get("source_rel") or "").strip()]
@@ -545,7 +1061,9 @@ def _profile(
         "shards": shards,
         "path_focus": path_focus,
         "concentration": concentration,
+        "sparse_large_line_pressure": sparse_pressure,
         "live_window_safe": bool(live_window_safe),
+        "p_core_backlog_allocation_contract": _p_core_backlog_allocation_contract(env, sparse_pressure),
         "self_accommodation": _profile_self_accommodation(
             live_window_safe=bool(live_window_safe),
             min_pending_lines=int(max(min_pending_lines, 1)),
@@ -609,17 +1127,26 @@ def _is_aggressive_decision_source(source_rel: str) -> bool:
     )
 
 
+def _is_core_signal_source(source_rel: str) -> bool:
+    return str(source_rel or "").startswith("governance/events/signal_generation_")
+
+
 def _decision_drainer_env(base: dict[str, str], core_rows: list[dict[str, Any]]) -> tuple[list[str], dict[str, str]]:
     concentration = _concentration_summary(core_rows)
     concentrated = bool(concentration.get("concentrated", False))
+    sparse_pressure = _sparse_large_line_pressure(core_rows)
+    sparse_large_line_active = bool(sparse_pressure.get("active", False))
     regular_focus: list[str] = []
     aggressive_focus: list[str] = []
     crypto_focus: list[str] = []
+    signal_focus: list[str] = []
     for row in core_rows[:12]:
         source_rel = str(row.get("source_rel") or "").strip()
         if not source_rel:
             continue
-        if _is_crypto_decision_source(source_rel):
+        if _is_core_signal_source(source_rel):
+            signal_focus.append(source_rel)
+        elif _is_crypto_decision_source(source_rel):
             crypto_focus.append(source_rel)
         elif _is_aggressive_decision_source(source_rel):
             aggressive_focus.append(source_rel)
@@ -628,14 +1155,14 @@ def _decision_drainer_env(base: dict[str, str], core_rows: list[dict[str, Any]])
 
     shards: list[str] = []
     env: dict[str, str] = {**base}
-    if concentrated:
+    if concentrated or sparse_large_line_active:
         env.update(
             {
-                "SQL_LINK_SERVICE_CONCENTRATED_CORE_DRAIN": "1",
+                "SQL_LINK_SERVICE_CONCENTRATED_CORE_DRAIN": "1" if concentrated else "0",
                 "SQL_LINK_SERVICE_CONCENTRATED_CORE_TOP1_SHARE": str(concentration.get("top1_share", 0.0)),
                 "SQL_LINK_SERVICE_CONCENTRATED_CORE_TOP3_SHARE": str(concentration.get("top3_share", 0.0)),
                 "SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS": "420",
-                "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "60",
+                "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "90",
                 "SQL_LINK_SERVICE_SHARD_TRADING_STATE_CHECKPOINT_LINES": "1000",
                 "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_STATE_CHECKPOINT_LINES": "1000",
                 "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_STATE_CHECKPOINT_LINES": "1000",
@@ -644,28 +1171,50 @@ def _decision_drainer_env(base: dict[str, str], core_rows: list[dict[str, Any]])
                 "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_MERGE_MAX_JSONL_ROWS": "32000",
             }
         )
+    if sparse_large_line_active:
+        env.update(
+            {
+                "SQL_LINK_SERVICE_SPARSE_LARGE_DECISION_DRAIN": "1",
+                "SQL_LINK_SERVICE_SPARSE_LARGE_DECISION_FILE_COUNT": str(sparse_pressure.get("file_count", 0)),
+                "INGEST_MAX_BYTES_PER_FILE": str(SPARSE_LARGE_DECISION_MAX_BYTES_PER_FILE),
+                "SQLITE_BATCH_MAX_BYTES": str(SPARSE_LARGE_DECISION_SQLITE_BATCH_MAX_BYTES),
+                "SQL_LINK_SERVICE_SHARD_TRADING_STATE_CHECKPOINT_LINES": "250",
+                "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_STATE_CHECKPOINT_LINES": "500",
+                "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_STATE_CHECKPOINT_LINES": "500",
+                "SQL_LINK_SERVICE_SHARD_TRADING_MERGE_MAX_JSONL_ROWS": "250",
+                "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MERGE_MAX_JSONL_ROWS": "250",
+                "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_MERGE_MAX_JSONL_ROWS": "250",
+            }
+        )
     if regular_focus:
         shards.append("trading")
         env["SQL_LINK_SERVICE_SHARD_TRADING_PATH_CONTAINS"] = ",".join(regular_focus[:8])
-        env["SQL_LINK_SERVICE_SHARD_TRADING_MAX_FILES"] = "16"
-        env["SQL_LINK_SERVICE_SHARD_TRADING_MAX_LINES_PER_FILE"] = "24000" if concentrated else "64000"
+        env["SQL_LINK_SERVICE_SHARD_TRADING_MAX_FILES"] = "8" if sparse_large_line_active else "16"
+        env["SQL_LINK_SERVICE_SHARD_TRADING_MAX_LINES_PER_FILE"] = "12000" if sparse_large_line_active else ("24000" if concentrated else "64000")
         # Keep the companion aggressive shard in the handoff for mixed equity decision pressure.
         # Some aggressive sleeves write through regular decision-channel paths rather than
         # shadow_aggressive-prefixed files, so this preserves the broader hot-lane sweep.
         shards.append("aggressive_trading")
-        env["SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_FILES"] = "14"
-        env["SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_LINES_PER_FILE"] = "12000" if concentrated else "24000"
+        env["SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_FILES"] = "8" if sparse_large_line_active else "14"
+        env["SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_LINES_PER_FILE"] = "12000" if (concentrated or sparse_large_line_active) else "24000"
     if aggressive_focus:
         if "aggressive_trading" not in shards:
             shards.append("aggressive_trading")
         env["SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_PATH_CONTAINS"] = ",".join(aggressive_focus[:8])
-        env["SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_FILES"] = "14"
-        env["SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_LINES_PER_FILE"] = "12000" if concentrated else "24000"
+        env["SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_FILES"] = "8" if sparse_large_line_active else "14"
+        env["SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_LINES_PER_FILE"] = "12000" if (concentrated or sparse_large_line_active) else "24000"
     if crypto_focus:
         shards.append("crypto_trading")
         env["SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_PATH_CONTAINS"] = ",".join(crypto_focus[:8])
         env["SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_MAX_FILES"] = "14"
         env["SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_MAX_LINES_PER_FILE"] = "64000"
+    if signal_focus:
+        shards.append("governance")
+        env["SQL_LINK_SERVICE_SHARD_GOVERNANCE_PATH_CONTAINS"] = ",".join(signal_focus[:8])
+        env["SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES"] = "8"
+        env["SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_LINES_PER_FILE"] = "96000" if concentrated else "48000"
+        env["SQL_LINK_SERVICE_SHARD_GOVERNANCE_STATE_CHECKPOINT_LINES"] = "4000"
+        env["SQL_LINK_SERVICE_SHARD_GOVERNANCE_MERGE_MAX_JSONL_ROWS"] = "64000"
 
     if not shards:
         shards = ["trading", "aggressive_trading", "crypto_trading"]
@@ -844,11 +1393,19 @@ def _derivatives_drainer_env(base: dict[str, str], rows: list[dict[str, Any]], *
     return shards, env
 
 
-def _candidate_drainers(backpressure: dict[str, Any], *, critical: bool) -> list[dict[str, Any]]:
-    base = _base_env(critical=critical)
+def _candidate_drainers(
+    backpressure: dict[str, Any],
+    *,
+    critical: bool,
+    host_context: dict[str, Any] | None = None,
+    storage_control: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    base = _base_env(critical=critical, backpressure=backpressure, host_context=host_context)
+    storage = storage_control if isinstance(storage_control, dict) else {}
+    stale_decision_rows = _stale_decision_rows_from_storage_control(storage)
     core_rows = _collect_sources(
         backpressure,
-        ("governance/channels/decision/", "decisions/"),
+        ("governance/channels/decision/", "decisions/", "governance/events/signal_generation_"),
         keys=("top_pending_files",),
     )
     governance_rows = _collect_sources(
@@ -878,6 +1435,14 @@ def _candidate_drainers(backpressure: dict[str, Any], *, critical: bool) -> list
         backpressure,
         ("governance/watchdog/",),
         keys=("top_support_telemetry_pending_files", "top_deferred_pending_files"),
+    )
+    risk_rows = _merge_source_rows(
+        _overlay_rows_from_storage_control(storage, ("governance/channels/risk/",)),
+        _collect_sources(
+            backpressure,
+            ("governance/channels/risk/",),
+            keys=("top_pending_files", "top_support_telemetry_pending_files", "top_deferred_pending_files"),
+        ),
     )
     bridge_rows = _collect_sources_by_contains(
         backpressure,
@@ -1234,6 +1799,7 @@ def _candidate_drainers(backpressure: dict[str, Any], *, critical: bool) -> list
     hot_path_budget_shards, hot_path_budget_env = _focused_shard_env(base, hot_path_budget_rows, shards=["governance", "data"], critical=critical, max_files=10, max_lines_per_file=24000, state_checkpoint_lines=1000)
     admission_evidence_shards, admission_evidence_env = _focused_shard_env(base, admission_evidence_rows, shards=["governance", "data"], critical=critical, max_files=8, max_lines_per_file=16000, state_checkpoint_lines=900)
     writer_progress_shards, writer_progress_env = _focused_shard_env(base, writer_progress_rows, shards=["support_watchdog", "health_fast", "governance"], critical=critical, max_files=6, max_lines_per_file=12000, state_checkpoint_lines=600, include_health_fast=False)
+    risk_support_shards, risk_support_env = _focused_shard_env(base, risk_rows, shards=["risk_support"], critical=critical, max_files=10, max_lines_per_file=800000, state_checkpoint_lines=32000)
     training_lineage_shards, training_lineage_env = _focused_shard_env(base, training_lineage_rows, shards=["governance", "data"], critical=critical, max_files=8, max_lines_per_file=16000, state_checkpoint_lines=900)
     label_contract_shards, label_contract_env = _focused_shard_env(base, label_contract_rows, shards=["data", "governance", "schema_violations"], critical=critical, max_files=8, max_lines_per_file=16000, state_checkpoint_lines=900)
     collector_telemetry_shards, collector_telemetry_env = _focused_shard_env(base, collector_telemetry_rows, shards=["data", "governance"], critical=critical, max_files=8, max_lines_per_file=16000, state_checkpoint_lines=900)
@@ -1242,8 +1808,38 @@ def _candidate_drainers(backpressure: dict[str, Any], *, critical: bool) -> list
     cold_focus_paths = [str(row["source_rel"]) for row in cold_rows[:8]]
     crypto_cold_focus_paths = [path for path in cold_focus_paths if _is_crypto_decision_source(path)]
     regular_cold_focus_paths = [path for path in cold_focus_paths if path not in crypto_cold_focus_paths]
+    stale_decision_shards, stale_decision_env = _decision_drainer_env(base, stale_decision_rows)
+    if stale_decision_rows:
+        stale_decision_env.update(
+            {
+                "SQL_LINK_SERVICE_STALE_DECISION_SOURCE_CATCH_UP": "1",
+                "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "120" if critical else "90",
+                "SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS": "420",
+                "SQL_LINK_SERVICE_SHARD_TRADING_MAX_LINES_PER_FILE": "64000",
+                "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_LINES_PER_FILE": "64000",
+                "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_MAX_LINES_PER_FILE": "64000",
+                "SQL_LINK_SERVICE_SHARD_TRADING_STATE_CHECKPOINT_LINES": "1500",
+                "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_STATE_CHECKPOINT_LINES": "1500",
+                "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_STATE_CHECKPOINT_LINES": "1500",
+                "SQL_LINK_SERVICE_SHARD_TRADING_MERGE_MAX_JSONL_ROWS": str(STALE_DECISION_CATCH_UP_MERGE_MAX_JSONL_ROWS),
+                "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MERGE_MAX_JSONL_ROWS": str(STALE_DECISION_CATCH_UP_MERGE_MAX_JSONL_ROWS),
+                "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_MERGE_MAX_JSONL_ROWS": str(STALE_DECISION_CATCH_UP_MERGE_MAX_JSONL_ROWS),
+                "WRITER_CYCLE_MAX_CATCH_UP_WAVES": "3" if critical else "2",
+            }
+        )
 
     profiles = [
+        _profile(
+            name="stale_decision_log_drainer",
+            reason="drain source-attributed old decision JSONL logs before tiny stale tails keep stealing writer focus",
+            rows=stale_decision_rows,
+            shards=stale_decision_shards,
+            priority_boost=180_000,
+            live_window_safe=True,
+            env=stale_decision_env,
+            min_pending_lines=25,
+            stale_ready_age_seconds=DEFAULT_AGE_PRESSURE_THRESHOLD_SECONDS,
+        ),
         _profile(
             name="derivatives_surface_drainer",
             reason="drain options, futures, Greeks, swaps, and exotic-derivative decision backlog through derivatives-focused trading shards",
@@ -1420,6 +2016,17 @@ def _candidate_drainers(backpressure: dict[str, Any], *, critical: bool) -> list
             stale_ready_age_seconds=MICRO_STALE_READY_AGE_SECONDS / 2.0,
         ),
         _profile(
+            name="risk_support_drainer",
+            reason="drain risk-channel support backlog that can block training even when core decision backlog is green",
+            rows=risk_rows,
+            shards=risk_support_shards,
+            priority_boost=175_000,
+            live_window_safe=True,
+            env=risk_support_env,
+            min_pending_lines=25,
+            stale_ready_age_seconds=MICRO_STALE_READY_AGE_SECONDS / 2.0,
+        ),
+        _profile(
             name="training_lineage_drainer",
             reason="drain training lineage, manifest, process-intelligence, retrain-outcome, and schema-lineage artifacts before targeted retrain gates are evaluated",
             rows=training_lineage_rows,
@@ -1482,6 +2089,8 @@ def _candidate_drainers(backpressure: dict[str, Any], *, critical: bool) -> list
             priority_boost=100_000 if _safe_int(backpressure.get("pending_lines"), 0) >= CORE_HARD_PENDING_LINES else 60_000,
             live_window_safe=True,
             env=decision_env,
+            min_pending_lines=25,
+            stale_ready_age_seconds=DEFAULT_AGE_PRESSURE_THRESHOLD_SECONDS,
         ),
         _profile(
             name="governance_execution_drainer",
@@ -1563,6 +2172,8 @@ def _candidate_drainers(backpressure: dict[str, Any], *, critical: bool) -> list
             priority_boost=25_000,
             live_window_safe=True,
             env=bridge_env,
+            min_pending_lines=25,
+            stale_ready_age_seconds=DEFAULT_AGE_PRESSURE_THRESHOLD_SECONDS,
         ),
         _profile(
             name="attribution_drainer",
@@ -1624,6 +2235,11 @@ def _write_service_request(path: Path, *, active_drainer: dict[str, Any], now_ut
         "assigned_pressure_lane": str(active_drainer.get("assigned_pressure_lane") or ""),
         "ops_infrabots": list(active_drainer.get("ops_infrabots") or []),
         "self_accommodation": active_drainer.get("self_accommodation") if isinstance(active_drainer.get("self_accommodation"), dict) else {},
+        "p_core_backlog_allocation_contract": (
+            active_drainer.get("p_core_backlog_allocation_contract")
+            if isinstance(active_drainer.get("p_core_backlog_allocation_contract"), dict)
+            else {}
+        ),
         "requested_at": now_utc.isoformat(),
         "expires_utc": datetime.fromtimestamp(expires_utc, tz=timezone.utc).isoformat(),
         "env_overrides": {str(key): str(value) for key, value in env.items() if str(key).strip()},
@@ -1709,13 +2325,30 @@ def build_payload(
     backpressure = load_json(health_root / "ingestion_backpressure_latest.json")
     storage_control = load_json(health_root / "ingestion_storage_control_latest.json")
     governor = load_json(health_root / "ingestion_storage_governor_latest.json")
+    resource_guard = load_json(health_root / "resource_guard_latest.json")
+    runtime_throttle = load_json(health_root / "runtime_throttle_control_latest.json")
+    computer_task = load_json(health_root / "computer_task_intelligence_latest.json")
+    storage_backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
+    storage_overlay = (
+        storage_control.get("sql_ingestion_pending_overlay")
+        if isinstance(storage_control.get("sql_ingestion_pending_overlay"), dict)
+        else {}
+    )
     critical = bool(
         str(governor.get("profile") or "").strip() == "critical_backpressure"
         or str(storage_control.get("severity") or "").strip() == "critical"
         or _safe_int(backpressure.get("pending_lines"), 0) >= CORE_HARD_PENDING_LINES
+        or _safe_int(storage_backpressure.get("total_pending_lines"), 0) >= CORE_HARD_PENDING_LINES
+        or _safe_int(storage_overlay.get("total_pending_lines"), 0) >= CORE_HARD_PENDING_LINES
     )
     window = eastern_off_hours_window(now=now)
-    drainers = _candidate_drainers(backpressure, critical=critical)
+    host_context = {
+        "resource_guard": resource_guard,
+        "runtime_throttle": runtime_throttle,
+        "computer_task": computer_task,
+        "off_hours_active": bool(window.get("active", False)),
+    }
+    drainers = _candidate_drainers(backpressure, critical=critical, host_context=host_context, storage_control=storage_control)
     ready_drainers = [row for row in drainers if str(row.get("status") or "") == "ready"]
     active_drainer = ready_drainers[0] if ready_drainers else {}
     live_window_allowed = bool(

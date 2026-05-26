@@ -537,6 +537,19 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     ):
         autonomous_repair_paths += 1
 
+    triggered_playbooks = lane_recovery.get("triggered_playbooks") if isinstance(lane_recovery.get("triggered_playbooks"), list) else []
+    critical_lane_playbook_count = sum(
+        1
+        for row in triggered_playbooks
+        if isinstance(row, dict) and str(row.get("severity") or "").strip().lower() in {"critical", "blocked"}
+    )
+    warning_lane_playbook_count = sum(
+        1
+        for row in triggered_playbooks
+        if isinstance(row, dict) and str(row.get("severity") or "").strip().lower() not in {"critical", "blocked"}
+    )
+    lane_playbook_penalty = (2.0 * critical_lane_playbook_count) + min(4.0, 0.08 * warning_lane_playbook_count)
+
     bounded_live_release_contention = bool(
         bool(live_canary_summary.get("preapproved_supervised_ready", False))
         and str(live_research_split.get("clearance_state") or "") in {
@@ -567,7 +580,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     severity_penalty = (
         (0.5 if bounded_live_release_contention else 1.0 if bool(live_canary_summary.get("preapproved_supervised_ready", False)) else 2.0)
         * _safe_int(live_research_split.get("contention_score"), 0)
-        + 0.75 * _safe_int(lane_recovery.get("triggered_playbook_count"), 0)
+        + lane_playbook_penalty
         + 0.75 * _safe_int(thaw_summary.get("blocked_count"), 0)
         + (0.35 if bounded_coverage_stage else 1.0) * _safe_int(coverage_autopilot.get("coverage_shortfall_bots"), 0)
         + 0.25 * _safe_int(data_plane_summary.get("write_failure_count"), 0)
@@ -633,6 +646,12 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "component_statuses": component_statuses,
         "live_research_split": live_research_split,
         "lane_recovery_playbooks": lane_recovery,
+        "lane_recovery_playbook_penalty": {
+            "critical_count": critical_lane_playbook_count,
+            "warning_count": warning_lane_playbook_count,
+            "penalty": round(float(lane_playbook_penalty), 3),
+            "policy": "critical_full_warning_capped",
+        },
         "lane_thaw_controller": thaw_summary,
         "coverage_autopilot": coverage_autopilot,
         "auth_lease_workflow": auth_workflow,

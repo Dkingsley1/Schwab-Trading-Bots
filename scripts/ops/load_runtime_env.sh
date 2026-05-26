@@ -74,9 +74,9 @@ for candidate in \
   "$PROJECT_ROOT/config/.env.host_profile_override" \
   "$PROJECT_ROOT/config/.env.memory_efficiency_override" \
   "$PROJECT_ROOT/config/.env.runtime_resource_guard_override" \
-  "$PROJECT_ROOT/config/.env.process_fanout_guard_override" \
   "$PROJECT_ROOT/config/.env.pressure_relief_override" \
   "$PROJECT_ROOT/config/.env.guard_intelligence_override" \
+  "$PROJECT_ROOT/config/.env.process_fanout_guard_override" \
   "$PROJECT_ROOT/config/.env.super_intelligence_override" \
   "$PROJECT_ROOT/config/.env.platform_intelligence_override" \
   "$PROJECT_ROOT/config/.env.platform_brain_v4_override" \
@@ -92,7 +92,11 @@ for candidate in \
   "$PROJECT_ROOT/config/.env.browser_quiet_override" \
   "$PROJECT_ROOT/config/.env.storage_pressure_override" \
   "$PROJECT_ROOT/config/.env.storage_target_override" \
-  "$PROJECT_ROOT/config/.env.storage_override"; do
+  "$PROJECT_ROOT/config/.env.storage_override" \
+  "$PROJECT_ROOT/config/.env.computer_task_override" \
+  "$PROJECT_ROOT/config/.env.memory_pressure_intelligence_override" \
+  "$PROJECT_ROOT/config/.env.autonomic_resource_governor_override" \
+  "$PROJECT_ROOT/config/.env.operator_mode_override"; do
   if load_file "$candidate"; then
     LOADED_FILES+=("${candidate#$PROJECT_ROOT/}")
   fi
@@ -422,10 +426,11 @@ export RESOURCE_GUARD_MEMORY_RED_AVAILABLE_PCT="${RESOURCE_GUARD_MEMORY_RED_AVAI
 export RESOURCE_GUARD_MEMORY_RED_FREE_PCT="${RESOURCE_GUARD_MEMORY_RED_FREE_PCT:-4}"
 export RESOURCE_GUARD_MEMORY_RED_SWAP_GB="${RESOURCE_GUARD_MEMORY_RED_SWAP_GB:-18}"
 export RESOURCE_GUARD_MEMORY_RED_THROTTLED_PAGES="${RESOURCE_GUARD_MEMORY_RED_THROTTLED_PAGES:-1}"
-export RESOURCE_GUARD_CREATIVE_APP_NAMES="${RESOURCE_GUARD_CREATIVE_APP_NAMES:-Final Cut Pro,Logic Pro}"
+export RESOURCE_GUARD_CREATIVE_APP_NAMES="${RESOURCE_GUARD_CREATIVE_APP_NAMES:-Final Cut Pro,Logic Pro,Music,iTunes}"
 export RESOURCE_GUARD_CREATIVE_HOT_CPU_THRESHOLD="${RESOURCE_GUARD_CREATIVE_HOT_CPU_THRESHOLD:-140}"
 export RESOURCE_GUARD_LOGIC_HOT_CPU_THRESHOLD="${RESOURCE_GUARD_LOGIC_HOT_CPU_THRESHOLD:-80}"
 export RESOURCE_GUARD_FINAL_CUT_HOT_CPU_THRESHOLD="${RESOURCE_GUARD_FINAL_CUT_HOT_CPU_THRESHOLD:-140}"
+export RESOURCE_GUARD_MUSIC_HOT_CPU_THRESHOLD="${RESOURCE_GUARD_MUSIC_HOT_CPU_THRESHOLD:-45}"
 export RESOURCE_GUARD_BLOCK_ON_CREATIVE_SESSION_LEVELS="${RESOURCE_GUARD_BLOCK_ON_CREATIVE_SESSION_LEVELS:-dual_pro,hot}"
 export RESOURCE_GUARD_OPTIONAL_BLOCK_ON_MEMORY_STATES="${RESOURCE_GUARD_OPTIONAL_BLOCK_ON_MEMORY_STATES:-yellow,red}"
 export RESOURCE_GUARD_OPTIONAL_BLOCK_ON_CREATIVE_SESSION_LEVELS="${RESOURCE_GUARD_OPTIONAL_BLOCK_ON_CREATIVE_SESSION_LEVELS:-active,dual_pro,hot}"
@@ -438,6 +443,7 @@ export CREATIVE_COTENANT_COOLDOWN_SECONDS="${CREATIVE_COTENANT_COOLDOWN_SECONDS:
 export MEMORY_EFFICIENCY_CREATIVE_ACTIVE_MAX_PROFILE="${MEMORY_EFFICIENCY_CREATIVE_ACTIVE_MAX_PROFILE:-air_safe}"
 export MEMORY_EFFICIENCY_CREATIVE_LOGIC_PROFILE="${MEMORY_EFFICIENCY_CREATIVE_LOGIC_PROFILE:-pro_balanced}"
 export MEMORY_EFFICIENCY_CREATIVE_FINAL_CUT_PROFILE="${MEMORY_EFFICIENCY_CREATIVE_FINAL_CUT_PROFILE:-air_safe}"
+export MEMORY_EFFICIENCY_CREATIVE_MUSIC_PROFILE="${MEMORY_EFFICIENCY_CREATIVE_MUSIC_PROFILE:-air_safe}"
 export MEMORY_EFFICIENCY_CREATIVE_HOT_PROFILE="${MEMORY_EFFICIENCY_CREATIVE_HOT_PROFILE:-constrained}"
 export MEMORY_EFFICIENCY_CREATIVE_DUAL_PROFILE="${MEMORY_EFFICIENCY_CREATIVE_DUAL_PROFILE:-constrained}"
 export MEMORY_EFFICIENCY_CREATIVE_COOLDOWN_PROFILE="${MEMORY_EFFICIENCY_CREATIVE_COOLDOWN_PROFILE:-air_safe}"

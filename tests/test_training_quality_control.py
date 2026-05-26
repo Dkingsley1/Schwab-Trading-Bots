@@ -146,8 +146,8 @@ def test_build_payload_surfaces_blockers_and_targeted_actions(tmp_path: Path) ->
     assert "promotion_coverage" in payload["top_priorities"]
     assert payload["targeted_actions"]["repair_runtime_input_bot_ids"] == [
         "brain_refinery_v4_simple",
-        "brain_refinery_v13_choppy",
     ]
+    assert payload["targeted_actions"]["runtime_input_depth_debt_bot_ids"] == ["brain_refinery_v13_choppy"]
     assert payload["targeted_actions"]["quality_probation_bot_ids"] == [
         "brain_refinery_v43_intraday_ultrafast_proxy",
     ]
@@ -159,6 +159,7 @@ def test_build_payload_surfaces_blockers_and_targeted_actions(tmp_path: Path) ->
     assert payload["research"]["multiple_testing_status"] == "blocked"
     assert payload["immutable_lineage"]["lineage_status"] == "blocked"
     assert "storage_backpressure" in payload["failure_taxonomy"]["failure_buckets"]
+    assert "runtime_input_depth_debt" in payload["failure_taxonomy"]["failure_buckets"]
 
 
 def test_build_payload_marks_ready_when_training_surface_is_healthy(tmp_path: Path) -> None:

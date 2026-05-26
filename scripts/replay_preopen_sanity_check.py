@@ -41,29 +41,49 @@ def _iter_paths(base: Path, pattern: str, profile: str, domain: str) -> Iterable
     return out
 
 
-def _scan_jsonl_rows(paths: Iterable[Path], since_ts: datetime) -> Dict[str, Any]:
+def _scan_jsonl_rows(paths: Iterable[Path], since_ts: datetime, *, max_scan_bytes_per_file: int = 0) -> Dict[str, Any]:
     rows = 0
     timestamps: List[datetime] = []
     files = 0
+    files_discovered = 0
+    skipped_old_files = 0
+    truncated_files = 0
+    bytes_scanned = 0
     for p in paths:
-        files += 1
+        files_discovered += 1
         try:
-            with p.open('r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                    except Exception:
-                        continue
-                    ts = _parse_ts(obj.get('timestamp_utc'))
-                    if ts is None:
-                        continue
-                    if ts < since_ts:
-                        continue
-                    rows += 1
-                    timestamps.append(ts)
+            stat = p.stat()
+            if datetime.fromtimestamp(stat.st_mtime, timezone.utc) < since_ts:
+                skipped_old_files += 1
+                continue
+            files += 1
+            size = stat.st_size
+            max_bytes = max(int(max_scan_bytes_per_file), 0)
+            start = max(size - max_bytes, 0) if max_bytes and size > max_bytes else 0
+            if start > 0:
+                truncated_files += 1
+            with p.open('rb') as f:
+                f.seek(start)
+                data = f.read(max_bytes if start > 0 else -1)
+            bytes_scanned += len(data)
+            lines = data.splitlines()
+            if start > 0 and lines:
+                lines = lines[1:]
+            for raw_line in lines:
+                line = raw_line.decode('utf-8', errors='ignore').strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                ts = _parse_ts(obj.get('timestamp_utc'))
+                if ts is None:
+                    continue
+                if ts < since_ts:
+                    continue
+                rows += 1
+                timestamps.append(ts)
         except Exception:
             continue
 
@@ -71,7 +91,11 @@ def _scan_jsonl_rows(paths: Iterable[Path], since_ts: datetime) -> Dict[str, Any
     return {
         'rows': rows,
         'files': files,
+        'files_discovered': files_discovered,
+        'skipped_old_files': skipped_old_files,
         'timestamps': timestamps,
+        'truncated_files': truncated_files,
+        'bytes_scanned': bytes_scanned,
     }
 
 
@@ -144,6 +168,11 @@ def main() -> int:
     parser.add_argument('--strict-exit', action='store_true', default=os.getenv('REPLAY_PREOPEN_STRICT_EXIT', '0').strip() == '1')
     parser.add_argument('--profile', default='')
     parser.add_argument('--domain', default='')
+    parser.add_argument(
+        '--max-scan-bytes-per-file',
+        type=int,
+        default=int(os.getenv('REPLAY_PREOPEN_MAX_SCAN_BYTES_PER_FILE', str(1024 * 1024))),
+    )
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args()
 
@@ -180,8 +209,9 @@ def main() -> int:
             domain=args.domain,
         )
 
-        decision = _scan_jsonl_rows(decision_paths, since_ts)
-        governance = _scan_jsonl_rows(governance_paths, since_ts)
+        scan_bytes = max(int(args.max_scan_bytes_per_file), 0)
+        decision = _scan_jsonl_rows(decision_paths, since_ts, max_scan_bytes_per_file=scan_bytes)
+        governance = _scan_jsonl_rows(governance_paths, since_ts, max_scan_bytes_per_file=scan_bytes)
 
         decision_stale = _stale_windows(decision['timestamps'], max(args.stale_seconds, 1))
         governance_stale = _stale_windows(governance['timestamps'], max(args.stale_seconds, 1))
@@ -215,12 +245,20 @@ def main() -> int:
         'decision': {
             'rows': int(decision['rows']),
             'files_scanned': int(decision['files']),
+            'files_discovered': int(decision.get('files_discovered', decision['files']) or 0),
+            'skipped_old_files': int(decision.get('skipped_old_files', 0) or 0),
             'stale_windows': int(decision_stale),
+            'truncated_files': int(decision.get('truncated_files', 0) or 0),
+            'bytes_scanned': int(decision.get('bytes_scanned', 0) or 0),
         },
         'governance': {
             'rows': int(governance['rows']),
             'files_scanned': int(governance['files']),
+            'files_discovered': int(governance.get('files_discovered', governance['files']) or 0),
+            'skipped_old_files': int(governance.get('skipped_old_files', 0) or 0),
             'stale_windows': int(governance_stale),
+            'truncated_files': int(governance.get('truncated_files', 0) or 0),
+            'bytes_scanned': int(governance.get('bytes_scanned', 0) or 0),
         },
         'thresholds': {
             'stale_seconds': int(args.stale_seconds),
@@ -228,6 +266,7 @@ def main() -> int:
             'min_governance_rows': int(args.min_governance_rows),
             'max_decision_stale_windows': int(args.max_decision_stale_windows),
             'max_governance_stale_windows': int(args.max_governance_stale_windows),
+            'max_scan_bytes_per_file': int(args.max_scan_bytes_per_file),
         },
     }
 

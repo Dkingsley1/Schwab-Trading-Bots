@@ -223,6 +223,33 @@ def test_whole_system_intelligence_builds_signal_bus_brain_contracts_and_handoff
     assert self_layer["causal_diagnosis"]["primary_root_cause"] == "storage_backpressure_primary"
     assert self_layer["integration_routing"]["route_mode"] == "storage_first_recovery"
     assert self_layer["integration_routing"]["primary_owner"] == "backpressure_storage_brain_v2"
+    awareness = self_layer["awareness_state_vector"]
+    assert awareness["grade"] in {"A", "B", "C", "D", "F"}
+    assert awareness["level"] in {"high", "medium", "low"}
+    assert awareness["known_now"]["causal_root"] == "storage_backpressure_primary"
+    assert awareness["body_map"]["storage"]["total_pending_lines"] == 17267
+    assert awareness["senses"]["signal_count"] >= 22
+    assert awareness["identity"]["active_bots"] == 2
+    assert awareness["boundaries"]["trade_authority"] == "none"
+    assert awareness["boundaries"]["protected_volume_denylist"] == ["/Volumes/VIDEO"]
+    assert awareness["boundaries"]["protected_volume_policy"] == "never_touch_or_clean_VIDEO_without_explicit_user_request"
+    assert awareness["blind_spots"]
+    assert awareness["next_probe_plan"]
+    assert awareness["confidence_calibration"]["confidence_level"] in {"high", "medium", "low"}
+    assert awareness["confidence_calibration"]["claim_style"] in {"direct", "qualified", "ask_or_measure_first"}
+    assert awareness["confidence_calibration"]["overconfidence_guard"]["active"] is True
+    assert awareness["degradation_forecast"]["horizon_minutes"] == 30
+    assert awareness["degradation_forecast"]["risks"]
+    assert awareness["autonomy_posture"]["mode"] in {
+        "ask_operator_or_observe_only",
+        "measure_before_apply",
+        "bounded_infrastructure_only",
+        "bounded_apply_allowed",
+    }
+    assert "live_trade_authority" in awareness["autonomy_posture"]["blocked_actions"]
+    assert "parallel_sql_writers" in awareness["autonomy_posture"]["blocked_actions"]
+    assert awareness["consistency_checks"]["overall_status"] in {"ready", "advisory"}
+    assert awareness["evidence_after_action"][0]["command"] == ["./scripts/ops/opsctl.sh", "system-intelligence", "--json"]
     assert super_layer["decision_packet"]["executive_mode"] == "drain"
     assert super_layer["decision_packet"]["owner"] == "backpressure_storage_brain_v2"
     assert super_layer["adaptive_policy"]["guard_policy_mode"] == "full_schwab_observe"
@@ -251,12 +278,24 @@ def test_whole_system_intelligence_builds_signal_bus_brain_contracts_and_handoff
     assert "storage_backpressure_primary" in handoff["attention_packet"]["super_thesis"]
     assert handoff["attention_packet"]["adaptive_policy"]["expansion_posture"] == "catalog_only"
     assert handoff["attention_packet"]["uncertainty_level"] == "low"
+    assert handoff["attention_packet"]["self_awareness_grade"] == awareness["grade"]
+    assert handoff["attention_packet"]["self_awareness_level"] == awareness["level"]
+    assert handoff["attention_packet"]["operator_boundaries"]["protected_volume_denylist"] == ["/Volumes/VIDEO"]
+    assert handoff["attention_packet"]["self_awareness_blind_spots"]
+    assert handoff["attention_packet"]["self_awareness_confidence"]["claim_style"] == awareness["confidence_calibration"]["claim_style"]
+    assert handoff["attention_packet"]["self_awareness_autonomy"]["mode"] == awareness["autonomy_posture"]["mode"]
+    assert handoff["attention_packet"]["self_awareness_forecast"]["posture"] == awareness["degradation_forecast"]["posture"]
+    assert handoff["attention_packet"]["self_awareness_consistency"]["overall_status"] == awareness["consistency_checks"]["overall_status"]
+    assert handoff["attention_packet"]["self_awareness_evidence_after_action"]
     assert handoff["attention_packet"]["causal_root"] == "storage_backpressure_primary"
     assert handoff["attention_packet"]["action_effectiveness"] == "insufficient_history"
     assert handoff["attention_packet"]["integration_route"] == "storage_first_recovery"
     assert handoff["attention_packet"]["outcome_verdict"] == "baseline"
     assert handoff["attention_packet"]["recursive_status"] in {"ready", "advisory", "degraded"}
     assert handoff["attention_packet"]["next_more_advanced_layer"] == "cognitive_twin_counterfactual_simulator"
+    assert handoff["attention_packet"]["upgrade_integration"]["plan_count"] >= 1
+    assert handoff["attention_packet"]["upgrade_integration"]["contract"]["requires_proof_metric"] is True
+    assert "integrate_pending_upgrades_with_guardrails" in handoff["attention_packet"]["needs_codex"]
     assert "docs/pycharm/intelligence_layers_latest.md" in handoff["attention_packet"]["pycharm_index_path"]
     assert "apply_pressure_relief_before_heavy_work" in handoff["attention_packet"]["needs_codex"]
     assert handoff["communication_contract"]["proactive_delivery_to_codex"] is False
@@ -272,6 +311,7 @@ def test_whole_system_intelligence_writes_artifacts_and_self_memory(tmp_path: Pa
     self_path = tmp_path / "governance" / "health" / "system_self_intelligence_latest.json"
     super_path = tmp_path / "governance" / "health" / "system_super_intelligence_latest.json"
     outcome_path = tmp_path / "governance" / "health" / "super_intelligence_outcome_learning_latest.json"
+    storage_causal_replay_path = tmp_path / "governance" / "health" / "storage_causal_replay_memory_latest.json"
     recursive_path = tmp_path / "governance" / "health" / "system_recursive_intelligence_latest.json"
     documentation_reporting_path = tmp_path / "governance" / "health" / "documentation_reporting_intelligence_latest.json"
     handoff_path = tmp_path / "governance" / "health" / "codex_handoff_latest.json"
@@ -279,6 +319,7 @@ def test_whole_system_intelligence_writes_artifacts_and_self_memory(tmp_path: Pa
     memory_path = tmp_path / "governance" / "system_intelligence" / "self_intelligence_memory.jsonl"
     super_memory_path = tmp_path / "governance" / "system_intelligence" / "super_intelligence_memory.jsonl"
     outcome_memory_path = tmp_path / "governance" / "system_intelligence" / "intervention_outcomes.jsonl"
+    storage_causal_replay_memory_path = tmp_path / "governance" / "system_intelligence" / "storage_causal_replay_memory.jsonl"
     recursive_memory_path = tmp_path / "governance" / "system_intelligence" / "recursive_intelligence_memory.jsonl"
     super_override_path = tmp_path / "config" / ".env.super_intelligence_override"
     pycharm_index_path = tmp_path / "docs" / "pycharm" / "intelligence_layers_latest.md"
@@ -294,6 +335,7 @@ def test_whole_system_intelligence_writes_artifacts_and_self_memory(tmp_path: Pa
         self_intelligence_path=self_path,
         super_intelligence_path=super_path,
         outcome_learning_path=outcome_path,
+        storage_causal_replay_path=storage_causal_replay_path,
         recursive_intelligence_path=recursive_path,
         documentation_reporting_path=documentation_reporting_path,
         handoff_path=handoff_path,
@@ -301,6 +343,7 @@ def test_whole_system_intelligence_writes_artifacts_and_self_memory(tmp_path: Pa
         memory_path=memory_path,
         super_memory_path=super_memory_path,
         outcome_memory_path=outcome_memory_path,
+        storage_causal_replay_memory_path=storage_causal_replay_memory_path,
         recursive_memory_path=recursive_memory_path,
         super_override_path=super_override_path,
         pycharm_index_path=pycharm_index_path,
@@ -315,12 +358,14 @@ def test_whole_system_intelligence_writes_artifacts_and_self_memory(tmp_path: Pa
     assert self_path.exists()
     assert super_path.exists()
     assert outcome_path.exists()
+    assert storage_causal_replay_path.exists()
     assert recursive_path.exists()
     assert documentation_reporting_path.exists()
     assert handoff_path.exists()
     assert memory_path.exists()
     assert super_memory_path.exists()
     assert outcome_memory_path.exists()
+    assert storage_causal_replay_memory_path.exists()
     assert recursive_memory_path.exists()
     assert super_override_path.exists()
     assert pycharm_index_path.exists()
@@ -330,6 +375,7 @@ def test_whole_system_intelligence_writes_artifacts_and_self_memory(tmp_path: Pa
     assert "Causal Root" in handoff_md_path.read_text(encoding="utf-8")
     assert "Super Intelligence" in handoff_md_path.read_text(encoding="utf-8")
     assert "Outcome Learning" in handoff_md_path.read_text(encoding="utf-8")
+    assert "Storage Causal Replay" in handoff_md_path.read_text(encoding="utf-8")
     assert "Recursive Intelligence" in handoff_md_path.read_text(encoding="utf-8")
     assert "Super Regime" in handoff_md_path.read_text(encoding="utf-8")
     assert "Thesis" in handoff_md_path.read_text(encoding="utf-8")
@@ -344,10 +390,225 @@ def test_whole_system_intelligence_writes_artifacts_and_self_memory(tmp_path: Pa
     assert "cognitive_twin_counterfactual_simulator" in pycharm_index_path.read_text(encoding="utf-8")
     assert "relieve_pressure_then_micro_drain" in memory_path.read_text(encoding="utf-8")
     assert "relieve_pressure_then_micro_drain" in outcome_memory_path.read_text(encoding="utf-8")
+    assert "storage_backpressure_primary" in storage_causal_replay_memory_path.read_text(encoding="utf-8")
     assert "recursive_score" in recursive_memory_path.read_text(encoding="utf-8")
     assert "SUPER_INTELLIGENCE_EXECUTIVE_MODE=drain" in super_override_path.read_text(encoding="utf-8")
     assert "SUPER_INTELLIGENCE_OPERATIONAL_REGIME=storage_backpressure" in super_override_path.read_text(encoding="utf-8")
     assert "SUPER_INTELLIGENCE_OBJECTIVE_GUARDRAIL_STATUS=ready" in super_override_path.read_text(encoding="utf-8")
+
+
+def test_system_intelligence_routes_training_quality_to_guarded_recovery_batch(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    training_command = [
+        "./scripts/ops/opsctl.sh",
+        "retrain-force-targeted",
+        "--include-bot-ids",
+        "brain_refinery_v10,brain_refinery_v17",
+        "--retrain-profile",
+        "coverage_batch20_canary",
+        "--skip-master-update",
+    ]
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.01,
+            "backpressure": {
+                "total_pending_lines": 250,
+                "core_pending_lines": 250,
+                "pending_lines_threshold": 15000,
+                "oldest_pending_age_seconds": 30,
+            },
+        },
+    )
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "ready",
+            "memory_snapshot": {
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "none",
+                "swap_used_gb": 1.0,
+                "compressed_store_gb": 5.0,
+            },
+            "cotenant_awareness": {"memory_pressure_clear": True},
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {
+            "overall_status": "degraded",
+            "memory_pressure_level": "normal",
+            "cpu_pressure_level": "watch",
+            "host_saturation_score": 42.0,
+        },
+    )
+    _write_json(
+        health / "training_quality_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "training_quality_score": 56.5,
+            "top_priorities": ["runtime_input_coverage", "active_probation_isolation"],
+        },
+    )
+    _write_json(
+        health / "training_runtime_control_latest.json",
+        {
+            "overall_status": "degraded",
+            "training_launch_contract": {
+                "mode": "canary_training_allowed",
+                "launch_allowed": True,
+                "recommended_batch_size": 20,
+                "requested_batch_size": 20,
+                "available_canary_pool_size": 23,
+                "training_quality_recovery_canary": True,
+                "launch_blockers": [],
+                "recommended_retrain_command": training_command,
+                "host_training_headroom_gate": {
+                    "selected_training_profile": "coverage_batch20_canary",
+                    "batch20_execution_mode": "sequential_memory_guarded_waves",
+                    "batch20_wave_size": 4,
+                },
+            },
+        },
+    )
+    _write_json(health / "guard_intelligence_latest.json", {"overall_status": "ready", "policy_mode": "full_schwab_observe", "signals": {"guard_status_counts": {"blockers": []}}})
+    _write_json(health / "writer_process_intelligence_latest.json", {"overall_status": "ready", "decision_packet": {"action": "observe", "risk_flags": []}, "writer_health": {"state": "idle", "active": False}})
+
+    payload = src.build_payload(tmp_path)
+    system_brain = payload["system_brain"]
+    brain = system_brain["decision_packet"]
+    super_decision = payload["system_super_intelligence"]["decision_packet"]
+    handoff = payload["codex_handoff"]["attention_packet"]
+
+    assert payload["system_signal_bus"]["summary"]["training_runtime_launch_allowed"] is True
+    assert brain["action"] == "run_guarded_training_recovery_canary"
+    assert brain["safe_next_command"] == training_command
+    assert brain["training_recovery_batch_size"] == 20
+    assert "do_not_promote_recovery_canary_to_master_during_quality_recovery" in brain["do_not_do"]
+    assert super_decision["executive_mode"] == "train"
+    assert super_decision["owner"] == "training_runtime_control"
+    assert handoff["safe_next_command"] == training_command
+    assert "run_guarded_training_recovery_canary_and_refresh_quality" in handoff["needs_codex"]
+    assert handoff["integration_route"] == "training_recovery_first"
+
+
+def test_system_intelligence_routes_storage_quota_top_risk_to_quota_remediation(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.01,
+            "backpressure": {"total_pending_lines": 250, "core_pending_lines": 250, "pending_lines_threshold": 15000},
+        },
+    )
+    _write_json(
+        health / "storage_quota_guard_latest.json",
+        {
+            "overall_status": "blocked",
+            "quota_summary": {
+                "hard_breaches": 1,
+                "soft_breaches": 0,
+                "tracked_lane_count": 5,
+                "blocked_families": ["decisions"],
+                "worst_over_hard_gb": 9.431,
+                "worst_hard_ratio": 1.262,
+            },
+            "lanes": [
+                {
+                    "family": "decisions",
+                    "used_gb": 45.431,
+                    "hard_quota_gb": 36.0,
+                    "over_hard_gb": 9.431,
+                    "hard_ratio": 1.262,
+                    "status": "blocked",
+                }
+            ],
+        },
+    )
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "ready",
+            "memory_snapshot": {"memory_pressure_state": "green", "memory_pressure_kind": "none"},
+            "cotenant_awareness": {"memory_pressure_clear": True},
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {"overall_status": "degraded", "memory_pressure_level": "normal", "cpu_pressure_level": "watch", "host_saturation_score": 42.0},
+    )
+
+    payload = src.build_payload(tmp_path)
+    system_brain = payload["system_brain"]
+    brain = system_brain["decision_packet"]
+    super_decision = payload["system_super_intelligence"]["decision_packet"]
+
+    assert payload["system_signal_bus"]["summary"]["top_risk"] == "storage_quota_guard"
+    assert brain["action"] == "refresh_storage_quota_then_drain_decisions"
+    assert brain["operating_mode"] == "storage_quota_remediation"
+    assert brain["safe_next_command"] == ["./scripts/ops/opsctl.sh", "storage-quota-guard", "--json"]
+    assert any(step["command"][1] == "governance-telemetry-compactor" for step in system_brain["playbook"])
+    assert super_decision["executive_mode"] == "quota"
+    assert super_decision["owner"] == "storage_quota_guard"
+
+
+def test_codex_handoff_surfaces_storage_quota_pressure_actions(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "storage_quota_guard_latest.json",
+        {
+            "overall_status": "blocked",
+            "quota_summary": {
+                "hard_breaches": 2,
+                "soft_breaches": 0,
+                "tracked_lane_count": 5,
+                "blocked_families": ["decisions", "governance_telemetry"],
+                "worst_over_hard_gb": 180.79,
+                "worst_hard_ratio": 16.066,
+            },
+            "lanes": [
+                {
+                    "family": "governance_telemetry",
+                    "used_gb": 192.79,
+                    "hard_quota_gb": 12.0,
+                    "over_hard_gb": 180.79,
+                    "hard_ratio": 16.066,
+                    "status": "blocked",
+                },
+                {
+                    "family": "decisions",
+                    "used_gb": 63.775,
+                    "hard_quota_gb": 36.0,
+                    "over_hard_gb": 27.775,
+                    "hard_ratio": 1.772,
+                    "status": "blocked",
+                },
+            ],
+            "recommended_actions": [
+                "shed verbose governance telemetry and compact jsonl ingest journals before trusting the support telemetry quota",
+                "prioritize ingestion-storage-control and the core decision drainer before widening decision log producers",
+            ],
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    handoff = payload["codex_handoff"]["attention_packet"]
+    quota = handoff["storage_quota_pressure"]
+
+    assert quota["status"] == "blocked"
+    assert quota["blocked_lanes"] == ["governance_telemetry", "decisions"]
+    assert quota["worst_over_hard_gb"] == 180.79
+    assert quota["top_quota_lanes"][0]["family"] == "governance_telemetry"
+    assert "follow_storage_quota_remediation_before_growth" in handoff["needs_codex"]
+    assert any(item == "quota_blocked_lanes=governance_telemetry,decisions" for item in handoff["why"])
+    assert any(item == "quota_worst_over_hard_gb=180.79" for item in handoff["why"])
 
 
 def test_documentation_reporting_treats_ok_report_bundle_entries_as_ready(tmp_path: Path) -> None:
@@ -522,6 +783,169 @@ def test_self_intelligence_prechecks_conflicting_drainer_writer_state(tmp_path: 
     assert "run_self_intelligence_precheck_before_brain_action" in handoff["needs_codex"]
 
 
+def test_drainer_signal_metrics_surface_backlog_needs_packet() -> None:
+    metrics = src._drainer_metrics(
+        {
+            "overall_status": "ready",
+            "decision_packet": {
+                "action": "tighten_intake_then_re_score",
+                "selected_drainer": "core_decision_drainer",
+                "total_pending_lines": 30344,
+                "target_pending_lines": 10000,
+                "backlog_grade": "C",
+                "backlog_score": 73.7,
+                "risk_flags": ["recent_refill_after_drain"],
+            },
+            "backlog_needs_packet": {
+                "current_grade": "C",
+                "next_grade": "B",
+                "top_need_section": "core_decision",
+                "top_need": "drain core decision pending lines",
+                "needs": [{"section_id": "core_decision", "what_it_needs": "drain core decision pending lines"}],
+                "accelerator_contract": {
+                    "latest_needs_artifact": "governance/health/backlog_drain_needs_latest.json",
+                    "fix_ledger_artifact": "governance/system_intelligence/backlog_drain_fix_ledger.jsonl",
+                },
+            },
+        }
+    )
+
+    assert metrics["backlog_grade"] == "C"
+    assert metrics["backlog_score"] == 73.7
+    assert metrics["needs_count"] == 1
+    assert metrics["top_need_section"] == "core_decision"
+    assert metrics["needs_artifact"] == "governance/health/backlog_drain_needs_latest.json"
+    assert "need=core_decision" in src._signal_summary("drainer_intelligence", metrics)
+
+
+def test_self_intelligence_refreshes_drainer_storage_alignment_when_pending_totals_drift(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "severity": "critical",
+            "pressure_index": 2.716,
+            "backpressure": {"total_pending_lines": 40742, "core_pending_lines": 39726, "pending_lines_threshold": 15000},
+        },
+    )
+    _write_json(
+        health / "drainer_intelligence_layer_latest.json",
+        {
+            "overall_status": "ready",
+            "decision_packet": {
+                "action": "wait_for_writer_then_re_score",
+                "selected_drainer": "core_decision_drainer",
+                "total_pending_lines": 628010,
+                "target_pending_lines": 5000,
+                "risk_flags": ["storage_critical", "writer_active"],
+            },
+        },
+    )
+    _write_json(
+        health / "backpressure_super_drainer_latest.json",
+        {
+            "overall_status": "applied_with_followups",
+            "active_drainer": "core_decision_drainer",
+            "summary": {"final_pending_lines": 493811, "total_pending_lines": 493811},
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    self_layer = payload["system_self_intelligence"]
+    handoff = payload["codex_handoff"]["attention_packet"]
+    conflicts = self_layer["uncertainty"]["conflicting_signals"]
+
+    assert "drainer_pending_total_drift_from_storage" in conflicts
+    assert "super_drainer_pending_total_drift_from_storage" in conflicts
+    assert self_layer["reflex"]["action"] == "refresh_drainer_storage_alignment_before_apply"
+    assert self_layer["reflex"]["command"] == ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"]
+    assert self_layer["reflex"]["followup_command"] == ["./scripts/ops/opsctl.sh", "drainer-intelligence-layer", "--apply", "--json"]
+    assert self_layer["reflex"]["verification_command"] == ["./scripts/ops/opsctl.sh", "system-intelligence", "--json"]
+    assert self_layer["reflex"]["blocks_brain_action_until_refreshed"] is True
+    assert handoff["safe_next_command"] == ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"]
+    assert handoff["super_mode"] == "precheck"
+
+
+def test_self_intelligence_allows_small_pending_total_drift(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "severity": "critical",
+            "pressure_index": 2.716,
+            "backpressure": {"total_pending_lines": 40742, "core_pending_lines": 39726, "pending_lines_threshold": 15000},
+        },
+    )
+    _write_json(
+        health / "drainer_intelligence_layer_latest.json",
+        {
+            "overall_status": "ready",
+            "decision_packet": {
+                "action": "run_micro_drain_after_pressure_relief",
+                "selected_drainer": "core_decision_drainer",
+                "total_pending_lines": 48000,
+                "target_pending_lines": 10000,
+                "risk_flags": ["storage_critical"],
+            },
+        },
+    )
+    _write_json(
+        health / "backpressure_super_drainer_latest.json",
+        {
+            "overall_status": "ready",
+            "active_drainer": "core_decision_drainer",
+            "summary": {"final_pending_lines": 48500, "total_pending_lines": 48500},
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    self_layer = payload["system_self_intelligence"]
+    conflicts = self_layer["uncertainty"]["conflicting_signals"]
+
+    assert "drainer_pending_total_drift_from_storage" not in conflicts
+    assert "super_drainer_pending_total_drift_from_storage" not in conflicts
+    assert self_layer["reflex"]["action"] == "follow_system_brain"
+
+
+def test_self_intelligence_refreshes_drainer_storage_alignment_when_drainer_underreports_pending(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "severity": "critical",
+            "pressure_index": 8.351,
+            "backpressure": {"total_pending_lines": 125266, "core_pending_lines": 124250, "pending_lines_threshold": 15000},
+        },
+    )
+    _write_json(
+        health / "drainer_intelligence_layer_latest.json",
+        {
+            "overall_status": "ready",
+            "decision_packet": {
+                "action": "wait_for_writer_then_re_score",
+                "selected_drainer": "core_decision_drainer",
+                "total_pending_lines": 40742,
+                "target_pending_lines": 5000,
+                "risk_flags": ["storage_critical", "writer_active"],
+            },
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    self_layer = payload["system_self_intelligence"]
+
+    assert "drainer_pending_total_drift_from_storage" in self_layer["uncertainty"]["conflicting_signals"]
+    assert self_layer["reflex"]["action"] == "refresh_drainer_storage_alignment_before_apply"
+    assert self_layer["reflex"]["command"] == ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"]
+    assert self_layer["reflex"]["followup_command"] == ["./scripts/ops/opsctl.sh", "drainer-intelligence-layer", "--apply", "--json"]
+
+
 def test_self_intelligence_refreshes_stale_pressure_surfaces_with_valid_command(tmp_path: Path) -> None:
     _seed_pressure_project(tmp_path)
     health = tmp_path / "governance" / "health"
@@ -539,6 +963,91 @@ def test_self_intelligence_refreshes_stale_pressure_surfaces_with_valid_command(
     assert handoff["safe_next_command"] == ["./scripts/ops/opsctl.sh", "memory-efficiency", "status", "--json"]
 
 
+def test_self_intelligence_refreshes_stale_storage_decision_surfaces(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.2,
+            "backpressure": {"total_pending_lines": 1200, "core_pending_lines": 400, "pending_lines_threshold": 15000},
+        },
+    )
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "ready",
+            "memory_snapshot": {
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "none",
+                "memory_free_pct": 83.0,
+                "swap_used_gb": 0.2,
+                "compressed_store_gb": 2.0,
+            },
+            "cotenant_awareness": {"memory_pressure_clear": True},
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {
+            "overall_status": "ready",
+            "memory_pressure_level": "normal",
+            "cpu_pressure_level": "watch",
+            "host_saturation_score": 35.0,
+        },
+    )
+    _write_json(
+        health / "storage_quota_guard_latest.json",
+        {
+            "overall_status": "blocked",
+            "quota_summary": {"hard_breaches": 2, "soft_breaches": 0, "tracked_lane_count": 4},
+            "lanes": [{"family": "decisions", "status": "blocked"}],
+            "recommended_actions": ["refresh quota lanes before treating this as current pressure"],
+        },
+    )
+    old_epoch = 1
+    os.utime(health / "storage_quota_guard_latest.json", (old_epoch, old_epoch))
+
+    payload = src.build_payload(tmp_path)
+    signal_bus = payload["system_signal_bus"]
+    self_layer = payload["system_self_intelligence"]
+    handoff = payload["codex_handoff"]["attention_packet"]
+    quota_signal = next(row for row in signal_bus["signals"] if row["name"] == "storage_quota_guard")
+
+    assert quota_signal["stale"] is True
+    assert quota_signal["raw_severity_score"] >= 90
+    assert quota_signal["severity_score"] < quota_signal["raw_severity_score"]
+    assert signal_bus["summary"]["stale_top_signal"] == "storage_quota_guard"
+    assert self_layer["reflex"]["action"] == "refresh_stale_decision_surfaces"
+    assert self_layer["reflex"]["command"] == ["./scripts/ops/opsctl.sh", "storage-quota-guard", "--json"]
+    assert self_layer["reflex"]["refresh_plan"][0]["signal"] == "storage_quota_guard"
+    assert handoff["safe_next_command"] == ["./scripts/ops/opsctl.sh", "storage-quota-guard", "--json"]
+
+
+def test_deeper_intelligence_refresh_command_persists_artifact(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "deeper_intelligence_layers_latest.json",
+        {
+            "overall_status": "advisory",
+            "layer_count": 10,
+            "blocked_count": 0,
+            "degraded_count": 0,
+        },
+    )
+    old_epoch = 1
+    os.utime(health / "deeper_intelligence_layers_latest.json", (old_epoch, old_epoch))
+
+    signal_bus = src.build_signal_bus(tmp_path)
+    deeper_signal = next(row for row in signal_bus["signals"] if row["name"] == "deeper_intelligence_layers")
+
+    assert deeper_signal["stale"] is True
+    assert deeper_signal["refresh_command"] == ["./scripts/ops/opsctl.sh", "deeper-intelligence-layers", "--apply", "--json"]
+
+
 def test_signal_bus_does_not_report_memory_high_when_memory_controller_is_storage_blocked(tmp_path: Path) -> None:
     _seed_pressure_project(tmp_path)
     health = tmp_path / "governance" / "health"
@@ -554,6 +1063,7 @@ def test_signal_bus_does_not_report_memory_high_when_memory_controller_is_storag
                 "compressed_store_gb": 10.0,
             },
             "cotenant_awareness": {"memory_pressure_clear": True, "storage_pressure_clear": False},
+            "reasons": ["memory_headroom_ok"],
         },
     )
     _write_json(
@@ -643,6 +1153,62 @@ def test_super_intelligence_does_not_treat_conservative_fanout_hold_as_guard_con
     assert payload["system_super_intelligence"]["decision_packet"]["executive_mode"] != "precheck"
 
 
+def test_self_intelligence_suppresses_stale_auth_halt_blocker_when_auth_lease_is_healthy(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "global_killswitch_latest.json",
+        {
+            "overall_status": "ready",
+            "halt": False,
+            "clear_ready": False,
+            "clear_blockers": ["auth_lease_critical"],
+        },
+    )
+    _write_json(
+        health / "auth_lease_manager_latest.json",
+        {
+            "overall_status": "ready",
+            "lease_state": "healthy",
+            "broker_state": {"auth_ok": True, "broker_operable": True},
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    conflicts = payload["system_self_intelligence"]["uncertainty"]["conflicting_signals"]
+    self_questions = payload["codex_handoff"]["attention_packet"]["self_questions"]
+
+    assert "halt_clear_blockers_present_without_active_halt" not in conflicts
+    assert all("halt_clear_blockers_present_without_active_halt" not in question for question in self_questions)
+
+
+def test_self_intelligence_keeps_halt_blocker_conflict_when_auth_lease_is_not_clear(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "global_killswitch_latest.json",
+        {
+            "overall_status": "ready",
+            "halt": False,
+            "clear_ready": False,
+            "clear_blockers": ["auth_lease_critical"],
+        },
+    )
+    _write_json(
+        health / "auth_lease_manager_latest.json",
+        {
+            "overall_status": "blocked",
+            "lease_state": "critical",
+            "broker_state": {"auth_ok": False, "broker_operable": False},
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    conflicts = payload["system_self_intelligence"]["uncertainty"]["conflicting_signals"]
+
+    assert "halt_clear_blockers_present_without_active_halt" in conflicts
+
+
 def test_self_intelligence_scores_repeated_action_effectiveness(tmp_path: Path) -> None:
     _seed_pressure_project(tmp_path)
     memory_path = tmp_path / "governance" / "system_intelligence" / "self_intelligence_memory.jsonl"
@@ -664,6 +1230,8 @@ def test_self_intelligence_scores_repeated_action_effectiveness(tmp_path: Path) 
 
     payload = src.build_payload(tmp_path)
     self_layer = payload["system_self_intelligence"]
+    super_layer = payload["system_super_intelligence"]
+    handoff = payload["codex_handoff"]["attention_packet"]
 
     assert self_layer["learning_memory"]["same_action_repeat_count"] == 3
     assert self_layer["action_effectiveness"]["same_action_run_length"] == 4
@@ -671,3 +1239,176 @@ def test_self_intelligence_scores_repeated_action_effectiveness(tmp_path: Path) 
     assert "pressure_playbook_not_reducing_backlog" in self_layer["causal_diagnosis"]["root_causes"]
     assert "add_drain_outcome_verifier" in [row["gap"] for row in self_layer["capability_gaps"]]
     assert self_layer["reflex"]["action"] == "escalate_repeated_action_not_clearing_pressure"
+    assert self_layer["reflex"]["command"] == [
+        "./scripts/ops/opsctl.sh",
+        "backpressure-super-drainer",
+        "--apply",
+        "--max-waves",
+        "1",
+        "--target-pending-lines",
+        "5000",
+        "--json",
+    ]
+    assert self_layer["reflex"]["followup_command"] == ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"]
+    assert self_layer["reflex"]["verification_command"] == ["./scripts/ops/opsctl.sh", "system-intelligence", "--json"]
+    assert self_layer["reflex"]["evidence_window"]["requires_single_sql_writer"] is True
+    assert super_layer["decision_packet"]["action"] == "run_outcome_verified_micro_drain"
+    assert super_layer["decision_packet"]["owner"] == "backpressure_super_drainer"
+    assert handoff["safe_next_command"] == self_layer["reflex"]["command"]
+    assert "run_outcome_verified_micro_drain_then_measure" in handoff["needs_codex"]
+    assert handoff["upgrade_integration"]["overall_status"] == "active"
+    assert handoff["upgrade_integration"]["next_upgrade"] == "escalate_repeated_action_not_clearing_pressure"
+    assert handoff["upgrade_integration"]["next_safe_command"] == self_layer["reflex"]["command"]
+    assert handoff["upgrade_integration"]["plan"][0]["proof_metric"] == "pending_lines_delta<=-250"
+
+
+def test_outcome_learning_credits_recent_verified_super_drainer_progress() -> None:
+    signal_bus = {
+        "summary": {"total_pending_lines": 493811},
+        "signals": [
+            {
+                "name": "backpressure_super_drainer",
+                "age_minutes": 2.0,
+                "metrics": {
+                    "initial_pending_lines": 759207,
+                    "final_pending_lines": 628010,
+                    "total_pending_lines": 628010,
+                    "pending_lines_delta": 131197,
+                    "waves_run": 1,
+                    "progress_waves": 1,
+                    "any_progress": True,
+                    "stop_reason": "max_waves_reached",
+                },
+            }
+        ],
+    }
+    super_intelligence = {
+        "overall_status": "degraded",
+        "decision_packet": {
+            "action": "run_outcome_verified_micro_drain",
+            "executive_mode": "rethink",
+            "owner": "backpressure_super_drainer",
+            "top_attention": "ingestion_storage",
+        },
+        "decision_quality_layer": {"quality_score": 47.1},
+        "adversarial_simulation_layer": {
+            "resilience_score": 57,
+            "top_scenario": "storage_refill_after_cleanup",
+        },
+        "regime_drift_audit": {
+            "overall_status": "degraded",
+            "current_operational_regime": "storage_backpressure",
+        },
+        "adaptive_policy": {"guard_policy_mode": "full_schwab_observe"},
+        "semantic_synthesis_layer": {"invalidators": ["decision_quality_low"]},
+    }
+    self_intelligence = {
+        "action_effectiveness": {"verdict": "worsening"},
+        "causal_diagnosis": {"primary_root_cause": "storage_backpressure_primary", "confidence": 0.76},
+    }
+    outcome_events = [
+        {
+            "timestamp_utc": "2026-05-19T19:00:00Z",
+            "status": "degraded",
+            "action": "run_outcome_verified_micro_drain",
+            "pending_lines": 628010,
+            "decision_quality_score": 67.1,
+            "resilience_score": 57,
+        }
+    ]
+
+    payload = src.build_outcome_learning(
+        signal_bus=signal_bus,
+        system_brain={},
+        self_intelligence=self_intelligence,
+        super_intelligence=super_intelligence,
+        outcome_events=outcome_events,
+    )
+
+    assert payload["intervention_outcome"]["verdict"] == "effective"
+    assert payload["overall_status"] == "ready"
+    assert payload["drain_outcome_verifier"]["state"] == "verified_recent_progress"
+    assert payload["drain_outcome_verifier"]["current_below_verified_final"] is True
+    assert payload["drain_outcome_verifier"]["pending_lines_delta"] == 131197
+    assert "recent_drain_progress_verified" in payload["causal_replay_scorer"]["replay_findings"]
+    credit = payload["policy_credit_assignment"]["run_outcome_verified_micro_drain"]
+    assert credit["credit_score"] > 50
+    assert "verified_drain_delta=131197" in credit["evidence"]
+
+
+def test_self_intelligence_uses_verified_drain_progress_before_escalating_repeated_action(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "severity": "critical",
+            "pressure_index": 1488.423,
+            "backpressure": {"total_pending_lines": 493811, "core_pending_lines": 46505, "pending_lines_threshold": 15000},
+        },
+    )
+    _write_json(
+        health / "backpressure_super_drainer_latest.json",
+        {
+            "overall_status": "applied_with_followups",
+            "active_drainer": "core_decision_drainer",
+            "summary": {
+                "initial_pending_lines": 759207,
+                "final_pending_lines": 628010,
+                "pending_lines_delta": 131197,
+                "waves_run": 1,
+                "progress_waves": 1,
+                "any_progress": True,
+                "stop_reason": "max_waves_reached",
+            },
+        },
+    )
+    _write_json(
+        health / "drainer_intelligence_layer_latest.json",
+        {
+            "overall_status": "ready",
+            "decision_packet": {
+                "action": "wait_for_writer_then_re_score",
+                "selected_drainer": "core_decision_drainer",
+                "total_pending_lines": 493811,
+                "target_pending_lines": 10000,
+                "risk_flags": ["storage_critical", "writer_active"],
+            },
+        },
+    )
+    memory_path = tmp_path / "governance" / "system_intelligence" / "self_intelligence_memory.jsonl"
+    memory_path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {
+            "timestamp_utc": f"2026-05-19T19:0{i}:00Z",
+            "status": "degraded",
+            "action": "relieve_pressure_then_micro_drain",
+            "top_risk": "ingestion_storage",
+            "pending_lines": 6806,
+            "trajectory": "flat",
+            "uncertainty_level": "low",
+            "reflex_action": "follow_system_brain",
+        }
+        for i in range(3)
+    ]
+    memory_path.write_text("\n".join(json.dumps(row, ensure_ascii=True) for row in rows) + "\n", encoding="utf-8")
+
+    payload = src.build_payload(tmp_path)
+    self_layer = payload["system_self_intelligence"]
+    storage_replay = payload["storage_causal_replay_memory"]
+    handoff = payload["codex_handoff"]["attention_packet"]
+
+    assert self_layer["drain_outcome_verifier"]["state"] == "verified_recent_progress"
+    assert self_layer["action_effectiveness"]["verdict"] == "effective"
+    assert self_layer["action_effectiveness"]["verified_drain_delta"] == 131197
+    assert self_layer["action_effectiveness"]["measurement_rebased_by_verified_drain"] is True
+    assert storage_replay["overall_status"] == "ready"
+    assert storage_replay["memory_status"]["replay_ready"] is True
+    assert storage_replay["memory_status"]["latest_verified_drain_delta"] == 131197
+    assert handoff["storage_causal_replay"]["replay_ready"] is True
+    assert handoff["storage_causal_replay"]["latest_verified_drain_delta"] == 131197
+    assert self_layer["reflex"]["action"] == "follow_system_brain"
+    assert "super_drainer_pending_total_drift_from_storage" not in self_layer["uncertainty"]["conflicting_signals"]
+    assert "add_drain_outcome_verifier" not in [row["gap"] for row in self_layer["capability_gaps"]]
+    assert "persist_storage_causal_replay_memory" not in [row["gap"] for row in self_layer["capability_gaps"]]

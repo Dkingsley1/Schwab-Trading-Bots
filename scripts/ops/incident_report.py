@@ -5,6 +5,7 @@ import argparse
 import html
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -102,36 +103,80 @@ def _pdf_renderer_binary(allow_gui_renderer: bool) -> tuple[str, str]:
     return "", ""
 
 
+def _terminate_renderer_process(proc: subprocess.Popen[str] | None) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except Exception:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=4.0)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=4.0)
+        except Exception:
+            pass
+
+
 def _render_pdf_via_open_app(renderer: str, html_uri: str, pdf_path: Path, *, project_root: Path) -> tuple[bool, str]:
     app_binary = Path(renderer)
-    app_bundle = app_binary.parents[2]
     profile_dir = Path(tempfile.mkdtemp(prefix="incident-report-open-"))
+    proc: subprocess.Popen[str] | None = None
     try:
         if pdf_path.exists():
             pdf_path.unlink()
         cmd = [
-            "open",
-            "-na",
-            str(app_bundle),
-            "--args",
-            "--headless",
+            str(app_binary),
+            "--headless=new",
             "--disable-gpu",
             "--no-first-run",
             "--no-default-browser-check",
+            "--silent-launch",
+            "--no-startup-window",
+            "--disable-background-networking",
+            "--metrics-recording-only",
             f"--user-data-dir={profile_dir}",
             f"--print-to-pdf={pdf_path}",
             html_uri,
         ]
-        rc, out, err = _run(cmd, project_root=project_root)
-        if rc != 0:
-            return False, err or out or f"rc={rc}"
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(project_root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
         deadline = time.monotonic() + 45.0
         while time.monotonic() < deadline:
             if pdf_path.exists() and pdf_path.stat().st_size > 0:
+                _terminate_renderer_process(proc)
                 return True, "ok"
+            rc = proc.poll()
+            if rc is not None:
+                out, err = proc.communicate()
+                if pdf_path.exists() and pdf_path.stat().st_size > 0:
+                    return True, out or err or "ok"
+                return False, (err or out or f"rc={rc}").strip()
             time.sleep(0.5)
+        _terminate_renderer_process(proc)
         return False, "pdf_render_timeout"
+    except Exception as exc:
+        _terminate_renderer_process(proc)
+        return False, str(exc)
     finally:
+        _terminate_renderer_process(proc)
         shutil.rmtree(profile_dir, ignore_errors=True)
 
 

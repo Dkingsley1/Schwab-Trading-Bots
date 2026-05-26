@@ -227,3 +227,40 @@ def test_build_sqlite_skip_report_treats_routed_queue_db_as_external(monkeypatch
     assert payload['queue_db_path'] == str(project_root / 'data' / 'bot_channel_queue.sqlite3')
     assert by_rel['data/bot_channel_queue.sqlite3']['route_verification']['state'] == 'verified'
     assert by_rel['data/bot_channel_queue.sqlite3']['classification'] != 'active_local_queue'
+
+
+def test_build_sqlite_skip_report_verifies_repo_passthrough_queue_db(monkeypatch, tmp_path):
+    project_root = tmp_path / 'project'
+    local_root = project_root / 'local_fallback_storage'
+    external_root = tmp_path / 'external'
+    repo_data = project_root / 'data'
+    local_data = local_root / 'data'
+    external_data = external_root / 'data'
+    repo_data.mkdir(parents=True, exist_ok=True)
+    local_data.mkdir(parents=True, exist_ok=True)
+    external_data.mkdir(parents=True, exist_ok=True)
+
+    (local_data / 'jsonl_link.sqlite3').write_text('local-primary', encoding='utf-8')
+    (external_data / 'jsonl_link.sqlite3').write_text('external-primary', encoding='utf-8')
+    (repo_data / 'bot_channel_queue.sqlite3').write_text('active-queue', encoding='utf-8')
+    (local_data / 'snapshot_context.sqlite3').write_text('snapshot-local', encoding='utf-8')
+    (external_data / 'snapshot_context.sqlite3').write_text('snapshot-external', encoding='utf-8')
+
+    monkeypatch.setenv('BOT_LOGS_LOCAL_FALLBACK_ROOT', str(local_root))
+    monkeypatch.setenv('BOT_CHANNEL_QUEUE_DB', str(repo_data / 'bot_channel_queue.sqlite3'))
+
+    payload = storage_failback_sync._build_sqlite_skip_report(
+        project_root,
+        external_root,
+        mode='external',
+        active_root=external_root,
+    )
+
+    by_rel = {row['relative_path']: row for row in payload['entries']}
+    queue = by_rel['data/bot_channel_queue.sqlite3']
+    assert queue['classification'] == 'active_repo_queue_passthrough'
+    assert queue['route_verification']['state'] == 'active_passthrough'
+    assert queue['active_repo']['exists'] is True
+    assert payload['summary']['active_passthrough_count'] == 1
+    assert payload['summary']['verification_mismatch_count'] == 0
+    assert payload['route_verification']['ready_count'] == 3

@@ -293,33 +293,61 @@ def _build_sqlite_skip_report(
     external_ready_count = 0
     verified_count = 0
     curated_standby_count = 0
+    active_passthrough_count = 0
     verification_mismatches: list[str] = []
 
     for rel in tracked:
+        repo_path = project_root / rel
         local_path = local_root / rel
         external_path = external_root / rel
+        repo_meta = _path_metadata(repo_path)
         local_meta = _path_metadata(local_path)
         external_meta = _path_metadata(external_path)
+        repo_exists = bool(repo_meta.get("exists", False))
         local_exists = bool(local_meta.get("exists", False))
         external_exists = bool(external_meta.get("exists", False))
+        repo_bytes = int(repo_meta.get("size_bytes", 0) or 0)
         local_bytes = int(local_meta.get("size_bytes", 0) or 0)
         external_bytes = int(external_meta.get("size_bytes", 0) or 0)
         if local_exists:
             local_present_count += 1
             local_bytes_total += local_bytes
 
+        repo_sidecars = _sqlite_sidecars(repo_path)
         local_sidecars = _sqlite_sidecars(local_path)
         external_sidecars = _sqlite_sidecars(external_path)
+        try:
+            repo_realpath = repo_path.resolve(strict=False)
+        except Exception:
+            repo_realpath = repo_path
         try:
             local_realpath = local_path.resolve(strict=False)
         except Exception:
             local_realpath = local_path
+        try:
+            external_realpath = external_path.resolve(strict=False)
+        except Exception:
+            external_realpath = external_path
+        repo_is_external_route = bool(repo_exists and external_exists and repo_realpath == external_realpath)
 
         active_path = ""
         classification = "not_present"
         reason = "No retained local fallback SQLite file is present for this skip path."
 
-        if local_exists and rel == "data/bot_channel_queue.sqlite3" and queue_db_realpath == local_realpath:
+        if (
+            rel == "data/bot_channel_queue.sqlite3"
+            and repo_exists
+            and queue_db_realpath == repo_realpath
+            and not repo_is_external_route
+        ):
+            classification = "active_repo_queue_passthrough"
+            reason = (
+                "The channel queue DB is currently pinned to the repo data passthrough route, "
+                "so this active live queue is verified in place instead of requiring an external copy."
+            )
+            active_path = str(repo_path)
+            active_passthrough_count += 1
+        elif local_exists and rel == "data/bot_channel_queue.sqlite3" and queue_db_realpath == local_realpath:
             classification = "active_local_queue"
             reason = (
                 "The channel queue DB is currently pinned to the internal fallback root, "
@@ -343,7 +371,15 @@ def _build_sqlite_skip_report(
 
         verification_state = "missing_external_copy"
         verification_reason = "The external route does not currently have a verified SQLite copy for this tracked path."
-        if str(mode or "") == "external" and classification in {"warm_standby_retained", "active_local_queue"} and (
+        if classification == "active_repo_queue_passthrough" and repo_bytes > 0:
+            verification_state = "active_passthrough"
+            verification_reason = (
+                "The active queue DB is intentionally routed through the repo passthrough data path; "
+                "the failback route is considered ready because the live queue is present and not copy-back eligible."
+            )
+            external_ready_count += 1
+            verified_count += 1
+        elif str(mode or "") == "external" and classification in {"warm_standby_retained", "active_local_queue"} and (
             not external_exists or external_bytes <= 0 or (local_exists and external_bytes < local_bytes)
         ):
             verification_state = "curated_standby"
@@ -377,6 +413,10 @@ def _build_sqlite_skip_report(
                     "state": verification_state,
                     "reason": verification_reason,
                 },
+                "active_repo": {
+                    **repo_meta,
+                    "sidecars": repo_sidecars,
+                },
                 "local": {
                     **local_meta,
                     "sidecars": local_sidecars,
@@ -408,6 +448,7 @@ def _build_sqlite_skip_report(
             "tracked_entries": len(entries),
             "local_present_count": int(local_present_count),
             "active_local_count": int(active_local_count),
+            "active_passthrough_count": int(active_passthrough_count),
             "warm_standby_count": int(warm_standby_count),
             "external_ready_count": int(external_ready_count),
             "verified_count": int(verified_count),

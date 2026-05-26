@@ -111,11 +111,67 @@ def test_advanced_quant_model_features_include_expansion_keys() -> None:
         "quant_esig_signature_available_norm",
         "quant_quantlib_available_norm",
         "quant_quantlib_pricing_benchmark_norm",
+        "quant_strategy_carry_edge_norm",
+        "quant_strategy_mean_reversion_edge_norm",
+        "quant_strategy_volatility_rv_edge_norm",
+        "quant_strategy_microstructure_edge_norm",
+        "quant_strategy_tail_hedge_edge_norm",
+        "quant_strategy_crypto_basis_edge_norm",
+        "quant_strategy_kelly_sizing_readiness_norm",
+        "quant_strategy_portfolio_fit_norm",
+        "quant_strategy_selection_confidence_norm",
+        "quant_strategy_execution_alignment_norm",
+        "quant_strategy_risk_adjusted_conviction_norm",
+        "quant_strategy_allocation_bias_norm",
     }
 
     assert required.issubset(features)
     assert set(src.QUANT_MODEL_FEATURE_KEYS).issubset(features)
     assert all(0.0 <= float(features[key]) <= 1.0 for key in required)
+
+
+def test_quant_strategy_scorecard_turns_quant_context_into_actionable_edges() -> None:
+    features = src.summarize_quant_model_features(
+        {
+            "last_price": 42500.0,
+            "atm_strike": 42500.0,
+            "expiry_days": 14,
+            "implied_volatility": 0.45,
+            "mom_1m": -0.002,
+            "mom_5m": 0.001,
+            "flow_direction_signed": 0.35,
+            "edge_norm": 0.72,
+            "source_confidence_norm": 0.88,
+            "market_micro_tradeability_score_norm": 0.90,
+            "execution_fitness_norm": 0.84,
+            "futures_basis_bps_norm": 0.70,
+            "futures_roll_yield_norm": 0.62,
+            "crypto_hyperliquid_funding_norm": 0.82,
+            "crypto_basis_norm": 0.76,
+            "crypto_open_interest_change_norm": 0.68,
+            "crypto_cross_provider_agreement_norm": 0.81,
+            "options_iv_realized_spread_norm": 0.79,
+            "trend_persistence_norm": 0.28,
+            "strategy_overlap_pressure_norm": 0.12,
+            "cross_sleeve_correlation_pressure_norm": 0.18,
+            "walk_forward_parameter_stability_norm": 0.74,
+        },
+        external_snapshots={
+            "macro": {"ok": True},
+            "news": {"ok": True},
+            "market_micro": {"ok": True},
+            "crypto_correlation": {"ok": True},
+        },
+    )
+
+    assert features["quant_strategy_carry_edge_norm"] > 0.35
+    assert features["quant_strategy_crypto_basis_edge_norm"] > 0.40
+    assert features["quant_strategy_kelly_sizing_readiness_norm"] > 0.25
+    assert features["quant_strategy_portfolio_fit_norm"] > 0.50
+    assert features["quant_strategy_selection_confidence_norm"] > 0.35
+    assert features["quant_strategy_execution_alignment_norm"] > 0.45
+    assert features["quant_strategy_risk_adjusted_conviction_norm"] > 0.25
+    assert features["quant_strategy_allocation_bias_norm"] > 0.35
 
 
 def test_quant_model_inventory_tracks_mlx_and_new_models() -> None:
@@ -173,6 +229,8 @@ def test_quant_model_inventory_tracks_mlx_and_new_models() -> None:
     assert "topological_quantum_field_theory_braid_group_proxy" in models
     assert "mfgc_congestion_control_proxy" in models
     assert "spde_manifold_limit_order_book_fluid_proxy" in models
+    assert "quant_strategy_scorecard_layer" in models
+    assert "quant_strategy_risk_adjusted_conviction_router" in models
     assert {
         "mlx_core_random",
         "mx_grad",

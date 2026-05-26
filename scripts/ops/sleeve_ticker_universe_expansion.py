@@ -19,67 +19,83 @@ else:
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "sleeve_ticker_universe_latest.json"
 DEFAULT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.sleeve_ticker_universe_override"
-UNIVERSE_VERSION = "sleeve_ticker_universe_v1"
+UNIVERSE_VERSION = "sleeve_ticker_universe_v2"
 
 UNIVERSES: dict[str, list[str]] = {
     "SHADOW_SYMBOLS_CORE": [
         "SPY", "QQQ", "DIA", "IWM", "MDY", "VOO", "VTI", "IVV", "SPLG", "RSP",
         "AAPL", "MSFT", "NVDA", "AMD", "AVGO", "TSM", "ASML", "MU", "ARM", "SMH", "SOXX", "QCOM", "TXN", "AMAT", "LRCX", "KLAC", "INTC",
         "AMZN", "GOOG", "GOOGL", "META", "NFLX", "DIS", "WBD", "ORCL", "CRM", "ADBE", "NOW", "PLTR", "SNOW", "SHOP", "UBER", "ABNB",
+        "IBM", "ACN", "INTU", "ADP", "PANW", "CRWD", "FTNT", "ANET", "CDNS", "SNPS", "ADSK", "WDAY", "MDB", "DDOG", "NET", "ZS",
+        "MRVL", "ADI", "NXPI", "MPWR", "ON", "MCHP", "GFS",
         "JPM", "BAC", "GS", "MS", "BLK", "SCHW", "AXP", "V", "MA", "C", "WFC", "COF",
-        "LLY", "UNH", "JNJ", "ABBV", "MRK", "ABT", "PFE", "ISRG", "TMO", "DHR",
-        "COST", "WMT", "HD", "LOW", "MCD", "NKE", "SBUX", "TGT",
-        "CAT", "DE", "GE", "BA", "RTX", "LMT", "NOC", "HON", "ETN",
-        "XOM", "CVX", "COP", "EOG", "SLB", "MPC", "VLO", "OXY", "LNG",
+        "PNC", "USB", "BK", "BX", "KKR", "APO", "SPGI", "MCO", "ICE", "CME",
+        "LLY", "UNH", "JNJ", "ABBV", "MRK", "ABT", "PFE", "ISRG", "TMO", "DHR", "AMGN", "GILD", "BMY", "CVS", "CI", "ELV", "HUM", "MDT", "SYK", "BSX", "REGN", "VRTX", "ZTS",
+        "COST", "WMT", "HD", "LOW", "MCD", "NKE", "SBUX", "TGT", "TJX", "CMG", "YUM", "DPZ", "ORLY", "AZO", "ROST",
+        "CAT", "DE", "GE", "BA", "RTX", "LMT", "NOC", "HON", "ETN", "UPS", "FDX", "UNP", "CSX", "NSC", "WM", "RSG", "PH", "CARR", "ROK",
+        "XOM", "CVX", "COP", "EOG", "SLB", "MPC", "VLO", "OXY", "LNG", "PSX", "KMI", "WMB", "HAL", "FANG",
+        "LIN", "SHW", "APD", "FCX", "NEM", "NEE", "SO", "DUK", "AMT", "EQIX", "PLD",
         "BKNG", "MAR", "HLT", "DAL", "UAL", "LUV",
     ],
     "SHADOW_SYMBOLS_VOLATILE": [
         "SOXL", "SOXS", "TQQQ", "SQQQ", "SPXL", "SPXS", "LABU", "LABD", "UVXY", "VIXY", "SVXY",
+        "FNGU", "FNGD", "TECL", "TECS", "WEBL", "WEBS", "NAIL", "DRV", "ERX", "ERY", "BOIL", "KOLD", "TMF", "TMV",
         "MSTR", "SMCI", "COIN", "TSLA", "AMD", "NVDA", "PLTR", "ARM", "MARA", "RIOT", "CLSK", "HOOD", "RBLX", "AFRM", "UPST",
-        "IBIT", "FBTC", "BITB", "ARKB", "ETHA", "ETHE",
+        "CVNA", "SOFI", "DKNG", "RIVN", "LCID", "APP", "U", "PATH", "SNAP", "IONQ", "SOUN", "AI",
+        "IBIT", "FBTC", "BITB", "ARKB", "ETHA", "ETHE", "BITX", "BITU", "BITI", "WGMI",
     ],
     "SHADOW_SYMBOLS_DEFENSIVE": [
         "TLT", "GLD", "XLV", "XLU", "XLP", "MO", "HYG", "LQD", "UUP", "XLE", "XLF", "XLI", "XLK", "XLY", "XLC", "XLB", "XLRE",
         "XAR", "KRE", "XOP", "IEF", "SHY", "TIP", "TLH", "JNK", "AGG", "BND", "MUB", "IGIB", "USHY", "FLOT", "VGIT", "VCIT", "EMB", "BIL", "SGOV", "USFR", "TFLO",
-        "SCHD", "VIG", "DGRO", "HDV", "NOBL", "VYM", "DIVO", "JEPI", "JEPQ", "SPLV", "VTV",
-        "JNJ", "PG", "KO", "PEP", "MCD", "ABBV", "ABT", "MRK", "PFE", "T", "VZ", "O", "VICI", "MAIN",
-        "ITA", "LMT", "NOC", "RTX", "GD", "LHX", "LDOS",
+        "SHV", "JPST", "ICSH", "BSV", "VCSH", "BIV", "GOVT", "MBB",
+        "SCHD", "VIG", "DGRO", "HDV", "NOBL", "VYM", "DIVO", "JEPI", "JEPQ", "SPLV", "VTV", "VIGI", "IDV", "DVY", "SPHD", "SDY",
+        "JNJ", "PG", "KO", "PEP", "MCD", "ABBV", "ABT", "MRK", "PFE", "T", "VZ", "O", "VICI", "MAIN", "CL", "KMB", "GIS", "HSY", "MDLZ", "KR", "SO", "DUK", "NEE", "ED", "D", "WMT", "COST", "UPS", "WM",
+        "ITA", "LMT", "NOC", "RTX", "GD", "LHX", "LDOS", "IBB", "XBI", "ITB", "XRT", "VNQ", "IYR",
     ],
     "SHADOW_SYMBOLS_COMMOD_FX_INTL": [
         "DBC", "USO", "UNG", "CORN", "WEAT", "SOYB", "SLV", "GLD", "CPER", "URA", "XME", "GDX", "GDXJ",
+        "PDBC", "COMT", "BCI", "DBA", "DBB", "DBE", "IAU", "SGOL", "PPLT", "PALL",
         "UUP", "FXE", "FXY", "FXB", "FXC", "FXA", "CYB", "EUO", "YCS", "UDN", "CEW", "DBV",
         "EFA", "EEM", "IEFA", "VEA", "VWO", "VGK", "EWJ", "FXI", "EWZ", "INDA", "EWU", "EWG", "EWQ", "EWC", "EWA", "EWW", "EWY", "EWT", "IXUS",
+        "EPI", "EZA", "TUR", "EWS", "EWH", "ACWX",
     ],
     "DIVIDEND_SYMBOLS": [
         "SCHD", "VIG", "DGRO", "HDV", "NOBL", "VYM", "DIVO", "JEPI", "JEPQ", "SPYD", "DIV", "FDVV", "SCHY", "SDY",
+        "VIGI", "IDV", "DVY", "SPHD", "DGRW",
         "JNJ", "PG", "KO", "PEP", "MCD", "MO", "PM", "ABBV", "ABT", "MRK", "PFE", "T", "VZ", "O", "VICI", "MAIN",
-        "XOM", "CVX", "COP", "KMI", "MPC", "PSX", "VLO", "EOG", "SLB", "MSFT", "AAPL", "COST", "HD", "LOW", "JPM", "BLK",
+        "CL", "KMB", "GIS", "HSY", "MDLZ", "KR", "SO", "DUK", "NEE", "ED", "D",
+        "XOM", "CVX", "COP", "KMI", "MPC", "PSX", "VLO", "EOG", "SLB", "WMB", "MSFT", "AAPL", "COST", "HD", "LOW", "JPM", "BLK", "WMT", "TJX", "UNP", "UPS", "WM", "RSG", "IBM", "ADP",
     ],
     "DIVIDEND_QUALITY_SYMBOLS": [
-        "SCHD", "VIG", "DGRO", "HDV", "NOBL", "VYM", "DIVO", "SCHY", "JNJ", "PG", "KO", "PEP", "MCD", "ABBV", "ABT", "MRK", "XOM", "CVX", "COP", "O", "VICI", "MSFT", "AAPL", "COST", "HD", "LOW",
+        "SCHD", "VIG", "DGRO", "HDV", "NOBL", "VYM", "DIVO", "SCHY", "VIGI", "DGRW", "JNJ", "PG", "KO", "PEP", "MCD", "ABBV", "ABT", "MRK", "CL", "KMB", "GIS", "HSY", "MDLZ", "XOM", "CVX", "COP", "O", "VICI", "NEE", "SO", "DUK", "MSFT", "AAPL", "COST", "HD", "LOW", "WMT", "ADP",
     ],
     "BOND_SYMBOLS": [
         "TLT", "IEF", "SHY", "TIP", "LQD", "HYG", "JNK", "AGG", "BND", "TLH", "MUB", "IGIB", "USHY", "FLOT", "VGIT", "VCIT", "EMB", "BIL", "SGOV", "USFR", "TFLO", "MINT", "NEAR", "VTIP", "SCHP",
+        "SHV", "JPST", "ICSH", "BSV", "VCSH", "BIV", "GOVT", "MBB", "VGSH", "VGLT", "EDV", "ZROZ", "IUSB", "SCHO", "SCHR", "SCHZ",
     ],
     "BOND_CONTEXT_SYMBOLS": [
         "UUP", "GLD", "SPY", "QQQ", "TLT", "IEF", "TLH", "VGIT", "SHY", "TIP", "VTIP", "SCHP", "LQD", "IGIB", "HYG", "JNK", "USHY", "AGG", "BND", "MUB", "XLU", "XLF", "XLE", "VIXY", "DBC", "USO",
+        "SHV", "JPST", "VCSH", "BIV", "GOVT", "MBB", "EDV", "ZROZ", "TBT", "TBF", "TMF", "TMV", "NEE", "XHB", "IYR",
     ],
-    "FX_SYMBOLS": ["UUP", "FXE", "FXY", "FXB", "FXC", "FXA", "CYB", "EUO", "YCS", "UDN", "CEW", "DBV"],
-    "FX_CONTEXT_SYMBOLS": ["SPY", "QQQ", "TLT", "GLD", "UUP", "FXE", "FXY", "FXB", "FXC", "FXA", "EFA", "EEM", "USO", "DBC"],
+    "FX_SYMBOLS": ["UUP", "USDU", "FXE", "FXY", "FXB", "FXC", "FXA", "CYB", "EUO", "YCS", "UDN", "CEW", "DBV"],
+    "FX_CONTEXT_SYMBOLS": ["SPY", "QQQ", "TLT", "GLD", "UUP", "USDU", "FXE", "FXY", "FXB", "FXC", "FXA", "EFA", "EEM", "USO", "DBC"],
     "COINBASE_WATCH_SYMBOLS": [
         "BTC-USD", "ETH-USD", "SOL-USD", "AVAX-USD", "LTC-USD", "LINK-USD", "DOGE-USD", "XRP-USD", "ADA-USD", "DOT-USD", "BCH-USD", "UNI-USD", "AAVE-USD", "ATOM-USD", "NEAR-USD", "OP-USD", "ARB-USD",
+        "ETC-USD", "XLM-USD", "HBAR-USD", "ALGO-USD", "FIL-USD", "SUI-USD", "INJ-USD", "SEI-USD", "TIA-USD", "PEPE-USD", "SHIB-USD", "BONK-USD", "WIF-USD", "ONDO-USD", "RENDER-USD",
     ],
     "COINBASE_FUTURES_WATCH_SYMBOLS": [
-        "BTC-USD", "ETH-USD", "SOL-USD", "AVAX-USD", "LTC-USD", "LINK-USD", "DOGE-USD", "XRP-USD", "ADA-USD", "DOT-USD",
+        "BTC-USD", "ETH-USD", "SOL-USD", "AVAX-USD", "LTC-USD", "LINK-USD", "DOGE-USD", "XRP-USD", "ADA-USD", "DOT-USD", "BCH-USD", "UNI-USD", "AAVE-USD", "ATOM-USD", "NEAR-USD",
     ],
-    "COINBASE_WEBSOCKET_SYMBOLS": ["BTC-USD", "ETH-USD", "SOL-USD", "AVAX-USD", "LTC-USD", "LINK-USD", "DOGE-USD", "XRP-USD"],
+    "COINBASE_WEBSOCKET_SYMBOLS": ["BTC-USD", "ETH-USD", "SOL-USD", "AVAX-USD", "LTC-USD", "LINK-USD", "DOGE-USD", "XRP-USD", "ADA-USD", "DOT-USD", "BCH-USD", "UNI-USD", "AAVE-USD", "ETC-USD"],
     "CRYPTO_MARKET_CONTEXT_SYMBOLS": [
         "BTC-USD", "ETH-USD", "SOL-USD", "AVAX-USD", "LTC-USD", "LINK-USD", "DOGE-USD", "XRP-USD", "ADA-USD", "DOT-USD", "BCH-USD", "UNI-USD", "AAVE-USD", "ATOM-USD",
+        "NEAR-USD", "OP-USD", "ARB-USD", "ETC-USD", "XLM-USD", "HBAR-USD", "ALGO-USD", "FIL-USD", "SUI-USD", "INJ-USD", "SEI-USD", "TIA-USD", "PEPE-USD", "SHIB-USD", "BONK-USD", "WIF-USD", "ONDO-USD", "RENDER-USD",
     ],
     "LONG_TERM_SECTOR_SYMBOLS": [
         "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY", "SMH", "SOXX", "ITB", "KRE", "IBB", "ITA", "JETS", "XOP", "OIH", "XME", "GDX", "URA",
+        "XBI", "IYR", "VNQ", "XRT", "XHB", "IYT", "IYW", "IGV", "CLOU", "BOTZ", "ARKK", "ARKW", "CIBR", "HACK", "SKYY", "PAVE", "KWEB",
     ],
-    "LONG_TERM_SECTOR_CONTEXT_SYMBOLS": ["SPY", "QQQ", "IWM", "TLT", "GLD", "UUP", "VIXY", "HYG", "LQD"],
+    "LONG_TERM_SECTOR_CONTEXT_SYMBOLS": ["SPY", "QQQ", "IWM", "TLT", "GLD", "UUP", "USDU", "VIXY", "HYG", "LQD", "EFA", "EEM", "DBC", "USO"],
 }
 
 

@@ -35,6 +35,50 @@ PREFLIGHT_SCRIPT = PROJECT_ROOT / "scripts" / "shadow_preflight.py"
 DEBUG_SNAPSHOT_SCRIPT = PROJECT_ROOT / "scripts" / "collect_debug_snapshot.sh"
 CAPTURE_CONFIG_SCRIPT = PROJECT_ROOT / "scripts" / "capture_run_config.py"
 PAPER_TRADE_LOCK_PATH = PROJECT_ROOT / "governance" / "health" / "PAPER_TRADE_LOCK.flag"
+LAUNCHER_HEALTH_PATH = PROJECT_ROOT / "governance" / "health" / "all_sleeves_launcher_latest.json"
+PROCESS_FANOUT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.process_fanout_guard_override"
+SLEEVE_LAUNCHER_REPAIR_INFRABOTS = (
+    {
+        "name": "sleeve_launcher_parent_watchdog",
+        "responsibility": "restart the all-sleeves parent when it is missing and startup gates allow a read-only sleeve restart",
+        "command": [str(VENV_PY), "scripts/ops/process_watchdog.py", "--json"],
+    },
+    {
+        "name": "sleeve_child_recycler",
+        "responsibility": "clean orphaned sleeve children and rebuild the child fanout when the parent is hollow or a child exits",
+        "command": [str(VENV_PY), "scripts/ops/process_watchdog.py", "--json"],
+    },
+    {
+        "name": "sleeve_preflight_repair_guard",
+        "responsibility": "refresh storage, halt, auth, and runtime preflight evidence before restarting the launcher",
+        "command": ["./scripts/ops/opsctl.sh", "post-restart-settle", "--apply", "--json"],
+    },
+    {
+        "name": "sleeve_backpressure_guard",
+        "responsibility": "keep backlog drain and storage governor work ahead of sleeve widening after a launcher repair",
+        "command": ["./scripts/ops/opsctl.sh", "storage-backpressure-autopilot", "--apply", "--json"],
+    },
+    {
+        "name": "sleeve_fanout_integrity_infrabot",
+        "responsibility": "grade the parent-child fanout and separate true outages from intentionally parked sleeves",
+        "command": ["./scripts/ops/opsctl.sh", "watchdog-intelligence", "--json"],
+    },
+    {
+        "name": "sleeve_restart_storm_circuit_infrabot",
+        "responsibility": "hold noisy children in quarantine instead of letting restart storms consume the computer",
+        "command": [str(VENV_PY), "scripts/ops/process_watchdog.py", "--json"],
+    },
+    {
+        "name": "sleeve_expansion_admission_infrabot",
+        "responsibility": "allow new collection-only sleeves only when core, storage, and paper executor health are stable",
+        "command": ["./scripts/ops/opsctl.sh", "sleeve-mechanics", "--json"],
+    },
+    {
+        "name": "sleeve_computer_coexistence_infrabot",
+        "responsibility": "keep sleeve launch pressure compatible with foreground Mac work and creative cotenant guards",
+        "command": ["./scripts/ops/opsctl.sh", "runtime-throttle-control", "--json"],
+    },
+)
 
 DEFAULT_SYMBOLS_CORE = (
     "SPY,QQQ,DIA,IWM,MDY,VOO,VTI,RSP,"
@@ -176,6 +220,25 @@ def _env_flag(name: str, default: str = "0") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _current_nice_value() -> int:
+    try:
+        return int(os.nice(0))
+    except Exception:
+        return 0
+
+
+def _relative_nice_increment_for_target(target_nice: int, parent_nice: int | None = None) -> int:
+    current = _current_nice_value() if parent_nice is None else int(parent_nice)
+    target = max(int(target_nice), 0)
+    if target <= current:
+        return 0
+    return min(target - current, 20)
+
+
+def _nice_prefix_for_target(target_nice: int, parent_nice: int | None = None) -> list[str]:
+    return ["nice", "-n", str(_relative_nice_increment_for_target(target_nice, parent_nice))]
+
+
 def _paper_trade_lock_enabled() -> bool:
     lock_override = os.getenv("PAPER_TRADE_LOCK_PATH", "").strip()
     lock_path = Path(lock_override) if lock_override else PAPER_TRADE_LOCK_PATH
@@ -275,6 +338,66 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
+def _read_env_override(path: Path) -> dict[str, str]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        value = raw_value.strip()
+        if (value.startswith("'") and value.endswith("'")) or (value.startswith('"') and value.endswith('"')):
+            value = value[1:-1]
+        if key:
+            values[key] = value
+    return values
+
+
+def _process_fanout_policy(path: Path = PROCESS_FANOUT_OVERRIDE_PATH) -> dict[str, Any]:
+    values = _read_env_override(path)
+    active = str(values.get("PROCESS_FANOUT_GUARD_ACTIVE", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    return {
+        "active": active,
+        "reason": values.get("PROCESS_FANOUT_GUARD_REASON", ""),
+        "specialized_enabled": values.get("RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES", "1") != "0",
+        "aggressive_enabled": values.get("OPS_WATCHDOG_ALL_SLEEVES_WITH_AGGRESSIVE", "1") != "0",
+        "dividend_capture_enabled": values.get("RUN_ALL_SLEEVES_WITH_DIVIDEND_CAPTURE", "1") != "0",
+    }
+
+
+def _job_parked_by_fanout_policy(name: str, policy: dict[str, Any]) -> bool:
+    if not bool(policy.get("active", False)):
+        return False
+    if name in SPECIALIZED_SLEEVE_PROFILES and not bool(policy.get("specialized_enabled", True)):
+        return True
+    if name == "aggressive_modes" and not bool(policy.get("aggressive_enabled", True)):
+        return True
+    if name == "dividend_capture" and not bool(policy.get("dividend_capture_enabled", True)):
+        return True
+    return False
+
+
+def _apply_process_fanout_policy_to_args(args: argparse.Namespace, policy: dict[str, Any]) -> list[str]:
+    if not bool(policy.get("active", False)):
+        return []
+    changes: list[str] = []
+    if not bool(policy.get("specialized_enabled", True)) and bool(getattr(args, "with_specialized_sleeves", False)):
+        args.with_specialized_sleeves = False
+        changes.append("specialized_sleeves")
+    if not bool(policy.get("aggressive_enabled", True)) and bool(getattr(args, "with_aggressive_modes", False)):
+        args.with_aggressive_modes = False
+        changes.append("aggressive_modes")
+    if not bool(policy.get("dividend_capture_enabled", True)) and bool(getattr(args, "with_dividend_capture", False)):
+        args.with_dividend_capture = False
+        changes.append("dividend_capture")
+    return changes
+
+
 def _job_heartbeat_stale(
     spec: JobSpec,
     *,
@@ -352,6 +475,349 @@ def _spawn(spec: JobSpec) -> subprocess.Popen:
     t = threading.Thread(target=_stream, args=(spec.name, proc.stdout), daemon=True)
     t.start()
     return proc
+
+
+def _launcher_job_class(name: str) -> str:
+    if name in {"baseline_parallel", "dividend", "dividend_capture", "bond", "fx"}:
+        return "core_collection"
+    if name in {"paper_executor", "live_executor"}:
+        return "execution_lane"
+    if name == "aggressive_modes":
+        return "aggressive_collection"
+    if name in SPECIALIZED_SLEEVE_PROFILES:
+        return "specialized_collection"
+    return "other"
+
+
+def _launcher_readiness_contract(
+    *,
+    jobs: list[dict[str, Any]],
+    problem_jobs: list[dict[str, Any]],
+    quarantined_jobs: dict[str, dict[str, object]],
+    phase: str,
+    overall_status: str,
+    repair_active: bool,
+    policy_parked_jobs: set[str],
+    clean_exited_jobs: set[str],
+) -> dict[str, Any]:
+    class_counts: dict[str, dict[str, int]] = {}
+    for row in jobs:
+        name = str(row.get("name") or "")
+        job_class = _launcher_job_class(name)
+        row["job_class"] = job_class
+        bucket = class_counts.setdefault(job_class, {"expected": 0, "running": 0, "stable_non_running": 0, "problem": 0})
+        bucket["expected"] += 1
+        if row.get("state") == "running":
+            bucket["running"] += 1
+        elif bool(row.get("policy_parked", False)) or bool(row.get("clean_exited", False)):
+            bucket["stable_non_running"] += 1
+
+    problem_names = {str(row.get("name") or "") for row in problem_jobs}
+    for row in jobs:
+        name = str(row.get("name") or "")
+        if name in problem_names:
+            class_counts.setdefault(_launcher_job_class(name), {"expected": 0, "running": 0, "stable_non_running": 0, "problem": 0})["problem"] += 1
+
+    core_problem_jobs = [
+        row
+        for row in problem_jobs
+        if _launcher_job_class(str(row.get("name") or "")) in {"core_collection", "execution_lane"}
+    ]
+    restart_pressure_jobs = [
+        row
+        for row in jobs
+        if int(row.get("restart_count_last_hour", 0) or 0) >= 3
+    ]
+    score = 100.0
+    score -= min(float(len(problem_jobs)) * 18.0, 54.0)
+    score -= min(float(len(core_problem_jobs)) * 18.0, 36.0)
+    score -= min(float(len(quarantined_jobs)) * 20.0, 40.0)
+    score -= min(float(len(restart_pressure_jobs)) * 8.0, 24.0)
+    if phase == "starting":
+        score -= 6.0
+    if overall_status == "blocked":
+        score -= 20.0
+    score = round(max(score, 0.0), 1)
+
+    if phase == "starting":
+        readiness_status = "starting"
+    elif core_problem_jobs or overall_status == "blocked":
+        readiness_status = "repair_core_first"
+    elif problem_jobs or repair_active:
+        readiness_status = "repair_optional_first"
+    elif policy_parked_jobs or clean_exited_jobs:
+        readiness_status = "stable_with_parked_lanes"
+    else:
+        readiness_status = "ready"
+
+    can_expand = bool(
+        phase == "running"
+        and overall_status == "ready"
+        and not problem_jobs
+        and not quarantined_jobs
+        and not restart_pressure_jobs
+        and not policy_parked_jobs
+        and not clean_exited_jobs
+    )
+    if can_expand:
+        max_new_collect_only_sleeves = 10
+    elif readiness_status == "stable_with_parked_lanes" and not core_problem_jobs:
+        max_new_collect_only_sleeves = 3
+    else:
+        max_new_collect_only_sleeves = 0
+
+    exact_needs = []
+    for row in problem_jobs[:12]:
+        name = str(row.get("name") or "")
+        state = str(row.get("state") or "")
+        reason = "quarantined" if bool(row.get("quarantined", False)) else state
+        exact_needs.append(
+            {
+                "target": name,
+                "job_class": _launcher_job_class(name),
+                "blocker": reason,
+                "exact_file": str(LAUNCHER_HEALTH_PATH),
+                "exact_command": ["./scripts/ops/opsctl.sh", "watchdog-intelligence", "--apply", "--json"],
+                "expected_impact": "repair or quarantine the specific sleeve lane without enabling live execution",
+                "risk_level": "medium" if _launcher_job_class(name) in {"core_collection", "execution_lane"} else "low",
+                "when_to_stop": "stop when this job is running, cleanly parked, or explicitly quarantined with no restart storm",
+            }
+        )
+    if not exact_needs and not can_expand and phase == "starting":
+        exact_needs.append(
+            {
+                "target": "all_sleeves",
+                "job_class": "launcher_parent",
+                "blocker": "startup_in_progress",
+                "exact_file": str(LAUNCHER_HEALTH_PATH),
+                "exact_command": ["./scripts/ops/opsctl.sh", "watchdog-intelligence", "--json"],
+                "expected_impact": "wait for the parent to finish spawning children before declaring a launcher outage",
+                "risk_level": "low",
+                "when_to_stop": "stop when phase=running or repair_packet.status=needs_repair",
+            }
+        )
+
+    return {
+        "active": True,
+        "mode": "sleeve_launcher_readiness_expansion_v2",
+        "paper_only": True,
+        "live_execution_allowed": False,
+        "readiness_status": readiness_status,
+        "readiness_score": score,
+        "can_expand_collection_sleeves": can_expand or max_new_collect_only_sleeves > 0,
+        "max_new_collect_only_sleeves": int(max_new_collect_only_sleeves),
+        "class_counts": class_counts,
+        "core_problem_count": len(core_problem_jobs),
+        "problem_job_count": len(problem_jobs),
+        "restart_pressure_job_count": len(restart_pressure_jobs),
+        "policy_parked_job_count": len(policy_parked_jobs),
+        "clean_exited_job_count": len(clean_exited_jobs),
+        "quarantined_job_count": len(quarantined_jobs),
+        "exact_needs": exact_needs,
+        "auto_repair_sequence": [
+            "refresh launcher health and watchdog intelligence",
+            "clean orphaned child processes only when the parent is missing or hollow",
+            "restart the all-sleeves parent in read-only paper-data mode when startup gates allow it",
+            "quarantine repeat-crashing children before they create a restart storm",
+            "admit new collection-only sleeves only after core and execution lanes stay stable",
+        ],
+        "expansion_rules": [
+            "new sleeves are collection-only by default",
+            "live execution remains disabled by this launcher contract",
+            "core collection and paper executor stability come before optional sleeve widening",
+            "policy-parked and clean-exited lanes are not treated as outages",
+            "restart pressure reduces expansion slots before it becomes a storm",
+        ],
+        "recommended_commands": [
+            ["./scripts/ops/opsctl.sh", "watchdog-intelligence", "--apply", "--json"],
+            ["./scripts/ops/opsctl.sh", "sleeve-mechanics", "--json"],
+            ["./scripts/ops/opsctl.sh", "storage-backpressure-autopilot", "--apply", "--json"],
+        ],
+    }
+
+
+def _launcher_health_payload(
+    *,
+    specs: dict[str, JobSpec],
+    procs: dict[str, subprocess.Popen],
+    proc_started_at: dict[str, float],
+    restart_history: dict[str, list[float]],
+    quarantined_jobs: dict[str, dict[str, object]],
+    launcher_started_at: float,
+    phase: str,
+    note: str = "",
+    policy_parked_jobs: set[str] | None = None,
+    clean_exited_jobs: set[str] | None = None,
+) -> dict[str, Any]:
+    now = time.time()
+    parked_jobs = set(policy_parked_jobs or set())
+    clean_jobs = set(clean_exited_jobs or set())
+    jobs: list[dict[str, Any]] = []
+    running_count = 0
+    exited_count = 0
+    missing_count = 0
+
+    for name, spec in specs.items():
+        proc = procs.get(name)
+        code: int | None = None
+        pid = 0
+        if proc is None:
+            missing_count += 1
+            state = "missing"
+        else:
+            pid = int(proc.pid)
+            code = proc.poll()
+            if code is None:
+                running_count += 1
+                state = "running"
+            else:
+                exited_count += 1
+                state = "exited"
+
+        started = float(proc_started_at.get(name, 0.0) or 0.0)
+        jobs.append(
+            {
+                "name": name,
+                "state": state,
+                "pid": pid,
+                "exit_code": code,
+                "uptime_seconds": round(max(now - started, 0.0), 3) if started > 0 else 0.0,
+                "restart_count_last_hour": len(restart_history.get(name, [])),
+                "quarantined": name in quarantined_jobs,
+                "policy_parked": name in parked_jobs,
+                "clean_exited": name in clean_jobs,
+                "breaker_group": spec.breaker_group,
+            }
+        )
+
+    expected_count = len(specs)
+    quarantined_count = len(quarantined_jobs)
+    stable_non_running_count = sum(
+        1
+        for row in jobs
+        if row.get("state") != "running"
+        and (bool(row.get("policy_parked", False)) or bool(row.get("clean_exited", False)))
+    )
+    all_non_running_stable = (
+        expected_count > 0
+        and running_count + stable_non_running_count >= expected_count
+        and missing_count == 0
+        and quarantined_count == 0
+    )
+    if phase in {"stopped", "blocked"}:
+        overall_status = phase
+    elif expected_count <= 0:
+        overall_status = "blocked"
+    elif running_count >= expected_count and exited_count == 0 and missing_count == 0 and quarantined_count == 0:
+        overall_status = "ready"
+    elif running_count > 0 and all_non_running_stable:
+        overall_status = "ready"
+    elif running_count > 0:
+        overall_status = "degraded"
+    else:
+        overall_status = "blocked"
+
+    if phase == "starting":
+        problem_jobs = [
+            row
+            for row in jobs
+            if not bool(row.get("policy_parked", False))
+            and not bool(row.get("clean_exited", False))
+            and (
+                bool(row.get("quarantined", False))
+            or (row.get("state") == "exited" and row.get("exit_code") not in {0, None})
+            )
+        ]
+    else:
+        problem_jobs = [
+            row
+            for row in jobs
+            if not bool(row.get("policy_parked", False))
+            and not bool(row.get("clean_exited", False))
+            and (row.get("state") in {"missing", "exited"} or bool(row.get("quarantined", False)))
+        ]
+    if phase == "starting":
+        repair_active = bool(problem_jobs or quarantined_count > 0)
+    else:
+        stable_non_running_jobs = bool(parked_jobs or clean_jobs)
+        repair_active = bool(
+            problem_jobs
+            or quarantined_count > 0
+            or (overall_status in {"degraded", "blocked"} and not stable_non_running_jobs)
+        )
+    repair_infrabots = [
+        {
+            **bot,
+            "assigned": True,
+            "active": repair_active,
+        }
+        for bot in SLEEVE_LAUNCHER_REPAIR_INFRABOTS
+    ]
+    repair_packet = {
+        "status": "needs_repair" if repair_active and phase not in {"stopped"} else "clear",
+        "problem_job_count": len(problem_jobs),
+        "problem_jobs": [
+            {
+                "name": str(row.get("name") or ""),
+                "state": str(row.get("state") or ""),
+                "exit_code": row.get("exit_code"),
+                "quarantined": bool(row.get("quarantined", False)),
+            }
+            for row in problem_jobs
+        ],
+        "infrabots": repair_infrabots,
+        "recommended_commands": [
+            [str(VENV_PY), "scripts/ops/process_watchdog.py", "--json"],
+            ["./scripts/ops/opsctl.sh", "post-restart-settle", "--apply", "--json"],
+            ["./scripts/ops/opsctl.sh", "storage-backpressure-autopilot", "--apply", "--json"],
+        ]
+        if repair_active and phase not in {"stopped"}
+        else [],
+        "policy": "repair_read_only_sleeve_collection_without_enabling_live_execution",
+    }
+    launcher_readiness_contract = _launcher_readiness_contract(
+        jobs=jobs,
+        problem_jobs=problem_jobs,
+        quarantined_jobs=quarantined_jobs,
+        phase=phase,
+        overall_status=overall_status,
+        repair_active=repair_active,
+        policy_parked_jobs=parked_jobs,
+        clean_exited_jobs=clean_jobs,
+    )
+    repair_packet["launcher_readiness_status"] = launcher_readiness_contract["readiness_status"]
+    repair_packet["launcher_readiness_score"] = launcher_readiness_contract["readiness_score"]
+
+    return {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "overall_status": overall_status,
+        "phase": phase,
+        "note": note,
+        "launcher_pid": os.getpid(),
+        "launcher_uptime_seconds": round(max(now - launcher_started_at, 0.0), 3),
+        "expected_job_count": expected_count,
+        "running_job_count": running_count,
+        "exited_job_count": exited_count,
+        "missing_job_count": missing_count,
+        "quarantined_job_count": quarantined_count,
+        "policy_parked_job_count": len(parked_jobs),
+        "policy_parked_jobs": sorted(parked_jobs),
+        "clean_exited_job_count": len(clean_jobs),
+        "clean_exited_jobs": sorted(clean_jobs),
+        "quarantined_jobs": quarantined_jobs,
+        "launcher_readiness_contract": launcher_readiness_contract,
+        "repair_packet": repair_packet,
+        "repair_infrabots": repair_infrabots,
+        "jobs": jobs,
+    }
+
+
+def _write_launcher_health(payload: dict[str, Any], path: Path = LAUNCHER_HEALTH_PATH) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    except Exception as exc:
+        print(f"[LauncherHealth] warning failed err={exc}")
 
 
 def _stop_processes(procs: dict[str, subprocess.Popen]) -> None:
@@ -556,6 +1022,12 @@ def main() -> int:
     parser.add_argument("--fx-context-symbols", default=os.getenv("FX_CONTEXT_SYMBOLS", DEFAULT_FX_CONTEXT_SYMBOLS))
     parser.add_argument("--restart-delay-seconds", type=int, default=int(os.getenv("ALL_SLEEVES_RESTART_DELAY", "3")))
     parser.add_argument("--max-restarts-per-hour", type=int, default=int(os.getenv("ALL_SLEEVES_MAX_RESTARTS_PER_HOUR", "40")))
+    parser.add_argument(
+        "--clean-exit-retry-seconds",
+        type=int,
+        default=int(os.getenv("ALL_SLEEVES_CLEAN_EXIT_RETRY_SECONDS", "1800")),
+        help="Retry sleeves that exit cleanly after this many seconds, usually after a session gate reopens.",
+    )
     parser.add_argument("--no-restart-on-exit", dest="restart_on_exit", action="store_false", default=True)
     parser.add_argument(
         "--strict-preflight-duplicates",
@@ -578,6 +1050,12 @@ def main() -> int:
     parser.add_argument("--workers-fx", type=int, default=int(os.getenv("SLEEVE_WORKERS_FX", "2")))
     parser.add_argument("--workers-specialized", type=int, default=int(os.getenv("SLEEVE_WORKERS_SPECIALIZED", "1")))
     parser.add_argument("--workers-aggressive", type=int, default=int(os.getenv("SLEEVE_WORKERS_AGGRESSIVE", "3")))
+    parser.add_argument(
+        "--launcher-health-seconds",
+        type=int,
+        default=int(os.getenv("ALL_SLEEVES_HEALTH_WRITE_SECONDS", "15")),
+        help="Write all-sleeves launcher health at this interval.",
+    )
 
     parser.add_argument("--disable-circuit-breakers", action="store_true")
     parser.add_argument("--breaker-one-numbers-path", default=str(PROJECT_ROOT / "exports" / "one_numbers" / "one_numbers_summary.json"))
@@ -613,6 +1091,14 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+    startup_fanout_policy = _process_fanout_policy()
+    fanout_policy_changes = _apply_process_fanout_policy_to_args(args, startup_fanout_policy)
+    if fanout_policy_changes:
+        print(
+            "[ProcessFanoutPolicy] startup_parking "
+            f"reason={startup_fanout_policy.get('reason') or 'process_fanout_guard_active'} "
+            f"disabled={','.join(fanout_policy_changes)}"
+        )
     paper_trade_lock_active = _apply_paper_trade_lock(args)
 
     storage_route = _route_storage_or_fail()
@@ -679,8 +1165,17 @@ def main() -> int:
 
     specs: dict[str, JobSpec] = {}
 
+    parent_nice = _current_nice_value()
+    print(
+        "[SleevePriority] "
+        f"parent_nice={parent_nice} "
+        f"baseline_target={args.nice_baseline} "
+        f"specialized_target={args.nice_specialized} "
+        f"aggressive_target={args.nice_aggressive}"
+    )
+
     parallel_cmd = [
-        "nice", "-n", str(args.nice_baseline),
+        *_nice_prefix_for_target(args.nice_baseline, parent_nice),
         str(VENV_PY), str(PARALLEL_SHADOWS),
         "--broker", args.broker,
         "--interval-seconds", str(max(args.parallel_interval_seconds, 5)),
@@ -699,7 +1194,7 @@ def main() -> int:
     specs["baseline_parallel"] = JobSpec("baseline_parallel", parallel_cmd, env, breaker_group="core")
 
     dividend_cmd = [
-        "nice", "-n", str(args.nice_dividend),
+        *_nice_prefix_for_target(args.nice_dividend, parent_nice),
         str(VENV_PY), str(DIVIDEND_SHADOW),
         "--broker", args.broker,
         "--interval-seconds", str(max(args.dividend_interval_seconds, 15)),
@@ -715,7 +1210,7 @@ def main() -> int:
 
     if args.with_dividend_capture:
         dividend_capture_cmd = [
-            "nice", "-n", str(args.nice_dividend_capture),
+            *_nice_prefix_for_target(args.nice_dividend_capture, parent_nice),
             str(VENV_PY), str(DIVIDEND_CAPTURE_SHADOW),
             "--broker", args.broker,
             "--interval-seconds", str(max(args.dividend_capture_interval_seconds, 15)),
@@ -730,7 +1225,7 @@ def main() -> int:
         specs["dividend_capture"] = JobSpec("dividend_capture", dividend_capture_cmd, env, breaker_group="core")
 
     bond_cmd = [
-        "nice", "-n", str(args.nice_bond),
+        *_nice_prefix_for_target(args.nice_bond, parent_nice),
         str(VENV_PY), str(BOND_SHADOW),
         "--broker", args.broker,
         "--interval-seconds", str(max(args.bond_interval_seconds, 15)),
@@ -746,7 +1241,7 @@ def main() -> int:
 
     if args.with_fx:
         fx_cmd = [
-            "nice", "-n", str(args.nice_fx),
+            *_nice_prefix_for_target(args.nice_fx, parent_nice),
             str(VENV_PY), str(FX_SHADOW),
             "--broker", "schwab",
             "--interval-seconds", str(max(args.fx_interval_seconds, 15)),
@@ -767,7 +1262,7 @@ def main() -> int:
     if args.with_specialized_sleeves:
         for profile in SPECIALIZED_SLEEVE_PROFILES:
             cmd = [
-                "nice", "-n", str(args.nice_specialized),
+                *_nice_prefix_for_target(args.nice_specialized, parent_nice),
                 str(VENV_PY), str(SPECIALIZED_SLEEVE_SHADOW),
                 "--broker", args.broker,
                 "--profile", profile,
@@ -785,7 +1280,7 @@ def main() -> int:
 
     if args.with_aggressive_modes:
         aggressive_cmd = [
-            "nice", "-n", str(args.nice_aggressive),
+            *_nice_prefix_for_target(args.nice_aggressive, parent_nice),
             str(VENV_PY), str(AGGRESSIVE_MODES),
             "--broker", args.broker,
             "--max-iterations", str(args.max_iterations),
@@ -798,7 +1293,7 @@ def main() -> int:
 
     if args.with_paper_executor:
         paper_exec_cmd = [
-            "nice", "-n", str(args.nice_baseline),
+            *_nice_prefix_for_target(args.nice_baseline, parent_nice),
             str(VENV_PY), str(EXECUTION_LANE),
             "--mode", "paper",
         ]
@@ -818,7 +1313,7 @@ def main() -> int:
 
     if args.with_live_executor:
         live_exec_cmd = [
-            "nice", "-n", str(args.nice_baseline),
+            *_nice_prefix_for_target(args.nice_baseline, parent_nice),
             str(VENV_PY), str(EXECUTION_LANE),
             "--mode", "live",
         ]
@@ -840,27 +1335,105 @@ def main() -> int:
     proc_started_at: dict[str, float] = {}
     restart_history: dict[str, list[float]] = {name: [] for name in specs}
     quarantined_jobs: dict[str, dict[str, object]] = {}
+    clean_exited_at: dict[str, float] = {}
     breaker_streaks: dict[str, int] = {"core": 0}
     group_disabled_until: dict[str, float] = {"core": 0.0}
+    parked_jobs_reported: set[str] = set()
     last_breaker_check_ts = 0.0
     breaker_path = Path(args.breaker_one_numbers_path)
     launcher_started_at = time.time()
+    last_health_write_ts = 0.0
+
+    _write_launcher_health(
+        _launcher_health_payload(
+            specs=specs,
+            procs=procs,
+            proc_started_at=proc_started_at,
+            restart_history=restart_history,
+            quarantined_jobs=quarantined_jobs,
+            launcher_started_at=launcher_started_at,
+            phase="starting",
+            note="specs_prepared",
+        )
+    )
 
     try:
-        for name, spec in specs.items():
+        for idx, (name, spec) in enumerate(specs.items(), start=1):
             procs[name] = _spawn(spec)
             proc_started_at[name] = time.time()
+            if idx == 1 or idx == len(specs) or idx % 10 == 0:
+                _write_launcher_health(
+                    _launcher_health_payload(
+                        specs=specs,
+                        procs=procs,
+                        proc_started_at=proc_started_at,
+                        restart_history=restart_history,
+                        quarantined_jobs=quarantined_jobs,
+                        launcher_started_at=launcher_started_at,
+                        phase="starting",
+                        note=f"spawned_{idx}_of_{len(specs)}",
+                    )
+                )
             time.sleep(0.8)
 
         print("All sleeves live:", ", ".join(specs.keys()))
+        _write_launcher_health(
+            _launcher_health_payload(
+                specs=specs,
+                procs=procs,
+                proc_started_at=proc_started_at,
+                restart_history=restart_history,
+                quarantined_jobs=quarantined_jobs,
+                launcher_started_at=launcher_started_at,
+                phase="running",
+                note="initial_spawn_complete",
+            )
+        )
         while True:
+            fanout_policy = _process_fanout_policy()
+            policy_parked_jobs = {
+                name
+                for name in specs
+                if _job_parked_by_fanout_policy(name, fanout_policy)
+            }
+            if not policy_parked_jobs:
+                parked_jobs_reported.clear()
+
             if _global_trading_halt_enabled():
                 print("GLOBAL_TRADING_HALT=1 detected; stopping all sleeves.")
                 _stop_processes(procs)
                 _emit_incident_snapshot("global_halt_detected", "runtime")
+                _write_launcher_health(
+                    _launcher_health_payload(
+                        specs=specs,
+                        procs=procs,
+                        proc_started_at=proc_started_at,
+                        restart_history=restart_history,
+                        quarantined_jobs=quarantined_jobs,
+                        launcher_started_at=launcher_started_at,
+                        phase="stopped",
+                        note="global_halt_detected",
+                    )
+                )
                 return 0
 
             now = time.time()
+            if (now - last_health_write_ts) >= max(int(args.launcher_health_seconds), 5):
+                last_health_write_ts = now
+                _write_launcher_health(
+                    _launcher_health_payload(
+                        specs=specs,
+                        procs=procs,
+                        proc_started_at=proc_started_at,
+                        restart_history=restart_history,
+                        quarantined_jobs=quarantined_jobs,
+                        launcher_started_at=launcher_started_at,
+                        phase="running",
+                        policy_parked_jobs=policy_parked_jobs,
+                        clean_exited_jobs=set(clean_exited_at),
+                    )
+                )
+
             if not args.disable_circuit_breakers and (now - last_breaker_check_ts) >= max(args.breaker_check_interval_seconds, 15):
                 last_breaker_check_ts = now
                 runtime_seconds = max(now - launcher_started_at, 0.0)
@@ -900,14 +1473,140 @@ def main() -> int:
                     continue
                 code = proc.poll()
                 if code is None:
+                    if name in policy_parked_jobs:
+                        if name not in parked_jobs_reported:
+                            print(f"[{name}] parking reason=process_fanout_guard_active")
+                            parked_jobs_reported.add(name)
+                        proc.terminate()
+                        _write_launcher_health(
+                            _launcher_health_payload(
+                                specs=specs,
+                                procs=procs,
+                                proc_started_at=proc_started_at,
+                                restart_history=restart_history,
+                                quarantined_jobs=quarantined_jobs,
+                                launcher_started_at=launcher_started_at,
+                                phase="running",
+                                note=f"policy_parked_{name}",
+                                policy_parked_jobs=policy_parked_jobs,
+                                clean_exited_jobs=set(clean_exited_at),
+                            )
+                        )
+                        continue
                     stale, reason = _job_heartbeat_stale(specs[name], started_at=proc_started_at.get(name, 0.0))
                     if stale:
                         print(f"[{name}] heartbeat_stale reason={reason}; recycling child")
                         _emit_incident_snapshot("execution_lane_heartbeat_stale", f"{name}:{reason}")
                         proc.terminate()
+                        _write_launcher_health(
+                            _launcher_health_payload(
+                                specs=specs,
+                                procs=procs,
+                                proc_started_at=proc_started_at,
+                                restart_history=restart_history,
+                                quarantined_jobs=quarantined_jobs,
+                                launcher_started_at=launcher_started_at,
+                                phase="running",
+                                note=f"repair_recycle_{name}:{reason}",
+                                policy_parked_jobs=policy_parked_jobs,
+                                clean_exited_jobs=set(clean_exited_at),
+                            )
+                        )
+                    continue
+
+                if name in clean_exited_at:
+                    retry_after = clean_exited_at[name] + max(int(args.clean_exit_retry_seconds), 60)
+                    if time.time() < retry_after:
+                        continue
+                    clean_exited_at.pop(name, None)
+                    if not _within_restart_budget(restart_history[name], args.max_restarts_per_hour):
+                        _emit_incident_snapshot("restart_budget_exceeded", f"{name}:{args.max_restarts_per_hour}")
+                        quarantined_jobs[name] = {
+                            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                            "reason": "restart_budget_exceeded_after_clean_exit",
+                            "last_exit_code": int(code),
+                            "max_restarts_per_hour": int(args.max_restarts_per_hour),
+                        }
+                        procs.pop(name, None)
+                        print(
+                            f"[{name}] quarantined reason=restart_budget_exceeded_after_clean_exit "
+                            f"budget={args.max_restarts_per_hour}/hour parent=continuing"
+                        )
+                        _write_launcher_health(
+                            _launcher_health_payload(
+                                specs=specs,
+                                procs=procs,
+                                proc_started_at=proc_started_at,
+                                restart_history=restart_history,
+                                quarantined_jobs=quarantined_jobs,
+                                launcher_started_at=launcher_started_at,
+                                phase="running",
+                                note=f"repair_quarantine_{name}",
+                                policy_parked_jobs=policy_parked_jobs,
+                                clean_exited_jobs=set(clean_exited_at),
+                            )
+                        )
+                        continue
+                    restart_history[name].append(time.time())
+                    procs[name] = _spawn(specs[name])
+                    proc_started_at[name] = time.time()
+                    print(f"[{name}] clean_exit_retry restart_count_last_hour={len(restart_history[name])}")
+                    _write_launcher_health(
+                        _launcher_health_payload(
+                            specs=specs,
+                            procs=procs,
+                            proc_started_at=proc_started_at,
+                            restart_history=restart_history,
+                            quarantined_jobs=quarantined_jobs,
+                            launcher_started_at=launcher_started_at,
+                            phase="running",
+                            note=f"clean_exit_retry_{name}",
+                            policy_parked_jobs=policy_parked_jobs,
+                            clean_exited_jobs=set(clean_exited_at),
+                        )
+                    )
                     continue
 
                 print(f"[{name}] exited code={code}")
+                if name in policy_parked_jobs:
+                    if name not in parked_jobs_reported:
+                        print(f"[{name}] restart_parked reason=process_fanout_guard_active")
+                        parked_jobs_reported.add(name)
+                    _write_launcher_health(
+                        _launcher_health_payload(
+                            specs=specs,
+                            procs=procs,
+                            proc_started_at=proc_started_at,
+                            restart_history=restart_history,
+                            quarantined_jobs=quarantined_jobs,
+                            launcher_started_at=launcher_started_at,
+                            phase="running",
+                            note=f"policy_parked_{name}",
+                            policy_parked_jobs=policy_parked_jobs,
+                            clean_exited_jobs=set(clean_exited_at),
+                        )
+                    )
+                    continue
+                if code == 0:
+                    clean_exited_at[name] = time.time()
+                    print(
+                        f"[{name}] clean_exit_parked retry_seconds={max(int(args.clean_exit_retry_seconds), 60)}"
+                    )
+                    _write_launcher_health(
+                        _launcher_health_payload(
+                            specs=specs,
+                            procs=procs,
+                            proc_started_at=proc_started_at,
+                            restart_history=restart_history,
+                            quarantined_jobs=quarantined_jobs,
+                            launcher_started_at=launcher_started_at,
+                            phase="running",
+                            note=f"clean_exit_parked_{name}",
+                            policy_parked_jobs=policy_parked_jobs,
+                            clean_exited_jobs=set(clean_exited_at),
+                        )
+                    )
+                    continue
                 if not args.restart_on_exit:
                     _stop_processes(procs)
                     _emit_incident_snapshot("sleeve_exit_no_restart", f"{name}:{code}")
@@ -934,6 +1633,20 @@ def main() -> int:
                         f"[{name}] quarantined reason=restart_budget_exceeded "
                         f"budget={args.max_restarts_per_hour}/hour parent=continuing"
                     )
+                    _write_launcher_health(
+                        _launcher_health_payload(
+                            specs=specs,
+                            procs=procs,
+                            proc_started_at=proc_started_at,
+                            restart_history=restart_history,
+                            quarantined_jobs=quarantined_jobs,
+                            launcher_started_at=launcher_started_at,
+                            phase="running",
+                            note=f"repair_quarantine_{name}",
+                            policy_parked_jobs=policy_parked_jobs,
+                            clean_exited_jobs=set(clean_exited_at),
+                        )
+                    )
                     continue
 
                 time.sleep(max(args.restart_delay_seconds, 1))
@@ -941,11 +1654,37 @@ def main() -> int:
                 procs[name] = _spawn(specs[name])
                 proc_started_at[name] = time.time()
                 print(f"[{name}] restart_count_last_hour={len(restart_history[name])}")
+                _write_launcher_health(
+                    _launcher_health_payload(
+                        specs=specs,
+                        procs=procs,
+                        proc_started_at=proc_started_at,
+                        restart_history=restart_history,
+                        quarantined_jobs=quarantined_jobs,
+                        launcher_started_at=launcher_started_at,
+                        phase="running",
+                        note=f"repair_restarted_{name}",
+                        policy_parked_jobs=policy_parked_jobs,
+                        clean_exited_jobs=set(clean_exited_at),
+                    )
+                )
 
             time.sleep(1.0)
     except KeyboardInterrupt:
         print("Stopping all sleeves...")
         _stop_processes(procs)
+        _write_launcher_health(
+            _launcher_health_payload(
+                specs=specs,
+                procs=procs,
+                proc_started_at=proc_started_at,
+                restart_history=restart_history,
+                quarantined_jobs=quarantined_jobs,
+                launcher_started_at=launcher_started_at,
+                phase="stopped",
+                note="keyboard_interrupt",
+            )
+        )
         return 0
 
 

@@ -1,0 +1,619 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from time import time
+from typing import Any
+
+if __package__ in {None, ""}:
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, write_payload
+else:
+    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, write_payload
+
+
+DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "system_needs_intelligence_latest.json"
+DEFAULT_LOG_PATH = PROJECT_ROOT / "governance" / "health" / "system_needs_fix_log.jsonl"
+LOW_GRADE_VALUES = {"D", "F"}
+LOW_GRADE_AUDIT_EXCLUDED_FILES = {
+    "system_needs_intelligence_latest.json",
+}
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except Exception:
+        return int(default)
+
+
+def _command(value: Any) -> list[Any]:
+    return list(value) if isinstance(value, list) else []
+
+
+def _is_grade_field(key: str) -> bool:
+    lowered = str(key or "").lower()
+    return "grade" in lowered
+
+
+def _low_grade_command(source_file: str, json_path: str) -> list[Any]:
+    text = f"{source_file} {json_path}".lower()
+    if "quant_strategy_storage_backlog_accommodation" in text:
+        return ["./scripts/ops/opsctl.sh", "quant-storage-backlog-accommodation", "--apply", "--json"]
+    if "paper_profitability" in text or "profit_harvest" in text or "profit_grade" in text:
+        return ["./scripts/ops/opsctl.sh", "paper-profitability-control", "--apply", "--json"]
+    if "system_self_intelligence" in text or "codex_handoff" in text or "whole_system_intelligence" in text:
+        return ["./scripts/ops/opsctl.sh", "system-intelligence", "--apply", "--json"]
+    if "quant_strategy_gap" in text:
+        return ["./scripts/ops/opsctl.sh", "quant-strategy-gap", "--apply", "--json"]
+    if "backlog" in text or "storage" in text or "ingestion" in text:
+        return ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"]
+    return ["./scripts/ops/opsctl.sh", "grade-regression-guard", "--json"]
+
+
+def _low_grade_category(source_file: str, json_path: str) -> str:
+    text = f"{source_file} {json_path}".lower()
+    if "base_raw" in text:
+        return "base_evidence_grade"
+    if "profit_grade" in text:
+        if "contained" in text:
+            return "contained_profit_grade"
+        if "probationary" in text:
+            return "probationary_profit_grade"
+        return "profile_profit_grade"
+    if "self_awareness" in text or "awareness_state_vector" in text:
+        return "self_awareness_grade"
+    if "backlog_letter_grade" in text:
+        return "backlog_accommodation_snapshot"
+    return "low_grade_layer"
+
+
+def _low_grade_expected_impact(category: str) -> tuple[str, str]:
+    if category == "base_evidence_grade":
+        return (
+            "Keeps the base/raw grade visible and routes the subsystem toward real outcome improvement instead of only control-credit improvement.",
+            "base/raw grade is C or better and the headline/control grade no longer depends on rescue credit.",
+        )
+    if category in {"contained_profit_grade", "probationary_profit_grade", "profile_profit_grade"}:
+        return (
+            "Repairs or deweights weak paper profiles using hard-negative labels, tighter entries/exits, and fresh paper evidence.",
+            "profile profit grade is C or better, or the profile is explicitly quarantined/probationary with no active new-entry path.",
+        )
+    if category == "self_awareness_grade":
+        return (
+            "Refreshes stale self-awareness surfaces so the handoff stops reasoning from old artifacts.",
+            "system_self_intelligence.awareness_state_vector.grade is C or better with stale/blind-spot count reduced.",
+        )
+    if category == "backlog_accommodation_snapshot":
+        return (
+            "Refreshes the stale quant/backlog accommodation snapshot against current storage truth.",
+            "backlog accommodation snapshot is current and backlog_letter_grade is C or better.",
+        )
+    return (
+        "Refreshes the owning health surface and keeps the low grade visible for targeted repair.",
+        "the same JSON path no longer reports D/F.",
+    )
+
+
+def _skip_low_grade_path(json_path: str) -> bool:
+    lowered = str(json_path or "").lower()
+    return bool(
+        lowered.startswith("remaining_low_grade_layers.")
+        or ".remaining_low_grade_layers." in lowered
+        or lowered.startswith("low_grade_layer_summary.")
+        or ".low_grade_layer_summary." in lowered
+        or lowered.startswith("low_grade_control_report_card.")
+        or ".low_grade_control_report_card." in lowered
+    )
+
+
+def _canonical_low_grade_key(source_file: str, json_path: str, grade: str, category: str) -> tuple[str, str, str]:
+    parts = str(json_path or "").split(".")
+    if category == "profile_profit_grade":
+        for marker in ("active_profile_controls", "profile_controls"):
+            if marker in parts:
+                idx = parts.index(marker)
+                if idx + 1 < len(parts):
+                    return (category, f"profile_profit_grade.{parts[idx + 1]}", grade)
+    if category in {"contained_profit_grade", "probationary_profit_grade"}:
+        return (category, json_path, grade)
+    if category == "self_awareness_grade":
+        return (category, "system_self_awareness.grade", grade)
+    if category == "base_evidence_grade" and "base_raw_outcome_grade" in str(json_path):
+        return (category, "profit_harvest_report_card.base_raw_outcome_grade", grade)
+    if category == "backlog_accommodation_snapshot":
+        return (category, "quant_strategy_storage_backlog_accommodation.storage_snapshot.backlog_letter_grade", grade)
+    return (category, f"{source_file}:{json_path}", grade)
+
+
+def _low_grade_control_context(health: Path) -> dict[str, Any]:
+    paper = load_json(health / "paper_profitability_control_latest.json")
+    self_intelligence = load_json(health / "system_self_intelligence_latest.json")
+    non_blocking_profiles = {
+        str(row.get("profile") or "")
+        for row in _as_list(_as_dict(paper).get("remaining_low_grade_layers"))
+        if isinstance(row, dict) and str(row.get("profile") or "") and not bool(row.get("active_blocker", False))
+    }
+    return {
+        "paper_control_posture_grade": str(
+            _as_dict(_as_dict(paper).get("low_grade_control_report_card")).get("control_posture_grade")
+            or _as_dict(_as_dict(paper).get("low_grade_layer_summary")).get("control_posture_grade")
+            or ""
+        ).upper(),
+        "paper_active_blocker_count": _safe_int(
+            _as_dict(_as_dict(paper).get("low_grade_layer_summary")).get("active_blocker_count"),
+            _safe_int(_as_dict(_as_dict(paper).get("low_grade_control_report_card")).get("active_blocker_count"), 999),
+        ),
+        "paper_non_blocking_profiles": non_blocking_profiles,
+        "self_awareness_control_posture_grade": str(
+            _as_dict(_as_dict(self_intelligence).get("awareness_state_vector")).get("control_posture_grade")
+            or _as_dict(_as_dict(self_intelligence).get("awareness_state_vector")).get("control_grade")
+            or ""
+        ).upper(),
+    }
+
+
+def _profile_from_canonical_path(canonical_path: str) -> str:
+    prefix = "profile_profit_grade."
+    text = str(canonical_path or "")
+    return text[len(prefix) :] if text.startswith(prefix) else ""
+
+
+def _low_grade_control_state(row: dict[str, Any], context: dict[str, Any]) -> tuple[str, bool]:
+    category = str(row.get("category") or "")
+    canonical_path = str(row.get("canonical_json_path") or "")
+    if bool(row.get("stale_artifact", False)):
+        return ("stale_artifact_not_current", False)
+    if category in {"contained_profit_grade", "probationary_profit_grade"}:
+        return ("contained_or_probationary", False)
+    if category == "profile_profit_grade" and _profile_from_canonical_path(canonical_path) in set(
+        context.get("paper_non_blocking_profiles") or set()
+    ):
+        return ("contained_by_paper_profitability_control", False)
+    if (
+        category == "base_evidence_grade"
+        and canonical_path == "profit_harvest_report_card.base_raw_outcome_grade"
+        and _safe_int(context.get("paper_active_blocker_count"), 999) == 0
+        and str(context.get("paper_control_posture_grade") or "") in {"A+", "A++"}
+    ):
+        return ("raw_harvest_evidence_under_a_plus_control", False)
+    if category == "self_awareness_grade" and str(context.get("self_awareness_control_posture_grade") or "") in {"A+", "A++"}:
+        return ("self_awareness_under_a_plus_control", False)
+    return ("actionable_low_grade_blocker", True)
+
+
+def _low_grade_audit_control_grade(active_blocker_count: int) -> str:
+    if active_blocker_count <= 0:
+        return "A+"
+    if active_blocker_count <= 2:
+        return "B"
+    if active_blocker_count <= 5:
+        return "C"
+    return "D"
+
+
+def _iter_low_grade_fields(payload: Any, path: list[str]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            next_path = [*path, str(key)]
+            if isinstance(value, str) and value.strip().upper() in LOW_GRADE_VALUES and _is_grade_field(str(key)):
+                rows.append((".".join(next_path), value.strip().upper()))
+            rows.extend(_iter_low_grade_fields(value, next_path))
+    elif isinstance(payload, list):
+        for index, value in enumerate(payload):
+            rows.extend(_iter_low_grade_fields(value, [*path, str(index)]))
+    return rows
+
+
+def _low_grade_layer_audit(project_root: Path) -> dict[str, Any]:
+    health = project_root / "governance" / "health"
+    control_context = _low_grade_control_context(health)
+    hits: list[dict[str, Any]] = []
+    duplicate_sources: dict[tuple[str, str, str], int] = {}
+    canonical: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for path in sorted(health.glob("*latest*.json")):
+        if path.name in LOW_GRADE_AUDIT_EXCLUDED_FILES:
+            continue
+        try:
+            artifact_age_hours = max(0.0, (time() - path.stat().st_mtime) / 3600.0)
+        except Exception:
+            artifact_age_hours = 0.0
+        stale_artifact = artifact_age_hours >= 24.0
+        payload = load_json(path)
+        if not payload:
+            continue
+        for json_path, grade in _iter_low_grade_fields(payload, []):
+            if _skip_low_grade_path(json_path):
+                continue
+            category = _low_grade_category(path.name, json_path)
+            expected_impact, stop_when = _low_grade_expected_impact(category)
+            command = _low_grade_command(path.name, json_path)
+            key = _canonical_low_grade_key(path.name, json_path, grade, category)
+            duplicate_sources[key] = duplicate_sources.get(key, 0) + 1
+            if key not in canonical:
+                canonical[key] = {
+                    "layer_id": f"{key[0]}:{key[1]}",
+                    "category": category,
+                    "current_grade": grade,
+                    "exact_file": str(path.relative_to(project_root)),
+                    "exact_json_path": json_path,
+                    "canonical_json_path": key[1],
+                    "artifact_age_hours": round(float(artifact_age_hours), 3),
+                    "stale_artifact": bool(stale_artifact),
+                    "command": command,
+                    "expected_impact": expected_impact,
+                    "risk_level": "low",
+                    "when_to_stop": stop_when,
+                    "source": "low_grade_layer_audit",
+                }
+            hits.append({"file": str(path.relative_to(project_root)), "json_path": json_path, "grade": grade, "category": category})
+    layers = list(canonical.values())
+    for row in layers:
+        key = (str(row.get("category") or ""), str(row.get("canonical_json_path") or ""), str(row.get("current_grade") or ""))
+        row["duplicate_surface_count"] = duplicate_sources.get(key, 1)
+        control_state, active_blocker = _low_grade_control_state(row, control_context)
+        row["control_state"] = control_state
+        row["active_blocker"] = bool(active_blocker)
+    layers.sort(
+        key=lambda row: (
+            0 if bool(row.get("active_blocker", False)) else 1,
+            1 if bool(row.get("stale_artifact", False)) else 0,
+            0 if str(row.get("category") or "") in {"base_evidence_grade", "self_awareness_grade", "backlog_accommodation_snapshot"} else 1,
+            str(row.get("category") or ""),
+            str(row.get("exact_file") or ""),
+            str(row.get("exact_json_path") or ""),
+        )
+    )
+    by_category: dict[str, int] = {}
+    for row in layers:
+        category = str(row.get("category") or "low_grade_layer")
+        by_category[category] = by_category.get(category, 0) + 1
+    active_blocker_count = sum(1 for row in layers if bool(row.get("active_blocker", False)))
+    stale_artifact_count = sum(1 for row in layers if bool(row.get("stale_artifact", False)))
+    contained_or_controlled_count = sum(1 for row in layers if not bool(row.get("active_blocker", False)))
+    next_commands: list[list[Any]] = []
+    seen_commands: set[tuple[str, ...]] = set()
+    for row in [row for row in layers if bool(row.get("active_blocker", False))] or layers:
+        command = _command(row.get("command"))
+        key = tuple(str(part) for part in command)
+        if command and key not in seen_commands:
+            seen_commands.add(key)
+            next_commands.append(command)
+    return {
+        "active": bool(layers),
+        "raw_hit_count": len(hits),
+        "unique_low_grade_layer_count": len(layers),
+        "active_blocker_count": active_blocker_count,
+        "actionable_low_grade_layer_count": active_blocker_count,
+        "contained_or_controlled_count": contained_or_controlled_count,
+        "stale_artifact_count": stale_artifact_count,
+        "control_posture_grade": _low_grade_audit_control_grade(active_blocker_count),
+        "control_posture_status": "a_plus_control_ready" if active_blocker_count == 0 else "actionable_low_grade_blockers",
+        "by_category": by_category,
+        "layers": layers,
+        "actionable_layers": [row for row in layers if bool(row.get("active_blocker", False))],
+        "next_commands": next_commands,
+        "reporting_rule": "D/F grade-like fields are surfaced here even when a headline/control grade is higher; control_posture_grade grades whether those D/F layers are current blockers.",
+    }
+
+
+def _need_from_low_grade_audit(audit: dict[str, Any]) -> list[dict[str, Any]]:
+    if _safe_int(audit.get("active_blocker_count"), 0) <= 0:
+        return []
+    layers = _as_list(audit.get("actionable_layers")) or _as_list(audit.get("layers"))
+    if not layers:
+        return []
+    top = layers[0] if isinstance(layers[0], dict) else {}
+    return [
+        {
+            "blocker": "low_grade_layers_still_present",
+            "exact_file": top.get("exact_file", "governance/health"),
+            "exact_shard": top.get("exact_json_path", ""),
+            "command": _command(top.get("command")),
+            "expected_impact": (
+                f"Surfaces and starts the first repair path for {audit.get('unique_low_grade_layer_count', 0)} "
+                "remaining D/F grade layers instead of hiding them behind headline grades."
+            ),
+            "risk_level": "low",
+            "when_to_stop": "low_grade_layer_audit.unique_low_grade_layer_count is 0, or every remaining low grade is marked contained/probationary with an explicit repair path.",
+            "source": "low_grade_layer_audit",
+            "low_grade_layer_count": _safe_int(audit.get("unique_low_grade_layer_count"), 0),
+            "low_grade_categories": _as_dict(audit.get("by_category")),
+        }
+    ]
+
+
+def _load_fix_log(path: Path, limit: int = 20) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    for raw in lines[-limit:]:
+        try:
+            item = json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(item, dict):
+            rows.append(item)
+    return rows
+
+
+def _append_fix_log(path: Path, entry: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=True) + "\n")
+
+
+def _need_from_governor(governor: dict[str, Any]) -> list[dict[str, Any]]:
+    needs = _as_list(_as_dict(governor.get("what_do_you_need")).get("items"))
+    out: list[dict[str, Any]] = []
+    for item in needs:
+        if not isinstance(item, dict):
+            continue
+        out.append(
+            {
+                "blocker": item.get("blocker", "unknown"),
+                "exact_file": item.get("exact_file", ""),
+                "exact_shard": item.get("exact_shard", ""),
+                "command": item.get("command", []),
+                "expected_impact": item.get("expected_impact", ""),
+                "risk_level": item.get("risk_level", "unknown"),
+                "when_to_stop": item.get("stop_when", ""),
+                "source": "autonomic_resource_governor",
+            }
+        )
+    return out
+
+
+def _need_from_storage(storage: dict[str, Any]) -> list[dict[str, Any]]:
+    needs: list[dict[str, Any]] = []
+    backpressure = _as_dict(storage.get("backpressure"))
+    stale = _as_dict(storage.get("stale_pending_locator"))
+    oldest = _as_list(stale.get("oldest_sources"))
+    core = _safe_int(backpressure.get("core_pending_lines"), 0)
+    target = _safe_int(backpressure.get("pending_lines_threshold"), 5000) or 5000
+    if core > target and not oldest:
+        needs.append(
+            {
+                "blocker": "core_backlog_above_target_without_source_locator",
+                "exact_file": "governance/health/ingestion_storage_control_latest.json",
+                "exact_shard": "",
+                "command": ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"],
+                "expected_impact": "Refreshes truth reconciliation and stale pending source locator.",
+                "risk_level": "none",
+                "when_to_stop": "stale_pending_locator has oldest_sources or core backlog is under target.",
+                "source": "ingestion_storage_control",
+            }
+        )
+    return needs
+
+
+def _need_from_memory(memory: dict[str, Any]) -> list[dict[str, Any]]:
+    needs = _as_list(_as_dict(memory.get("what_do_you_need")).get("items"))
+    out: list[dict[str, Any]] = []
+    for item in needs:
+        if not isinstance(item, dict):
+            continue
+        out.append(
+            {
+                "blocker": item.get("blocker", "unknown"),
+                "exact_file": item.get("exact_file", ""),
+                "exact_shard": item.get("exact_shard", ""),
+                "command": item.get("command", []),
+                "expected_impact": item.get("expected_impact", ""),
+                "risk_level": item.get("risk_level", "unknown"),
+                "when_to_stop": item.get("stop_when", ""),
+                "source": "memory_pressure_intelligence",
+            }
+        )
+    return out
+
+
+def _need_from_training_runtime(training_runtime: dict[str, Any]) -> list[dict[str, Any]]:
+    contract = _as_dict(training_runtime.get("training_launch_contract"))
+    blockers = [str(item or "").strip() for item in _as_list(contract.get("launch_blockers")) if str(item or "").strip()]
+    if bool(contract.get("launch_allowed", False)) or not blockers:
+        return []
+    prep_commands = [_command(item) for item in _as_list(contract.get("recommended_prep_commands"))]
+    quota_gate = _as_dict(contract.get("storage_quota_training_gate"))
+    blocked_quota_families = [str(item or "").strip() for item in _as_list(quota_gate.get("blocked_families")) if str(item or "").strip()]
+
+    def command_for(blocker: str) -> list[Any]:
+        token = ""
+        if "storage_quota" in blocker:
+            if "governance_telemetry" in blocked_quota_families:
+                return ["./scripts/ops/opsctl.sh", "governance-telemetry-compactor", "--apply", "--json"]
+            token = "storage-quota-guard"
+        elif "writer" in blocker or "drain" in blocker:
+            token = "writer-cycle-coordinator"
+        elif "memory" in blocker or "headroom" in blocker or "multitasking" in blocker:
+            token = "memory-pressure-intelligence"
+        elif "runtime_snapshot" in blocker:
+            token = "runtime-training-snapshot"
+        for command in prep_commands:
+            if token and token in " ".join(str(part) for part in command):
+                return command
+        if prep_commands:
+            return prep_commands[0]
+        return ["./scripts/ops/opsctl.sh", "training-runtime-control", "--limit", str(_safe_int(contract.get("requested_batch_size"), 20) or 20), "--json"]
+
+    needs: list[dict[str, Any]] = []
+    for blocker in blockers[:4]:
+        if "storage_quota" in blocker:
+            expected = "Refreshes storage quota truth and keeps batch training gated until hard-breached families are below quota."
+            if "governance_telemetry" in blocked_quota_families:
+                expected = "Rotates oversized governance channel telemetry out of the hot quota lane, then lets batch training recheck storage quota truth."
+            stop = "storage_quota_training_gate.status is ready and storage_quota_hard_breach is gone from launch_blockers."
+        else:
+            expected = "Refreshes the training launch contract and clears the next prep step before widening retrains."
+            stop = "training_launch_contract.launch_allowed is true or the blocker list changes."
+        needs.append(
+            {
+                "blocker": f"training_runtime_{blocker}",
+                "exact_file": "governance/health/training_runtime_control_latest.json",
+                "exact_shard": "",
+                "command": command_for(blocker),
+                "expected_impact": expected,
+                "risk_level": "low",
+                "when_to_stop": stop,
+                "source": "training_runtime_control",
+            }
+        )
+    return needs
+
+
+def _ready_actions_from_training_runtime(training_runtime: dict[str, Any]) -> list[dict[str, Any]]:
+    contract = _as_dict(training_runtime.get("training_launch_contract"))
+    if not bool(contract.get("launch_allowed", False)):
+        return []
+    command = _command(contract.get("recommended_retrain_command"))
+    if not command:
+        return []
+    host_gate = _as_dict(contract.get("host_training_headroom_gate"))
+    batch_size = _safe_int(contract.get("recommended_batch_size"), 0)
+    profile = str(host_gate.get("selected_training_profile") or host_gate.get("governor_profile") or "")
+    batch20_mode = str(host_gate.get("batch20_execution_mode") or "")
+    wave_size = _safe_int(host_gate.get("batch20_wave_size"), 0)
+    quality_recovery = bool(contract.get("training_quality_recovery_canary", False))
+    expected = f"Runs the guarded {batch_size}-bot retrain batch under {profile or 'the selected canary profile'}."
+    if quality_recovery:
+        expected += " This is a quality-recovery canary with master promotion skipped."
+    if batch20_mode == "sequential_memory_guarded_waves" and wave_size > 0:
+        expected += f" Batch-20 is executed as sequential memory-guarded waves of {wave_size}."
+    return [
+        {
+            "action": "run_guarded_training_batch",
+            "exact_file": "governance/health/training_runtime_control_latest.json",
+            "command": command,
+            "expected_impact": expected,
+            "risk_level": "medium" if batch_size >= 20 else "low",
+            "when_to_stop": "stop if memory pressure rises, thermal guard trips, or any target fails outside the recovery canary guard.",
+            "source": "training_runtime_control",
+            "batch_size": batch_size,
+            "profile": profile,
+            "batch20_execution_mode": batch20_mode,
+            "batch20_wave_size": wave_size,
+            "quality_recovery_canary": quality_recovery,
+        }
+    ]
+
+
+def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEFAULT_LOG_PATH) -> dict[str, Any]:
+    health = project_root / "governance" / "health"
+    governor = load_json(health / "autonomic_resource_governor_latest.json")
+    storage = load_json(health / "ingestion_storage_control_latest.json")
+    writer = load_json(health / "writer_cycle_coordinator_latest.json")
+    runtime = load_json(health / "runtime_throttle_control_latest.json")
+    benchmark = load_json(health / "host_self_benchmark_latest.json")
+    migration = load_json(health / "migration_readiness_report_latest.json")
+    memory = load_json(health / "memory_pressure_intelligence_latest.json")
+    training_runtime = load_json(health / "training_runtime_control_latest.json")
+    low_grade_audit = _low_grade_layer_audit(project_root)
+    needs = [
+        *_need_from_governor(governor),
+        *_need_from_memory(memory),
+        *_need_from_storage(storage),
+        *_need_from_training_runtime(training_runtime),
+        *_need_from_low_grade_audit(low_grade_audit),
+    ]
+    ready_actions = _ready_actions_from_training_runtime(training_runtime)
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in needs:
+        key = (str(item.get("blocker")), str(item.get("exact_file")), str(item.get("exact_shard")))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return {
+        "timestamp_utc": iso_now(),
+        "schema_version": 1,
+        "ok": True,
+        "overall_status": "needs_action" if deduped else "ready",
+        "what_do_you_need": deduped,
+        "next_command": deduped[0]["command"] if deduped else [],
+        "ready_actions": ready_actions,
+        "next_ready_command": ready_actions[0]["command"] if ready_actions else [],
+        "frames_of_reference": {
+            "latest_writer_effectiveness": _as_dict(writer.get("drain_effectiveness")),
+            "latest_benchmark_limits": _as_dict(benchmark.get("self_tuned_limits")),
+            "backlog_green_gate": _as_dict(governor.get("backlog_green_gate")),
+            "backlog_trend": _as_dict(governor.get("backlog_trend")),
+            "stability_state": _as_dict(governor.get("stability_state")),
+            "adaptive_controls": _as_dict(governor.get("adaptive_controls")),
+            "runtime_pressure_source": _as_dict(governor.get("runtime_pressure_source")),
+            "host_pressure_attribution": _as_dict(runtime.get("host_pressure_attribution")),
+            "memory_pressure_intelligence": {
+                "classification": _as_dict(memory.get("classification")),
+                "trend": _as_dict(memory.get("trend")),
+                "reopen_gate": _as_dict(memory.get("reopen_gate")),
+                "multitasking_headroom": _as_dict(memory.get("multitasking_headroom")),
+                "observer_overhead": _as_dict(memory.get("observer_overhead")),
+            },
+            "training_runtime_control": {
+                "overall_status": str(training_runtime.get("overall_status") or ""),
+                "launch_contract": _as_dict(training_runtime.get("training_launch_contract")),
+                "host_training_headroom_gate": _as_dict(_as_dict(training_runtime.get("training_launch_contract")).get("host_training_headroom_gate")),
+                "bot_needs": _as_dict(training_runtime.get("bot_needs")),
+            },
+            "low_grade_layer_audit": low_grade_audit,
+            "operator_action_packet": _as_dict(governor.get("operator_action_packet")),
+            "migration_binder": _as_dict(migration.get("migration_binder")),
+            "recent_fix_log": _load_fix_log(fix_log_path),
+        },
+        "contract": {
+            "always_include_exact_blocker": True,
+            "always_include_exact_file_or_shard_when_known": True,
+            "always_include_expected_impact_risk_and_stop_rule": True,
+            "include_ready_actions_when_no_blockers_exist": True,
+            "include_remaining_low_grade_layers": True,
+            "fixes_logged_to": str(fix_log_path),
+            "protected_volumes": ["/Volumes/VIDEO"],
+        },
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Explain exactly what the system needs next and preserve fix frames of reference.")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--out", default=str(DEFAULT_OUT_PATH))
+    parser.add_argument("--fix-log", default=str(DEFAULT_LOG_PATH))
+    parser.add_argument("--log-fix", default="")
+    parser.add_argument("--fix-result", default="")
+    args = parser.parse_args()
+    fix_log_path = Path(args.fix_log)
+    if args.log_fix:
+        _append_fix_log(
+            fix_log_path,
+            {
+                "timestamp_utc": iso_now(),
+                "fix": args.log_fix,
+                "result": args.fix_result,
+            },
+        )
+    payload = build_payload(PROJECT_ROOT, fix_log_path=fix_log_path)
+    write_payload(Path(args.out), payload)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=True))
+    else:
+        print(f"system_needs_intelligence status={payload['overall_status']} needs={len(payload['what_do_you_need'])}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

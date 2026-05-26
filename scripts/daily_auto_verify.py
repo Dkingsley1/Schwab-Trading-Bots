@@ -416,9 +416,13 @@ def _run_check(
 
 
 def _timeout_for_check(name: str, slow_timeout_sec: int) -> int:
+    if name == "replay_preopen_sanity":
+        return min(
+            int(slow_timeout_sec),
+            max(int(os.getenv("DAILY_AUTO_VERIFY_REPLAY_SANITY_TIMEOUT_SEC", "45")), 5),
+        )
     slow_names = {
         "daily_runtime_summary",
-        "replay_preopen_sanity",
         "snapshot_coverage_sentinel",
         "guardrail_triprate_sentinel",
         "execution_queue_stress_bot",

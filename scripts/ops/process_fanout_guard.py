@@ -27,13 +27,29 @@ DEFAULT_STATE_PATH = PROJECT_ROOT / "governance" / "health" / "process_fanout_gu
 DEFAULT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.process_fanout_guard_override"
 DEFAULT_PROJECT_MARKER = str(PROJECT_ROOT)
 TARGETABLE_MARKERS = (
+    "scripts/replay_preopen_sanity_check.py",
     "scripts/run_shadow_training_loop.py",
     "scripts/run_specialized_sleeve_shadow.py",
     "scripts/run_parallel_aggressive_modes.py",
     "scripts/run_parallel_shadows.py",
-    "scripts/run_all_sleeves.py",
+)
+ORPHAN_CLEANUP_MARKERS = (
+    "scripts/replay_preopen_sanity_check.py",
+    "scripts/resource_guard.py",
+    "scripts/session_ready_check.py",
+    "scripts/data_source_divergence_bot.py",
+    "scripts/guardrail_triprate_sentinel.py",
+    "scripts/execution_queue_stress_bot.py",
+    "scripts/preopen_replay_drift_bot.py",
+    "scripts/snapshot_coverage_sentinel.py",
+    "scripts/canary_diagnostics_loop.py",
+    "scripts/collect_market_crypto_correlation_context.py",
+    "scripts/collect_dividend_drip_state.py",
+    "scripts/ops/canary_auto_tuner.py",
+    "scripts/ops/storage_failback_sync.py",
 )
 PROTECTED_MARKERS = (
+    "scripts/run_all_sleeves.py",
     "scripts/run_execution_lane.py",
     "scripts/ops/process_fanout_guard.py",
     "scripts/ops/process_watchdog.py",
@@ -159,6 +175,10 @@ def _is_protected(row: ProcRow, keep_profiles: set[str]) -> bool:
     command = row.command
     if any(marker in command for marker in PROTECTED_MARKERS):
         return True
+    if any(marker in command for marker in PRESSURE_CORE_SLEEVE_MARKERS):
+        return True
+    if "scripts/run_shadow_training_loop.py" in command and _broker(command) == "schwab" and _profile(command) in PRESSURE_CORE_PROFILES:
+        return True
     if _env_flag("PROCESS_FANOUT_GUARD_CORE_SLEEVE_RESTART_ALLOWED", "0"):
         if any(marker in command for marker in PRESSURE_CORE_SLEEVE_MARKERS):
             return True
@@ -178,9 +198,35 @@ def _is_targetable(row: ProcRow, keep_profiles: set[str]) -> bool:
     return any(marker in row.command for marker in TARGETABLE_MARKERS)
 
 
+def _is_orphaned(row: ProcRow, live_pids: set[int], *, grace_seconds: int) -> bool:
+    if row.ppid <= 1:
+        return True
+    if row.ppid not in live_pids and row.etimes >= max(int(grace_seconds), 0):
+        return True
+    return False
+
+
+def _is_orphan_cleanup_candidate(
+    row: ProcRow,
+    live_pids: set[int],
+    keep_profiles: set[str],
+    *,
+    grace_seconds: int,
+) -> bool:
+    if _is_protected(row, keep_profiles):
+        return False
+    if row.etimes < max(int(grace_seconds), 0):
+        return False
+    if not _is_orphaned(row, live_pids, grace_seconds=grace_seconds):
+        return False
+    return any(marker in row.command for marker in ORPHAN_CLEANUP_MARKERS)
+
+
 def _priority(row: ProcRow) -> tuple[int, float, int]:
     command = row.command
-    if "scripts/run_all_sleeves.py" in command or "scripts/run_parallel_aggressive_modes.py" in command:
+    if "scripts/replay_preopen_sanity_check.py" in command:
+        base = 0
+    elif "scripts/run_all_sleeves.py" in command or "scripts/run_parallel_aggressive_modes.py" in command:
         base = 0
     elif "scripts/run_parallel_shadows.py" in command:
         base = 1
@@ -199,6 +245,17 @@ def _status(triggered: bool, terminated_count: int) -> str:
     if triggered:
         return "active"
     return "ready"
+
+
+def _ordered_unique_rows(rows: list[ProcRow]) -> list[ProcRow]:
+    seen: set[int] = set()
+    out: list[ProcRow] = []
+    for row in rows:
+        if row.pid in seen:
+            continue
+        seen.add(row.pid)
+        out.append(row)
+    return out
 
 
 def _write_override(
@@ -261,13 +318,36 @@ def build_payload(
     max_rss_mb = _env_float("PROCESS_FANOUT_GUARD_MAX_RSS_MB", 5120.0)
     target_rss_mb = _env_float("PROCESS_FANOUT_GUARD_TARGET_RSS_MB", 4096.0)
     hold_seconds = _env_int("PROCESS_FANOUT_GUARD_HOLD_SECONDS", 600)
+    orphan_cleanup_enabled = _env_flag("PROCESS_FANOUT_GUARD_ORPHAN_CLEANUP_ENABLED", "1")
+    orphan_grace_seconds = _env_int("PROCESS_FANOUT_GUARD_ORPHAN_GRACE_SECONDS", 900)
     keep_profiles = set(_env_csv("PROCESS_FANOUT_GUARD_KEEP_PROFILES", "schwab_futures,fx,dividend,bond"))
     state = load_json(state_path)
-    preserve_clear_cooldown = _env_flag("PROCESS_FANOUT_GUARD_PRESERVE_CLEAR_COOLDOWN", "0")
+    preserve_clear_cooldown = _env_flag("PROCESS_FANOUT_GUARD_PRESERVE_CLEAR_COOLDOWN", "1")
     previous_hold_until = None if clear_hold or not preserve_clear_cooldown else parse_iso_utc(state.get("hold_until_utc"))
+    if previous_hold_until is None and preserve_clear_cooldown and not clear_hold:
+        last_triggered = parse_iso_utc(state.get("last_triggered_utc"))
+        if last_triggered is not None:
+            restored_hold_until = last_triggered + timedelta(seconds=max(hold_seconds, 0))
+            if restored_hold_until > now:
+                previous_hold_until = restored_hold_until
 
     rows = collect_processes(project_marker=project_marker)
+    live_pids = {row.pid for row in rows}
     targetable = [row for row in rows if _is_targetable(row, keep_profiles)]
+    orphan_candidates = (
+        [
+            row
+            for row in rows
+            if _is_orphan_cleanup_candidate(
+                row,
+                live_pids,
+                keep_profiles,
+                grace_seconds=orphan_grace_seconds,
+            )
+        ]
+        if orphan_cleanup_enabled
+        else []
+    )
     protected = [row for row in rows if _is_protected(row, keep_profiles)]
     total_rss_mb = round(sum(row.rss_mb for row in rows), 3)
     targetable_rss_mb = round(sum(row.rss_mb for row in targetable), 3)
@@ -289,11 +369,12 @@ def build_payload(
             kill_plan.append(row)
             projected_count -= 1
             projected_rss = round(projected_rss - row.rss_mb, 3)
-    core_sleeve_restart_allowed = bool(triggered and not targetable and not kill_plan)
+    orphan_kill_plan = sorted(orphan_candidates, key=_priority)
+    core_sleeve_restart_allowed = bool(triggered and not targetable and not kill_plan and not orphan_kill_plan)
 
     terminated: list[dict[str, Any]] = []
     if apply:
-        for row in kill_plan:
+        for row in _ordered_unique_rows(kill_plan + orphan_kill_plan):
             try:
                 os.kill(row.pid, signal.SIGTERM)
                 terminated.append({"pid": row.pid, "ok": True, "rss_mb": row.rss_mb, "command": row.command[:500]})
@@ -325,10 +406,33 @@ def build_payload(
         },
     )
     terminated_count = sum(1 for row in terminated if bool(row.get("ok", False)))
+    orphan_terminated_count = sum(1 for row in terminated if row.get("pid") in {candidate.pid for candidate in orphan_kill_plan} and bool(row.get("ok", False)))
+    overall_status = _status(triggered, terminated_count if apply else len(kill_plan))
+    if not triggered and orphan_kill_plan:
+        if apply:
+            overall_status = "active" if orphan_terminated_count > 0 else "degraded"
+        else:
+            overall_status = "degraded"
+    orphan_candidate_pids = {candidate.pid for candidate in orphan_candidates}
+    recommended_actions = [
+        "process_fanout_guard wrote a runtime override to stop aggressive all-sleeves relaunch while pressure is active"
+        if triggered
+        else "process fanout is within configured budget",
+        "clear stale orphaned helper processes"
+        if orphan_kill_plan and not apply
+        else "stale orphaned helper processes were cleared" if orphan_terminated_count else "",
+        "run with --apply to terminate optional Schwab shadow research workers"
+        if triggered and kill_plan and not apply
+        else "optional Schwab shadow research workers were trimmed" if apply and any(row.get("pid") not in orphan_candidate_pids for row in terminated if bool(row.get("ok", False))) else "",
+        "fanout pressure has no targetable optional workers; keep restart guard active"
+        if triggered and not kill_plan and not orphan_kill_plan
+        else "",
+    ]
+    recommended_actions = [item for item in recommended_actions if item]
     payload = {
         "timestamp_utc": iso_now(),
-        "overall_status": _status(triggered, terminated_count if apply else len(kill_plan)),
-        "ok": not triggered or bool(kill_plan) or not apply,
+        "overall_status": overall_status,
+        "ok": bool((not triggered or bool(kill_plan) or not apply) and (not orphan_kill_plan or not apply or orphan_terminated_count > 0)),
         "apply": bool(apply),
         "thresholds": {
             "max_count": max_count,
@@ -336,6 +440,8 @@ def build_payload(
             "max_rss_mb": max_rss_mb,
             "target_rss_mb": target_rss_mb,
             "hold_seconds": hold_seconds,
+            "orphan_cleanup_enabled": bool(orphan_cleanup_enabled),
+            "orphan_grace_seconds": int(orphan_grace_seconds),
             "keep_profiles": sorted(keep_profiles),
         },
         "fanout": {
@@ -343,6 +449,8 @@ def build_payload(
             "total_rss_mb": total_rss_mb,
             "targetable_count": len(targetable),
             "targetable_rss_mb": targetable_rss_mb,
+            "orphan_cleanup_candidate_count": len(orphan_candidates),
+            "orphan_cleanup_rss_mb": round(sum(row.rss_mb for row in orphan_candidates), 3),
             "protected_count": len(protected),
         },
         "triggered": triggered,
@@ -372,6 +480,24 @@ def build_payload(
             }
             for row in kill_plan
         ],
+        "orphan_cleanup": {
+            "enabled": bool(orphan_cleanup_enabled),
+            "grace_seconds": int(orphan_grace_seconds),
+            "candidate_count": len(orphan_candidates),
+            "planned_count": len(orphan_kill_plan),
+            "terminated_count": int(orphan_terminated_count),
+            "candidates": [
+                {
+                    "pid": row.pid,
+                    "ppid": row.ppid,
+                    "rss_mb": row.rss_mb,
+                    "cpu_percent": row.cpu_percent,
+                    "elapsed_seconds": row.etimes,
+                    "command": row.command[:500],
+                }
+                for row in orphan_kill_plan
+            ],
+        },
         "terminated_count": terminated_count,
         "terminated": terminated,
         "top_processes": [
@@ -382,18 +508,12 @@ def build_payload(
                 "profile": _profile(row.command),
                 "broker": _broker(row.command),
                 "protected": _is_protected(row, keep_profiles),
+                "orphan_cleanup_candidate": row.pid in orphan_candidate_pids,
                 "command": row.command[:500],
             }
             for row in sorted(rows, key=lambda item: item.rss_mb, reverse=True)[:20]
         ],
-        "recommended_actions": [
-            "process_fanout_guard wrote a runtime override to stop aggressive all-sleeves relaunch while pressure is active"
-            if triggered
-            else "process fanout is within configured budget",
-            "run with --apply to terminate optional Schwab shadow research workers"
-            if triggered and not apply
-            else "optional Schwab shadow research workers were trimmed" if terminated_count else "no process trim was needed",
-        ],
+        "recommended_actions": recommended_actions or ["no process trim was needed"],
     }
     write_payload(out_path, payload)
     return payload

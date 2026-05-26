@@ -174,6 +174,18 @@ QUANT_MODEL_FEATURE_KEYS = [
     "quant_tqft_braid_group_norm",
     "quant_mfgc_congestion_norm",
     "quant_spde_manifold_lob_fluid_norm",
+    "quant_strategy_carry_edge_norm",
+    "quant_strategy_mean_reversion_edge_norm",
+    "quant_strategy_volatility_rv_edge_norm",
+    "quant_strategy_microstructure_edge_norm",
+    "quant_strategy_tail_hedge_edge_norm",
+    "quant_strategy_crypto_basis_edge_norm",
+    "quant_strategy_kelly_sizing_readiness_norm",
+    "quant_strategy_portfolio_fit_norm",
+    "quant_strategy_selection_confidence_norm",
+    "quant_strategy_execution_alignment_norm",
+    "quant_strategy_risk_adjusted_conviction_norm",
+    "quant_strategy_allocation_bias_norm",
     "quant_model_resource_pressure_norm",
     "quant_model_data_confidence_norm",
 ]
@@ -1462,6 +1474,162 @@ def quantum_classical_hybrid_optimization_proxy(features: Mapping[str, Any] | No
     return _clamp01(0.25 * qemc + 0.20 * kelly + 0.25 * genetic + 0.20 * allocation + 0.10 * iter_quality)
 
 
+def quant_strategy_scorecard(features: Mapping[str, Any] | None = None) -> dict[str, float]:
+    features = features or {}
+
+    def f(key: str, default: float = 0.0) -> float:
+        return _clamp01(_safe_float(features.get(key), default))
+
+    def avg(*values: float) -> float:
+        clean = [_clamp01(value) for value in values]
+        return _clamp01(sum(clean) / max(len(clean), 1))
+
+    data_conf = f("quant_model_data_confidence_norm", f("source_confidence_norm", 0.50))
+    tradeability = f("market_micro_tradeability_score_norm", f("execution_fitness_norm", 0.50))
+    kelly = f("quant_kelly_fraction_norm", 0.50)
+    tail_risk = max(f("quant_cvar_tail_risk_norm"), f("quant_evt_pot_tail_norm"), f("quant_merton_jump_risk_norm"))
+    dependency = max(
+        f("quant_copula_dependency_norm"),
+        f("quant_dcc_garch_correlation_norm"),
+        f("quant_correlation_convergence_norm"),
+        f("cross_sleeve_correlation_pressure_norm", 0.25),
+    )
+    overlap = max(f("strategy_overlap_pressure_norm", 0.15), f("duplicate_alpha_pressure_norm", 0.15))
+    kalman_stack = avg(
+        f("quant_kalman_filter_confidence_norm"),
+        f("quant_particle_filter_confidence_norm"),
+        f("quant_gpu_kalman_filter_confidence_norm"),
+    )
+    vol_surface = avg(
+        f("quant_heston_vol_risk_norm"),
+        f("quant_sabr_vol_surface_norm"),
+        f("quant_svi_ssvi_vol_surface_norm"),
+        f("quant_dupire_local_vol_surface_norm"),
+    )
+    micro_stack = avg(
+        f("quant_execution_microstructure_awareness_norm"),
+        f("quant_limit_order_book_transformer_norm"),
+        f("quant_geometric_order_book_transformer_norm"),
+        f("quant_lobdif_order_book_diffusion_norm"),
+        tradeability,
+    )
+
+    carry_edge = _clamp01(
+        0.22 * f("futures_basis_bps_norm", f("futures_basis_norm", 0.0))
+        + 0.18 * f("futures_roll_yield_norm", f("term_structure_carry_norm", 0.0))
+        + 0.17 * f("fx_carry_proxy_norm", f("rate_differential_carry_norm", 0.0))
+        + 0.15 * f("dividend_yield_norm", f("equity_carry_norm", 0.0))
+        + 0.15 * f("bond_curve_2s10s_norm", f("yield_curve_carry_norm", 0.0))
+        + 0.13 * f("crypto_hyperliquid_funding_norm", f("crypto_funding_norm", 0.0))
+    )
+    mean_reversion_edge = _clamp01(
+        0.25 * f("quant_ou_mean_reversion_norm", 0.50)
+        + 0.20 * kalman_stack
+        + 0.18 * f("quant_regime_switch_filter_confidence_norm")
+        + 0.15 * (1.0 - f("trend_persistence_norm", f("lead_lag_confidence_norm", 0.45)))
+        + 0.12 * (1.0 - f("quant_rough_volatility_fbm_norm"))
+        + 0.10 * data_conf
+    )
+    volatility_rv_edge = _clamp01(
+        0.24 * f("options_iv_realized_spread_norm", f("vol_risk_premium_norm", 0.0))
+        + 0.20 * vol_surface
+        + 0.16 * f("quant_path_dependent_volatility_norm")
+        + 0.14 * f("quant_fractional_hurst_rough_vol_norm")
+        + 0.14 * (1.0 - f("quant_flash_freeze_slippage_norm"))
+        + 0.12 * data_conf
+    )
+    microstructure_edge = _clamp01(
+        0.34 * micro_stack
+        + 0.18 * f("quant_markovian_execution_control_norm")
+        + 0.16 * f("quant_differentiable_market_impact_norm")
+        + 0.12 * (1.0 - f("quant_vpin_order_flow_toxicity_norm"))
+        + 0.10 * (1.0 - f("execution_latency_pressure_norm", 0.20))
+        + 0.10 * data_conf
+    )
+    tail_hedge_edge = _clamp01(
+        0.24 * tail_risk
+        + 0.18 * dependency
+        + 0.16 * f("quant_synthetic_crisis_market_gan_norm")
+        + 0.14 * f("quant_macro_stress_2026_driver_norm")
+        + 0.12 * f("quant_covid_2020_pandemic_replay_norm")
+        + 0.10 * f("quant_portfolio_durability_norm")
+        + 0.06 * data_conf
+    )
+    crypto_basis_edge = _clamp01(
+        0.24 * f("crypto_hyperliquid_funding_norm", f("crypto_funding_norm", 0.0))
+        + 0.20 * f("crypto_basis_norm", f("crypto_perp_basis_norm", 0.0))
+        + 0.16 * f("crypto_open_interest_change_norm", f("crypto_oi_pressure_norm", 0.0))
+        + 0.14 * f("market_crypto_risk_corr_norm", 0.0)
+        + 0.14 * f("crypto_cross_provider_agreement_norm", f("provider_agreement_norm", 0.0))
+        + 0.12 * data_conf
+    )
+
+    risk_pressure = max(tail_risk, dependency, f("drawdown_pressure_norm", 0.0))
+    kelly_sizing_readiness = _clamp01(
+        (
+            0.34 * kelly
+            + 0.22 * data_conf
+            + 0.18 * tradeability
+            + 0.16 * f("quant_genetic_optimization_stability_norm", f("walk_forward_parameter_stability_norm", 0.50))
+            + 0.10 * max(carry_edge, mean_reversion_edge, volatility_rv_edge, microstructure_edge, crypto_basis_edge)
+        )
+        * (1.0 - 0.35 * risk_pressure)
+    )
+    portfolio_fit = _clamp01(
+        0.26 * data_conf
+        + 0.22 * f("quant_portfolio_durability_norm", 0.50)
+        + 0.18 * (1.0 - dependency)
+        + 0.14 * (1.0 - overlap)
+        + 0.12 * tradeability
+        + 0.08 * f("quant_replication_crisis_shield_norm", 0.50)
+    )
+    edges = [carry_edge, mean_reversion_edge, volatility_rv_edge, microstructure_edge, tail_hedge_edge, crypto_basis_edge]
+    top_edges = sorted(edges, reverse=True)[:3]
+    top_edge = sum(top_edges) / max(len(top_edges), 1)
+    edge_separation = max(top_edges) - min(top_edges) if len(top_edges) > 1 else top_edge
+    selection_confidence = _clamp01(
+        0.38 * top_edge
+        + 0.24 * data_conf
+        + 0.18 * kelly_sizing_readiness
+        + 0.12 * portfolio_fit
+        + 0.08 * edge_separation
+    )
+    execution_alignment = _clamp01(
+        0.38 * microstructure_edge
+        + 0.24 * tradeability
+        + 0.18 * f("quant_markovian_execution_control_norm")
+        + 0.12 * (1.0 - f("execution_latency_pressure_norm", 0.20))
+        + 0.08 * (1.0 - f("quant_vpin_order_flow_toxicity_norm"))
+    )
+    risk_adjusted_conviction = _clamp01(
+        selection_confidence
+        * (0.55 + 0.45 * portfolio_fit)
+        * (0.72 + 0.28 * execution_alignment)
+        * (1.0 - 0.30 * risk_pressure)
+    )
+    allocation_bias = _clamp01(
+        0.42 * kelly_sizing_readiness
+        + 0.30 * risk_adjusted_conviction
+        + 0.18 * portfolio_fit
+        + 0.10 * execution_alignment
+    )
+
+    return {
+        "quant_strategy_carry_edge_norm": carry_edge,
+        "quant_strategy_mean_reversion_edge_norm": mean_reversion_edge,
+        "quant_strategy_volatility_rv_edge_norm": volatility_rv_edge,
+        "quant_strategy_microstructure_edge_norm": microstructure_edge,
+        "quant_strategy_tail_hedge_edge_norm": tail_hedge_edge,
+        "quant_strategy_crypto_basis_edge_norm": crypto_basis_edge,
+        "quant_strategy_kelly_sizing_readiness_norm": kelly_sizing_readiness,
+        "quant_strategy_portfolio_fit_norm": portfolio_fit,
+        "quant_strategy_selection_confidence_norm": selection_confidence,
+        "quant_strategy_execution_alignment_norm": execution_alignment,
+        "quant_strategy_risk_adjusted_conviction_norm": risk_adjusted_conviction,
+        "quant_strategy_allocation_bias_norm": allocation_bias,
+    }
+
+
 def formal_verification_smart_agent_safety_proxy(features: Mapping[str, Any] | None = None) -> float:
     features = features or {}
     checks = _env_int("QUANT_MODEL_FORMAL_CHECKS", 12, low=1, high=256)
@@ -2346,6 +2514,7 @@ def summarize_quant_model_features(
             "quant_model_data_confidence_norm": data_conf,
         }
     )
+    out.update(quant_strategy_scorecard({**dict(features), **out}))
     return out
 
 
@@ -2484,6 +2653,8 @@ def quant_model_inventory() -> dict[str, Any]:
             "topological_quantum_field_theory_braid_group_proxy",
             "mfgc_congestion_control_proxy",
             "spde_manifold_limit_order_book_fluid_proxy",
+            "quant_strategy_scorecard_layer",
+            "quant_strategy_risk_adjusted_conviction_router",
         ],
         "feature_keys": list(QUANT_MODEL_FEATURE_KEYS),
         "resource_profile": resource,

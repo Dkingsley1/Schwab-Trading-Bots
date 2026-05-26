@@ -26,15 +26,20 @@ HOT_LANES = {
     "health_fast",
     "trading_fast",
     "crypto_trading_fast",
-    "runtime",
-    "crypto_runtime",
-    "writer_progress",
-}
-WARM_LANES = {
     "aggressive_trading",
     "trading",
     "crypto_trading",
+    "runtime",
+    "crypto_runtime",
+    "crypto_api_ingress",
+    "writer_progress",
+}
+WARM_LANES = {
     "governance",
+    "crypto_governance",
+    "risk_support",
+    "support_watchdog",
+    "schema_violations",
     "predictive_stability",
     "self_healing",
     "hot_path_storage",
@@ -49,6 +54,7 @@ COLD_LANES = {
     "admission_evidence",
     "reports",
 }
+UNOWNED_PROGRESS_GRACE_MINUTES = 2.0
 
 
 def _safe_int(raw: Any, default: int = 0) -> int:
@@ -124,13 +130,50 @@ def _writer_progress_payload(writer_cycle: dict[str, Any], progress: dict[str, A
     merged_rows = max(_safe_int(current.get("merged_rows_this_cycle"), 0), _safe_int(progress.get("merged_rows_this_cycle"), 0))
     completed_merges = max(_safe_int(current.get("completed_merge_count"), 0), _safe_int(progress.get("completed_merge_count"), 0))
     completed_shards = max(_safe_int(current.get("completed_shard_count"), 0), _safe_int(progress.get("completed_shard_count"), 0))
-    lock_held = bool(lock_state.get("held", False))
-    progress_recent = (_age_minutes(progress) or 0.0) <= 30.0
-    active = bool(lock_held or current.get("active", False) or (current.get("running", False) and progress_recent))
-    current_step = str(current.get("current_step") or progress.get("current_step") or "")
+    planned_shards = max(_safe_int(current.get("planned_shard_count"), 0), _safe_int(progress.get("planned_shard_count"), 0))
+    pending_shards = max(_safe_int(current.get("pending_shard_count"), 0), _safe_int(progress.get("pending_shard_count"), 0))
+    timed_out_shards = max(_safe_int(current.get("timed_out_shard_count"), 0), _safe_int(progress.get("timed_out_shard_count"), 0))
+    shard_link_plan = progress.get("shard_link_plan") if isinstance(progress.get("shard_link_plan"), dict) else {}
+    lock_held = bool(lock_state.get("held", False) or current.get("writer_lock_held", False))
+    current_step = str(current.get("effective_current_step") or current.get("current_step") or progress.get("current_step") or "")
     lock_owner = str(lock_state.get("owner") or "") or str(current.get("writer_lock_owner") or progress.get("writer_lock_owner") or "")
+    progress_recent = progress_age <= 30.0
+    running = bool(current.get("running", False) or progress.get("running", False) or str(progress.get("status") or "") == "running")
+    grace_minutes = _safe_float(current.get("unowned_progress_grace_minutes"), UNOWNED_PROGRESS_GRACE_MINUTES)
+    owner_pid_live_raw = current.get("writer_owner_pid_live")
+    owner_pid_live_known = isinstance(owner_pid_live_raw, bool)
+    owner_pid_live = bool(owner_pid_live_raw) if owner_pid_live_known else False
+    owner_confirmed_dead = bool(owner_pid_live_known and not owner_pid_live)
+    unowned_running_progress = bool(
+        running
+        and not lock_held
+        and (
+            not lock_owner
+            or owner_confirmed_dead
+        )
+    )
+    progress_orphaned = bool(
+        current.get("progress_orphaned", False)
+        or (unowned_running_progress and progress_age > max(float(grace_minutes), 0.0))
+    )
+    active = bool(lock_held or current.get("active", False) or (running and progress_recent and not progress_orphaned))
+    if progress_orphaned:
+        active = False
 
-    if not active:
+    child_writer_active = bool(current.get("child_writer_active", False))
+    service_idle_holding_lock = bool(
+        lock_held
+        and not running
+        and not child_writer_active
+        and current_step == "complete"
+        and str(current.get("active_source") or "") == "writer_lock"
+    )
+
+    if progress_orphaned:
+        state = "orphaned_progress"
+    elif service_idle_holding_lock:
+        state = "service_idle_holding_lock"
+    elif not active:
         state = "idle"
     elif progress_age >= 90.0 and merged_rows <= 0 and completed_merges <= 0:
         state = "stalled"
@@ -149,8 +192,20 @@ def _writer_progress_payload(writer_cycle: dict[str, Any], progress: dict[str, A
         "merged_rows_this_cycle": int(merged_rows),
         "completed_merge_count": int(completed_merges),
         "completed_shard_count": int(completed_shards),
+        "planned_shard_count": int(planned_shards),
+        "pending_shard_count": int(pending_shards),
+        "timed_out_shard_count": int(timed_out_shards),
+        "pending_shards": list(progress.get("pending_shards") or [])[:16],
+        "timed_out_shards": list(progress.get("timed_out_shards") or [])[:16],
+        "shard_link_plan_policy": str(shard_link_plan.get("policy") or ""),
+        "shard_link_plan_order": list(shard_link_plan.get("planned_order") or [])[:32],
         "writer_lock_owner": lock_owner,
         "writer_lock_held": bool(lock_held),
+        "progress_orphaned": bool(progress_orphaned),
+        "child_writer_active": child_writer_active,
+        "active_child_writer_count": _safe_int(current.get("active_child_writer_count"), 0),
+        "active_child_writer_pids": list(current.get("active_child_writer_pids") or [])[:12],
+        "active_source": str(current.get("active_source") or ("writer_lock" if lock_held else "recent_progress" if active else "idle")),
         "writer_progress_observed_by_coordinator": bool(coordinator_summary.get("writer_progress_observed", False)),
         "stale_writer_detected_by_coordinator": bool(coordinator_summary.get("stale_writer_detected", False)),
         "stale_writer_restart_attempted": bool(coordinator_summary.get("stale_writer_restart_attempted", False)),
@@ -344,12 +399,18 @@ def _risk_flags(
 ) -> list[str]:
     risks: list[str] = []
     state = str(writer_health.get("state") or "")
-    if bool(writer_health.get("active", False)):
+    if state == "service_idle_holding_lock":
+        risks.append("writer_service_idle_lock")
+    elif bool(writer_health.get("active", False)):
         risks.append("writer_active")
+    if state == "orphaned_progress":
+        risks.append("writer_progress_orphaned")
     if state == "stale_progress":
         risks.append("writer_progress_stale")
     if state == "stalled":
         risks.append("writer_progress_stalled")
+    if _safe_int(writer_health.get("timed_out_shard_count"), 0) > 0:
+        risks.append("shard_link_timeouts")
     if not progress:
         risks.append("missing_writer_progress_artifact")
     if bool(process_topology.get("duplicate_sql_writer_processes", False)):
@@ -382,6 +443,10 @@ def _decision_action(writer_health: dict[str, Any], process_topology: dict[str, 
         return "verify_writer_progress_then_re_score"
     if "process_fanout_pressure" in risks:
         return "trim_fanout_before_writer_expansion"
+    if "writer_service_idle_lock" in risks:
+        if _safe_int(pressure.get("pending_lines"), 0) > 0:
+            return "request_writer_service_handoff_then_re_score"
+        return "observe_writer_service_idle_lock"
     if bool(writer_health.get("active", False)):
         return "wait_for_active_writer_progress"
     if _safe_int(pressure.get("pending_lines"), 0) > 0:
@@ -412,6 +477,17 @@ def _playbook(action: str) -> list[dict[str, Any]]:
             {"step": "run_single_writer", "command": ["./scripts/ops/opsctl.sh", "sql-sync", "--json"]},
             {"step": "re_score_writer", "command": ["./scripts/ops/opsctl.sh", "writer-process-intelligence", "--json"]},
         ]
+    if action == "request_writer_service_handoff_then_re_score":
+        return [
+            {"step": "request_drainer_handoff", "command": ["./scripts/ops/opsctl.sh", "backpressure-drainer-fleet", "--apply", "--ttl-seconds", "900", "--json"]},
+            {"step": "observe_writer_service", "command": ["./scripts/ops/opsctl.sh", "writer-cycle-coordinator", "--json"]},
+            {"step": "re_score_writer", "command": ["./scripts/ops/opsctl.sh", "writer-process-intelligence", "--json"]},
+        ]
+    if action == "observe_writer_service_idle_lock":
+        return [
+            {"step": "observe_writer_service", "command": ["./scripts/ops/opsctl.sh", "writer-cycle-coordinator", "--json"]},
+            {"step": "re_score_writer", "command": ["./scripts/ops/opsctl.sh", "writer-process-intelligence", "--json"]},
+        ]
     if action == "wait_for_active_writer_progress":
         return [
             {"step": "observe_writer", "command": ["./scripts/ops/opsctl.sh", "writer-cycle-coordinator", "--json"]},
@@ -424,12 +500,14 @@ def _confidence(risks: list[str], profiles: list[dict[str, Any]], writer_health:
     score = 0.52
     if profiles:
         score += 0.16
-    if str(writer_health.get("state") or "") in {"idle", "active_progressing"}:
+    if str(writer_health.get("state") or "") in {"idle", "active_progressing", "service_idle_holding_lock"}:
         score += 0.1
     if "writer_progress_stale" in risks:
         score -= 0.08
     if "writer_progress_stalled" in risks:
         score -= 0.18
+    if "shard_link_timeouts" in risks:
+        score -= 0.04
     if "duplicate_sql_writer_processes" in risks:
         score -= 0.18
     if "process_fanout_pressure" in risks:

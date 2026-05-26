@@ -26,7 +26,7 @@ else:
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "bot_logs_cleanup_intelligence_latest.json"
 DEFAULT_HISTORY_PATH = PROJECT_ROOT / "governance" / "health" / "bot_logs_cleanup_intelligence_history.jsonl"
-DEFAULT_TARGET_FREE_GB = 100.0
+DEFAULT_TARGET_FREE_GB = 125.0
 DEFAULT_MIN_AGE_HOURS = 12.0
 DEFAULT_PREFIX_VERIFY_BYTES = 65536
 DEFAULT_FALLBACK_QUARANTINE_ROOT = PROJECT_ROOT / "local_fallback_storage" / "quarantine" / "bot_logs_cleanup"

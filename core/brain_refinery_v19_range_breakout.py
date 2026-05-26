@@ -35,6 +35,27 @@ def rolling_std(x, window):
         out[i] = np.std(x[start:i+1])
     return out
 
+def rolling_mean(x, window):
+    out = np.zeros_like(x)
+    for i in range(len(x)):
+        start = max(0, i - window + 1)
+        out[i] = np.mean(x[start:i+1])
+    return out
+
+def rolling_max(x, window):
+    out = np.zeros_like(x)
+    for i in range(len(x)):
+        start = max(0, i - window + 1)
+        out[i] = np.max(x[start:i+1])
+    return out
+
+def rolling_min(x, window):
+    out = np.zeros_like(x)
+    for i in range(len(x)):
+        start = max(0, i - window + 1)
+        out[i] = np.min(x[start:i+1])
+    return out
+
 # -----------------------------
 # Model
 # -----------------------------
@@ -160,14 +181,24 @@ def simulate_range_breakout(n=5000):
     prices[0] = 100.0
     lower, upper = 95.0, 105.0
     vol = 0.5
+    breakout_drift = 0.0
     for i in range(1, n):
         if i % 1200 == 0:
             # breakout: shift the range
             shift = np.random.choice([-10, 10])
             lower += shift
             upper += shift
+            breakout_drift = 0.10 * np.sign(shift)
+        breakout_drift *= 0.994
+        center = 0.5 * (lower + upper)
+        mean_reversion = 0.012 * (center - prices[i - 1])
+        boundary_pressure = 0.0
+        if prices[i - 1] > upper - 1.5:
+            boundary_pressure = -0.08
+        elif prices[i - 1] < lower + 1.5:
+            boundary_pressure = 0.08
         noise = vol * np.random.randn()
-        prices[i] = prices[i-1] + noise
+        prices[i] = prices[i-1] + noise + mean_reversion + boundary_pressure + breakout_drift
         prices[i] = max(lower, min(upper, prices[i]))
     return prices
 
@@ -180,19 +211,62 @@ FEATURE_SOURCE = "prices"
 def build_features(prices):
     returns = np.log(prices[1:] / prices[:-1])
     returns = np.concatenate([[0.0], returns])
-    sma = np.convolve(prices, np.ones(10) / 10, mode="same")
+    sma = rolling_mean(prices, 20)
     ema10 = ema(prices, 10)
+    ema30 = ema(prices, 30)
     rsi14 = rsi(prices, 14)
     vol10 = rolling_std(returns, 10)
-    return np.stack([returns, sma, ema10, rsi14, vol10], axis=1)
+    vol30 = rolling_std(returns, 30)
+    hi80 = rolling_max(prices, 80)
+    lo80 = rolling_min(prices, 80)
+    channel = hi80 - lo80 + 1e-8
+    range_pos = ((prices - lo80) / channel) - 0.5
+    channel_width = channel / (sma + 1e-8)
+    dist_upper = (hi80 - prices) / channel
+    dist_lower = (prices - lo80) / channel
+    trend = (ema10 - ema30) / (prices + 1e-8)
+    compression = vol10 / (vol30 + 1e-8)
+    reversion_z = (prices - sma) / (rolling_std(prices, 30) + 1e-8)
+    return np.stack(
+        [
+            returns,
+            trend,
+            rsi14 / 100.0,
+            vol10,
+            compression,
+            range_pos,
+            channel_width,
+            dist_upper,
+            dist_lower,
+            reversion_z,
+        ],
+        axis=1,
+    )
 
 
 def train_brain():
     return train_price_indicator_bot(
         run_tag="brain_refinery_v19_range_breakout",
-        feature_names=["returns", "sma10", "ema10", "rsi14", "vol10"],
+        feature_names=[
+            "returns",
+            "ema_trend_10_30",
+            "rsi14_norm",
+            "vol10",
+            "vol_compression_10_30",
+            "range_position_80",
+            "channel_width_80",
+            "distance_upper_80",
+            "distance_lower_80",
+            "reversion_z_30",
+        ],
         feature_builder=build_features,
         price_simulator=simulate_range_breakout,
+        num_points=9000,
+        window=48,
+        horizon=2,
+        learning_rate=0.0008,
+        epochs=260,
+        patience=24,
     )
 
 if __name__ == "__main__":

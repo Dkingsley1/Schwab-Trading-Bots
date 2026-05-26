@@ -4,6 +4,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Tuple
@@ -225,6 +226,128 @@ def _auth_attempt(token_path: Path, callback_timeout_seconds: float, validate_ac
         }
 
 
+def _write_token_atomic(token_path: Path, payload: Dict[str, Any]) -> None:
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = token_path.with_suffix(token_path.suffix + '.tmp')
+    tmp.write_text(json.dumps(payload, ensure_ascii=True), encoding='utf-8')
+    try:
+        mode = token_path.stat().st_mode & 0o777
+        os.chmod(tmp, mode)
+    except Exception:
+        pass
+    tmp.replace(token_path)
+
+
+def _direct_refresh_token_grant(token_path: Path, *, min_extension_seconds: float = 300.0) -> Dict[str, Any]:
+    api_key = os.getenv('SCHWAB_API_KEY', '').strip()
+    app_secret = os.getenv('SCHWAB_SECRET', '').strip()
+    if not credentials_ready(schwab_credentials_from_env()):
+        return {'attempted': False, 'ok': False, 'reason': 'missing_credentials', 'details': {'method': 'refresh_token_grant'}}
+
+    try:
+        from authlib.integrations.httpx_client import OAuth2Client
+        from schwab.auth import TOKEN_ENDPOINT
+    except Exception as exc:
+        return {
+            'attempted': False,
+            'ok': False,
+            'reason': f'refresh_grant_import_error:{type(exc).__name__}:{exc}',
+            'details': {'method': 'refresh_token_grant'},
+        }
+
+    try:
+        # schwab-py writes token updates directly, so tolerate a tiny read race
+        # with any older loop that may still be shutting down.
+        wrapped: Dict[str, Any] | None = None
+        last_exc: Exception | None = None
+        for _ in range(5):
+            try:
+                wrapped = json.loads(token_path.read_text(encoding='utf-8'))
+                break
+            except Exception as exc:
+                last_exc = exc
+                time.sleep(0.15)
+        if wrapped is None:
+            raise last_exc or RuntimeError('token_read_failed')
+
+        old_token = dict(wrapped.get('token') or {})
+        refresh_token = str(old_token.get('refresh_token') or '').strip()
+        if not refresh_token:
+            return {
+                'attempted': False,
+                'ok': False,
+                'reason': 'missing_refresh_token',
+                'details': {'method': 'refresh_token_grant'},
+            }
+
+        before_expires_at = float(old_token.get('expires_at') or 0.0)
+        before_expires_in = before_expires_at - time.time()
+        oauth = OAuth2Client(
+            api_key,
+            client_secret=app_secret,
+            token=old_token,
+            token_endpoint=TOKEN_ENDPOINT,
+        )
+        new_token = dict(
+            oauth.refresh_token(
+                TOKEN_ENDPOINT,
+                refresh_token=refresh_token,
+                auth=(api_key, app_secret),
+            )
+        )
+        if not str(new_token.get('access_token') or '').strip():
+            return {
+                'attempted': True,
+                'ok': False,
+                'reason': 'refresh_returned_no_access_token',
+                'details': {'method': 'refresh_token_grant'},
+            }
+        if not str(new_token.get('refresh_token') or '').strip():
+            new_token['refresh_token'] = refresh_token
+
+        after_expires_at = float(new_token.get('expires_at') or (time.time() + float(new_token.get('expires_in') or 0.0)))
+        after_expires_in = after_expires_at - time.time()
+        min_extension = max(float(min_extension_seconds), 0.0)
+        if after_expires_in <= max(before_expires_in, 0.0) + min_extension:
+            return {
+                'attempted': True,
+                'ok': False,
+                'reason': 'refresh_did_not_extend_enough',
+                'details': {
+                    'method': 'refresh_token_grant',
+                    'before_expires_in_seconds': round(before_expires_in, 3),
+                    'after_expires_in_seconds': round(after_expires_in, 3),
+                    'min_extension_seconds': round(min_extension, 3),
+                },
+            }
+
+        _write_token_atomic(
+            token_path,
+            {
+                'creation_timestamp': int(wrapped.get('creation_timestamp') or time.time()),
+                'token': new_token,
+            },
+        )
+        return {
+            'attempted': True,
+            'ok': True,
+            'reason': 'refresh_token_grant_success',
+            'details': {
+                'method': 'refresh_token_grant',
+                'before_expires_in_seconds': round(before_expires_in, 3),
+                'after_expires_in_seconds': round(after_expires_in, 3),
+                'refresh_token_changed': new_token.get('refresh_token') != refresh_token,
+            },
+        }
+    except Exception as exc:
+        return {
+            'attempted': True,
+            'ok': False,
+            'reason': f'refresh_grant_error:{type(exc).__name__}:{exc}',
+            'details': {'method': 'refresh_token_grant'},
+        }
+
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description='Premarket Schwab token guard with auto-refresh + alerting.')
@@ -252,6 +375,17 @@ def main() -> int:
         dest='validate_account_probe',
         action='store_false',
         help='Skip the post-auth account probe.',
+    )
+    parser.add_argument(
+        '--skip-refresh-token-grant',
+        action='store_true',
+        default=os.getenv('PREMARKET_TOKEN_SKIP_REFRESH_TOKEN_GRANT', '0').strip() == '1',
+        help='Disable direct OAuth refresh-token renewal before falling back to client auth.',
+    )
+    parser.add_argument(
+        '--refresh-token-min-extension-seconds',
+        type=float,
+        default=float(os.getenv('PREMARKET_TOKEN_REFRESH_MIN_EXTENSION_SECONDS', '300')),
     )
     parser.add_argument('--alert-suppress-seconds', type=int, default=int(os.getenv('PREMARKET_TOKEN_ALERT_SUPPRESS_SECONDS', '1800')))
     parser.add_argument('--json', action='store_true')
@@ -284,11 +418,21 @@ def main() -> int:
     auth: Dict[str, Any] = {'attempted': False, 'ok': True, 'reason': 'not_needed'}
     if args.always_auth or needs_refresh:
         if network['ok']:
-            auth = _auth_attempt(
-                token_path=token_path,
-                callback_timeout_seconds=float(args.auth_timeout_seconds),
-                validate_account_probe=bool(args.validate_account_probe),
-            )
+            if needs_refresh and not bool(args.skip_refresh_token_grant):
+                auth = _direct_refresh_token_grant(
+                    token_path,
+                    min_extension_seconds=float(args.refresh_token_min_extension_seconds),
+                )
+            if not auth.get('attempted') or not auth.get('ok'):
+                fallback_auth = _auth_attempt(
+                    token_path=token_path,
+                    callback_timeout_seconds=float(args.auth_timeout_seconds),
+                    validate_account_probe=bool(args.validate_account_probe),
+                )
+                auth = {
+                    **fallback_auth,
+                    'refresh_grant': auth,
+                }
         else:
             auth = {
                 'attempted': False,

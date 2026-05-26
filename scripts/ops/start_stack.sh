@@ -140,6 +140,7 @@ fi
 "$PY" "$PROJECT_ROOT/scripts/ops/portable_brain_contract.py" apply >/dev/null 2>&1 || true
 "$PY" "$PROJECT_ROOT/scripts/resource_guard.py" --profile refresh --json >/dev/null 2>&1 || true
 "$PY" "$PROJECT_ROOT/scripts/ops/memory_efficiency_control.py" apply >/dev/null 2>&1 || true
+"$PY" "$PROJECT_ROOT/scripts/ops/computer_task_intelligence.py" --apply --json >/dev/null 2>&1 || true
 
 if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
   # shellcheck disable=SC1091

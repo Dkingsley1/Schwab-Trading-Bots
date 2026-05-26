@@ -173,6 +173,7 @@ def _supportability_for_row(row: dict[str, Any], *, snapshot_ready: bool = False
         return "inactive"
     if _is_collection_only_active(row):
         return "collection_only_active"
+    training_isolated = bool(row.get("training_excluded", False) or row.get("exclude_from_training", False))
     best_quality_score = _best_score(row.get("registry_quality_score"), row.get("candidate_quality_score"))
     best_test_accuracy = _best_score(row.get("registry_test_accuracy"), row.get("candidate_test_accuracy"))
     if not bool(row.get("diagnostic_fresh", False)):
@@ -200,6 +201,10 @@ def _supportability_for_row(row: dict[str, Any], *, snapshot_ready: bool = False
             return "registry_seeded_active"
         return "unsupported_stale_diagnostics"
     cause = str(row.get("inferred_cause") or "")
+    if training_isolated and cause in {"shared_runtime_input_gap", "sequence_depth_gap"}:
+        return "isolated_runtime_input_debt"
+    if training_isolated and cause == "quality_guard_failure":
+        return "isolated_quality_probation"
     if cause in {"shared_runtime_input_gap", "sequence_depth_gap"}:
         return "unsupported_runtime_inputs"
     if cause in {"sample_filter_too_strict", "confidence_gate_too_strict", "label_builder_too_strict", "label_balance_gap", "dataset_floor_gap"}:
@@ -331,10 +336,27 @@ def build_audit_payload(
         "supportability_counts": dict(sorted(supportability_counts.items())),
         "runtime_snapshot": snapshot,
         "active_sample_starved": [
-            row for row in supportability_active_rows if str(row.get("status")) == "deferred_sample_starved"
+            row
+            for row in supportability_active_rows
+            if str(row.get("status")) == "deferred_sample_starved"
+            and not str(row.get("supportability_status") or "").startswith("isolated_")
+        ][:25],
+        "active_sample_starved_isolated": [
+            row
+            for row in supportability_active_rows
+            if str(row.get("status")) == "deferred_sample_starved"
+            and str(row.get("supportability_status") or "").startswith("isolated_")
         ][:25],
         "active_quality_failed": [
-            row for row in supportability_active_rows if str(row.get("inferred_cause")) == "quality_guard_failure"
+            row
+            for row in supportability_active_rows
+            if str(row.get("inferred_cause")) == "quality_guard_failure"
+            and str(row.get("supportability_status") or "") != "isolated_quality_probation"
+        ][:25],
+        "active_quality_probation_isolated": [
+            row
+            for row in supportability_active_rows
+            if str(row.get("supportability_status") or "") == "isolated_quality_probation"
         ][:25],
         "active_stale_diagnostics": [
             row for row in supportability_active_rows if not bool(row.get("diagnostic_fresh", False))

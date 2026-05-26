@@ -146,16 +146,37 @@ def _pending_metrics(project_root: Path) -> dict[str, Any]:
     backpressure = _health(project_root, "ingestion_backpressure_latest.json")
     storage = _health(project_root, "ingestion_storage_control_latest.json")
     storage_bp = _as_dict(storage.get("backpressure"))
-    core = max(_safe_int(backpressure.get("pending_lines"), 0), _safe_int(storage_bp.get("core_pending_lines"), 0))
-    deferred = max(_safe_int(backpressure.get("pending_lines_deferred"), 0), _safe_int(storage_bp.get("deferred_pending_lines"), 0))
-    cold = max(_safe_int(backpressure.get("pending_lines_cold"), 0), _safe_int(storage_bp.get("cold_pending_lines"), 0))
-    support = max(
-        _safe_int(backpressure.get("pending_lines_support_telemetry"), 0),
-        _safe_int(storage_bp.get("support_pending_lines"), 0),
-    )
-    total = max(_safe_int(backpressure.get("pending_lines_total"), 0), _safe_int(storage_bp.get("total_pending_lines"), 0), core + deferred + cold + support)
     threshold = max(_safe_int(storage_bp.get("pending_lines_threshold"), 15000), 1)
-    oldest = max(_safe_float(backpressure.get("oldest_pending_age_seconds"), 0.0), _safe_float(storage_bp.get("oldest_pending_age_seconds"), 0.0))
+    storage_total = _safe_int(storage_bp.get("total_pending_lines"), 0)
+    storage_oldest = _safe_float(storage_bp.get("oldest_pending_age_seconds"), 0.0)
+    storage_status = str(storage.get("overall_status") or "").strip().lower()
+    storage_severity = str(storage.get("severity") or "").strip().lower()
+    pressure_index = _safe_float(storage.get("pressure_index"), 0.0)
+    storage_authoritative = bool(
+        storage_bp
+        and storage_total <= threshold
+        and storage_oldest <= 240.0
+        and pressure_index < 1.0
+        and storage_status in {"ready", "advisory", "ok", "stable", ""}
+        and storage_severity in {"ready", "advisory", "ok", "stable", "watch", ""}
+    )
+    if storage_authoritative:
+        core = _safe_int(storage_bp.get("core_pending_lines"), 0)
+        deferred = _safe_int(storage_bp.get("deferred_pending_lines"), 0)
+        cold = _safe_int(storage_bp.get("cold_pending_lines"), 0)
+        support = _safe_int(storage_bp.get("support_pending_lines"), 0)
+        total = storage_total
+        oldest = storage_oldest
+    else:
+        core = max(_safe_int(backpressure.get("pending_lines"), 0), _safe_int(storage_bp.get("core_pending_lines"), 0))
+        deferred = max(_safe_int(backpressure.get("pending_lines_deferred"), 0), _safe_int(storage_bp.get("deferred_pending_lines"), 0))
+        cold = max(_safe_int(backpressure.get("pending_lines_cold"), 0), _safe_int(storage_bp.get("cold_pending_lines"), 0))
+        support = max(
+            _safe_int(backpressure.get("pending_lines_support_telemetry"), 0),
+            _safe_int(storage_bp.get("support_pending_lines"), 0),
+        )
+        total = max(_safe_int(backpressure.get("pending_lines_total"), 0), storage_total, core + deferred + cold + support)
+        oldest = max(_safe_float(backpressure.get("oldest_pending_age_seconds"), 0.0), storage_oldest)
     ratio = total / float(threshold)
     return {
         "core_pending_lines": core,
@@ -168,6 +189,7 @@ def _pending_metrics(project_root: Path) -> dict[str, Any]:
         "oldest_pending_age_seconds": round(oldest, 3),
         "severity": str(storage.get("severity") or "unknown"),
         "pressure_index": round(_safe_float(storage.get("pressure_index"), ratio), 6),
+        "storage_live_authoritative": storage_authoritative,
         "estimated_total_drain_minutes": storage_bp.get("estimated_total_drain_minutes"),
     }
 
@@ -208,7 +230,7 @@ def _bot_quality(project_root: Path, platform: dict[str, Any]) -> dict[str, Any]
     zero_obs = _safe_int(rollup.get("zero_observation_count"), 0)
     quality_status = str(quality.get("overall_status") or "missing")
     status = "ready"
-    if quality_status == "blocked" or average < 55.0 or zero_obs > 0:
+    if quality_status in {"blocked", "degraded", "needs_work"} or average < 55.0 or zero_obs > 0:
         status = "needs_work"
     return {
         "overall_status": status,
@@ -235,11 +257,31 @@ def _bot_quality(project_root: Path, platform: dict[str, Any]) -> dict[str, Any]
 def _duplicate_alpha(platform: dict[str, Any]) -> dict[str, Any]:
     section = _platform_section(platform, "duplicate_alpha_overlap_detector")
     overlap = _safe_int(section.get("overlap_cluster_count"), 0)
-    status = "needs_work" if overlap > 0 or str(section.get("overall_status") or "") in {"needs_work", "degraded"} else "ready"
+    high_overlap = _safe_int(section.get("high_overlap_cluster_count"), 0)
+    source_status = str(section.get("overall_status") or "missing")
+    novelty_contract_raw = section.get("novelty_contract")
+    novelty_contract = _as_dict(novelty_contract_raw)
+    controlled_by_novelty_contract = bool(
+        novelty_contract_raw
+        or novelty_contract
+        or _bool(section.get("novelty_contract_present"))
+        or _bool(section.get("compression_review_active"))
+        or _bool(section.get("review_queue_active"))
+    )
+    source_needs_work = source_status in {"needs_work", "degraded"}
+    if overlap <= 0 and not source_needs_work:
+        status = "ready"
+    elif overlap > 0 and controlled_by_novelty_contract:
+        status = "watch"
+    else:
+        status = "needs_work"
     return {
         "overall_status": status,
         "overlap_cluster_count": overlap,
-        "source_status": str(section.get("overall_status") or "missing"),
+        "high_overlap_cluster_count": high_overlap,
+        "source_status": source_status,
+        "controlled_by_novelty_contract": controlled_by_novelty_contract,
+        "compression_review_required": bool(overlap > 0),
         "assigned_infrabots": INFRA_ASSIGNMENTS["duplicate_alpha_compression"],
         "recommended_commands": [
             ["./scripts/ops/opsctl.sh", "duplicate-alpha-detector", "--json"],

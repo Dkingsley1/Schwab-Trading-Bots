@@ -57,6 +57,24 @@ def _parse_csv(raw: Any) -> list[str]:
     return [str(part).strip().lower() for part in str(raw or "").split(",") if str(part).strip()]
 
 
+def _label_contract_from_registry_row(row: dict[str, Any]) -> dict[str, Any]:
+    raw = row.get("label_contract") or row.get("training_label_contract") or row.get("universal_label_contract")
+    if not isinstance(raw, dict):
+        return {}
+    label_family = str(raw.get("label_family") or raw.get("family") or "").strip()
+    primary_horizon = str(raw.get("primary_horizon") or raw.get("primary_label_horizon") or "").strip()
+    if not label_family or not primary_horizon:
+        return {}
+    return {
+        "label_family": label_family,
+        "primary_horizon": primary_horizon,
+        "aux_horizons": list(raw.get("aux_horizons") or raw.get("aux_label_horizons") or []),
+        "required_context": list(raw.get("required_context") or raw.get("required_label_context") or []),
+        "contract_version": str(raw.get("contract_version") or raw.get("version") or row.get("data_label_contract_version") or ""),
+        "source": "registry_requalification_repair",
+    }
+
+
 def _age_hours(path: Path) -> float | None:
     try:
         return max((datetime.now(timezone.utc) - datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)).total_seconds() / 3600.0, 0.0)
@@ -157,8 +175,17 @@ def _data_collection_threshold(row: dict[str, Any]) -> tuple[bool, dict[str, Any
         _safe_int(row.get("collected_observation_count"), 0),
         _safe_int(row.get("observation_count"), 0),
     )
-    min_observations = max(_safe_int(row.get("minimum_training_observations"), 0), 0)
-    min_days = max(_safe_int(row.get("minimum_data_collection_days"), 0), 0)
+    paper_standard = row.get("paper_promotion_standard") if isinstance(row.get("paper_promotion_standard"), dict) else {}
+    min_observations = max(
+        _safe_int(row.get("minimum_training_observations"), 0),
+        _safe_int(paper_standard.get("minimum_observations"), 0),
+        0,
+    )
+    min_days = max(
+        _safe_int(row.get("minimum_data_collection_days"), 0),
+        _safe_int(paper_standard.get("minimum_collection_days"), 0),
+        0,
+    )
     observations_ready = bool(min_observations <= 0 or observations >= min_observations)
     days_ready = bool(min_days <= 0 or (started_age_days is not None and started_age_days >= float(min_days)))
     ready = bool(observations_ready and days_ready)
@@ -194,6 +221,7 @@ def _recovered_diagnostic(
     log_payload: dict[str, Any],
     log_path: Path,
     model_path: Path | None,
+    label_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metrics = log_payload.get("metrics") if isinstance(log_payload.get("metrics"), dict) else {}
     acted_count = max(
@@ -227,6 +255,8 @@ def _recovered_diagnostic(
         "recovery_source_log_path": str(log_path),
         "recovery_source_model_path": str(model_path) if model_path else "",
     }
+    if label_contract:
+        runtime_meta["label_contract"] = dict(label_contract)
     payload = {
         "timestamp_utc": diag_timestamp,
         "run_tag": bot_id,
@@ -255,6 +285,7 @@ def _diagnostic_from_source_payload(
     source_payload: dict[str, Any],
     source_path: Path,
     model_path: Path | None,
+    label_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if isinstance(source_payload.get("metrics"), dict):
         return _recovered_diagnostic(
@@ -262,6 +293,7 @@ def _diagnostic_from_source_payload(
             log_payload=source_payload,
             log_path=source_path,
             model_path=model_path,
+            label_contract=label_contract,
         )
     payload = dict(source_payload)
     payload.setdefault("timestamp_utc", str(payload.get("timestamp") or datetime.now(timezone.utc).isoformat()))
@@ -273,6 +305,8 @@ def _diagnostic_from_source_payload(
         "recovery_source_log_path": str(source_path),
         "recovery_source_model_path": str(model_path) if model_path else "",
     }
+    if label_contract:
+        payload["runtime_meta"]["label_contract"] = dict(label_contract)
     payload["repair_source_path"] = str(source_path)
     return payload
 
@@ -314,6 +348,13 @@ def apply_repairs(
         latest_log_newer_than_diag = bool(
             latest_log and diag_path.exists() and latest_log.stat().st_mtime > diag_path.stat().st_mtime
         )
+        diag_payload = _load_json(diag_path) if diag_path.exists() else {}
+        diag_runtime_meta = diag_payload.get("runtime_meta") if isinstance(diag_payload.get("runtime_meta"), dict) else {}
+        diag_missing_label_contract = bool(
+            _label_contract_from_registry_row(row)
+            and not isinstance(diag_runtime_meta.get("label_contract"), dict)
+            and not isinstance(diag_runtime_meta.get("training_label_contract"), dict)
+        )
 
         if latest_model and str(row.get("model_path") or "") != str(latest_model):
             row["model_path"] = str(latest_model)
@@ -326,6 +367,7 @@ def apply_repairs(
             (not diag_exists_before)
             or latest_log_newer_than_diag
             or (diag_age_hours is not None and diag_age_hours > 72.0)
+            or diag_missing_label_contract
         ):
             log_payload = _load_json(latest_log)
             recovered = _diagnostic_from_source_payload(
@@ -333,6 +375,7 @@ def apply_repairs(
                 source_payload=log_payload,
                 source_path=latest_log,
                 model_path=latest_model,
+                label_contract=_label_contract_from_registry_row(row),
             )
             _write_json(diag_path, recovered)
             diag_rebuilt = True

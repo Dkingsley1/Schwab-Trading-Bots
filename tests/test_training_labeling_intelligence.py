@@ -106,6 +106,101 @@ def test_apply_is_idempotent_by_slot_kind(tmp_path: Path) -> None:
     assert second["pack"]["bot_ids"][0] == first["added_bot_ids"][0]
 
 
+def test_targeted_label_repair_overrides_generic_existing_contract(tmp_path: Path) -> None:
+    _write_registry(tmp_path)
+    registry_path = tmp_path / "master_bot_registry.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    registry["sub_bots"].append(
+        {
+            "bot_id": "brain_refinery_v95_rates_regime_bond_bot",
+            "bot_role": "signal_sub_bot",
+            "active": True,
+            "data_collection_active": True,
+            "lifecycle_state": "paper_live_data",
+            "label_contract": {
+                "version": tli.UNIVERSAL_LABEL_CONTRACT_VERSION,
+                "label_family": "generic_directional",
+                "primary_horizon": "1d_forward_return",
+                "required_context": ["price_bars", "volume", "market_context"],
+                "source": "inferred_from_registry_identity",
+            },
+            "data_label_contract_version": tli.UNIVERSAL_LABEL_CONTRACT_VERSION,
+        }
+    )
+    registry_path.write_text(json.dumps(registry) + "\n", encoding="utf-8")
+
+    payload = tli.apply_registry(tmp_path)
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    repaired = next(row for row in registry["sub_bots"] if row["bot_id"] == "brain_refinery_v95_rates_regime_bond_bot")
+
+    assert "brain_refinery_v95_rates_regime_bond_bot" in payload["label_contract_summary"]["updated_label_contract_bot_ids"]
+    assert repaired["training_label_contract_status"] == "targeted_labeling_repair"
+    assert repaired["label_contract"]["label_family"] == "fixed_income_rates"
+    assert repaired["label_contract"]["training_lane"] == "slow_lane_balanced"
+    assert "rates_curve" in repaired["label_contract"]["required_context"]
+
+
+def test_missing_advanced_quant_contract_gets_quant_research_family(tmp_path: Path) -> None:
+    _write_registry(tmp_path)
+    registry_path = tmp_path / "master_bot_registry.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    registry["sub_bots"].append(
+        {
+            "bot_id": "brain_refinery_v444_quant_pricing_merton_jump_diffusion_bot",
+            "bot_role": "signal_sub_bot",
+            "active": True,
+            "data_collection_active": True,
+            "training_excluded": True,
+            "lifecycle_state": "data_collection_only",
+        }
+    )
+    registry_path.write_text(json.dumps(registry) + "\n", encoding="utf-8")
+
+    payload = tli.apply_registry(tmp_path)
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    repaired = next(row for row in registry["sub_bots"] if row["bot_id"] == "brain_refinery_v444_quant_pricing_merton_jump_diffusion_bot")
+
+    assert "brain_refinery_v444_quant_pricing_merton_jump_diffusion_bot" in payload["label_contract_summary"]["updated_label_contract_bot_ids"]
+    assert repaired["label_contract"]["label_family"] == "quant_pricing_research"
+    assert repaired["label_contract"]["training_lane"] == "research_quant_proxy"
+    assert "quant_model_feature_surface" in repaired["label_contract"]["required_context"]
+    assert "model_price_sensitivity_grid" in repaired["label_contract"]["required_context"]
+
+
+def test_collect_only_diagnostics_include_training_excluded_paper_live_data(tmp_path: Path) -> None:
+    _write_registry(tmp_path)
+    registry_path = tmp_path / "master_bot_registry.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    registry["sub_bots"].append(
+        {
+            "bot_id": "brain_refinery_v12_news_shocks",
+            "bot_role": "signal_sub_bot",
+            "active": True,
+            "data_collection_active": True,
+            "training_excluded": True,
+            "lifecycle_state": "paper_live_data",
+            "observations": 320,
+            "minimum_training_observations": 1000,
+        }
+    )
+    registry_path.write_text(json.dumps(registry) + "\n", encoding="utf-8")
+
+    payload = tli.apply_registry(
+        tmp_path,
+        materialize_collect_only_diagnostics=True,
+        collect_only_diagnostic_min_version=0,
+    )
+
+    diagnostics = payload["collect_only_diagnostics"]
+    assert "brain_refinery_v12_news_shocks" in diagnostics["written_bot_ids"]
+    diag_path = tmp_path / "governance" / "training_diagnostics" / "brain_refinery_v12_news_shocks_latest.json"
+    assert diag_path.exists()
+    diag = json.loads(diag_path.read_text(encoding="utf-8"))
+    assert diag["training_excluded"] is True
+    assert diag["lifecycle_state"] == "paper_live_data"
+    assert diag["runtime_meta"]["collection_threshold"]["observations_remaining"] == 680
+
+
 def test_training_process_intelligence_reads_walk_forward_coverage_artifacts(tmp_path: Path) -> None:
     _write_registry(tmp_path)
     health = tmp_path / "governance" / "health"

@@ -21,6 +21,7 @@ DEFAULT_ROLLUP_HISTORY_PATH = PROJECT_ROOT / "governance" / "health" / "one_numb
 DEFAULT_ROLLUP_HISTORY_MAX_DAYS = 400
 DAY_SUFFIX_RE = re.compile(r"_(\d{8})\.jsonl$")
 RAW_JSONL_DAY_RE = re.compile(r"_(\d{8})\.jsonl(?:\.gz)?$")
+ONE_NUMBERS_ARTIFACT_RE = re.compile(r"^one_numbers_(\d{8})_\d{8}_\d{6}\.csv$")
 ONE_NUMBERS_START_DAY_ENV_NAMES = (
     "ONE_NUMBERS_ORIGINAL_START_DAY",
     "ONE_NUMBERS_EXPECTED_START_DAY",
@@ -285,6 +286,44 @@ def _refresh_latest_metrics_alias(*, out_dir: Path, metrics_csv_path: Path) -> P
         latest_metrics_csv.unlink()
     latest_metrics_csv.symlink_to(metrics_csv_path.name)
     return latest_metrics_csv
+
+
+def _report_day_rank(day: object) -> int:
+    raw = str(day or "").strip()
+    if re.fullmatch(r"\d{8}", raw):
+        return int(raw)
+    return -1
+
+
+def _payload_report_day(payload: dict[str, object]) -> str:
+    return str(payload.get("resolved_day") or payload.get("day_utc") or payload.get("requested_day") or "").strip()
+
+
+def _current_latest_report_day(out_dir: Path) -> str:
+    candidates: list[str] = []
+    for path in (out_dir / "one_numbers_summary.json", PROJECT_ROOT / "governance" / "health" / "one_numbers_latest.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except Exception:
+            payload = {}
+        if isinstance(payload, dict):
+            day = _payload_report_day(payload)
+            if day:
+                candidates.append(day)
+    if out_dir.exists():
+        for path in out_dir.iterdir():
+            match = ONE_NUMBERS_ARTIFACT_RE.match(path.name)
+            if match:
+                candidates.append(match.group(1))
+    return max(candidates, key=_report_day_rank, default="")
+
+
+def _should_update_one_numbers_latest(out_dir: Path, payload: dict[str, object]) -> bool:
+    new_day = _payload_report_day(payload)
+    current_day = _current_latest_report_day(out_dir)
+    if not current_day:
+        return True
+    return _report_day_rank(new_day) >= _report_day_rank(current_day)
 
 
 def _xlsx_col_name(index: int) -> str:

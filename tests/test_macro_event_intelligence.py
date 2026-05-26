@@ -125,3 +125,158 @@ def test_macro_event_intelligence_recognizes_manual_replay_artifacts(tmp_path: P
     assert payload["transcript_quality"] == "full_replay"
     assert payload["media_status"] == "ready"
     assert payload["replay_contract"]["replay_completed"] is True
+
+
+def test_macro_event_intelligence_ignores_stale_media_from_different_event(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    live_macro_path = tmp_path / "live_macro_latest.json"
+    media_latest_path = tmp_path / "media_latest.json"
+    _write_json(health / "macro_auto_watch_status.json", {"live_detected": False, "post_live_replay_completed": False})
+    _write_json(health / "macro_auto_watch_state.json", {})
+    _write_json(
+        health / "live_macro_media_status.json",
+        {
+            "ok": True,
+            "source": "CGTN",
+            "speaker": "Jensen Huang",
+            "timestamp_utc": "2026-05-14T17:22:20+00:00",
+            "transcript_quality_norm": 0.9,
+            "cue_count": 20,
+            "asr_backend": "mlx_whisper",
+        },
+    )
+    _write_json(media_latest_path, {"ok": True, "source": "CGTN", "timestamp_utc": "2026-05-14T17:22:20+00:00", "transcript_quality_norm": 0.9})
+    _write_json(
+        live_macro_path,
+        {
+            "source": "Company Earnings Call",
+            "published": "2026-05-20T14:28:36+00:00",
+            "stance": "mixed",
+            "sentiment_hint": -0.2,
+            "shock_hint": 0.85,
+            "items": [
+                {
+                    "headline": "NVIDIA Q1 FY2027 earnings today",
+                    "summary": "results and call are scheduled today",
+                    "published": "2026-05-20T14:28:36+00:00",
+                }
+            ],
+        },
+    )
+
+    payload = src.build_payload(project_root, live_macro_path=live_macro_path, media_latest_path=media_latest_path)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["media_context_status"] == "stale_or_different_event"
+    assert payload["transcript_quality"] == "live_excerpt"
+    assert payload["transcript_quality_score"] == 0.0
+
+
+def test_macro_event_intelligence_reports_unverified_schwab_calendar(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    live_macro_path = tmp_path / "live_macro_latest.json"
+    media_latest_path = tmp_path / "media_latest.json"
+    _write_json(
+        health / "macro_auto_watch_status.json",
+        {
+            "correlate_with_schwab_calendar": True,
+            "calendar_correlation_enabled": True,
+            "calendar_correlation_ok": False,
+            "calendar_correlation_reason": "client_has_no_calendar_methods",
+            "calendar_correlation_source": "schwab.client",
+        },
+    )
+    _write_json(health / "macro_auto_watch_state.json", {})
+    _write_json(health / "live_macro_media_status.json", {})
+    _write_json(media_latest_path, {})
+    _write_json(
+        live_macro_path,
+        {
+            "source": "Company Earnings Call",
+            "published": "2026-05-20T14:28:36+00:00",
+            "shock_hint": 0.85,
+            "items": [{"headline": "NVIDIA Q1 FY2027 earnings today", "summary": "official event source is active"}],
+        },
+    )
+
+    payload = src.build_payload(project_root, live_macro_path=live_macro_path, media_latest_path=media_latest_path)
+
+    assert payload["calendar_verification"]["status"] == "unverified"
+    assert payload["calendar_verification"]["reason"] == "client_has_no_calendar_methods"
+    assert any("Schwab calendar verification" in action for action in payload["recommended_actions"])
+
+
+def test_macro_event_intelligence_rejects_fomc_calendar_for_nvda_earnings(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    live_macro_path = tmp_path / "live_macro_latest.json"
+    media_latest_path = tmp_path / "media_latest.json"
+    _write_json(
+        health / "macro_auto_watch_status.json",
+        {
+            "correlate_with_schwab_calendar": True,
+            "calendar_correlation_enabled": True,
+            "calendar_correlation_ok": True,
+            "calendar_correlation_reason": "matched_event",
+            "calendar_correlation_source": "federalreserve.gov",
+            "calendar_event_title": "FOMC Press Conference",
+            "calendar_event_time_utc": "2026-06-17T18:30:00+00:00",
+            "calendar_matched_terms": ["FOMC", "Federal Reserve"],
+        },
+    )
+    _write_json(health / "macro_auto_watch_state.json", {})
+    _write_json(health / "live_macro_media_status.json", {})
+    _write_json(media_latest_path, {})
+    _write_json(
+        live_macro_path,
+        {
+            "template": "earnings_call",
+            "source": "Company Earnings Call",
+            "published": "2026-05-20T20:05:00+00:00",
+            "shock_hint": 0.9,
+            "symbols": ["NVDA", "QQQ", "SMH"],
+            "items": [{"headline": "NVIDIA Q1 FY2027 post-earnings move watch", "summary": "watch after-hours reaction and next-session continuation"}],
+        },
+    )
+
+    payload = src.build_payload(project_root, live_macro_path=live_macro_path, media_latest_path=media_latest_path)
+
+    verification = payload["calendar_verification"]
+    assert verification["ok"] is False
+    assert verification["status"] == "unverified"
+    assert verification["mismatch"] is True
+    assert verification["reason"] == "calendar_event_mismatch:matched_event"
+    assert verification["event_title"] == "FOMC Press Conference"
+    assert any("NVIDIA IR preset" in action for action in payload["recommended_actions"])
+
+
+def test_macro_event_intelligence_treats_official_release_as_event_evidence(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    live_macro_path = tmp_path / "live_macro_latest.json"
+    media_latest_path = tmp_path / "media_latest.json"
+    _write_json(health / "macro_auto_watch_status.json", {})
+    _write_json(health / "macro_auto_watch_state.json", {})
+    _write_json(health / "live_macro_media_status.json", {})
+    _write_json(media_latest_path, {})
+    _write_json(
+        live_macro_path,
+        {
+            "template": "earnings_call",
+            "source": "NVIDIA IR",
+            "speaker": "NVIDIA management",
+            "published": "2026-05-20T20:20:00+00:00",
+            "url": "https://www.globenewswire.com/news-release/2026/05/20/3298888/0/en/nvidia-announces-financial-results-for-first-quarter-fiscal-2027.html",
+            "shock_hint": 1.0,
+            "symbols": ["NVDA", "QQQ", "SMH"],
+            "items": [{"headline": "NVIDIA Q1 FY2027 post-earnings move watch", "summary": "official results release and next-session continuation watch"}],
+        },
+    )
+
+    payload = src.build_payload(project_root, live_macro_path=live_macro_path, media_latest_path=media_latest_path)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["transcript_quality"] == "official_release"
+    assert not any("caption-aligned" in action for action in payload["recommended_actions"])

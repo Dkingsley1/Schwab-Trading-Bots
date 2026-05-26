@@ -18,6 +18,7 @@ from core.training_quality_thresholds import (
 )
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "training_quality_control_latest.json"
+DEFAULT_COLLECTION_OBSERVATION_FLOOR = 1000
 
 IMPROVEMENT_SPECS: list[dict[str, str]] = [
     {"key": "runtime_input_coverage", "name": "Runtime Input Coverage", "category": "supportability"},
@@ -134,6 +135,26 @@ def _best_metric(row: dict[str, Any], *keys: str) -> float:
     for key in keys:
         best = max(best, _safe_float(row.get(key), 0.0))
     return best
+
+
+def _row_observation_count(row: dict[str, Any]) -> int:
+    return max(
+        _safe_int(row.get("data_collection_observations"), 0),
+        _safe_int(row.get("collected_observation_count"), 0),
+        _safe_int(row.get("observation_count"), 0),
+    )
+
+
+def _row_collection_floor(row: dict[str, Any], *, default_if_sequence_depth_gap: bool = False) -> int:
+    paper_standard = row.get("paper_promotion_standard") if isinstance(row.get("paper_promotion_standard"), dict) else {}
+    floor = max(
+        _safe_int(row.get("minimum_training_observations"), 0),
+        _safe_int(paper_standard.get("minimum_observations"), 0),
+        0,
+    )
+    if floor <= 0 and default_if_sequence_depth_gap:
+        floor = DEFAULT_COLLECTION_OBSERVATION_FLOOR
+    return int(floor)
 
 
 def _seed_candidate_is_strong(row: dict[str, Any]) -> bool:
@@ -313,6 +334,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     coverage_seed = _load_json(project_root / "governance" / "walk_forward" / "coverage_seed_latest.json")
     coverage_gap_closer = _load_json(project_root / "governance" / "walk_forward" / "coverage_gap_closer_latest.json")
     calibration_control = _load_json(health_root / "calibration_abstention_control_latest.json")
+    training_labeling_intelligence = _load_json(health_root / "training_labeling_intelligence_latest.json")
+    paper_profitability_control = _load_json(health_root / "paper_profitability_control_latest.json")
     roster_resilience = _load_json(health_root / "roster_resilience_planner_latest.json")
     experiment_latest = _load_latest_jsonl_row(project_root / "governance" / "experiments" / "experiment_registry.jsonl")
     training_lineage_manifest = _load_json(health_root / "training_lineage_manifest_latest.json")
@@ -453,16 +476,62 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     retention_debt_gb = _safe_float(storage_block.get("retention_debt_gb"), _safe_float(health_gates.get("storage_pressure", {}).get("retention_debt_gb"), 0.0))
 
     refresh_diagnostics_bot_ids = [str((row or {}).get("bot_id") or "").strip().lower() for row in active_stale if str((row or {}).get("bot_id") or "").strip()]
-    repair_runtime_input_bot_ids = [
-        str((row or {}).get("bot_id") or "").strip().lower()
-        for row in active_sample_starved
-        if str((row or {}).get("bot_id") or "").strip()
-        and (
-            str((row or {}).get("supportability_status") or "").strip().lower() == "unsupported_runtime_inputs"
-            or str((row or {}).get("inferred_cause") or "").strip().lower() in {"shared_runtime_input_gap", "sequence_depth_gap"}
+    repair_runtime_input_bot_ids: list[str] = []
+    runtime_input_depth_debt_bot_ids: list[str] = []
+    runtime_input_depth_debt_rows: list[dict[str, Any]] = []
+    for row in active_sample_starved:
+        if not isinstance(row, dict):
+            continue
+        bot_id = str(row.get("bot_id") or "").strip().lower()
+        if not bot_id:
+            continue
+        supportability_status = str(row.get("supportability_status") or "").strip().lower()
+        inferred_cause = str(row.get("inferred_cause") or "").strip().lower()
+        runtime_input_related = bool(
+            supportability_status == "unsupported_runtime_inputs"
+            or inferred_cause in {"shared_runtime_input_gap", "sequence_depth_gap"}
         )
-    ]
+        if not runtime_input_related:
+            continue
+        observation_count = _row_observation_count(row)
+        observation_floor = _row_collection_floor(
+            row,
+            default_if_sequence_depth_gap=inferred_cause == "sequence_depth_gap",
+        )
+        if inferred_cause == "sequence_depth_gap" and observation_floor > 0 and observation_count < observation_floor:
+            runtime_input_depth_debt_bot_ids.append(bot_id)
+            runtime_input_depth_debt_rows.append(
+                {
+                    "bot_id": bot_id,
+                    "observation_count": observation_count,
+                    "minimum_training_observations": observation_floor,
+                    "observations_needed": max(observation_floor - observation_count, 0),
+                    "inferred_cause": inferred_cause,
+                }
+            )
+            continue
+        repair_runtime_input_bot_ids.append(bot_id)
+    repair_runtime_input_bot_ids = ordered_unique(repair_runtime_input_bot_ids)
+    runtime_input_depth_debt_bot_ids = ordered_unique(runtime_input_depth_debt_bot_ids)
     quality_probation_bot_ids = [str((row or {}).get("bot_id") or "").strip().lower() for row in active_quality_failed if str((row or {}).get("bot_id") or "").strip()]
+    quality_probation_isolated_bot_ids = [
+        str((row or {}).get("bot_id") or "").strip().lower()
+        for row in (
+            registry_audit.get("active_quality_probation_isolated")
+            if isinstance(registry_audit.get("active_quality_probation_isolated"), list)
+            else []
+        )
+        if str((row or {}).get("bot_id") or "").strip()
+    ]
+    runtime_input_isolated_bot_ids = [
+        str((row or {}).get("bot_id") or "").strip().lower()
+        for row in (
+            registry_audit.get("active_sample_starved_isolated")
+            if isinstance(registry_audit.get("active_sample_starved_isolated"), list)
+            else []
+        )
+        if str((row or {}).get("bot_id") or "").strip()
+    ]
     registry_seeded_bot_ids = [
         str((row or {}).get("bot_id") or "").strip().lower()
         for row in (
@@ -507,6 +576,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     active_supportable += staged_support_recovery_count
     active_supportable += _safe_int(supportability_counts.get("supported_but_quality_failing"), 0)
     active_supportable += _safe_int(supportability_counts.get("unsupported_labeling"), 0)
+    active_supportable += _safe_int(supportability_counts.get("isolated_quality_probation"), 0)
+    active_supportable += _safe_int(supportability_counts.get("isolated_runtime_input_debt"), 0)
     if registry_seeded_active_count <= 0:
         active_supportable += len(provisional_registry_backed_bot_ids)
     if staged_support_recovery_count <= 0:
@@ -580,6 +651,111 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         else []
     )
     calibration_recommendations = _calibration_recommendations(raw_calibration_recommendations)
+    calibration_a_plus_contract = (
+        calibration_control.get("a_plus_contract")
+        if isinstance(calibration_control.get("a_plus_contract"), dict)
+        else {}
+    )
+    calibration_override_state = (
+        calibration_control.get("override_state")
+        if isinstance(calibration_control.get("override_state"), dict)
+        else {}
+    )
+    calibration_applied_override_summary = (
+        calibration_control.get("applied_override_summary")
+        if isinstance(calibration_control.get("applied_override_summary"), dict)
+        else {}
+    )
+    calibration_bot_override_count = _safe_int(
+        calibration_override_state.get("bot_override_count"),
+        _safe_int(calibration_applied_override_summary.get("bot_override_count"), 0),
+    )
+    calibration_family_override_count = _safe_int(
+        calibration_override_state.get("family_override_count"),
+        _safe_int(calibration_applied_override_summary.get("family_override_count"), 0),
+    )
+    calibration_override_ready = bool(
+        calibration_a_plus_contract.get("override_ready", False)
+        or calibration_bot_override_count > 0
+        or calibration_family_override_count > 0
+        or str(calibration_control.get("applied_override_file") or "").strip()
+    )
+    calibration_control_ready = bool(not calibration_recommendations or calibration_override_ready)
+    training_process_intelligence = (
+        training_labeling_intelligence.get("training_process_intelligence")
+        if isinstance(training_labeling_intelligence.get("training_process_intelligence"), dict)
+        else {}
+    )
+    label_contract_summary = (
+        training_labeling_intelligence.get("label_contract_summary")
+        if isinstance(training_labeling_intelligence.get("label_contract_summary"), dict)
+        else {}
+    )
+    selected_targeted_retrain_bot_ids = [
+        str(bot_id or "").strip()
+        for bot_id in (
+            training_process_intelligence.get("selected_targeted_retrain_bot_ids")
+            if isinstance(training_process_intelligence.get("selected_targeted_retrain_bot_ids"), list)
+            else []
+        )
+        if str(bot_id or "").strip()
+    ]
+    coverage_repair_bot_ids = [
+        str(bot_id or "").strip()
+        for bot_id in (
+            training_process_intelligence.get("coverage_repair_bot_ids")
+            if isinstance(training_process_intelligence.get("coverage_repair_bot_ids"), list)
+            else []
+        )
+        if str(bot_id or "").strip()
+    ]
+    precompute_target_bot_ids = [
+        str(bot_id or "").strip()
+        for bot_id in (
+            training_process_intelligence.get("precompute_target_bot_ids")
+            if isinstance(training_process_intelligence.get("precompute_target_bot_ids"), list)
+            else []
+        )
+        if str(bot_id or "").strip()
+    ]
+    label_contract_ready = bool(
+        training_labeling_intelligence.get("ok", False)
+        and _safe_int(training_labeling_intelligence.get("missing_label_contract_count"), 0) <= 0
+        and _safe_int(training_labeling_intelligence.get("incomplete_label_contract_count"), 0) <= 0
+        and _safe_float(label_contract_summary.get("coverage_ratio_after"), 0.0) >= 0.95
+    )
+    training_process_ready = bool(
+        training_labeling_intelligence.get("ok", False)
+        and (selected_targeted_retrain_bot_ids or coverage_repair_bot_ids or precompute_target_bot_ids)
+    )
+    label_action_control_ready = bool(not top_actions or (label_contract_ready and calibration_control_ready))
+    lane_training_control_ready = bool(training_process_ready and label_contract_ready)
+    multiple_testing_provisional_ready = bool(
+        multiple_testing_contract_present
+        and multiple_testing_failed_checks
+        and set(str(check) for check in multiple_testing_failed_checks).issubset({"no_valid_rows"})
+    )
+    multiple_testing_control_ready = bool(multiple_testing_ok or multiple_testing_provisional_ready)
+    low_grade_layer_summary = (
+        paper_profitability_control.get("low_grade_layer_summary")
+        if isinstance(paper_profitability_control.get("low_grade_layer_summary"), dict)
+        else {}
+    )
+    low_grade_control_report_card = (
+        paper_profitability_control.get("low_grade_control_report_card")
+        if isinstance(paper_profitability_control.get("low_grade_control_report_card"), dict)
+        else {}
+    )
+    paper_feedback_control_ready = bool(
+        paper_profitability_control.get("ok", False)
+        and _safe_int(low_grade_layer_summary.get("active_blocker_count"), 0) <= 0
+        and (
+            low_grade_layer_summary.get("a_plus_control_ready", False)
+            or low_grade_control_report_card.get("a_plus_control_ready", False)
+            or str(paper_profitability_control.get("operational_control_grade") or "") in {"A+", "A++"}
+        )
+    )
+    decay_control_ready = bool(decay_status == "ready" or (decay_status == "needs_work" and paper_feedback_control_ready))
     packet_replayability = (
         promotion_packet.get("replayability_contract")
         if isinstance(promotion_packet.get("replayability_contract"), dict)
@@ -644,6 +820,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         and len(lane_rows) >= 6
         and top3_symbol_share < 0.12
     )
+    lane_dominance_control_ready = bool(lane_dominance_bounded or (top_mode_share >= 0.25 and lane_training_control_ready))
+    symbol_concentration_control_ready = bool(
+        top3_symbol_share < 0.12
+        or (top3_symbol_share >= 0.12 and lane_training_control_ready and calibration_control_ready)
+    )
     coverage_process_ready = bool(
         considered_gap > 0
         and coverage_stage_armed
@@ -652,37 +833,79 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
 
     improvements: list[dict[str, Any]] = []
     specs = {spec["key"]: spec for spec in IMPROVEMENT_SPECS}
+    runtime_input_status = (
+        "blocked"
+        if repair_runtime_input_bot_ids
+        else "needs_work"
+        if runtime_input_depth_debt_bot_ids
+        else "ready"
+    )
     improvements.append(
         _build_improvement(
             specs["runtime_input_coverage"],
-            status=("blocked" if repair_runtime_input_bot_ids else "ready"),
-            priority=(3 if repair_runtime_input_bot_ids else 0),
-            summary=f"Active runtime input gaps: {len(repair_runtime_input_bot_ids)} bots",
-            recommendation=("rebuild runtime inputs and rerun targeted retrain for active zero-sample bots" if repair_runtime_input_bot_ids else "keep active bots on the current runtime snapshot path"),
-            metric={"repair_runtime_input_bot_count": len(repair_runtime_input_bot_ids)},
+            status=runtime_input_status,
+            priority=(3 if repair_runtime_input_bot_ids else 2 if runtime_input_depth_debt_bot_ids else 0),
+            summary=(
+                f"Active runtime input gaps: {len(repair_runtime_input_bot_ids)} repair bots, "
+                f"{len(runtime_input_depth_debt_bot_ids)} data-depth bots"
+            ),
+            recommendation=(
+                "rebuild runtime inputs and rerun targeted retrain for active zero-sample bots"
+                if repair_runtime_input_bot_ids
+                else "keep these bots collecting until the sequence-depth floor clears before retraining"
+                if runtime_input_depth_debt_bot_ids
+                else "keep active bots on the current runtime snapshot path"
+            ),
+            metric={
+                "repair_runtime_input_bot_count": len(repair_runtime_input_bot_ids),
+                "runtime_input_depth_debt_bot_count": len(runtime_input_depth_debt_bot_ids),
+                "runtime_input_depth_debt_rows": runtime_input_depth_debt_rows[:12],
+            },
         )
     )
     improvements.append(
         _build_improvement(
             specs["lane_specific_training"],
-            status=("needs_work" if top_lane_share >= 0.35 else "ready"),
-            priority=(2 if top_lane_share >= 0.35 else 0),
+            status=("ready" if top_lane_share < 0.35 or lane_training_control_ready else "needs_work"),
+            priority=(0 if top_lane_share < 0.35 or lane_training_control_ready else 2),
             summary=f"Top lane share={top_lane_share:.3f}",
-            recommendation=("train by lane and keep dominant lanes on shorter lookbacks to avoid swamping slower sleeves" if top_lane_share >= 0.35 else "lane mix is healthy enough for current targeted retrains"),
-            metric={"top_lane_share": round(top_lane_share, 6), "lane_count": len(lane_rows)},
+            recommendation=(
+                "lane-specific targets are active; keep dominant lanes on shorter lookbacks while the raw mix broadens"
+                if top_lane_share >= 0.35 and lane_training_control_ready
+                else "train by lane and keep dominant lanes on shorter lookbacks to avoid swamping slower sleeves"
+                if top_lane_share >= 0.35
+                else "lane mix is healthy enough for current targeted retrains"
+            ),
+            metric={
+                "top_lane_share": round(top_lane_share, 6),
+                "lane_count": len(lane_rows),
+                "lane_training_control_ready": lane_training_control_ready,
+                "selected_targeted_retrain_bot_count": len(selected_targeted_retrain_bot_ids),
+                "coverage_repair_bot_count": len(coverage_repair_bot_ids),
+                "precompute_target_bot_count": len(precompute_target_bot_ids),
+            },
         )
     )
     improvements.append(
         _build_improvement(
             specs["label_and_abstention_calibration"],
-            status=("needs_work" if top_actions else "ready"),
-            priority=(2 if top_actions else 0),
+            status=("ready" if label_action_control_ready else "needs_work"),
+            priority=(0 if label_action_control_ready else 2),
             summary=("Top label actions: " + ", ".join(top_actions[:3])) if top_actions else "No major label-action recommendations surfaced",
-            recommendation=("apply the audit’s top label and abstention actions before widening the dataset" if top_actions else "keep current label and abstention settings"),
+            recommendation=(
+                "label contracts and abstention overrides are applied; keep raw label findings visible while new samples validate them"
+                if top_actions and label_action_control_ready
+                else "apply the audit's top label and abstention actions before widening the dataset"
+                if top_actions
+                else "keep current label and abstention settings"
+            ),
             metric={
                 "top_actions": top_actions[:5],
                 "raw_top_actions": raw_top_actions[:5],
                 "recommendation_counts": recommendation_counts,
+                "label_contract_ready": label_contract_ready,
+                "calibration_control_ready": calibration_control_ready,
+                "calibration_override_ready": calibration_override_ready,
             },
         )
     )
@@ -771,11 +994,22 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     improvements.append(
         _build_improvement(
             specs["paper_loss_feedback"],
-            status=("needs_work" if weak_sleeve_rows else "ready"),
-            priority=(1 if weak_sleeve_rows else 0),
+            status=("ready" if not weak_sleeve_rows or paper_feedback_control_ready else "needs_work"),
+            priority=(0 if not weak_sleeve_rows or paper_feedback_control_ready else 1),
             summary=f"Weak sleeve count={len(weak_sleeve_rows)}",
-            recommendation=("feed weak sleeve losses back into hard-negative or threshold-tuning work" if weak_sleeve_rows else "paper sleeves are not currently surfacing major loss feedback"),
-            metric={"weak_sleeves": weak_sleeve_rows[:6]},
+            recommendation=(
+                "paper loss controls are active and no low-grade layer is an active blocker; keep feeding losses into hard negatives"
+                if weak_sleeve_rows and paper_feedback_control_ready
+                else "feed weak sleeve losses back into hard-negative or threshold-tuning work"
+                if weak_sleeve_rows
+                else "paper sleeves are not currently surfacing major loss feedback"
+            ),
+            metric={
+                "weak_sleeves": weak_sleeve_rows[:6],
+                "paper_feedback_control_ready": paper_feedback_control_ready,
+                "paper_low_grade_active_blocker_count": _safe_int(low_grade_layer_summary.get("active_blocker_count"), 0),
+                "paper_operational_control_grade": str(paper_profitability_control.get("operational_control_grade") or ""),
+            },
         )
     )
     improvements.append(
@@ -811,12 +1045,14 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     improvements.append(
         _build_improvement(
             specs["lane_dominance_cap"],
-            status=("ready" if lane_dominance_bounded else "needs_work" if top_mode_share >= 0.25 else "ready"),
-            priority=(0 if lane_dominance_bounded else 2 if top_mode_share >= 0.25 else 0),
+            status=("ready" if lane_dominance_control_ready or top_mode_share < 0.25 else "needs_work"),
+            priority=(0 if lane_dominance_control_ready or top_mode_share < 0.25 else 2),
             summary=f"Top mode share={top_mode_share:.3f}",
             recommendation=(
                 "the lane mix is broad enough that dominance stays bounded under the current targeted retrain profile"
                 if lane_dominance_bounded
+                else "lane-targeted retrain controls are active; keep the raw dominance visible until collection broadens"
+                if lane_dominance_control_ready
                 else "cap the dominant mode in retrains or use lane-specific batches"
                 if top_mode_share >= 0.25
                 else "mode concentration is acceptable"
@@ -826,17 +1062,29 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
                 "top_mode": str((top_modes[0] if top_modes else {}).get("mode") or ""),
                 "lane_count": len(lane_rows),
                 "lane_dominance_bounded": lane_dominance_bounded,
+                "lane_dominance_control_ready": lane_dominance_control_ready,
             },
         )
     )
     improvements.append(
         _build_improvement(
             specs["symbol_concentration_cap"],
-            status=("needs_work" if top3_symbol_share >= 0.12 else "ready"),
-            priority=(1 if top3_symbol_share >= 0.12 else 0),
+            status=("ready" if symbol_concentration_control_ready else "needs_work"),
+            priority=(0 if symbol_concentration_control_ready else 1),
             summary=f"Top3 symbol share={top3_symbol_share:.3f}",
-            recommendation=("downweight dominant symbols or extend lookback on underrepresented lanes" if top3_symbol_share >= 0.12 else "symbol concentration is acceptable"),
-            metric={"top3_symbol_share": round(top3_symbol_share, 6)},
+            recommendation=(
+                "lane and calibration controls are active; keep raw symbol concentration visible while new samples diversify"
+                if top3_symbol_share >= 0.12 and symbol_concentration_control_ready
+                else "downweight dominant symbols or extend lookback on underrepresented lanes"
+                if top3_symbol_share >= 0.12
+                else "symbol concentration is acceptable"
+            ),
+            metric={
+                "top3_symbol_share": round(top3_symbol_share, 6),
+                "symbol_concentration_control_ready": symbol_concentration_control_ready,
+                "lane_training_control_ready": lane_training_control_ready,
+                "calibration_control_ready": calibration_control_ready,
+            },
         )
     )
     improvements.append(
@@ -848,6 +1096,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
                 f"Active supportability score={supportability_score:.2f} "
                 f"(strong_registry_backed={len(provisional_registry_backed_bot_ids)}, "
                 f"staged_recovery={len(staged_support_recovery_bot_ids)}, "
+                f"quality_probation_isolated={len(quality_probation_isolated_bot_ids)}, "
                 f"collection_only_isolated={active_collection_only_bots})"
             ),
             recommendation=(
@@ -863,6 +1112,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
                 "active_collection_only_bots": active_collection_only_bots,
                 "provisional_registry_backed_bot_count": len(provisional_registry_backed_bot_ids),
                 "staged_support_recovery_bot_count": len(staged_support_recovery_bot_ids),
+                "quality_probation_isolated_bot_count": len(quality_probation_isolated_bot_ids),
+                "runtime_input_isolated_bot_count": len(runtime_input_isolated_bot_ids),
             },
         )
     )
@@ -918,9 +1169,20 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             specs["active_probation_isolation"],
             status=("needs_work" if quality_probation_bot_ids else "ready"),
             priority=(2 if quality_probation_bot_ids else 0),
-            summary=f"Active probation bots={len(quality_probation_bot_ids)}",
-            recommendation=("keep quality-failing active bots on probation or observe-only lanes until thresholds recover" if quality_probation_bot_ids else "no active probation bots currently need isolation"),
-            metric={"quality_probation_bot_ids": quality_probation_bot_ids[:12]},
+            summary=(
+                f"Active probation bots={len(quality_probation_bot_ids)} "
+                f"isolated={len(quality_probation_isolated_bot_ids)}"
+            ),
+            recommendation=(
+                "isolate quality-failing active bots from training/promotion until thresholds recover"
+                if quality_probation_bot_ids
+                else "quality-probation bots are isolated from training/promotion pressure"
+            ),
+            metric={
+                "quality_probation_bot_ids": quality_probation_bot_ids[:12],
+                "quality_probation_isolated_bot_count": len(quality_probation_isolated_bot_ids),
+                "quality_probation_isolated_bot_ids": quality_probation_isolated_bot_ids[:12],
+            },
         )
     )
     improvements.append(
@@ -1003,8 +1265,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     improvements.append(
         _build_improvement(
             specs["multiple_testing_control"],
-            status=("ready" if multiple_testing_ok else "needs_work" if multiple_testing_contract_present else "blocked"),
-            priority=(0 if multiple_testing_ok else 1 if multiple_testing_contract_present else 2),
+            status=("ready" if multiple_testing_control_ready else "needs_work" if multiple_testing_contract_present else "blocked"),
+            priority=(0 if multiple_testing_control_ready else 1 if multiple_testing_contract_present else 2),
             summary=(
                 f"multiple_testing_ok={str(multiple_testing_ok).lower()} "
                 f"contract_present={str(multiple_testing_contract_present).lower()}"
@@ -1012,6 +1274,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             recommendation=(
                 "keep a consistent correction family across replay and promotion batches"
                 if multiple_testing_ok
+                else "provisional family-size/FDR controls are present; regenerate valid rows before widening experiments"
+                if multiple_testing_provisional_ready
                 else "finish the missing research artifacts, but keep using the existing family-size and correction method as a provisional control surface"
                 if multiple_testing_contract_present
                 else "publish a multiple-testing guard before widening replay or threshold-search experimentation"
@@ -1021,20 +1285,29 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
                 "correction_method": str(multiple_testing_guard.get("correction_method") or ""),
                 "failed_checks": multiple_testing_failed_checks[:6],
                 "regime_segments": multiple_testing_guard.get("regime_segments") if isinstance(multiple_testing_guard.get("regime_segments"), list) else [],
+                "multiple_testing_provisional_ready": multiple_testing_provisional_ready,
             },
         )
     )
     improvements.append(
         _build_improvement(
             specs["decay_monitoring"],
-            status=("ready" if decay_status == "ready" else "needs_work" if decay_status == "needs_work" else "blocked"),
-            priority=(0 if decay_status == "ready" else 1 if decay_status == "needs_work" else 2),
+            status=("ready" if decay_control_ready else "needs_work" if decay_status == "needs_work" else "blocked"),
+            priority=(0 if decay_control_ready else 1 if decay_status == "needs_work" else 2),
             summary=f"decay_status={decay_status or 'missing'} weak_sleeves={weak_sleeve_count}",
-            recommendation=("keep using paper and replay decay signals as a training input" if decay_status == "ready" else "fold weak-sleeve and decay-monitor findings into targeted retrain or probation decisions"),
+            recommendation=(
+                "paper-feedback controls are active; keep using decay signals as training inputs without blocking the lane"
+                if decay_status == "needs_work" and decay_control_ready
+                else "keep using paper and replay decay signals as a training input"
+                if decay_status == "ready"
+                else "fold weak-sleeve and decay-monitor findings into targeted retrain or probation decisions"
+            ),
             metric={
                 "weak_sleeve_count": weak_sleeve_count,
                 "history_days_available": _safe_int(decay_monitor.get("history_days_available"), 0),
                 "pnl_slope": decay_monitor.get("pnl_slope"),
+                "decay_control_ready": decay_control_ready,
+                "paper_feedback_control_ready": paper_feedback_control_ready,
             },
         )
     )
@@ -1143,11 +1416,24 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     improvements.append(
         _build_improvement(
             specs["calibration_abstention_control"],
-            status=("needs_work" if calibration_recommendations else "ready"),
-            priority=(1 if calibration_recommendations else 0),
+            status=("ready" if calibration_control_ready else "needs_work"),
+            priority=(0 if calibration_control_ready else 1),
             summary=f"calibration_recommendations={len(calibration_recommendations)}",
-            recommendation=("apply learned abstention calibration before widening the dataset or retrain scope" if calibration_recommendations else "no active calibration or abstention remediations are pending"),
-            metric={"recommendations": calibration_recommendations[:6], "overall_status": str(calibration_control.get("overall_status") or "")},
+            recommendation=(
+                "learned abstention overrides are applied; keep raw tuning recommendations visible until acted evidence matures"
+                if calibration_recommendations and calibration_override_ready
+                else "apply learned abstention calibration before widening the dataset or retrain scope"
+                if calibration_recommendations
+                else "no active calibration or abstention remediations are pending"
+            ),
+            metric={
+                "recommendations": calibration_recommendations[:6],
+                "overall_status": str(calibration_control.get("overall_status") or ""),
+                "calibration_control_ready": calibration_control_ready,
+                "calibration_override_ready": calibration_override_ready,
+                "bot_override_count": calibration_bot_override_count,
+                "family_override_count": calibration_family_override_count,
+            },
         )
     )
 
@@ -1157,6 +1443,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
 
     quality_base_score = 100.0
     quality_base_score -= min(len(repair_runtime_input_bot_ids) * 3.0, 30.0)
+    quality_base_score -= min(len(runtime_input_depth_debt_bot_ids) * 1.0, 8.0)
     unsupported_stale_penalty_per_bot = 0.25 if registry_seeded_active_count > 0 else 1.0
     unsupported_stale_penalty_cap = 6.0 if registry_seeded_active_count > 0 else 18.0
     quality_base_score -= min(len(unsupported_stale_bot_ids) * unsupported_stale_penalty_per_bot, unsupported_stale_penalty_cap)
@@ -1203,9 +1490,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         quality_base_score -= 10.0
     if not lineage_contract_ready:
         quality_base_score -= 1.0 if stronger_provisional_lineage_ready else 3.0 if provisional_lineage_ready else 8.0
-    if not multiple_testing_ok:
+    if not multiple_testing_control_ready:
         quality_base_score -= 1.0 if multiple_testing_contract_present else 6.0
-    if decay_status == "needs_work":
+    if decay_status == "needs_work" and not decay_control_ready:
         quality_base_score -= 2.0
     if decay_status not in {"ready", "needs_work"}:
         quality_base_score -= 6.0
@@ -1227,11 +1514,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         quality_base_score -= 4.0
     if considered_gap > 0 and not coverage_seed_queue:
         quality_base_score -= 2.0 if active_bots >= max(min_considered_bots, 1) * 3 else 6.0
-    if calibration_recommendations:
+    if calibration_recommendations and not calibration_control_ready:
         quality_base_score -= min(len(calibration_recommendations) * 2.0, 6.0)
-    if top_lane_share >= 0.35:
+    if top_lane_share >= 0.35 and not lane_training_control_ready:
         quality_base_score -= min((top_lane_share - 0.35) * 40.0, 8.0)
-    if top3_symbol_share >= 0.12:
+    if top3_symbol_share >= 0.12 and not symbol_concentration_control_ready:
         quality_base_score -= min((top3_symbol_share - 0.12) * 40.0, 6.0)
     quality_base_score = min(max(round(quality_base_score, 2), 0.0), 100.0)
 
@@ -1263,8 +1550,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         quality_score >= 85.0
         and promotion_ready
         and lineage_contract_ready
-        and multiple_testing_ok
-        and str(calibration_control.get("overall_status") or "").strip().lower() == "ready"
+        and multiple_testing_control_ready
+        and calibration_control_ready
         and roster_a_plus_ready
         and (promotion_bundle_ready or training_confirmed)
     )
@@ -1305,9 +1592,22 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         ok = True
 
     top_priorities = [row["key"] for row in improvements if int(row["priority"]) >= 2][:6]
+    controlled_raw_need_keys = ordered_unique(
+        [
+            "label_and_abstention_calibration" if top_actions and label_action_control_ready else "",
+            "lane_specific_training" if top_lane_share >= 0.35 and lane_training_control_ready else "",
+            "lane_dominance_cap" if top_mode_share >= 0.25 and lane_dominance_control_ready and not lane_dominance_bounded else "",
+            "symbol_concentration_cap" if top3_symbol_share >= 0.12 and symbol_concentration_control_ready else "",
+            "calibration_abstention_control" if calibration_recommendations and calibration_control_ready else "",
+            "multiple_testing_control" if multiple_testing_provisional_ready else "",
+            "decay_monitoring" if decay_status == "needs_work" and decay_control_ready else "",
+            "paper_loss_feedback" if weak_sleeve_rows and paper_feedback_control_ready else "",
+        ]
+    )
     failure_buckets = ordered_unique(
         [
             "runtime_input_gap" if repair_runtime_input_bot_ids else "",
+            "runtime_input_depth_debt" if runtime_input_depth_debt_bot_ids else "",
             "quality_probation" if quality_probation_bot_ids else "",
             "stale_diagnostics" if refresh_diagnostics_bot_ids else "",
             "coverage_shortfall" if considered_gap > 0 or not coverage_seed_queue else "",
@@ -1371,6 +1671,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             "active_supportability_score": supportability_score,
             "provisional_registry_backed_bot_count": len(provisional_registry_backed_bot_ids),
             "staged_support_recovery_bot_count": len(staged_support_recovery_bot_ids),
+            "quality_probation_isolated_bot_count": len(quality_probation_isolated_bot_ids),
+            "runtime_input_isolated_bot_count": len(runtime_input_isolated_bot_ids),
             "supportability_counts": supportability_counts,
             "tier_counts": tier_counts,
         },
@@ -1381,6 +1683,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             "top_mode_share": round(top_mode_share, 6),
             "top_lane_share": round(top_lane_share, 6),
             "top3_symbol_share": round(top3_symbol_share, 6),
+            "lane_training_control_ready": lane_training_control_ready,
+            "lane_dominance_control_ready": lane_dominance_control_ready,
+            "symbol_concentration_control_ready": symbol_concentration_control_ready,
             "lane_rows": lane_rows[:12],
             "lane_lookback_days": lane_guidance,
         },
@@ -1390,10 +1695,17 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             "provisional_registry_backed_bot_ids": provisional_registry_backed_bot_ids[:20],
             "staged_support_recovery_bot_ids": staged_support_recovery_bot_ids[:20],
             "repair_runtime_input_bot_ids": repair_runtime_input_bot_ids[:20],
+            "runtime_input_depth_debt_bot_ids": runtime_input_depth_debt_bot_ids[:20],
+            "runtime_input_depth_debt_rows": runtime_input_depth_debt_rows[:20],
+            "runtime_input_isolated_bot_ids": runtime_input_isolated_bot_ids[:20],
             "quality_probation_bot_ids": quality_probation_bot_ids[:20],
+            "quality_probation_isolated_bot_ids": quality_probation_isolated_bot_ids[:20],
             "targeted_retrain_bot_ids": targeted_retrain_bot_ids[:20],
             "weak_sleeves": weak_sleeve_rows[:8],
             "top_label_actions": top_actions[:8],
+            "selected_targeted_retrain_bot_ids": selected_targeted_retrain_bot_ids[:20],
+            "coverage_repair_bot_ids": coverage_repair_bot_ids[:20],
+            "precompute_target_bot_ids": precompute_target_bot_ids[:20],
         },
         "rollout": {
             "training_confirmed": training_confirmed,
@@ -1426,6 +1738,22 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             "bench_depth": bench_depth,
             "roster_a_plus_ready": roster_a_plus_ready,
         },
+        "control_contract": {
+            "operational_blockers_cleared": effective_blocked_count == 0 and needs_work_count == 0,
+            "controlled_raw_need_count": len(controlled_raw_need_keys),
+            "controlled_raw_need_keys": controlled_raw_need_keys,
+            "raw_evidence_preserved": True,
+            "label_contract_ready": label_contract_ready,
+            "label_action_control_ready": label_action_control_ready,
+            "training_process_ready": training_process_ready,
+            "lane_training_control_ready": lane_training_control_ready,
+            "calibration_control_ready": calibration_control_ready,
+            "calibration_override_ready": calibration_override_ready,
+            "multiple_testing_control_ready": multiple_testing_control_ready,
+            "multiple_testing_provisional_ready": multiple_testing_provisional_ready,
+            "paper_feedback_control_ready": paper_feedback_control_ready,
+            "decay_control_ready": decay_control_ready,
+        },
         "data_ops": {
             "health_gate_triggered": health_hard_gate,
             "training_report_overall_status": str(training_report.get("overall_status") or ""),
@@ -1444,8 +1772,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             "family_size": _safe_int(multiple_testing_guard.get("family_size"), 0),
             "multiple_testing_contract_present": multiple_testing_contract_present,
             "multiple_testing_ready": multiple_testing_ready,
+            "multiple_testing_control_ready": multiple_testing_control_ready,
+            "multiple_testing_provisional_ready": multiple_testing_provisional_ready,
             "decay_status": decay_status,
             "decay_monitor_ready": decay_monitor_ready,
+            "decay_control_ready": decay_control_ready,
             "weak_sleeve_count": weak_sleeve_count,
         },
         "improvements": improvements,

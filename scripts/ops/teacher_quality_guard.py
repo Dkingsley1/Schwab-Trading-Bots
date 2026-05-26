@@ -18,6 +18,7 @@ else:
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "distillation" / "teacher_quality_latest.json"
+OVERFIT_BLOCKING_STATUSES = {"leak_like", "severe_overfit", "overfit_watch", "high_accuracy_guarded"}
 
 
 def _safe_float(raw: Any, default: float = 0.0) -> float:
@@ -75,6 +76,59 @@ def _paper_bonus_map(paper_payload: dict[str, Any]) -> dict[str, float]:
     return bonuses
 
 
+def _as_dict(raw: Any) -> dict[str, Any]:
+    return raw if isinstance(raw, dict) else {}
+
+
+def _overfit_awareness(project_root: Path) -> dict[str, Any]:
+    return load_json(project_root / "governance" / "health" / "overfitting_awareness_latest.json")
+
+
+def _overfit_awareness_map(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    rows = payload.get("bot_risk") if isinstance(payload.get("bot_risk"), list) else []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        bot_id = str(row.get("bot_id") or "").strip().lower()
+        if bot_id:
+            out[bot_id] = row
+    return out
+
+
+def _teacher_overfit_blocked(row: dict[str, Any]) -> bool:
+    if not row:
+        return False
+    status = str(row.get("status") or "").strip().lower()
+    policy = _as_dict(row.get("policy"))
+    return status in OVERFIT_BLOCKING_STATUSES and not bool(policy.get("may_teach", False))
+
+
+def _teacher_overfit_fields(row: dict[str, Any]) -> dict[str, Any]:
+    if not row:
+        return {
+            "overfit_status": "unknown",
+            "overfit_risk_score": 0.0,
+            "overfit_train_forward_gap": 0.0,
+            "overfit_policy": {
+                "may_teach": True,
+                "may_promote": True,
+                "requires_generalization_canary": False,
+            },
+        }
+    policy = _as_dict(row.get("policy"))
+    return {
+        "overfit_status": str(row.get("status") or "unknown"),
+        "overfit_risk_score": round(_safe_float(row.get("risk_score"), 0.0), 6),
+        "overfit_train_forward_gap": round(_safe_float(row.get("train_forward_gap"), 0.0), 6),
+        "overfit_policy": {
+            "may_teach": bool(policy.get("may_teach", False)),
+            "may_promote": bool(policy.get("may_promote", False)),
+            "requires_generalization_canary": bool(policy.get("requires_generalization_canary", False)),
+        },
+    }
+
+
 def _teacher_score(
     *,
     forward_mean: float,
@@ -123,6 +177,8 @@ def build_payload(
     training_quality = load_json(project_root / "governance" / "health" / "training_quality_control_latest.json")
     paper_performance = load_json(project_root / "governance" / "health" / "paper_performance_latest.json")
     current_plan = load_json(project_root / "governance" / "distillation" / "teacher_student_plan_latest.json")
+    overfit_payload = _overfit_awareness(project_root)
+    overfit_map = _overfit_awareness_map(overfit_payload)
     registry_rows = _registry_rows(project_root)
     registry_map = _registry_row_map(registry_rows)
     blocked_ids = set()
@@ -130,6 +186,7 @@ def build_payload(
     for key in (
         "refresh_diagnostics_bot_ids",
         "repair_runtime_input_bot_ids",
+        "runtime_input_depth_debt_bot_ids",
         "quality_probation_bot_ids",
         "targeted_retrain_bot_ids",
     ):
@@ -142,6 +199,8 @@ def build_payload(
     candidate_map: dict[str, dict[str, Any]] = {}
     rejected_rows: list[dict[str, Any]] = []
     rejected_reasons = Counter()
+    overfit_rejected_statuses = Counter()
+    overfit_rejected_ids: set[str] = set()
 
     def reject(bot_id: str, role: str, reason: str) -> None:
         text = str(reason or "").strip()
@@ -182,6 +241,13 @@ def build_payload(
         )
         if bot_id in blocked_ids:
             reject(bot_id, role, "quality_guard_blocked")
+            continue
+        overfit_row = overfit_map.get(bot_id, {})
+        if _teacher_overfit_blocked(overfit_row):
+            if bot_id not in overfit_rejected_ids:
+                overfit_rejected_ids.add(bot_id)
+                overfit_rejected_statuses[str(overfit_row.get("status") or "unknown")] += 1
+            reject(bot_id, role, "overfit_risk_blocked")
             continue
         if status != "pass":
             reject(bot_id, role, f"walk_forward_status:{status or 'unknown'}")
@@ -224,6 +290,7 @@ def build_payload(
                 "active": active,
                 "lifecycle_state": str(reg_row.get("lifecycle_state") or ""),
                 "paper_bonus": round(paper_bonus.get(bot_id, 0.0), 6),
+                **_teacher_overfit_fields(overfit_row),
             }
         )
 
@@ -236,6 +303,13 @@ def build_payload(
         active = bool(reg_row.get("active", False))
         if bot_id in blocked_ids:
             reject(bot_id, role, "quality_guard_blocked")
+            continue
+        overfit_row = overfit_map.get(bot_id, {})
+        if _teacher_overfit_blocked(overfit_row):
+            if bot_id not in overfit_rejected_ids:
+                overfit_rejected_ids.add(bot_id)
+                overfit_rejected_statuses[str(overfit_row.get("status") or "unknown")] += 1
+            reject(bot_id, role, "overfit_risk_blocked")
             continue
         if bool(reg_row.get("deleted_from_rotation", False)) or lifecycle_state in {"probation", "retired", "deleted", "deactivated"}:
             reject(bot_id, role, "inactive_for_teacher_duty")
@@ -284,6 +358,7 @@ def build_payload(
                 "active": active,
                 "lifecycle_state": lifecycle_state,
                 "paper_bonus": round(paper_bonus.get(bot_id, 0.0), 6),
+                **_teacher_overfit_fields(overfit_row),
             }
         )
 
@@ -324,6 +399,7 @@ def build_payload(
             "promote at least one elite teacher-quality bot so student distillation is anchored to proven behavior" if elite_count == 0 else "",
             "seed teachers for uncovered student roles before expanding the student roster" if uncovered_roles else "",
             "keep bots that are on quality probation or runtime-input repair out of the teacher pool until they recover" if blocked_ids else "",
+            "keep overfit-risk or high-accuracy-guarded bots out of teacher duty until generalization canaries clear" if overfit_rejected_statuses else "",
         ]
     )
 
@@ -348,6 +424,15 @@ def build_payload(
             "student_role_count": len(student_roles),
             "uncovered_student_role_count": len(uncovered_roles),
             "excluded_bot_count": len(rejected_rows),
+            "overfit_blocked_teacher_count": len(overfit_rejected_ids),
+        },
+        "overfitting_awareness": {
+            "overall_status": str(overfit_payload.get("overall_status") if overfit_payload else "missing") or "ready",
+            "risk_bot_count": _safe_int(overfit_payload.get("risk_bot_count"), 0),
+            "hard_risk_bot_count": _safe_int(overfit_payload.get("hard_risk_bot_count"), 0),
+            "blocked_teacher_count": len(overfit_rejected_ids),
+            "blocked_status_counts": dict(overfit_rejected_statuses),
+            "policy": "overfit-risk, leak-like, severe-overfit, and high-accuracy-guarded bots cannot teach students",
         },
         "qualified_teachers": teachers,
         "role_coverage": [

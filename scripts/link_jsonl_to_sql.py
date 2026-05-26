@@ -1163,6 +1163,35 @@ def _sqlite_executemany_with_retry(
             attempt += 1
 
 
+def _source_file_identity_for_sqlite_insert(
+    conn: Optional[sqlite3.Connection],
+    table: str,
+    file_path: Path,
+    source_rel: str,
+    start_line: int,
+) -> str:
+    source_file = str(file_path)
+    rel = str(source_rel or "").replace("\\", "/")
+    if conn is None or int(start_line) != 0 or not rel.startswith("governance/channels/"):
+        return source_file
+    try:
+        existing = conn.execute(
+            f"SELECT 1 FROM {table} WHERE source_file=? AND source_rel=? LIMIT 1",
+            (source_file, source_rel),
+        ).fetchone()
+    except Exception:
+        return source_file
+    if not existing:
+        return source_file
+    try:
+        inode = int(file_path.stat().st_ino)
+    except Exception:
+        inode = 0
+    if inode <= 0:
+        return source_file
+    return f"{source_file}#inode={inode}"
+
+
 def _sync_file_to_sqlite(
     conn: Optional[sqlite3.Connection],
     table: str,
@@ -1180,18 +1209,23 @@ def _sync_file_to_sqlite(
     run_id: str,
     iter_id: str,
     max_lines_per_file: int = 0,
+    max_bytes_per_file: int = 0,
+    oversize_payload_bytes: int = 0,
+    sqlite_batch_max_bytes: int = 0,
     checkpoint_every_lines: int = 0,
     checkpoint_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     inserted = 0
     invalid = 0
     invalid_logged = 0
+    oversize_payloads = 0
     ops_write_failures = 0
     last_line_seen = max(int(start_line), 0)
     last_offset_seen = max(int(start_offset_bytes), 0)
     last_checkpoint_line = max(int(start_line), 0)
     source_rel = str(file_path.relative_to(project_root))
     source_stream = _classify_stream(source_rel)
+    source_file_identity = _source_file_identity_for_sqlite_insert(conn, table, file_path, source_rel, start_line)
     expected_schema_version = _log_schema_version()
     ops_conn = None
     if not dry_run:
@@ -1201,9 +1235,11 @@ def _sync_file_to_sqlite(
             ops_conn = None
 
     rows: List[Tuple[Any, ...]] = []
+    rows_payload_bytes = 0
+    start_offset_base = max(int(start_offset_bytes), 0)
 
     def flush_ops() -> None:
-        nonlocal ops_write_failures
+        nonlocal ops_conn, ops_write_failures
         if ops_conn is None:
             return
         try:
@@ -1214,9 +1250,14 @@ def _sync_file_to_sqlite(
                 ops_conn.rollback()
             except Exception:
                 pass
+            try:
+                ops_conn.close()
+            except Exception:
+                pass
+            ops_conn = None
 
     def _record_ops(write_fn: Callable[[], None]) -> None:
-        nonlocal ops_write_failures
+        nonlocal ops_conn, ops_write_failures
         if ops_conn is None:
             return
         try:
@@ -1227,6 +1268,11 @@ def _sync_file_to_sqlite(
                 ops_conn.rollback()
             except Exception:
                 pass
+            try:
+                ops_conn.close()
+            except Exception:
+                pass
+            ops_conn = None
 
     def emit_checkpoint(force: bool = False) -> None:
         nonlocal last_checkpoint_line
@@ -1247,6 +1293,7 @@ def _sync_file_to_sqlite(
                     "inserted": int(inserted),
                     "invalid": int(invalid),
                     "invalid_samples_logged": int(invalid_logged),
+                    "oversize_payloads": int(oversize_payloads),
                     "ops_write_failures": int(ops_write_failures),
                 }
             )
@@ -1273,10 +1320,37 @@ def _sync_file_to_sqlite(
             flush_ops()
         last_checkpoint_line = int(last_line_seen)
 
+    def flush_rows(checkpoint: bool = False) -> None:
+        nonlocal inserted, rows, rows_payload_bytes
+        if not rows:
+            return
+        if not dry_run:
+            if conn is None:
+                raise RuntimeError("sqlite connection missing")
+            cur = _sqlite_executemany_with_retry(
+                conn,
+                f"INSERT OR IGNORE INTO {table} (source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json, run_id, iter_id, decision_id, parent_decision_id, log_schema_version, source_day_utc, source_stream, source_partition_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+                lock_retries=lock_retries,
+                lock_retry_delay_seconds=lock_retry_delay_seconds,
+            )
+            inserted += cur.rowcount if cur.rowcount is not None else 0
+        else:
+            inserted += len(rows)
+        rows = []
+        rows_payload_bytes = 0
+        if checkpoint:
+            emit_checkpoint()
+
     try:
         for line_no, raw, next_offset in _iter_new_lines(file_path, start_line, start_offset_bytes):
             if int(max_lines_per_file) > 0 and (int(line_no) - max(int(start_line), 0)) > int(max_lines_per_file):
                 break
+            if int(max_bytes_per_file) > 0:
+                processed_lines = int(line_no) - max(int(start_line), 0)
+                processed_bytes = max(int(next_offset) - int(start_offset_base), 0)
+                if processed_lines > 1 and processed_bytes > int(max_bytes_per_file):
+                    break
             last_line_seen = int(line_no)
             last_offset_seen = int(next_offset)
             try:
@@ -1313,6 +1387,50 @@ def _sync_file_to_sqlite(
                         iter_id=iter_id,
                     )
                     invalid_logged += 1
+                continue
+
+            payload_bytes = len(payload.encode("utf-8"))
+            if int(oversize_payload_bytes) > 0 and payload_bytes > int(oversize_payload_bytes):
+                invalid += 1
+                oversize_payloads += 1
+                exc = ValueError(
+                    f"payload_size_bytes {payload_bytes} exceeds oversize_payload_bytes {int(oversize_payload_bytes)}"
+                )
+                if ops_conn is not None:
+                    _record_ops(
+                        lambda: ops_data_plane.record_dead_letter(
+                            ops_conn,
+                            lane="sqlite",
+                            source_rel=source_rel,
+                            line_no=int(line_no),
+                            offset_bytes=int(next_offset),
+                            error_class="OversizePayload",
+                            error_message=str(exc),
+                            raw_payload=raw[:512],
+                            run_id=run_id,
+                            iter_id=iter_id,
+                            metadata={
+                                "table": table,
+                                "file_path": str(file_path),
+                                "payload_size_bytes": int(payload_bytes),
+                                "oversize_payload_bytes": int(oversize_payload_bytes),
+                            },
+                            commit=False,
+                        )
+                    )
+                if invalid_logged < max(int(invalid_sample_limit), 0):
+                    _log_invalid_line(
+                        invalid_log_path=invalid_log_path,
+                        mode="sqlite",
+                        source_rel=source_rel,
+                        line_no=line_no,
+                        raw=raw,
+                        error=exc,
+                        run_id=run_id,
+                        iter_id=iter_id,
+                    )
+                    invalid_logged += 1
+                emit_checkpoint()
                 continue
 
             event_ts = _extract_event_ts_utc(obj)
@@ -1355,7 +1473,7 @@ def _sync_file_to_sqlite(
             sha1 = hashlib.sha1(payload.encode("utf-8")).hexdigest()
             rows.append(
                 (
-                    str(file_path),
+                    source_file_identity,
                     source_rel,
                     line_no,
                     _now_utc(),
@@ -1371,38 +1489,14 @@ def _sync_file_to_sqlite(
                     source_partition_key,
                 )
             )
+            rows_payload_bytes += int(payload_bytes)
 
-            if len(rows) >= 1000:
-                if not dry_run:
-                    if conn is None:
-                        raise RuntimeError("sqlite connection missing")
-                    cur = _sqlite_executemany_with_retry(
-                        conn,
-                        f"INSERT OR IGNORE INTO {table} (source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json, run_id, iter_id, decision_id, parent_decision_id, log_schema_version, source_day_utc, source_stream, source_partition_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        rows,
-                        lock_retries=lock_retries,
-                        lock_retry_delay_seconds=lock_retry_delay_seconds,
-                    )
-                    inserted += cur.rowcount if cur.rowcount is not None else 0
-                else:
-                    inserted += len(rows)
-                rows = []
-                emit_checkpoint()
+            if len(rows) >= 1000 or (
+                int(sqlite_batch_max_bytes) > 0 and int(rows_payload_bytes) >= int(sqlite_batch_max_bytes)
+            ):
+                flush_rows(checkpoint=True)
 
-        if rows:
-            if not dry_run:
-                if conn is None:
-                    raise RuntimeError("sqlite connection missing")
-                cur = _sqlite_executemany_with_retry(
-                    conn,
-                    f"INSERT OR IGNORE INTO {table} (source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json, run_id, iter_id, decision_id, parent_decision_id, log_schema_version, source_day_utc, source_stream, source_partition_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    rows,
-                    lock_retries=lock_retries,
-                    lock_retry_delay_seconds=lock_retry_delay_seconds,
-                )
-                inserted += cur.rowcount if cur.rowcount is not None else 0
-            else:
-                inserted += len(rows)
+        flush_rows()
 
         emit_checkpoint(force=True)
     finally:
@@ -1414,6 +1508,7 @@ def _sync_file_to_sqlite(
         "inserted": int(inserted),
         "invalid": int(invalid),
         "invalid_samples_logged": int(invalid_logged),
+        "oversize_payloads": int(oversize_payloads),
         "ops_write_failures": int(ops_write_failures),
         "last_line": int(last_line_seen),
         "last_offset_bytes": int(last_offset_seen),
@@ -1555,12 +1650,16 @@ def _sync_file_to_mysql(
     run_id: str,
     iter_id: str,
     max_lines_per_file: int = 0,
+    max_bytes_per_file: int = 0,
+    oversize_payload_bytes: int = 0,
 ) -> Dict[str, Any]:
     inserted = 0
     invalid = 0
     invalid_logged = 0
+    oversize_payloads = 0
     last_line_seen = max(int(start_line), 0)
     last_offset_seen = max(int(start_offset_bytes), 0)
+    start_offset_base = max(int(start_offset_bytes), 0)
     vals: List[str] = []
     source_rel = str(file_path.relative_to(project_root))
 
@@ -1585,6 +1684,11 @@ def _sync_file_to_mysql(
     for line_no, raw, next_offset in _iter_new_lines(file_path, start_line, start_offset_bytes):
         if int(max_lines_per_file) > 0 and (int(line_no) - max(int(start_line), 0)) > int(max_lines_per_file):
             break
+        if int(max_bytes_per_file) > 0:
+            processed_lines = int(line_no) - max(int(start_line), 0)
+            processed_bytes = max(int(next_offset) - int(start_offset_base), 0)
+            if processed_lines > 1 and processed_bytes > int(max_bytes_per_file):
+                break
         last_line_seen = int(line_no)
         last_offset_seen = int(next_offset)
         try:
@@ -1592,6 +1696,27 @@ def _sync_file_to_mysql(
             payload = json.dumps(obj, ensure_ascii=True, separators=(",", ":"))
         except Exception as exc:
             invalid += 1
+            if invalid_logged < max(int(invalid_sample_limit), 0):
+                _log_invalid_line(
+                    invalid_log_path=invalid_log_path,
+                    mode="mysql",
+                    source_rel=source_rel,
+                    line_no=line_no,
+                    raw=raw,
+                    error=exc,
+                    run_id=run_id,
+                    iter_id=iter_id,
+                )
+                invalid_logged += 1
+            continue
+
+        payload_bytes = len(payload.encode("utf-8"))
+        if int(oversize_payload_bytes) > 0 and payload_bytes > int(oversize_payload_bytes):
+            invalid += 1
+            oversize_payloads += 1
+            exc = ValueError(
+                f"payload_size_bytes {payload_bytes} exceeds oversize_payload_bytes {int(oversize_payload_bytes)}"
+            )
             if invalid_logged < max(int(invalid_sample_limit), 0):
                 _log_invalid_line(
                     invalid_log_path=invalid_log_path,
@@ -1639,14 +1764,51 @@ def _sync_file_to_mysql(
         "inserted": int(inserted),
         "invalid": int(invalid),
         "invalid_samples_logged": int(invalid_logged),
+        "oversize_payloads": int(oversize_payloads),
         "last_line": int(last_line_seen),
         "last_offset_bytes": int(last_offset_seen),
     }
 
 
+def _env_flag(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _journal_event_allowed(payload: Dict[str, Any]) -> bool:
+    event = str(payload.get("event") or "").strip()
+    if event == "file_failed" and _env_flag("INGEST_JOURNAL_ERRORS_ALWAYS", True):
+        return True
+    if not _env_flag("INGEST_JOURNAL_ENABLED", True):
+        return False
+    if event == "file_start" and not _env_flag("INGEST_JOURNAL_FILE_START_ENABLED", True):
+        return False
+    if event == "file_checkpoint" and not _env_flag("INGEST_JOURNAL_CHECKPOINT_ENABLED", True):
+        return False
+    if (
+        event in {"file_checkpoint", "file_complete"}
+        and not _env_flag("INGEST_JOURNAL_ZERO_PENDING_ENABLED", True)
+        and int(payload.get("pending_lines") or 0) <= 0
+    ):
+        return False
+    return True
+
+
+def _journal_path_allowed(path: Path) -> bool:
+    normalized = str(path).replace("\\", "/")
+    if "/governance/events/" in normalized and not _env_flag("INGEST_JOURNAL_DAILY_ENABLED", True):
+        return False
+    return True
+
+
 def _journal_event(paths: List[Path], payload: Dict[str, Any]) -> None:
+    if not _journal_event_allowed(payload):
+        return
     for path in paths:
-        _append_jsonl(path, payload)
+        if _journal_path_allowed(path):
+            _append_jsonl(path, payload)
 
 
 def main() -> int:
@@ -1685,6 +1847,24 @@ def main() -> int:
         "--max-lines-per-file",
         type=int,
         default=int(os.getenv("INGEST_MAX_LINES_PER_FILE", "0")),
+    )
+    parser.add_argument(
+        "--max-bytes-per-file",
+        type=int,
+        default=int(os.getenv("INGEST_MAX_BYTES_PER_FILE", "0")),
+        help="Maximum bytes to process from each file per run; 0 disables the cap.",
+    )
+    parser.add_argument(
+        "--oversize-payload-bytes",
+        type=int,
+        default=int(os.getenv("INGEST_OVERSIZE_PAYLOAD_BYTES", "0")),
+        help="Dead-letter JSONL payloads larger than this byte size; 0 disables the cap.",
+    )
+    parser.add_argument(
+        "--sqlite-batch-max-bytes",
+        type=int,
+        default=int(os.getenv("SQLITE_BATCH_MAX_BYTES", "0")),
+        help="Flush SQLite batches once accumulated payload bytes exceed this size; 0 keeps row-count batching only.",
     )
     parser.add_argument(
         "--max-deferred-files",
@@ -1837,12 +2017,14 @@ def main() -> int:
             "oldest_uningested_age_seconds": 0.0,
             "files_with_pending": 0,
             "top_pending_files": [],
+            "oversize_payloads": 0,
         },
         "mysql": {
             "pending_lines": 0,
             "oldest_uningested_age_seconds": 0.0,
             "files_with_pending": 0,
             "top_pending_files": [],
+            "oversize_payloads": 0,
         },
     }
     latency_metrics: Dict[str, Dict[str, Any]] = {
@@ -1908,6 +2090,7 @@ def main() -> int:
                             "inserted": int(checkpoint["inserted"]),
                             "invalid": int(checkpoint["invalid"]),
                             "invalid_samples_logged": int(checkpoint["invalid_samples_logged"]),
+                            "oversize_payloads": int(checkpoint.get("oversize_payloads", 0) or 0),
                             "ops_write_failures": int(checkpoint.get("ops_write_failures", 0) or 0),
                             "pending_lines": int(pending_lines),
                         },
@@ -1933,6 +2116,9 @@ def main() -> int:
                         run_id=run_id,
                         iter_id=iter_id,
                         max_lines_per_file=max(int(args.max_lines_per_file), 0),
+                        max_bytes_per_file=max(int(args.max_bytes_per_file), 0),
+                        oversize_payload_bytes=max(int(args.oversize_payload_bytes), 0),
+                        sqlite_batch_max_bytes=max(int(args.sqlite_batch_max_bytes), 0),
                         checkpoint_every_lines=max(int(args.sqlite_state_checkpoint_lines), 0),
                         checkpoint_cb=sqlite_checkpoint,
                     )
@@ -1976,6 +2162,9 @@ def main() -> int:
                 lag_metrics["sqlite"]["ops_write_failures"] = int(
                     lag_metrics["sqlite"].get("ops_write_failures", 0) or 0
                 ) + int(result.get("ops_write_failures", 0) or 0)
+                lag_metrics["sqlite"]["oversize_payloads"] = int(
+                    lag_metrics["sqlite"].get("oversize_payloads", 0) or 0
+                ) + int(result.get("oversize_payloads", 0) or 0)
 
                 try:
                     post_st = fp.stat()
@@ -2021,6 +2210,7 @@ def main() -> int:
                         "inserted": int(result["inserted"]),
                         "invalid": int(result["invalid"]),
                         "invalid_samples_logged": int(result["invalid_samples_logged"]),
+                        "oversize_payloads": int(result.get("oversize_payloads", 0) or 0),
                         "ops_write_failures": int(result.get("ops_write_failures", 0) or 0),
                         "last_line": int(result["last_line"]),
                         "last_offset_bytes": int(result["last_offset_bytes"]),
@@ -2077,6 +2267,8 @@ def main() -> int:
                         run_id=run_id,
                         iter_id=iter_id,
                         max_lines_per_file=max(int(args.max_lines_per_file), 0),
+                        max_bytes_per_file=max(int(args.max_bytes_per_file), 0),
+                        oversize_payload_bytes=max(int(args.oversize_payload_bytes), 0),
                     )
                 except FileNotFoundError:
                     _journal_event(
@@ -2112,6 +2304,9 @@ def main() -> int:
                 total_inserted["mysql"] += int(result["inserted"])
                 total_invalid["mysql"] += int(result["invalid"])
                 total_invalid_samples["mysql"] += int(result["invalid_samples_logged"])
+                lag_metrics["mysql"]["oversize_payloads"] = int(
+                    lag_metrics["mysql"].get("oversize_payloads", 0) or 0
+                ) + int(result.get("oversize_payloads", 0) or 0)
 
                 try:
                     post_st = fp.stat()
@@ -2157,6 +2352,7 @@ def main() -> int:
                         "inserted": int(result["inserted"]),
                         "invalid": int(result["invalid"]),
                         "invalid_samples_logged": int(result["invalid_samples_logged"]),
+                        "oversize_payloads": int(result.get("oversize_payloads", 0) or 0),
                         "last_line": int(result["last_line"]),
                         "last_offset_bytes": int(result["last_offset_bytes"]),
                         "pending_lines": int(pending_lines),
@@ -2297,19 +2493,23 @@ def main() -> int:
             "json_files_discovered": int(len(json_files)),
             "invalid_log_file": str(invalid_log_path),
             "journal_files": [str(p) for p in journal_paths],
-        "filters": {
-            "include_streams": include_streams,
-            "exclude_streams": exclude_streams,
-            "path_contains": path_contains,
-            "path_not_contains": path_not_contains,
-            "max_lines_per_file": max(int(args.max_lines_per_file), 0),
-        },
+            "filters": {
+                "include_streams": include_streams,
+                "exclude_streams": exclude_streams,
+                "path_contains": path_contains,
+                "path_not_contains": path_not_contains,
+                "max_lines_per_file": max(int(args.max_lines_per_file), 0),
+                "max_bytes_per_file": max(int(args.max_bytes_per_file), 0),
+                "oversize_payload_bytes": max(int(args.oversize_payload_bytes), 0),
+                "sqlite_batch_max_bytes": max(int(args.sqlite_batch_max_bytes), 0),
+            },
             "sqlite": {
                 "enabled": bool(sqlite_sink_enabled),
                 "status": "active" if sqlite_sink_enabled else "disabled_by_link_mode",
                 "inserted": int(total_inserted["sqlite"]),
                 "invalid": int(total_invalid["sqlite"]),
                 "invalid_samples_logged": int(total_invalid_samples["sqlite"]),
+                "oversize_payloads": int(lag_metrics["sqlite"].get("oversize_payloads", 0) or 0),
                 "ops_write_failures": int(lag_metrics["sqlite"].get("ops_write_failures", 0) or 0),
                 "pending_lines": int(lag_metrics["sqlite"]["pending_lines"]),
                 "oldest_uningested_age_seconds": float(lag_metrics["sqlite"]["oldest_uningested_age_seconds"]),
@@ -2328,6 +2528,7 @@ def main() -> int:
                 "inserted": int(total_inserted["mysql"]),
                 "invalid": int(total_invalid["mysql"]),
                 "invalid_samples_logged": int(total_invalid_samples["mysql"]),
+                "oversize_payloads": int(lag_metrics["mysql"].get("oversize_payloads", 0) or 0),
                 "pending_lines": int(lag_metrics["mysql"]["pending_lines"]),
                 "oldest_uningested_age_seconds": float(lag_metrics["mysql"]["oldest_uningested_age_seconds"]),
                 "files_with_pending": int(lag_metrics["mysql"]["files_with_pending"]),

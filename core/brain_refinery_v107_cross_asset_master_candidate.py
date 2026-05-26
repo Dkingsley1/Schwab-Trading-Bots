@@ -118,6 +118,7 @@ def _runtime_feature_vector(sequence, idx):
             feature_ema(sequence, idx, "flow_risk_on_norm", 4),
             feature_ema(sequence, idx, "breadth_risk_off_norm", 4),
             feature_ema(sequence, idx, "capital_flow_signed_scaled", 4),
+            _cross_asset_support(obs),
         ],
         dtype=np.float32,
     )
@@ -128,14 +129,20 @@ def _runtime_sample_filter(sequence, idx, horizon):
     return (
         base_runtime_gate(
             obs,
-            min_quote_agreement=0.80,
-            max_quote_deviation=0.26,
-            max_spread_bps=32.0,
+            min_quote_agreement=0.74,
+            max_quote_deviation=0.32,
+            max_spread_bps=40.0,
             min_queue_depth=0.0,
-            max_latency_ms=3400.0,
+            max_latency_ms=3800.0,
         )
-        and _cross_asset_support(obs) >= 0.24
-        and abs(_signed01(observation_feature(obs, "capital_flow_signed_scaled"))) >= 0.06
+        and _cross_asset_support(obs) >= 0.16
+        and max(
+            abs(_signed01(observation_feature(obs, "capital_flow_signed_scaled"))),
+            abs(_signed01(observation_feature(obs, "lead_lag_signal_signed"))),
+            abs(observation_feature(obs, "mom_5m") * 120.0),
+            abs(observation_feature(obs, "behavior_prior")),
+        )
+        >= 0.03
     )
 
 
@@ -183,29 +190,34 @@ def train_brain():
             "flow_risk_on_ema_4",
             "breadth_risk_off_ema_4",
             "capital_flow_signed_ema_4",
+            "cross_asset_support",
         ],
         runtime_feature_builder=_runtime_feature_vector,
         runtime_label_builder=risk_support_label_builder(
-            min_return=-0.0008,
-            max_drawdown=0.020,
-            max_realized_vol=0.030,
-            vol_multiplier=3.25,
+            min_return=0.0002,
+            max_drawdown=0.016,
+            max_realized_vol=0.024,
+            vol_multiplier=2.8,
         ),
         sample_filter=_runtime_sample_filter,
         confidence_builder=_runtime_confidence,
         min_confidence=0.30,
-        lookback_days=60,
+        lookback_days=75,
         mode_allowlist=_MASTER_CANDIDATE_MODES,
         symbol_allowlist=_MASTER_CANDIDATE_SYMBOLS,
         window=18,
         horizon=6,
-        min_samples=480,
-        min_sequences=6,
-        min_positive_samples=120,
+        min_samples=160,
+        min_sequences=4,
+        min_positive_samples=40,
+        min_negative_samples=40,
         max_best_val_loss=0.695,
         max_final_val_loss=0.708,
         min_acted_accuracy=0.60,
-        min_accuracy_lift_over_majority=0.03,
+        min_accuracy_lift_over_majority=0.02,
+        acted_prob_threshold=0.78,
+        min_acted_coverage=0.04,
+        max_acted_coverage=0.24,
         allow_fallback_on_insufficient_data=False,
         require_both_sides_precision=False,
     )

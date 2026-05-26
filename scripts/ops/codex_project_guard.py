@@ -23,6 +23,9 @@ REQUIRED_AGENT_MARKERS = [
     "Source Of Truth",
     "Scope Discipline",
     "Current Separate Domains",
+    "Forbidden Volumes",
+    "/Volumes/VIDEO",
+    "video_volume_boundary_guard",
     "Regression Guardrails",
     "per-surface retry budgets",
     "codex-project-guard",
@@ -64,6 +67,28 @@ TRADING_SYSTEM_DOC_PATHS = {
     "docs/architecture/SOURCE_OF_TRUTH.md",
     "docs/architecture/ADR-0001-system-source-of-truth.md",
 }
+FORBIDDEN_VOLUME_BOUNDARIES = [
+    {
+        "bot_id": "video_volume_boundary_guard",
+        "volume": "/Volumes/VIDEO",
+        "reason": "user-owned exFAT media storage is outside bot cleanup/storage authority",
+        "forbidden_operations": [
+            "inspect",
+            "index",
+            "mdutil",
+            "mount",
+            "unmount",
+            "repair",
+            "prune",
+            "move",
+            "delete",
+            "chmod",
+            "chown",
+            "quarantine",
+            "maintenance",
+        ],
+    }
+]
 
 
 def _read_text(path: Path) -> str:
@@ -162,6 +187,24 @@ def _staged_scope_check(staged_paths: list[str], allow_separate_domain: bool) ->
     }
 
 
+def _forbidden_volume_boundary_check() -> dict[str, Any]:
+    return {
+        "name": "video_volume_boundary_guard",
+        "family": "operator_boundary",
+        "path": "/Volumes/VIDEO",
+        "exists": True,
+        "status": "ready",
+        "ok": True,
+        "detail": "forbidden_volume_registered_do_not_touch_without_explicit_user_approval",
+        "authority_boundary": "no_inspection_no_cleanup_no_indexing_no_mount_ops_no_metadata_ops",
+        "bot_id": "video_volume_boundary_guard",
+        "blocked_volume": "/Volumes/VIDEO",
+        "blocked_volume_type": "exFAT_user_media_storage",
+        "forbidden_operations": FORBIDDEN_VOLUME_BOUNDARIES[0]["forbidden_operations"],
+        "operator_instruction": "Do not touch /Volumes/VIDEO. If a task might involve it, stop and ask first.",
+    }
+
+
 def build_payload(
     project_root: Path = PROJECT_ROOT,
     *,
@@ -184,6 +227,7 @@ def build_payload(
             ],
             allow_separate_domain,
         ),
+        _forbidden_volume_boundary_check(),
     ]
     if include_staged:
         rows.append(_staged_scope_check(staged_paths if staged_paths is not None else _git_staged_paths(project_root), allow_separate_domain))
@@ -202,6 +246,9 @@ def build_payload(
             "stage explicit, scoped paths only; split separate-domain work into a separate commit/PR"
             if any(row.get("name") == "staged_scope_boundary" for row in blocked)
             else "",
+            "do not touch `/Volumes/VIDEO`; it is protected by `video_volume_boundary_guard`"
+            if any(row.get("name") == "video_volume_boundary_guard" for row in rows)
+            else "",
         ]
     )
     return {
@@ -216,6 +263,7 @@ def build_payload(
             "degraded_guard_count": len(degraded),
         },
         "recommended_actions": recommended_actions,
+        "operator_boundaries": FORBIDDEN_VOLUME_BOUNDARIES,
     }
 
 

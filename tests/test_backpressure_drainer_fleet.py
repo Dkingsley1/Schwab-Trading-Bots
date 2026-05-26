@@ -58,6 +58,152 @@ def test_backpressure_drainer_fleet_routes_concentrated_decisions_to_trading(tmp
     assert "conservative_equities_schwab" in payload["active_env_overrides"]["SQL_LINK_SERVICE_SHARD_TRADING_PATH_CONTAINS"]
 
 
+def test_backpressure_drainer_fleet_byte_bounds_sparse_large_decision_rows(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 12000,
+            "pending_lines_total": 12000,
+            "top_pending_files": [
+                {
+                    "source_rel": "governance/channels/decision/dividend_capture_equities_schwab/decision_20260519.jsonl",
+                    "pending_lines": 9000,
+                    "oldest_pending_age_seconds": 900.0,
+                    "file_size_bytes": 2_200_000_000,
+                    "estimated_avg_bytes_per_line": 250_000.0,
+                    "estimated_pending_bytes": 2_200_000_000,
+                    "sparse_large_line": True,
+                },
+                {
+                    "source_rel": "decisions/paper/trade_decisions_20260519.jsonl",
+                    "pending_lines": 3000,
+                    "oldest_pending_age_seconds": 300.0,
+                },
+            ],
+        },
+    )
+    _write_json(health / "ingestion_storage_control_latest.json", {"severity": "critical"})
+
+    payload = src.build_payload(
+        project_root,
+        apply=False,
+        now_utc=datetime(2026, 5, 19, 21, 45, tzinfo=timezone.utc),
+    )
+
+    env = payload["active_env_overrides"]
+    assert payload["active_drainer"]["name"] == "core_decision_drainer"
+    assert payload["active_drainer"]["sparse_large_line_pressure"]["active"] is True
+    assert payload["active_drainer"]["sparse_large_line_pressure"]["estimated_pending_bytes"] == 2_200_000_000
+    assert env["SQL_LINK_SERVICE_SPARSE_LARGE_DECISION_DRAIN"] == "1"
+    assert env["INGEST_MAX_BYTES_PER_FILE"] == str(128 * 1024 * 1024)
+    assert env["SQLITE_BATCH_MAX_BYTES"] == str(32 * 1024 * 1024)
+    assert env["SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS"] == "420"
+    assert env["BACKLOG_PCORE_ALLOCATION_ACTIVE"] == "1"
+    assert env["BACKLOG_DRAIN_SINGLE_WRITER_ONLY"] == "1"
+    assert env["SQL_LINK_SERVICE_SINGLE_WRITER_ONLY"] == "1"
+    assert int(env["BACKLOG_PCORE_PREPROCESS_WORKERS"]) >= 1
+    assert env["BOT_COLLECTION_DUTY_CYCLE_ENABLED"] == "1"
+    assert env["TRAINING_RUNTIME_PAUSED_FOR_BACKLOG"] == "1"
+    p_core = payload["active_drainer"]["p_core_backlog_allocation_contract"]
+    assert p_core["policy"] == "p_core_preprocess_single_sql_writer"
+    assert p_core["single_writer_only"] is True
+    assert p_core["training_pcore_gate"]["allowed_when_backlog_green"] is True
+    assert env["SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"] == "90"
+    assert env["SQL_LINK_SERVICE_SHARD_TRADING_MAX_FILES"] == "8"
+    assert env["SQL_LINK_SERVICE_SHARD_TRADING_MAX_LINES_PER_FILE"] == "12000"
+    assert env["SQL_LINK_SERVICE_SHARD_TRADING_STATE_CHECKPOINT_LINES"] == "250"
+    assert env["SQL_LINK_SERVICE_SHARD_TRADING_MERGE_MAX_JSONL_ROWS"] == "250"
+    assert env["SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MERGE_MAX_JSONL_ROWS"] == "250"
+    assert env["SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_MERGE_MAX_JSONL_ROWS"] == "250"
+
+
+def test_backpressure_drainer_fleet_bursts_p_core_seven_when_host_is_deep_green(monkeypatch) -> None:
+    monkeypatch.setenv("BACKLOG_PCORE_TARGET", "8")
+    workers, intelligence = src._p_core_preprocess_workers(
+        critical=True,
+        backpressure={
+            "pending_lines": 30000,
+            "pending_lines_total": 40000,
+            "oldest_pending_age_seconds": 1200.0,
+            "pending_lines_threshold": 15000,
+            "oldest_age_threshold_seconds": 240.0,
+            "line_estimation": {"sparse_large_line_active": True},
+        },
+        host_context={
+            "off_hours_active": True,
+            "runtime_throttle": {
+                "host_saturation_score": 35.0,
+                "compute_pressure_level": "normal",
+                "memory_pressure_level": "normal",
+                "throttle_profile": "soft_cap",
+            },
+            "resource_guard": {"creative_session_level": "idle"},
+        },
+    )
+
+    assert workers == 7
+    assert intelligence["mode"] == "burst_7"
+    assert intelligence["seventh_core_burst"]["allowed"] is True
+
+
+def test_backpressure_drainer_fleet_protects_creative_p_core_headroom(monkeypatch) -> None:
+    monkeypatch.setenv("BACKLOG_PCORE_TARGET", "8")
+    workers, intelligence = src._p_core_preprocess_workers(
+        critical=True,
+        backpressure={
+            "pending_lines": 30000,
+            "pending_lines_total": 40000,
+            "oldest_pending_age_seconds": 1200.0,
+            "pending_lines_threshold": 15000,
+            "oldest_age_threshold_seconds": 240.0,
+            "line_estimation": {"sparse_large_line_active": True},
+        },
+        host_context={
+            "off_hours_active": True,
+            "runtime_throttle": {
+                "host_saturation_score": 30.0,
+                "compute_pressure_level": "normal",
+                "memory_pressure_level": "normal",
+            },
+            "resource_guard": {"creative_session_level": "hot", "creative_session_kind": "audio_production"},
+            "computer_task": {"primary_task": "audio_production"},
+        },
+    )
+
+    assert workers == 3
+    assert intelligence["mode"] == "creative_foreground_protect_3"
+
+
+def test_backpressure_drainer_fleet_narrows_p_core_workers_for_memory_pressure(monkeypatch) -> None:
+    monkeypatch.setenv("BACKLOG_PCORE_TARGET", "8")
+    workers, intelligence = src._p_core_preprocess_workers(
+        critical=True,
+        backpressure={
+            "pending_lines": 30000,
+            "pending_lines_total": 40000,
+            "oldest_pending_age_seconds": 1200.0,
+            "pending_lines_threshold": 15000,
+            "oldest_age_threshold_seconds": 240.0,
+            "line_estimation": {"sparse_large_line_active": True},
+        },
+        host_context={
+            "off_hours_active": True,
+            "runtime_throttle": {
+                "host_saturation_score": 35.0,
+                "compute_pressure_level": "normal",
+                "memory_pressure_level": "red",
+                "throttle_profile": "sustain",
+            },
+            "resource_guard": {"memory_pressure_kind": "throttled", "swap_used_gb": 19.0, "pages_throttled": 1},
+        },
+    )
+
+    assert workers == 2
+    assert intelligence["mode"] == "memory_relief_2"
+
+
 def test_backpressure_drainer_fleet_routes_crypto_decisions_to_crypto_shard(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -124,7 +270,159 @@ def test_backpressure_drainer_fleet_writes_single_writer_handoff(tmp_path: Path)
     assert payload["service_request"]["request_kind"] == "backpressure_drainer_fleet"
     assert payload["service_request"]["reason"].endswith(":support_watchdog_drainer")
     assert payload["service_request"]["env_overrides"]["SQL_LINK_SERVICE_SHARDS"] == "support_watchdog,health_fast"
+    assert payload["service_request"]["env_overrides"]["BACKLOG_PCORE_ALLOCATION_ACTIVE"] == "1"
+    assert payload["service_request"]["p_core_backlog_allocation_contract"]["sqlite_writer_count"] == 1
     assert (health / "sql_link_service_request_latest.json").exists()
+
+
+def test_backpressure_drainer_fleet_handoffs_overlay_risk_support_backlog(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 125,
+            "pending_lines_total": 352,
+            "pending_lines_support_telemetry": 6,
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "severity": "elevated",
+            "backpressure": {
+                "core_pending_lines": 292,
+                "support_pending_lines": 346679,
+                "total_pending_lines": 347198,
+            },
+            "sql_ingestion_pending_overlay": {
+                "active": True,
+                "total_pending_lines": 346971,
+                "support_pending_lines": 346679,
+                "top_pending_files": [
+                    {
+                        "source_rel": "governance/channels/risk/default_crypto_schwab/risk_20260521.jsonl",
+                        "shard": "risk_support",
+                        "pending_lines": 269938,
+                        "oldest_pending_age_seconds": 7.198,
+                    },
+                    {
+                        "source_rel": "governance/channels/risk/crypto_futures_crypto_schwab/risk_20260521.jsonl",
+                        "shard": "risk_support",
+                        "pending_lines": 76741,
+                        "oldest_pending_age_seconds": 6.827,
+                    },
+                ],
+            },
+        },
+    )
+
+    payload = src.build_payload(
+        project_root,
+        apply=True,
+        now_utc=datetime(2026, 5, 21, 15, 0, tzinfo=timezone.utc),
+    )
+
+    assert payload["overall_status"] == "handoff_requested"
+    assert payload["active_drainer"]["name"] == "risk_support_drainer"
+    assert payload["active_drainer"]["pending_lines"] == 346679
+    assert payload["service_request"]["assigned_pressure_lane"] == "risk_support_backpressure"
+    env = payload["service_request"]["env_overrides"]
+    assert env["SQL_LINK_SERVICE_SHARDS"] == "risk_support,health_fast"
+    assert "default_crypto_schwab" in env["SQL_LINK_SERVICE_SHARD_RISK_SUPPORT_PATH_CONTAINS"]
+    assert env["SQL_LINK_SERVICE_SHARD_RISK_SUPPORT_MAX_LINES_PER_FILE"] == "800000"
+    assert env["SQL_LINK_SERVICE_SHARD_RISK_SUPPORT_STATE_CHECKPOINT_LINES"] == "32000"
+    assert env["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.20"
+
+
+def test_backpressure_drainer_fleet_prioritizes_signal_generation_core_backlog(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 425461,
+            "pending_lines_total": 570530,
+            "top_pending_files": [
+                {
+                    "source_rel": "governance/events/signal_generation_20260524.jsonl",
+                    "pending_lines": 230451,
+                    "oldest_pending_age_seconds": 0.0,
+                },
+                {
+                    "source_rel": "decisions/shadow_crypto/trade_decisions_20260524.jsonl",
+                    "pending_lines": 102473,
+                    "oldest_pending_age_seconds": 0.0,
+                },
+                {
+                    "source_rel": "decisions/shadow_crypto_futures_crypto/trade_decisions_20260524.jsonl",
+                    "pending_lines": 91847,
+                    "oldest_pending_age_seconds": 0.0,
+                },
+            ],
+            "top_deferred_pending_files": [
+                {
+                    "source_rel": "governance/channels/risk/crypto_futures_crypto_schwab/risk_20260524.jsonl",
+                    "pending_lines": 142659,
+                    "oldest_pending_age_seconds": 3.0,
+                },
+            ],
+        },
+    )
+    _write_json(health / "ingestion_storage_control_latest.json", {"severity": "critical"})
+
+    payload = src.build_payload(
+        project_root,
+        apply=False,
+        now_utc=datetime(2026, 5, 24, 15, 0, tzinfo=timezone.utc),
+    )
+
+    assert payload["overall_status"] == "ready"
+    assert payload["active_drainer"]["name"] == "core_decision_drainer"
+    assert payload["active_drainer"]["pending_lines"] == 424771
+    assert "governance" in payload["active_drainer"]["shards"]
+    assert "crypto_trading" in payload["active_drainer"]["shards"]
+    env = payload["active_env_overrides"]
+    assert env["SQL_LINK_SERVICE_SHARDS"].startswith("crypto_trading,governance")
+    assert "signal_generation_20260524" in env["SQL_LINK_SERVICE_SHARD_GOVERNANCE_PATH_CONTAINS"]
+    assert env["SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_LINES_PER_FILE"] == "96000"
+
+
+def test_backpressure_drainer_fleet_routes_tiny_stale_bridge_tails(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 95,
+            "pending_lines_total": 95,
+            "pending_lines_threshold": 15000,
+            "oldest_age_threshold_seconds": 240.0,
+            "top_pending_files": [
+                {
+                    "source_rel": "paper_trades_paper.jsonl",
+                    "pending_lines": 48,
+                    "oldest_pending_age_seconds": 611.0,
+                },
+                {
+                    "source_rel": "exports/paper_broker_bridge/paper/paper_bridge_orders_20260524.jsonl",
+                    "pending_lines": 47,
+                    "oldest_pending_age_seconds": 611.0,
+                },
+            ],
+        },
+    )
+
+    payload = src.build_payload(
+        project_root,
+        apply=False,
+        now_utc=datetime(2026, 5, 24, 16, 0, tzinfo=timezone.utc),
+    )
+
+    assert payload["overall_status"] == "ready"
+    assert payload["active_drainer"]["name"] == "fast_trade_bridge_drainer"
+    assert payload["active_drainer"]["readiness_reason"] == "material_pending"
+    assert payload["active_env_overrides"]["SQL_LINK_SERVICE_SHARDS"].startswith("trading_fast,")
 
 
 def test_backpressure_drainer_fleet_guards_cold_stage_during_market_hours(tmp_path: Path) -> None:
@@ -379,6 +677,63 @@ def test_backpressure_drainer_fleet_routes_stale_provider_tails_even_when_tiny(t
     assert payload["next_drainer_queue"][0]["name"] == "core_decision_drainer"
     assert payload["metrics"]["stale_tail_ready_count"] == 1
     assert payload["metrics"]["expanded_lane_count"] >= 15
+
+
+def test_backpressure_drainer_fleet_prioritizes_source_attributed_stale_decision_logs(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 1200,
+            "pending_lines_total": 1200,
+            "oldest_age_threshold_seconds": 240,
+            "top_pending_files": [
+                {
+                    "source_rel": "governance/channels/decision/swaptions_equities_schwab/decision_20260520.jsonl",
+                    "pending_lines": 33,
+                    "oldest_pending_age_seconds": 15896.0,
+                }
+            ],
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "severity": "critical",
+            "stale_pending_locator": {
+                "status": "attributed",
+                "oldest_sources": [
+                    {
+                        "source_rel": "decisions/shadow_aggressive_equities/trade_decisions_20260515.jsonl",
+                        "pending_lines": 19902,
+                        "oldest_pending_age_seconds": 111456.0,
+                    },
+                    {
+                        "source_rel": "decisions/shadow_swing_aggressive_equities/trade_decisions_20260515.jsonl",
+                        "pending_lines": 24038,
+                        "oldest_pending_age_seconds": 111437.0,
+                    },
+                    {
+                        "source_rel": "decisions/shadow_conservative_equities/trade_decisions_20260515.jsonl",
+                        "pending_lines": 6615,
+                        "oldest_pending_age_seconds": 111445.0,
+                    },
+                ],
+            },
+        },
+    )
+
+    payload = src.build_payload(project_root, apply=False, now_utc=datetime(2026, 5, 21, 1, 0, tzinfo=timezone.utc))
+
+    assert payload["active_drainer"]["name"] == "stale_decision_log_drainer"
+    assert payload["active_drainer"]["pending_lines"] == 50555
+    env = payload["active_env_overrides"]
+    assert env["SQL_LINK_SERVICE_STALE_DECISION_SOURCE_CATCH_UP"] == "1"
+    assert env["SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS"] == "420"
+    assert "shadow_aggressive_equities" in env["SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_PATH_CONTAINS"]
+    assert "shadow_conservative_equities" in env["SQL_LINK_SERVICE_SHARD_TRADING_PATH_CONTAINS"]
+    assert payload["next_drainer_queue"][0]["name"] == "derivatives_surface_drainer"
 
 
 def test_backpressure_drainer_fleet_routes_derivatives_to_focused_trading_shards(tmp_path: Path) -> None:

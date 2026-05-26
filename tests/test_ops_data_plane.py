@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -131,6 +132,48 @@ def test_load_shard_heat_map_fails_open_for_corrupt_ops_plane(tmp_path: Path) ->
     assert src.load_shard_heat_map(project_root) == {}
 
 
+def test_connect_quarantines_corrupt_ops_plane_and_recreates_schema(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    ops_db = project_root / "governance" / "ops_data_plane.sqlite3"
+    ops_db.parent.mkdir(parents=True, exist_ok=True)
+    ops_db.write_bytes(b"not a sqlite database")
+
+    with src.connect(project_root) as conn:
+        src.record_dead_letter(
+            conn,
+            lane="sqlite",
+            source_rel="decisions/demo.jsonl",
+            line_no=1,
+            offset_bytes=10,
+            error_class="OversizePayload",
+            error_message="payload too large",
+            raw_payload="{}",
+        )
+        count = conn.execute("SELECT COUNT(*) FROM ingest_dead_letters").fetchone()[0]
+
+    quarantined = list(ops_db.parent.glob("ops_data_plane.sqlite3.corrupt_*"))
+    assert quarantined
+    assert int(count) == 1
+
+
+def test_connect_quarantines_corrupt_symlink_target_without_replacing_link(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    ops_db = project_root / "governance" / "ops_data_plane.sqlite3"
+    external = tmp_path / "external" / "ops_data_plane.sqlite3"
+    external.parent.mkdir(parents=True, exist_ok=True)
+    ops_db.parent.mkdir(parents=True, exist_ok=True)
+    external.write_bytes(b"not a sqlite database")
+    ops_db.symlink_to(external)
+
+    with src.connect(project_root) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM ingest_dead_letters").fetchone()[0]
+
+    quarantined = list(external.parent.glob("ops_data_plane.sqlite3.corrupt_*"))
+    assert ops_db.is_symlink()
+    assert quarantined
+    assert int(count) == 0
+
+
 def test_normalize_entity_key_relativizes_project_paths(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     artifact = project_root / "governance" / "health" / "collector.json"
@@ -170,6 +213,7 @@ def test_emit_materialized_summaries_rolls_up_stream_and_symbol_daily(tmp_path: 
     project_root = tmp_path / "project"
     source_db = project_root / "data" / "jsonl_link.sqlite3"
     source_db.parent.mkdir(parents=True, exist_ok=True)
+    day_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     with sqlite3.connect(str(source_db)) as conn:
         conn.execute(
             """
@@ -197,40 +241,40 @@ def test_emit_materialized_summaries_rolls_up_stream_and_symbol_daily(tmp_path: 
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                (
-                    str(project_root / "decisions" / "a.jsonl"),
-                    "decisions/a.jsonl",
-                    1,
-                    "2026-04-16T12:00:00+00:00",
-                    "sha1",
-                    json.dumps({"timestamp_utc": "2026-04-16T12:00:00+00:00", "symbol": "SPY", "action": "BUY"}),
-                    "run-1",
-                    "iter-1",
+                    (
+                        str(project_root / "decisions" / "a.jsonl"),
+                        "decisions/a.jsonl",
+                        1,
+                        f"{day_utc}T12:00:00+00:00",
+                        "sha1",
+                        json.dumps({"timestamp_utc": f"{day_utc}T12:00:00+00:00", "symbol": "SPY", "action": "BUY"}),
+                        "run-1",
+                        "iter-1",
                     "d-1",
                     "p-1",
                     2,
                 ),
-                (
-                    str(project_root / "decisions" / "a.jsonl"),
-                    "decisions/a.jsonl",
-                    2,
-                    "2026-04-16T12:10:00+00:00",
-                    "sha2",
-                    json.dumps({"timestamp_utc": "2026-04-16T12:10:00+00:00", "symbol": "SPY", "action": "SELL"}),
-                    "run-1",
-                    "iter-1",
+                    (
+                        str(project_root / "decisions" / "a.jsonl"),
+                        "decisions/a.jsonl",
+                        2,
+                        f"{day_utc}T12:10:00+00:00",
+                        "sha2",
+                        json.dumps({"timestamp_utc": f"{day_utc}T12:10:00+00:00", "symbol": "SPY", "action": "SELL"}),
+                        "run-1",
+                        "iter-1",
                     "d-2",
                     "p-1",
                     2,
                 ),
-                (
-                    str(project_root / "governance" / "events" / "g.jsonl"),
-                    "governance/events/g.jsonl",
-                    1,
-                    "2026-04-16T12:20:00+00:00",
-                    "sha3",
-                    json.dumps({"timestamp_utc": "2026-04-16T12:20:00+00:00", "symbol": "QQQ", "action": "HOLD"}),
-                    "run-2",
+                    (
+                        str(project_root / "governance" / "events" / "g.jsonl"),
+                        "governance/events/g.jsonl",
+                        1,
+                        f"{day_utc}T12:20:00+00:00",
+                        "sha3",
+                        json.dumps({"timestamp_utc": f"{day_utc}T12:20:00+00:00", "symbol": "QQQ", "action": "HOLD"}),
+                        "run-2",
                     "iter-2",
                     "d-3",
                     "p-2",

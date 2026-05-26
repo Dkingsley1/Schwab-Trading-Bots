@@ -45,4 +45,12 @@ if __name__ == "__main__":
         feature_builder=build_features,
         window=44,
         horizon=3,
+        acted_prob_threshold=0.80,
+        min_long_precision=0.52,
+        min_short_precision=0.52,
+        require_both_sides_precision=True,
+        min_acted_accuracy=0.58,
+        min_accuracy_lift_over_majority=0.02,
+        min_precision_balance_score=0.48,
+        max_acted_coverage=0.28,
     )

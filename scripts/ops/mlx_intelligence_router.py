@@ -140,6 +140,12 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _norm_package(name: str) -> str:
     return str(name or "").strip().lower().replace("_", "-")
 
@@ -194,7 +200,95 @@ def _coverage(statuses: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def _runtime_caps(memory: dict[str, Any], throttle: dict[str, Any], mlx_runtime: dict[str, Any]) -> dict[str, Any]:
+def _readiness_repair_plan(
+    coverage: dict[str, Any],
+    mlx_runtime: dict[str, Any],
+    mlx_library: dict[str, Any],
+    caps: dict[str, Any],
+) -> dict[str, Any]:
+    missing = [str(item) for item in (coverage.get("missing_packages") or [])]
+    runtime_status = _status(mlx_runtime)
+    library_status = _status(mlx_library)
+    pcore_active = bool(caps.get("p_core_allocation_aware", False))
+    coverage_ratio = _safe_float(coverage.get("coverage_ratio"), 0.0)
+    if not missing and runtime_status not in {"missing", "blocked"}:
+        status = "ready"
+    elif runtime_status == "missing" or coverage_ratio <= 0.0:
+        status = "audit_required"
+    elif missing:
+        status = "package_repair_required"
+    else:
+        status = "watch"
+    commands = []
+    if status in {"audit_required", "watch"}:
+        commands.append(["./scripts/ops/opsctl.sh", "mlx-audit", "--json"])
+    if missing or library_status == "blocked":
+        commands.append(["./scripts/ops/opsctl.sh", "mlx-library-upgrade", "--json"])
+        commands.append(["./scripts/ops/opsctl.sh", "mlx-intelligence-router", "--apply", "--json"])
+    return {
+        "status": status,
+        "runtime_status": runtime_status,
+        "library_status": library_status,
+        "coverage_ratio": round(coverage_ratio, 4),
+        "missing_count": len(missing),
+        "missing_packages": missing,
+        "pcore_safe_to_repair_now": not pcore_active,
+        "repair_window_policy": "defer_package_installs_until_backlog_green_or_operator_approved" if pcore_active else "repair_now_if_needed",
+        "recommended_commands": commands,
+        "next_action": "run MLX audit first; package coverage is empty or stale"
+        if status == "audit_required"
+        else "repair missing MLX packages after backlog pressure cools"
+        if missing and pcore_active
+        else "repair missing MLX packages"
+        if missing
+        else "MLX readiness is clean",
+    }
+
+
+def _p_core_allocation_contract(throttle: dict[str, Any], storage: dict[str, Any]) -> dict[str, Any]:
+    runtime_feedback = throttle.get("p_core_runtime_feedback") if isinstance(throttle.get("p_core_runtime_feedback"), dict) else {}
+    backlog_relief = storage.get("backlog_relief_contract") if isinstance(storage.get("backlog_relief_contract"), dict) else {}
+    storage_contract = (
+        backlog_relief.get("p_core_backlog_allocation_contract")
+        if isinstance(backlog_relief.get("p_core_backlog_allocation_contract"), dict)
+        else {}
+    )
+    source = "runtime_throttle_control" if runtime_feedback else "ingestion_storage_control" if storage_contract else "missing"
+    raw = runtime_feedback or storage_contract
+    burst = raw.get("p_core_burst_intelligence") if isinstance(raw.get("p_core_burst_intelligence"), dict) else {}
+    training_gate = raw.get("training_pcore_gate") if isinstance(raw.get("training_pcore_gate"), dict) else {}
+    control_env = raw.get("control_env") if isinstance(raw.get("control_env"), dict) else {}
+    mode = str(burst.get("mode") or control_env.get("BACKLOG_PCORE_BURST_MODE") or "").strip()
+    workers = _safe_int(raw.get("preprocess_worker_budget"), _safe_int(burst.get("selected_workers"), 0))
+    if workers <= 0:
+        workers = _safe_int(control_env.get("BACKLOG_PCORE_PREPROCESS_WORKERS"), 0)
+    memory_optimizer = (
+        mode.startswith("memory_relief")
+        or _truthy(control_env.get("BACKLOG_MEMORY_PRESSURE_CORE_OPTIMIZER"))
+        or _truthy(raw.get("memory_pressure_core_optimizer"))
+    )
+    training_allowed = bool(training_gate.get("small_targeted_training_allowed_now", training_gate.get("allowed_now", True)))
+    return {
+        "active": _truthy(raw.get("active", False)),
+        "source": source,
+        "policy": str((raw.get("policy") or "p_core_preprocess_single_sql_writer") if raw else ""),
+        "mode": mode,
+        "preprocess_worker_budget": int(max(workers, 0)),
+        "max_budget": _safe_int(burst.get("max_budget"), _safe_int(raw.get("p_core_count"), 0)),
+        "memory_optimizer_active": bool(memory_optimizer),
+        "training_gate_blocked": bool(training_gate and not training_allowed),
+        "training_gate": training_gate,
+        "headroom_policy": str(raw.get("headroom_policy") or raw.get("reserve_policy") or "reserve_foreground_first"),
+        "reason": str(burst.get("reason") or control_env.get("BACKLOG_PCORE_BURST_REASON") or ""),
+    }
+
+
+def _runtime_caps(
+    memory: dict[str, Any],
+    throttle: dict[str, Any],
+    mlx_runtime: dict[str, Any],
+    p_core: dict[str, Any],
+) -> dict[str, Any]:
     memory_snapshot = memory.get("memory_snapshot") if isinstance(memory.get("memory_snapshot"), dict) else {}
     cpu_snapshot = memory.get("cpu_snapshot") if isinstance(memory.get("cpu_snapshot"), dict) else {}
     cotenant = memory.get("cotenant_awareness") if isinstance(memory.get("cotenant_awareness"), dict) else {}
@@ -211,6 +305,11 @@ def _runtime_caps(memory: dict[str, Any], throttle: dict[str, Any], mlx_runtime:
     compile_smoke_ok = bool(((mlx_runtime.get("runtime") or {}).get("compile_smoke_ok", False)))
     metal_available = bool(((mlx_runtime.get("runtime") or {}).get("metal_available", False)))
     cotenant_active = bool(cotenant.get("active", False) or cotenant.get("mode") in {"managed_cotenant", "guarded_cotenant", "pressure_aware_cotenant"})
+    p_core_active = bool(p_core.get("active", False))
+    p_core_mode = str(p_core.get("mode") or "").strip()
+    p_core_workers = _safe_int(p_core.get("preprocess_worker_budget"), 0)
+    p_core_memory_optimizer = bool(p_core.get("memory_optimizer_active", False))
+    p_core_training_blocked = bool(p_core.get("training_gate_blocked", False))
     pressure_profile = "max_throughput"
     max_jobs = 3
     tensor_batch_cap = 64
@@ -242,14 +341,51 @@ def _runtime_caps(memory: dict[str, Any], throttle: dict[str, Any], mlx_runtime:
         graph_node_cap = 9000
         audio_minutes_cap = 30
         heavy_vlm_enabled = True
+    p_core_coordination_policy = "not_active"
+    if p_core_active:
+        p_core_coordination_policy = "yield_to_backlog_p_core_contract"
+        max_jobs = min(max_jobs, 1)
+        heavy_vlm_enabled = False
+        if p_core_mode == "memory_relief_2" or (p_core_memory_optimizer and p_core_workers <= 2):
+            tensor_batch_cap = min(tensor_batch_cap, 8)
+            embedding_batch_cap = min(embedding_batch_cap, 16)
+            graph_node_cap = min(graph_node_cap, 1500)
+            audio_minutes_cap = min(audio_minutes_cap, 8)
+            p_core_coordination_policy = "memory_relief_yields_mlx_to_backlog_and_foreground_apps"
+        elif p_core_mode == "memory_relief_3" or p_core_memory_optimizer:
+            tensor_batch_cap = min(tensor_batch_cap, 12)
+            embedding_batch_cap = min(embedding_batch_cap, 24)
+            graph_node_cap = min(graph_node_cap, 2000)
+            audio_minutes_cap = min(audio_minutes_cap, 10)
+            p_core_coordination_policy = "memory_relief_yields_mlx_to_backlog_and_foreground_apps"
+        elif p_core_mode in {"foreground_protect", "burst_6", "burst_7"} or p_core_workers >= 6:
+            tensor_batch_cap = min(tensor_batch_cap, 16)
+            embedding_batch_cap = min(embedding_batch_cap, 32)
+            graph_node_cap = min(graph_node_cap, 3000)
+            audio_minutes_cap = min(audio_minutes_cap, 12)
+            p_core_coordination_policy = "backlog_burst_owns_p_cores_mlx_runs_light"
+        elif p_core_mode == "daily_driver_5" or p_core_workers >= 5:
+            tensor_batch_cap = min(tensor_batch_cap, 32)
+            embedding_batch_cap = min(embedding_batch_cap, 64)
+            graph_node_cap = min(graph_node_cap, 6000)
+            audio_minutes_cap = min(audio_minutes_cap, 20)
+            p_core_coordination_policy = "daily_backlog_driver_keeps_mlx_single_job"
     compile_mode = "canary_first" if compile_available and compile_smoke_ok and metal_available else "off"
+    if p_core_active and (
+        p_core_memory_optimizer
+        or p_core_training_blocked
+        or p_core_mode in {"foreground_protect", "burst_6", "burst_7", "memory_relief_2", "memory_relief_3"}
+    ):
+        compile_mode = "off"
     return {
         "profile": pressure_profile,
         "throttle_profile": throttle_profile,
         "memory_pressure_level": memory_level,
         "cpu_pressure_level": cpu_level,
         "host_saturation_score": round(host_saturation_score, 3),
-        "host_pressure_state": "constrained" if pressure_profile in {"protect_live", "sustain"} else ("foreground_safe" if pressure_profile == "foreground_safe" else "clear"),
+        "host_pressure_state": "backlog_p_core_reserved"
+        if p_core_active
+        else ("constrained" if pressure_profile in {"protect_live", "sustain"} else ("foreground_safe" if pressure_profile == "foreground_safe" else "clear")),
         "cotenant_active": cotenant_active,
         "open_app_count": _safe_int(cotenant.get("open_app_count"), 0),
         "co_running_level": str(cotenant.get("co_running_level") or ""),
@@ -263,7 +399,71 @@ def _runtime_caps(memory: dict[str, Any], throttle: dict[str, Any], mlx_runtime:
         "compile_available": compile_available,
         "compile_smoke_ok": compile_smoke_ok,
         "metal_available": metal_available,
-        "policy": "maximize_library_coverage_without_maxing_cpu_or_shared_memory",
+        "p_core_allocation_aware": p_core_active,
+        "p_core_contract_source": str(p_core.get("source") or "missing"),
+        "p_core_allocation_mode": p_core_mode,
+        "p_core_preprocess_workers": p_core_workers,
+        "p_core_max_budget": _safe_int(p_core.get("max_budget"), 0),
+        "p_core_memory_optimizer_active": p_core_memory_optimizer,
+        "p_core_training_gate_blocked": p_core_training_blocked,
+        "p_core_coordination_policy": p_core_coordination_policy,
+        "mlx_cpu_affinity_library_available": False,
+        "mlx_core_spread_role": "gpu_tensor_compute_only_cpu_spread_is_managed_by_os_adapter_and_autonomic_governor",
+        "p_core_reason": str(p_core.get("reason") or ""),
+        "policy": "maximize_mlx_library_coverage_while_yielding_to_cpu_memory_and_backlog_p_core_contracts",
+    }
+
+
+def _mlx_reopen_controller(caps: dict[str, Any], coverage: dict[str, Any], p_core: dict[str, Any]) -> dict[str, Any]:
+    profile = str(caps.get("profile") or "").strip()
+    compile_mode = str(caps.get("compile_mode") or "off").strip()
+    missing_count = _safe_int(coverage.get("missing_count"), 0)
+    max_jobs = _safe_int(caps.get("max_concurrent_mlx_jobs"), 0)
+    p_core_active = bool(caps.get("p_core_allocation_aware", False) or p_core.get("active", False))
+    memory_optimizer = bool(caps.get("p_core_memory_optimizer_active", False) or p_core.get("memory_optimizer_active", False))
+    if missing_count > 0:
+        mode = "closed_package_repair_required"
+        allowed = False
+        next_stage = "repair_packages"
+        reason = "MLX package coverage is incomplete"
+    elif profile in {"protect_live", "sustain"}:
+        mode = "closed_runtime_pressure"
+        allowed = False
+        next_stage = "wait_for_foreground_safe"
+        reason = "runtime or memory pressure is elevated"
+    elif p_core_active and memory_optimizer:
+        mode = "single_light_job_memory_guard"
+        allowed = max_jobs >= 1
+        next_stage = "canary_first_after_memory_clear"
+        reason = "backlog P-core memory guard owns CPU headroom; MLX may run only light single jobs"
+    elif p_core_active:
+        mode = "single_light_job_yielding_to_pcore"
+        allowed = max_jobs >= 1
+        next_stage = "canary_first_after_backlog_idle"
+        reason = "backlog P-core contract is active, so MLX yields heavy work"
+    elif compile_mode == "canary_first":
+        mode = "canary_first_ready"
+        allowed = True
+        next_stage = "bounded_scale_after_canary_success"
+        reason = "compile, Metal, package coverage, and host caps are clear"
+    else:
+        mode = "single_light_job_no_compile"
+        allowed = max_jobs >= 1
+        next_stage = "enable_compile_after_smoke_clear"
+        reason = "MLX runtime is available but compile canary is not clear"
+    return {
+        "enabled": True,
+        "mode": mode,
+        "allowed": bool(allowed),
+        "max_concurrent_jobs": int(max(max_jobs, 0)),
+        "compile_mode": compile_mode,
+        "next_stage": next_stage,
+        "p_core_active": p_core_active,
+        "memory_optimizer_active": memory_optimizer,
+        "requires_runtime_profile": "foreground_safe_or_clear",
+        "recommended_command": ["./scripts/ops/opsctl.sh", "mlx-intelligence-router", "--apply", "--json"],
+        "reason": reason,
+        "policy": "reopen_mlx_as_canary_first_after_runtime_pcore_and_memory_pressure_clear",
     }
 
 
@@ -328,6 +528,7 @@ def _library_utilization_matrix(routes: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _recommended_env(caps: dict[str, Any]) -> dict[str, str]:
+    reopen = caps.get("mlx_reopen_controller") if isinstance(caps.get("mlx_reopen_controller"), dict) else {}
     return {
         "MLX_INTELLIGENCE_ROUTER_ENABLED": "1",
         "MLX_INTELLIGENCE_PROFILE": str(caps.get("profile") or "foreground_safe"),
@@ -339,6 +540,15 @@ def _recommended_env(caps: dict[str, Any]) -> dict[str, str]:
         "MLX_INTELLIGENCE_HEAVY_VLM_ENABLED": "1" if bool(caps.get("heavy_vlm_enabled", False)) else "0",
         "MLX_INTELLIGENCE_COMPILE_MODE": str(caps.get("compile_mode") or "off"),
         "MLX_INTELLIGENCE_SHARED_MEMORY_POLICY": "foreground_safe_unified_memory",
+        "MLX_INTELLIGENCE_PCORE_AWARE": "1" if bool(caps.get("p_core_allocation_aware", False)) else "0",
+        "MLX_INTELLIGENCE_PCORE_MODE": str(caps.get("p_core_allocation_mode") or ""),
+        "MLX_INTELLIGENCE_PCORE_PREPROCESS_WORKERS": str(_safe_int(caps.get("p_core_preprocess_workers"), 0)),
+        "MLX_INTELLIGENCE_PCORE_MEMORY_OPTIMIZER": "1" if bool(caps.get("p_core_memory_optimizer_active", False)) else "0",
+        "MLX_INTELLIGENCE_PCORE_COORDINATION_POLICY": str(caps.get("p_core_coordination_policy") or "not_active"),
+        "MLX_INTELLIGENCE_BACKLOG_HEADROOM_POLICY": "yield_to_backlog_p_core_workers_when_active",
+        "MLX_INTELLIGENCE_REOPEN_MODE": str(reopen.get("mode") or "unknown"),
+        "MLX_INTELLIGENCE_REOPEN_ALLOWED": "1" if bool(reopen.get("allowed", False)) else "0",
+        "MLX_INTELLIGENCE_REOPEN_NEXT_STAGE": str(reopen.get("next_stage") or ""),
     }
 
 
@@ -361,13 +571,20 @@ def _recommended_actions(
     route_coverage: dict[str, Any],
     caps: dict[str, Any],
 ) -> list[str]:
+    reopen = caps.get("mlx_reopen_controller") if isinstance(caps.get("mlx_reopen_controller"), dict) else {}
     return ordered_unique(
         [
             "route every MLX-capable intelligence job through mlx-intelligence-router before expanding the library set",
+            "MLX can reopen through the canary-first lane"
+            if str(reopen.get("mode") or "") == "canary_first_ready"
+            else "keep MLX in the reopen controller's light/capped mode until runtime and P-core pressure clear",
             "keep mlx.compile canary-first until runtime-throttle and memory-efficiency both stay green"
             if str(caps.get("compile_mode") or "") == "canary_first"
             else "keep mlx.compile disabled for heavy jobs until the compile smoke and Metal checks are green",
             "treat 100 percent utilization as library coverage, not hardware saturation",
+            "let the backlog P-core allocation own preprocessing and keep MLX to one light job until backlog turns green"
+            if bool(caps.get("p_core_allocation_aware", False))
+            else "",
             "thin VLM, long audio, graph, and simulation jobs while CPU or memory pressure is elevated"
             if not bool(caps.get("heavy_vlm_enabled", True)) or bool(caps.get("cotenant_active", False)) or str(caps.get("cpu_pressure_level") or "") in {"watch", "elevated", "high"}
             else "",
@@ -385,10 +602,15 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     mlx_library = load_json(health_root / "mlx_library_upgrade_latest.json")
     memory = load_json(health_root / "memory_efficiency_control_latest.json")
     throttle = load_json(health_root / "runtime_throttle_control_latest.json")
+    storage = load_json(health_root / "ingestion_storage_control_latest.json")
     quant = load_json(health_root / "quant_model_control_latest.json")
     statuses = _package_statuses(mlx_runtime, mlx_library)
     coverage = _coverage(statuses)
-    caps = _runtime_caps(memory, throttle, mlx_runtime)
+    p_core_contract = _p_core_allocation_contract(throttle, storage)
+    caps = _runtime_caps(memory, throttle, mlx_runtime, p_core_contract)
+    mlx_reopen = _mlx_reopen_controller(caps, coverage, p_core_contract)
+    caps["mlx_reopen_controller"] = mlx_reopen
+    readiness_repair = _readiness_repair_plan(coverage, mlx_runtime, mlx_library, caps)
     routes = _lane_routes(statuses, caps)
     route_coverage = _route_coverage(routes)
     library_matrix = _library_utilization_matrix(routes)
@@ -405,7 +627,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         status = "blocked"
     elif blocked_lane_count:
         status = "degraded"
-    elif str(caps.get("profile") or "") in {"foreground_safe", "sustain", "protect_live"}:
+    elif str(caps.get("profile") or "") in {"foreground_safe", "sustain", "protect_live"} or bool(caps.get("p_core_allocation_aware", False)):
         status = "advisory"
     return {
         "timestamp_utc": iso_now(),
@@ -413,8 +635,10 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "ok": status in {"ready", "advisory"},
         "overall_status": status,
         "library_coverage": coverage,
+        "readiness_repair_plan": readiness_repair,
         "route_coverage": route_coverage,
         "runtime_caps": caps,
+        "mlx_reopen_controller": mlx_reopen,
         "recommended_runtime_env": env,
         "workload_routes": routes,
         "library_utilization_matrix": library_matrix,
@@ -423,11 +647,18 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "uses_all_available_mlx_libraries": bool(library_matrix.get("mapped_library_ratio") == 1.0 and missing_count == 0),
             "hardware_saturation_goal": "no",
             "safe_utilization_goal": "100_percent_library_coverage_with_cpu_memory_aware_caps",
+            "p_core_allocation_aware": bool(caps.get("p_core_allocation_aware", False)),
+            "p_core_allocation_policy": str(caps.get("p_core_coordination_policy") or "not_active"),
+            "p_core_contract_source": str(caps.get("p_core_contract_source") or "missing"),
+            "mlx_cpu_affinity_library_available": False,
+            "cpu_spread_owner": "os_adapter_layer_and_autonomic_resource_governor",
             "live_path_policy": "feature_enrichment_and_risk_context_only",
             "training_path_policy": "off_hours_or_runtime_throttle_cleared",
             "paper_path_policy": "respect_paper_trade_lock_and_runtime_caps",
+            "mlx_reopen_mode": str(mlx_reopen.get("mode") or ""),
+            "mlx_reopen_allowed": bool(mlx_reopen.get("allowed", False)),
         },
-        "recommended_actions": _recommended_actions(coverage, route_coverage, caps),
+        "recommended_actions": ordered_unique([str(readiness_repair.get("next_action") or "")] + _recommended_actions(coverage, route_coverage, caps)),
         "artifact_paths": {
             "json": str(DEFAULT_OUT_PATH),
             "external_context": str(DEFAULT_EXTERNAL_CONTEXT_PATH),
@@ -440,6 +671,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 def render_markdown(payload: dict[str, Any]) -> str:
     coverage = payload.get("library_coverage") if isinstance(payload.get("library_coverage"), dict) else {}
     route_coverage = payload.get("route_coverage") if isinstance(payload.get("route_coverage"), dict) else {}
+    repair = payload.get("readiness_repair_plan") if isinstance(payload.get("readiness_repair_plan"), dict) else {}
     caps = payload.get("runtime_caps") if isinstance(payload.get("runtime_caps"), dict) else {}
     lines = [
         "# MLX Intelligence Router",
@@ -452,6 +684,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"- MLX package coverage: `{coverage.get('coverage_ratio', 0.0)}`",
         f"- Route coverage: `{route_coverage.get('route_coverage_ratio', 0.0)}`",
         f"- Missing packages: `{', '.join(coverage.get('missing_packages') or []) or 'none'}`",
+        f"- Readiness repair: `{repair.get('status', '')}`",
         "",
         "## Runtime Caps",
         "",
@@ -462,6 +695,10 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"- Graph node cap: `{caps.get('graph_node_cap', '')}`",
         f"- Heavy VLM enabled: `{caps.get('heavy_vlm_enabled', '')}`",
         f"- Compile mode: `{caps.get('compile_mode', '')}`",
+        f"- P-core aware: `{caps.get('p_core_allocation_aware', '')}`",
+        f"- P-core mode: `{caps.get('p_core_allocation_mode', '')}`",
+        f"- P-core preprocess workers: `{caps.get('p_core_preprocess_workers', '')}`",
+        f"- P-core policy: `{caps.get('p_core_coordination_policy', '')}`",
         "",
         "## Workload Routes",
         "",

@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "updated_utc": "2026-05-04T13:34:24.190968+00:00",
+  "updated_utc": "2026-05-24T16:39:22.901816+00:00",
   "layer": "platform_intelligence_12_part_control_plane",
   "primary_section_keys": [
     "bot_lifecycle_manager",

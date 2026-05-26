@@ -1,4 +1,5 @@
 import json
+import signal
 import sys
 from pathlib import Path
 
@@ -207,3 +208,63 @@ def test_incident_report_main_writes_markdown_html_and_pdf(tmp_path: Path, monke
     assert "Decision-Oriented Incident Report" in html
     assert "Current Counts" in html
     assert "watchdog throttled maintenance work" in html
+
+
+def test_incident_report_app_renderer_reaps_headless_chrome_after_pdf(tmp_path: Path, monkeypatch) -> None:
+    chrome_bin = tmp_path / "Google Chrome.app" / "Contents" / "MacOS" / "Google Chrome"
+    chrome_bin.parent.mkdir(parents=True)
+    chrome_bin.write_text("# fake chrome\n", encoding="utf-8")
+    profile_dir = tmp_path / "incident-report-open-test"
+    pdf_path = tmp_path / "incident_report_latest.pdf"
+
+    class FakeProc:
+        pid = 4321
+
+        def __init__(self) -> None:
+            self.waited = False
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.waited = True
+            self.returncode = -signal.SIGTERM
+            return self.returncode
+
+        def communicate(self):
+            return "", ""
+
+    fake_proc = FakeProc()
+    popen_calls: list[list[str]] = []
+    killpg_calls: list[tuple[int, int]] = []
+
+    def fake_mkdtemp(prefix: str) -> str:
+        assert prefix == "incident-report-open-"
+        profile_dir.mkdir()
+        return str(profile_dir)
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append(list(cmd))
+        assert kwargs["start_new_session"] is True
+        assert kwargs["cwd"] == str(tmp_path)
+        pdf_path.write_bytes(b"%PDF-1.4\nincident report\n")
+        return fake_proc
+
+    def fake_killpg(pid: int, sig: int) -> None:
+        killpg_calls.append((pid, sig))
+
+    monkeypatch.setattr(report.tempfile, "mkdtemp", fake_mkdtemp)
+    monkeypatch.setattr(report.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(report.os, "killpg", fake_killpg)
+
+    ok, detail = report._render_pdf_via_open_app(str(chrome_bin), "file:///tmp/report.html", pdf_path, project_root=tmp_path)
+
+    assert ok is True
+    assert detail == "ok"
+    assert popen_calls
+    assert popen_calls[0][0] == str(chrome_bin)
+    assert "--headless=new" in popen_calls[0]
+    assert killpg_calls == [(4321, signal.SIGTERM)]
+    assert fake_proc.waited is True
+    assert not profile_dir.exists()

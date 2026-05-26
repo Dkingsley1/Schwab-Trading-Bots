@@ -788,7 +788,7 @@ def test_daily_auto_verify_uses_slow_timeout_for_heavy_checks() -> None:
 
     assert daily_auto_verify._timeout_for_check("daily_runtime_summary", slow_timeout) == slow_timeout
     assert daily_auto_verify._timeout_for_check("data_source_divergence_bot", slow_timeout) == slow_timeout
-    assert daily_auto_verify._timeout_for_check("replay_preopen_sanity", slow_timeout) == slow_timeout
+    assert daily_auto_verify._timeout_for_check("replay_preopen_sanity", slow_timeout) == 45
     assert daily_auto_verify._timeout_for_check("resource_guard", slow_timeout) == daily_auto_verify.DEFAULT_CMD_TIMEOUT_SEC
 
 

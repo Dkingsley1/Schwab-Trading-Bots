@@ -107,6 +107,7 @@ def main() -> int:
     watchdog_age_seconds = _payload_age_seconds(watchdog)
     watchdog_unhealthy_targets = 0
     watchdog_running_targets = 0
+    watchdog_creative_paused_targets = 0
     watchdog_live_lane_running = False
     for row in watchdog_targets:
         if not isinstance(row, dict):
@@ -114,10 +115,13 @@ def main() -> int:
         target_name = str(row.get("name") or "").strip().lower()
         running_count = int(row.get("running", 0) or 0) + int(row.get("alt_running", 0) or 0)
         heartbeat_ok = bool(row.get("heartbeat_ok", False))
+        creative_paused = bool(row.get("paused_by_creative_cotenant_guard", False))
         if running_count > 0 and heartbeat_ok:
             watchdog_running_targets += 1
             if target_name in {"all_sleeves", "live_lane"}:
                 watchdog_live_lane_running = True
+        elif creative_paused and not bool(args.allow_live_broker_submit or canary_submit_enabled):
+            watchdog_creative_paused_targets += 1
         else:
             watchdog_unhealthy_targets += 1
     live_lane_running = bool(live_lane_file_running or watchdog_live_lane_running)
@@ -299,6 +303,7 @@ def main() -> int:
             "target_count": len(watchdog_targets),
             "healthy_target_count": int(watchdog_running_targets),
             "unhealthy_target_count": int(watchdog_unhealthy_targets),
+            "creative_paused_target_count": int(watchdog_creative_paused_targets),
             "restart_storm_count": int(watchdog_restart_storms),
             "alert_count": int(watchdog_alerts),
             "bounded_paper_lane_watchdog": bool(bounded_paper_lane_watchdog),

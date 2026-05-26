@@ -137,8 +137,8 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "./scripts/ops/opsctl.sh pycharm-active-bot-highlights --apply --json" in commands_text
     assert "### Reporter quality infrabot" in commands_text
     assert "./scripts/ops/opsctl.sh report-quality-guard --repair --json" in commands_text
-    assert "### Install nightly showcase and PDF refresh" in commands_text
-    assert "./scripts/install_daily_log_refresh_launchd.sh" in commands_text
+    assert "### Install nightly showcase and PDF refresh" not in commands_text
+    assert "./scripts/install_daily_log_refresh_launchd.sh" not in commands_text
     assert "## Schwab Auth" in commands_text
     assert "### Schwab auth supervisor" in commands_text
     assert "./scripts/ops/opsctl.sh schwab-auth-supervisor --json" in commands_text
@@ -148,65 +148,13 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "./scripts/ops/opsctl.sh token-refresh-interactive" in commands_text
     assert "### Schwab auth recovery plus lane restart" in commands_text
     assert "./scripts/ops/opsctl.sh feed-refresh --source schwab" in commands_text
-    assert "## Platform Expansion" in commands_text
-    assert "### Apply the 12-layer platform intelligence control plane" in commands_text
-    assert "./scripts/ops/opsctl.sh platform-intelligence --apply --json" in commands_text
-    assert "### Preview the 12-layer platform intelligence control plane" in commands_text
-    assert "./scripts/ops/opsctl.sh platform-intelligence --json" in commands_text
-    assert "### Apply Platform Brain v4 Grande" in commands_text
-    assert "./scripts/ops/opsctl.sh platform-brain-v4 --apply --json" in commands_text
-    assert "### Preview Platform Brain v4 Grande" in commands_text
-    assert "./scripts/ops/opsctl.sh platform-brain-v4 --json" in commands_text
-    assert "### Apply Platform Brain v5 Reflex Cortex" in commands_text
-    assert "./scripts/ops/opsctl.sh platform-brain-v5 --apply --json" in commands_text
-    assert "### Preview Platform Brain v5 Reflex Cortex" in commands_text
-    assert "./scripts/ops/opsctl.sh platform-brain-v5 --json" in commands_text
-    assert "### Apply the seven-part stabilization and quality layer" in commands_text
-    assert "./scripts/ops/opsctl.sh platform-stabilization --apply --json" in commands_text
-    assert "### Preview the seven-part stabilization and quality layer" in commands_text
-    assert "./scripts/ops/opsctl.sh platform-stabilization --json" in commands_text
-    assert "### Apply the settlement stabilization layer" in commands_text
-    assert "./scripts/ops/opsctl.sh platform-settlement-stabilization --apply --json" in commands_text
-    assert "### Preview the settlement stabilization layer" in commands_text
-    assert "./scripts/ops/opsctl.sh platform-settlement-stabilization --json" in commands_text
-    assert "### Apply the coordination intelligence control-plane pack" in commands_text
-    assert "./scripts/ops/opsctl.sh coordination-intelligence --apply --json" in commands_text
-    assert "### Preview the coordination intelligence control-plane pack" in commands_text
-    assert "./scripts/ops/opsctl.sh coordination-intelligence --json" in commands_text
-    assert "### Apply the alpha intelligence evolution pack" in commands_text
-    assert "./scripts/ops/opsctl.sh alpha-intelligence-evolution --apply --json" in commands_text
-    assert "### Preview the alpha intelligence evolution pack" in commands_text
-    assert "./scripts/ops/opsctl.sh alpha-intelligence-evolution --json" in commands_text
-    assert "### Apply the intelligence layer advancement pack" in commands_text
-    assert "./scripts/ops/opsctl.sh intelligence-layer-advancement --apply --json" in commands_text
-    assert "### Preview the intelligence layer advancement pack" in commands_text
-    assert "./scripts/ops/opsctl.sh intelligence-layer-advancement --json" in commands_text
-    assert "### Apply the apex self-awareness intelligence pack" in commands_text
-    assert "./scripts/ops/opsctl.sh apex-self-awareness-intelligence --apply --json" in commands_text
-    assert "### Preview the apex self-awareness intelligence pack" in commands_text
-    assert "./scripts/ops/opsctl.sh apex-self-awareness-intelligence --json" in commands_text
-    assert "### Apply the deep recursive awareness pack" in commands_text
-    assert "./scripts/ops/opsctl.sh deep-recursive-awareness --apply --json" in commands_text
-    assert "### Preview the deep recursive awareness pack" in commands_text
-    assert "./scripts/ops/opsctl.sh deep-recursive-awareness --json" in commands_text
-    assert "### Apply the 24-sleeve quant strategy gap pack" in commands_text
-    assert "./scripts/ops/opsctl.sh quant-strategy-gap --apply --json" in commands_text
-    assert "### Preview the 24-sleeve quant strategy gap pack" in commands_text
-    assert "./scripts/ops/opsctl.sh quant-strategy-gap --json" in commands_text
-    assert "### Apply the 14-organ platform organ systems pack" in commands_text
-    assert "./scripts/ops/opsctl.sh platform-organs --apply --json" in commands_text
-    assert "### Preview the 14-organ platform organ systems pack" in commands_text
-    assert "./scripts/ops/opsctl.sh platform-organs --json" in commands_text
-    assert "### Apply the 14-muscle trading action systems pack" in commands_text
-    assert "./scripts/ops/opsctl.sh trading-muscles --apply --json" in commands_text
-    assert "### Preview the 14-muscle trading action systems pack" in commands_text
-    assert "./scripts/ops/opsctl.sh trading-muscles --json" in commands_text
+    assert "## Platform Expansion" not in commands_text
+    assert "./scripts/ops/opsctl.sh platform-intelligence --apply --json" not in commands_text
+    assert "./scripts/ops/opsctl.sh platform-brain-v4 --apply --json" not in commands_text
+    assert "./scripts/ops/opsctl.sh platform-brain-v5 --apply --json" not in commands_text
     assert "### Open the expansion inventory PDF" in commands_text
     assert "./scripts/ops/open_report_artifact.sh expansions" in commands_text
-    assert "### Arm the guarded 400 bot paper ramp" in commands_text
-    assert "./scripts/ops/opsctl.sh paper-400-ramp --apply --json" in commands_text
-    assert "### Preview the guarded 400 bot paper ramp" in commands_text
-    assert "./scripts/ops/opsctl.sh paper-400-ramp --json" in commands_text
+    assert "./scripts/ops/opsctl.sh paper-400-ramp --apply --json" not in commands_text
     assert "tastytrade-sync --json" not in commands_text
 
     runbook_text = (project_root / "scripts" / "runbook.sh").read_text(encoding="utf-8")
@@ -214,7 +162,7 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "find_section_heading()" in runbook_text
     contract_payload = json.loads((project_root / "governance" / "health" / "commands_contract_latest.json").read_text(encoding="utf-8"))
     assert contract_payload["schema_version"] == commands_src.COMMAND_CONTRACT_SCHEMA_VERSION
-    assert contract_payload["entry_count"] == 152
+    assert contract_payload["entry_count"] == 130
     assert contract_payload["contract_hash"] in commands_text
 
 
@@ -237,7 +185,7 @@ def test_render_commands_markdown_places_new_entries_in_expected_sections(tmp_pa
     status_health = commands_text.split("## Status And Health", 1)[1].split("## SQL And Reports", 1)[0]
     retrain = commands_text.split("## Retrain", 1)[1].split("## Reports And PDFs", 1)[0]
     reports = commands_text.split("## Reports And PDFs", 1)[1].split("## Data Context Syncs", 1)[0]
-    data_context = commands_text.split("## Data Context Syncs", 1)[1].split("## Macro And Media", 1)[0]
+    data_context = commands_text.split("## Data Context Syncs", 1)[1].split("## Live Feed Refreshes", 1)[0]
 
     assert "### Heavy live feed view across all sections" in live_views
     assert "./scripts/ops/opsctl.sh feed --source all --heavy" in live_views
@@ -281,7 +229,7 @@ def test_render_commands_markdown_places_new_entries_in_expected_sections(tmp_pa
     assert "### Force full retrain (bypass prechecks)" in retrain
     assert "### Review or prune eligible local standby SQLite copies after BOT_LOGS soak" in commands_text
     assert "### Refresh showcase, framework map, and PDFs now" in reports
-    assert "### Install nightly showcase and PDF refresh" in reports
+    assert "### Install nightly showcase and PDF refresh" not in reports
     assert "### Active bot stack PDF" in reports
     assert "### Open the post-trade analysis PDF" in reports
     assert "./scripts/ops/open_report_artifact.sh posttrade" in reports

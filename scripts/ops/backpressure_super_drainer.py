@@ -169,6 +169,7 @@ def _storage_snapshot(project_root: Path) -> dict[str, Any]:
         )
 
     storage = control.get("storage") if isinstance(control.get("storage"), dict) else {}
+    sql_overlay = control.get("sql_ingestion_pending_overlay") if isinstance(control.get("sql_ingestion_pending_overlay"), dict) else {}
     return {
         "timestamp_utc": str(control.get("timestamp_utc") or backpressure.get("timestamp_utc") or ""),
         "overall_status": str(control.get("overall_status") or "unknown"),
@@ -191,6 +192,8 @@ def _storage_snapshot(project_root: Path) -> dict[str, Any]:
         ),
         "retention_debt_gb": round(_safe_float(storage.get("retention_debt_gb"), 0.0), 3),
         "queue_watermarks_status": str(queue_watermarks.get("overall_status") or ""),
+        "queue_watermarks_source": str(control.get("queue_watermarks_source") or ""),
+        "sql_ingestion_pending_overlay": sql_overlay,
     }
 
 
@@ -209,6 +212,7 @@ def _coordinator_preview(
     poll_seconds: float,
     wait_timeout_seconds: float,
     command_timeout_seconds: int,
+    sql_manager_timeout_cap_seconds: int,
     include_maintenance: bool,
 ) -> dict[str, Any]:
     try:
@@ -218,6 +222,7 @@ def _coordinator_preview(
             poll_seconds=float(poll_seconds),
             wait_timeout_seconds=float(wait_timeout_seconds),
             command_timeout_seconds=int(command_timeout_seconds),
+            sql_manager_timeout_cap_seconds=int(sql_manager_timeout_cap_seconds),
             skip_maintenance=not bool(include_maintenance),
         )
     except Exception as exc:
@@ -376,11 +381,19 @@ def _drainer_memory_payload(payload: dict[str, Any], previous: dict[str, Any] | 
         "stop_reason": str(summary.get("stop_reason") or payload.get("stop_reason") or ""),
         "target_met": bool(payload.get("target_met_final", False)),
     }
+    event["pending_lines_net_change"] = int(event["final_pending_lines"] - event["initial_pending_lines"])
+    event["refill_detected"] = bool(event["waves_run"] > 0 and event["pending_lines_net_change"] > 0)
     history = [row for row in history if isinstance(row, dict)] + [event]
     history = history[-160:]
     recent = history[-30:]
     progress_events = [row for row in recent if _safe_int(row.get("pending_lines_delta"), 0) > 0 or bool(row.get("target_met", False))]
     target_events = [row for row in recent if bool(row.get("target_met", False))]
+    refill_events = [
+        row
+        for row in recent
+        if bool(row.get("refill_detected", False))
+        or (_safe_int(row.get("waves_run"), 0) > 0 and _safe_int(row.get("final_pending_lines"), 0) > _safe_int(row.get("initial_pending_lines"), 0))
+    ]
     return {
         "timestamp_utc": event["timestamp_utc"],
         "schema_version": 1,
@@ -390,8 +403,10 @@ def _drainer_memory_payload(payload: dict[str, Any], previous: dict[str, Any] | 
         "recent_window_count": len(recent),
         "recent_progress_event_count": len(progress_events),
         "recent_target_met_count": len(target_events),
+        "recent_refill_event_count": len(refill_events),
         "recent_progress_rate": round(len(progress_events) / max(len(recent), 1), 4),
         "recent_target_met_rate": round(len(target_events) / max(len(recent), 1), 4),
+        "recent_refill_rate": round(len(refill_events) / max(len(recent), 1), 4),
         "history": history,
         "memory_contract": "remember_drainer_waves_targets_progress_stalls_timeouts_and_active_lanes_for_self_model_reasoning",
     }
@@ -410,6 +425,7 @@ def _coordinator_command(
     poll_seconds: float,
     wait_timeout_seconds: float,
     command_timeout_seconds: int,
+    sql_manager_timeout_cap_seconds: int,
     include_maintenance: bool,
     stale_progress_minutes: float,
 ) -> list[str]:
@@ -426,6 +442,8 @@ def _coordinator_command(
         "--stale-progress-minutes",
         str(float(stale_progress_minutes)),
     ]
+    if int(sql_manager_timeout_cap_seconds) > 0:
+        cmd.extend(["--sql-manager-timeout-cap-seconds", str(int(sql_manager_timeout_cap_seconds))])
     if not include_maintenance:
         cmd.append("--skip-maintenance")
     cmd.append("--json")
@@ -521,6 +539,7 @@ def build_payload(
     poll_seconds: float = DEFAULT_POLL_SECONDS,
     wait_timeout_seconds: float = DEFAULT_WAIT_TIMEOUT_SECONDS,
     command_timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT_SECONDS,
+    sql_manager_timeout_cap_seconds: int = 0,
     stale_progress_minutes: float = coordinator_src.DEFAULT_STALE_PROGRESS_MINUTES,
     include_maintenance: bool = False,
     force_live_window: bool = False,
@@ -539,6 +558,7 @@ def build_payload(
         poll_seconds=float(poll_seconds),
         wait_timeout_seconds=float(wait_timeout_seconds),
         command_timeout_seconds=int(command_timeout_seconds),
+        sql_manager_timeout_cap_seconds=int(sql_manager_timeout_cap_seconds),
         include_maintenance=bool(include_maintenance),
     )
     writer_before = _writer_snapshot(project_root)
@@ -580,6 +600,7 @@ def build_payload(
                 poll_seconds=float(poll_seconds),
                 wait_timeout_seconds=float(wait_timeout_seconds),
                 command_timeout_seconds=int(command_timeout_seconds),
+                sql_manager_timeout_cap_seconds=int(sql_manager_timeout_cap_seconds),
                 include_maintenance=bool(include_maintenance),
             )
             if not wave_live_ready and not bool(wave_coordinator.get("actionable", False)):
@@ -592,6 +613,7 @@ def build_payload(
                 poll_seconds=float(poll_seconds),
                 wait_timeout_seconds=float(wait_timeout_seconds),
                 command_timeout_seconds=int(command_timeout_seconds),
+                sql_manager_timeout_cap_seconds=int(sql_manager_timeout_cap_seconds),
                 include_maintenance=bool(include_maintenance),
                 stale_progress_minutes=float(stale_progress_minutes),
             )
@@ -703,6 +725,16 @@ def build_payload(
         "active_drainer": active_drainer,
         "stop_reason": stop_reason,
     }
+    latest_progress = waves[-1].get("progress", {}) if waves and isinstance(waves[-1], dict) else {}
+    writer_progress_observed = any(_safe_int(row.get("progress", {}).get("merged_rows_observed"), 0) > 0 for row in waves)
+    snapshot_reconciliation = {
+        "pending_snapshot_changed": bool(summary["pending_lines_delta"] > 0),
+        "writer_progress_observed": bool(writer_progress_observed),
+        "likely_snapshot_lag": bool(writer_progress_observed and summary["pending_lines_delta"] <= 0 and len(waves) > 0),
+        "latest_pending_lines_before": _safe_int(latest_progress.get("pending_lines_before"), total_pending),
+        "latest_pending_lines_after": _safe_int(latest_progress.get("pending_lines_after"), final_pending),
+        "latest_merged_rows_observed": _safe_int(latest_progress.get("merged_rows_observed"), 0),
+    }
     guardrails = {
         "single_writer_only": True,
         "uses_writer_cycle_coordinator": True,
@@ -766,6 +798,7 @@ def build_payload(
             "poll_seconds": float(poll_seconds),
             "wait_timeout_seconds": float(wait_timeout_seconds),
             "command_timeout_seconds": int(command_timeout_seconds),
+            "sql_manager_timeout_cap_seconds": int(sql_manager_timeout_cap_seconds),
             "stale_progress_minutes": float(stale_progress_minutes),
             "include_maintenance": bool(include_maintenance),
             "force_live_window": bool(force_live_window),
@@ -777,6 +810,11 @@ def build_payload(
         "live_drainer_ready": bool(live_ready),
         "coordinator_actionable": bool(coordinator_actionable),
         "active_drainer": active_drainer,
+        "initial_pending_lines": int(total_pending),
+        "final_pending_lines": int(final_pending),
+        "pending_lines_delta": int(summary["pending_lines_delta"]),
+        "progress_waves": int(summary["progress_waves"]),
+        "snapshot_reconciliation": snapshot_reconciliation,
         "ready_drainer_names": _ready_drainer_names(initial_drainer),
         "writer_state_before": writer_before,
         "initial_storage": initial_storage,
@@ -856,6 +894,7 @@ def main() -> int:
     parser.add_argument("--poll-seconds", type=float, default=DEFAULT_POLL_SECONDS)
     parser.add_argument("--wait-timeout-seconds", type=float, default=DEFAULT_WAIT_TIMEOUT_SECONDS)
     parser.add_argument("--command-timeout-seconds", type=int, default=DEFAULT_COMMAND_TIMEOUT_SECONDS)
+    parser.add_argument("--sql-manager-timeout-cap-seconds", type=int, default=int(os.getenv("BACKPRESSURE_SUPER_DRAINER_SQL_MANAGER_TIMEOUT_CAP_SECONDS", "0")))
     parser.add_argument("--stale-progress-minutes", type=float, default=float(coordinator_src.DEFAULT_STALE_PROGRESS_MINUTES))
     parser.add_argument("--include-maintenance", action="store_true")
     parser.add_argument("--force-live-window", action="store_true")
@@ -900,6 +939,7 @@ def main() -> int:
             poll_seconds=float(args.poll_seconds),
             wait_timeout_seconds=float(args.wait_timeout_seconds),
             command_timeout_seconds=int(args.command_timeout_seconds),
+            sql_manager_timeout_cap_seconds=int(args.sql_manager_timeout_cap_seconds),
             stale_progress_minutes=float(args.stale_progress_minutes),
             include_maintenance=bool(args.include_maintenance),
             force_live_window=bool(args.force_live_window),

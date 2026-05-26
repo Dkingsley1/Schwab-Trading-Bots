@@ -53,6 +53,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     halt = _health(project_root, "global_halt_auto_clear_latest.json") or _health(project_root, "global_killswitch_latest.json")
     storage = _health(project_root, "ingestion_storage_control_latest.json")
     schwab_futures = _health(project_root, "data_ingress_latest_schwab_futures_equities_schwab.json")
+    done_for_today = _health(project_root, "system_done_for_today_latest.json")
     alerts = process.get("alerts") if isinstance(process.get("alerts"), list) else []
     safety = process.get("safety_pause") if isinstance(process.get("safety_pause"), dict) else {}
     swap_payload = swap.get("swap_pressure") if isinstance(swap.get("swap_pressure"), dict) else {}
@@ -143,9 +144,16 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "pause_reason": schwab_futures.get("pause_reason"),
             "total_counts": schwab_futures.get("total_counts", {}),
         },
+        "done_for_today": {
+            "overall_status": done_for_today.get("overall_status"),
+            "can_stop_chasing": bool(done_for_today.get("can_stop_chasing", False)),
+            "blockers": done_for_today.get("blockers", []),
+            "next_command": ["./scripts/ops/opsctl.sh", "done-for-today", "--json"],
+        },
         "recommended_commands": [
             ["./scripts/ops/opsctl.sh", "pressure-relief", "--apply", "--json"],
             ["./scripts/ops/opsctl.sh", "global-halt-status", "--json"],
+            ["./scripts/ops/opsctl.sh", "done-for-today", "--json"],
         ],
     }
 

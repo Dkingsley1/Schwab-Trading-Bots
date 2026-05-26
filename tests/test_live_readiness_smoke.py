@@ -370,3 +370,60 @@ def test_live_readiness_smoke_treats_all_sleeves_watchdog_as_live_lane(tmp_path)
     assert rc == 0
     assert payload["live_lane_running"] is True
     assert payload["preopen_dashboard"]["live_lane_running"] is True
+
+
+def test_live_readiness_smoke_forgives_creative_cotenant_paused_targets_in_validate_only(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+
+    (health / "broker_readiness_latest.json").write_text(json.dumps({"ready_for_open": True, "network_ok": True, "auth_ok": True}), encoding="utf-8")
+    (health / "premarket_token_guard_latest.json").write_text(json.dumps({"ok": True}), encoding="utf-8")
+    (health / "session_ready_latest.json").write_text(json.dumps({"ready": True}), encoding="utf-8")
+    (health / "execution_lane_paper_latest.json").write_text(json.dumps({"stale": False}), encoding="utf-8")
+    (health / "execution_lane_live_latest.json").write_text(json.dumps({"stale": True}), encoding="utf-8")
+    (health / "storage_route_status_latest.json").write_text(json.dumps({"ok": True, "mode": "external"}), encoding="utf-8")
+    (health / "resource_guard_latest.json").write_text(json.dumps({"resource_guard_ok": True}), encoding="utf-8")
+    (health / "process_watchdog_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "status": [
+                    {"name": "all_sleeves", "running": 1, "heartbeat_ok": True},
+                    {
+                        "name": "coinbase_loop",
+                        "running": 0,
+                        "heartbeat_ok": False,
+                        "paused_by_creative_cotenant_guard": True,
+                        "restart_skipped": "creative_cotenant_pause_active",
+                    },
+                    {
+                        "name": "coinbase_futures_loop",
+                        "running": 0,
+                        "heartbeat_ok": False,
+                        "paused_by_creative_cotenant_guard": True,
+                        "restart_skipped": "creative_cotenant_pause_active",
+                    },
+                ],
+                "restart_storms": [],
+                "alerts": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "live_readiness_creative_pause.json"
+    old_root = smoke.PROJECT_ROOT
+    try:
+        smoke.PROJECT_ROOT = project_root
+        sys.argv = ["live_readiness_smoke.py", "--project-root", str(project_root), "--out-file", str(out), "--json"]
+        rc = smoke.main()
+    finally:
+        smoke.PROJECT_ROOT = old_root
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert rc == 0
+    assert payload["overall_status"] == "ready"
+    assert payload["process_watchdog"]["creative_paused_target_count"] == 2
+    assert payload["process_watchdog"]["unhealthy_target_count"] == 0
+    assert "watchdog_targets_missing" not in payload["hard_blocks"]

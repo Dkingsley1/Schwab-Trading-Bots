@@ -1,16 +1,16 @@
 # Intelligence Layers PyCharm Index
 
-- Updated UTC: `2026-05-07T18:07:23.381394+00:00`
+- Updated UTC: `2026-05-24T18:13:04.826341+00:00`
 - Whole-System Status: `degraded`
-- Top Risk: `ingestion_storage`
-- Safe Next Command: `./scripts/ops/opsctl.sh guard-intelligence --apply --json`
+- Top Risk: `runtime_throttle`
+- Safe Next Command: `./scripts/ops/opsctl.sh pressure-relief --apply --json`
 
 ## Bot Activity Snapshot
 
-- Active Bots: `1580`
-- Data-Collection Bots: `1580`
+- Active Bots: `1603`
+- Data-Collection Bots: `1603`
 - Paper-Live-Data Bots: `35`
-- Sleeve Profiles: `306`
+- Sleeve Profiles: `317`
 - Active Marker: <span style="color:#0b5cad;font-weight:700">ACTIVE</span>
 - PyCharm Note: bots can be running under launchd or Terminal even when PyCharm's Run panel is empty.
 
@@ -35,38 +35,38 @@
 
 - Memory Pressure High: `False`
 - Runtime Pressure High: `True`
-- Storage Critical: `True`
-- Writer Active: `False`
-- Guard Policy Mode: `protective_throttle`
+- Storage Critical: `False`
+- Writer Active: `True`
+- Guard Policy Mode: `full_schwab_observe`
 
 ## Docs Commands Reporting
 
-- Layer Status: `ready`
-- Action: `observe_docs_reporting_contract`
-- Command Contract Entries: `152`
+- Layer Status: `advisory`
+- Action: `refresh_readme_commands_reporting_links`
+- Command Contract Entries: `130`
 - Command Issues: `0`
 - Report Bundle Entries: `38`
 - Report Bundle Errors: `0`
 - Report Permission Errors: `0`
-- PyCharm File Color Status: `ready`
-- PyCharm Active Core Files: `1417`
-- PyCharm Scope Strategy: `brain_refinery_family_with_inactive_exclusions`
-- PyCharm Scope Pattern Bytes: `3603`
-- PyCharm Project View Style: `scope_background_color`
-- PyCharm Foreground Blue Source: `pycharm_vcs_modified_file_status`
+- PyCharm File Color Status: `missing`
+- PyCharm Active Core Files: `0`
+- PyCharm Scope Strategy: ``
+- PyCharm Scope Pattern Bytes: `0`
+- PyCharm Project View Style: ``
+- PyCharm Foreground Blue Source: ``
 - Foreground Blue Without Dirtying Files: `False`
 
 ## Intelligence Layers
 
-- `super_intelligence`: status `degraded`, mode `stabilize`, action `stabilize_guard_and_process_budget`
-- `outcome_learning`: status `degraded`, verdict `monitoring`
+- `super_intelligence`: status `degraded`, mode `stabilize`, action `relieve_pressure_then_observe_backlog`
+- `outcome_learning`: status `ready`, verdict `effective`
 - `paper_lane_governor`: status `ready`, mode `standard_30_50_active`, score `35`
-- `symbol_universe_intelligence`: status `ready`, score `84.05`
+- `symbol_universe_intelligence`: status `ready`, score `100.0`
 - `cognitive_twin_counterfactuals`: status `advisory`, score `46`, next `pressure_relief_success`
-- `recursive_policy_evolution`: status `degraded`, score `54.0`, next `cognitive_twin_counterfactual_simulator`
-- `deeper_self_awareness_layers`: status `advisory`, mode `advisory_control_plane_with_constitutional_lockout_attestation`, score `6`, next `causal_world_model,belief_ledger_confidence,adversarial_market_infra_simulator`
-- `codex_handoff`: status `degraded`
-- `documentation_reporting_intelligence`: status `ready`, action `observe_docs_reporting_contract`, score `152`
+- `recursive_policy_evolution`: status `advisory`, score `66.0`, next `cognitive_twin_counterfactual_simulator`
+- `deeper_self_awareness_layers`: status `advisory`, mode `advisory_control_plane_with_constitutional_lockout_attestation`, score `7`, next `belief_ledger_confidence,adversarial_market_infra_simulator,resource_economist`
+- `codex_handoff`: status `advisory`
+- `documentation_reporting_intelligence`: status `advisory`, action `refresh_readme_commands_reporting_links`, score `130`
 
 ## PyCharm Open Paths
 
@@ -79,6 +79,7 @@
 - `outcome_learning`: `governance/health/super_intelligence_outcome_learning_latest.json`
 - `recursive_intelligence`: `governance/health/system_recursive_intelligence_latest.json`
 - `deeper_intelligence_layers`: `governance/health/deeper_intelligence_layers_latest.json`
+- `bot_intelligence_mesh`: `governance/health/bot_intelligence_mesh_latest.json`
 - `codex_handoff_json`: `governance/health/codex_handoff_latest.json`
 - `codex_handoff_markdown`: `exports/reports/operator/codex_handoff_latest.md`
 - `super_override`: `config/.env.super_intelligence_override`

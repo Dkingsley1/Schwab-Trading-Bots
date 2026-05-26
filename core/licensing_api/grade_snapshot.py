@@ -40,6 +40,8 @@ def _safe_int(raw: Any, default: int = 0) -> int:
 
 def score_to_letter(score: float) -> str:
     value = max(0.0, min(float(score), 100.0))
+    if value >= 99.0:
+        return "A++"
     if value >= 96.0:
         return "A+"
     if value >= 92.0:

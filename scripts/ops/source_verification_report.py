@@ -7,6 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover - zoneinfo is available on normal Python 3.9+ runtimes.
+    ZoneInfo = None
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REPORTS_DIR = PROJECT_ROOT / "exports" / "reports"
 HEALTH_DIR = PROJECT_ROOT / "governance" / "health"
@@ -69,12 +74,88 @@ def _ok_count(mapping: dict[str, Any]) -> tuple[int, int]:
     return ok, total
 
 
+def _ordered_unique(items: list[Any]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in items:
+        text = str(raw or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
 def _minimum_ok_sources(total: int, *, floor: int = 1, tolerate_failures: int = 1, min_ratio: float = 0.75) -> int:
     if int(total) <= 0:
         return 0
     ratio_target = int(round(float(total) * float(min_ratio)))
     tolerated_target = int(total) - max(int(tolerate_failures), 0)
     return min(int(total), max(int(floor), ratio_target, tolerated_target))
+
+
+def _market_closed_for_local_micro(now: datetime) -> bool:
+    if ZoneInfo is not None:
+        local = now.astimezone(ZoneInfo("America/New_York"))
+    else:
+        local = now.astimezone(timezone.utc)
+    if local.weekday() >= 5:
+        return True
+    minutes = local.hour * 60 + local.minute
+    return minutes < (9 * 60 + 30) or minutes > (16 * 60)
+
+
+def _market_holiday_pause_observed(health_dir: Path, now: datetime) -> bool:
+    for path in sorted(health_dir.glob("data_ingress_latest_*_equities_schwab.json"))[:200]:
+        payload = _read_json(path)
+        if str(payload.get("pause_reason") or "").strip().lower() != "holiday":
+            continue
+        if str(payload.get("loop_state") or "").strip().lower() != "paused_session_gate":
+            continue
+        ts = _parse_ts(payload.get("timestamp_utc"))
+        if _is_fresh(ts, now, 12.0):
+            return True
+    return False
+
+
+def _row_has_actionable_notes(row: dict[str, Any]) -> bool:
+    notes = [str(item or "").strip() for item in row.get("notes") or [] if str(item or "").strip()]
+    if not notes:
+        return False
+    if str(row.get("verification_status") or "") == STATUS_SINGLE_UNVERIFIED:
+        return True
+    evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+    accepted_note_tokens: set[str] = set()
+    if bool(evidence.get("market_closed_local_micro_fallback")):
+        accepted_note_tokens.update({"local_micro_absent_market_closed"})
+    if bool(evidence.get("official_rate_only_holiday_fallback")):
+        accepted_note_tokens.update({"market_proxy_absent_market_closed"})
+    for note in notes:
+        if note in accepted_note_tokens:
+            continue
+        if note.startswith("partial_sources=") and accepted_note_tokens:
+            continue
+        return True
+    return False
+
+
+def _refresh_command_for_source(project_root: Path, source_id: str) -> list[str]:
+    opsctl = str(project_root / "scripts" / "ops" / "opsctl.sh")
+    mapping: dict[str, list[str]] = {
+        "market_quote_profiles": [str(project_root / ".venv312" / "bin" / "python"), str(project_root / "scripts" / "data_source_divergence_bot.py"), "--json"],
+        "polygon_unusual_whales_options_context": [opsctl, "options-flow-sync", "--json"],
+        "macro_crossstack": [opsctl, "macro-crosscheck", "--json"],
+        "crypto_market_context": [opsctl, "crypto-market-sync", "--json"],
+        "fx_market_context": [opsctl, "fx-market-sync", "--json"],
+        "public_macro_feeds": [opsctl, "macro-context-sync", "--json"],
+        "official_macro_context": [opsctl, "macro-context-sync", "--json"],
+        "schwab_education_context": [opsctl, "macro-context-sync", "--json"],
+        "market_micro_context": [opsctl, "market-micro-sync", "--json"],
+        "sec_edgar_context": [opsctl, "sec-edgar-sync", "--json"],
+        "extended_quant_context": [opsctl, "extended-quant-sync", "--json"],
+        "fed_2026_supervisory_stress_scenario": [opsctl, "source-verification", "--json"],
+    }
+    return mapping.get(str(source_id), [opsctl, "source-verification", "--json"])
 
 
 def _row(
@@ -322,23 +403,38 @@ def _fx_market_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     notes: list[str] = []
     ok_sources = int(payload.get("ok_source_count", 0) or 0)
     total_sources = int(payload.get("source_count", 0) or 0)
+    official_pairs = int(payload.get("official_pairs", 0) or 0)
+    proxy_symbols_observed = int(payload.get("proxy_symbols_observed", 0) or 0)
     proxy_agreement_norm = float(payload.get("proxy_agreement_norm", 0.0) or 0.0)
+    official_rate_only_holiday_fallback = bool(
+        bool(payload.get("ok", False))
+        and ok_sources >= 3
+        and official_pairs >= 3
+        and proxy_symbols_observed <= 0
+        and (_market_closed_for_local_micro(now) or _market_holiday_pause_observed(health_dir, now))
+        and fresh
+    )
     if ok_sources < total_sources:
         notes.append(f"partial_sources={ok_sources}/{total_sources}")
-    if proxy_agreement_norm < 0.34:
+    if official_rate_only_holiday_fallback:
+        notes.append("market_proxy_absent_market_closed")
+    elif proxy_agreement_norm < 0.34:
         notes.append("proxy_agreement_low")
     if not fresh:
         notes.append("stale_artifact")
-    status = (
-        STATUS_CROSS_VERIFIED
-        if bool(payload.get("ok", False))
+    if (
+        bool(payload.get("ok", False))
         and ok_sources >= 2
-        and int(payload.get("official_pairs", 0) or 0) >= 3
-        and int(payload.get("proxy_symbols_observed", 0) or 0) >= 3
+        and official_pairs >= 3
+        and proxy_symbols_observed >= 3
         and proxy_agreement_norm > 0.0
         and fresh
-        else STATUS_SINGLE_UNVERIFIED
-    )
+    ):
+        status = STATUS_CROSS_VERIFIED
+    elif official_rate_only_holiday_fallback:
+        status = STATUS_SINGLE_VERIFIED
+    else:
+        status = STATUS_SINGLE_UNVERIFIED
     return _row(
         source_id="fx_market_context",
         title="FX Market Context",
@@ -354,9 +450,10 @@ def _fx_market_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         evidence={
             "ok_sources": ok_sources,
             "total_sources": total_sources,
-            "official_pairs": int(payload.get("official_pairs", 0) or 0),
-            "proxy_symbols_observed": int(payload.get("proxy_symbols_observed", 0) or 0),
+            "official_pairs": official_pairs,
+            "proxy_symbols_observed": proxy_symbols_observed,
             "proxy_agreement_norm": proxy_agreement_norm,
+            "official_rate_only_holiday_fallback": official_rate_only_holiday_fallback,
             "direct_forex_execution_supported": bool(payload.get("direct_forex_execution_supported", False)),
             "direct_forex_execution_reason": str(payload.get("direct_forex_execution_reason") or ""),
         },
@@ -502,23 +599,43 @@ def _market_micro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         and not bool(value.get("contract_participates", True))
         and not bool(value.get("ok", False))
     )
+    local_micro_ok = bool((sources.get("local_micro") or {}).get("ok", False)) if isinstance(sources, dict) else False
+    finra_ok = bool((sources.get("finra_short_volume") or {}).get("ok", False)) if isinstance(sources, dict) else False
+    nasdaq_halts_ok = bool((sources.get("nasdaq_trade_halts") or {}).get("ok", False)) if isinstance(sources, dict) else False
+    treasury_ok = bool((sources.get("treasury_auctions") or {}).get("ok", False)) if isinstance(sources, dict) else False
     critical_sources = {
-        "local_micro": bool((sources.get("local_micro") or {}).get("ok", False)) if isinstance(sources, dict) else False,
-        "finra_short_volume": bool((sources.get("finra_short_volume") or {}).get("ok", False)) if isinstance(sources, dict) else False,
+        "local_micro": local_micro_ok,
+        "external_micro_reference": bool(finra_ok or nasdaq_halts_ok),
+        "treasury_auction_context": treasury_ok,
+        "finra_short_volume": finra_ok,
+        "nasdaq_trade_halts": nasdaq_halts_ok,
     }
     if not fresh:
         notes.append("stale_artifact")
     min_ok_sources = _minimum_ok_sources(total_count, floor=3, tolerate_failures=1, min_ratio=0.75)
+    holiday_pause_observed = _market_holiday_pause_observed(health_dir, now)
+    market_closed_local_micro_fallback = bool(
+        not local_micro_ok
+        and (_market_closed_for_local_micro(now) or holiday_pause_observed)
+        and bool(finra_ok or nasdaq_halts_ok)
+        and treasury_ok
+        and fresh
+    )
+    effective_ok_count = ok_count + (1 if market_closed_local_micro_fallback else 0)
     if total_count > 0 and ok_count < total_count:
         notes.append(f"partial_sources={ok_count}/{total_count}")
+    if market_closed_local_micro_fallback:
+        notes.append("local_micro_absent_market_closed")
     if auxiliary_degraded:
         notes.append(f"auxiliary_source_degraded={','.join(auxiliary_degraded)}")
     status = (
         STATUS_SINGLE_VERIFIED
         if bool(payload.get("ok", False))
         and total_count > 0
-        and ok_count >= min_ok_sources
-        and all(critical_sources.values())
+        and effective_ok_count >= min_ok_sources
+        and (local_micro_ok or market_closed_local_micro_fallback)
+        and bool(finra_ok or nasdaq_halts_ok)
+        and treasury_ok
         and fresh
         else STATUS_SINGLE_UNVERIFIED
     )
@@ -536,9 +653,12 @@ def _market_micro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         notes=notes,
         evidence={
             "ok_sources": ok_count,
+            "effective_ok_sources": effective_ok_count,
             "total_sources": total_count,
             "min_ok_sources_required": min_ok_sources,
             "critical_sources": critical_sources,
+            "market_closed_local_micro_fallback": market_closed_local_micro_fallback,
+            "holiday_pause_observed": holiday_pause_observed,
             "local_micro_symbol_count": int(((sources.get("local_micro") or {}).get("symbol_count", 0)) or 0),
             "finra_symbol_count": int(((sources.get("finra_short_volume") or {}).get("symbol_count", 0)) or 0),
         },
@@ -760,16 +880,48 @@ def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict
         STATUS_SINGLE_UNVERIFIED: sum(1 for row in rows if row["verification_status"] == STATUS_SINGLE_UNVERIFIED),
     }
     unverified = [row["source_id"] for row in rows if row["verification_status"] == STATUS_SINGLE_UNVERIFIED]
-    warnings = [row["source_id"] for row in rows if row["notes"]]
+    warnings = [row["source_id"] for row in rows if _row_has_actionable_notes(row)]
+    stale = [row["source_id"] for row in rows if not bool(row.get("fresh", False))]
+    degraded = _ordered_unique(unverified + warnings)
+    all_verified = counts[STATUS_SINGLE_UNVERIFIED] == 0
+    all_cross_verified = counts[STATUS_CROSS_VERIFIED] == len(rows)
+    overall_status = "ready" if all_verified else "degraded"
+    refresh_commands: list[list[str]] = []
+    for source_id in degraded:
+        command = _refresh_command_for_source(project_root, source_id)
+        if command not in refresh_commands:
+            refresh_commands.append(command)
+    if refresh_commands and [str(project_root / "scripts" / "ops" / "opsctl.sh"), "source-verification", "--json"] not in refresh_commands:
+        refresh_commands.append([str(project_root / "scripts" / "ops" / "opsctl.sh"), "source-verification", "--json"])
     return {
         "timestamp_utc": now.isoformat(),
+        "schema_version": 2,
+        "ok": all_verified,
+        "overall_status": overall_status,
         "overall": {
-            "all_cross_verified": counts[STATUS_CROSS_VERIFIED] == len(rows),
-            "all_verified": counts[STATUS_SINGLE_UNVERIFIED] == 0,
+            "all_cross_verified": all_cross_verified,
+            "all_verified": all_verified,
             "counts": counts,
             "total_sources": len(rows),
             "unverified_sources": unverified,
             "sources_with_notes": warnings,
+            "stale_sources": stale,
+        },
+        "unverified_sources": unverified,
+        "stale_artifacts": stale,
+        "degraded_artifacts": degraded,
+        "recommended_refresh_commands": refresh_commands,
+        "recommended_actions": [
+            "refresh degraded source artifacts with the recommended commands, then rerun source-verification",
+            "keep required market context lanes fresh before using market-move explanations for confidence claims",
+        ]
+        if degraded
+        else ["source verification is clean; keep scheduled collectors current"],
+        "autorefresh_contract": {
+            "enabled": True,
+            "apply_command": [str(project_root / "scripts" / "ops" / "opsctl.sh"), "source-verification-refresh", "--apply", "--json"],
+            "preview_command": [str(project_root / "scripts" / "ops" / "opsctl.sh"), "source-verification-refresh", "--json"],
+            "policy": "refresh_only_degraded_or_stale_source_artifacts_then_rerun_source_verification",
         },
         "sources": rows,
     }

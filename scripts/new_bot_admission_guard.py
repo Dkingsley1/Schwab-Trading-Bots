@@ -17,6 +17,19 @@ SCOPE_EXEMPT_TOKENS = (
     "manual_collection_restore",
     "manual_canary_restore",
 )
+COLLECTION_ONLY_STATES = {
+    "data_collection_only",
+    "collection_only",
+    "collecting_only",
+    "paper_live_data",
+}
+PROMOTION_SCOPE_STATUSES = {
+    "candidate",
+    "challenger",
+    "master_candidate",
+    "probation",
+    "promotion_candidate",
+}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -62,12 +75,20 @@ def _truthy_flag(value: Any) -> bool:
 
 
 def _admission_scope_requested(raw_row: dict[str, Any], wf_row: dict[str, Any]) -> bool:
+    lifecycle_state = str(raw_row.get("lifecycle_state") or "").strip().lower()
+    promotion_status = str(raw_row.get("promotion_status") or "").strip().lower()
+    explicit_rollout_requested = (
+        _truthy_flag(raw_row.get("paper_trading"))
+        or _truthy_flag(raw_row.get("shadow_mode"))
+        or promotion_status in PROMOTION_SCOPE_STATUSES
+    )
+    if lifecycle_state in COLLECTION_ONLY_STATES and not explicit_rollout_requested:
+        return False
     if bool(raw_row.get("active", False)):
         return True
     if _truthy_flag(raw_row.get("paper_trading")) or _truthy_flag(raw_row.get("shadow_mode")):
         return True
-    promotion_status = str(raw_row.get("promotion_status") or "").strip().lower()
-    if promotion_status in {"candidate", "shadow", "paper", "probation", "challenger"}:
+    if promotion_status in PROMOTION_SCOPE_STATUSES:
         return True
     return False
 

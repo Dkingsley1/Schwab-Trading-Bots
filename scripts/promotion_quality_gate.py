@@ -37,6 +37,7 @@ def _resolve_daily_verify_failures(
     graduation_gate: dict[str, Any],
     owner_guard: dict[str, Any],
     admission_guard: dict[str, Any],
+    feature_store_ready: bool,
     schema_compatibility_guard: dict[str, Any],
     golden_replay_guard: dict[str, Any],
     cohort_drift_guard: dict[str, Any],
@@ -47,6 +48,9 @@ def _resolve_daily_verify_failures(
     snapshot_coverage_guard: dict[str, Any],
     data_source_divergence_guard: dict[str, Any],
     artifact_freshness_guard: dict[str, Any],
+    nightly_resilience_guard: dict[str, Any],
+    state_snapshot_drill: dict[str, Any],
+    db_integrity_guard: dict[str, Any],
     ignored_failed_checks: set[str] | None = None,
 ) -> tuple[list[str], list[str]]:
     failed = daily_verify.get("failed_checks") if isinstance(daily_verify.get("failed_checks"), list) else []
@@ -71,7 +75,19 @@ def _resolve_daily_verify_failures(
         if name == "new_bot_admission_guard" and bool(admission_guard.get("ok", False)):
             resolved.append(name)
             continue
+        if name == "feature_store_manifest" and feature_store_ready:
+            resolved.append(name)
+            continue
         if name == "retrain_schema_compatibility_guard" and bool(schema_compatibility_guard.get("ok", False)):
+            resolved.append(name)
+            continue
+        if name == "nightly_resilience_check" and (bool(nightly_resilience_guard.get("ok", False)) or not promotion_scope_active):
+            resolved.append(name)
+            continue
+        if name == "state_snapshot_drill" and bool(state_snapshot_drill.get("ok", False)):
+            resolved.append(name)
+            continue
+        if name == "db_integrity" and bool(db_integrity_guard.get("ok", False)):
             resolved.append(name)
             continue
         if name == "golden_replay_regression_guard" and bool(golden_replay_guard.get("ok", False)):
@@ -132,6 +148,9 @@ def evaluate_quality(
     snapshot_coverage_guard: dict[str, Any] | None = None,
     data_source_divergence_guard: dict[str, Any] | None = None,
     artifact_freshness_guard: dict[str, Any] | None = None,
+    nightly_resilience_guard: dict[str, Any] | None = None,
+    state_snapshot_drill: dict[str, Any] | None = None,
+    db_integrity_guard: dict[str, Any] | None = None,
     *,
     max_fail_share: float,
     min_considered_bots: int,
@@ -161,28 +180,14 @@ def evaluate_quality(
     snapshot_coverage_guard = snapshot_coverage_guard or {}
     data_source_divergence_guard = data_source_divergence_guard or {}
     artifact_freshness_guard = artifact_freshness_guard or {}
+    nightly_resilience_guard = nightly_resilience_guard or {}
+    state_snapshot_drill = state_snapshot_drill or {}
+    db_integrity_guard = db_integrity_guard or {}
 
     considered = int(promotion_gate.get("considered_bots", 0) or 0)
     raw_fail_share = promotion_gate.get("fail_share", 1.0)
     fail_share = float(1.0 if raw_fail_share is None else raw_fail_share)
     promote_ok = bool(promotion_gate.get("promote_ok", False))
-    unresolved_daily_verify, resolved_daily_verify = _resolve_daily_verify_failures(
-        daily_verify,
-        graduation_gate=graduation_gate,
-        owner_guard=bot_support_owner_guard,
-        admission_guard=new_bot_admission_guard,
-        schema_compatibility_guard=retrain_schema_compatibility_guard,
-        golden_replay_guard=golden_replay_regression_guard,
-        cohort_drift_guard=cohort_drift_baseline_guard,
-        replay_hash_registry_gate=replay_hash_registry_gate,
-        probation_guard=champion_challenger_probation_guard,
-        promotion_packet=promotion_packet,
-        promotion_gate=promotion_gate,
-        snapshot_coverage_guard=snapshot_coverage_guard,
-        data_source_divergence_guard=data_source_divergence_guard,
-        artifact_freshness_guard=artifact_freshness_guard,
-        ignored_failed_checks=ignore_daily_verify_failed_checks,
-    )
     point_in_time_contract = (
         feature_store_manifest.get("point_in_time_contract")
         if isinstance(feature_store_manifest.get("point_in_time_contract"), dict)
@@ -200,6 +205,27 @@ def evaluate_quality(
             or point_in_time_contract.get("seed_ready", False)
         )
         and str(contract_hashes.get("dataset_manifest_sha256") or "").strip()
+    )
+    unresolved_daily_verify, resolved_daily_verify = _resolve_daily_verify_failures(
+        daily_verify,
+        graduation_gate=graduation_gate,
+        owner_guard=bot_support_owner_guard,
+        admission_guard=new_bot_admission_guard,
+        feature_store_ready=feature_store_ready,
+        schema_compatibility_guard=retrain_schema_compatibility_guard,
+        golden_replay_guard=golden_replay_regression_guard,
+        cohort_drift_guard=cohort_drift_baseline_guard,
+        replay_hash_registry_gate=replay_hash_registry_gate,
+        probation_guard=champion_challenger_probation_guard,
+        promotion_packet=promotion_packet,
+        promotion_gate=promotion_gate,
+        snapshot_coverage_guard=snapshot_coverage_guard,
+        data_source_divergence_guard=data_source_divergence_guard,
+        artifact_freshness_guard=artifact_freshness_guard,
+        nightly_resilience_guard=nightly_resilience_guard,
+        state_snapshot_drill=state_snapshot_drill,
+        db_integrity_guard=db_integrity_guard,
+        ignored_failed_checks=ignore_daily_verify_failed_checks,
     )
 
     promotion_scope_active = _promotion_scope_active(promotion_gate, graduation_gate)
@@ -285,6 +311,9 @@ def evaluate_quality(
         "snapshot_coverage_ok": bool(snapshot_coverage_guard.get("ok", False)) if snapshot_coverage_guard else None,
         "data_source_divergence_ok": bool(data_source_divergence_guard.get("ok", False)) if data_source_divergence_guard else None,
         "artifact_freshness_ok": bool(artifact_freshness_guard.get("ok", False)) if artifact_freshness_guard else None,
+        "nightly_resilience_ok": bool(nightly_resilience_guard.get("ok", False)) if nightly_resilience_guard else None,
+        "state_snapshot_drill_ok": bool(state_snapshot_drill.get("ok", False)) if state_snapshot_drill else None,
+        "db_integrity_ok": bool(db_integrity_guard.get("ok", False)) if db_integrity_guard else None,
     }
     return len(failed) == 0, failed, details
 
@@ -310,6 +339,9 @@ def main() -> int:
     parser.add_argument("--snapshot-coverage-file", default=str(PROJECT_ROOT / "governance" / "health" / "snapshot_coverage_latest.json"))
     parser.add_argument("--data-source-divergence-file", default=str(PROJECT_ROOT / "governance" / "health" / "data_source_divergence_latest.json"))
     parser.add_argument("--artifact-freshness-file", default=str(PROJECT_ROOT / "governance" / "health" / "artifact_freshness_slo_latest.json"))
+    parser.add_argument("--nightly-resilience-file", default=str(PROJECT_ROOT / "governance" / "health" / "nightly_resilience_latest.json"))
+    parser.add_argument("--state-snapshot-drill-file", default=str(PROJECT_ROOT / "exports" / "state_snapshot_drills" / "latest.json"))
+    parser.add_argument("--db-integrity-file", default=str(PROJECT_ROOT / "governance" / "health" / "sqlite_maintenance_latest.json"))
     parser.add_argument("--max-fail-share", type=float, default=float(defaults.get("max_fail_share", 0.25)))
     parser.add_argument("--min-considered-bots", type=int, default=int(defaults.get("min_considered_bots", 4)))
     parser.add_argument("--require-replay", action="store_true", default=True)
@@ -339,6 +371,9 @@ def main() -> int:
     snapshot_coverage = _load_json(Path(args.snapshot_coverage_file))
     data_source_divergence = _load_json(Path(args.data_source_divergence_file))
     artifact_freshness = _load_json(Path(args.artifact_freshness_file))
+    nightly_resilience = _load_json(Path(args.nightly_resilience_file))
+    state_snapshot_drill = _load_json(Path(args.state_snapshot_drill_file))
+    db_integrity = _load_json(Path(args.db_integrity_file))
 
     ok, failed_checks, details = evaluate_quality(
         promotion,
@@ -359,6 +394,9 @@ def main() -> int:
         snapshot_coverage_guard=snapshot_coverage,
         data_source_divergence_guard=data_source_divergence,
         artifact_freshness_guard=artifact_freshness,
+        nightly_resilience_guard=nightly_resilience,
+        state_snapshot_drill=state_snapshot_drill,
+        db_integrity_guard=db_integrity,
         max_fail_share=float(args.max_fail_share),
         min_considered_bots=int(args.min_considered_bots),
         require_replay=bool(args.require_replay),
@@ -396,6 +434,9 @@ def main() -> int:
             "snapshot_coverage": str(args.snapshot_coverage_file),
             "data_source_divergence": str(args.data_source_divergence_file),
             "artifact_freshness": str(args.artifact_freshness_file),
+            "nightly_resilience": str(args.nightly_resilience_file),
+            "state_snapshot_drill": str(args.state_snapshot_drill_file),
+            "db_integrity": str(args.db_integrity_file),
         },
     }
 

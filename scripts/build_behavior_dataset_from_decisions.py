@@ -344,6 +344,26 @@ PAPER_CONTEXT_FEATURE_NAMES = [
 
 FEATURE_NAMES.extend(PAPER_CONTEXT_FEATURE_NAMES)
 
+PAPER_PROFITABILITY_FEATURE_NAMES = [
+    "paper_profitability_master_awareness_active_norm",
+    "paper_profitability_master_profit_score_norm",
+    "paper_profitability_master_drag_norm",
+    "paper_profitability_master_training_weight_norm",
+    "paper_profitability_master_size_multiplier_norm",
+    "paper_profitability_master_risk_norm",
+    "paper_profitability_grandmaster_awareness_active_norm",
+    "paper_profitability_grandmaster_profit_score_norm",
+    "paper_profitability_grandmaster_drag_norm",
+    "paper_profitability_grandmaster_training_weight_norm",
+    "paper_profitability_grandmaster_size_multiplier_norm",
+    "paper_profitability_grandmaster_risk_norm",
+    "paper_profitability_grandmaster_exit_pressure_norm",
+    "paper_profitability_grandmaster_execution_discount_norm",
+    "paper_profitability_grandmaster_conflict_cap_norm",
+]
+
+FEATURE_NAMES.extend(PAPER_PROFITABILITY_FEATURE_NAMES)
+
 BEHAVIOR_CAPITAL_FLOW_FEATURE_NAMES = [
     "capital_flow_signed_scaled",
     "capital_flow_inflow_norm",
@@ -1837,6 +1857,8 @@ def _decision_feature_vector(
             paper_recent_return_proxy_signed_scaled,
         ]
     )
+    for key in PAPER_PROFITABILITY_FEATURE_NAMES:
+        vec.append(_clamp01(_to_float(features.get(key), _to_float(gov.get(key), 0.0))))
     for key in BEHAVIOR_CAPITAL_FLOW_FEATURE_NAMES:
         raw = _to_float(features.get(key), _to_float(gov.get(key), 0.0))
         if key == "capital_flow_signed_scaled":

@@ -156,6 +156,14 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         or (bool(promotion_packet.get("packet_complete", False)) and bool(packet_signature.get("verified", False)))
         or strong_signed_packet_replay_ready
     )
+    stronger_provisional_lineage_ready = bool(
+        hash_bundle_complete
+        and feature_store_lineage_ok
+        and replay_hash_registry_ok
+        and snapshot_coverage_ok
+        and decay_monitor_ready
+        and promotion_packet_seed_ready
+    )
 
     lineage_contract_ready = bool(
         feature_store_lineage_ok
@@ -225,6 +233,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         lineage_score += 2.5
     if strong_signed_packet_replay_ready and not promotion_packet_ready:
         lineage_score += 2.5
+    if stronger_provisional_lineage_ready and not exact_replay_ready:
+        lineage_score += 7.5
     lineage_score = min(round(lineage_score, 2), 100.0)
 
     seeded_hash_count = sum(1 for present in bundle_hash_presence.values() if present)
@@ -235,6 +245,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "promotion_packet_seed_ready": promotion_packet_seed_ready,
         "research_contract_ready": bool(multiple_testing_ready and decay_monitor_ready),
         "snapshot_coverage_ok": snapshot_coverage_ok,
+        "stronger_provisional_lineage_ready": stronger_provisional_lineage_ready,
     }
     thin_lineage_evidence = bool(
         not experiment_latest
@@ -299,6 +310,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "hash_bundle_complete": hash_bundle_complete,
         "exact_replay_ready": exact_replay_ready,
         "strong_signed_packet_replay_ready": strong_signed_packet_replay_ready,
+        "stronger_provisional_lineage_ready": stronger_provisional_lineage_ready,
         "feature_store_lineage_ok": feature_store_lineage_ok,
         "feature_store_schema_version": int(feature_store_manifest.get("lineage_schema_version", 0) or 0),
         "replay_hash_registry_ok": replay_hash_registry_ok,

@@ -168,12 +168,12 @@ def _runtime_sample_filter(sequence, idx, horizon):
     trend_support = _trend_support(obs)
     bias = abs(_direction_bias(obs))
     return (
-        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.80
-        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.26
-        and abs(observation_feature(obs, "spread_bps")) <= 28.0
+        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.74
+        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.34
+        and abs(observation_feature(obs, "spread_bps")) <= 36.0
         and observation_feature(obs, "queue_depth", 0.0) >= 0.0
-        and trend_support >= 0.20
-        and bias >= 0.0008
+        and trend_support >= 0.16
+        and bias >= 0.00045
     )
 
 
@@ -199,7 +199,7 @@ def _runtime_trend_label(sequence, idx, horizon):
     obs = sequence[idx]
     support = _trend_support(obs)
     bias = _direction_bias(obs)
-    if support < 0.20 or abs(bias) < 0.0008:
+    if support < 0.16 or abs(bias) < 0.00045:
         return None
 
     expected_up = bias >= 0.0
@@ -207,8 +207,8 @@ def _runtime_trend_label(sequence, idx, horizon):
     realized = future_realized_vol(sequence, idx, horizon)
     drawdown = abs(future_max_drawdown(sequence, idx, horizon))
     signed_ret = fwd_ret if expected_up else -fwd_ret
-    move_threshold = max(0.00055, 0.00145 - (0.00095 * support))
-    if abs(fwd_ret) < move_threshold and realized < 0.022 and drawdown < 0.0125:
+    move_threshold = max(0.00030, 0.00095 - (0.00058 * support))
+    if abs(fwd_ret) < move_threshold and realized < 0.014 and drawdown < 0.0075:
         return None
 
     quote_quality = _clip01(
@@ -223,9 +223,9 @@ def _runtime_trend_label(sequence, idx, horizon):
         - (0.24 * drawdown)
     )
     failure_score = (-signed_ret) + (0.15 * realized) + (0.22 * drawdown)
-    if success_score >= 0.00050:
+    if success_score >= 0.00038:
         return 1.0 if expected_up else 0.0
-    if failure_score >= 0.00080:
+    if failure_score >= 0.00055:
         return 0.0 if expected_up else 1.0
     return None
 
@@ -281,30 +281,30 @@ def train_brain():
         symbol_allowlist=_SIMPLE_SYMBOLS,
         sample_filter=_runtime_sample_filter,
         confidence_builder=_runtime_confidence,
-        min_confidence=0.40,
-        sample_stride=2,
+        min_confidence=0.36,
+        sample_stride=1,
         lookback_days=60,
-        window=20,
+        window=16,
         horizon=6,
-        min_samples=192,
+        min_samples=96,
         min_sequences=4,
-        min_positive_samples=32,
-        min_negative_samples=32,
-        acted_prob_threshold=0.68,
+        min_positive_samples=18,
+        min_negative_samples=18,
+        acted_prob_threshold=0.74,
         fallback_trainer=_train_synthetic,
         allow_fallback_on_insufficient_data=False,
         max_best_val_loss=0.6925,
         max_final_val_loss=0.7050,
-        min_long_precision=0.54,
-        min_short_precision=0.54,
+        min_long_precision=0.52,
+        min_short_precision=0.52,
         require_both_sides_precision=True,
-        min_acted_accuracy=0.60,
+        min_acted_accuracy=0.58,
         min_long_acted_count=5,
         min_short_acted_count=5,
-        min_accuracy_lift_over_majority=0.03,
+        min_accuracy_lift_over_majority=0.02,
         min_label_balance_score=0.20,
         min_precision_balance_score=0.45,
-        max_acted_coverage=0.34,
+        max_acted_coverage=0.28,
     )
 
 

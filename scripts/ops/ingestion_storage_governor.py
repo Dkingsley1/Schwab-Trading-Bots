@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -113,6 +114,20 @@ def _writer_shedding_contract(
 ) -> dict[str, Any]:
     hard_breaches = list(((queue_watermarks.get("breaches") or {}).get("hard") or []))
     elevated_breaches = list(((queue_watermarks.get("breaches") or {}).get("elevated") or []))
+    target_breaches = list(((queue_watermarks.get("breaches") or {}).get("target") or []))
+    support_row = ((queue_watermarks.get("lanes") or {}).get("support_telemetry") or {})
+    support_pending = _safe_int(support_row.get("pending_lines"), 0)
+    support_target = max(_safe_int(support_row.get("target"), 5000), 1)
+    support_target_pressure = bool(
+        "support_telemetry" in target_breaches
+        and profile_name == "critical_backpressure"
+        and support_pending >= support_target * 2
+    )
+    shed_support_telemetry = bool(
+        "support_telemetry" in hard_breaches
+        or "support_telemetry" in elevated_breaches
+        or support_target_pressure
+    )
     level = "normal"
     if profile_name == "critical_backpressure":
         level = "protect_core"
@@ -122,7 +137,7 @@ def _writer_shedding_contract(
     notes = []
     if route_drift:
         notes.append("writer route drift keeps live writes pinned to the routed repo DB path until storage alignment is restored")
-    if "support_telemetry" in hard_breaches or "support_telemetry" in elevated_breaches:
+    if shed_support_telemetry:
         notes.append("support telemetry should stay shard-isolated so watchdog chatter cannot crowd the core writer")
     if "stale_stage" in hard_breaches or "stale_stage" in elevated_breaches:
         notes.append("stale-stage backlog should be reaped or archived instead of treated as hot-path ingestion")
@@ -131,11 +146,13 @@ def _writer_shedding_contract(
         "level": level,
         "freeze_cold_lanes": profile_name == "critical_backpressure",
         "throttle_deferred_lanes": profile_name in {"critical_backpressure", "elevated_backpressure"},
-        "shed_support_telemetry": "support_telemetry" in hard_breaches or "support_telemetry" in elevated_breaches,
+        "shed_support_telemetry": shed_support_telemetry,
         "suppress_verbose_decision_logs": profile_name in {"critical_backpressure", "elevated_backpressure"},
         "route_drift_override": bool(route_drift),
         "hard_breaches": hard_breaches,
         "elevated_breaches": elevated_breaches,
+        "target_breaches": target_breaches,
+        "support_target_pressure": support_target_pressure,
         "notes": notes,
     }
 
@@ -143,10 +160,10 @@ def _writer_shedding_contract(
 def _override_lines(profile_name: str, env_overrides: dict[str, str]) -> list[str]:
     lines = [
         "# Auto-managed by scripts/ops/ingestion_storage_governor.py",
-        f"BOT_INGESTION_STORAGE_PROFILE={profile_name}",
+        f"BOT_INGESTION_STORAGE_PROFILE={shlex.quote(str(profile_name))}",
     ]
     for key, value in sorted(env_overrides.items()):
-        lines.append(f"{key}={value}")
+        lines.append(f"{key}={shlex.quote(str(value))}")
     return lines
 
 
@@ -211,6 +228,78 @@ def _critical_deferred_budget(*, core_pending_lines: int, deferred_pending_lines
     return 0
 
 
+def _active_backlog_relief_issues(backlog_relief_contract: dict[str, Any] | None) -> set[str]:
+    if not isinstance(backlog_relief_contract, dict):
+        return set()
+    raw = backlog_relief_contract.get("active_issue_ids")
+    if isinstance(raw, list):
+        return {str(item).strip() for item in raw if str(item).strip()}
+    issues = backlog_relief_contract.get("issues")
+    if isinstance(issues, list):
+        return {
+            str(row.get("id") or "").strip()
+            for row in issues
+            if isinstance(row, dict) and bool(row.get("active", False)) and str(row.get("id") or "").strip()
+        }
+    return set()
+
+
+def _apply_backlog_relief_env(env: dict[str, str], backlog_relief_contract: dict[str, Any] | None) -> dict[str, str]:
+    active = _active_backlog_relief_issues(backlog_relief_contract)
+    env["BACKLOG_RELIEF_CONTRACT_ACTIVE"] = "1" if active else "0"
+    env["BACKLOG_RELIEF_ACTIVE_ISSUES"] = ",".join(sorted(active))
+    if "single_writer_merge_speed" in active or "stale_old_pending_work" in active:
+        env.update(
+            {
+                "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "90",
+                "SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS": "420",
+                "SQL_LINK_SERVICE_SQLITE_TIMEOUT": "420",
+                "SQL_LINK_SERVICE_LOCK_RETRIES": "360",
+                "SQL_LINK_SERVICE_LOCK_RETRY_DELAY_SECONDS": "0.35",
+                "SQL_LINK_SERVICE_CATCH_UP_WAVE": "1",
+            }
+        )
+    if "storage_write_latency" in active:
+        env.update(
+            {
+                "SQLITE_CACHE_SIZE_KB": "32768",
+                "SQLITE_MMAP_SIZE_MB": "512",
+                "SQLITE_WAL_AUTOCHECKPOINT_PAGES": "4000",
+                "BOT_OPS_SQLITE_CACHE_SIZE_KB": "8192",
+                "BOT_OPS_SQLITE_MMAP_SIZE_MB": "96",
+                "BOT_OPS_SQLITE_BUSY_TIMEOUT_MS": "420000",
+            }
+        )
+    if "sparse_huge_jsonl_files" in active:
+        env.update(
+            {
+                "INGEST_MAX_BYTES_PER_FILE": str(128 * 1024 * 1024),
+                "SQLITE_BATCH_MAX_BYTES": str(32 * 1024 * 1024),
+                "INGEST_TOP_PENDING_FILES": "24",
+            }
+        )
+    if "intake_outpaces_drain" in active:
+        env.update(
+            {
+                "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "1",
+                "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": "0.20",
+                "BOT_COLLECTION_DUTY_CYCLE_A_PLUS_PLUS_TARGET": "1",
+                "TRAINING_RUNTIME_PAUSED_FOR_BACKLOG": "1",
+                "SHADOW_RESEARCH_PAUSED_FOR_BACKLOG": "1",
+                "HEAVY_COLLECTORS_PAUSED_FOR_BACKLOG": "1",
+                "REPORT_REFRESH_PAUSED_FOR_BACKLOG": "1",
+            }
+        )
+    if "stale_old_pending_work" in active:
+        env["WRITER_CYCLE_MAX_CATCH_UP_WAVES"] = "3"
+    if isinstance(backlog_relief_contract, dict):
+        p_core_contract = backlog_relief_contract.get("p_core_backlog_allocation_contract")
+        p_core_env = p_core_contract.get("control_env") if isinstance(p_core_contract, dict) else {}
+        if isinstance(p_core_env, dict):
+            env.update({str(key): str(value) for key, value in p_core_env.items() if str(key).strip()})
+    return env
+
+
 def _profile_env(
     profile_name: str,
     project_root: Path,
@@ -218,6 +307,7 @@ def _profile_env(
     core_pending_lines: int = 0,
     deferred_pending_lines: int = 0,
     route_drift: bool = False,
+    backlog_relief_contract: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     routed_primary_db = str(project_root / "data" / "jsonl_link.sqlite3")
     routed_queue_db = str(project_root / "data" / "bot_channel_queue.sqlite3")
@@ -260,6 +350,9 @@ def _profile_env(
                 "LOG_GATE_PASSES": "0",
                 "LOG_SUB_BOT_DECISIONS": "0",
                 "LOG_MASTER_VARIANT_DECISIONS": "0",
+                "LOG_GRAND_MASTER_DECISIONS": "0",
+                "LOG_OPTIONS_MASTER_DECISIONS": "0",
+                "LOG_FUTURES_MASTER_DECISIONS": "0",
                 "LOG_DECISION_EXPLANATIONS": "0",
                 "LOG_SHADOW_PNL_ATTRIBUTION": "0",
                 "CHANNEL_LOG_PRIMARY_MODE": "channel",
@@ -278,6 +371,11 @@ def _profile_env(
                 "SQL_LINK_SERVICE_QUEUE_MAX_ROWS": "180000",
                 "SQL_LINK_SERVICE_QUEUE_ORPHAN_DAYS": "7",
                 "SQL_LINK_SERVICE_LOCAL_FALLBACK_PRUNE_MAX_FILES": "800",
+                "INGEST_JOURNAL_DAILY_ENABLED": "0",
+                "INGEST_JOURNAL_FILE_START_ENABLED": "0",
+                "INGEST_JOURNAL_CHECKPOINT_ENABLED": "0",
+                "INGEST_JOURNAL_ZERO_PENDING_ENABLED": "0",
+                "INGEST_JOURNAL_ERRORS_ALWAYS": "1",
                 "RETENTION_STALE_PURGE_LOW_VALUE_DAYS": "3",
                 "RETENTION_STALE_PURGE_MEDIUM_VALUE_DAYS": "14",
                 "RETENTION_STALE_PURGE_HIGH_VALUE_DAYS": "30",
@@ -318,7 +416,7 @@ def _profile_env(
                 "SQL_LINK_SERVICE_SHARD_CRYPTO_SHADOW_ATTRIBUTION_HOT_RETENTION_MIN_INTERVAL_SECONDS": "60",
             }
         )
-        return base
+        return _apply_backlog_relief_env(base, backlog_relief_contract)
     if profile_name == "elevated_backpressure":
         base.update(
             {
@@ -329,6 +427,8 @@ def _profile_env(
                 "LOG_LOOP_STATE": "1",
                 "LOG_GATE_EVALUATIONS": "0",
                 "LOG_GATE_PASSES": "0",
+                "LOG_OPTIONS_MASTER_DECISIONS": "0",
+                "LOG_FUTURES_MASTER_DECISIONS": "0",
                 "LOG_SHADOW_PNL_ATTRIBUTION": "0",
                 "CHANNEL_LOG_PRIMARY_MODE": "channel",
                 "LEGACY_HOT_CHANNEL_MIRROR_ENABLED": "0",
@@ -345,6 +445,11 @@ def _profile_env(
                 "SQL_LINK_SERVICE_QUEUE_MAX_DB_GB": "10",
                 "SQL_LINK_SERVICE_QUEUE_MAX_ROWS": "220000",
                 "SQL_LINK_SERVICE_QUEUE_ORPHAN_DAYS": "10",
+                "INGEST_JOURNAL_DAILY_ENABLED": "0",
+                "INGEST_JOURNAL_FILE_START_ENABLED": "0",
+                "INGEST_JOURNAL_CHECKPOINT_ENABLED": "1",
+                "INGEST_JOURNAL_ZERO_PENDING_ENABLED": "0",
+                "INGEST_JOURNAL_ERRORS_ALWAYS": "1",
                 "RETENTION_STALE_PURGE_LOW_VALUE_DAYS": "5",
                 "RETENTION_STALE_PURGE_MEDIUM_VALUE_DAYS": "21",
                 "RETENTION_STALE_PURGE_HIGH_VALUE_DAYS": "45",
@@ -385,7 +490,7 @@ def _profile_env(
                 "SQL_LINK_SERVICE_SHARD_CRYPTO_SHADOW_ATTRIBUTION_HOT_RETENTION_MIN_INTERVAL_SECONDS": "90",
             }
         )
-        return base
+        return _apply_backlog_relief_env(base, backlog_relief_contract)
     base.update(
         {
             "INGEST_MAX_DEFERRED_FILES": "2",
@@ -399,7 +504,7 @@ def _profile_env(
             "RETENTION_STALE_PURGE_MAX_GB": "8",
         }
     )
-    return base
+    return _apply_backlog_relief_env(base, backlog_relief_contract)
 
 
 def build_payload(
@@ -420,11 +525,27 @@ def build_payload(
     sql_progress = _load_json(health_root / "sql_link_service_progress_latest.json")
     health_gates = _load_json(health_root / "health_gates_latest.json")
 
-    core_pending_lines = _safe_int(backpressure.get("pending_lines"), _safe_int(((queue.get("lane_counts") or {}).get("core") or {}).get("pending_lines"), 0))
-    deferred_pending_lines = _safe_int(backpressure.get("pending_lines_deferred"), _safe_int(((queue.get("lane_counts") or {}).get("deferred") or {}).get("pending_lines"), 0))
-    cold_pending_lines = _safe_int(backpressure.get("pending_lines_cold"), _safe_int(((queue.get("lane_counts") or {}).get("cold") or {}).get("pending_lines"), 0))
-    support_pending_lines = _safe_int(backpressure.get("pending_lines_support_telemetry"), 0)
-    stale_stage_pending_lines = _safe_int(backpressure.get("pending_lines_stale_stage"), 0)
+    storage_backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
+    core_pending_lines = max(
+        _safe_int(backpressure.get("pending_lines"), _safe_int(((queue.get("lane_counts") or {}).get("core") or {}).get("pending_lines"), 0)),
+        _safe_int(storage_backpressure.get("core_pending_lines"), 0),
+    )
+    deferred_pending_lines = max(
+        _safe_int(backpressure.get("pending_lines_deferred"), _safe_int(((queue.get("lane_counts") or {}).get("deferred") or {}).get("pending_lines"), 0)),
+        _safe_int(storage_backpressure.get("deferred_pending_lines"), 0),
+    )
+    cold_pending_lines = max(
+        _safe_int(backpressure.get("pending_lines_cold"), _safe_int(((queue.get("lane_counts") or {}).get("cold") or {}).get("pending_lines"), 0)),
+        _safe_int(storage_backpressure.get("cold_pending_lines"), 0),
+    )
+    support_pending_lines = max(
+        _safe_int(backpressure.get("pending_lines_support_telemetry"), 0),
+        _safe_int(storage_backpressure.get("support_pending_lines"), 0),
+    )
+    stale_stage_pending_lines = max(
+        _safe_int(backpressure.get("pending_lines_stale_stage"), 0),
+        _safe_int(storage_backpressure.get("stale_stage_pending_lines"), 0),
+    )
     retention_debt_gb = _safe_float(((storage_control.get("storage") or {}).get("retention_debt_gb")), _safe_float(((health_gates.get("storage_pressure") or {}).get("retention_debt_gb")), 0.0))
     pressure_index = _safe_float(storage_control.get("pressure_index"), 0.0)
     storage_severity = str(storage_control.get("severity") or "")
@@ -481,6 +602,11 @@ def build_payload(
         core_pending_lines=core_pending_lines,
         deferred_pending_lines=deferred_pending_lines,
         route_drift=route_drift,
+        backlog_relief_contract=(
+            storage_control.get("backlog_relief_contract")
+            if isinstance(storage_control.get("backlog_relief_contract"), dict)
+            else None
+        ),
     )
     queue_watermarks = _queue_watermarks(
         core_pending_lines=core_pending_lines,
@@ -513,6 +639,18 @@ def build_payload(
         top_actions.append("shed support telemetry into shard-isolated writes until support backlog drops under its elevated watermark")
     if bool(writer_shedding.get("freeze_cold_lanes", False)):
         top_actions.append("keep cold-lane ingestion frozen while the core queue remains under active protection")
+    active_relief_issues = sorted(
+        _active_backlog_relief_issues(
+            storage_control.get("backlog_relief_contract")
+            if isinstance(storage_control.get("backlog_relief_contract"), dict)
+            else None
+        )
+    )
+    if active_relief_issues:
+        top_actions.append(
+            "apply the backlog relief contract for "
+            + ",".join(active_relief_issues)
+        )
 
     notes = [
         "the governor writes a dedicated storage-pressure override so manual storage route switches can still live in config/.env.storage_override",
@@ -584,9 +722,32 @@ def build_payload(
             "log_gate_passes": env_overrides.get("LOG_GATE_PASSES"),
             "log_sub_bot_decisions": env_overrides.get("LOG_SUB_BOT_DECISIONS"),
             "log_master_variant_decisions": env_overrides.get("LOG_MASTER_VARIANT_DECISIONS"),
+            "log_grand_master_decisions": env_overrides.get("LOG_GRAND_MASTER_DECISIONS"),
+            "log_options_master_decisions": env_overrides.get("LOG_OPTIONS_MASTER_DECISIONS"),
+            "log_futures_master_decisions": env_overrides.get("LOG_FUTURES_MASTER_DECISIONS"),
             "log_decision_explanations": env_overrides.get("LOG_DECISION_EXPLANATIONS"),
             "log_shadow_pnl_attribution": env_overrides.get("LOG_SHADOW_PNL_ATTRIBUTION"),
+            "ingest_journal_daily_enabled": env_overrides.get("INGEST_JOURNAL_DAILY_ENABLED"),
+            "ingest_journal_file_start_enabled": env_overrides.get("INGEST_JOURNAL_FILE_START_ENABLED"),
+            "ingest_journal_checkpoint_enabled": env_overrides.get("INGEST_JOURNAL_CHECKPOINT_ENABLED"),
+            "ingest_journal_zero_pending_enabled": env_overrides.get("INGEST_JOURNAL_ZERO_PENDING_ENABLED"),
+            "backlog_relief_contract_active": env_overrides.get("BACKLOG_RELIEF_CONTRACT_ACTIVE"),
+            "backlog_relief_active_issues": env_overrides.get("BACKLOG_RELIEF_ACTIVE_ISSUES"),
+            "p_core_backlog_allocation_active": env_overrides.get("BACKLOG_PCORE_ALLOCATION_ACTIVE"),
+            "p_core_preprocess_workers": _safe_int(env_overrides.get("BACKLOG_PCORE_PREPROCESS_WORKERS"), 0),
+            "single_writer_only": env_overrides.get("BACKLOG_DRAIN_SINGLE_WRITER_ONLY"),
+            "training_pcore_allowed_when_green": env_overrides.get("TRAINING_PCORE_ALLOWED_WHEN_BACKLOG_GREEN"),
+            "training_pcore_max_workers": _safe_int(env_overrides.get("TRAINING_PCORE_MAX_WORKERS"), 0),
+            "collection_duty_cycle_enabled": env_overrides.get("BOT_COLLECTION_DUTY_CYCLE_ENABLED"),
+            "collection_duty_cycle_max_active_ratio": env_overrides.get("BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"),
+            "ingest_max_bytes_per_file": _safe_int(env_overrides.get("INGEST_MAX_BYTES_PER_FILE"), 0),
+            "sqlite_batch_max_bytes": _safe_int(env_overrides.get("SQLITE_BATCH_MAX_BYTES"), 0),
         },
+        "backlog_relief_contract": (
+            storage_control.get("backlog_relief_contract")
+            if isinstance(storage_control.get("backlog_relief_contract"), dict)
+            else {}
+        ),
         "env_overrides": env_overrides,
         "top_actions": top_actions,
         "notes": notes,

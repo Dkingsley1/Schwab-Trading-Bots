@@ -631,8 +631,16 @@ def _provider_rotation_failover(project_root: Path, *, max_rows: int) -> dict[st
         provider_status = "ready"
         route = "primary"
         if pause_gate:
-            provider_status = "cooldown" if "cooldown" in pause_gate or "403" in pause_reason or "429" in pause_reason else "degraded"
-            route = "cache_then_slow_retry"
+            pause_text = f"{pause_gate} {pause_reason}".lower()
+            if "cooldown" in pause_text or "403" in pause_text or "429" in pause_text:
+                provider_status = "cooldown"
+                route = "cache_then_slow_retry"
+            elif "session_gate" in pause_text or "weekend" in pause_text or "post_window" in pause_text:
+                provider_status = "paused_session_gate"
+                route = "session_gate_last_good_cache"
+            else:
+                provider_status = "degraded"
+                route = "cache_then_slow_retry"
         elif api_error > max(api_ok, 0):
             provider_status = "degraded"
             route = "fallback_cache_or_proxy"

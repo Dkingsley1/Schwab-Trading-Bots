@@ -496,12 +496,48 @@ def test_weekly_retrain_coverage_canary_profile_clamps_runtime_inputs() -> None:
     assert args.counterfactual_replay is False
     assert args.paper_hard_example_pack is False
     assert args.build_runtime_training_snapshot is False
-    assert args.runtime_train_use_snapshot is False
-    assert args.runtime_train_prefer_sqlite is False
+    assert args.runtime_train_use_snapshot is True
+    assert args.runtime_train_prefer_sqlite is True
     assert args.runtime_train_fast_fail_zero_sample_attempts == 2
-    assert args.target_timeout_seconds == 600
+    assert args.target_timeout_seconds == 900
     assert args.cold_lane_retrain_extras is False
     assert args.auto_insufficient_data_retry is False
+
+
+def test_weekly_retrain_coverage_micro_and_small_canary_profiles_are_bounded() -> None:
+    for profile_name, timeout in (
+        ("coverage_micro_canary", 600),
+        ("coverage_small_canary", 720),
+        ("coverage_batch10_canary", 900),
+        ("coverage_batch20_canary", 1200),
+    ):
+        args = weekly_retrain.argparse.Namespace(
+            retrain_profile=profile_name,
+            include_bot_ids="brain_refinery_v10_seasonal",
+            counterfactual_replay=True,
+            paper_hard_example_pack=True,
+            cold_lane_retrain_extras=True,
+            require_sample_quotas=True,
+            new_bot_boost=True,
+            build_runtime_training_snapshot=True,
+            runtime_training_snapshot_prefer_sqlite=True,
+            runtime_train_use_snapshot=True,
+            runtime_train_prefer_sqlite=True,
+            runtime_train_fast_fail_zero_sample_attempts=0,
+            target_timeout_seconds=0,
+            auto_insufficient_data_retry=True,
+        )
+
+        profile = weekly_retrain._apply_retrain_profile_defaults(args)
+
+        assert profile == profile_name
+        assert args.counterfactual_replay is False
+        assert args.paper_hard_example_pack is False
+        assert args.build_runtime_training_snapshot is False
+        assert args.runtime_train_fast_fail_zero_sample_attempts == 2
+        assert args.target_timeout_seconds == timeout
+        assert args.cold_lane_retrain_extras is False
+        assert args.auto_insufficient_data_retry is False
 
 
 def test_weekly_retrain_coverage_canary_profile_can_use_external_snapshot(monkeypatch) -> None:
@@ -529,7 +565,7 @@ def test_weekly_retrain_coverage_canary_profile_can_use_external_snapshot(monkey
     assert args.build_runtime_training_snapshot is False
     assert args.runtime_train_use_snapshot is True
     assert args.runtime_train_prefer_sqlite is True
-    assert args.target_timeout_seconds == 600
+    assert args.target_timeout_seconds == 900
 
 
 def test_weekly_retrain_coverage_canary_profile_env_overrides_allow_stride_one_recovery(monkeypatch) -> None:
@@ -548,6 +584,37 @@ def test_weekly_retrain_coverage_canary_profile_env_overrides_allow_stride_one_r
     assert overrides["RUNTIME_TRAIN_AUTOFIX_INSUFFICIENT_DATA"] == "1"
     assert env["RUNTIME_TRAIN_SAMPLE_STRIDE_FLOOR"] == "1"
     assert env["RUNTIME_TRAIN_SAMPLE_STRIDE_OVERRIDE"] == "1"
+
+
+def test_weekly_retrain_coverage_micro_and_small_canary_env_overrides_are_smaller(monkeypatch) -> None:
+    monkeypatch.delenv("RETRAIN_COVERAGE_CANARY_LOOKBACK_CAP_DAYS", raising=False)
+    monkeypatch.delenv("RETRAIN_COVERAGE_CANARY_SAMPLE_STRIDE", raising=False)
+    monkeypatch.delenv("RETRAIN_COVERAGE_CANARY_MAX_SAMPLES", raising=False)
+    monkeypatch.delenv("RETRAIN_COVERAGE_CANARY_BATCH_SIZE_CAP", raising=False)
+    micro_env = {}
+    small_env = {}
+    batch10_env = {}
+    batch20_env = {}
+
+    micro = weekly_retrain._apply_retrain_profile_env_overrides(micro_env, "coverage_micro_canary")
+    small = weekly_retrain._apply_retrain_profile_env_overrides(small_env, "coverage_small_canary")
+    batch10 = weekly_retrain._apply_retrain_profile_env_overrides(batch10_env, "coverage_batch10_canary")
+    batch20 = weekly_retrain._apply_retrain_profile_env_overrides(batch20_env, "coverage_batch20_canary")
+
+    assert micro["RUNTIME_TRAIN_LOOKBACK_DAYS_CAP"] == "14"
+    assert micro["RUNTIME_TRAIN_SAMPLE_STRIDE_FLOOR"] == "2"
+    assert micro["RUNTIME_TRAIN_MAX_SAMPLES"] == "2000"
+    assert micro["RUNTIME_TRAIN_BATCH_SIZE_CAP"] == "32"
+    assert small["RUNTIME_TRAIN_LOOKBACK_DAYS_CAP"] == "30"
+    assert small["RUNTIME_TRAIN_SAMPLE_STRIDE_FLOOR"] == "1"
+    assert small["RUNTIME_TRAIN_MAX_SAMPLES"] == "4000"
+    assert small["RUNTIME_TRAIN_BATCH_SIZE_CAP"] == "48"
+    assert batch10["RUNTIME_TRAIN_LOOKBACK_DAYS_CAP"] == "45"
+    assert batch10["RUNTIME_TRAIN_MAX_SAMPLES"] == "6000"
+    assert batch10["RUNTIME_TRAIN_BATCH_SIZE_CAP"] == "64"
+    assert batch20["RUNTIME_TRAIN_LOOKBACK_DAYS_CAP"] == "60"
+    assert batch20["RUNTIME_TRAIN_MAX_SAMPLES"] == "8000"
+    assert batch20["RUNTIME_TRAIN_BATCH_SIZE_CAP"] == "64"
 
 
 def test_weekly_retrain_default_auto_promotes_small_explicit_target_set_to_canary() -> None:

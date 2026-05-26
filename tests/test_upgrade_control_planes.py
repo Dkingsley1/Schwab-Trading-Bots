@@ -107,7 +107,15 @@ def test_training_runtime_control_prioritizes_sequence_timeout_retries(tmp_path:
     )
     _write_json(
         project_root / "governance" / "health" / "health_gates_latest.json",
-        {"recommended_operating_mode": "shadow_only", "inputs": {"backpressure_overload_severe": True}},
+        {
+            "recommended_operating_mode": "shadow_only",
+            "inputs": {
+                "backpressure_overload_severe": True,
+                "backpressure_pending_lines": 40000,
+                "backpressure_oldest_pending_age_seconds": 7200.0,
+                "sql_progress_status": "ok",
+            },
+        },
     )
     _write_json(
         project_root / "governance" / "walk_forward" / "coverage_seed_latest.json",
@@ -120,6 +128,10 @@ def test_training_runtime_control_prioritizes_sequence_timeout_retries(tmp_path:
     assert payload["snapshot_ready"] is True
     assert payload["precompute_targets"][0]["bot_id"] == "brain_refinery_v43_intraday_ultrafast_proxy"
     assert "loading_sequences_timeout" in payload["precompute_targets"][0]["reasons"]
+    assert payload["training_launch_contract"]["mode"] == "blocked"
+    assert payload["training_launch_contract"]["backpressure_gate"]["severe"] is True
+    assert "backpressure_overload_severe" in payload["training_launch_contract"]["launch_blockers"]
+    assert "resource_guard_not_green" in payload["training_launch_contract"]["prep_blockers"]
 
 
 def test_regime_control_plane_combines_sentiment_and_risk(tmp_path: Path) -> None:

@@ -19,6 +19,9 @@ def _write_contract_files(root: Path, readme_extra: str = "") -> None:
                 "## Source Of Truth",
                 "## Scope Discipline",
                 "## Current Separate Domains",
+                "## Forbidden Volumes",
+                "/Volumes/VIDEO",
+                "video_volume_boundary_guard",
                 "## Regression Guardrails",
                 "Use per-surface retry budgets.",
                 "Run codex-project-guard.",
@@ -64,6 +67,10 @@ def test_codex_project_guard_ready_when_contract_markers_exist(tmp_path: Path) -
 
     assert payload["overall_status"] == "ready"
     assert payload["metrics"]["blocked_guard_count"] == 0
+    boundary = next(row for row in payload["guards"] if row["name"] == "video_volume_boundary_guard")
+    assert boundary["blocked_volume"] == "/Volumes/VIDEO"
+    assert "mdutil" in boundary["forbidden_operations"]
+    assert payload["operator_boundaries"][0]["bot_id"] == "video_volume_boundary_guard"
 
 
 def test_codex_project_guard_blocks_separate_domain_doc_drift(tmp_path: Path) -> None:

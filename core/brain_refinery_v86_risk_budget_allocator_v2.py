@@ -91,6 +91,60 @@ def _runtime_feature_vector(sequence, idx):
     )
 
 
+def _clip01(value):
+    return float(np.clip(value, 0.0, 1.0))
+
+
+def _allocator_pressure(obs):
+    specialist_edge = abs(observation_feature(obs, "options_specialist_vote", 0.5) - 0.5) * 2.0
+    return _clip01(
+        (0.20 * abs(observation_feature(obs, "pct_from_close")))
+        + (0.16 * observation_feature(obs, "vol_30m"))
+        + (0.14 * observation_feature(obs, "breadth_risk_off_norm"))
+        + (0.12 * observation_feature(obs, "options_negative_bias_norm"))
+        + (0.12 * observation_feature(obs, "calendar_macro_abs_surprise_norm"))
+        + (0.10 * specialist_edge)
+        + (0.10 * abs(observation_feature(obs, "capital_flow_signed_scaled")))
+        + (0.06 * abs(observation_feature(obs, "lag_expected_fill_delta_bps")) / 20.0)
+    )
+
+
+def _runtime_sample_filter(sequence, idx, horizon):
+    obs = sequence[idx]
+    pressure = _allocator_pressure(obs)
+    specialist_edge = abs(observation_feature(obs, "options_specialist_vote", 0.5) - 0.5)
+    return (
+        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.70
+        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.35
+        and abs(observation_feature(obs, "spread_bps", 0.0)) <= 45.0
+        and observation_feature(obs, "queue_depth", 0.0) >= 0.0
+        and pressure >= 0.38
+        and (
+            abs(observation_feature(obs, "behavior_prior")) >= 0.08
+            or specialist_edge >= 0.15
+            or abs(observation_feature(obs, "capital_flow_signed_scaled")) >= 0.10
+        )
+    )
+
+
+def _runtime_confidence(sequence, idx, horizon):
+    obs = sequence[idx]
+    quote = _clip01(
+        0.65 * observation_feature(obs, "data_quality_quote_agreement_norm", 1.0)
+        + 0.35 * (1.0 - observation_feature(obs, "data_quality_quote_deviation_norm", 0.0))
+    )
+    specialist_edge = abs(observation_feature(obs, "options_specialist_vote", 0.5) - 0.5) * 2.0
+    fill_delta = _clip01(1.0 - abs(observation_feature(obs, "lag_expected_fill_delta_bps")) / 25.0)
+    return _clip01(
+        (0.28 * _allocator_pressure(obs))
+        + (0.18 * quote)
+        + (0.16 * _clip01(abs(observation_feature(obs, "behavior_prior")) * 4.0))
+        + (0.14 * _clip01(specialist_edge))
+        + (0.12 * _clip01(abs(observation_feature(obs, "capital_flow_signed_scaled")) * 4.0))
+        + (0.12 * fill_delta)
+    )
+
+
 def _train_synthetic():
     return train_indicator_bot(
         run_tag="brain_refinery_v86_risk_budget_allocator_v2",
@@ -155,15 +209,32 @@ if __name__ == "__main__":
         ],
         runtime_feature_builder=_runtime_feature_vector,
         runtime_label_builder=risk_support_label_builder(
-            min_return=0.0,
-            max_drawdown=0.015,
-            max_realized_vol=0.02,
-            vol_multiplier=3.0,
+            min_return=0.0002,
+            max_drawdown=0.010,
+            max_realized_vol=0.016,
+            vol_multiplier=2.5,
         ),
-        lookback_days=21,
+        sample_filter=_runtime_sample_filter,
+        confidence_builder=_runtime_confidence,
+        min_confidence=0.36,
+        sample_stride=1,
+        lookback_days=45,
         window=28,
         horizon=10,
-        min_samples=224,
+        min_samples=180,
         min_sequences=3,
         fallback_trainer=_train_synthetic,
+        allow_fallback_on_insufficient_data=False,
+        max_best_val_loss=0.690,
+        max_final_val_loss=0.705,
+        acted_prob_threshold=0.78,
+        min_long_precision=0.56,
+        min_short_precision=0.56,
+        require_both_sides_precision=True,
+        min_acted_accuracy=0.62,
+        min_long_acted_count=4,
+        min_short_acted_count=4,
+        min_accuracy_lift_over_majority=0.025,
+        min_precision_balance_score=0.55,
+        max_acted_coverage=0.24,
     )

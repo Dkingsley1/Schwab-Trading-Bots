@@ -175,12 +175,22 @@ def _source_contract(source_name: str) -> dict[str, float]:
     }
 
 
+def _http_retries() -> int:
+    try:
+        return max(int(os.getenv("MARKET_MICRO_HTTP_RETRIES", "0") or 0), 0)
+    except Exception:
+        return 0
+
+
 def _fetch_json_result(url: str, *, source_name: str, timeout: float = 12.0) -> dict[str, Any]:
     contract = _source_contract(source_name)
     return fetch_json(
         url=url,
         user_agent=USER_AGENT,
         timeout=timeout,
+        retries=_http_retries(),
+        backoff_seconds=0.25,
+        jitter_seconds=0.05,
         collector_key="market_micro_context",
         source_name=source_name,
         entity_key=url,
@@ -196,6 +206,9 @@ def _fetch_text_result(url: str, *, source_name: str, timeout: float = 12.0) -> 
         url=url,
         user_agent=USER_AGENT,
         timeout=timeout,
+        retries=_http_retries(),
+        backoff_seconds=0.25,
+        jitter_seconds=0.05,
         collector_key="market_micro_context",
         source_name=source_name,
         entity_key=url,
@@ -451,21 +464,35 @@ def _recent_decision_paths(project_root: Path, *, lookback_days: int) -> List[Pa
     since_utc = datetime.now(timezone.utc) - timedelta(days=max(int(lookback_days), 1))
     cutoff_day = (since_utc - timedelta(days=1)).date()
     out: List[Path] = []
-    for path in (project_root / "decision_explanations").glob("shadow*/decision_explanations_*.jsonl"):
-        day_utc = _path_day_utc(path)
-        if day_utc is not None and day_utc.date() >= cutoff_day:
-            out.append(path)
-            continue
-        try:
-            mtime_utc = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-        except Exception:
-            continue
-        if mtime_utc >= since_utc - timedelta(days=1):
-            out.append(path)
+    candidate_patterns = (
+        (project_root / "decision_explanations", "shadow*/decision_explanations_*.jsonl"),
+        (project_root / "local_fallback_storage" / "decisions", "shadow*/trade_decisions_*.jsonl"),
+        (project_root / "local_fallback_storage" / "decisions", "paper/trade_decisions_*.jsonl"),
+    )
+    for root, pattern in candidate_patterns:
+        for path in root.glob(pattern):
+            day_utc = _path_day_utc(path)
+            if day_utc is not None and day_utc.date() >= cutoff_day:
+                out.append(path)
+                continue
+            try:
+                mtime_utc = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            except Exception:
+                continue
+            if mtime_utc >= since_utc - timedelta(days=1):
+                out.append(path)
     return sorted({p.resolve() for p in out})
 
 
-def _iter_recent_rows(project_root: Path, *, lookback_days: int, symbols: set[str]) -> Iterable[Dict[str, Any]]:
+def _iter_recent_rows(
+    project_root: Path,
+    *,
+    lookback_days: int,
+    symbols: set[str],
+    max_files: int = 0,
+    max_bytes_per_file: int = 0,
+    max_rows: int = 0,
+) -> Iterable[Dict[str, Any]]:
     allowed_strategies = {
         "grand_master_bot",
         "grand_master_intent_bot",
@@ -480,9 +507,21 @@ def _iter_recent_rows(project_root: Path, *, lookback_days: int, symbols: set[st
         "options_sub_bot",
         "futures_sub_bot",
     }
-    for path in _recent_decision_paths(project_root, lookback_days=lookback_days):
+    emitted = 0
+    paths = _recent_decision_paths(project_root, lookback_days=lookback_days)
+    if max_files > 0:
+        paths = paths[-max_files:]
+    for path in paths:
         try:
             with path.open("r", encoding="utf-8") as fh:
+                if max_bytes_per_file > 0:
+                    try:
+                        size = path.stat().st_size
+                        if size > max_bytes_per_file:
+                            fh.seek(max(size - max_bytes_per_file, 0))
+                            fh.readline()
+                    except Exception:
+                        pass
                 for raw in fh:
                     raw = raw.strip()
                     if not raw:
@@ -512,12 +551,23 @@ def _iter_recent_rows(project_root: Path, *, lookback_days: int, symbols: set[st
                     if ts is None:
                         continue
                     row["_parsed_ts_utc"] = ts
+                    emitted += 1
                     yield row
+                    if max_rows > 0 and emitted >= max_rows:
+                        return
         except Exception:
             continue
 
 
-def _aggregate_local_micro_context(project_root: Path, *, lookback_days: int, symbols: set[str]) -> Dict[str, Dict[str, float]]:
+def _aggregate_local_micro_context(
+    project_root: Path,
+    *,
+    lookback_days: int,
+    symbols: set[str],
+    max_files: int = 0,
+    max_bytes_per_file: int = 0,
+    max_rows: int = 0,
+) -> Dict[str, Dict[str, float]]:
     et_zone = ZoneInfo("America/New_York") if ZoneInfo is not None else timezone.utc
     per_symbol: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
     counts: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
@@ -525,7 +575,14 @@ def _aggregate_local_micro_context(project_root: Path, *, lookback_days: int, sy
     family_counts: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
     last_quote_state: Dict[str, Dict[str, Any]] = {}
 
-    for row in _iter_recent_rows(project_root, lookback_days=lookback_days, symbols=symbols):
+    for row in _iter_recent_rows(
+        project_root,
+        lookback_days=lookback_days,
+        symbols=symbols,
+        max_files=max_files,
+        max_bytes_per_file=max_bytes_per_file,
+        max_rows=max_rows,
+    ):
         symbol = str(row.get("symbol") or "").strip().upper()
         ts_utc = row.get("_parsed_ts_utc")
         if not isinstance(ts_utc, datetime):
@@ -1199,7 +1256,14 @@ def collect(args: argparse.Namespace) -> int:
     health_root = PROJECT_ROOT / "governance" / "health"
 
     status: Dict[str, Any] = {"timestamp_utc": now_utc.isoformat(), "ok": True, "sources": {}, "source_contracts": {}}
-    local_micro = _aggregate_local_micro_context(PROJECT_ROOT, lookback_days=args.lookback_days, symbols=symbols)
+    local_micro = _aggregate_local_micro_context(
+        PROJECT_ROOT,
+        lookback_days=args.lookback_days,
+        symbols=symbols,
+        max_files=args.max_local_files,
+        max_bytes_per_file=args.max_local_bytes_per_file,
+        max_rows=args.max_local_rows,
+    )
     status["sources"]["local_micro"] = {
         "ok": bool(local_micro),
         "symbol_count": len(local_micro),
@@ -1364,6 +1428,9 @@ def main() -> int:
     parser.add_argument("--max-runtime-seconds", type=int, default=int(os.getenv("MARKET_MICRO_MAX_RUNTIME_SECONDS", "75")))
     parser.add_argument("--lookback-days", type=int, default=21)
     parser.add_argument("--finra-lookback-days", type=int, default=5)
+    parser.add_argument("--max-local-files", type=int, default=int(os.getenv("MARKET_MICRO_MAX_LOCAL_FILES", "32") or 32))
+    parser.add_argument("--max-local-bytes-per-file", type=int, default=int(os.getenv("MARKET_MICRO_MAX_LOCAL_BYTES_PER_FILE", str(8 * 1024 * 1024)) or (8 * 1024 * 1024)))
+    parser.add_argument("--max-local-rows", type=int, default=int(os.getenv("MARKET_MICRO_MAX_LOCAL_ROWS", "50000") or 50000))
     parser.add_argument("--symbols", default="")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--test-only", action="store_true")

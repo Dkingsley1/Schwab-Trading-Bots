@@ -19,6 +19,13 @@ else:
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "live_runtime_separation_control_latest.json"
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _cold_lane_contract(
     project_root: Path,
     *,
@@ -114,6 +121,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
     live_readiness = load_json(live_readiness_path)
     training_runtime = load_json(health_root / "training_runtime_control_latest.json")
     storage_tier = load_json(health_root / "storage_tier_policy_latest.json")
+    storage_control = load_json(health_root / "ingestion_storage_control_latest.json")
     resource_guard = load_json(health_root / "resource_guard_latest.json")
     coverage_seed = load_json(walk_root / "coverage_seed_latest.json")
     process_watchdog = load_json(health_root / "process_watchdog_latest.json")
@@ -124,8 +132,19 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
         live_age_minutes is None or float(live_age_minutes) <= max(float(live_fresh_minutes), 1.0)
     )
     training_blocked = str(training_runtime.get("overall_status") or "") == "blocked"
-    storage_blocked = str(storage_tier.get("overall_status") or "") == "blocked"
+    storage_blocked_raw = str(storage_tier.get("overall_status") or "") == "blocked"
     hot_path_over_budget_bytes = int(((storage_tier.get("pressure") or {}).get("hot_path_over_budget_bytes", 0)) or 0)
+    storage_target_status = storage_control.get("steady_state", {}).get("target_status", {}) if isinstance(storage_control.get("steady_state"), dict) else {}
+    external_route = storage_control.get("external_route_verification") if isinstance(storage_control.get("external_route_verification"), dict) else {}
+    storage_steady_state_ready = bool(
+        str(storage_control.get("overall_status") or "").strip().lower() == "ready"
+        and str(storage_control.get("severity") or "").strip().lower() == "stable"
+        and bool(storage_target_status.get("steady_state_ready", False))
+        and _safe_float(storage_control.get("backpressure_quality_score"), 0.0) >= 95.0
+        and _safe_float(storage_control.get("recovery_quality_score"), 0.0) >= 88.0
+        and str(external_route.get("verification_state") or "").strip().lower() in {"ready", "verified", "curated_ready", "active_passthrough"}
+    )
+    storage_blocked = bool(storage_blocked_raw and not storage_steady_state_ready)
     coverage_shortfall_bots = int(coverage_seed.get("coverage_shortfall_bots", 0) or 0)
     swap_used_gb = float(resource_guard.get("swap_used_gb", 0.0) or 0.0)
     restart_storms = len(process_watchdog.get("restart_storms") or [])
@@ -133,11 +152,12 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
     contention_signals = {
         "training_runtime_blocked": training_blocked,
         "storage_hot_path_blocked": storage_blocked,
+        "storage_hot_path_bounded_by_control": bool(storage_blocked_raw and storage_steady_state_ready),
         "coverage_shortfall_present": coverage_shortfall_bots > 0,
         "swap_pressure_elevated": swap_used_gb >= 8.0,
         "restart_storm_present": restart_storms > 0,
     }
-    contention_score = sum(1 for value in contention_signals.values() if value)
+    contention_score = sum(1 for key, value in contention_signals.items() if key != "storage_hot_path_bounded_by_control" and value)
 
     overall_status = "ready"
     if contention_score >= 3:
@@ -220,6 +240,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
             "hot_path_over_budget_bytes": hot_path_over_budget_bytes,
             "swap_used_gb": round(float(swap_used_gb), 3),
             "restart_storms": restart_storms,
+            "storage_steady_state_ready": bool(storage_steady_state_ready),
             "signals": contention_signals,
         },
         "release_contract": {

@@ -17,6 +17,71 @@ SPEC.loader.exec_module(MODULE)
 
 
 class LinkJsonlToSqlTests(unittest.TestCase):
+    def test_journal_event_honors_pressure_budget_flags(self) -> None:
+        keys = [
+            "INGEST_JOURNAL_DAILY_ENABLED",
+            "INGEST_JOURNAL_FILE_START_ENABLED",
+            "INGEST_JOURNAL_CHECKPOINT_ENABLED",
+            "INGEST_JOURNAL_ZERO_PENDING_ENABLED",
+        ]
+        old_env = {key: os.environ.get(key) for key in keys}
+        try:
+            os.environ["INGEST_JOURNAL_DAILY_ENABLED"] = "0"
+            os.environ["INGEST_JOURNAL_FILE_START_ENABLED"] = "0"
+            os.environ["INGEST_JOURNAL_CHECKPOINT_ENABLED"] = "0"
+            os.environ["INGEST_JOURNAL_ZERO_PENDING_ENABLED"] = "0"
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                latest = root / "governance" / "health" / "jsonl_ingest_batch_journal_latest.jsonl"
+                daily = root / "governance" / "events" / "jsonl_ingest_batches_20260520.jsonl"
+
+                MODULE._journal_event([latest, daily], {"event": "file_start", "source_rel": "decisions/a.jsonl"})
+                MODULE._journal_event(
+                    [latest, daily],
+                    {"event": "file_checkpoint", "source_rel": "decisions/a.jsonl", "pending_lines": 10},
+                )
+                MODULE._journal_event(
+                    [latest, daily],
+                    {"event": "file_complete", "source_rel": "decisions/a.jsonl", "pending_lines": 0},
+                )
+                MODULE._journal_event(
+                    [latest, daily],
+                    {"event": "file_complete", "source_rel": "decisions/b.jsonl", "pending_lines": 2},
+                )
+
+                self.assertTrue(latest.exists())
+                self.assertFalse(daily.exists())
+                rows = [json.loads(line) for line in latest.read_text(encoding="utf-8").splitlines()]
+
+            self.assertEqual([row["event"] for row in rows], ["file_complete"])
+            self.assertEqual(rows[0]["source_rel"], "decisions/b.jsonl")
+        finally:
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_journal_event_keeps_failures_when_journal_disabled(self) -> None:
+        keys = ["INGEST_JOURNAL_ENABLED", "INGEST_JOURNAL_ERRORS_ALWAYS"]
+        old_env = {key: os.environ.get(key) for key in keys}
+        try:
+            os.environ["INGEST_JOURNAL_ENABLED"] = "0"
+            os.environ["INGEST_JOURNAL_ERRORS_ALWAYS"] = "1"
+            with tempfile.TemporaryDirectory() as td:
+                latest = Path(td) / "journal.jsonl"
+                MODULE._journal_event([latest], {"event": "file_complete", "source_rel": "decisions/a.jsonl"})
+                MODULE._journal_event([latest], {"event": "file_failed", "source_rel": "decisions/b.jsonl"})
+                rows = [json.loads(line) for line in latest.read_text(encoding="utf-8").splitlines()]
+
+            self.assertEqual([row["event"] for row in rows], ["file_failed"])
+        finally:
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
     def test_extract_correlation_fields_prefers_top_level(self) -> None:
         row = {
             "run_id": "run-top",
@@ -170,6 +235,75 @@ class LinkJsonlToSqlTests(unittest.TestCase):
         self.assertEqual(schema_drift_count, 1)
         self.assertIsNotNone(watermark)
 
+    def test_sync_file_to_sqlite_uses_inode_identity_after_channel_rotation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db_path = root / "ingest.sqlite3"
+            jsonl_path = root / "governance" / "channels" / "decision" / "default_crypto_schwab" / "decision_20260522.jsonl"
+            jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+            jsonl_path.write_text(
+                json.dumps({"timestamp_utc": "2026-05-22T10:00:00+00:00", "symbol": "BTC-USD", "action": "HOLD"}) + "\n",
+                encoding="utf-8",
+            )
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                MODULE._ensure_sqlite_schema(conn, "jsonl_records")
+                first = MODULE._sync_file_to_sqlite(
+                    conn,
+                    "jsonl_records",
+                    root,
+                    jsonl_path,
+                    start_line=0,
+                    start_offset_bytes=0,
+                    dry_run=False,
+                    lock_retries=0,
+                    lock_retry_delay_seconds=0.01,
+                    latency_all=None,
+                    latency_stream=None,
+                    invalid_log_path=None,
+                    invalid_sample_limit=0,
+                    run_id="",
+                    iter_id="",
+                )
+                conn.commit()
+
+                jsonl_path.unlink()
+                jsonl_path.write_text(
+                    json.dumps({"timestamp_utc": "2026-05-22T10:01:00+00:00", "symbol": "ETH-USD", "action": "HOLD"}) + "\n",
+                    encoding="utf-8",
+                )
+                second = MODULE._sync_file_to_sqlite(
+                    conn,
+                    "jsonl_records",
+                    root,
+                    jsonl_path,
+                    start_line=0,
+                    start_offset_bytes=0,
+                    dry_run=False,
+                    lock_retries=0,
+                    lock_retry_delay_seconds=0.01,
+                    latency_all=None,
+                    latency_stream=None,
+                    invalid_log_path=None,
+                    invalid_sample_limit=0,
+                    run_id="",
+                    iter_id="",
+                )
+                conn.commit()
+                rows = conn.execute("SELECT source_file, line_no, payload_json FROM jsonl_records ORDER BY id").fetchall()
+            finally:
+                conn.close()
+
+        self.assertEqual(first["inserted"], 1)
+        self.assertEqual(second["inserted"], 1)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0][1], 1)
+        self.assertEqual(rows[1][1], 1)
+        self.assertNotEqual(rows[0][0], rows[1][0])
+        self.assertIn("#inode=", rows[1][0])
+        self.assertIn("ETH-USD", rows[1][2])
+
     def test_sync_file_to_sqlite_checkpoints_within_large_file(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -254,6 +388,104 @@ class LinkJsonlToSqlTests(unittest.TestCase):
         self.assertEqual(result["last_line"], 2)
         self.assertGreater(result["last_offset_bytes"], 0)
         self.assertEqual(int(row_count), 2)
+
+    def test_sync_file_to_sqlite_dead_letters_oversize_payload_and_advances_cursor(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db_path = root / "ingest.sqlite3"
+            jsonl_path = root / "decisions" / "trade_decisions_20260101.jsonl"
+            invalid_log = root / "governance" / "events" / "invalid.jsonl"
+            jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+            jsonl_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"value": "ok"}),
+                        json.dumps({"value": "x" * 100}),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                MODULE._ensure_sqlite_schema(conn, "jsonl_records")
+                result = MODULE._sync_file_to_sqlite(
+                    conn,
+                    "jsonl_records",
+                    root,
+                    jsonl_path,
+                    start_line=0,
+                    start_offset_bytes=0,
+                    dry_run=False,
+                    lock_retries=0,
+                    lock_retry_delay_seconds=0.01,
+                    latency_all=None,
+                    latency_stream=None,
+                    invalid_log_path=invalid_log,
+                    invalid_sample_limit=2,
+                    run_id="",
+                    iter_id="",
+                    oversize_payload_bytes=40,
+                )
+                conn.commit()
+                row_count = conn.execute("SELECT COUNT(*) FROM jsonl_records").fetchone()[0]
+            finally:
+                conn.close()
+            with sqlite3.connect(str(root / "governance" / "ops_data_plane.sqlite3")) as ops_conn:
+                dead_letter = ops_conn.execute(
+                    "SELECT error_class FROM ingest_dead_letters ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+            invalid_log_text = invalid_log.read_text(encoding="utf-8")
+
+        self.assertEqual(result["inserted"], 1)
+        self.assertEqual(result["invalid"], 1)
+        self.assertEqual(result["oversize_payloads"], 1)
+        self.assertEqual(result["last_line"], 2)
+        self.assertEqual(int(row_count), 1)
+        self.assertEqual(dead_letter[0], "OversizePayload")
+        self.assertIn("payload_size_bytes", invalid_log_text)
+
+    def test_main_accepts_writer_size_control_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            sqlite_db = root / "data" / "jsonl_link.sqlite3"
+            health_file = root / "governance" / "health" / "jsonl_sql_ingestion_health_latest.json"
+            jsonl_path = root / "decisions" / "trade_decisions_20260101.jsonl"
+            jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+            jsonl_path.write_text(json.dumps({"value": "ok"}) + "\n", encoding="utf-8")
+
+            original_argv = list(os.sys.argv)
+            try:
+                os.sys.argv = [
+                    "link_jsonl_to_sql.py",
+                    "--project-root",
+                    str(root),
+                    "--mode",
+                    "sqlite",
+                    "--sqlite-db",
+                    str(sqlite_db),
+                    "--health-file",
+                    str(health_file),
+                    "--skip-json-files",
+                    "--max-bytes-per-file",
+                    "67108864",
+                    "--oversize-payload-bytes",
+                    "262144",
+                    "--sqlite-batch-max-bytes",
+                    "4194304",
+                ]
+                rc = MODULE.main()
+            finally:
+                os.sys.argv = original_argv
+
+            payload = json.loads(health_file.read_text(encoding="utf-8"))
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(payload["filters"]["max_bytes_per_file"], 67108864)
+        self.assertEqual(payload["filters"]["oversize_payload_bytes"], 262144)
+        self.assertEqual(payload["filters"]["sqlite_batch_max_bytes"], 4194304)
+        self.assertEqual(payload["sqlite"]["inserted"], 1)
 
     def test_discover_jsonl_files_prioritizes_decision_streams(self) -> None:
         with tempfile.TemporaryDirectory() as td:

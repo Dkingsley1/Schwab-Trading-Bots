@@ -103,7 +103,6 @@ WATCHDOG_ARGS=(
   --watch-schwab-futures
   --watch-coinbase
   --watch-coinbase-futures
-  --allow-schwab-standby-heartbeats
   --interval-seconds "${SHADOW_WATCHDOG_INTERVAL_SECONDS:-20}"
   --max-restarts-per-window "${SHADOW_WATCHDOG_MAX_RESTARTS_PER_WINDOW:-12}"
   --restart-window-seconds "${SHADOW_WATCHDOG_RESTART_WINDOW_SECONDS:-3600}"
@@ -125,7 +124,7 @@ if ! credentials_ready_for_watchdog; then
   WATCHDOG_ARGS=( "${WATCHDOG_ARGS[@]:0:4}" --schwab-futures-optional "${WATCHDOG_ARGS[@]:4}" )
 fi
 
-if [[ "${SHADOW_WATCHDOG_DIRECT_CHILD_SLEEVES:-1}" == "1" ]]; then
+if [[ "${SHADOW_WATCHDOG_DIRECT_CHILD_SLEEVES:-0}" == "1" ]]; then
   WATCHDOG_ARGS=( "${WATCHDOG_ARGS[@]:0:4}" --watch-aggressive-modes --watch-dividend --watch-bond --watch-fx "${WATCHDOG_ARGS[@]:4}" )
   if [[ "${DIVIDEND_CAPTURE_SHADOW_ENABLED:-1}" == "1" ]]; then
     WATCHDOG_ARGS=( "${WATCHDOG_ARGS[@]:0:8}" --watch-dividend-capture "${WATCHDOG_ARGS[@]:8}" )

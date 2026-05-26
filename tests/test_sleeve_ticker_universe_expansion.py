@@ -8,12 +8,18 @@ def test_sleeve_ticker_universe_expands_applicable_sleeves() -> None:
     env = payload["env_overrides"]
 
     assert payload["overall_status"] == "ready"
-    assert payload["symbol_counts"]["SHADOW_SYMBOLS_CORE"] >= 90
-    assert payload["symbol_counts"]["SHADOW_SYMBOLS_DEFENSIVE"] >= 60
-    assert payload["symbol_counts"]["COINBASE_WATCH_SYMBOLS"] >= 15
+    assert payload["universe_version"] == "sleeve_ticker_universe_v2"
+    assert payload["symbol_counts"]["SHADOW_SYMBOLS_CORE"] >= 170
+    assert payload["symbol_counts"]["SHADOW_SYMBOLS_VOLATILE"] >= 60
+    assert payload["symbol_counts"]["SHADOW_SYMBOLS_DEFENSIVE"] >= 100
+    assert payload["symbol_counts"]["COINBASE_WATCH_SYMBOLS"] >= 30
     assert "NVDA" in env["SHADOW_SYMBOLS_CORE"]
+    assert "PANW" in env["SHADOW_SYMBOLS_CORE"]
+    assert "BITX" in env["SHADOW_SYMBOLS_VOLATILE"]
     assert "TLT" in env["BOND_SYMBOLS"]
+    assert "SHV" in env["BOND_SYMBOLS"]
     assert "BTC-USD" in env["COINBASE_WATCH_SYMBOLS"]
+    assert "SUI-USD" in env["COINBASE_WATCH_SYMBOLS"]
     assert "SLEEVE_TICKER_UNIVERSE_ENABLED" in env
     assert payload["safety_contract"]["adds_live_execution"] is False
 

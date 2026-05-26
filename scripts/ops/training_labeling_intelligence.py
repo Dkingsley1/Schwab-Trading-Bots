@@ -23,6 +23,7 @@ MINIMUM_TRAINING_OBSERVATIONS = 70000
 MINIMUM_COLLECTION_DAYS = 180
 SAMPLE_RATE = 0.01
 MAX_DAILY_MB_PER_BOT = 1
+DEFAULT_COLLECT_ONLY_DIAGNOSTIC_MIN_VERSION = 700
 
 
 INTELLIGENCE_SYSTEMS: list[dict[str, Any]] = [
@@ -102,6 +103,67 @@ REQUIRED_LABELS = [
     "lineage_gate_status",
     "promotion_gate_status",
 ]
+
+ADVANCED_QUANT_LABEL_FAMILIES = {
+    "quant_pricing_research",
+    "state_space_filter_research",
+    "optimization_research",
+    "transaction_cost_slippage_research",
+    "cross_asset_basis_research",
+    "market_data_tape_normalization_research",
+    "order_flow_toxicity_research",
+}
+
+TARGETED_LABEL_CONTRACT_OVERRIDES: dict[str, dict[str, Any]] = {
+    "brain_refinery_v31_defensive_rotation": {
+        "label_family": "options_surface",
+        "primary_horizon": "defensive_rotation_iv_realized_1d_5d",
+        "aux_horizons": ["downside_capture_1d_5d", "skew_shift", "spread_quality", "event_vol_reset"],
+        "required_context": ["options_chain", "iv_surface", "open_interest", "bid_ask_spread", "greeks", "skew"],
+    },
+    "brain_refinery_v99_defensive_dividend_concentration": {
+        "label_family": "income_options_surface",
+        "primary_horizon": "dividend_concentration_risk_adjusted_5d_20d",
+        "aux_horizons": ["ex_dividend_window", "payout_safety", "skew_shift", "event_vol_reset"],
+        "required_context": ["ex_dividend_calendar", "payout_metrics", "options_chain", "iv_surface", "open_interest", "bid_ask_spread"],
+    },
+    "brain_refinery_v96_credit_spread_rotation_bot": {
+        "label_family": "credit_spread",
+        "primary_horizon": "credit_spread_rotation_5d_20d",
+        "aux_horizons": ["spread_widening_risk", "duration_adjusted_return", "credit_beta", "drawdown_avoidance_5d"],
+        "required_context": ["credit_spread_context", "rates_curve", "sector_context", "market_breadth", "realized_volatility", "liquidity_state"],
+    },
+    "brain_refinery_v95_rates_regime_bond_bot": {
+        "label_family": "fixed_income_rates",
+        "primary_horizon": "rates_regime_total_return_5d_20d",
+        "aux_horizons": ["yield_curve_shift", "duration_beta", "inflation_surprise", "credit_stress"],
+        "required_context": ["rates_curve", "duration_context", "inflation_context", "macro_calendar", "credit_stress", "liquidity_state"],
+    },
+    "brain_refinery_v94_dividend_yield_trap_avoidance": {
+        "label_family": "income_total_return",
+        "primary_horizon": "dividend_yield_trap_avoidance_20d_total_return",
+        "aux_horizons": ["payout_safety", "dividend_cut_risk", "earnings_quality", "drawdown_avoidance_5d"],
+        "required_context": ["ex_dividend_calendar", "payout_metrics", "balance_sheet_quality", "earnings_calendar", "rate_context", "sector_context"],
+    },
+    "brain_refinery_v93_dividend_quality_compounder": {
+        "label_family": "income_total_return",
+        "primary_horizon": "dividend_quality_compounder_20d_total_return",
+        "aux_horizons": ["payout_safety", "dividend_growth", "earnings_quality", "risk_adjusted_return"],
+        "required_context": ["ex_dividend_calendar", "payout_metrics", "balance_sheet_quality", "earnings_calendar", "rate_context", "sector_context"],
+    },
+    "brain_refinery_v69_cost_aware_execution_filter": {
+        "label_family": "execution_cost_quality",
+        "primary_horizon": "execution_cost_avoidance_after_slippage",
+        "aux_horizons": ["spread_cost_delta", "fill_quality", "latency_penalty", "market_impact_proxy"],
+        "required_context": ["spread_quality", "execution_quality", "slippage_trace", "fill_quality", "latency_trace", "market_micro_context"],
+    },
+    "brain_refinery_v67_correlation_penalty_layer": {
+        "label_family": "correlation_risk_effect",
+        "primary_horizon": "correlation_penalty_risk_adjusted_5d",
+        "aux_horizons": ["correlation_cluster_stability", "exposure_netting_delta", "drawdown_avoidance_5d", "diversification_score"],
+        "required_context": ["correlation_matrix", "cross_asset_correlation", "sector_context", "portfolio_exposure", "risk_budget", "market_breadth"],
+    },
+}
 
 
 STORAGE_TARGETS = [
@@ -276,6 +338,13 @@ def _infer_label_family(row: dict[str, Any]) -> tuple[str, str, list[str], list[
     rules: list[tuple[tuple[str, ...], str, str, list[str], list[str]]] = [
         (("label", "training", "retrain", "coverage"), "training_process_quality", "retrain_cycle_improves_gate_status", ["coverage_gap_delta", "label_quality_delta", "runtime_failure_delta"], ["training_quality_trace", "coverage_gap_trace", "runtime_snapshot_trace"]),
         (("governor", "backlog", "storage", "memory", "auth", "operator", "lineage", "guard"), "operational_guard_effect", "guard_prevents_bad_runtime_action", ["false_positive_guard", "incident_prevention", "pressure_delta"], ["runtime_health", "incident_log", "operator_context"]),
+        (("quant_pricing", "merton", "heston", "monte_carlo", "quasi", "latin_hypercube", "finite_difference", "fft", "trinomial", "sabr", "svi", "dupire", "bates"), "quant_pricing_research", "pricing_model_dispersion_after_cost", ["surface_mispricing", "hedge_cost", "proxy_label_quality"], ["quant_model_feature_surface", "listed_option_surface", "realized_vol", "rates_context", "model_price_sensitivity_grid"]),
+        (("state_space", "kalman", "particle_filter", "regime_filter", "hidden_markov", "changepoint"), "state_space_filter_research", "state_filter_regime_confidence", ["latent_state_stability", "regime_transition_quality", "sequence_depth"], ["runtime_feature_history", "market_micro_features", "state_filter_diagnostics", "regime_transition_trace"]),
+        (("optimization", "kelly", "optimizer", "portfolio_fit", "convex", "genetic"), "optimization_research", "objective_improvement_after_constraints", ["constraint_violation", "kelly_sizing_quality", "portfolio_fit"], ["optimization_search_trace", "constraint_violation_trace", "objective_value_trace", "kelly_fraction_trace"]),
+        (("transaction_cost", "slippage", "queue", "fill_realism", "market_impact"), "transaction_cost_slippage_research", "slippage_realism_after_queue_cost", ["queue_cost", "fill_quality", "market_impact_proxy"], ["transaction_cost_surface", "fill_realism_context", "queue_position_context", "latency_trace"]),
+        (("basis", "cross_asset_basis", "funding_basis", "rates_fx"), "cross_asset_basis_research", "basis_convergence_after_funding_cost", ["basis_widening", "funding_stress", "cross_asset_confirmation"], ["basis", "basis_context", "cross_asset_correlation", "funding_context", "proxy_data_source_lineage"]),
+        (("tape_normalization", "nbbo", "taq", "sip", "opra"), "market_data_tape_normalization_research", "tape_schema_quality_after_latency", ["feed_latency", "schema_quality", "off_exchange_volume"], ["opra_nbbo_taq_sip_normalized_events", "mbo_mbp_depth_snapshot", "dark_pool_off_exchange_volume", "feed_latency_schema_health"]),
+        (("order_flow_toxicity", "vpin", "toxic_flow"), "order_flow_toxicity_research", "toxic_flow_spread_queue_response", ["vpin_toxicity", "toxic_flow", "spread_queue_response"], ["vpin_order_flow_toxicity", "market_micro_features", "spread_queue_response", "source_quality"]),
         (("option", "gamma", "iv", "0dte"), "options_surface", "iv_realized_1d_5d", ["gamma", "skew", "spread_quality", "event_vol_reset"], ["options_chain", "iv_surface", "open_interest", "bid_ask_spread"]),
         (("future", "basis", "curve"), "futures_event_session", "session_event_followthrough", ["basis", "curve", "macro_event_window"], ["futures_bars", "session_calendar", "basis_context", "macro_calendar"]),
         (("crypto",), "crypto_microstructure", "crypto_session_followthrough", ["liquidity_sweep", "basis", "funding_stress"], ["crypto_bars", "order_book_proxy", "funding_context"]),
@@ -292,19 +361,38 @@ def _infer_label_family(row: dict[str, Any]) -> tuple[str, str, list[str], list[
 
 
 def _training_lane_for_family(label_family: str) -> str:
-    if label_family in {"intraday_fast", "options_surface", "futures_event_session", "crypto_microstructure"}:
+    if label_family in {"intraday_fast", "options_surface", "income_options_surface", "futures_event_session", "crypto_microstructure", "execution_cost_quality"}:
         return "lane_specific_fast"
     if label_family in {"training_process_quality", "operational_guard_effect"}:
         return "governance_effect"
+    if label_family in ADVANCED_QUANT_LABEL_FAMILIES:
+        return "research_quant_proxy"
     if label_family in {"alpha_research"}:
         return "research_walk_forward"
-    if label_family in {"income_total_return", "risk_adjusted_preservation", "multi_day"}:
+    if label_family in {"income_total_return", "risk_adjusted_preservation", "multi_day", "fixed_income_rates", "credit_spread", "correlation_risk_effect"}:
         return "slow_lane_balanced"
     return "general_balanced"
 
 
 def _universal_contract(row: dict[str, Any]) -> dict[str, Any]:
     existing = _existing_contract(row)
+    bot_id = str(row.get("bot_id") or "").strip()
+    override = TARGETED_LABEL_CONTRACT_OVERRIDES.get(bot_id)
+    if override:
+        label_family = str(override["label_family"])
+        return {
+            "version": UNIVERSAL_LABEL_CONTRACT_VERSION,
+            "label_family": label_family,
+            "primary_horizon": str(override["primary_horizon"]),
+            "aux_horizons": list(override["aux_horizons"]),
+            "required_context": list(override["required_context"]),
+            "required_labels": list(REQUIRED_LABELS),
+            "required_join_mode": "point_in_time_only",
+            "forbidden_join_modes": ["future_leakage", "lookahead_join", "unbounded_raw_feed_join"],
+            "quality_floor": _safe_float(existing.get("quality_floor"), 0.84),
+            "training_lane": _training_lane_for_family(label_family),
+            "source": "targeted_labeling_repair_override",
+        }
     family, primary, aux, context = _infer_label_family(row)
     existing_family = str(existing.get("label_family") or existing.get("family") or "").strip()
     existing_primary = str(existing.get("primary_horizon") or existing.get("primary_label_horizon") or "").strip()
@@ -342,12 +430,15 @@ def _apply_universal_label_contracts(rows: list[dict[str, Any]], now: str) -> di
         if not had_any:
             missing_before += 1
         contract = _universal_contract(row)
+        targeted_override = str(contract.get("source") or "") == "targeted_labeling_repair_override"
         family_counts[str(contract["label_family"])] += 1
         lane_counts[str(contract["training_lane"])] += 1
-        status = "preserved_explicit" if complete else "normalized_incomplete" if had_any else "normalized_missing"
+        status = "targeted_labeling_repair" if targeted_override else "preserved_explicit" if complete else "normalized_incomplete" if had_any else "normalized_missing"
         if status == "preserved_explicit":
             preserved_explicit += 1
         elif status == "normalized_incomplete":
+            normalized_incomplete += 1
+        elif status == "targeted_labeling_repair":
             normalized_incomplete += 1
         else:
             normalized_missing += 1
@@ -357,7 +448,7 @@ def _apply_universal_label_contracts(rows: list[dict[str, Any]], now: str) -> di
         row["training_label_contract_status"] = status
         row["training_lane"] = contract["training_lane"]
         row["label_contract_last_reviewed_utc"] = now
-        if not complete:
+        if targeted_override or not complete:
             row["label_contract"] = contract
             row["data_label_contract_version"] = UNIVERSAL_LABEL_CONTRACT_VERSION
             updated_bot_ids.append(str(row.get("bot_id") or ""))
@@ -433,6 +524,246 @@ def _threshold_progress() -> dict[str, Any]:
         "minimum_data_collection_days": MINIMUM_COLLECTION_DAYS,
         "days_ready": False,
         "training_ready": False,
+    }
+
+
+def _minimum_observations_for_row(row: dict[str, Any]) -> int:
+    standard = row.get("paper_promotion_standard") if isinstance(row.get("paper_promotion_standard"), dict) else {}
+    threshold = row.get("data_collection_threshold") if isinstance(row.get("data_collection_threshold"), dict) else {}
+    training_policy = row.get("training_threshold_policy") if isinstance(row.get("training_threshold_policy"), dict) else {}
+    candidates = [
+        standard.get("minimum_observations"),
+        threshold.get("minimum_training_observations"),
+        training_policy.get("minimum_observations"),
+        row.get("minimum_training_observations"),
+    ]
+    for raw in candidates:
+        value = _safe_int(raw, 0)
+        if value > 0:
+            return value
+    return 0
+
+
+def _minimum_collection_days_for_row(row: dict[str, Any]) -> int:
+    standard = row.get("paper_promotion_standard") if isinstance(row.get("paper_promotion_standard"), dict) else {}
+    training_policy = row.get("training_threshold_policy") if isinstance(row.get("training_threshold_policy"), dict) else {}
+    candidates = [
+        standard.get("minimum_collection_days"),
+        training_policy.get("minimum_collection_days"),
+        row.get("minimum_data_collection_days"),
+    ]
+    for raw in candidates:
+        value = _safe_int(raw, 0)
+        if value > 0:
+            return value
+    return 0
+
+
+def _observation_count_for_row(row: dict[str, Any]) -> int:
+    progress = row.get("data_collection_threshold_progress") if isinstance(row.get("data_collection_threshold_progress"), dict) else {}
+    candidates = [
+        row.get("data_collection_observations"),
+        row.get("observations"),
+        progress.get("observations"),
+    ]
+    return max(_safe_int(raw, 0) for raw in candidates)
+
+
+def _collection_age_days_for_row(row: dict[str, Any], now: datetime) -> float:
+    raw = str(row.get("data_collection_started_utc") or row.get("created_at_utc") or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(raw)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return round(max((now - parsed.astimezone(timezone.utc)).total_seconds(), 0.0) / 86400.0, 3)
+    except Exception:
+        return 0.0
+
+
+def _collect_only_diagnostic_payload(row: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+    bot_id = str(row.get("bot_id") or "").strip()
+    contract = row.get("universal_label_contract") if isinstance(row.get("universal_label_contract"), dict) else {}
+    if not contract:
+        contract = _universal_contract(row)
+    observations = _observation_count_for_row(row)
+    minimum_observations = _minimum_observations_for_row(row)
+    collection_age_days = _collection_age_days_for_row(row, now)
+    minimum_collection_days = _minimum_collection_days_for_row(row)
+    observations_ready = bool(minimum_observations > 0 and observations >= minimum_observations)
+    days_ready = bool(minimum_collection_days > 0 and collection_age_days >= minimum_collection_days)
+    required_context = list(contract.get("required_context") or [])
+    required_labels = list(contract.get("required_labels") or [])
+    label_family = str(contract.get("label_family") or "generic_directional")
+    primary_horizon = str(contract.get("primary_horizon") or "1d_forward_return")
+    return {
+        "timestamp_utc": now.isoformat(),
+        "schema_version": 1,
+        "status": "collect_only_label_contract_ready",
+        "bot_id": bot_id,
+        "bot_role": str(row.get("bot_role") or ""),
+        "lifecycle_state": str(row.get("lifecycle_state") or ""),
+        "training_excluded": True,
+        "data_collection_active": bool(row.get("data_collection_active", False)),
+        "sample_count": 0,
+        "observation_count": observations,
+        "eligible_sequences": 0,
+        "sequence_count": 0,
+        "positive_rate": 0.0,
+        "skipped_filtered": 0,
+        "skipped_low_confidence": 0,
+        "skipped_labels": 0,
+        "metrics": {
+            "acted_coverage": -1.0,
+            "acted_accuracy": -1.0,
+            "accuracy_lift_over_majority": 0.0,
+            "long_precision": 0.0,
+            "short_precision": 0.0,
+            "label_balance_score": 0.0,
+            "precision_balance_score": 0.0,
+            "long_acted_count": 0,
+            "short_acted_count": 0,
+            "test_accuracy": 0.0,
+            "quality_score": _safe_float(row.get("quality_score"), 0.0),
+        },
+        "runtime_meta": {
+            "sample_count": 0,
+            "observation_count": observations,
+            "eligible_sequences": 0,
+            "positive_rate": 0.0,
+            "label_contract": contract,
+            "training_label_contract": contract,
+            "label_audit": {
+                "label_family": label_family,
+                "primary_horizon": primary_horizon,
+                "required_context": required_context,
+                "required_labels": required_labels,
+                "required_join_mode": str(contract.get("required_join_mode") or "point_in_time_only"),
+                "forbidden_join_modes": list(contract.get("forbidden_join_modes") or []),
+                "label_contract_complete": bool(label_family and primary_horizon and required_context),
+                "point_in_time_only": str(contract.get("required_join_mode") or "point_in_time_only") == "point_in_time_only",
+            },
+            "collection_threshold": {
+                "minimum_observations": minimum_observations,
+                "current_observations": observations,
+                "observations_remaining": max(minimum_observations - observations, 0),
+                "observations_ready": observations_ready,
+                "minimum_collection_days": minimum_collection_days,
+                "collection_age_days": collection_age_days,
+                "days_remaining": max(round(minimum_collection_days - collection_age_days, 3), 0.0),
+                "days_ready": days_ready,
+                "training_ready": bool(observations_ready and days_ready),
+            },
+            "diagnostic_kind": "collect_only_label_contract_bootstrap",
+            "safe_next_step": "collect_more_data" if minimum_observations > observations else "refresh_with_real_samples",
+        },
+        "diagnostic_contract": {
+            "purpose": "Make collect-only high-numbered bots explain their label contract and collection threshold before canary training.",
+            "no_training_started": True,
+            "no_master_update": True,
+            "no_execution": True,
+            "protected_volumes": ["/Volumes/VIDEO"],
+        },
+    }
+
+
+def _materialize_collect_only_diagnostics(
+    project_root: Path,
+    rows: list[dict[str, Any]],
+    *,
+    min_version: int,
+    limit: int,
+    overwrite: bool,
+) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    diagnostics_dir = project_root / "governance" / "training_diagnostics"
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    candidates = _collect_only_diagnostic_candidates(rows, min_version=min_version)
+    selected = candidates[:limit] if limit and limit > 0 else candidates
+    written: list[str] = []
+    skipped_existing: list[str] = []
+    for row in selected:
+        bot_id = str(row.get("bot_id") or "").strip()
+        out_path = diagnostics_dir / f"{bot_id}_latest.json"
+        if out_path.exists() and not overwrite:
+            skipped_existing.append(bot_id)
+            continue
+        _write_json(out_path, _collect_only_diagnostic_payload(row, now=now))
+        written.append(bot_id)
+    rollup = {
+        "timestamp_utc": now.isoformat(),
+        "schema_version": 1,
+        "min_bot_version": int(min_version),
+        "candidate_count": len(candidates),
+        "selected_count": len(selected),
+        "written_count": len(written),
+        "skipped_existing_count": len(skipped_existing),
+        "written_bot_ids": written[:250],
+        "skipped_existing_bot_ids": skipped_existing[:250],
+        "policy": "diagnostics_only_no_training_no_master_update",
+    }
+    _write_json(project_root / "governance" / "training_labeling_intelligence" / "collect_only_diagnostics_latest.json", rollup)
+    return rollup
+
+
+def _collect_only_diagnostic_candidates(rows: list[dict[str, Any]], *, min_version: int) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        bot_id = str(row.get("bot_id") or "").strip()
+        version = _version_from_bot_id(bot_id)
+        if version is None or version < int(min_version):
+            continue
+        if not bool(row.get("active", False)) or not bool(row.get("data_collection_active", False)):
+            continue
+        if not (bool(row.get("training_excluded", False)) or bool(row.get("exclude_from_training", False))):
+            continue
+        lifecycle_state = str(row.get("lifecycle_state") or "").strip()
+        if lifecycle_state not in {"data_collection_only", "paper_live_data"}:
+            continue
+        candidates.append(row)
+    candidates.sort(key=lambda item: _version_from_bot_id(str(item.get("bot_id") or "")) or 0)
+    return candidates
+
+
+def _collect_only_diagnostic_preview(
+    project_root: Path,
+    rows: list[dict[str, Any]],
+    *,
+    min_version: int,
+    limit: int,
+) -> dict[str, Any]:
+    diagnostics_dir = project_root / "governance" / "training_diagnostics"
+    candidates = _collect_only_diagnostic_candidates(rows, min_version=min_version)
+    selected = candidates[:limit] if limit and limit > 0 else candidates
+    existing: list[str] = []
+    missing: list[str] = []
+    for row in selected:
+        bot_id = str(row.get("bot_id") or "").strip()
+        if (diagnostics_dir / f"{bot_id}_latest.json").exists():
+            existing.append(bot_id)
+        else:
+            missing.append(bot_id)
+    return {
+        "schema_version": 1,
+        "mode": "preview",
+        "min_bot_version": int(min_version),
+        "limit": int(limit),
+        "candidate_count": len(candidates),
+        "selected_count": len(selected),
+        "existing_diagnostic_count": len(existing),
+        "missing_diagnostic_count": len(missing),
+        "missing_bot_ids": missing[:250],
+        "existing_bot_ids": existing[:250],
+        "recommended_apply_command": (
+            "./scripts/ops/opsctl.sh training-labeling-intelligence --apply "
+            "--materialize-collect-only-diagnostics "
+            f"--collect-only-diagnostic-min-version {int(min_version)} "
+            f"--collect-only-diagnostic-limit {int(limit)} --json"
+        ),
+        "policy": "diagnostics_only_no_training_no_master_update",
     }
 
 
@@ -795,7 +1126,12 @@ def _refresh_summary(registry: dict[str, Any], label_summary: dict[str, Any]) ->
     registry["summary"] = summary
 
 
-def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
+def build_payload(
+    project_root: Path = PROJECT_ROOT,
+    *,
+    collect_only_diagnostic_min_version: int = DEFAULT_COLLECT_ONLY_DIAGNOSTIC_MIN_VERSION,
+    collect_only_diagnostic_limit: int = 0,
+) -> dict[str, Any]:
     registry = _load_json(project_root / "master_bot_registry.json")
     rows = _registry_rows(registry)
     plan = plan_registry_expansion(registry)
@@ -821,11 +1157,24 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "incomplete_label_contract_count": incomplete_contracts,
         "pack": plan["pack"],
         "training_process_intelligence": _training_process_intelligence(project_root),
+        "collect_only_diagnostics": _collect_only_diagnostic_preview(
+            project_root,
+            rows,
+            min_version=collect_only_diagnostic_min_version,
+            limit=collect_only_diagnostic_limit,
+        ),
         "recommended_apply_command": "./scripts/ops/opsctl.sh training-labeling-intelligence --apply --json",
     }
 
 
-def apply_registry(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
+def apply_registry(
+    project_root: Path = PROJECT_ROOT,
+    *,
+    materialize_collect_only_diagnostics: bool = False,
+    collect_only_diagnostic_min_version: int = DEFAULT_COLLECT_ONLY_DIAGNOSTIC_MIN_VERSION,
+    collect_only_diagnostic_limit: int = 0,
+    overwrite_collect_only_diagnostics: bool = False,
+) -> dict[str, Any]:
     registry_path = project_root / "master_bot_registry.json"
     registry = _load_json(registry_path)
     rows = _registry_rows(registry)
@@ -846,7 +1195,27 @@ def apply_registry(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     _write_json(registry_path, registry)
 
     process = _training_process_intelligence(project_root)
-    payload = build_payload(project_root)
+    collect_only_diagnostics = (
+        _materialize_collect_only_diagnostics(
+            project_root,
+            rows,
+            min_version=collect_only_diagnostic_min_version,
+            limit=collect_only_diagnostic_limit,
+            overwrite=overwrite_collect_only_diagnostics,
+        )
+        if materialize_collect_only_diagnostics
+        else _collect_only_diagnostic_preview(
+            project_root,
+            rows,
+            min_version=collect_only_diagnostic_min_version,
+            limit=collect_only_diagnostic_limit,
+        )
+    )
+    payload = build_payload(
+        project_root,
+        collect_only_diagnostic_min_version=collect_only_diagnostic_min_version,
+        collect_only_diagnostic_limit=collect_only_diagnostic_limit,
+    )
     payload.update(
         {
             "mode": "applied",
@@ -859,6 +1228,7 @@ def apply_registry(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "storage_targets_ready": storage_targets_ready,
             "label_contract_summary": label_summary,
             "training_process_intelligence": process,
+            "collect_only_diagnostics": collect_only_diagnostics,
         }
     )
     config_payload = {
@@ -878,20 +1248,40 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Improve training process intelligence and normalize universal label contracts.")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--materialize-collect-only-diagnostics", action="store_true")
+    parser.add_argument("--collect-only-diagnostic-min-version", type=int, default=DEFAULT_COLLECT_ONLY_DIAGNOSTIC_MIN_VERSION)
+    parser.add_argument("--collect-only-diagnostic-limit", type=int, default=0)
+    parser.add_argument("--overwrite-collect-only-diagnostics", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
     project_root = Path(args.project_root).resolve()
-    payload = apply_registry(project_root) if args.apply else build_payload(project_root)
+    payload = (
+        apply_registry(
+            project_root,
+            materialize_collect_only_diagnostics=bool(args.materialize_collect_only_diagnostics),
+            collect_only_diagnostic_min_version=int(args.collect_only_diagnostic_min_version),
+            collect_only_diagnostic_limit=int(args.collect_only_diagnostic_limit),
+            overwrite_collect_only_diagnostics=bool(args.overwrite_collect_only_diagnostics),
+        )
+        if args.apply
+        else build_payload(
+            project_root,
+            collect_only_diagnostic_min_version=int(args.collect_only_diagnostic_min_version),
+            collect_only_diagnostic_limit=int(args.collect_only_diagnostic_limit),
+        )
+    )
     if args.json:
         print(json.dumps(payload, ensure_ascii=True, indent=2))
     else:
+        diagnostics = payload.get("collect_only_diagnostics") if isinstance(payload.get("collect_only_diagnostics"), dict) else {}
         print(
             "training_labeling_intelligence "
             f"mode={payload['mode']} systems={payload['system_count']} bots={payload['bot_count']} "
             f"planned={payload['planned_bot_count']} added={payload.get('added_bot_count', 0)} "
             f"missing_labels={payload.get('missing_label_contract_count', 0)} "
-            f"selected_targets={len(payload['training_process_intelligence']['selected_targeted_retrain_bot_ids'])}"
+            f"selected_targets={len(payload['training_process_intelligence']['selected_targeted_retrain_bot_ids'])} "
+            f"collect_only_diagnostics={diagnostics.get('written_count', diagnostics.get('missing_diagnostic_count', 0))}"
         )
     return 0
 

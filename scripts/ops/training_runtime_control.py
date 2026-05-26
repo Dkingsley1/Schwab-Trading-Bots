@@ -12,6 +12,21 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "training_runtime_control_latest.json"
+TRAINING_REPAIR_ACTIONS = {
+    "rebuild_model_artifact",
+    "recover_training_log",
+    "repair_runtime_inputs",
+    "refresh_training_diagnostics",
+    "targeted_retrain",
+}
+TRAINING_BATCH_PROFILES = {
+    "coverage_micro_canary",
+    "coverage_small_canary",
+    "coverage_canary",
+    "coverage_batch10_canary",
+    "coverage_batch20_canary",
+}
+TRAINING_BATCH_MAX = 20
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -182,6 +197,9 @@ def _build_precompute_targets(
     training_quality: dict[str, Any],
     retrain_scorecard: dict[str, Any],
     coverage_seed: dict[str, Any],
+    coverage_gap_closer: dict[str, Any],
+    training_requalification: dict[str, Any],
+    bot_needs: dict[str, Any],
 ) -> list[dict[str, Any]]:
     targets: dict[str, dict[str, Any]] = {}
 
@@ -194,6 +212,10 @@ def _build_precompute_targets(
                 "priority": 0.0,
                 "reasons": [],
                 "actions": [],
+                "candidate_actions": [],
+                "current_runs": 0,
+                "runs_remaining": 0,
+                "needs_runtime_input_repair": False,
             },
         )
         return row
@@ -239,14 +261,809 @@ def _build_precompute_targets(
         row["priority"] = float(row["priority"]) + min(_safe_float(seed_row.get("priority"), 0.0), 15.0)
         row["reasons"].append("coverage_seed")
         row["actions"].append("reuse_shared_snapshot_for_walk_forward")
+        row["current_runs"] = max(_safe_int(row.get("current_runs"), 0), _safe_int(seed_row.get("current_runs"), 0))
+        row["runs_remaining"] = max(_safe_int(row.get("runs_remaining"), 0), _safe_int(seed_row.get("runs_remaining"), 0))
+        row["needs_runtime_input_repair"] = bool(row.get("needs_runtime_input_repair", False) or seed_row.get("needs_runtime_input_repair", False))
+        for action in seed_row.get("actions") or []:
+            if str(action or "").strip():
+                row["candidate_actions"].append(str(action).strip())
+
+    def add_ranked_candidate(candidate_row: dict[str, Any], *, reason: str, priority_cap: float, default_action: str) -> None:
+        bot = str(candidate_row.get("bot_id") or "").strip()
+        if not bot:
+            return
+        row = ensure(bot)
+        row["priority"] = float(row["priority"]) + min(_safe_float(candidate_row.get("priority"), 0.0), float(priority_cap))
+        row["reasons"].append(reason)
+        row["actions"].append(default_action)
+        row["current_runs"] = max(
+            _safe_int(row.get("current_runs"), 0),
+            _safe_int(candidate_row.get("current_runs"), _safe_int(candidate_row.get("walk_forward_runs"), 0)),
+        )
+        row["runs_remaining"] = max(_safe_int(row.get("runs_remaining"), 0), _safe_int(candidate_row.get("runs_remaining"), 0))
+        row["needs_runtime_input_repair"] = bool(
+            row.get("needs_runtime_input_repair", False)
+            or candidate_row.get("needs_runtime_input_repair", False)
+            or "repair_runtime_inputs" in [str(action or "").strip() for action in candidate_row.get("actions") or []]
+        )
+        for action in candidate_row.get("actions") or []:
+            if str(action or "").strip():
+                row["candidate_actions"].append(str(action).strip())
+
+    for candidate_row in coverage_gap_closer.get("active_stage_candidates") or []:
+        if isinstance(candidate_row, dict):
+            add_ranked_candidate(
+                candidate_row,
+                reason="coverage_gap_stage",
+                priority_cap=18.0,
+                default_action="reuse_shared_snapshot_for_staged_candidate",
+            )
+
+    for candidate_row in coverage_gap_closer.get("backup_candidates") or []:
+        if isinstance(candidate_row, dict):
+            add_ranked_candidate(
+                candidate_row,
+                reason="coverage_gap_backup",
+                priority_cap=12.0,
+                default_action="prepare_backup_candidate_for_walk_forward",
+            )
+
+    ranked_requalification: list[dict[str, Any]] = []
+    seen_requalification: set[str] = set()
+    for key in ("top_reactivation_ready", "top_candidates"):
+        for candidate_row in training_requalification.get(key) or []:
+            if isinstance(candidate_row, dict):
+                bot = str(candidate_row.get("bot_id") or "").strip().lower()
+                if not bot or bot in seen_requalification:
+                    continue
+                seen_requalification.add(bot)
+                ranked_requalification.append(candidate_row)
+    for candidate_row in ranked_requalification:
+        add_ranked_candidate(
+            candidate_row,
+            reason="training_requalification_candidate",
+            priority_cap=10.0,
+            default_action="prepare_requalification_candidate_for_batch_training",
+        )
+
+    bot_needs_records: dict[str, dict[str, Any]] = {}
+    for need_row in bot_needs.get("bot_needs") or []:
+        if not isinstance(need_row, dict):
+            continue
+        bot = str(need_row.get("bot_id") or "").strip()
+        if bot:
+            bot_needs_records[bot] = need_row
+    next_batches = bot_needs.get("next_batches") if isinstance(bot_needs.get("next_batches"), dict) else {}
+    for rank, raw_bot in enumerate(next_batches.get("training_topoff") or []):
+        bot = str(raw_bot or "").strip()
+        if not bot:
+            continue
+        need_row = bot_needs_records.get(bot, {})
+        evidence = need_row.get("evidence") if isinstance(need_row.get("evidence"), dict) else {}
+        row = ensure(bot)
+        fallback_priority = max(52.0 - (rank * 0.1), 40.0)
+        row["priority"] = float(row["priority"]) + min(_safe_float(need_row.get("priority"), fallback_priority), 14.0)
+        row["reasons"].append("bot_needs_training_topoff")
+        row["actions"].append("reuse_shared_snapshot_for_walk_forward")
+        row["actions"].append("prepare_memory_guarded_training_topoff")
+        row["candidate_actions"].extend(
+            [
+                "generate_walk_forward_runs",
+                "refresh_promotion_gate",
+                "recheck_promotion_quality_gate",
+            ]
+        )
+        row["current_runs"] = max(
+            _safe_int(row.get("current_runs"), 0),
+            _safe_int(evidence.get("walk_forward_runs"), 0),
+        )
+        row["runs_remaining"] = max(
+            _safe_int(row.get("runs_remaining"), 0),
+            _safe_int(evidence.get("walk_forward_runs_remaining"), 0),
+        )
 
     out: list[dict[str, Any]] = []
     for row in targets.values():
         row["reasons"] = _ordered_unique(list(row.get("reasons") or []))
         row["actions"] = _ordered_unique(list(row.get("actions") or []))
+        row["candidate_actions"] = _ordered_unique(list(row.get("candidate_actions") or []))
+        all_actions = {str(action or "").strip() for action in list(row["actions"]) + list(row["candidate_actions"])}
+        repair_first = bool(row.get("needs_runtime_input_repair", False) or all_actions.intersection(TRAINING_REPAIR_ACTIONS))
+        if repair_first:
+            row["training_stage"] = "repair_first"
+        elif _safe_int(row.get("runs_remaining"), 0) > 0:
+            row["training_stage"] = "coverage_topoff"
+        elif "coverage_seed" in row["reasons"]:
+            row["training_stage"] = "promotion_confirmation"
+        elif "loading_sequences_timeout" in row["reasons"]:
+            row["training_stage"] = "cache_retry"
+        else:
+            row["training_stage"] = "precompute"
         out.append(row)
     out.sort(key=lambda row: (-_safe_float(row.get("priority"), 0.0), str(row.get("bot_id") or "")))
     return out
+
+
+def _public_target(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "bot_id": str(row.get("bot_id") or ""),
+        "family": str(row.get("family") or ""),
+        "priority": round(_safe_float(row.get("priority"), 0.0), 3),
+        "training_stage": str(row.get("training_stage") or "precompute"),
+        "current_runs": _safe_int(row.get("current_runs"), 0),
+        "runs_remaining": _safe_int(row.get("runs_remaining"), 0),
+        "needs_runtime_input_repair": bool(row.get("needs_runtime_input_repair", False)),
+        "reasons": list(row.get("reasons") or [])[:6],
+        "actions": list(row.get("actions") or [])[:6],
+        "candidate_actions": list(row.get("candidate_actions") or [])[:8],
+    }
+
+
+def _build_backpressure_training_gate(
+    *,
+    health_gates: dict[str, Any],
+    storage_control: dict[str, Any],
+    ingestion_backpressure: dict[str, Any],
+    super_drainer: dict[str, Any],
+) -> dict[str, Any]:
+    inputs = health_gates.get("inputs") if isinstance(health_gates.get("inputs"), dict) else {}
+    storage_bp = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
+    storage_overlay = (
+        storage_control.get("sql_ingestion_pending_overlay")
+        if isinstance(storage_control.get("sql_ingestion_pending_overlay"), dict)
+        else {}
+    )
+    super_summary = super_drainer.get("summary") if isinstance(super_drainer.get("summary"), dict) else {}
+    storage_overlay_reconciled_downward = bool(
+        storage_bp.get("overlay_adjusted", False)
+        and storage_overlay.get("used_for_pressure", False)
+        and storage_overlay.get("reconciled_downward_for_pressure", False)
+    )
+    pending_threshold = max(
+        _safe_int(storage_bp.get("pending_lines_threshold"), 0),
+        15_000,
+    )
+    oldest_threshold = max(
+        _safe_float(storage_bp.get("oldest_age_threshold_seconds"), 0.0),
+        240.0,
+    )
+    storage_status = str(storage_control.get("overall_status") or "").strip().lower()
+    storage_severity = str(storage_control.get("severity") or "").strip().lower()
+    pressure_index = _safe_float(storage_control.get("pressure_index"), 0.0)
+    storage_pending_lines = _safe_int(storage_bp.get("total_pending_lines"), 0)
+    storage_oldest_age = _safe_float(storage_bp.get("oldest_pending_age_seconds"), 0.0)
+    storage_live_authoritative = bool(
+        storage_bp
+        and storage_pending_lines <= pending_threshold
+        and storage_oldest_age <= oldest_threshold
+        and pressure_index < 1.0
+        and storage_status in {"ready", "advisory", "ok", "stable", ""}
+        and storage_severity in {"ready", "advisory", "ok", "stable", "watch", ""}
+    )
+    if storage_overlay_reconciled_downward or storage_live_authoritative:
+        pending_lines = _safe_int(storage_bp.get("total_pending_lines"), 0)
+        oldest_age = _safe_float(storage_bp.get("oldest_pending_age_seconds"), 0.0)
+    else:
+        pending_lines = max(
+            _safe_int(inputs.get("backpressure_pending_lines"), 0),
+            _safe_int(storage_bp.get("total_pending_lines"), 0),
+            _safe_int(ingestion_backpressure.get("pending_lines_total"), 0),
+            _safe_int(ingestion_backpressure.get("pending_lines"), 0),
+            _safe_int(super_drainer.get("final_pending_lines"), 0),
+            _safe_int(super_summary.get("final_pending_lines"), 0),
+        )
+        oldest_age = max(
+            _safe_float(inputs.get("backpressure_oldest_pending_age_seconds"), 0.0),
+            _safe_float(storage_bp.get("oldest_pending_age_seconds"), 0.0),
+            _safe_float(ingestion_backpressure.get("oldest_pending_age_seconds_total"), 0.0),
+            _safe_float(ingestion_backpressure.get("oldest_pending_age_seconds"), 0.0),
+        )
+    storage_numeric_clear = bool(
+        storage_bp
+        and pending_lines <= pending_threshold
+        and oldest_age <= oldest_threshold
+        and pressure_index < 1.0
+        and (storage_live_authoritative or storage_status not in {"blocked", "critical"})
+        and (storage_live_authoritative or storage_severity not in {"blocked", "critical"})
+    )
+    health_severe = bool(inputs.get("backpressure_overload_severe", False))
+    direct_overload = bool(ingestion_backpressure.get("overload", False))
+    # Health-gate and ingestion artifacts can lag behind the SQL-backed storage
+    # truth after a super-drain. Let fresh below-threshold storage measurements
+    # clear stale severe flags, while still honoring true hard storage states.
+    effective_health_severe = bool(health_severe and not storage_numeric_clear)
+    effective_direct_overload = bool(direct_overload and not storage_numeric_clear)
+    severe = bool(
+        effective_health_severe
+        or storage_status in {"blocked", "critical"}
+        or storage_severity in {"blocked", "critical"}
+        or pressure_index >= 1.0
+        or pending_lines > pending_threshold
+        or oldest_age > oldest_threshold
+        or (effective_direct_overload and (pending_lines > 0 or oldest_age > 0.0))
+    )
+    sql_status = str(inputs.get("sql_progress_status") or "").strip().lower()
+    cooling_down = bool(
+        severe
+        and pending_lines <= 1000
+        and oldest_age <= 1800.0
+        and storage_status not in {"blocked", "critical"}
+        and storage_severity not in {"blocked", "critical"}
+        and pressure_index < 1.0
+        and sql_status in {"", "ok", "complete", "idle"}
+    )
+    sources = []
+    if health_severe or _safe_int(inputs.get("backpressure_pending_lines"), 0) > 0:
+        sources.append("health_gates")
+    if storage_control:
+        sources.append("ingestion_storage_control")
+    if storage_overlay_reconciled_downward:
+        sources.append("sql_overlay_reconciled_downward")
+    if ingestion_backpressure:
+        sources.append("ingestion_backpressure")
+    if super_drainer:
+        sources.append("backpressure_super_drainer")
+    return {
+        "severe": severe,
+        "cooling_down": cooling_down,
+        "pending_lines": int(pending_lines),
+        "oldest_pending_age_seconds": round(float(oldest_age), 3),
+        "pending_lines_threshold": int(pending_threshold),
+        "oldest_age_threshold_seconds": round(float(oldest_threshold), 3),
+        "storage_status": storage_status,
+        "storage_severity": storage_severity,
+        "pressure_index": round(float(pressure_index), 6),
+        "sql_progress_status": sql_status,
+        "storage_numeric_clear": storage_numeric_clear,
+        "storage_live_authoritative": storage_live_authoritative,
+        "stale_health_severe_ignored": bool(health_severe and storage_numeric_clear),
+        "stale_ingestion_overload_ignored": bool(direct_overload and storage_numeric_clear),
+        "sources": _ordered_unique(sources),
+    }
+
+
+def _writer_cycle_state(writer_cycle: dict[str, Any]) -> dict[str, Any]:
+    for key in ("writer_state_before", "writer_state_after_wait", "writer_state_after_remediation"):
+        state = writer_cycle.get(key)
+        if isinstance(state, dict) and state:
+            return state
+    return {}
+
+
+def _build_pretraining_drain_buffer(
+    *,
+    project_root: Path,
+    backpressure_gate: dict[str, Any],
+    writer_cycle: dict[str, Any],
+    backlog_accelerator: dict[str, Any],
+) -> dict[str, Any]:
+    state = _writer_cycle_state(writer_cycle)
+    completed = _safe_int(state.get("completed_shard_count"), 0)
+    planned = _safe_int(state.get("planned_shard_count"), 0)
+    current_step = str(state.get("current_step") or "").strip().lower()
+    writer_status = str(state.get("status") or writer_cycle.get("overall_status") or "").strip().lower()
+    progress_age = _safe_float(state.get("progress_age_minutes"), 0.0)
+    cycle_age = _safe_float(state.get("cycle_age_minutes"), 0.0)
+    running = bool(state.get("running", False))
+    active = bool(state.get("active", False) or (running and current_step not in {"", "complete"}))
+    if current_step == "complete" and writer_status in {"ok", "complete", "idle"} and not running:
+        active = False
+    pending_lines = _safe_int(backpressure_gate.get("pending_lines"), 0)
+    oldest_age = _safe_float(backpressure_gate.get("oldest_pending_age_seconds"), 0.0)
+    pending_threshold = max(_safe_int(backpressure_gate.get("pending_lines_threshold"), 15_000), 1)
+    age_threshold = max(_safe_float(backpressure_gate.get("oldest_age_threshold_seconds"), 240.0), 1.0)
+    warm_pending = min(1_000, max(int(pending_threshold * 0.2), 250))
+    hold_pending = min(2_500, max(int(pending_threshold * 0.45), warm_pending + 1))
+    warm_age = min(120.0, max(age_threshold * 0.5, 60.0))
+    hold_age = min(300.0, max(age_threshold * 1.25, warm_age + 1.0))
+    storage_numeric_clear = bool(backpressure_gate.get("storage_numeric_clear", False))
+    pressure_index = _safe_float(backpressure_gate.get("pressure_index"), 0.0)
+    if storage_numeric_clear and pressure_index < 0.75:
+        # Once storage is genuinely green, do not keep training in a no-op
+        # micro-drain loop just because a small live tail is above the very
+        # conservative warm buffer.
+        warm_pending = max(warm_pending, min(5_000, int(pending_threshold * 0.35)))
+        warm_age = max(warm_age, min(180.0, age_threshold))
+    accel_score = _safe_int((backlog_accelerator.get("bulletproof_score") or {}).get("score"), 100)
+    accel_status = str(backlog_accelerator.get("overall_status") or "").strip().lower()
+    reasons: list[str] = []
+    status = "clear"
+    batch_cap = TRAINING_BATCH_MAX
+    launch_blocker = ""
+    recommended_command: list[str] = []
+    safe_to_launch = True
+
+    writer_command = [str(project_root / "scripts" / "ops" / "opsctl.sh"), "writer-cycle-coordinator", "--json"]
+    writer_apply_command = [str(project_root / "scripts" / "ops" / "opsctl.sh"), "writer-cycle-coordinator", "--apply", "--skip-maintenance", "--json"]
+    if bool(backpressure_gate.get("severe", False)):
+        status = "blocked_by_backpressure_gate"
+        safe_to_launch = False
+        batch_cap = 0
+        recommended_command = writer_command
+        reasons.append("backpressure gate is already severe")
+    elif active and progress_age >= 12.0 and (planned <= 0 or completed < planned) and current_step not in {"complete"}:
+        status = "writer_attention_required"
+        safe_to_launch = False
+        batch_cap = 0
+        launch_blocker = "writer_progress_stale_before_training"
+        recommended_command = writer_apply_command
+        reasons.append("active writer progress is stale before training launch")
+    elif active and (pending_lines > hold_pending or oldest_age > hold_age):
+        status = "hold_for_active_writer_catchup"
+        safe_to_launch = False
+        batch_cap = 0
+        launch_blocker = "pretraining_drain_buffer_active"
+        recommended_command = writer_command
+        reasons.append("active writer should reduce warm backlog before training starts")
+    elif not active and (pending_lines > warm_pending or oldest_age > warm_age):
+        status = "run_micro_drain_first"
+        safe_to_launch = False
+        batch_cap = 0
+        launch_blocker = "pretraining_micro_drain_recommended"
+        recommended_command = writer_apply_command
+        reasons.append("one bounded writer pass should run before training")
+    elif active and (pending_lines > warm_pending or oldest_age > warm_age):
+        status = "trim_batch_during_writer_catchup"
+        batch_cap = 2
+        recommended_command = writer_command
+        reasons.append("writer is healthy but still carrying warm pending work")
+    elif active:
+        status = "writer_active_backlog_green"
+        recommended_command = writer_command
+        reasons.append("writer is active, but backlog is inside the training buffer")
+
+    if safe_to_launch and accel_score < 80:
+        status = "accelerator_grade_caution" if status == "clear" else status
+        batch_cap = min(batch_cap, 2)
+        reasons.append("backlog P-core accelerator grade is below B")
+    elif safe_to_launch and accel_status == "advisory" and status == "clear":
+        reasons.append("backlog accelerator has advisory context but no launch blocker")
+
+    return {
+        "status": status,
+        "safe_to_launch_now": bool(safe_to_launch and batch_cap > 0),
+        "launch_blocker": launch_blocker,
+        "batch_cap": int(max(batch_cap, 0)),
+        "pending_lines": int(pending_lines),
+        "oldest_pending_age_seconds": round(float(oldest_age), 3),
+        "warm_pending_line_buffer": int(warm_pending),
+        "hold_pending_line_buffer": int(hold_pending),
+        "warm_oldest_age_seconds": round(float(warm_age), 3),
+        "hold_oldest_age_seconds": round(float(hold_age), 3),
+        "writer": {
+            "active": bool(active),
+            "running": bool(running),
+            "status": writer_status,
+            "current_step": current_step,
+            "completed_shard_count": int(completed),
+            "planned_shard_count": int(planned),
+            "progress_age_minutes": round(float(progress_age), 3),
+            "cycle_age_minutes": round(float(cycle_age), 3),
+        },
+        "accelerator": {
+            "status": accel_status,
+            "score": int(accel_score),
+            "letter": str((backlog_accelerator.get("bulletproof_score") or {}).get("letter") or ""),
+        },
+        "recommended_command": recommended_command,
+        "reasons": _ordered_unique(reasons),
+    }
+
+
+def _build_host_training_headroom_gate(
+    *,
+    project_root: Path,
+    memory_intelligence: dict[str, Any],
+    autonomic_governor: dict[str, Any],
+) -> dict[str, Any]:
+    classification = memory_intelligence.get("classification") if isinstance(memory_intelligence.get("classification"), dict) else {}
+    reopen_gate = memory_intelligence.get("reopen_gate") if isinstance(memory_intelligence.get("reopen_gate"), dict) else {}
+    multitasking = memory_intelligence.get("multitasking_headroom") if isinstance(memory_intelligence.get("multitasking_headroom"), dict) else {}
+    budgets = autonomic_governor.get("budgets") if isinstance(autonomic_governor.get("budgets"), dict) else {}
+    training_budget = budgets.get("training") if isinstance(budgets.get("training"), dict) else {}
+    memory_status = str(classification.get("status") or "unknown").strip().lower()
+    multitasking_level = str(multitasking.get("level") or "").strip().lower()
+    memory_safe = bool(reopen_gate.get("safe_for_training", True)) if memory_intelligence else True
+    small_canary_safe = bool(reopen_gate.get("small_canary_training_safe", False))
+    small_batch_safe = bool(reopen_gate.get("small_batch_training_safe", False))
+    batch10_safe = bool(reopen_gate.get("batch10_training_safe", False))
+    batch20_safe = bool(reopen_gate.get("batch20_training_safe", False))
+    batch20_execution_mode = str(reopen_gate.get("batch20_execution_mode") or "").strip()
+    memory_batch_cap = _safe_int(
+        reopen_gate.get("training_batch_cap"),
+        20 if batch20_safe else 10 if batch10_safe else 4 if memory_safe else 2 if small_batch_safe else 1 if small_canary_safe else 0,
+    )
+    multitasking_blocks = bool(reopen_gate.get("training_blocked_by_multitasking", False))
+    if memory_intelligence and multitasking.get("training_allowed_by_multitasking") is False and bool(multitasking.get("active", False)):
+        multitasking_blocks = True
+    governor_allows = bool(training_budget.get("allowed", True)) if autonomic_governor else True
+    governor_profile = str(training_budget.get("profile") or "").strip()
+    governor_micro_allows = bool(governor_allows and governor_profile == "coverage_micro_canary")
+    governor_small_allows = bool(governor_allows and governor_profile == "coverage_small_canary")
+    governor_batch10_allows = bool(governor_allows and governor_profile == "coverage_batch10_canary")
+    governor_batch20_allows = bool(governor_allows and governor_profile == "coverage_batch20_canary")
+    governor_batch_cap = _safe_int(
+        (training_budget.get("reentry_gate") if isinstance(training_budget.get("reentry_gate"), dict) else {}).get("max_parallel_trainings"),
+        20
+        if governor_batch20_allows
+        else 10
+        if governor_batch10_allows
+        else 4
+        if governor_allows and governor_profile == "coverage_canary"
+        else 2
+        if governor_small_allows
+        else 1
+        if governor_micro_allows
+        else 0
+        if not governor_allows
+        else 4,
+    )
+    blockers: list[str] = []
+    reasons: list[str] = []
+    batch_cap = TRAINING_BATCH_MAX
+    if memory_status in {"hard_relief", "swap_relief", "compression_relief"}:
+        blockers.append("host_memory_relief_active")
+        reasons.append("memory pressure is in relief mode")
+        batch_cap = 0
+    elif batch20_safe:
+        batch_cap = min(batch_cap, 20)
+        if batch20_execution_mode == "sequential_memory_guarded_waves":
+            reasons.append("memory pressure intelligence has cleared batch-20 as sequential memory-guarded waves")
+        else:
+            reasons.append("memory pressure intelligence has cleared the batch-20 training lane")
+    elif batch10_safe:
+        batch_cap = min(batch_cap, 10)
+        reasons.append("memory pressure intelligence has cleared the batch-10 training lane")
+    elif memory_safe:
+        batch_cap = min(batch_cap, 4)
+    elif not memory_safe and not (small_batch_safe or small_canary_safe):
+        blockers.append("host_training_headroom_not_clear")
+        reasons.append("memory pressure intelligence has not cleared training headroom")
+        batch_cap = 0
+    elif not memory_safe and small_batch_safe:
+        batch_cap = min(batch_cap, 2)
+        reasons.append("full training headroom is still soaking, but a two-bot small canary is memory-safe")
+    elif not memory_safe and small_canary_safe:
+        batch_cap = min(batch_cap, 1)
+        reasons.append("full training headroom is still soaking, but a one-bot micro-canary is memory-safe")
+    batch_cap = min(batch_cap, max(memory_batch_cap, 0))
+    if multitasking_blocks:
+        blockers.append("host_multitasking_reserve_active")
+        reasons.append("foreground app reserve is active")
+        batch_cap = 0
+    if not governor_allows:
+        blockers.append("autonomic_training_budget_closed")
+        reasons.append("autonomic governor training budget is closed")
+        batch_cap = 0
+    elif governor_batch20_allows:
+        batch_cap = min(batch_cap, 20, max(governor_batch_cap, 0))
+        reasons.append("autonomic governor is allowing the batch-20 canary lane")
+    elif governor_batch10_allows:
+        batch_cap = min(batch_cap, 10, max(governor_batch_cap, 0))
+        reasons.append("autonomic governor is allowing the batch-10 canary lane")
+    elif governor_small_allows:
+        batch_cap = min(batch_cap, 2, max(governor_batch_cap, 0))
+        reasons.append("autonomic governor is allowing the two-bot small canary lane")
+    elif governor_micro_allows:
+        batch_cap = min(batch_cap, 1)
+        reasons.append("autonomic governor is only allowing the micro-canary lane")
+    elif governor_allows:
+        batch_cap = min(batch_cap, 4, max(governor_batch_cap, 1))
+    status = "ready" if not blockers else "blocked"
+    selected_profile = "none"
+    if status == "ready" and batch_cap > 0:
+        if batch_cap >= 20 and governor_batch20_allows:
+            selected_profile = "coverage_batch20_canary"
+        elif batch_cap >= 10 and (governor_batch10_allows or governor_batch20_allows):
+            selected_profile = "coverage_batch10_canary"
+        elif batch_cap >= 4:
+            selected_profile = "coverage_canary"
+        elif batch_cap >= 2:
+            selected_profile = "coverage_small_canary"
+        else:
+            selected_profile = "coverage_micro_canary"
+    command: list[str] = []
+    if blockers:
+        command = [str(project_root / "scripts" / "ops" / "opsctl.sh"), "memory-pressure-intelligence", "--apply", "--json"]
+    reentry_stages = [
+        {
+            "stage": "micro_canary",
+            "profile": "coverage_micro_canary",
+            "max_parallel_trainings": 1,
+            "memory_safe": small_canary_safe,
+            "governor_allows": governor_micro_allows or governor_small_allows or governor_batch10_allows or governor_batch20_allows,
+            "required_clear_samples": 1,
+        },
+        {
+            "stage": "small_canary",
+            "profile": "coverage_small_canary",
+            "max_parallel_trainings": 2,
+            "memory_safe": small_batch_safe,
+            "governor_allows": governor_small_allows or governor_batch10_allows or governor_batch20_allows,
+            "required_clear_samples": 2,
+        },
+        {
+            "stage": "batch10_canary",
+            "profile": "coverage_batch10_canary",
+            "max_parallel_trainings": 10,
+            "memory_safe": batch10_safe,
+            "governor_allows": governor_batch10_allows or governor_batch20_allows,
+            "required_clear_samples": 3,
+        },
+        {
+            "stage": "batch20_canary",
+            "profile": "coverage_batch20_canary",
+            "max_parallel_trainings": 20,
+            "memory_safe": batch20_safe,
+            "governor_allows": governor_batch20_allows,
+            "required_clear_samples": 4,
+            "execution_mode": batch20_execution_mode,
+            "wave_size": _safe_int(reopen_gate.get("batch20_wave_size"), 0),
+            "between_wave_memory_recheck": bool(reopen_gate.get("batch20_requires_between_target_memory_recheck", False)),
+        },
+    ]
+    for stage in reentry_stages:
+        stage["allowed_now"] = bool(
+            status == "ready"
+            and batch_cap >= _safe_int(stage.get("max_parallel_trainings"), 0)
+            and bool(stage.get("memory_safe", False))
+            and bool(stage.get("governor_allows", False))
+        )
+    next_stage = next(
+        (
+            stage
+            for stage in reentry_stages
+            if bool(stage.get("memory_safe", False)) and bool(stage.get("governor_allows", False))
+        ),
+        reentry_stages[0],
+    )
+    return {
+        "status": status,
+        "safe_for_training": not blockers,
+        "launch_blockers": _ordered_unique(blockers),
+        "batch_cap": int(batch_cap),
+        "memory_status": memory_status,
+        "memory_decision": str(classification.get("decision") or ""),
+        "recommended_p_core_worker_cap": _safe_int(classification.get("recommended_p_core_worker_cap"), 0),
+        "multitasking_level": multitasking_level,
+        "open_apps": list(multitasking.get("open_apps") or [])[:10],
+        "training_blocked_by_multitasking": bool(multitasking_blocks),
+        "governor_training_allowed": bool(governor_allows),
+        "governor_profile": governor_profile,
+        "selected_training_profile": selected_profile,
+        "small_canary_training_safe": small_canary_safe,
+        "small_batch_training_safe": small_batch_safe,
+        "batch10_training_safe": batch10_safe,
+        "batch20_training_safe": batch20_safe,
+        "batch20_execution_mode": batch20_execution_mode,
+        "batch20_wave_size": _safe_int(reopen_gate.get("batch20_wave_size"), 0),
+        "batch20_requires_between_target_memory_recheck": bool(reopen_gate.get("batch20_requires_between_target_memory_recheck", False)),
+        "memory_training_batch_cap": int(memory_batch_cap),
+        "governor_batch_cap": int(governor_batch_cap),
+        "runtime_clear_reentry_ladder": reentry_stages,
+        "next_reentry_stage": next_stage,
+        "recommended_command": command,
+        "reasons": _ordered_unique(reasons),
+    }
+
+
+def _build_resource_guard_training_gate(project_root: Path, resource_guard: dict[str, Any]) -> dict[str, Any]:
+    ok = bool(resource_guard.get("resource_guard_ok", resource_guard.get("ok", True)))
+    memory_state = str(resource_guard.get("memory_pressure_state") or "unknown").strip().lower()
+    reasons = [str(item).strip() for item in resource_guard.get("resource_guard_reasons") or [] if str(item).strip()]
+    blockers: list[str] = []
+    if not ok or memory_state not in {"green", "unknown"}:
+        blockers.append("resource_guard_not_green")
+    command = []
+    if blockers:
+        command = [
+            str(resolve_runtime_python(project_root)),
+            str(project_root / "scripts" / "resource_guard.py"),
+            "--profile",
+            "refresh",
+            "--json",
+        ]
+    return {
+        "status": "ready" if not blockers else "blocked",
+        "ok": ok,
+        "launch_blockers": blockers,
+        "memory_pressure_state": memory_state,
+        "memory_pressure_kind": str(resource_guard.get("memory_pressure_kind") or ""),
+        "swap_used_gb": round(_safe_float(resource_guard.get("swap_used_gb"), 0.0), 3),
+        "creative_session_level": str(resource_guard.get("creative_session_level") or ""),
+        "reasons": _ordered_unique(reasons),
+        "recommended_command": command,
+    }
+
+
+def _build_storage_quota_training_gate(project_root: Path, storage_quota: dict[str, Any]) -> dict[str, Any]:
+    summary = storage_quota.get("quota_summary") if isinstance(storage_quota.get("quota_summary"), dict) else {}
+    hard_breaches = _safe_int(summary.get("hard_breaches"), 0)
+    soft_breaches = _safe_int(summary.get("soft_breaches"), 0)
+    blocked_families = [str(item) for item in summary.get("blocked_families") or [] if str(item or "").strip()]
+    degraded_families = [str(item) for item in summary.get("degraded_families") or [] if str(item or "").strip()]
+    blockers: list[str] = []
+    reasons: list[str] = []
+    if hard_breaches > 0:
+        blockers.append("storage_quota_hard_breach")
+        reasons.append("storage quota guard has hard-breached lanes; heavy training stays gated until quota is below hard limits")
+    elif soft_breaches > 0:
+        reasons.append("storage quota guard has soft-breached lanes; keep training canary-sized")
+    command = [str(project_root / "scripts" / "ops" / "opsctl.sh"), "storage-quota-guard", "--json"] if blockers else []
+    return {
+        "status": "ready" if not blockers else "blocked",
+        "launch_blockers": blockers,
+        "hard_breaches": hard_breaches,
+        "soft_breaches": soft_breaches,
+        "blocked_families": blocked_families,
+        "degraded_families": degraded_families,
+        "worst_over_hard_gb": round(_safe_float(summary.get("worst_over_hard_gb"), 0.0), 3),
+        "worst_hard_ratio": round(_safe_float(summary.get("worst_hard_ratio"), 0.0), 3),
+        "recommended_actions": [str(item) for item in storage_quota.get("recommended_actions") or [] if str(item or "").strip()][:6],
+        "recommended_command": command,
+        "reasons": _ordered_unique(reasons),
+    }
+
+
+def _build_training_launch_contract(
+    *,
+    project_root: Path,
+    snapshot_fresh: bool,
+    resource_guard_ok: bool,
+    memory_pressure_state: str,
+    resource_guard_gate: dict[str, Any],
+    storage_quota_gate: dict[str, Any],
+    parity_state: str,
+    mlx_failure_active: bool,
+    backpressure_gate: dict[str, Any],
+    pretraining_drain_buffer: dict[str, Any],
+    host_headroom_gate: dict[str, Any],
+    training_quality_blocked: bool,
+    training_quality_score: float,
+    precompute_targets: list[dict[str, Any]],
+    fresh_minutes: int,
+    batch_limit: int,
+) -> dict[str, Any]:
+    backpressure_severe = bool(backpressure_gate.get("severe", False))
+    backpressure_cooling_down = bool(backpressure_gate.get("cooling_down", False))
+    repair_first = [_public_target(row) for row in precompute_targets if str(row.get("training_stage") or "") == "repair_first"]
+    canary_pool = [
+        _public_target(row)
+        for row in precompute_targets
+        if str(row.get("training_stage") or "") != "repair_first"
+    ]
+    requested_batch = min(max(int(batch_limit), 1), TRAINING_BATCH_MAX)
+    selected_profile = str(
+        host_headroom_gate.get("selected_training_profile")
+        or host_headroom_gate.get("governor_profile")
+        or ""
+    ).strip()
+    quality_recovery_canary = bool(
+        training_quality_blocked
+        and selected_profile in {"coverage_canary", "coverage_batch10_canary", "coverage_batch20_canary"}
+        and _safe_float(training_quality_score, 0.0) >= 50.0
+        and len(canary_pool) >= min(requested_batch, 10)
+    )
+
+    launch_blockers: list[str] = []
+    prep_blockers: list[str] = []
+    if not snapshot_fresh:
+        launch_blockers.append("runtime_snapshot_not_fresh")
+        prep_blockers.append("runtime_snapshot_not_fresh")
+    if not resource_guard_ok or memory_pressure_state not in {"green", "unknown"}:
+        launch_blockers.append("resource_guard_not_green")
+        prep_blockers.append("resource_guard_not_green")
+    for blocker in storage_quota_gate.get("launch_blockers") or []:
+        text = str(blocker or "").strip()
+        if text:
+            launch_blockers.append(text)
+    if backpressure_severe:
+        launch_blockers.append("backpressure_cooling_down" if backpressure_cooling_down else "backpressure_overload_severe")
+    drain_blocker = str(pretraining_drain_buffer.get("launch_blocker") or "").strip()
+    if drain_blocker:
+        launch_blockers.append(drain_blocker)
+    for blocker in host_headroom_gate.get("launch_blockers") or []:
+        text = str(blocker or "").strip()
+        if text:
+            launch_blockers.append(text)
+    if training_quality_blocked and not quality_recovery_canary:
+        launch_blockers.append("training_quality_blocked")
+    if parity_state in {"missing_runtime_python", "runtime_probe_failed", "native_backend_missing"}:
+        launch_blockers.append(f"runtime_backend_{parity_state}")
+        prep_blockers.append(f"runtime_backend_{parity_state}")
+    if mlx_failure_active:
+        launch_blockers.append("mlx_failure_active")
+        prep_blockers.append("mlx_failure_active")
+
+    drain_batch_cap = min(max(_safe_int(pretraining_drain_buffer.get("batch_cap"), TRAINING_BATCH_MAX), 0), TRAINING_BATCH_MAX)
+    host_batch_cap = min(max(_safe_int(host_headroom_gate.get("batch_cap"), 4), 0), TRAINING_BATCH_MAX)
+    batch_size = min(requested_batch, drain_batch_cap, host_batch_cap, len(canary_pool))
+    canary_batch = canary_pool[:batch_size]
+    prep_allowed = bool(snapshot_fresh and resource_guard_ok and parity_state not in {"missing_runtime_python", "runtime_probe_failed", "native_backend_missing"} and not mlx_failure_active and precompute_targets)
+    launch_allowed = bool(not launch_blockers and canary_batch)
+    mode = "canary_training_allowed" if launch_allowed else ("prep_only" if prep_allowed else "blocked")
+
+    retrain_command: list[str] = []
+    if launch_allowed:
+        profile = selected_profile
+        if profile not in TRAINING_BATCH_PROFILES:
+            profile = "coverage_canary"
+        retrain_command = [
+            str(project_root / "scripts" / "ops" / "opsctl.sh"),
+            "retrain-force-targeted",
+            "--include-bot-ids",
+            ",".join(row["bot_id"] for row in canary_batch),
+            "--retrain-profile",
+            profile,
+            "--skip-master-update",
+        ]
+
+    drain_command = pretraining_drain_buffer.get("recommended_command") if isinstance(pretraining_drain_buffer.get("recommended_command"), list) else []
+    host_command = host_headroom_gate.get("recommended_command") if isinstance(host_headroom_gate.get("recommended_command"), list) else []
+    resource_command = resource_guard_gate.get("recommended_command") if isinstance(resource_guard_gate.get("recommended_command"), list) else []
+    quota_command = storage_quota_gate.get("recommended_command") if isinstance(storage_quota_gate.get("recommended_command"), list) else []
+    recommended_prep_commands = []
+    if drain_command:
+        recommended_prep_commands.append(list(drain_command))
+    if host_command and host_command not in recommended_prep_commands:
+        recommended_prep_commands.append(list(host_command))
+    if resource_command and resource_command not in recommended_prep_commands:
+        recommended_prep_commands.append(list(resource_command))
+    if quota_command and quota_command not in recommended_prep_commands:
+        recommended_prep_commands.append(list(quota_command))
+    recommended_prep_commands.extend(
+        [
+            [
+                str(project_root / "scripts" / "ops" / "opsctl.sh"),
+                "runtime-training-snapshot",
+                "--reuse-if-fresh-minutes",
+                str(max(int(fresh_minutes), 1)),
+                "--json",
+            ],
+            [
+                str(project_root / "scripts" / "ops" / "opsctl.sh"),
+                "training-runtime-control",
+                "--json",
+            ],
+        ]
+    )
+
+    return {
+        "mode": mode,
+        "launch_allowed": launch_allowed,
+        "prep_allowed": prep_allowed,
+        "launch_blockers": _ordered_unique(launch_blockers),
+        "prep_blockers": _ordered_unique(prep_blockers),
+        "backpressure_gate": {
+            "severe": bool(backpressure_severe),
+            "cooling_down": backpressure_cooling_down,
+            "pending_lines": _safe_int(backpressure_gate.get("pending_lines"), 0),
+            "oldest_pending_age_seconds": round(_safe_float(backpressure_gate.get("oldest_pending_age_seconds"), 0.0), 3),
+            "pending_lines_threshold": _safe_int(backpressure_gate.get("pending_lines_threshold"), 0),
+            "oldest_age_threshold_seconds": round(_safe_float(backpressure_gate.get("oldest_age_threshold_seconds"), 0.0), 3),
+            "storage_status": str(backpressure_gate.get("storage_status") or ""),
+            "storage_severity": str(backpressure_gate.get("storage_severity") or ""),
+            "pressure_index": round(_safe_float(backpressure_gate.get("pressure_index"), 0.0), 6),
+            "sql_progress_status": str(backpressure_gate.get("sql_progress_status") or ""),
+            "sources": list(backpressure_gate.get("sources") or []),
+        },
+        "pretraining_drain_buffer": pretraining_drain_buffer,
+        "host_training_headroom_gate": host_headroom_gate,
+        "resource_guard_gate": resource_guard_gate,
+        "storage_quota_training_gate": storage_quota_gate,
+        "training_quality_recovery_canary": quality_recovery_canary,
+        "training_quality_score": round(_safe_float(training_quality_score, 0.0), 3),
+        "canary_batch": canary_batch,
+        "repair_first_targets": repair_first[: max(int(batch_limit), 1)],
+        "prep_targets": [_public_target(row) for row in precompute_targets[: max(int(batch_limit), 1)]],
+        "requested_batch_size": int(requested_batch),
+        "available_canary_pool_size": len(canary_pool),
+        "drain_batch_cap": int(drain_batch_cap),
+        "host_batch_cap": int(host_batch_cap),
+        "recommended_batch_size": len(canary_batch) if launch_allowed else 0,
+        "recommended_retrain_command": retrain_command,
+        "recommended_prep_commands": recommended_prep_commands,
+    }
 
 
 def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360, limit: int = 8) -> dict[str, Any]:
@@ -258,7 +1075,18 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
     training_success = _load_json(health_root / "training_success_latest.json")
     resource_guard = _load_json(health_root / "resource_guard_latest.json")
     health_gates = _load_json(health_root / "health_gates_latest.json")
+    storage_control = _load_json(health_root / "ingestion_storage_control_latest.json")
+    storage_quota = _load_json(health_root / "storage_quota_guard_latest.json")
+    ingestion_backpressure = _load_json(health_root / "ingestion_backpressure_latest.json")
+    super_drainer = _load_json(health_root / "backpressure_super_drainer_latest.json")
+    writer_cycle = _load_json(health_root / "writer_cycle_coordinator_latest.json")
+    backlog_accelerator = _load_json(health_root / "backlog_pcore_accelerator_latest.json")
+    memory_intelligence = _load_json(health_root / "memory_pressure_intelligence_latest.json")
+    autonomic_governor = _load_json(health_root / "autonomic_resource_governor_latest.json")
+    training_requalification = _load_json(health_root / "training_requalification_latest.json")
+    bot_needs = _load_json(health_root / "bot_needs_intelligence_latest.json")
     coverage_seed = _load_json(walk_root / "coverage_seed_latest.json")
+    coverage_gap_closer = _load_json(walk_root / "coverage_gap_closer_latest.json")
     runtime_probe = _runtime_backend_probe(project_root)
 
     snapshot_age_minutes = _age_minutes(snapshot.get("timestamp_utc"))
@@ -276,11 +1104,33 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
         training_quality=training_quality,
         retrain_scorecard=retrain_scorecard,
         coverage_seed=coverage_seed,
+        coverage_gap_closer=coverage_gap_closer,
+        training_requalification=training_requalification,
+        bot_needs=bot_needs,
     )
     resource_guard_ok = bool(resource_guard.get("resource_guard_ok", True))
     memory_pressure_state = str(resource_guard.get("memory_pressure_state") or "").strip().lower() or "unknown"
+    resource_guard_gate = _build_resource_guard_training_gate(project_root, resource_guard)
+    storage_quota_gate = _build_storage_quota_training_gate(project_root, storage_quota)
     operating_mode = str(health_gates.get("recommended_operating_mode") or "").strip() or "unknown"
-    backpressure_severe = bool(health_gates.get("inputs", {}).get("backpressure_overload_severe", False)) if isinstance(health_gates.get("inputs"), dict) else False
+    backpressure_gate = _build_backpressure_training_gate(
+        health_gates=health_gates,
+        storage_control=storage_control,
+        ingestion_backpressure=ingestion_backpressure,
+        super_drainer=super_drainer,
+    )
+    pretraining_drain_buffer = _build_pretraining_drain_buffer(
+        project_root=project_root,
+        backpressure_gate=backpressure_gate,
+        writer_cycle=writer_cycle,
+        backlog_accelerator=backlog_accelerator,
+    )
+    host_headroom_gate = _build_host_training_headroom_gate(
+        project_root=project_root,
+        memory_intelligence=memory_intelligence,
+        autonomic_governor=autonomic_governor,
+    )
+    backpressure_severe = bool(backpressure_gate.get("severe", False))
 
     parity_state = str(runtime_probe.get("parity_state") or "")
     training_failure_details = training_success.get("failure_details") if isinstance(training_success.get("failure_details"), list) else []
@@ -308,6 +1158,24 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
             or len(precompute_targets) > 0
         )
     )
+    training_launch_contract = _build_training_launch_contract(
+        project_root=project_root,
+        snapshot_fresh=snapshot_fresh,
+        resource_guard_ok=resource_guard_ok,
+        memory_pressure_state=memory_pressure_state,
+        resource_guard_gate=resource_guard_gate,
+        storage_quota_gate=storage_quota_gate,
+        parity_state=parity_state,
+        mlx_failure_active=mlx_failure_active,
+        backpressure_gate=backpressure_gate,
+        pretraining_drain_buffer=pretraining_drain_buffer,
+        host_headroom_gate=host_headroom_gate,
+        training_quality_blocked=training_quality_blocked,
+        training_quality_score=_safe_float(training_quality.get("training_quality_score"), 0.0),
+        precompute_targets=precompute_targets,
+        fresh_minutes=fresh_minutes,
+        batch_limit=limit,
+    )
 
     overall_status = "ready"
     if not snapshot_fresh or not resource_guard_ok:
@@ -318,6 +1186,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
         overall_status = "blocked"
     elif training_quality_blocked:
         overall_status = "degraded" if coverage_repair_ready else "blocked"
+    elif not bool(host_headroom_gate.get("safe_for_training", True)):
+        overall_status = "constrained"
 
     recommended_actions: list[str] = []
     if not snapshot_fresh:
@@ -326,8 +1196,40 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
         recommended_actions.append("precompute or reuse shared sequence caches for bots that timed out in loading_sequences")
     if not resource_guard_ok or memory_pressure_state not in {"green", "unknown"}:
         recommended_actions.append("wait for green memory pressure before forcing targeted retrains that expand sequence windows")
-    if backpressure_severe:
+    if resource_guard_gate.get("reasons"):
+        recommended_actions.append("clear the resource guard reason before training: " + "; ".join(list(resource_guard_gate.get("reasons") or [])[:3]))
+    if storage_quota_gate.get("launch_blockers"):
+        recommended_actions.append(
+            "clear storage quota hard breaches before launching batch training: "
+            + ", ".join(list(storage_quota_gate.get("blocked_families") or [])[:4])
+        )
+    if backpressure_severe and bool(backpressure_gate.get("cooling_down", False)):
+        recommended_actions.append("keep retrain workers parked while the backpressure gate cools below the training threshold")
+    elif backpressure_severe:
         recommended_actions.append("treat retrain workers as background-only until ingestion backpressure exits the severe state")
+    drain_buffer_status = str(pretraining_drain_buffer.get("status") or "")
+    if drain_buffer_status == "writer_attention_required":
+        recommended_actions.append("run the writer-cycle coordinator recovery check before training because writer progress is stale")
+    elif drain_buffer_status == "hold_for_active_writer_catchup":
+        recommended_actions.append("let the active writer reduce warm pending work before starting the coverage canary")
+    elif drain_buffer_status == "run_micro_drain_first":
+        recommended_actions.append("run one bounded P-core writer catch-up pass before launching the coverage canary")
+    elif drain_buffer_status == "trim_batch_during_writer_catchup":
+        recommended_actions.append("trim the canary batch while the active writer catches up")
+    elif drain_buffer_status == "writer_active_backlog_green":
+        recommended_actions.append("the writer is active but inside the training buffer; training can stay canary-sized")
+    if not bool(host_headroom_gate.get("safe_for_training", True)):
+        if bool(host_headroom_gate.get("training_blocked_by_multitasking", False)):
+            recommended_actions.append("hold training until foreground app reserve clears or the operator explicitly wants to trade responsiveness for training")
+        else:
+            recommended_actions.append("refresh memory-pressure intelligence and wait for training headroom before launching canary retrains")
+    if training_launch_contract["mode"] == "prep_only":
+        recommended_actions.append("keep training in prep-only mode until the launch blockers clear")
+    elif training_launch_contract["mode"] == "canary_training_allowed":
+        if bool(training_launch_contract.get("training_quality_recovery_canary", False)):
+            recommended_actions.append("run only the guarded recovery canary with --skip-master-update while quality control is blocked")
+        else:
+            recommended_actions.append("run only the recommended coverage_canary batch before widening training")
     if _safe_int(coverage_seed.get("coverage_shortfall_bots"), 0) > 0:
         recommended_actions.append("reuse the shared snapshot when seeding walk-forward coverage so promotion coverage improves without rebuilding runtime inputs")
     if parity_state in {"missing_runtime_python", "runtime_probe_failed"}:
@@ -374,6 +1276,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
             "memory_pressure_state": memory_pressure_state,
             "swap_used_gb": round(_safe_float(resource_guard.get("swap_used_gb"), 0.0), 3),
         },
+        "resource_guard_training_gate": resource_guard_gate,
+        "storage_quota_training_gate": storage_quota_gate,
         "runtime_backend_parity": {
             "parity_state": parity_state,
             "runtime_python_path": str(runtime_probe.get("runtime_python_path") or ""),
@@ -399,6 +1303,16 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
             "coverage_shortfall_bots": _safe_int(coverage_seed.get("coverage_shortfall_bots"), 0),
             "seed_queue_size": len(coverage_seed.get("seed_queue") or []),
         },
+        "bot_needs": {
+            "overall_status": str(bot_needs.get("overall_status") or ""),
+            "training_topoff_candidates": len(
+                ((bot_needs.get("next_batches") if isinstance(bot_needs.get("next_batches"), dict) else {}).get("training_topoff") or [])
+            ),
+            "need_counts": bot_needs.get("need_counts") if isinstance(bot_needs.get("need_counts"), dict) else {},
+        },
+        "backpressure_training_gate": backpressure_gate,
+        "pretraining_drain_buffer": pretraining_drain_buffer,
+        "host_training_headroom_gate": host_headroom_gate,
         "coverage_repair_ready": bool(coverage_repair_ready),
         "retry_pack": {
             "command": list(retry_pack.get("command") or []),
@@ -408,6 +1322,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
         "operating_mode": operating_mode,
         "precompute_targets": precompute_targets[: max(int(limit), 1)],
         "repair_contract": repair_contract,
+        "training_launch_contract": training_launch_contract,
         "recommended_actions": _ordered_unique(recommended_actions),
     }
     return payload

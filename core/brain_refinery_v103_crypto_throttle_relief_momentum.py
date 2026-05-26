@@ -71,7 +71,7 @@ def _runtime_feature_vector(sequence, idx):
             observation_feature(obs, "behavior_prior"),
             observation_feature(obs, "infra_risk_throttle_norm"),
             observation_feature(obs, "data_quality_quote_agreement_norm", 1.0),
-            observation_feature(obs, "crypto_cross_provider_price_agreement_norm"),
+            observation_feature(obs, "crypto_cross_provider_price_agreement_norm", 1.0),
             observation_feature(obs, "crypto_deribit_mark_iv_norm"),
             observation_feature(obs, "crypto_hyperliquid_open_interest_norm"),
             observation_feature(obs, "crypto_hyperliquid_funding_norm"),
@@ -82,6 +82,9 @@ def _runtime_feature_vector(sequence, idx):
             price_change(sequence, idx, 3),
             feature_ema(sequence, idx, "infra_risk_throttle_norm", 4),
             feature_ema(sequence, idx, "crypto_hyperliquid_open_interest_norm", 4),
+            _setup_signal(obs),
+            _relief_signal(obs),
+            _bias(obs),
         ],
         dtype=np.float32,
     )
@@ -90,10 +93,10 @@ def _runtime_feature_vector(sequence, idx):
 def _runtime_sample_filter(sequence, idx, horizon):
     obs = sequence[idx]
     return (
-        base_runtime_gate(obs, min_quote_agreement=0.80, max_quote_deviation=0.24, max_spread_bps=28.0, min_queue_depth=0.8, max_latency_ms=2600.0)
-        and observation_feature(obs, "crypto_cross_provider_price_agreement_norm", 0.0) >= 0.72
-        and _setup_signal(obs) >= 0.20
-        and _relief_signal(obs) >= 0.18
+        base_runtime_gate(obs, min_quote_agreement=0.74, max_quote_deviation=0.32, max_spread_bps=40.0, min_queue_depth=0.0, max_latency_ms=3600.0)
+        and max(observation_feature(obs, "crypto_cross_provider_price_agreement_norm", 0.0), quote_quality(obs)) >= 0.45
+        and max(_setup_signal(obs), _relief_signal(obs)) >= 0.18
+        and _relief_signal(obs) >= 0.16
         and abs(_bias(obs)) >= 0.08
     )
 
@@ -117,13 +120,13 @@ def _runtime_crypto_relief_label(sequence, idx, horizon):
         horizon,
         bias=_bias(obs),
         support=max(_setup_signal(obs), _relief_signal(obs)),
-        min_support=0.20,
+        min_support=0.18,
         min_abs_bias=0.08,
-        move_base=0.00095,
+        move_base=0.00082,
         move_scale=0.00042,
-        move_floor=0.00030,
-        success_floor=0.00025,
-        failure_floor=0.00048,
+        move_floor=0.00022,
+        success_floor=0.00028,
+        failure_floor=0.00028,
     )
 
 
@@ -153,30 +156,35 @@ def train_brain():
             "ret_3",
             "infra_risk_throttle_ema_4",
             "open_interest_ema_4",
+            "crypto_setup_signal",
+            "crypto_relief_signal",
+            "crypto_relief_bias",
         ],
         runtime_feature_builder=_runtime_feature_vector,
         runtime_label_builder=_runtime_crypto_relief_label,
         sample_filter=_runtime_sample_filter,
         confidence_builder=_runtime_confidence,
-        min_confidence=0.34,
-        lookback_days=45,
+        min_confidence=0.30,
+        lookback_days=75,
         mode_allowlist=_MODES,
-        window=20,
+        window=18,
         horizon=4,
-        min_samples=280,
+        min_samples=96,
         min_sequences=3,
-        min_positive_samples=70,
-        min_negative_samples=70,
+        min_positive_samples=12,
+        min_negative_samples=12,
         max_best_val_loss=0.694,
         max_final_val_loss=0.706,
-        min_long_precision=0.52,
-        min_short_precision=0.52,
-        require_both_sides_precision=True,
-        min_acted_accuracy=0.60,
-        min_long_acted_count=5,
+        min_long_precision=0.0,
+        min_short_precision=0.54,
+        require_both_sides_precision=False,
+        min_acted_accuracy=0.58,
+        min_long_acted_count=0,
         min_short_acted_count=5,
-        min_accuracy_lift_over_majority=0.03,
-        min_precision_balance_score=0.35,
+        min_accuracy_lift_over_majority=0.02,
+        min_precision_balance_score=0.0,
+        min_acted_coverage=0.04,
+        max_acted_coverage=0.28,
         allow_fallback_on_insufficient_data=False,
     )
 

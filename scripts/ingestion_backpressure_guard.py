@@ -64,34 +64,121 @@ def _safe_count_lines(path: Path) -> int:
         return 0
 
 
-def _estimated_total_lines(path: Path, stat, progress: dict, *, max_exact_bytes: int, sample_bytes: int) -> int:
+def _estimated_total_lines_detail(path: Path, stat, progress: dict, *, max_exact_bytes: int, sample_bytes: int) -> dict:
     size_bytes = int(stat.st_size)
+    detail = {
+        "file_size_bytes": size_bytes,
+        "total_lines": 0,
+        "line_estimate_method": "unknown",
+        "sample_bytes": 0,
+        "sample_newlines": 0,
+        "estimated_avg_bytes_per_line": 0.0,
+        "sparse_large_line": False,
+    }
     if size_bytes <= max(int(max_exact_bytes), 0):
-        return _safe_count_lines(path)
+        total = _safe_count_lines(path)
+        detail.update(
+            {
+                "total_lines": int(total),
+                "line_estimate_method": "exact_count",
+                "estimated_avg_bytes_per_line": round(size_bytes / max(int(total), 1), 3) if total > 0 else 0.0,
+            }
+        )
+        return detail
 
     last_line = int(float(progress.get("last_line", 0) or 0))
     prev_size = int(float(progress.get("file_size_bytes", 0) or 0))
     if last_line > 0 and prev_size > 0:
         # Reuse prior ingestion density to avoid rescanning multi-GB files on every verify.
         est = int(round((size_bytes / max(prev_size, 1)) * last_line))
-        return max(est, last_line)
+        total = max(est, last_line)
+        avg_bytes = size_bytes / max(total, 1)
+        detail.update(
+            {
+                "total_lines": int(total),
+                "line_estimate_method": "progress_density",
+                "estimated_avg_bytes_per_line": round(avg_bytes, 3),
+                "sparse_large_line": bool(avg_bytes >= 64 * 1024),
+            }
+        )
+        return detail
 
     sample_target = min(max(int(sample_bytes), 4096), size_bytes)
+    sample_offsets = [0]
+    if size_bytes > sample_target:
+        sample_offsets.append(max(size_bytes - sample_target, 0))
+    if size_bytes > sample_target * 2:
+        sample_offsets.append(max((size_bytes - sample_target) // 2, 0))
+    sample_offsets = sorted(set(sample_offsets))
+    sample_total_bytes = 0
+    sample_newlines = 0
     try:
         with path.open("rb") as f:
-            sample = f.read(sample_target)
+            for offset in sample_offsets:
+                f.seek(offset)
+                sample = f.read(sample_target)
+                sample_total_bytes += len(sample)
+                sample_newlines += sample.count(b"\n")
     except Exception:
-        sample = b""
+        sample_total_bytes = 0
+        sample_newlines = 0
 
-    if sample:
-        newline_count = sample.count(b"\n")
-        if newline_count > 0:
-            avg_bytes_per_line = max(len(sample) / newline_count, 1.0)
+    if sample_total_bytes > 0:
+        if sample_newlines > 0:
+            avg_bytes_per_line = max(sample_total_bytes / sample_newlines, 1.0)
             est = int(round(size_bytes / avg_bytes_per_line))
-            return max(est, 1)
+            total = max(est, 1)
+            detail.update(
+                {
+                    "total_lines": int(total),
+                    "line_estimate_method": "multi_sample_density",
+                    "sample_bytes": int(sample_total_bytes),
+                    "sample_newlines": int(sample_newlines),
+                    "estimated_avg_bytes_per_line": round(avg_bytes_per_line, 3),
+                    "sparse_large_line": bool(avg_bytes_per_line >= 64 * 1024),
+                }
+            )
+            return detail
+        # A giant JSONL row can have no newline in the leading sample. Treating
+        # that as 256-byte rows wildly inflates backpressure for sparse-line
+        # files, so use the observed sample window as the minimum row size.
+        avg_bytes_per_line = max(float(sample_total_bytes), 1.0)
+        total = max(int(round(size_bytes / avg_bytes_per_line)), 1)
+        detail.update(
+            {
+                "total_lines": int(total),
+                "line_estimate_method": "sparse_no_newline_sample",
+                "sample_bytes": int(sample_total_bytes),
+                "sample_newlines": 0,
+                "estimated_avg_bytes_per_line": round(avg_bytes_per_line, 3),
+                "sparse_large_line": True,
+            }
+        )
+        return detail
 
     # Conservative fallback when we cannot sample content.
-    return max(size_bytes // 256, 1)
+    total = max(size_bytes // max(sample_target, 1), 1)
+    detail.update(
+        {
+            "total_lines": int(total),
+            "line_estimate_method": "sampling_failed_size_floor",
+            "estimated_avg_bytes_per_line": float(max(sample_target, 1)),
+            "sparse_large_line": True,
+        }
+    )
+    return detail
+
+
+def _estimated_total_lines(path: Path, stat, progress: dict, *, max_exact_bytes: int, sample_bytes: int) -> int:
+    return int(
+        _estimated_total_lines_detail(
+            path,
+            stat,
+            progress,
+            max_exact_bytes=max_exact_bytes,
+            sample_bytes=sample_bytes,
+        ).get("total_lines", 0)
+    )
 
 
 def _load_json(path: Path) -> dict:
@@ -113,7 +200,10 @@ def _last_line_for_state(rel: str, stat, progress: dict) -> int:
         return 0
     if prev_size > 0 and int(stat.st_size) < prev_size:
         return 0
-    if float(stat.st_mtime) < prev_mtime:
+    # Some filesystems/reporting paths round mtimes differently than the
+    # ingestion state writer. Treat sub-second drift as the same file instead
+    # of resurrecting fully ingested tiny tails as ancient backlog.
+    if float(stat.st_mtime) + 1.0 < prev_mtime:
         return 0
     return max(last_line, 0)
 
@@ -222,9 +312,26 @@ def _resolve_sqlite_state(project_root: Path, state_file: str | None) -> tuple[d
     if not state_files:
         return {}, [], "missing"
 
-    merged: dict[str, dict] = {}
+    candidates_by_rel: dict[str, list[dict]] = {}
     for path in state_files:
-        _merge_sqlite_progress(merged, _load_sqlite_progress(path))
+        for rel, progress in _load_sqlite_progress(path).items():
+            if isinstance(progress, dict):
+                candidates_by_rel.setdefault(str(rel), []).append(progress)
+
+    merged: dict[str, dict] = {}
+    for rel, candidates in candidates_by_rel.items():
+        current_path = project_root / rel
+        if current_path.exists():
+            try:
+                stat = current_path.stat()
+            except OSError:
+                stat = None
+            if stat is not None:
+                valid = [progress for progress in candidates if _last_line_for_state(rel, stat, progress) > 0]
+                if valid:
+                    merged[rel] = max(valid, key=_progress_sort_key)
+                    continue
+        merged[rel] = max(candidates, key=_progress_sort_key)
 
     mode = "sharded_merged" if shard_files else "legacy"
     return merged, [str(path) for path in state_files], mode
@@ -250,18 +357,45 @@ def _journal_reconciled_last_line(
     return journal_last_line, True
 
 
-def _record_top_pending(rows: list[dict], *, rel: str, pending: int, age_seconds: float, total: int, last_line: int, top_n: int) -> None:
+def _record_top_pending(
+    rows: list[dict],
+    *,
+    rel: str,
+    pending: int,
+    age_seconds: float,
+    total: int,
+    last_line: int,
+    top_n: int,
+    line_estimate: dict | None = None,
+) -> None:
     if pending <= 0:
         return
-    rows.append(
-        {
-            "source_rel": str(rel),
-            "pending_lines": int(pending),
-            "oldest_pending_age_seconds": round(float(age_seconds), 3),
-            "total_lines": int(total),
-            "last_line": int(last_line),
-        }
-    )
+    row = {
+        "source_rel": str(rel),
+        "pending_lines": int(pending),
+        "oldest_pending_age_seconds": round(float(age_seconds), 3),
+        "total_lines": int(total),
+        "last_line": int(last_line),
+    }
+    if isinstance(line_estimate, dict) and line_estimate:
+        file_size_bytes = int(float(line_estimate.get("file_size_bytes", 0) or 0))
+        row.update(
+            {
+                "file_size_bytes": file_size_bytes,
+                "line_estimate_method": str(line_estimate.get("line_estimate_method") or ""),
+                "estimated_avg_bytes_per_line": round(float(line_estimate.get("estimated_avg_bytes_per_line", 0.0) or 0.0), 3),
+                "sample_bytes": int(float(line_estimate.get("sample_bytes", 0) or 0)),
+                "sample_newlines": int(float(line_estimate.get("sample_newlines", 0) or 0)),
+                "sparse_large_line": bool(line_estimate.get("sparse_large_line", False)),
+                "estimated_pending_bytes": int(
+                    min(
+                        max(file_size_bytes, 0),
+                        max(int(pending), 0) * max(float(line_estimate.get("estimated_avg_bytes_per_line", 0.0) or 0.0), 0.0),
+                    )
+                ),
+            }
+        )
+    rows.append(row)
     rows.sort(
         key=lambda r: (
             int(r.get("pending_lines", 0)),
@@ -377,6 +511,10 @@ def main() -> int:
     journal_reconciled_files = 0
     journal_reconciled_lines = 0
     journal_reconciled_top_files: list[dict] = []
+    sparse_large_line_files = 0
+    sparse_large_line_pending_lines = 0
+    sparse_large_line_bytes = 0
+    sparse_large_line_pending_bytes = 0
 
     now_ts = datetime.now(timezone.utc).timestamp()
     for p in files:
@@ -396,16 +534,27 @@ def main() -> int:
             state_last_line=last_line,
             journal_progress=journal_progress.get(rel),
         )
-        total = _estimated_total_lines(
+        line_estimate = _estimated_total_lines_detail(
             p,
             st,
             progress,
             max_exact_bytes=int(args.max_exact_count_bytes),
             sample_bytes=int(args.sample_bytes),
         )
+        total = int(line_estimate.get("total_lines", 0) or 0)
         pending_lines = max(int(total) - int(last_line), 0)
         if pending_lines <= 0:
             continue
+        if bool(line_estimate.get("sparse_large_line", False)):
+            sparse_large_line_files += 1
+            sparse_large_line_pending_lines += int(pending_lines)
+            sparse_large_line_bytes += int(st.st_size)
+            sparse_large_line_pending_bytes += int(
+                min(
+                    max(int(st.st_size), 0),
+                    max(int(pending_lines), 0) * max(float(line_estimate.get("estimated_avg_bytes_per_line", 0.0) or 0.0), 0.0),
+                )
+            )
         if journal_reconciled:
             reconciled_delta = max(
                 int(float((journal_progress.get(rel) or {}).get("last_line", 0) or 0))
@@ -422,6 +571,7 @@ def main() -> int:
                 total=total,
                 last_line=last_line,
                 top_n=max(int(args.top_pending_files), 1),
+                line_estimate=line_estimate,
             )
 
         age_seconds = max(float(now_ts) - float(st.st_mtime), 0.0)
@@ -438,6 +588,7 @@ def main() -> int:
                 total=total,
                 last_line=last_line,
                 top_n=max(int(args.top_pending_files), 1),
+                line_estimate=line_estimate,
             )
             if _is_support_backpressure_file(rel):
                 file_count_support += 1
@@ -452,6 +603,7 @@ def main() -> int:
                     total=total,
                     last_line=last_line,
                     top_n=max(int(args.top_pending_files), 1),
+                    line_estimate=line_estimate,
                 )
             if _is_cold_backpressure_file(rel):
                 file_count_cold += 1
@@ -466,6 +618,7 @@ def main() -> int:
                     total=total,
                     last_line=last_line,
                     top_n=max(int(args.top_pending_files), 1),
+                    line_estimate=line_estimate,
                 )
             if _is_stale_stage_backpressure_file(rel):
                 file_count_stale_stage += 1
@@ -480,6 +633,7 @@ def main() -> int:
                     total=total,
                     last_line=last_line,
                     top_n=max(int(args.top_pending_files), 1),
+                    line_estimate=line_estimate,
                 )
         else:
             file_count_core += 1
@@ -494,6 +648,7 @@ def main() -> int:
                 total=total,
                 last_line=last_line,
                 top_n=max(int(args.top_pending_files), 1),
+                line_estimate=line_estimate,
             )
 
     out = project_root / "governance" / "health" / "ingestion_backpressure_latest.json"
@@ -581,6 +736,14 @@ def main() -> int:
         "ema_pressure": bool(ema_pressure),
         "overload": bool(overload),
         "recommended_extra_interval_seconds": int(extra),
+        "line_estimation": {
+            "sparse_large_line_files": int(sparse_large_line_files),
+            "sparse_large_line_pending_lines": int(sparse_large_line_pending_lines),
+            "sparse_large_line_bytes": int(sparse_large_line_bytes),
+            "sparse_large_line_pending_bytes": int(sparse_large_line_pending_bytes),
+            "sparse_large_line_active": bool(sparse_large_line_files > 0),
+            "sparse_large_line_policy": "multi_sample_density_then_sparse_window_floor",
+        },
         "deferred_backpressure_classes": [
             "governance/watchdog/*",
             "governance/events/api_calls_*",

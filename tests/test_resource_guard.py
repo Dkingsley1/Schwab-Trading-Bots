@@ -206,6 +206,55 @@ def test_refresh_job_allows_active_creative_session_when_system_has_headroom(mon
     assert details["refresh_creative_override_reason"] == "creative_session_active_allowed"
 
 
+def test_music_app_counts_as_audio_playback_cotenant(monkeypatch) -> None:
+    monkeypatch.setenv("RESOURCE_GUARD_CREATIVE_APP_NAMES", "Final Cut Pro,Logic Pro,Music,iTunes")
+    monkeypatch.setattr(
+        resource_guard,
+        "_scan_named_processes",
+        lambda _markers: (
+            {"Music": 4.2},
+            {"Music": "/System/Applications/Music.app/Contents/MacOS/Music"},
+        ),
+    )
+
+    snapshot = resource_guard._creative_apps_snapshot()
+
+    assert snapshot["creative_apps_active"] is True
+    assert snapshot["creative_apps"] == ["Music"]
+    assert snapshot["creative_session_level"] == "active"
+    assert snapshot["creative_session_kind"] == "music_playback"
+    assert snapshot["music_playback_cpu"] == 4.2
+
+
+def test_named_process_scan_ignores_helper_and_path_false_positives(monkeypatch) -> None:
+    class Result:
+        stdout = "\n".join(
+            [
+                "0.0 /System/Library/PrivateFrameworks/iTunesCloud.framework/Support/itunescloudd",
+                "58.2 ./Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient mcp",
+                "192.1 /opt/homebrew/bin/python /Users/dankingsley/PycharmProjects/schwab_trading_bot/scripts/failover_hot_standby.py",
+                "0.0 /Applications/Codex.app/Contents/Frameworks/Electron Framework.framework/Helpers/chrome_crashpad_handler",
+                "0.0 /System/Applications/Safari.app/Contents/Extensions/SafariWidgetExtension.appex/Contents/MacOS/SafariWidgetExtension",
+                "0.0 /System/Library/PrivateFrameworks/TextInputUIMacHelper.framework/Versions/A/XPCServices/CursorUIViewService.xpc/Contents/MacOS/CursorUIViewService",
+                "0.0 /System/Library/Frameworks/InputMethodKit.framework/Resources/imklaunchagent",
+                "4.2 /System/Applications/Music.app/Contents/MacOS/Music",
+                "12.5 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                "9.0 /Applications/PyCharm.app/Contents/MacOS/pycharm",
+            ]
+        )
+
+    monkeypatch.setattr(resource_guard.subprocess, "run", lambda *_args, **_kwargs: Result())
+
+    cpu_by_app, commands = resource_guard._scan_named_processes(
+        ["Music", "iTunes", "Code", "PyCharm", "Chrome", "Safari", "Cursor", "UTM"]
+    )
+
+    assert cpu_by_app == {"Music": 4.2, "Chrome": 12.5, "PyCharm": 9.0}
+    assert "itunescloudd" not in str(commands)
+    assert "Codex Computer Use" not in str(commands)
+    assert "SafariWidgetExtension" not in str(commands)
+
+
 def test_refresh_job_blocks_dual_creative_session(monkeypatch) -> None:
     monkeypatch.setenv("RESOURCE_GUARD_OPTIONAL_BLOCK_ON_MEMORY_STATES", "yellow,red")
     snapshot = {

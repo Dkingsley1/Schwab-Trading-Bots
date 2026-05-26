@@ -187,3 +187,210 @@ def test_observation_rollup_credits_governance_artifact_references_once(tmp_path
     assert registry["sub_bots"][0]["data_collection_observations"] == 1
     assert second_payload["new_artifact_observations_counted"] == 0
     assert second_payload["total_observations"] == 1
+
+
+def test_observation_rollup_includes_training_excluded_paper_live_data(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v56_meta_ranker"
+    registry_path = project_root / "master_bot_registry.json"
+    state_path = project_root / "governance" / "health" / "state.json"
+    registry = _registry(bot_id)
+    registry["sub_bots"][0]["lifecycle_state"] = "paper_live_data"
+    registry["sub_bots"][0]["minimum_training_observations"] = 2
+    _write_json(registry_path, registry)
+    stamp = src._day_stamps(1)[0]
+    decision_file = project_root / "decision_explanations" / "shadow_infra" / f"decision_explanations_{stamp}.jsonl"
+    decision_file.parent.mkdir(parents=True, exist_ok=True)
+    decision_file.write_text(
+        "\n".join(
+            [
+                json.dumps({"status": "DATA_ONLY_BLOCKED", "metadata": {"bot_id": bot_id}}),
+                json.dumps({"status": "SHADOW_ONLY", "reasons": [f"bot_id={bot_id}"]}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = src.build_payload(
+        project_root=project_root,
+        registry_path=registry_path,
+        state_path=state_path,
+        days=1,
+        bootstrap_tail_lines=20,
+        apply=True,
+    )
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    row = registry["sub_bots"][0]
+
+    assert payload["collector_count"] == 1
+    assert payload["bots_with_observations"] == 1
+    assert row["data_collection_observations"] == 2
+    assert row["data_collection_training_ready"] is True
+    assert row["training_excluded"] is False
+    assert registry["summary"]["data_collection_training_ready_bots"] == 1
+
+
+def test_observation_rollup_keeps_paper_live_data_blocked_without_observation_floor(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v99_defensive_dividend_concentration"
+    registry_path = project_root / "master_bot_registry.json"
+    state_path = project_root / "governance" / "health" / "state.json"
+    registry = _registry(bot_id)
+    row = registry["sub_bots"][0]
+    row["lifecycle_state"] = "paper_live_data"
+    row.pop("minimum_training_observations", None)
+    row["training_excluded"] = False
+    row["exclude_from_training"] = False
+    _write_json(registry_path, registry)
+    stamp = src._day_stamps(1)[0]
+    decision_file = project_root / "decision_explanations" / "shadow_dividend" / f"decision_explanations_{stamp}.jsonl"
+    decision_file.parent.mkdir(parents=True, exist_ok=True)
+    decision_file.write_text(
+        "\n".join(
+            [
+                json.dumps({"status": "DATA_ONLY_BLOCKED", "metadata": {"bot_id": bot_id}}),
+                json.dumps({"status": "SHADOW_ONLY", "reasons": [f"bot_id={bot_id}"]}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = src.build_payload(
+        project_root=project_root,
+        registry_path=registry_path,
+        state_path=state_path,
+        days=1,
+        bootstrap_tail_lines=20,
+        apply=True,
+    )
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    row = registry["sub_bots"][0]
+
+    assert payload["collector_count"] == 1
+    assert payload["bots_with_observations"] == 1
+    assert row["data_collection_observations"] == 2
+    assert row["data_collection_threshold_progress"]["training_ready"] is True
+    assert row["data_collection_training_ready"] is False
+    assert row["training_excluded"] is True
+    assert row["exclude_from_training"] is True
+    assert row["training_exclusion_reason"] == "paper_live_data_requires_minimum_training_observations"
+    assert row["promotion_block_reason"] == "awaiting_data_collection_quality_gate"
+    assert payload["training_ready_count"] == 0
+    assert payload["training_ready_bot_ids"] == []
+    assert registry["summary"]["data_collection_training_ready_bots"] == 0
+
+
+def test_observation_rollup_uses_nested_paper_promotion_observation_floor(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v99_defensive_dividend_concentration"
+    registry_path = project_root / "master_bot_registry.json"
+    state_path = project_root / "governance" / "health" / "state.json"
+    registry = _registry(bot_id)
+    row = registry["sub_bots"][0]
+    row["lifecycle_state"] = "paper_live_data"
+    row.pop("minimum_training_observations", None)
+    row["paper_promotion_standard"] = {"minimum_observations": 1000, "minimum_collection_days": 1}
+    _write_json(registry_path, registry)
+    stamp = src._day_stamps(1)[0]
+    decision_file = project_root / "decision_explanations" / "shadow_dividend" / f"decision_explanations_{stamp}.jsonl"
+    decision_file.parent.mkdir(parents=True, exist_ok=True)
+    decision_file.write_text(
+        "\n".join(
+            [
+                json.dumps({"status": "DATA_ONLY_BLOCKED", "metadata": {"bot_id": bot_id}}),
+                json.dumps({"status": "SHADOW_ONLY", "reasons": [f"bot_id={bot_id}"]}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = src.build_payload(
+        project_root=project_root,
+        registry_path=registry_path,
+        state_path=state_path,
+        days=1,
+        bootstrap_tail_lines=20,
+        apply=True,
+    )
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    row = registry["sub_bots"][0]
+
+    assert payload["bots_with_observations"] == 1
+    assert row["data_collection_threshold_progress"]["minimum_training_observations"] == 1000
+    assert row["data_collection_threshold_progress"]["training_ready"] is False
+    assert row["data_collection_training_ready"] is False
+    assert row["training_exclusion_reason"] == "minimum_data_collection_threshold_not_met"
+    assert payload["training_ready_count"] == 0
+
+
+def test_observation_rollup_excludes_bare_alias_when_canonical_collector_is_active(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    alias_id = "brain_refinery_v1"
+    canonical_id = "brain_refinery_v1_price_forecaster_baseline"
+    registry_path = project_root / "master_bot_registry.json"
+    state_path = project_root / "governance" / "health" / "state.json"
+    alias_row = _registry(alias_id)["sub_bots"][0]
+    alias_row.pop("minimum_training_observations", None)
+    canonical_row = _registry(canonical_id)["sub_bots"][0]
+    canonical_row["core_module_path"] = "core/brain_refinery_v1_price_forecaster_baseline.py"
+    canonical_row["minimum_training_observations"] = 1
+    _write_json(registry_path, {"summary": {}, "sub_bots": [alias_row, canonical_row]})
+    stamp = src._day_stamps(1)[0]
+    decision_file = project_root / "decision_explanations" / "shadow_signal" / f"decision_explanations_{stamp}.jsonl"
+    decision_file.parent.mkdir(parents=True, exist_ok=True)
+    decision_file.write_text(
+        json.dumps({"status": "SHADOW_ONLY", "metadata": {"bot_id": canonical_id}}) + "\n",
+        encoding="utf-8",
+    )
+
+    payload = src.build_payload(
+        project_root=project_root,
+        registry_path=registry_path,
+        state_path=state_path,
+        days=1,
+        bootstrap_tail_lines=20,
+        apply=True,
+    )
+
+    assert payload["collector_count"] == 1
+    assert payload["bots_with_observations"] == 1
+    assert payload["zero_observation_bot_ids"] == []
+    assert payload["top_collectors"][0]["bot_id"] == canonical_id
+
+
+def test_observation_rollup_blocks_zero_observation_collection_bot_without_floor(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v2"
+    registry_path = project_root / "master_bot_registry.json"
+    state_path = project_root / "governance" / "health" / "state.json"
+    registry = _registry(bot_id)
+    row = registry["sub_bots"][0]
+    row.pop("minimum_training_observations", None)
+    row["training_excluded"] = False
+    row["exclude_from_training"] = False
+    _write_json(registry_path, registry)
+
+    payload = src.build_payload(
+        project_root=project_root,
+        registry_path=registry_path,
+        state_path=state_path,
+        days=1,
+        bootstrap_tail_lines=20,
+        apply=True,
+    )
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    row = registry["sub_bots"][0]
+
+    assert payload["bots_with_observations"] == 0
+    assert payload["training_ready_count"] == 0
+    assert row["data_collection_training_ready"] is False
+    assert row["training_excluded"] is True
+    assert row["exclude_from_training"] is True
+    assert row["training_exclusion_reason"] == "data_collection_requires_observations"
+    assert row["promotion_block_reason"] == "awaiting_data_collection_quality_gate"
+    assert payload["zero_observation_bot_ids"] == [bot_id]
+    assert payload["zero_observation_repair_lane"]["active"] is True
+    assert payload["zero_observation_repair_lane"]["target_bot_ids"] == [bot_id]

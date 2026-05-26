@@ -21,9 +21,13 @@ Reports:
   incident
   incident-packet
   paper
+  daily-ops
+  daily-runtime
+  strategy-attribution
   calibration
   daily-auto-verify
   modelcard
+  quant
   sentiment
   macro
   source
@@ -31,8 +35,13 @@ Reports:
   unified
   explainability
   bundle
+  report-catalog
   correlation
   botstack
+  state-snapshot
+  system-overview
+  one-numbers
+  one-numbers-csv
   strategy-inventory
   expansions
   sendout
@@ -109,7 +118,7 @@ while [[ $# -gt 0 ]]; do
     --print-only)
       PRINT_ONLY=1
       ;;
-    summary|crash|framework|special|posttrade|training|timeline|incident|incident-packet|paper|calibration|daily-auto-verify|modelcard|sentiment|macro|source|replay|unified|explainability|bundle|correlation|botstack|strategy-inventory|expansions|sendout)
+    summary|crash|framework|special|posttrade|training|timeline|incident|incident-packet|paper|daily-ops|daily-runtime|strategy-attribution|calibration|daily-auto-verify|modelcard|quant|sentiment|macro|source|replay|unified|explainability|bundle|report-catalog|correlation|botstack|state-snapshot|system-overview|one-numbers|one-numbers-csv|strategy-inventory|expansions|sendout)
       REPORT_KIND="$1"
       ;;
     -h|--help)
@@ -201,6 +210,29 @@ case "$REPORT_KIND" in
       "$PROJECT_ROOT/exports/reports/paper_performance_latest.html" \
       "$PROJECT_ROOT/exports/reports/paper_performance_latest.md")"
     ;;
+  daily-ops)
+    run_python_script scripts/ops/daily_ops_report.py --json
+    run_opsctl report-pdfs --only daily_ops_report --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/reports/daily_ops_report_latest.pdf" \
+      "$PROJECT_ROOT/exports/reports/daily_ops_report_latest.md" \
+      "$PROJECT_ROOT/exports/reports/daily_ops_report_latest.json")"
+    ;;
+  daily-runtime)
+    run_opsctl report-pdfs --only daily_runtime_summary --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/sql_reports/daily_runtime_summary_latest.pdf" \
+      "$PROJECT_ROOT/exports/reports/pdf_render_sources/daily_runtime_summary_latest.html" \
+      "$PROJECT_ROOT/governance/health/daily_runtime_summary_latest.json")"
+    ;;
+  strategy-attribution)
+    run_opsctl strategy-attribution --json
+    run_opsctl report-pdfs --only strategy_attribution --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/reports/strategy_attribution_latest.pdf" \
+      "$PROJECT_ROOT/exports/reports/strategy_attribution_latest.md" \
+      "$PROJECT_ROOT/governance/health/strategy_attribution_latest.json")"
+    ;;
   calibration)
     run_opsctl report-pdfs --only paper_execution_calibration --json
     REPORT="$(pick_existing \
@@ -220,6 +252,14 @@ case "$REPORT_KIND" in
       "$PROJECT_ROOT/exports/sql_reports/model_card_latest.pdf" \
       "$PROJECT_ROOT/exports/sql_reports/model_card_latest.json" \
       "$PROJECT_ROOT/governance/health/model_card_latest.json")"
+    ;;
+  quant)
+    run_opsctl quant-model-control --json
+    run_opsctl report-pdfs --only quant_model_control --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/reports/quant_model_control/quant_model_control_latest.pdf" \
+      "$PROJECT_ROOT/exports/reports/quant_model_control/quant_model_control_latest.md" \
+      "$PROJECT_ROOT/governance/health/quant_model_control_latest.json")"
     ;;
   sentiment)
     run_opsctl report-pdfs --only sentiment_report --json
@@ -265,7 +305,7 @@ case "$REPORT_KIND" in
       "$PROJECT_ROOT/exports/sql_reports/bot_explainability_latest.json" \
       "$PROJECT_ROOT/governance/health/bot_explainability_latest.json")"
     ;;
-  bundle)
+  bundle|report-catalog)
     run_opsctl report-pdfs --json
     REPORT="$(pick_existing \
       "$PROJECT_ROOT/exports/reports/report_pdf_bundle_latest.pdf" \
@@ -283,6 +323,33 @@ case "$REPORT_KIND" in
       "$PROJECT_ROOT/exports/bot_stack_status/latest.pdf" \
       "$PROJECT_ROOT/exports/bot_stack_status/latest.html" \
       "$PROJECT_ROOT/exports/bot_stack_status/latest.md")"
+    ;;
+  state-snapshot)
+    run_opsctl report-pdfs --only state_snapshot_drills --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/state_snapshot_drills/state_snapshot_drills_latest.pdf" \
+      "$PROJECT_ROOT/exports/state_snapshot_drills/latest.json")"
+    ;;
+  system-overview)
+    run_opsctl report-pdfs --only system_overview --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/reports/system_overview/system_overview_weekly_platform_history_latest.pdf" \
+      "$PROJECT_ROOT/exports/reports/system_overview/system_overview_weekly_platform_history_latest.md")"
+    ;;
+  one-numbers)
+    run_python_script scripts/build_one_numbers_report.py
+    run_opsctl report-pdfs --only one_numbers --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/one_numbers/one_numbers_latest.pdf" \
+      "$PROJECT_ROOT/exports/one_numbers/latest.md" \
+      "$PROJECT_ROOT/exports/one_numbers/latest/one_numbers_latest.md" \
+      "$PROJECT_ROOT/governance/health/one_numbers_latest.json")"
+    ;;
+  one-numbers-csv)
+    run_python_script scripts/build_one_numbers_report.py
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/one_numbers/latest.csv" \
+      "$PROJECT_ROOT/exports/one_numbers/latest/one_numbers_latest.csv")"
     ;;
   strategy-inventory)
     run_opsctl strategy-inventory --json

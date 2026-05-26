@@ -342,8 +342,8 @@ def test_coverage_gap_closer_stages_four_best_non_infrastructure_candidates(tmp_
     assert payload["active_stage_candidates"][0]["bot_id"] == "brain_refinery_v10_seasonal"
     assert payload["active_stage_candidates"][1]["bot_id"] == "brain_refinery_v35_dmi_state_machine"
     assert payload["active_stage_candidates"][-1]["bot_id"] == "brain_refinery_v99_defensive_dividend_concentration"
-    assert "--retrain-profile" in payload["recommended_command"]
-    assert "coverage_canary" in payload["recommended_command"]
+    assert payload["recommended_command"][1] == "coverage-gap-closer"
+    assert payload["recommended_retrain_command"] == []
     assert "brain_refinery_v68_risk_budget_layer" not in staged
     assert staged == {
         "brain_refinery_v10_seasonal",
@@ -726,6 +726,7 @@ def test_coverage_gap_closer_surfaces_launch_ready_autopilot_when_runtime_is_cle
     assert payload["autopilot_contract"]["overall_status"] == "ready"
     assert payload["autopilot_contract"]["launch_state"] == "ready_to_launch"
     assert payload["autopilot_contract"]["can_launch_now"] is True
+    assert payload["recommended_command"][1] == "retrain-force-targeted"
 
 
 def test_coverage_gap_closer_opens_off_hours_auto_launch_window_when_live_lane_is_read_only(tmp_path: Path, monkeypatch) -> None:
@@ -859,11 +860,90 @@ def test_coverage_gap_closer_arms_next_off_hours_launch_when_market_is_still_ope
     assert payload["autopilot_contract"]["launch_contract"]["window_active"] is False
 
 
+def test_coverage_gap_closer_blocks_requested_launch_when_training_quality_is_blocked(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    _write_json(
+        project_root / "governance" / "walk_forward" / "coverage_seed_latest.json",
+        {
+            "seed_queue": [
+                {
+                    "bot_id": "brain_refinery_v10_seasonal",
+                    "bot_role": "signal_sub_bot",
+                    "priority": 100.0,
+                    "current_runs": 4,
+                    "runs_remaining": 8,
+                    "needs_runtime_input_repair": False,
+                }
+            ]
+        },
+    )
+    _write_json(
+        project_root / "governance" / "walk_forward" / "promotion_readiness_latest.json",
+        {"coverage_shortfall_bots": 1, "considered_bots": 3, "thresholds": {"min_considered_bots": 4}},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "training_runtime_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "snapshot_ready": True,
+            "coverage_repair_ready": True,
+            "training_quality": {"overall_status": "blocked"},
+        },
+    )
+    _write_json(project_root / "governance" / "health" / "resource_guard_latest.json", {"swap_used_gb": 1.0})
+    _write_json(
+        project_root / "governance" / "health" / "live_runtime_separation_control_latest.json",
+        {"overall_status": "ready", "release_contract": {"live_lane_should_be_read_only": False}},
+    )
+    monkeypatch.setattr(gap_closer_src, "_refresh_artifacts", lambda *args, **kwargs: [])
+
+    def _fail_run_json(*args, **kwargs):  # pragma: no cover - assertion helper
+        raise AssertionError("retrain command should not launch while training quality is blocked")
+
+    monkeypatch.setattr(gap_closer_src, "_run_json", _fail_run_json)
+
+    payload = gap_closer_src.run_gap_closer(
+        project_root,
+        candidate_limit=4,
+        stage_count=1,
+        max_cycles=1,
+        retrain_timeout_sec=1,
+        refresh_timeout_sec=1,
+        wait_for_idle_timeout_sec=1,
+        poll_sec=1,
+        stall_limit=1,
+        retrain_profile="coverage_canary",
+        apply_stage=False,
+        launch=True,
+        auto_launch_off_hours=False,
+        clear_other_candidates=True,
+        out_path=project_root / "governance" / "walk_forward" / "coverage_gap_closer_latest.json",
+        queue_out_path=project_root / "governance" / "walk_forward" / "coverage_gap_closer_queue.jsonl",
+    )
+
+    assert payload["autopilot_contract"]["can_launch_now"] is False
+    assert payload["autopilot_contract"]["launch_state"] == "stage_only_training_blocked"
+    assert "training_runtime_blocked" in payload["launch_decision"]["launch_blocked_reasons"]
+    assert "training_quality_blocked" in payload["launch_decision"]["launch_blocked_reasons"]
+    assert payload["cycle_records"] == []
+    assert payload["recommended_command"][1] == "coverage-gap-closer"
+    assert payload["recommended_retrain_command"] == []
+
+
 def test_coverage_gap_closer_rotates_timeout_prone_candidate_immediately(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     _write_json(
         project_root / "governance" / "walk_forward" / "promotion_readiness_latest.json",
         {"coverage_shortfall_bots": 3, "considered_bots": 1, "thresholds": {"min_considered_bots": 4, "min_runs_per_bot": 12}},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "training_runtime_control_latest.json",
+        {"overall_status": "ready", "snapshot_ready": True, "coverage_repair_ready": True},
+    )
+    _write_json(project_root / "governance" / "health" / "resource_guard_latest.json", {"swap_used_gb": 0.1})
+    _write_json(
+        project_root / "governance" / "health" / "live_runtime_separation_control_latest.json",
+        {"overall_status": "ready", "release_contract": {"live_lane_should_be_read_only": False}},
     )
     staged_rows = [
         {
@@ -1063,3 +1143,36 @@ def test_calibration_abstention_control_apply_writes_bot_and_family_overrides(tm
     assert "dividend" in override_payload["family_overrides"]
     assert override_payload["bot_overrides"]["brain_refinery_v43_intraday_ultrafast_proxy"]["acted_prob_threshold_uplift"] > 0.0
     assert override_payload["family_overrides"]["dividend"]["acted_prob_threshold_uplift"] > 0.0
+
+
+def test_calibration_abstention_control_preserves_existing_precision_overrides(tmp_path: Path) -> None:
+    payload = {
+        "recommendations": [
+            {
+                "bot_id": "brain_refinery_v42_tick_to_swing_alignment",
+                "family": "swing",
+                "mode": "tighten",
+                "target_acceptance_rate": 0.18,
+                "confidence_threshold_uplift": 0.09,
+                "recommended_abstention_budget": 0.82,
+            }
+        ],
+        "family_recommendations": [],
+    }
+    existing = {
+        "bot_overrides": {
+            "brain_refinery_v47_swing_1w_3w": {
+                "mode": "tighten",
+                "family": "swing",
+                "acted_prob_threshold_uplift": 0.09,
+                "target_acceptance_rate": 0.18,
+                "recommended_abstention_budget": 0.82,
+            }
+        },
+        "family_overrides": {},
+    }
+
+    override_payload = calibration_src.build_override_payload(payload, existing)
+
+    assert "brain_refinery_v42_tick_to_swing_alignment" in override_payload["bot_overrides"]
+    assert "brain_refinery_v47_swing_1w_3w" in override_payload["bot_overrides"]

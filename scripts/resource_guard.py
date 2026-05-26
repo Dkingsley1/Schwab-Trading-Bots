@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 _PAGE_SIZE_BYTES = 16384
+DEFAULT_CREATIVE_APP_NAMES = "Final Cut Pro,Logic Pro,Music,iTunes"
 
 
 def _csv_env(name: str, default: str) -> list[str]:
@@ -21,6 +23,74 @@ def _csv_env(name: str, default: str) -> list[str]:
 
 def _creative_block_levels(env_name: str, default: str) -> set[str]:
     return {item.lower() for item in _csv_env(env_name, default)}
+
+
+def _normalize_app_marker(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().removesuffix(".app")).lower()
+
+
+def _command_bundle_names(command: str) -> list[str]:
+    names: list[str] = []
+    for match in re.finditer(r"([^/\n]+?)\.app(?:/|\s|$)", str(command or ""), flags=re.IGNORECASE):
+        name = _normalize_app_marker(match.group(1))
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _bundle_matches_marker(bundle: str, marker: str) -> bool:
+    if not bundle or not marker:
+        return False
+    if bundle == marker:
+        return True
+    if bundle.endswith(f" {marker}"):
+        return True
+    aliases = {
+        "chrome": {"google chrome"},
+        "code": {"visual studio code"},
+        "music": {"music"},
+        "itunes": {"itunes"},
+    }
+    return bundle in aliases.get(marker, set())
+
+
+def _command_matches_marker(command: str, marker: str) -> bool:
+    marker_norm = _normalize_app_marker(marker)
+    if not marker_norm:
+        return False
+
+    lowered = str(command or "").lower()
+    bundles = _command_bundle_names(command)
+    if any(_bundle_matches_marker(bundle, marker_norm) for bundle in bundles):
+        if "/contents/extensions/" in lowered or ".appex" in lowered:
+            return False
+        return True
+
+    strict_gui_markers = {
+        "arc",
+        "brave browser",
+        "chrome",
+        "code",
+        "cursor",
+        "firefox",
+        "final cut pro",
+        "google chrome",
+        "intellij idea",
+        "itunes",
+        "logic pro",
+        "music",
+        "pycharm",
+        "safari",
+        "utm",
+        "visual studio code",
+        "webstorm",
+        "xcode",
+    }
+    if marker_norm in strict_gui_markers:
+        return False
+
+    token_pattern = rf"(?<![a-z0-9_./-]){re.escape(marker_norm)}(?![a-z0-9_./-])"
+    return bool(re.search(token_pattern, lowered, flags=re.IGNORECASE))
 
 
 def _scan_named_processes(markers: list[str]) -> tuple[dict[str, float], dict[str, str]]:
@@ -40,9 +110,8 @@ def _scan_named_processes(markers: list[str]) -> tuple[dict[str, float], dict[st
             except Exception:
                 continue
             cmd = parts[1]
-            lowered = cmd.lower()
             for marker in markers:
-                if marker.lower() in lowered:
+                if _command_matches_marker(cmd, marker):
                     cpu_by_app[marker] = round(cpu_by_app.get(marker, 0.0) + cpu, 2)
                     active_commands.setdefault(marker, cmd)
                     break
@@ -113,7 +182,7 @@ def _parse_vm_stat() -> dict[str, float]:
 
 
 def _creative_apps_snapshot() -> dict[str, Any]:
-    markers = _csv_env("RESOURCE_GUARD_CREATIVE_APP_NAMES", "Final Cut Pro,Logic Pro")
+    markers = _csv_env("RESOURCE_GUARD_CREATIVE_APP_NAMES", DEFAULT_CREATIVE_APP_NAMES)
     cpu_by_app, active_commands = _scan_named_processes(markers)
 
     active_apps = sorted(cpu_by_app)
@@ -121,10 +190,20 @@ def _creative_apps_snapshot() -> dict[str, Any]:
     hot_cpu_threshold = float(os.getenv("RESOURCE_GUARD_CREATIVE_HOT_CPU_THRESHOLD", "140"))
     logic_hot_cpu_threshold = float(os.getenv("RESOURCE_GUARD_LOGIC_HOT_CPU_THRESHOLD", "80"))
     final_cut_hot_cpu_threshold = float(os.getenv("RESOURCE_GUARD_FINAL_CUT_HOT_CPU_THRESHOLD", "140"))
+    music_hot_cpu_threshold = float(os.getenv("RESOURCE_GUARD_MUSIC_HOT_CPU_THRESHOLD", "45"))
     has_logic = any("logic" in app.lower() for app in active_apps)
     has_final_cut = any("final cut" in app.lower() for app in active_apps)
+    has_music = any(app.lower() in {"music", "itunes"} or "music.app" in app.lower() or "itunes" in app.lower() for app in active_apps)
     logic_cpu = round(sum(cpu for app, cpu in cpu_by_app.items() if "logic" in app.lower()), 2)
     final_cut_cpu = round(sum(cpu for app, cpu in cpu_by_app.items() if "final cut" in app.lower()), 2)
+    music_cpu = round(
+        sum(
+            cpu
+            for app, cpu in cpu_by_app.items()
+            if app.lower() in {"music", "itunes"} or "music.app" in app.lower() or "itunes" in app.lower()
+        ),
+        2,
+    )
     creative_level = "none"
     creative_kind = "none"
     if has_logic and has_final_cut:
@@ -136,6 +215,9 @@ def _creative_apps_snapshot() -> dict[str, Any]:
     elif has_final_cut:
         creative_level = "hot" if max(final_cut_cpu, total_cpu) >= min(hot_cpu_threshold, final_cut_hot_cpu_threshold) else "active"
         creative_kind = "final_cut_pro_hot" if creative_level == "hot" else "final_cut_pro"
+    elif has_music:
+        creative_level = "hot" if max(music_cpu, total_cpu) >= min(hot_cpu_threshold, music_hot_cpu_threshold) else "active"
+        creative_kind = "music_playback_hot" if creative_level == "hot" else "music_playback"
     elif active_apps:
         creative_level = "hot" if total_cpu >= hot_cpu_threshold else "active"
         creative_kind = "other_creative_hot" if creative_level == "hot" else "other_creative"
@@ -150,9 +232,11 @@ def _creative_apps_snapshot() -> dict[str, Any]:
         "creative_session_kind": creative_kind,
         "logic_pro_cpu": logic_cpu,
         "final_cut_pro_cpu": final_cut_cpu,
+        "music_playback_cpu": music_cpu,
         "creative_hot_cpu_threshold": hot_cpu_threshold,
         "logic_hot_cpu_threshold": logic_hot_cpu_threshold,
         "final_cut_hot_cpu_threshold": final_cut_hot_cpu_threshold,
+        "music_hot_cpu_threshold": music_hot_cpu_threshold,
         "creative_app_commands": {key: active_commands.get(key, "") for key in active_apps},
     }
 

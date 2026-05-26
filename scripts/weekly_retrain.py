@@ -1100,25 +1100,45 @@ def _apply_retrain_profile_defaults(args: argparse.Namespace) -> str:
         if 0 < explicit_target_count <= 5:
             profile = "canary"
 
-    coverage_canary_external_snapshot = bool(
+    coverage_canary_snapshot_available = bool(
         str(
             os.getenv("RETRAIN_COVERAGE_CANARY_SNAPSHOT_FILE", "")
             or os.getenv("RUNTIME_TRAIN_SNAPSHOT_FILE", "")
         ).strip()
+        or os.path.exists(RUNTIME_TRAINING_SNAPSHOT_LATEST)
     )
 
-    if profile == "coverage_canary":
+    coverage_profiles = {
+        "coverage_micro_canary",
+        "coverage_small_canary",
+        "coverage_canary",
+        "coverage_batch10_canary",
+        "coverage_batch20_canary",
+    }
+
+    if profile in coverage_profiles:
         args.counterfactual_replay = False
         args.paper_hard_example_pack = False
         args.require_sample_quotas = False
         args.new_bot_boost = False
         args.build_runtime_training_snapshot = False
         args.runtime_training_snapshot_prefer_sqlite = False
-        args.runtime_train_use_snapshot = bool(coverage_canary_external_snapshot)
-        args.runtime_train_prefer_sqlite = bool(coverage_canary_external_snapshot)
+        args.runtime_train_use_snapshot = bool(coverage_canary_snapshot_available)
+        args.runtime_train_prefer_sqlite = bool(coverage_canary_snapshot_available)
         args.runtime_train_fast_fail_zero_sample_attempts = max(int(args.runtime_train_fast_fail_zero_sample_attempts), 2)
-        if int(args.target_timeout_seconds) <= 0:
-            args.target_timeout_seconds = 600
+        target_timeout = (
+            600
+            if profile == "coverage_micro_canary"
+            else 720
+            if profile == "coverage_small_canary"
+            else 900
+            if profile == "coverage_canary"
+            else 900
+            if profile == "coverage_batch10_canary"
+            else 1200
+        )
+        if int(args.target_timeout_seconds) <= 0 or int(args.target_timeout_seconds) > target_timeout:
+            args.target_timeout_seconds = target_timeout
         args.cold_lane_retrain_extras = False
         args.auto_insufficient_data_retry = False
 
@@ -2014,14 +2034,45 @@ def _apply_env_floor(env: dict[str, str], key: str, desired: int, *, minimum: in
 
 def _apply_retrain_profile_env_overrides(env: dict[str, str], retrain_profile: str) -> dict[str, str]:
     profile = str(retrain_profile or "").strip().lower()
-    if profile != "coverage_canary":
+    if profile not in {
+        "coverage_micro_canary",
+        "coverage_small_canary",
+        "coverage_canary",
+        "coverage_batch10_canary",
+        "coverage_batch20_canary",
+    }:
         return {}
 
     requested_overrides: dict[str, str] = {}
-    lookback_cap = max(_mapping_int(os.getenv("RETRAIN_COVERAGE_CANARY_LOOKBACK_CAP_DAYS", "45"), 45), 1)
-    stride_floor = max(_mapping_int(os.getenv("RETRAIN_COVERAGE_CANARY_SAMPLE_STRIDE", "1"), 1), 1)
-    max_samples = max(_mapping_int(os.getenv("RETRAIN_COVERAGE_CANARY_MAX_SAMPLES", "6000"), 6000), 0)
-    batch_size_cap = max(_mapping_int(os.getenv("RETRAIN_COVERAGE_CANARY_BATCH_SIZE_CAP", "64"), 64), 32)
+    if profile == "coverage_micro_canary":
+        default_lookback = 14
+        default_stride = 2
+        default_samples = 2000
+        default_batch_cap = 32
+    elif profile == "coverage_small_canary":
+        default_lookback = 30
+        default_stride = 1
+        default_samples = 4000
+        default_batch_cap = 48
+    elif profile == "coverage_batch10_canary":
+        default_lookback = 45
+        default_stride = 1
+        default_samples = 6000
+        default_batch_cap = 64
+    elif profile == "coverage_batch20_canary":
+        default_lookback = 60
+        default_stride = 1
+        default_samples = 8000
+        default_batch_cap = 64
+    else:
+        default_lookback = 45
+        default_stride = 1
+        default_samples = 6000
+        default_batch_cap = 64
+    lookback_cap = max(_mapping_int(os.getenv("RETRAIN_COVERAGE_CANARY_LOOKBACK_CAP_DAYS", str(default_lookback)), default_lookback), 1)
+    stride_floor = max(_mapping_int(os.getenv("RETRAIN_COVERAGE_CANARY_SAMPLE_STRIDE", str(default_stride)), default_stride), 1)
+    max_samples = max(_mapping_int(os.getenv("RETRAIN_COVERAGE_CANARY_MAX_SAMPLES", str(default_samples)), default_samples), 0)
+    batch_size_cap = max(_mapping_int(os.getenv("RETRAIN_COVERAGE_CANARY_BATCH_SIZE_CAP", str(default_batch_cap)), default_batch_cap), 32)
 
     requested_overrides["RUNTIME_TRAIN_LOOKBACK_DAYS_CAP"] = str(
         _apply_env_cap(env, "RUNTIME_TRAIN_LOOKBACK_DAYS_CAP", lookback_cap, minimum=1)
@@ -3008,7 +3059,7 @@ def main() -> int:
     parser.add_argument(
         "--retrain-profile",
         default=os.getenv("RETRAIN_PROFILE", "default"),
-        help="Named retrain profile for future-run defaults (default, canary, coverage_canary, fast_daytime, full_overnight).",
+        help="Named retrain profile for future-run defaults (default, canary, coverage_micro_canary, coverage_small_canary, coverage_canary, coverage_batch10_canary, coverage_batch20_canary, fast_daytime, full_overnight).",
     )
     parser.add_argument(
         "--build-runtime-training-snapshot",

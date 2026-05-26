@@ -1,0 +1,43 @@
+{
+  "timestamp_utc": "2026-05-24T00:17:53.304132+00:00",
+  "schema_version": 1,
+  "pack_version": "sleeve_micro_expansion_v1",
+  "pack_slug": "ten_across_major_sleeves",
+  "bot_ids": [
+    "brain_refinery_v1638_default_evidence_disagreement_arbiter",
+    "brain_refinery_v1639_aggressive_breakout_confirmation_scout",
+    "brain_refinery_v1640_conservative_drawdown_stability_guard",
+    "brain_refinery_v1641_dividend_quality_cashflow_regime_guard",
+    "brain_refinery_v1642_bond_duration_credit_spread_router",
+    "brain_refinery_v1643_fx_usd_funding_carry_stress_guard",
+    "brain_refinery_v1644_intraday_open_drive_false_break_filter",
+    "brain_refinery_v1645_swing_multi_day_breakout_quality_filter",
+    "brain_refinery_v1646_crypto_futures_basis_liquidation_guard",
+    "brain_refinery_v1647_options_on_futures_skew_convexity_guard"
+  ],
+  "sleeve_profiles": [
+    "default",
+    "aggressive",
+    "conservative",
+    "dividend_income",
+    "bond",
+    "fx",
+    "intraday_aggressive",
+    "swing_aggressive",
+    "crypto_futures",
+    "options_on_futures"
+  ],
+  "safety_contract": {
+    "data_collection_only": true,
+    "execution_enabled": false,
+    "allocation_enabled": false,
+    "paper_trading_enabled": false,
+    "training_excluded_until_threshold": true,
+    "max_daily_mb_per_bot": 2,
+    "collection_throttle": "thin_digest",
+    "protected_volume_policy": "do_not_touch_/Volumes/VIDEO"
+  },
+  "applied": true,
+  "added_bot_count": 10,
+  "skipped_existing_bot_ids": []
+}

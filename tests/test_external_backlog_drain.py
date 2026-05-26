@@ -256,7 +256,176 @@ def test_external_backlog_drain_focuses_near_hard_core_expansion_backlog(tmp_pat
     assert payload["drain_overrides"]["crypto_trading_path_focus"] == [
         "decisions/shadow_crypto/trade_decisions_20260503.jsonl",
     ]
-    assert payload["drain_overrides"]["shard_link_timeout_seconds"] == 120
+    assert payload["drain_overrides"]["shard_link_timeout_seconds"] == 420
+
+
+def test_external_backlog_drain_treats_market_holiday_as_safe_storage_window(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 1000,
+            "pending_lines_total": 700000,
+            "pending_lines_deferred": 690000,
+            "pending_lines_cold": 0,
+            "top_deferred_pending_files": [
+                {
+                    "source_rel": "decision_explanations/shadow_crypto/decision_explanations_20260525.jsonl",
+                    "pending_lines": 334000,
+                    "oldest_pending_age_seconds": 36000.0,
+                },
+                {
+                    "source_rel": "decision_explanations/shadow_crypto_futures_crypto/decision_explanations_20260525.jsonl",
+                    "pending_lines": 324000,
+                    "oldest_pending_age_seconds": 36000.0,
+                },
+                {
+                    "source_rel": "decision_explanations/shadow_fx_equities/decision_explanations_20260525.jsonl",
+                    "pending_lines": 30000,
+                    "oldest_pending_age_seconds": 36000.0,
+                },
+            ],
+        },
+    )
+    _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 20})
+    _write_json(health / "storage_mount_guard_latest.json", {"external_available": True, "storage_mode": "external"})
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    monkeypatch.setattr(
+        src.governor_src,
+        "build_payload",
+        lambda *args, **kwargs: {"profile": "critical_backpressure", "env_overrides": {}},
+    )
+
+    payload = src.build_payload(
+        project_root,
+        apply=False,
+        now_utc=datetime(2026, 5, 25, 13, 30, tzinfo=timezone.utc),
+    )
+
+    assert payload["blocked_reasons"] == []
+    assert payload["off_hours_window"]["active"] is True
+    assert payload["off_hours_window"]["market_holiday"] is True
+    assert payload["off_hours_window"]["market_holiday_name"] == "memorial_day"
+    assert payload["recommended_now"] is True
+    assert payload["drain_overrides"]["preferred_shards"][:2] == ["crypto_explanations", "explanations"]
+    assert payload["drain_overrides"]["crypto_explanations_max_lines_per_file"] == 64000
+    assert payload["drain_overrides"]["crypto_explanations_path_focus"] == [
+        "decision_explanations/shadow_crypto/decision_explanations_20260525.jsonl",
+        "decision_explanations/shadow_crypto_futures_crypto/decision_explanations_20260525.jsonl",
+    ]
+    assert payload["drain_overrides"]["explanations_path_focus"] == [
+        "decision_explanations/shadow_fx_equities/decision_explanations_20260525.jsonl",
+    ]
+    assert any("crypto explanations shard pinned" in item for item in payload["top_actions"])
+
+
+def test_external_backlog_drain_uses_storage_overlay_leaders_for_focus(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 39811,
+            "pending_lines_total": 44060,
+            "pending_lines_deferred": 4249,
+            "pending_lines_cold": 0,
+            "top_pending_files": [
+                {
+                    "source_rel": "governance/events/write_failures_20260525.jsonl",
+                    "pending_lines": 32618,
+                    "oldest_pending_age_seconds": 13558.506,
+                }
+            ],
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "backpressure": {
+                "core_pending_lines": 1904980,
+                "deferred_pending_lines": 4249,
+                "cold_pending_lines": 0,
+                "support_pending_lines": 77119,
+                "total_pending_lines": 1986348,
+                "overlay_adjusted": True,
+                "oldest_pending_age_seconds": 36480.298,
+            },
+            "stale_pending_locator": {
+                "top_pending_sources": [
+                    {
+                        "source_rel": "governance/events/signal_generation_20260525.jsonl",
+                        "shard": "governance",
+                        "pressure_lane": "core",
+                        "pending_lines": 1314510,
+                        "oldest_pending_age_seconds": 114.839,
+                    },
+                    {
+                        "source_rel": "decisions/shadow_crypto/trade_decisions_20260525.jsonl",
+                        "shard": "crypto_trading",
+                        "pressure_lane": "core",
+                        "pending_lines": 298525,
+                        "oldest_pending_age_seconds": 36425.104,
+                    },
+                    {
+                        "source_rel": "decisions/shadow_crypto_futures_crypto/trade_decisions_20260525.jsonl",
+                        "shard": "crypto_trading",
+                        "pressure_lane": "core",
+                        "pending_lines": 291945,
+                        "oldest_pending_age_seconds": 36480.298,
+                    },
+                    {
+                        "source_rel": "governance/channels/risk/crypto_futures_crypto_schwab/risk_20260525.jsonl",
+                        "shard": "risk_support",
+                        "pressure_lane": "support",
+                        "pending_lines": 39103,
+                        "oldest_pending_age_seconds": 36409.237,
+                    },
+                ],
+                "oldest_sources": [],
+            },
+        },
+    )
+    _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 20})
+    _write_json(health / "storage_mount_guard_latest.json", {"external_available": True, "storage_mode": "external"})
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    monkeypatch.setattr(
+        src.governor_src,
+        "build_payload",
+        lambda *args, **kwargs: {"profile": "critical_backpressure", "env_overrides": {}},
+    )
+
+    payload = src.build_payload(
+        project_root,
+        apply=False,
+        now_utc=datetime(2026, 5, 25, 13, 40, tzinfo=timezone.utc),
+    )
+
+    assert payload["storage_overlay_focus"]["active"] is True
+    assert payload["storage_overlay_focus"]["adjusted"] is True
+    assert payload["backpressure_before"]["total_pending_lines"] == 1986348
+    assert payload["raw_backpressure_before"]["total_pending_lines"] == 44060
+    assert payload["core_focus_top3_pending_lines"] == 1904980
+    assert payload["drain_overrides"]["preferred_shards"][:5] == [
+        "governance",
+        "crypto_trading",
+        "risk_support",
+        "health_fast",
+        "support_watchdog",
+    ]
+    assert payload["drain_overrides"]["governance_path_focus"] == [
+        "governance/events/signal_generation_20260525.jsonl",
+        "governance/events/write_failures_20260525.jsonl",
+    ]
+    assert payload["drain_overrides"]["crypto_trading_path_focus"] == [
+        "decisions/shadow_crypto/trade_decisions_20260525.jsonl",
+        "decisions/shadow_crypto_futures_crypto/trade_decisions_20260525.jsonl",
+    ]
+    assert payload["drain_overrides"]["risk_support_path_focus"] == [
+        "governance/channels/risk/crypto_futures_crypto_schwab/risk_20260525.jsonl",
+    ]
+    assert payload["drain_overrides"]["risk_support_max_lines_per_file"] == 800000
+    assert any("risk-support shard pinned" in item for item in payload["top_actions"])
 
 
 def test_external_backlog_drain_does_not_recommend_broad_sweep_for_tiny_hot_queue(tmp_path: Path) -> None:
@@ -304,6 +473,59 @@ def test_external_backlog_drain_does_not_recommend_broad_sweep_for_tiny_hot_queu
     assert payload["recommended_now"] is False
     assert payload["material_drain_recommended"] is False
     assert payload["core_focus_concentrated"] is False
+
+
+def test_external_backlog_drain_recommends_sparse_large_jsonl_byte_window(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 240,
+            "pending_lines_total": 240,
+            "pending_lines_deferred": 0,
+            "pending_lines_cold": 0,
+            "line_estimation": {
+                "sparse_large_line_pending_lines": 90,
+                "sparse_large_line_pending_bytes": 96 * 1024 * 1024,
+            },
+            "top_pending_files": [
+                {
+                    "source_rel": "governance/channels/decision/default_crypto_schwab/decision_20260525.jsonl",
+                    "pending_lines": 90,
+                    "oldest_pending_age_seconds": 20.0,
+                    "sparse_large_line": True,
+                    "estimated_pending_bytes": 96 * 1024 * 1024,
+                    "estimated_avg_bytes_per_line": 950000.0,
+                    "file_size_bytes": 9_000_000_000,
+                }
+            ],
+        },
+    )
+    _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 2})
+    _write_json(health / "ingestion_storage_control_latest.json", {"overall_status": "blocked"})
+    _write_json(health / "storage_mount_guard_latest.json", {"external_available": True, "storage_mode": "external"})
+    _write_json(health / "storage_failback_sync_latest.json", {"mode": "external", "split_brain_conflicts": 0})
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    _write_json(health / "sql_link_service_latest.json", {"primary_db": str(project_root / "data" / "jsonl_link.sqlite3")})
+    _write_json(health / "sql_link_service_progress_latest.json", {})
+    _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": False, "storage_pressure": {"retention_debt_gb": 0.0}})
+
+    payload = src.build_payload(
+        project_root,
+        apply=False,
+        now_utc=datetime(2026, 5, 25, 21, 0, tzinfo=timezone.utc),
+    )
+
+    assert payload["recommended_now"] is True
+    assert payload["material_drain_recommended"] is True
+    assert payload["backpressure_after"]["sparse_large_line_pending_bytes"] == 96 * 1024 * 1024
+    assert payload["drain_overrides"]["sparse_large_decision_drain"] is True
+    assert payload["drain_overrides"]["ingest_max_bytes_per_file"] == 128 * 1024 * 1024
+    assert payload["drain_overrides"]["sqlite_batch_max_bytes"] == 32 * 1024 * 1024
+    assert payload["drain_overrides"]["crypto_trading_path_focus"] == [
+        "governance/channels/decision/default_crypto_schwab/decision_20260525.jsonl"
+    ]
 
 
 def test_external_backlog_drain_writes_handoff_when_resource_guard_blocks_focused_core_backlog(tmp_path: Path, monkeypatch) -> None:
@@ -558,7 +780,7 @@ def test_external_backlog_drain_apply_executes_and_refreshes_backlog(tmp_path: P
             assert env_overrides["INGEST_MAX_DEFERRED_FILES"] == "6"
             assert env_overrides["JSONL_SQL_MAX_COLD_LANE_FILES"] == "2"
             assert env_overrides["SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB"] == "0.25"
-            assert env_overrides["SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"] == "25"
+            assert env_overrides["SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"] == "90"
             assert env_overrides["SQL_LINK_SERVICE_AUTO_HOT_RETENTION"] == "0"
             assert env_overrides["SQL_LINK_SERVICE_AUTO_QUEUE_RETENTION"] == "0"
             assert env_overrides["SQL_LINK_SERVICE_SHARD_RUNTIME_STATE_CHECKPOINT_LINES"] == "1500"

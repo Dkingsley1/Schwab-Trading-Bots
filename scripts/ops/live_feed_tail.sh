@@ -198,6 +198,9 @@ HEAVY_SNAPSHOT_MAX_LINES="${LIVE_FEED_HEAVY_SNAPSHOT_MAX_LINES:-180}"
 HEAVY_TTL_ENABLED="${LIVE_FEED_HEAVY_TTL_ENABLED:-0}"
 HEAVY_TTL_SECONDS="${LIVE_FEED_HEAVY_TTL_SECONDS:-0}"
 MAX_LINE_CHARS="${LIVE_FEED_MAX_LINE_CHARS:-1400}"
+KEEPALIVE_ENABLED="${LIVE_FEED_KEEPALIVE_ENABLED:-1}"
+KEEPALIVE_SECONDS="${LIVE_FEED_KEEPALIVE_SECONDS:-15}"
+STARTUP_STATUS_ENABLED="${LIVE_FEED_STARTUP_STATUS_ENABLED:-1}"
 DECISION_MAX_AGE_HOURS="${LIVE_FEED_DECISION_MAX_AGE_HOURS:-48}"
 PRESSURE_OPTIMIZED="0"
 
@@ -239,8 +242,15 @@ fi
 if ! [[ "$HEAVY_TTL_SECONDS" =~ ^[0-9]+$ ]]; then
   HEAVY_TTL_SECONDS="0"
 fi
+if ! [[ "$KEEPALIVE_SECONDS" =~ ^[0-9]+$ ]]; then
+  KEEPALIVE_SECONDS="15"
+fi
 if ! [[ "$DECISION_MAX_AGE_HOURS" =~ ^[0-9]+$ ]]; then
   DECISION_MAX_AGE_HOURS="48"
+fi
+
+if [[ "$SNAPSHOT" != "1" && "$STARTUP_STATUS_ENABLED" == "1" ]]; then
+  echo "live_feed_starting source=$SOURCE heavy=$HEAVY_REQUESTED include_decisions=$INCLUDE_DECISIONS memory_profile=${MEMORY_PROFILE:-default} memory_aware=$MEMORY_AWARE max_follow_files=$HEAVY_MAX_FOLLOW_FILES"
 fi
 
 DAY_UTC="$(date -u +%Y%m%d)"
@@ -275,12 +285,13 @@ append_decision_file() {
 
 latest_log() {
   local pattern="$1"
-  local out
-  setopt localoptions nonomatch
-  unsetopt null_glob csh_null_glob
+  local -a matches
+  setopt localoptions extendedglob
   # ${~pattern} forces zsh glob expansion from a variable.
-  out="$(ls -1t ${~pattern} 2>/dev/null | head -n 1 || true)"
-  echo "$out"
+  matches=(${~pattern}(N.om[1]))
+  if (( ${#matches} > 0 )); then
+    print -r -- "$matches[1]"
+  fi
 }
 
 append_decision_json_dir() {
@@ -294,11 +305,41 @@ append_decision_json_dir() {
   append_decision_file "$(latest_log "$PROJECT_ROOT/decision_explanations/$dir/decision_explanations_*.jsonl")"
 }
 
+append_decision_channel_dir() {
+  local dir="$1"
+  if [[ "$DECISION_FILE_MODE" == "latest_only" ]]; then
+    append_decision_file "$(latest_log "$PROJECT_ROOT/governance/channels/decision/$dir/decision_*.jsonl")"
+    return
+  fi
+  append_decision_file "$PROJECT_ROOT/governance/channels/decision/$dir/decision_${DAY_LOCAL}.jsonl"
+  append_decision_file "$PROJECT_ROOT/governance/channels/decision/$dir/decision_${DAY_UTC}.jsonl"
+  append_decision_file "$(latest_log "$PROJECT_ROOT/governance/channels/decision/$dir/decision_*.jsonl")"
+}
+
+append_trade_decision_dir() {
+  local dir="$1"
+  if [[ "$DECISION_FILE_MODE" == "latest_only" ]]; then
+    append_decision_file "$(latest_log "$PROJECT_ROOT/local_fallback_storage/decisions/$dir/trade_decisions_*.jsonl")"
+    return
+  fi
+  append_decision_file "$PROJECT_ROOT/local_fallback_storage/decisions/$dir/trade_decisions_${DAY_LOCAL}.jsonl"
+  append_decision_file "$PROJECT_ROOT/local_fallback_storage/decisions/$dir/trade_decisions_${DAY_UTC}.jsonl"
+  append_decision_file "$(latest_log "$PROJECT_ROOT/local_fallback_storage/decisions/$dir/trade_decisions_*.jsonl")"
+}
+
 append_all_decision_json_dirs() {
   setopt localoptions null_glob
   local dir_path
   for dir_path in "$PROJECT_ROOT"/decision_explanations/*(/N); do
     append_decision_json_dir "${dir_path:t}"
+  done
+}
+
+append_all_decision_channel_dirs() {
+  setopt localoptions null_glob
+  local dir_path
+  for dir_path in "$PROJECT_ROOT"/governance/channels/decision/*(/N); do
+    append_decision_channel_dir "${dir_path:t}"
   done
 }
 
@@ -352,26 +393,41 @@ append_heavy_health_files() {
   fi
 }
 
+if [[ "$INCLUDE_DECISIONS" == "1" && ( "$SOURCE" == "all" || "$HEAVY_REQUESTED" == "1" ) ]]; then
+  append_trade_decision_dir "paper"
+fi
+
 if [[ "$SOURCE" == "schwab" || "$SOURCE" == "main" || "$SOURCE" == "all" ]]; then
-  append_file "$(latest_log "$PROJECT_ROOT/logs/schwab_live_*.log")"
   if [[ "$INCLUDE_DECISIONS" == "1" ]]; then
+    for d in aggressive_equities_schwab conservative_equities_schwab dividend_equities_schwab bond_equities_schwab; do
+      append_decision_channel_dir "$d"
+    done
     for d in shadow_equities shadow_aggressive_equities shadow_conservative_equities shadow_dividend_equities shadow_dividend_capture_equities shadow_bond_equities shadow_intraday_aggressive_equities shadow_swing_aggressive_equities; do
       append_decision_json_dir "$d"
     done
   fi
+  append_file "$(latest_log "$PROJECT_ROOT/logs/schwab_live_*.log")"
 fi
 
 if [[ "$SOURCE" == "schwab" || "$SOURCE" == "futures" || "$SOURCE" == "schwab_futures" || "$SOURCE" == "main" || "$SOURCE" == "all" ]]; then
+  if [[ "$INCLUDE_DECISIONS" == "1" ]]; then
+    append_decision_channel_dir "schwab_futures_equities_schwab"
+    append_decision_json_dir "shadow_schwab_futures_equities"
+  fi
   append_file "$(latest_log "$PROJECT_ROOT/logs/schwab_futures_live_*.log")"
   append_health_file "data_ingress_latest_schwab_futures_equities_schwab.json"
   append_health_file "broker_truth_schwab_futures_equities_schwab_latest.json"
   append_file "$(latest_log "$PROJECT_ROOT/governance/health/shadow_loop_schwab_futures_equities_schwab_*.json")"
-  if [[ "$INCLUDE_DECISIONS" == "1" ]]; then
-    append_decision_json_dir "shadow_schwab_futures_equities"
-  fi
 fi
 
 if [[ "$SOURCE" == "coinbase" || "$SOURCE" == "main" || "$SOURCE" == "all" ]]; then
+  if [[ "$INCLUDE_DECISIONS" == "1" ]]; then
+    append_decision_channel_dir "default_crypto_schwab"
+    append_trade_decision_dir "shadow_crypto"
+    for d in shadow_crypto shadow_coinbase; do
+      append_decision_json_dir "$d"
+    done
+  fi
   append_file "$(latest_log "$PROJECT_ROOT/logs/coinbase_live_*.log")"
   append_file "$PROJECT_ROOT/logs/watchdog_coinbase_loop.log"
   if [[ "$INCLUDE_WATCHDOG_LOG" == "1" ]]; then
@@ -380,35 +436,35 @@ if [[ "$SOURCE" == "coinbase" || "$SOURCE" == "main" || "$SOURCE" == "all" ]]; t
   append_health_file "data_ingress_latest_crypto_coinbase.json"
   append_health_file "process_watchdog_latest.json"
   append_health_file "shadow_watchdog_tripwire_latest.json"
-  if [[ "$INCLUDE_DECISIONS" == "1" ]]; then
-    for d in shadow_crypto shadow_coinbase; do
-      append_decision_json_dir "$d"
-    done
-  fi
 fi
 
 if [[ "$SOURCE" == "coinbase" || "$SOURCE" == "futures" || "$SOURCE" == "coinbase_futures" || "$SOURCE" == "main" || "$SOURCE" == "all" ]]; then
+  if [[ "$INCLUDE_DECISIONS" == "1" ]]; then
+    append_decision_channel_dir "crypto_futures_crypto_schwab"
+    append_trade_decision_dir "shadow_crypto_futures_crypto"
+    append_decision_json_dir "shadow_crypto_futures_crypto"
+  fi
   append_file "$(latest_log "$PROJECT_ROOT/logs/coinbase_futures_live_*.log")"
   append_health_file "data_ingress_latest_crypto_futures_crypto_coinbase.json"
   append_file "$(latest_log "$PROJECT_ROOT/governance/health/shadow_loop_crypto_futures_crypto_coinbase_*.json")"
-  if [[ "$INCLUDE_DECISIONS" == "1" ]]; then
-    append_decision_json_dir "shadow_crypto_futures_crypto"
-  fi
 fi
 
 if [[ "$SOURCE" == "fx" || "$SOURCE" == "all" ]]; then
+  if [[ "$INCLUDE_DECISIONS" == "1" ]]; then
+    append_decision_channel_dir "fx_equities_schwab"
+    append_trade_decision_dir "shadow_fx_equities"
+    append_decision_json_dir "shadow_fx_equities"
+  fi
   append_file "$(latest_log "$PROJECT_ROOT/logs/fx_live_*.log")"
   append_health_file "data_ingress_latest_fx_equities_schwab.json"
   append_health_file "broker_truth_fx_equities_schwab_latest.json"
   append_health_file "fx_shadow_session_latest.json"
   append_health_file "fx_market_context_sync_latest.json"
   append_file "$(latest_log "$PROJECT_ROOT/governance/health/shadow_loop_fx_equities_schwab_*.json")"
-  if [[ "$INCLUDE_DECISIONS" == "1" ]]; then
-    append_decision_json_dir "shadow_fx_equities"
-  fi
 fi
 
 if [[ "$HEAVY_REQUESTED" == "1" && "$INCLUDE_DECISIONS" == "1" && "$SOURCE" == "all" && "$HEAVY_INCLUDE_ALL_DECISION_DIRS" == "1" ]]; then
+  append_all_decision_channel_dirs
   append_all_decision_json_dirs
 fi
 
@@ -501,6 +557,40 @@ mark_heavy_inactive() {
   } > "$HEAVY_MARKER_FILE"
 }
 
+cleanup_live_feed() {
+  if [[ -n "${LIVE_FEED_KEEPALIVE_PID:-}" ]]; then
+    kill "$LIVE_FEED_KEEPALIVE_PID" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${HEAVY_TTL_PID:-}" ]]; then
+    kill "$HEAVY_TTL_PID" >/dev/null 2>&1 || true
+  fi
+  mark_heavy_inactive
+  true
+}
+
+install_live_feed_trap() {
+  [[ "$SNAPSHOT" != "1" ]] || return 0
+  # Do not trap EXIT here: zsh pipeline stages can inherit the trap and mark the
+  # heavy feed closed while the parent tail is still alive.
+  trap 'cleanup_live_feed; exit 129' HUP
+  trap 'cleanup_live_feed; exit 130' INT
+  trap 'cleanup_live_feed; exit 143' TERM
+}
+
+start_live_feed_keepalive() {
+  [[ "$SNAPSHOT" != "1" ]] || return 0
+  [[ "$KEEPALIVE_ENABLED" == "1" ]] || return 0
+  [[ "$KEEPALIVE_SECONDS" -gt 0 ]] || return 0
+  (
+    while true; do
+      sleep "$KEEPALIVE_SECONDS" || exit 0
+      printf 'live_feed_keepalive timestamp_utc=%s source=%s heavy=%s files=%s following=1 interrupt=ctrl-c\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SOURCE" "$HEAVY_REQUESTED" "${#files[@]}"
+    done
+  ) &
+  LIVE_FEED_KEEPALIVE_PID=$!
+}
+
 start_heavy_ttl_guard() {
   [[ "$HEAVY_REQUESTED" == "1" ]] || return 0
   [[ "$SNAPSHOT" != "1" ]] || return 0
@@ -512,7 +602,6 @@ start_heavy_ttl_guard() {
     kill -TERM $$ >/dev/null 2>&1 || true
   ) &
   HEAVY_TTL_PID=$!
-  trap '[[ -n "${HEAVY_TTL_PID:-}" ]] && kill "$HEAVY_TTL_PID" >/dev/null 2>&1 || true; mark_heavy_inactive' EXIT INT TERM
 }
 
 echo "live_feed source=$SOURCE local_day=$DAY_LOCAL utc_day=$DAY_UTC symbol=${SYMBOL:-ALL} lines=$LINES heavy=$HEAVY_REQUESTED include_decisions=$INCLUDE_DECISIONS include_watchdog_log=$INCLUDE_WATCHDOG_LOG memory_profile=${MEMORY_PROFILE:-default} memory_aware=$MEMORY_AWARE highlight=$COLOR_ENABLED highlight_palette=$COLOR_PALETTE decision_mode=$DECISION_FILE_MODE pressure_optimized=$PRESSURE_OPTIMIZED file_count=${#files[@]} tail_start_mode=$TAIL_START_MODE tail_start_bytes=$HEAVY_TAIL_BYTES max_line_chars=$MAX_LINE_CHARS"
@@ -525,6 +614,7 @@ if [[ "$RAW" == "1" ]]; then
     tail -n "$LINES" "${files[@]}"
     exit $?
   fi
+  install_live_feed_trap
   start_heavy_ttl_guard
   tail -n "$LINES" -F "${files[@]}"
   exit $?
@@ -591,6 +681,54 @@ truncate_live_lines() {
     }
     return ""
   }
+  function bool_field(line, key, pattern, raw) {
+    pattern = "\"" key "\"[[:space:]]*:[[:space:]]*(true|false)"
+    if (match(line, pattern)) {
+      raw = substr(line, RSTART, RLENGTH)
+      sub("^\"" key "\"[[:space:]]*:[[:space:]]*", "", raw)
+      return raw
+    }
+    return ""
+  }
+  function first_text(line, a, b, c, d, e, f, value) {
+    if (a != "") { value = text_field(line, a); if (value != "") return value }
+    if (b != "") { value = text_field(line, b); if (value != "") return value }
+    if (c != "") { value = text_field(line, c); if (value != "") return value }
+    if (d != "") { value = text_field(line, d); if (value != "") return value }
+    if (e != "") { value = text_field(line, e); if (value != "") return value }
+    if (f != "") { value = text_field(line, f); if (value != "") return value }
+    return ""
+  }
+  function first_num(line, a, b, c, d, e, f, value) {
+    if (a != "") { value = num_field(line, a); if (value != "") return value }
+    if (b != "") { value = num_field(line, b); if (value != "") return value }
+    if (c != "") { value = num_field(line, c); if (value != "") return value }
+    if (d != "") { value = num_field(line, d); if (value != "") return value }
+    if (e != "") { value = num_field(line, e); if (value != "") return value }
+    if (f != "") { value = num_field(line, f); if (value != "") return value }
+    return ""
+  }
+  function short_value(value, max_len) {
+    gsub(/[[:space:]]+/, "_", value)
+    if (max_len > 0 && length(value) > max_len) return substr(value, 1, max_len - 3) "..."
+    return value
+  }
+  function short_num(value) {
+    if (value == "") return ""
+    return sprintf("%.4f", value + 0.0)
+  }
+  function human_length(value) {
+    if (value >= 1000000) return sprintf("%.1fM", value / 1000000.0)
+    if (value >= 1000) return sprintf("%.1fk", value / 1000.0)
+    return value
+  }
+  function append_token(line, key, value) {
+    if (value == "") return line
+    return line " " key "=" short_value(value, 96)
+  }
+  function looks_like_json_fragment(line) {
+    return line ~ /^[[:space:]]*[,}\]]/ || line ~ /^[[:space:]]*"[A-Za-z0-9_:-]+"[[:space:]]*:/ || line ~ /^[[:space:]]*[A-Za-z0-9_:-]+"[[:space:]]*:/ || line ~ /",[[:space:]]*"[A-Za-z0-9_:-]+"[[:space:]]*:/ || line ~ /"bot_id"[[:space:]]*:|"observer_meta"[[:space:]]*:|"sleeve_profile"[[:space:]]*:/
+  }
   function highlight_token(line, pattern, paint) {
     if (color != "1") return line
     gsub(pattern, paint "&" reset, line)
@@ -636,26 +774,51 @@ truncate_live_lines() {
       fflush()
       exit 0
     }
-    if (length($0) > max && $0 ~ /^\{/) {
+    if (length($0) > max && $0 ~ /^\{/ && $0 ~ /"symbol"[[:space:]]*:/ && $0 ~ /"action"[[:space:]]*:|"master_action"[[:space:]]*:|"master_intent_action"[[:space:]]*:/) {
+      has_master_decision = $0 ~ /"master_action"[[:space:]]*:|"master_intent_action"[[:space:]]*:/
       ts = text_field($0, "timestamp_utc")
-      mode = text_field($0, "mode")
-      status = text_field($0, "status")
+      mode = first_text($0, "mode", "decision_mode", "execution_mode", "", "", "")
+      profile = first_text($0, "shadow_profile", "profile", "source_profile", "paper_profile", "", "")
+      broker = first_text($0, "broker", "shadow_domain", "market", "", "", "")
+      status = ""
+      if (!has_master_decision) status = first_text($0, "status", "state", "loop_state", "", "", "")
       symbol = text_field($0, "symbol")
-      action = text_field($0, "action")
-      strategy = text_field($0, "strategy")
-      score = num_field($0, "model_score")
-      if (ts == "") ts = "?"
-      if (mode == "") mode = "?"
-      if (status == "") status = "?"
-      if (symbol == "") symbol = "?"
-      if (action == "") action = "?"
-      if (strategy == "") strategy = "?"
-      if (score == "") score = "?"
-      print colorize_line("[decision] ts=" ts " mode=" mode " status=" status " symbol=" symbol " action=" action " strategy=" strategy " score=" score " [compacted length=" length($0) "]")
+      action = first_text($0, "action", "master_intent_action", "master_action", "decision", "", "")
+      driver = first_text($0, "strategy", "bot_id", "source_strategy", "leader_strategy", "top_strategy", "")
+      score = first_num($0, "model_score", "master_intent_score", "master_score", "score", "decision_score", "")
+      threshold = first_num($0, "threshold", "master_threshold", "decision_threshold", "", "", "")
+      guard_ok = bool_field($0, "ok")
+      schema_valid = bool_field($0, "schema_valid")
+      blocked_intent = bool_field($0, "master_guard_blocked_intent")
+      reason = text_field($0, "reason")
+      if (mode == "none" || mode == "null") mode = ""
+      if (status == "" && blocked_intent == "true") status = "blocked"
+      if (status == "" && schema_valid == "true") status = "ok"
+      if (status == "" && guard_ok == "true") status = "ok"
+      if (guard_ok == "true") guard = "ok"
+      else if (guard_ok == "false") guard = "check"
+      else guard = ""
+      out = "[decision]"
+      out = append_token(out, "ts", ts)
+      out = append_token(out, "profile", profile)
+      out = append_token(out, "broker", broker)
+      out = append_token(out, "symbol", symbol)
+      out = append_token(out, "action", action)
+      out = append_token(out, "status", status)
+      out = append_token(out, "score", short_num(score))
+      out = append_token(out, "threshold", short_num(threshold))
+      out = append_token(out, "mode", mode)
+      out = append_token(out, "driver", driver)
+      out = append_token(out, "guard", guard)
+      out = append_token(out, "reason", reason)
+      out = append_token(out, "len", human_length(length($0)))
+      print colorize_line(out)
       fflush()
       next
     }
-    if (length($0) > max) {
+    if (length($0) > max && looks_like_json_fragment($0)) {
+      print colorize_line("[json-fragment skipped len=" human_length(length($0)) " source=byte_tail_midline]")
+    } else if (length($0) > max) {
       print colorize_line(substr($0, 1, max) "... [truncated length=" length($0) "]")
     } else {
       print colorize_line($0)
@@ -735,5 +898,12 @@ if [[ "$HEAVY_REQUESTED" == "1" && "$HEAVY_BOOTSTRAP_SNAPSHOT" == "1" ]]; then
   run_filtered_snapshot "$filter_pat" "$HEAVY_BOOTSTRAP_MAX_LINES" || true
   echo "live_feed_following=1 interrupt=ctrl-c"
 fi
+install_live_feed_trap
+start_live_feed_keepalive
 start_heavy_ttl_guard
+set +e
 run_filtered_tail "$filter_pat"
+tail_rc=$?
+set -e
+cleanup_live_feed
+exit "$tail_rc"

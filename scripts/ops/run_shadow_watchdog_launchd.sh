@@ -12,6 +12,9 @@ PROFILE="${BOT_RUNTIME_PROFILE:-live}"
 
 cd "$PROJECT_ROOT"
 
+"$PROJECT_ROOT/.venv312/bin/python" "$PROJECT_ROOT/scripts/ops/apple_silicon_profile.py" apply >/dev/null 2>&1 || true
+"$PROJECT_ROOT/.venv312/bin/python" "$PROJECT_ROOT/scripts/ops/computer_task_intelligence.py" --apply --json >/dev/null 2>&1 || true
+
 if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
   # shellcheck disable=SC1091
   source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" "$PROFILE" --quiet
@@ -132,7 +135,7 @@ if ! schwab_credentials_ready_for_watchdog; then
   WATCH_ARGS+=(--schwab-futures-optional)
 fi
 
-if [[ "${SHADOW_WATCHDOG_DIRECT_CHILD_SLEEVES:-1}" == "1" ]]; then
+if [[ "${SHADOW_WATCHDOG_DIRECT_CHILD_SLEEVES:-0}" == "1" ]]; then
   WATCH_ARGS+=(
     --watch-aggressive-modes
     --watch-dividend
@@ -146,7 +149,6 @@ fi
 
 exec "$PYTHON_BIN" "$PROJECT_ROOT/scripts/shadow_watchdog.py" \
   "${WATCH_ARGS[@]}" \
-  --allow-schwab-standby-heartbeats \
   --interval-seconds "${SHADOW_WATCHDOG_INTERVAL_SECONDS:-20}" \
   --max-restarts-per-window "${SHADOW_WATCHDOG_MAX_RESTARTS_PER_WINDOW:-12}" \
   --restart-window-seconds "${SHADOW_WATCHDOG_RESTART_WINDOW_SECONDS:-3600}" \

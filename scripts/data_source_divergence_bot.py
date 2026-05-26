@@ -3,6 +3,7 @@ import json
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Iterator
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 HEALTH_DIR = PROJECT_ROOT / "governance" / "health"
@@ -47,6 +48,23 @@ def _candidate_master_control_paths(project_root: Path, since: datetime):
             continue
         if day >= min_date:
             yield path
+
+
+def _iter_recent_lines(path: Path, *, tail_bytes: int) -> Iterator[str]:
+    limit = max(int(tail_bytes or 0), 0)
+    if limit <= 0:
+        with path.open("r", encoding="utf-8") as handle:
+            yield from handle
+        return
+
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        start = max(size - limit, 0)
+        handle.seek(start)
+        if start > 0:
+            handle.readline()
+        for raw_line in handle:
+            yield raw_line.decode("utf-8", errors="ignore")
 
 
 def _row_is_simulated(row) -> bool:
@@ -130,7 +148,14 @@ def _summarize_bucket_map(
     return payload
 
 
-def build_divergence_payloads(project_root: Path, *, hours: int, max_relative_spread: float):
+def build_divergence_payloads(
+    project_root: Path,
+    *,
+    hours: int,
+    max_relative_spread: float,
+    tail_bytes: int = 32 * 1024 * 1024,
+    max_files: int = 400,
+):
     since = datetime.now(timezone.utc) - timedelta(hours=max(hours, 1))
 
     global_buckets = defaultdict(list)
@@ -138,35 +163,46 @@ def build_divergence_payloads(project_root: Path, *, hours: int, max_relative_sp
     profile_buckets = defaultdict(lambda: defaultdict(list))
     scope_dirs = defaultdict(set)
     skipped_simulated_rows = 0
+    scanned_files = 0
+    skipped_files = 0
 
-    for path in _candidate_master_control_paths(project_root, since):
+    candidates = sorted(
+        _candidate_master_control_paths(project_root, since),
+        key=lambda candidate: candidate.stat().st_mtime if candidate.exists() else 0.0,
+        reverse=True,
+    )
+    if max_files > 0:
+        skipped_files = max(len(candidates) - int(max_files), 0)
+        candidates = candidates[: int(max_files)]
+
+    for path in candidates:
+        scanned_files += 1
         shadow_dir = path.parent.name
         scope = _scope_for_shadow_dir(shadow_dir)
         scope_dirs[scope].add(shadow_dir)
         try:
-            with path.open("r", encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        row = json.loads(line)
-                    except Exception:
-                        continue
-                    ts = _parse_ts(row.get("timestamp_utc"))
-                    if ts is None or ts < since:
-                        continue
-                    if _row_is_simulated(row):
-                        skipped_simulated_rows += 1
-                        continue
-                    sym = str(row.get("symbol", "") or "").strip().upper()
-                    if not sym:
-                        continue
-                    market = row.get("market", {}) if isinstance(row.get("market", {}), dict) else {}
-                    px = float(market.get("last_price", 0.0) or 0.0)
-                    if px <= 0:
-                        continue
-                    minute = ts.replace(second=0, microsecond=0).isoformat()
-                    global_buckets[_meta_key(symbol=sym, minute=minute)].append(px)
-                    scope_buckets[scope][_meta_key(shadow_dir=shadow_dir, symbol=sym, minute=minute)].append(px)
-                    profile_buckets[shadow_dir][_meta_key(shadow_dir=shadow_dir, symbol=sym, minute=minute)].append(px)
+            for line in _iter_recent_lines(path, tail_bytes=tail_bytes):
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                ts = _parse_ts(row.get("timestamp_utc"))
+                if ts is None or ts < since:
+                    continue
+                if _row_is_simulated(row):
+                    skipped_simulated_rows += 1
+                    continue
+                sym = str(row.get("symbol", "") or "").strip().upper()
+                if not sym:
+                    continue
+                market = row.get("market", {}) if isinstance(row.get("market", {}), dict) else {}
+                px = float(market.get("last_price", 0.0) or 0.0)
+                if px <= 0:
+                    continue
+                minute = ts.replace(second=0, microsecond=0).isoformat()
+                global_buckets[_meta_key(symbol=sym, minute=minute)].append(px)
+                scope_buckets[scope][_meta_key(shadow_dir=shadow_dir, symbol=sym, minute=minute)].append(px)
+                profile_buckets[shadow_dir][_meta_key(shadow_dir=shadow_dir, symbol=sym, minute=minute)].append(px)
         except Exception:
             continue
 
@@ -254,6 +290,13 @@ def build_divergence_payloads(project_root: Path, *, hours: int, max_relative_sp
         "scopes": scope_payloads,
         "profiles": profile_payloads,
         "skipped_simulated_rows": int(skipped_simulated_rows),
+        "scan_control": {
+            "scanned_files": int(scanned_files),
+            "skipped_files": int(skipped_files),
+            "tail_bytes_per_file": int(max(tail_bytes, 0)),
+            "max_files": int(max_files),
+            "bounded_tail_scan": bool(tail_bytes > 0),
+        },
         "cross_profile": cross_profile_payload,
     }
     return global_payload, scope_payloads
@@ -263,6 +306,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Data source divergence bot.")
     parser.add_argument("--hours", type=int, default=2)
     parser.add_argument("--max-relative-spread", type=float, default=0.03)
+    parser.add_argument("--tail-bytes", type=int, default=32 * 1024 * 1024)
+    parser.add_argument("--max-files", type=int, default=400)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -270,6 +315,8 @@ def main() -> int:
         PROJECT_ROOT,
         hours=int(args.hours),
         max_relative_spread=float(args.max_relative_spread),
+        tail_bytes=int(args.tail_bytes),
+        max_files=int(args.max_files),
     )
 
     HEALTH_DIR.mkdir(parents=True, exist_ok=True)

@@ -146,6 +146,39 @@ def test_aggregate_local_micro_context_emits_richer_session_features(tmp_path: P
     assert spy["etf_fund_family_creation_pressure_norm"] > 0.0
 
 
+def test_aggregate_local_micro_context_reads_local_fallback_decision_lane(tmp_path: Path) -> None:
+    day_stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+    day_path = (
+        tmp_path
+        / "local_fallback_storage"
+        / "decisions"
+        / "shadow_intraday_aggressive_equities"
+        / f"trade_decisions_{day_stamp}.jsonl"
+    )
+    day_path.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "strategy": "grand_master_bot",
+        "symbol": "COIN",
+        "action": "BUY",
+        "quantity": 4,
+        "features": {
+            "pct_from_close": 0.012,
+            "mom_5m": 0.004,
+            "vol_30m": 0.02,
+            "spread_bps": 5.0,
+            "bid_size": 500.0,
+            "ask_size": 600.0,
+        },
+    }
+    day_path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    out = _aggregate_local_micro_context(tmp_path, lookback_days=1, symbols={"COIN"})
+
+    assert "COIN" in out
+    assert out["COIN"]["market_micro_range_expansion_norm"] > 0.0
+
+
 def test_parse_nasdaq_trade_halt_rows_reads_pipe_delimited_feed() -> None:
     raw = "\n".join(
         [

@@ -127,7 +127,7 @@ def test_data_plane_recovery_controller_clears_snapshot_failures_after_fresh_cac
         },
     )
     _write_json(health / "external_backlog_drain_latest.json", {"overall_status": "ready"})
-    _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 0})
+    _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 66})
     _write_json(health / "storage_tier_policy_latest.json", {"pressure": {"hot_path_over_budget_bytes": 0}})
     _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "ready"}})
     _write_json(
@@ -179,6 +179,38 @@ def test_data_plane_recovery_controller_marks_guarded_recovery_when_writer_hando
     assert payload["recovery_state"] == "recovering_under_guard"
     assert payload["backlog_recovery_contract"]["market_hours_guard"] is True
     assert payload["writer_handoff_contract"]["writer_service_active"] is True
+
+
+def test_data_plane_recovery_controller_trusts_storage_control_steady_state_over_stale_hot_path(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(health / "incident_timeline_latest.json", {"recent_incidents": []})
+    _write_json(health / "external_backlog_drain_latest.json", {"overall_status": "ready"})
+    _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 66})
+    _write_json(health / "storage_tier_policy_latest.json", {"pressure": {"hot_path_over_budget_bytes": 100}})
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "backpressure_quality_score": 100.0,
+            "recovery_quality_score": 96.0,
+            "steady_state": {"target_status": {"steady_state_ready": True}},
+            "external_route_verification": {"verification_state": "ready"},
+        },
+    )
+    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "ready"}})
+    _write_json(health / "sql_link_service_progress_latest.json", {"status": "running", "current_step": "shard_linking"})
+
+    payload = data_plane_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["recovery_state"] == "stable"
+    assert payload["queue_depth"] == 66
+    assert payload["small_steady_queue"] is True
+    assert payload["hot_path_over_budget_bytes"] == 0
+    assert payload["raw_hot_path_over_budget_bytes"] == 100
+    assert payload["storage_steady_state_ready"] is True
 
 
 def test_lane_thaw_controller_holds_lane_during_active_cooldown(tmp_path: Path) -> None:

@@ -402,6 +402,61 @@ CREATIVE_SESSION_OVERLAYS.update(
                 "FINAL_CUT_MEDIA_PRIORITY": "1",
             }
         },
+        "music_playback": {
+            "__default__": {
+                "SQL_LINK_SERVICE_INTERVAL_SECONDS": "150",
+                "SQL_LINK_SERVICE_JSON_FILE_SYNC_MIN_INTERVAL_SECONDS": "900",
+                "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS": "900",
+                "SQL_LINK_SERVICE_QUEUE_MIN_INTERVAL_SECONDS": "2400",
+                "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "36000",
+                "SQL_LINK_SERVICE_QUEUE_BATCH_SIZE": "22000",
+                "ONE_NUMBERS_REFRESH_INTERVAL_SECONDS": "1500",
+                "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "720",
+                "DATA_SOURCE_DIVERGENCE_REFRESH_INTERVAL_SECONDS": "1500",
+                "COINBASE_SNAPSHOT_MAX_WORKERS": "1",
+                "ASYNC_PIPELINE_WORKERS": "1",
+                "RUNTIME_FEATURE_CACHE_MAX_ENTRIES": "32",
+                "RUNTIME_SLOW_BOT_CACHE_MAX_SYMBOLS": "8",
+                "RUNTIME_TRAIN_BATCH_SIZE_CAP": "24",
+                "RUNTIME_TRAIN_MAX_SAMPLES": "3500",
+                "SQLITE_TEMP_STORE_MODE": "FILE",
+                "SQLITE_CACHE_SIZE_KB": "4096",
+                "SQLITE_MMAP_SIZE_MB": "16",
+                "BOT_OPS_SQLITE_TEMP_STORE_MODE": "FILE",
+                "BOT_OPS_SQLITE_CACHE_SIZE_KB": "1024",
+                "BOT_OPS_SQLITE_MMAP_SIZE_MB": "8",
+                "TOP_BOT_PAPER_TRADING_TOP_N": "1",
+                "TOP_BOT_PAPER_TRADING_OPTIONS_TOP_N": "0",
+                "CREATIVE_AUDIO_PRIORITY": "1",
+                "AUDIO_PLAYBACK_PRIORITY": "1",
+                "MUSIC_PLAYBACK_PRIORITY": "1",
+                "ITUNES_PLAYBACK_PRIORITY": "1",
+            }
+        },
+        "music_playback_hot": {
+            "__default__": {
+                "SQL_LINK_SERVICE_INTERVAL_SECONDS": "240",
+                "SQL_LINK_SERVICE_JSON_FILE_SYNC_MIN_INTERVAL_SECONDS": "1200",
+                "SQL_LINK_SERVICE_AUTO_HOT_RETENTION": "0",
+                "SQL_LINK_SERVICE_AUTO_QUEUE_RETENTION": "0",
+                "SQL_LINK_SERVICE_AUTO_LOCAL_FALLBACK_PRUNE": "0",
+                "ONE_NUMBERS_REFRESH_INTERVAL_SECONDS": "2400",
+                "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "1200",
+                "DATA_SOURCE_DIVERGENCE_REFRESH_INTERVAL_SECONDS": "2400",
+                "COINBASE_SNAPSHOT_MAX_WORKERS": "1",
+                "ASYNC_PIPELINE_WORKERS": "1",
+                "RUNTIME_FEATURE_CACHE_MAX_ENTRIES": "20",
+                "RUNTIME_SLOW_BOT_CACHE_MAX_SYMBOLS": "6",
+                "RUNTIME_TRAIN_BATCH_SIZE_CAP": "16",
+                "RUNTIME_TRAIN_MAX_SAMPLES": "2500",
+                "TOP_BOT_PAPER_TRADING_TOP_N": "1",
+                "TOP_BOT_PAPER_TRADING_OPTIONS_TOP_N": "0",
+                "CREATIVE_AUDIO_PRIORITY": "1",
+                "AUDIO_PLAYBACK_PRIORITY": "1",
+                "MUSIC_PLAYBACK_PRIORITY": "1",
+                "ITUNES_PLAYBACK_PRIORITY": "1",
+            }
+        },
         "cooldown": {
             "__default__": {
                 "SQL_LINK_SERVICE_INTERVAL_SECONDS": "150",
@@ -1017,6 +1072,8 @@ def _creative_session_summary(resource_guard: dict[str, Any]) -> dict[str, Any]:
             kind = "logic_pro_hot" if level == "hot" else "logic_pro"
         elif "final cut pro" in lowered_names:
             kind = "final_cut_pro_hot" if level == "hot" else "final_cut_pro"
+        elif lowered_names.intersection({"music", "itunes"}):
+            kind = "music_playback_hot" if level == "hot" else "music_playback"
         else:
             kind = level if level != "none" else "none"
     return {
@@ -1181,7 +1238,7 @@ def _recommended_profile(
         reasons.append(f"creative_session_{creative_key or 'dual_pro'}")
         creative_overlay = _creative_session_overlay(creative_session, base_tier)
     elif creative_level == "hot":
-        default_hot_profile = "constrained" if creative_key in {"logic_pro_hot", "final_cut_pro_hot"} else "air_safe"
+        default_hot_profile = "constrained" if creative_key in {"logic_pro_hot", "final_cut_pro_hot", "music_playback_hot"} else "air_safe"
         recommended = _cap_profile(
             recommended,
             _preferred_env_value("MEMORY_EFFICIENCY_CREATIVE_HOT_PROFILE", default_hot_profile, env_overrides),
@@ -1203,6 +1260,9 @@ def _recommended_profile(
                 "air_safe",
                 env_overrides,
             )
+        elif creative_key == "music_playback":
+            active_profile_env = "MEMORY_EFFICIENCY_CREATIVE_MUSIC_PROFILE"
+            active_profile_default = "air_safe"
         recommended = _cap_profile(
             recommended,
             _preferred_env_value(active_profile_env, active_profile_default, env_overrides),

@@ -25,6 +25,9 @@ def test_sleeve_mechanics_report_explains_launch_and_candidates() -> None:
     candidate_names = {str(row.get("name")) for row in payload["expansion_candidates"]}
     assert "convertible_bond_arbitrage" in candidate_names
     assert "intraday_momentum_muscle" in candidate_names
+    assert "volatility_risk_premium_harvesting" in candidate_names
+    assert "cliquet_ratchet_options" in candidate_names
+    assert "bermudan_exercise_monte_carlo_policy" in candidate_names
 
 
 def test_write_sleeve_mechanics_report_creates_artifacts(monkeypatch, tmp_path: Path) -> None:

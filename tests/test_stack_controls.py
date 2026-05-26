@@ -79,6 +79,16 @@ def test_run_all_sleeves_uses_signal_handlers() -> None:
     ]
 
 
+def test_run_all_sleeves_child_nice_targets_are_parent_relative() -> None:
+    assert run_all_sleeves._relative_nice_increment_for_target(8, parent_nice=5) == 3
+    assert run_all_sleeves._nice_prefix_for_target(8, parent_nice=5) == ["nice", "-n", "3"]
+
+
+def test_run_all_sleeves_child_nice_does_not_try_to_lift_above_parent() -> None:
+    assert run_all_sleeves._relative_nice_increment_for_target(4, parent_nice=5) == 0
+    assert run_all_sleeves._nice_prefix_for_target(4, parent_nice=5) == ["nice", "-n", "0"]
+
+
 def test_paper_trade_lock_disables_live_executor(monkeypatch) -> None:
     monkeypatch.setenv("PAPER_TRADE_LOCK", "1")
     monkeypatch.setattr(run_all_sleeves, "_emit_incident_snapshot", lambda *_args, **_kwargs: None)
@@ -171,6 +181,210 @@ def test_run_all_sleeves_heartbeat_watch_detects_stale_payload(tmp_path) -> None
 
     assert stale is True
     assert reason == "payload_stale"
+
+
+def test_run_all_sleeves_launcher_health_marks_degraded_children() -> None:
+    class FakeProc:
+        def __init__(self, pid: int, exit_code):
+            self.pid = pid
+            self._exit_code = exit_code
+
+        def poll(self):
+            return self._exit_code
+
+    specs = {
+        "baseline_parallel": run_all_sleeves.JobSpec("baseline_parallel", [], {}, breaker_group="core"),
+        "bond": run_all_sleeves.JobSpec("bond", [], {}, breaker_group="core"),
+        "fx": run_all_sleeves.JobSpec("fx", [], {}, breaker_group="core"),
+    }
+    procs = {
+        "baseline_parallel": FakeProc(101, None),
+        "bond": FakeProc(102, 1),
+    }
+
+    payload = run_all_sleeves._launcher_health_payload(
+        specs=specs,
+        procs=procs,
+        proc_started_at={"baseline_parallel": 50.0, "bond": 60.0},
+        restart_history={"bond": [80.0]},
+        quarantined_jobs={},
+        launcher_started_at=40.0,
+        phase="running",
+        note="test",
+    )
+
+    assert payload["overall_status"] == "degraded"
+    assert payload["expected_job_count"] == 3
+    assert payload["running_job_count"] == 1
+    assert payload["exited_job_count"] == 1
+    assert payload["missing_job_count"] == 1
+    assert payload["repair_packet"]["status"] == "needs_repair"
+    assert payload["repair_packet"]["problem_job_count"] == 2
+    assert "sleeve_launcher_parent_watchdog" in [row["name"] for row in payload["repair_infrabots"]]
+    states = {row["name"]: row["state"] for row in payload["jobs"]}
+    assert states == {"baseline_parallel": "running", "bond": "exited", "fx": "missing"}
+
+
+def test_run_all_sleeves_launcher_health_does_not_repair_not_yet_spawned_starting_jobs() -> None:
+    class FakeProc:
+        def __init__(self, pid: int, exit_code):
+            self.pid = pid
+            self._exit_code = exit_code
+
+        def poll(self):
+            return self._exit_code
+
+    specs = {
+        "baseline_parallel": run_all_sleeves.JobSpec("baseline_parallel", [], {}, breaker_group="core"),
+        "dividend": run_all_sleeves.JobSpec("dividend", [], {}, breaker_group="core"),
+        "bond": run_all_sleeves.JobSpec("bond", [], {}, breaker_group="core"),
+    }
+    procs = {
+        "baseline_parallel": FakeProc(101, None),
+        "dividend": FakeProc(102, 0),
+    }
+
+    payload = run_all_sleeves._launcher_health_payload(
+        specs=specs,
+        procs=procs,
+        proc_started_at={"baseline_parallel": 50.0, "dividend": 60.0},
+        restart_history={},
+        quarantined_jobs={},
+        launcher_started_at=40.0,
+        phase="starting",
+        note="test",
+    )
+
+    assert payload["repair_packet"]["status"] == "clear"
+    assert payload["repair_packet"]["problem_job_count"] == 0
+
+
+def test_run_all_sleeves_launcher_health_treats_fanout_parked_jobs_as_policy() -> None:
+    class FakeProc:
+        def __init__(self, pid: int, exit_code):
+            self.pid = pid
+            self._exit_code = exit_code
+
+        def poll(self):
+            return self._exit_code
+
+    specs = {
+        "baseline_parallel": run_all_sleeves.JobSpec("baseline_parallel", [], {}, breaker_group="core"),
+        "volatility": run_all_sleeves.JobSpec("volatility", [], {}, breaker_group="core"),
+        "aggressive_modes": run_all_sleeves.JobSpec("aggressive_modes", [], {}, breaker_group="core"),
+    }
+    procs = {
+        "baseline_parallel": FakeProc(101, None),
+        "volatility": FakeProc(102, -15),
+        "aggressive_modes": FakeProc(103, -15),
+    }
+
+    payload = run_all_sleeves._launcher_health_payload(
+        specs=specs,
+        procs=procs,
+        proc_started_at={"baseline_parallel": 50.0, "volatility": 60.0, "aggressive_modes": 70.0},
+        restart_history={},
+        quarantined_jobs={},
+        launcher_started_at=40.0,
+        phase="running",
+        note="test",
+        policy_parked_jobs={"volatility", "aggressive_modes"},
+    )
+
+    assert payload["overall_status"] == "ready"
+    assert payload["policy_parked_job_count"] == 2
+    assert payload["repair_packet"]["status"] == "clear"
+    assert payload["repair_packet"]["problem_job_count"] == 0
+    assert payload["launcher_readiness_contract"]["readiness_status"] == "stable_with_parked_lanes"
+    assert payload["launcher_readiness_contract"]["max_new_collect_only_sleeves"] == 3
+    parked = {row["name"]: row["policy_parked"] for row in payload["jobs"]}
+    assert parked["volatility"] is True
+    assert parked["aggressive_modes"] is True
+
+
+def test_run_all_sleeves_launcher_health_treats_clean_exits_as_session_parked() -> None:
+    class FakeProc:
+        def __init__(self, pid: int, exit_code):
+            self.pid = pid
+            self._exit_code = exit_code
+
+        def poll(self):
+            return self._exit_code
+
+    specs = {
+        "baseline_parallel": run_all_sleeves.JobSpec("baseline_parallel", [], {}, breaker_group="core"),
+        "volatility": run_all_sleeves.JobSpec("volatility", [], {}, breaker_group="core"),
+    }
+    procs = {
+        "baseline_parallel": FakeProc(101, None),
+        "volatility": FakeProc(102, 0),
+    }
+
+    payload = run_all_sleeves._launcher_health_payload(
+        specs=specs,
+        procs=procs,
+        proc_started_at={"baseline_parallel": 50.0, "volatility": 60.0},
+        restart_history={},
+        quarantined_jobs={},
+        launcher_started_at=40.0,
+        phase="running",
+        note="test",
+        clean_exited_jobs={"volatility"},
+    )
+
+    assert payload["overall_status"] == "ready"
+    assert payload["clean_exited_job_count"] == 1
+    assert payload["repair_packet"]["status"] == "clear"
+    assert payload["repair_packet"]["problem_job_count"] == 0
+    assert payload["launcher_readiness_contract"]["readiness_status"] == "stable_with_parked_lanes"
+    clean = {row["name"]: row["clean_exited"] for row in payload["jobs"]}
+    assert clean["volatility"] is True
+
+
+def test_run_all_sleeves_process_fanout_policy_parks_optional_sleeves(tmp_path: Path) -> None:
+    override = tmp_path / "override.env"
+    override.write_text(
+        "\n".join(
+            [
+                "PROCESS_FANOUT_GUARD_ACTIVE=1",
+                "RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES=0",
+                "OPS_WATCHDOG_ALL_SLEEVES_WITH_AGGRESSIVE=0",
+                "RUN_ALL_SLEEVES_WITH_DIVIDEND_CAPTURE=0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    policy = run_all_sleeves._process_fanout_policy(override)
+
+    assert run_all_sleeves._job_parked_by_fanout_policy("volatility", policy) is True
+    assert run_all_sleeves._job_parked_by_fanout_policy("aggressive_modes", policy) is True
+    assert run_all_sleeves._job_parked_by_fanout_policy("dividend_capture", policy) is True
+    assert run_all_sleeves._job_parked_by_fanout_policy("baseline_parallel", policy) is False
+
+
+def test_run_all_sleeves_applies_process_fanout_policy_before_building_specs() -> None:
+    class Args:
+        with_specialized_sleeves = True
+        with_aggressive_modes = True
+        with_dividend_capture = True
+
+    args = Args()
+
+    changes = run_all_sleeves._apply_process_fanout_policy_to_args(
+        args,
+        {
+            "active": True,
+            "specialized_enabled": False,
+            "aggressive_enabled": False,
+            "dividend_capture_enabled": False,
+        },
+    )
+
+    assert changes == ["specialized_sleeves", "aggressive_modes", "dividend_capture"]
+    assert args.with_specialized_sleeves is False
+    assert args.with_aggressive_modes is False
+    assert args.with_dividend_capture is False
 
 
 def test_run_all_sleeves_disk_gate_uses_external_runtime_storage(monkeypatch, tmp_path) -> None:
@@ -290,10 +504,26 @@ def test_livefeed_refresh_starts_fx_when_all_source_requested() -> None:
     text = _read(OPSCTL_PATH)
 
     assert 'if [[ "$SOURCE" == "fx" || "$SOURCE" == "all" ]]; then' in text
+    assert '"$PROJECT_ROOT/scripts/ops/opsctl.sh" fx-start --paper --live-data' in text
     assert '"$PROJECT_ROOT/scripts/ops/opsctl.sh" fx-start --paper --force-restart --live-data' in text
     assert 'if [[ "$SOURCE" == "fx" || "$SOURCE" == "schwab" || "$SOURCE" == "all" ]]; then' not in text
-    assert "livefeed-refresh|live-feed-refresh [paper default] [--dry-run]" in text
+    assert "livefeed-refresh|live-feed-refresh [paper default] [--dry-run] [--force-restart]" in text
     assert "livefeed_refresh_completed source=$SOURCE" in text
+
+
+def test_feed_refresh_is_supervised_ensure_by_default() -> None:
+    text = _read(OPSCTL_PATH)
+
+    assert "LIVEFEED_FORCE_RESTART=0" in text
+    assert "--force-restart) LIVEFEED_FORCE_RESTART=1" in text
+    assert "FEED_REFRESH_LOCK_DIR" in text
+    assert "feed_refresh_already_running" in text
+    assert "all_sleeves_running" in text
+    assert "action=kept_running" in text
+    assert 'if [[ "$LIVEFEED_FORCE_RESTART" == "1" ]]; then\n        kill_schwab_live_loops' in text
+    assert '"$PROJECT_ROOT/scripts/ops/opsctl.sh" schwab-futures-start --paper --live-data' in text
+    assert '"$PROJECT_ROOT/scripts/ops/opsctl.sh" coinbase-start --paper --live-data' in text
+    assert "force_restart=$LIVEFEED_FORCE_RESTART" in text
 
 
 def test_opsctl_exposes_commands_hygiene() -> None:
@@ -364,6 +594,24 @@ def test_opsctl_exposes_commands_hygiene() -> None:
     assert "platform-settlement-stabilization|settlement-stabilization" in text
     assert "platform_settlement_stabilization.py" in text
     assert ".env.platform_settlement_stabilization_override" in _read(PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh")
+
+
+def test_opsctl_exposes_backlog_pcore_accelerator() -> None:
+    text = _read(OPSCTL_PATH)
+
+    assert "backlog-pcore-accelerator|pcore-backlog-accelerator|backlog-accelerator" in text
+    assert "backlog_pcore_accelerator.py" in text
+    assert "backlog-pcore-accelerator [--apply] [--json]" in text
+
+
+def test_opsctl_exposes_income_operating_platform() -> None:
+    text = _read(OPSCTL_PATH)
+
+    assert "income-operating-platform|income-platform-control|income-reliability|income-control" in text
+    assert "income_operating_platform.py" in text
+    assert "account-policy-context|account-rules|account-context" in text
+    assert "account_policy_context.py" in text
+    assert "income-operating-platform|income-platform-control [--apply] [--json]" in text
 
 
 def test_macro_context_sync_does_not_pass_json_to_bls_helper() -> None:
@@ -523,6 +771,14 @@ def test_paper_mirror_all_active_defaults_to_calm_mode() -> None:
     assert "--require-coinbase-futures" in opsctl
 
 
+def test_snapshot_debug_reason_argument_is_restart_storm_safe() -> None:
+    shadow_loop = _read(PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py")
+
+    assert "def _record_snapshot_debug(symbol: str, event_reason: str, **extra: Any) -> None:" in shadow_loop
+    assert '"reason": event_reason,' in shadow_loop
+    assert 'row["detail_reason"] = detail_reason' in shadow_loop
+
+
 def test_runtime_env_has_keychain_handoff_and_calm_support_defaults() -> None:
     runtime_env = _read(PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh")
 
@@ -534,6 +790,7 @@ def test_runtime_env_has_keychain_handoff_and_calm_support_defaults() -> None:
     assert 'ASYNC_PIPELINE_WORKERS="${ASYNC_PIPELINE_WORKERS:-4}"' in runtime_env
     assert 'OPS_SUPPORT_JOBS_BACKGROUND_POLICY="${OPS_SUPPORT_JOBS_BACKGROUND_POLICY:-1}"' in runtime_env
     assert 'SUPPORT_MAINTENANCE_CONCURRENCY="${SUPPORT_MAINTENANCE_CONCURRENCY:-2}"' in runtime_env
+    assert runtime_env.index(".env.guard_intelligence_override") < runtime_env.index(".env.process_fanout_guard_override")
 
 
 def test_shadow_watchdog_defaults_cover_fx_and_dividend_capture() -> None:
@@ -549,7 +806,7 @@ def test_shadow_watchdog_defaults_cover_fx_and_dividend_capture() -> None:
     assert "RUN_ALL_SLEEVES_WITH_FX" in run_all_sleeves
     assert "RUN_ALL_SLEEVES_WITH_DIVIDEND_CAPTURE" in run_all_sleeves
     assert "SHADOW_WATCHDOG_DIRECT_CHILD_SLEEVES" in run_watchdog
-    assert 'SHADOW_WATCHDOG_DIRECT_CHILD_SLEEVES:-1' in run_watchdog
+    assert 'SHADOW_WATCHDOG_DIRECT_CHILD_SLEEVES:-0' in run_watchdog
     assert "--watch-dividend-capture" in run_watchdog
 
 
@@ -604,9 +861,25 @@ def test_live_feed_tail_has_memory_aware_heavy_defaults() -> None:
     assert "[ALERT]" in text
     assert "[WATCH]" in text
     assert "[OK]" in text
+    assert "Do not trap EXIT here" in text
+    assert "trap 'cleanup_live_feed; exit 130' INT" in text
+    assert "trap 'cleanup_live_feed' EXIT" not in text
+    assert "append_decision_channel_dir" in text
+    assert "governance/channels/decision/$dir/decision_*.jsonl" in text
+    assert "append_trade_decision_dir \"paper\"" in text
+    assert "local_fallback_storage/decisions/$dir/trade_decisions_*.jsonl" in text
     assert "[FLOW]" in text
     assert "append_decision_file" in text
-    assert "[decision] ts=" in text
+    assert 'out = "[decision]"' in text
+    assert 'append_token(out, "ts", ts)' in text
+    assert "master_intent_action" in text
+    assert "master_score" in text
+    assert "shadow_profile" in text
+    assert "driver" in text
+    assert "human_length" in text
+    assert "looks_like_json_fragment" in text
+    assert "[json-fragment skipped" in text
+    assert "strategy=? score=?" not in text
     assert "--heavy" in text
     assert '"$SOURCE" == "infra"' in text
     assert "append_heavy_health_files" in text

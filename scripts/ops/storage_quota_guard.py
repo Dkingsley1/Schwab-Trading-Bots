@@ -38,6 +38,17 @@ FAMILY_TO_ROLE = {
 }
 
 
+def _round_gb(value: float) -> float:
+    return round(float(value), 3)
+
+
+def _safe_float(raw: Any, default: float = 0.0) -> float:
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
 def _role_bytes(storage_tier: dict[str, Any], role: str) -> int:
     by_role = storage_tier.get("by_service_role") if isinstance(storage_tier.get("by_service_role"), dict) else {}
     return int(((by_role.get(role) or {}).get("bytes", 0)) or 0)
@@ -46,6 +57,24 @@ def _role_bytes(storage_tier: dict[str, Any], role: str) -> int:
 def _family_bytes(storage_tier: dict[str, Any], family: str) -> int:
     by_family = storage_tier.get("by_family") if isinstance(storage_tier.get("by_family"), dict) else {}
     return int(((by_family.get(family) or {}).get("bytes", 0)) or 0)
+
+
+def _quota_lane_action(lane: dict[str, Any]) -> str:
+    family = str(lane.get("family") or "")
+    status = str(lane.get("status") or "")
+    if status == "ready":
+        return ""
+    if family == "decisions":
+        return "prioritize ingestion-storage-control and the core decision drainer before widening decision log producers"
+    if family == "governance_telemetry":
+        return "shed verbose governance telemetry by running governance-telemetry-compactor to rotate oversized governance channel telemetry before trusting the support telemetry quota"
+    if family == "decision_explanations":
+        return "tighten explanation retention or cold-tier offload before hot-path quotas spill further"
+    if family == "sql_link_shards":
+        return "checkpoint and compact sql_link shards before the stateful_sql quota becomes runtime blocking"
+    if family == "artifact_store":
+        return "garbage-collect artifact store blobs proactively during long-run windows"
+    return f"reduce {family} storage before allowing growth lanes to widen"
 
 
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
@@ -60,6 +89,10 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         used_gb = float(bytes_used) / float(1024**3)
         soft_gb = float(quota["soft"])
         hard_gb = float(quota["hard"])
+        over_soft_gb = max(used_gb - soft_gb, 0.0)
+        over_hard_gb = max(used_gb - hard_gb, 0.0)
+        soft_ratio = used_gb / max(soft_gb, 0.001)
+        hard_ratio = used_gb / max(hard_gb, 0.001)
         status = "ready"
         if used_gb >= hard_gb:
             status = "blocked"
@@ -70,9 +103,13 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         lanes.append(
             {
                 "family": family,
-                "used_gb": round(used_gb, 3),
+                "used_gb": _round_gb(used_gb),
                 "soft_quota_gb": soft_gb,
                 "hard_quota_gb": hard_gb,
+                "over_soft_gb": _round_gb(over_soft_gb),
+                "over_hard_gb": _round_gb(over_hard_gb),
+                "soft_ratio": round(soft_ratio, 3),
+                "hard_ratio": round(hard_ratio, 3),
                 "status": status,
             }
         )
@@ -83,13 +120,21 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     elif soft_breaches > 0:
         overall_status = "degraded"
 
-    recommended_actions = ordered_unique(
-        [
-            "tighten explanation retention or cold-tier offload before hot-path quotas spill further" if any(row["family"] == "decision_explanations" and row["status"] != "ready" for row in lanes) else "",
-            "checkpoint and compact sql_link shards before the stateful_sql quota breaches become runtime blocking" if any(row["family"] == "sql_link_shards" and row["status"] != "ready" for row in lanes) else "",
-            "garbage-collect artifact store blobs proactively during long-run windows" if any(row["family"] == "artifact_store" and row["status"] != "ready" for row in lanes) else "",
-        ]
+    blocked_lanes = [row for row in lanes if str(row.get("status") or "") == "blocked"]
+    degraded_lanes = [row for row in lanes if str(row.get("status") or "") == "degraded"]
+    ranked_breaches = sorted(
+        [*blocked_lanes, *degraded_lanes],
+        key=lambda row: (
+            _safe_float(row.get("over_hard_gb"), 0.0),
+            _safe_float(row.get("over_soft_gb"), 0.0),
+            _safe_float(row.get("hard_ratio"), 0.0),
+        ),
+        reverse=True,
     )
+    recommended_actions = ordered_unique(_quota_lane_action(row) for row in ranked_breaches)
+    if blocked_lanes:
+        recommended_actions.append("keep expansion and heavy training gated until blocked storage quota lanes fall below hard quota")
+    recommended_actions = ordered_unique(recommended_actions)
 
     return {
         "timestamp_utc": iso_now(),
@@ -100,6 +145,10 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "hard_breaches": hard_breaches,
             "soft_breaches": soft_breaches,
             "tracked_lane_count": len(lanes),
+            "blocked_families": [str(row.get("family") or "") for row in blocked_lanes],
+            "degraded_families": [str(row.get("family") or "") for row in degraded_lanes],
+            "worst_over_hard_gb": _round_gb(max((_safe_float(row.get("over_hard_gb"), 0.0) for row in lanes), default=0.0)),
+            "worst_hard_ratio": round(max((_safe_float(row.get("hard_ratio"), 0.0) for row in lanes), default=0.0), 3),
         },
         "lanes": lanes,
         "infra_bots": ["storage_quota_guard", "storage_tier_policy", "retention_debt_sheriff"],

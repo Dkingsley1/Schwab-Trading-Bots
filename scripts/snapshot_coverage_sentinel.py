@@ -8,6 +8,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MASTER_CONTROL_DAY_RE = re.compile(r"master_control_(\d{8})\.jsonl$")
 REVERSE_SCAN_BLOCK_BYTES = 256 * 1024
+RUNTIME_TRAINING_SNAPSHOT_REL = Path("exports/training/runtime_training_snapshot_latest.jsonl")
 
 
 def _parse_ts(raw: Any):
@@ -67,6 +68,21 @@ def _candidate_master_control_files(project_root: Path, since: datetime) -> list
     ]
     files.sort(key=lambda path: (path.parent.name, path.name))
     return files
+
+
+def _runtime_training_snapshot_file(project_root: Path) -> Path:
+    health_snapshot = project_root / "governance" / "health" / "runtime_training_snapshot_latest.json"
+    try:
+        payload = json.loads(health_snapshot.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+    rows_path = str(payload.get("rows_path") or "").strip() if isinstance(payload, dict) else ""
+    if rows_path:
+        candidate = Path(rows_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = (project_root / candidate).resolve()
+        return candidate
+    return project_root / RUNTIME_TRAINING_SNAPSHOT_REL
 
 
 def _iter_recent_jsonl_rows(path: Path, since: datetime, *, block_bytes: int = REVERSE_SCAN_BLOCK_BYTES):
@@ -129,14 +145,34 @@ def build_payload(
     snapshot_rows = 0
     unique_snapshot_ids: set[str] = set()
     candidate_files = _candidate_master_control_files(project_root, since)
+    fallback_sources: list[str] = []
+    primary_sources: list[str] = []
 
-    for path in candidate_files:
+    runtime_snapshot = _runtime_training_snapshot_file(project_root)
+    scan_paths: list[Path] = []
+    if runtime_snapshot.exists() and _file_overlaps_window(runtime_snapshot, since):
+        scan_paths = [runtime_snapshot]
+        primary_sources.append(str(runtime_snapshot))
+    else:
+        scan_paths = list(candidate_files)
+
+    for path in scan_paths:
         for row in _iter_recent_jsonl_rows(path, since):
             total_rows += 1
             snapshot_id = row.get("snapshot_id")
             if snapshot_id:
                 snapshot_rows += 1
                 unique_snapshot_ids.add(str(snapshot_id))
+
+    if total_rows <= 0:
+        if runtime_snapshot.exists() and runtime_snapshot not in scan_paths:
+            fallback_sources.append(str(runtime_snapshot))
+            for row in _iter_recent_jsonl_rows(runtime_snapshot, since):
+                total_rows += 1
+                snapshot_id = row.get("snapshot_id")
+                if snapshot_id:
+                    snapshot_rows += 1
+                    unique_snapshot_ids.add(str(snapshot_id))
 
     unique_count = len(unique_snapshot_ids)
     expected_floor = max(expected_symbols, 1)
@@ -148,6 +184,10 @@ def build_payload(
         "window_hours": int(hours),
         "expected_symbols_floor": expected_floor,
         "files_considered": len(candidate_files),
+        "primary_sources": primary_sources,
+        "primary_source_count": len(primary_sources),
+        "fallback_sources": fallback_sources,
+        "fallback_source_count": len(fallback_sources),
         "rows_scanned": total_rows,
         "rows_with_snapshot_id": snapshot_rows,
         "unique_snapshot_ids": unique_count,

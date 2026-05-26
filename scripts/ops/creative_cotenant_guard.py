@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,17 @@ DEFAULT_STATE_PATH = PROJECT_ROOT / "governance" / "health" / "creative_cotenant
 DEFAULT_PAUSE_PATH = PROJECT_ROOT / "governance" / "health" / "creative_heavy_research_pause_latest.json"
 DEFAULT_RESOURCE_GUARD_PATH = PROJECT_ROOT / "governance" / "health" / "resource_guard_latest.json"
 HEAVY_RESEARCH_PATTERNS = [
+    "scripts/run_all_sleeves.py",
+    "scripts/run_parallel_shadows.py",
+    "scripts/run_parallel_aggressive_modes.py",
     "scripts/run_shadow_training_loop.py",
+    "scripts/run_dividend_shadow.py",
+    "scripts/run_dividend_capture_shadow.py",
+    "scripts/run_bond_shadow.py",
+    "scripts/run_fx_shadow.py",
+    "scripts/collect_market_crypto_correlation_context.py",
+    "scripts/collect_market_micro_context.py",
+    "scripts/ops/bounded_market_micro_sync.py",
     "scripts/retrain_orchestrator.py",
     "scripts/retrain_lane_scheduler.py",
     "scripts/weekly_retrain.py",
@@ -43,6 +54,11 @@ HEAVY_RESEARCH_PATTERNS = [
     "scripts/sql_hot_retention.py",
     "scripts/sql_queue_retention.py",
 ]
+PROTECTED_MANUAL_TRAINING_PROFILES = {
+    "coverage_micro_canary",
+    "coverage_small_canary",
+    "coverage_canary",
+}
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -78,6 +94,8 @@ def _creative_mode_label(kind: str) -> str:
         "logic_pro_hot": "Logic Pro hot",
         "final_cut_pro": "Final Cut Pro",
         "final_cut_pro_hot": "Final Cut Pro hot",
+        "music_playback": "Music/iTunes playback",
+        "music_playback_hot": "Music/iTunes playback hot",
         "dual_pro": "Logic Pro + Final Cut Pro",
         "cooldown": "creative cooldown",
         "none": "normal",
@@ -237,6 +255,33 @@ def _terminate_pids(pids: list[int]) -> list[dict[str, Any]]:
     return rows
 
 
+def _command_for_pid(pid: int) -> str:
+    try:
+        completed = subprocess.run(
+            ["ps", "-p", str(int(pid)), "-o", "command="],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except Exception:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return " ".join((completed.stdout or "").split())
+
+
+def _is_protected_manual_training(command: str) -> bool:
+    text = " ".join(str(command or "").split())
+    if "scripts/weekly_retrain.py" not in text:
+        return False
+    if "--include-bot-ids" not in text or "--skip-master-update" not in text:
+        return False
+    if "--force-all-targets" in text or "full_overnight" in text:
+        return False
+    return any(f"--retrain-profile {profile}" in text for profile in PROTECTED_MANUAL_TRAINING_PROFILES)
+
+
 def _matching_heavy_research_processes() -> list[dict[str, Any]]:
     current_pid = os.getpid()
     rows: list[dict[str, Any]] = []
@@ -262,23 +307,45 @@ def _matching_heavy_research_processes() -> list[dict[str, Any]]:
             pid = _safe_int(first, 0)
             if pid <= 0 or pid == current_pid or pid in seen:
                 continue
+            if not command:
+                command = _command_for_pid(pid)
+            if "scripts/shadow_watchdog.py" in command:
+                continue
+            if _is_protected_manual_training(command):
+                continue
             seen.add(pid)
             rows.append({"pid": pid, "pattern": pattern, "command": command})
     return sorted(rows, key=lambda row: int(row.get("pid", 0) or 0))
 
 
-def _pause_heavy_research(*, apply: bool, active: bool) -> dict[str, Any]:
+def _pause_heavy_research(*, apply: bool, active: bool, terminate_processes: bool | None = None) -> dict[str, Any]:
     matches = _matching_heavy_research_processes()
+    initial_matches = list(matches)
     terminated: list[dict[str, Any]] = []
-    if apply and active and matches:
-        terminated = _terminate_pids([int(row["pid"]) for row in matches])
+    should_terminate = bool(active if terminate_processes is None else terminate_processes)
+    if apply and active and should_terminate and matches:
+        for _ in range(5):
+            if not matches:
+                break
+            terminated.extend(_terminate_pids([int(row["pid"]) for row in matches]))
+            time.sleep(0.6)
+            matches = _matching_heavy_research_processes()
     return {
         "active": bool(active),
         "apply": bool(apply),
-        "action": "sigterm_optional_heavy_research" if active else "observe",
+        "terminate_processes": bool(should_terminate),
+        "action": (
+            "sigterm_optional_heavy_research"
+            if active and should_terminate
+            else "soft_pause_optional_heavy_research"
+            if active
+            else "observe"
+        ),
         "patterns": HEAVY_RESEARCH_PATTERNS,
-        "match_count": len(matches),
-        "matches": matches[:25],
+        "match_count": len(initial_matches),
+        "matches": initial_matches[:25],
+        "remaining_match_count": len(matches),
+        "remaining_matches": matches[:25],
         "terminated": terminated,
         "terminated_count": sum(1 for row in terminated if bool(row.get("ok", False))),
     }
@@ -381,9 +448,26 @@ def build_payload(
     memory_efficiency = _memory_efficiency_snapshot(project_root, override_path=override_path, apply=apply)
     paper_lane = _paper_lane_snapshot(project_root, apply=apply)
     runtime_throttle = load_json(project_root / "governance" / "health" / "runtime_throttle_control_latest.json")
+    load1_per_core = float(load1) / max(os.cpu_count() or 1, 1)
+    host_saturation_score = float(runtime_throttle.get("host_saturation_score") or 0.0)
     creative_session = memory_efficiency.get("creative_session") if isinstance(memory_efficiency.get("creative_session"), dict) else {}
     creative_active = bool(creative_session.get("active", False)) or str(creative_session.get("level") or "") == "cooldown"
-    heavy_pause = _pause_heavy_research(apply=apply, active=creative_active)
+    creative_kind = str(creative_session.get("kind") or "").strip().lower()
+    creative_level = str(creative_session.get("level") or "").strip().lower()
+    soft_audio_playback = creative_kind == "music_playback" and creative_level == "active"
+    audio_regression_guard = bool(
+        soft_audio_playback
+        and (
+            load1_per_core >= 0.55
+            or host_saturation_score >= 55.0
+            or str(runtime_throttle.get("overall_status") or "").strip().lower() in {"degraded", "blocked", "critical"}
+        )
+    )
+    heavy_pause = _pause_heavy_research(
+        apply=apply,
+        active=creative_active,
+        terminate_processes=bool(creative_active and (not soft_audio_playback or audio_regression_guard)),
+    )
     pause_contract = _pause_contract(project_root, snapshot=resource_snapshot, pause_result=heavy_pause, now=now)
 
     paper_status = "ready"
@@ -408,6 +492,8 @@ def build_payload(
         actions.append("heavy_research_pause_active")
     if int(heavy_pause.get("terminated_count", 0) or 0) > 0:
         actions.append("heavy_research_processes_paused")
+    if audio_regression_guard:
+        actions.append("music_audio_regression_guard_active")
     notification = ((resource_snapshot.get("creative_guard_state") or {}).get("notification") if isinstance(resource_snapshot.get("creative_guard_state"), dict) else {})
     if isinstance(notification, dict) and notification:
         actions.append(str(notification.get("event") or "creative_notification"))
@@ -423,7 +509,7 @@ def build_payload(
             "load1": round(float(load1), 3),
             "load5": round(float(load5), 3),
             "load15": round(float(load15), 3),
-            "load1_per_core": round(float(load1) / max(os.cpu_count() or 1, 1), 3),
+            "load1_per_core": round(load1_per_core, 3),
         },
         "memory_efficiency": memory_efficiency,
         "creative_mode": {
@@ -433,6 +519,8 @@ def build_payload(
             "apps": creative_session.get("apps") if isinstance(creative_session.get("apps"), list) else [],
             "cooldown_active": bool(creative_session.get("cooldown_active", False)),
             "cooldown_remaining_seconds": float(creative_session.get("cooldown_remaining_seconds", 0.0) or 0.0),
+            "audio_regression_guard_active": audio_regression_guard,
+            "audio_regression_guard_reason": "host_saturation_or_load_above_music_safe_envelope" if audio_regression_guard else "",
         },
         "heavy_research_pause": heavy_pause,
         "pause_contract": pause_contract,
@@ -455,6 +543,8 @@ def build_payload(
                 "memory_efficiency_override",
                 "paper_execution_lane_dedupe",
                 "creative_mode_notification",
+                "audio_playback_protection",
+                "audio_regression_guard",
             ],
         },
         "upgrade_track": {
@@ -465,6 +555,7 @@ def build_payload(
                 "launchd-aware duplicate lane cleanup with parent-process affinity",
                 "automatic opsctl reload when memory profile flips materially",
                 "per-app adaptive budgets based on Logic audio buffer size and Final Cut export state",
+                "audio playback first-run protection for Music and legacy iTunes",
             ],
         },
         "source_files": {

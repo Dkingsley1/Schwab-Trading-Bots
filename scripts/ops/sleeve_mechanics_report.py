@@ -23,6 +23,7 @@ MD_PATH = OUT_DIR / "sleeve_mechanics_latest.md"
 EXPANSION_PACK_FILES = (
     "quant_strategy_gap_v1.json",
     "trading_muscle_systems_v1.json",
+    "exotic_quant_safe_admission_v1.json",
     "institutional_alpha_validation_v1.json",
     "frontier_intelligence_v1.json",
     "platform_organ_systems_v1.json",
@@ -123,24 +124,34 @@ def _candidate_names_from_pack(pack: dict[str, Any]) -> list[str]:
 
 
 def _expansion_candidates(project_root: Path, existing_sleeves: set[str], specialized_profiles: set[str]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
+    rows_by_name: dict[str, dict[str, Any]] = {}
     for filename in EXPANSION_PACK_FILES:
         payload = _load_json(project_root / "config" / filename)
         pack = payload.get("pack") if isinstance(payload.get("pack"), dict) else payload
         pack_name = str(pack.get("display_name") or filename)
         pack_slug = str(pack.get("slug") or filename.removesuffix(".json"))
         for name in _candidate_names_from_pack(pack):
-            rows.append(
-                {
+            existing = rows_by_name.get(name)
+            if existing is None:
+                rows_by_name[name] = {
                     "name": name,
                     "pack_slug": pack_slug,
                     "pack_name": pack_name,
+                    "pack_slugs": [pack_slug],
+                    "pack_names": [pack_name],
                     "already_in_manifest": name in existing_sleeves,
                     "already_has_launcher": name in specialized_profiles,
                     "candidate_status": "wired" if name in specialized_profiles else "candidate",
                 }
-            )
-    return rows
+                continue
+            if pack_slug not in existing["pack_slugs"]:
+                existing["pack_slugs"].append(pack_slug)
+            if pack_name not in existing["pack_names"]:
+                existing["pack_names"].append(pack_name)
+            existing["already_in_manifest"] = bool(existing.get("already_in_manifest", False) or name in existing_sleeves)
+            existing["already_has_launcher"] = bool(existing.get("already_has_launcher", False) or name in specialized_profiles)
+            existing["candidate_status"] = "wired" if bool(existing["already_has_launcher"]) else "candidate"
+    return list(rows_by_name.values())
 
 
 def _sleeve_row(

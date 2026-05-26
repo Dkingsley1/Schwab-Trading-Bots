@@ -6,11 +6,15 @@ from scripts.shadow_watchdog import (
     Target,
     _build_default_schwab_cmd,
     _can_restart,
+    _creative_pause_guard_active,
     _decode_start_cmd,
     _evaluate_halt_auto_clear,
     _find_matching_rows,
     _heartbeat_health,
+    _heartbeat_startup_grace_active,
+    _parse_ps_etime_seconds,
     _parse_reason_set,
+    _restart_guard_active_for_target,
     _schwab_live_heartbeat_exclude_matches,
 )
 
@@ -155,6 +159,71 @@ def test_build_default_schwab_cmd_uses_all_sleeves_parent() -> None:
     assert "run_all_sleeves.py" in cmd
     assert "--with-aggressive-modes" in cmd
     assert "run_parallel_shadows.py" not in cmd
+
+
+def test_parse_ps_etime_seconds_handles_macos_formats() -> None:
+    assert _parse_ps_etime_seconds("00:01") == 1.0
+    assert _parse_ps_etime_seconds("01:02:03") == 3723.0
+    assert _parse_ps_etime_seconds("2-03:04:05") == 183845.0
+
+
+def test_schwab_parent_heartbeat_startup_grace_prevents_restart_storm() -> None:
+    target = Target(
+        name="schwab_parallel",
+        match="scripts/run_all_sleeves.py",
+        start_cmd="echo hi",
+        heartbeat_glob="/tmp/missing_*.json",
+        heartbeat_stale_seconds=180,
+        heartbeat_startup_grace_seconds=420,
+    )
+
+    assert _heartbeat_startup_grace_active(
+        target,
+        proc_live=True,
+        hb_required=True,
+        hb_ok=False,
+        process_age_seconds=120.0,
+    ) is True
+    assert _heartbeat_startup_grace_active(
+        target,
+        proc_live=True,
+        hb_required=True,
+        hb_ok=False,
+        process_age_seconds=421.0,
+    ) is False
+
+
+def test_creative_pause_guard_suppresses_shadow_restart_for_music(tmp_path, monkeypatch) -> None:
+    from scripts import shadow_watchdog
+
+    pause_path = tmp_path / "creative_heavy_research_pause_latest.json"
+    pause_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "active": True,
+                "creative_session_level": "hot",
+                "creative_session_kind": "music_playback_hot",
+                "env_contract": {
+                    "TRAINING_RUNTIME_PAUSED_FOR_CREATIVE": "1",
+                    "SHADOW_RESEARCH_PAUSED_FOR_CREATIVE": "1",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(shadow_watchdog, "CREATIVE_PAUSE_LATEST", pause_path)
+
+    target = Target(
+        name="coinbase_shadow",
+        match="scripts/run_shadow_training_loop.py --broker coinbase",
+        start_cmd=["./scripts/ops/opsctl.sh", "coinbase-start", "--paper"],
+    )
+
+    active, reason = _restart_guard_active_for_target(target)
+    assert _creative_pause_guard_active() is True
+    assert active is True
+    assert reason == "creative_audio_pause_guard_active"
 
 
 def test_live_schwab_watchdog_excludes_simulated_heartbeat_coverage_by_default() -> None:

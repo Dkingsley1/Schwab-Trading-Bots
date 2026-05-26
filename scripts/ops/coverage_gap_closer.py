@@ -114,6 +114,9 @@ def _autopilot_contract(
     remaining_run_budget = sum(max(_safe_int(row.get("runs_remaining"), 0), 0) for row in active_stage)
     snapshot_ready = bool(training_runtime.get("snapshot_ready", False))
     training_runtime_blocked = str(training_runtime.get("overall_status") or "").strip().lower() == "blocked"
+    training_quality = training_runtime.get("training_quality") if isinstance(training_runtime.get("training_quality"), dict) else {}
+    training_quality_blocked = str(training_quality.get("overall_status") or "").strip().lower() == "blocked"
+    training_launch_blocked = bool(training_runtime_blocked or training_quality_blocked)
     coverage_repair_ready = bool(training_runtime.get("coverage_repair_ready", False))
     swap_used_gb = _safe_float(resource_guard.get("swap_used_gb"), 0.0)
     swap_pressure_elevated = swap_used_gb >= 8.0
@@ -130,7 +133,7 @@ def _autopilot_contract(
         and preflight_repair_required_count <= 0
         and inflight_retrain_count <= 0
         and snapshot_ready
-        and (coverage_repair_ready or not training_runtime_blocked)
+        and not training_launch_blocked
         and cold_lane_ready
         and live_lane_should_be_read_only
     )
@@ -141,6 +144,7 @@ def _autopilot_contract(
         "coverage_shortfall_present": shortfall > 0,
         "snapshot_ready": snapshot_ready,
         "training_runtime_blocked": training_runtime_blocked,
+        "training_quality_blocked": training_quality_blocked,
         "coverage_repair_ready": coverage_repair_ready,
         "swap_pressure_elevated": swap_pressure_elevated,
         "live_runtime_blocked": runtime_separation_status == "blocked",
@@ -156,14 +160,15 @@ def _autopilot_contract(
             "runtime_input_repair_required" if shortfall > 0 and stage_count > 0 and repair_required_count > 0 else "",
             "coverage_preflight_repair_required" if shortfall > 0 and stage_count > 0 and preflight_repair_required_count > 0 else "",
             "waiting_for_idle" if inflight_retrain_count > 0 else "",
-            "training_runtime_blocked" if training_runtime_blocked and not coverage_repair_ready else "",
+            "training_runtime_blocked" if training_runtime_blocked else "",
+            "training_quality_blocked" if training_quality_blocked else "",
             "swap_pressure_elevated" if swap_pressure_elevated else "",
             "live_runtime_blocked" if runtime_separation_status == "blocked" else "",
             "snapshot_not_ready" if shortfall > 0 and not snapshot_ready else "",
         ]
     )
     off_hours_preferred = shortfall > 0 and (
-        training_runtime_blocked or runtime_separation_status == "blocked" or swap_pressure_elevated or live_lane_should_be_read_only
+        training_launch_blocked or runtime_separation_status == "blocked" or swap_pressure_elevated or live_lane_should_be_read_only
     )
     can_apply_stage = shortfall > 0 and stage_count > 0
     can_launch_now = (
@@ -173,7 +178,7 @@ def _autopilot_contract(
         and preflight_repair_required_count <= 0
         and inflight_retrain_count <= 0
         and snapshot_ready
-        and (coverage_repair_ready or not training_runtime_blocked)
+        and not training_launch_blocked
         and not swap_pressure_elevated
         and (runtime_separation_status != "blocked" or auto_launch_off_hours_ready)
     )
@@ -208,7 +213,11 @@ def _autopilot_contract(
         launch_state = "armed_for_off_hours_auto_launch"
         overall_status = "degraded"
         next_action = "leave the staged candidates armed so the next off-hours window can launch coverage cycles without reopening the live lane"
-    elif training_runtime_blocked or runtime_separation_status == "blocked" or swap_pressure_elevated:
+    elif training_launch_blocked:
+        launch_state = "stage_only_training_blocked"
+        overall_status = "degraded"
+        next_action = "keep the candidates staged and hold retrain workers until training-runtime-control clears"
+    elif runtime_separation_status == "blocked" or swap_pressure_elevated:
         launch_state = "stage_only_off_hours"
         overall_status = "degraded"
         next_action = "keep the candidates staged now, but launch coverage cycles in the cold lane once shared-host pressure drops"
@@ -249,12 +258,18 @@ def _autopilot_contract(
             "launch_guard": ("off_hours_only" if off_hours_preferred else "runtime_clear"),
             "coverage_repair_ready": coverage_repair_ready,
             "preflight_repair_required_count": preflight_repair_required_count,
+            "training_launch_blocked": training_launch_blocked,
         },
         "recommended_commands": {
             "stage_only": [
                 "./scripts/ops/opsctl.sh",
                 "coverage-gap-closer",
                 "--apply-stage",
+                "--json",
+            ],
+            "training_control": [
+                "./scripts/ops/opsctl.sh",
+                "training-runtime-control",
                 "--json",
             ],
             "launch_off_hours": [
@@ -628,6 +643,33 @@ def _build_payload(
         overall_status = "cleared"
     elif in_flight:
         overall_status = "waiting_for_idle"
+    retrain_command = [
+        str(project_root / "scripts" / "ops" / "opsctl.sh"),
+        "retrain-force-targeted",
+        "--include-bot-ids",
+        ",".join(_ordered_unique([str(row.get("bot_id") or "") for row in active_stage])),
+        "--retrain-profile",
+        str(retrain_profile or "coverage_canary"),
+        "--skip-master-update",
+    ]
+    stage_command = [
+        str(project_root / "scripts" / "ops" / "opsctl.sh"),
+        "coverage-gap-closer",
+        "--apply-stage",
+        "--skip-refresh",
+        "--json",
+    ]
+    training_control_command = [
+        str(project_root / "scripts" / "ops" / "opsctl.sh"),
+        "training-runtime-control",
+        "--json",
+    ]
+    if bool(autopilot_contract.get("can_launch_now", False)):
+        recommended_command = retrain_command
+    elif _safe_int(readiness.get("coverage_shortfall_bots"), 0) > 0 and active_stage:
+        recommended_command = stage_command
+    else:
+        recommended_command = training_control_command
     payload = {
         "timestamp_utc": _iso_now(),
         "schema_version": 1,
@@ -643,20 +685,14 @@ def _build_payload(
         "recommended_cycle_budget": int(max_cycles),
         "inflight_retrain_processes": in_flight,
         "autopilot_contract": autopilot_contract,
-        "recommended_command": [
-            str(project_root / "scripts" / "ops" / "opsctl.sh"),
-            "retrain-force-targeted",
-            "--include-bot-ids",
-            ",".join(_ordered_unique([str(row.get("bot_id") or "") for row in active_stage])),
-            "--retrain-profile",
-            str(retrain_profile or "coverage_canary"),
-            "--skip-master-update",
-        ],
+        "recommended_command": recommended_command,
+        "recommended_retrain_command": retrain_command if bool(autopilot_contract.get("can_launch_now", False)) else [],
         "recommended_actions": _ordered_unique(
             [
                 "stage the top non-infrastructure coverage candidates so promotion gating can count them without forcing them live",
                 "prefer the lighter signal candidates before retrying heavier options or dividend candidates",
-                "run coverage cycles under the cheaper coverage_canary retrain profile so runtime inputs fail fast instead of inflating into a full canary retrain",
+                "run coverage cycles under the cheaper coverage_canary retrain profile so runtime inputs fail fast instead of inflating into a full canary retrain" if bool(autopilot_contract.get("can_launch_now", False)) else "",
+                "keep retrain workers parked until training-runtime-control reports launch clearance" if "training_runtime_blocked" in autopilot_contract.get("blocking_reasons", []) or "training_quality_blocked" in autopilot_contract.get("blocking_reasons", []) else "",
                 "let the current retrain finish before launching the coverage pass to avoid memory contention",
                 "keep cycling targeted retrains until each staged candidate reaches the promotion run floor",
                 "refresh walk-forward and promotion artifacts after every cycle so stalled candidates can be swapped out quickly",
@@ -788,7 +824,8 @@ def run_gap_closer(
         readiness=pool.get("promotion_readiness") if isinstance(pool.get("promotion_readiness"), dict) else {},
         retrain_profile=retrain_profile,
     )
-    effective_launch = bool(launch or (auto_launch_off_hours and bool(initial_autopilot.get("can_auto_launch_off_hours", False))))
+    requested_launch_allowed = bool(launch and bool(initial_autopilot.get("can_launch_now", False)))
+    effective_launch = bool(requested_launch_allowed or (auto_launch_off_hours and bool(initial_autopilot.get("can_auto_launch_off_hours", False))))
     queue_rows = [
         {
             "cycle_index": cycle_index + 1,
@@ -810,6 +847,7 @@ def run_gap_closer(
         "effective_launch": effective_launch,
         "launch_mode": str(initial_autopilot.get("launch_mode") or ""),
         "launch_state": str(initial_autopilot.get("launch_state") or ""),
+        "launch_blocked_reasons": list(initial_autopilot.get("blocking_reasons") or []) if bool(launch) and not requested_launch_allowed else [],
         "auto_launch_pending": bool(((initial_autopilot.get("launch_contract") or {}).get("auto_launch_pending", False))),
         "auto_launch_window_active": bool(((initial_autopilot.get("launch_contract") or {}).get("window_active", False))),
     }

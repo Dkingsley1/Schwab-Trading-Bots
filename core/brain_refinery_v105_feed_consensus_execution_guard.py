@@ -55,6 +55,8 @@ def _runtime_feature_vector(sequence, idx):
             price_change(sequence, idx, 3),
             feature_ema(sequence, idx, "data_quality_quote_agreement_norm", 4),
             feature_ema(sequence, idx, "infra_risk_throttle_norm", 4),
+            _support_score(obs),
+            quote_quality(obs),
         ],
         dtype=np.float32,
     )
@@ -63,7 +65,7 @@ def _runtime_feature_vector(sequence, idx):
 def _runtime_sample_filter(sequence, idx, horizon):
     obs = sequence[idx]
     return (
-        base_runtime_gate(obs, min_quote_agreement=0.82, max_quote_deviation=0.22, max_spread_bps=24.0, min_queue_depth=0.5, max_latency_ms=2800.0)
+        base_runtime_gate(obs, min_quote_agreement=0.78, max_quote_deviation=0.26, max_spread_bps=30.0, min_queue_depth=0.0, max_latency_ms=3200.0)
         and _support_score(obs) >= 0.24
     )
 
@@ -99,28 +101,34 @@ def train_brain():
             "ret_3",
             "quote_agreement_ema_4",
             "throttle_ema_4",
+            "feed_support_score",
+            "quote_quality",
         ],
         runtime_feature_builder=_runtime_feature_vector,
         runtime_label_builder=risk_support_label_builder(
-            min_return=-0.0012,
-            max_drawdown=0.018,
-            max_realized_vol=0.026,
-            vol_multiplier=3.2,
+            min_return=0.0002,
+            max_drawdown=0.014,
+            max_realized_vol=0.022,
+            vol_multiplier=2.8,
         ),
         sample_filter=_runtime_sample_filter,
         confidence_builder=_runtime_confidence,
-        min_confidence=0.28,
-        lookback_days=45,
+        min_confidence=0.32,
+        lookback_days=75,
         mode_allowlist=_MODES,
         window=18,
         horizon=6,
         min_samples=320,
         min_sequences=4,
-        min_positive_samples=90,
+        min_positive_samples=60,
+        min_negative_samples=40,
         max_best_val_loss=0.694,
         max_final_val_loss=0.706,
         min_acted_accuracy=0.60,
-        min_accuracy_lift_over_majority=0.03,
+        min_accuracy_lift_over_majority=0.02,
+        acted_prob_threshold=0.78,
+        min_acted_coverage=0.04,
+        max_acted_coverage=0.24,
         allow_fallback_on_insufficient_data=False,
         require_both_sides_precision=False,
     )

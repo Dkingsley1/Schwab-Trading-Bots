@@ -434,3 +434,112 @@ def test_build_source_verification_payload_tolerates_one_partial_source_for_macr
     assert "partial_sources=5/6" in macro_row["notes"]
     assert micro_row["verification_status"] == "single_source_verified"
     assert "partial_sources=3/4" in micro_row["notes"]
+
+
+def test_market_micro_verification_accepts_nasdaq_when_finra_is_degraded(tmp_path: Path) -> None:
+    fresh_ts = datetime.now(timezone.utc).isoformat()
+    _write_json(
+        tmp_path / "governance" / "health" / "market_micro_sync_latest.json",
+        {
+            "timestamp_utc": fresh_ts,
+            "ok": True,
+            "sources": {
+                "local_micro": {"ok": True, "symbol_count": 5},
+                "treasury_auctions": {"ok": True, "rows": 12},
+                "finra_short_volume": {"ok": False, "symbol_count": 0},
+                "nasdaq_trade_halts": {"ok": True, "rows": 0},
+            },
+        },
+    )
+
+    micro_row = svr._market_micro_row(tmp_path / "governance" / "health", datetime.now(timezone.utc))
+
+    assert micro_row["verification_status"] == "single_source_verified"
+    assert micro_row["evidence"]["critical_sources"]["external_micro_reference"] is True
+    assert micro_row["evidence"]["critical_sources"]["finra_short_volume"] is False
+
+
+def test_market_micro_verification_accepts_market_closed_local_micro_fallback(tmp_path: Path) -> None:
+    sunday_utc = datetime(2026, 5, 24, 15, 30, tzinfo=timezone.utc)
+    _write_json(
+        tmp_path / "governance" / "health" / "market_micro_sync_latest.json",
+        {
+            "timestamp_utc": sunday_utc.isoformat(),
+            "ok": True,
+            "sources": {
+                "local_micro": {"ok": False, "symbol_count": 0},
+                "treasury_auctions": {"ok": True, "rows": 12},
+                "finra_short_volume": {"ok": True, "symbol_count": 392},
+                "nasdaq_trade_halts": {"ok": True, "rows": 0, "contract_participates": False},
+            },
+        },
+    )
+
+    micro_row = svr._market_micro_row(tmp_path / "governance" / "health", sunday_utc)
+
+    assert micro_row["verification_status"] == "single_source_verified"
+    assert "local_micro_absent_market_closed" in micro_row["notes"]
+    assert micro_row["evidence"]["market_closed_local_micro_fallback"] is True
+    assert micro_row["evidence"]["effective_ok_sources"] == 3
+
+
+def test_market_micro_verification_accepts_holiday_pause_fallback(tmp_path: Path) -> None:
+    holiday_utc = datetime(2026, 5, 25, 17, 30, tzinfo=timezone.utc)
+    _write_json(
+        tmp_path / "governance" / "health" / "market_micro_sync_latest.json",
+        {
+            "timestamp_utc": holiday_utc.isoformat(),
+            "ok": True,
+            "sources": {
+                "local_micro": {"ok": False, "symbol_count": 0},
+                "treasury_auctions": {"ok": True, "rows": 12},
+                "finra_short_volume": {"ok": True, "symbol_count": 392},
+                "nasdaq_trade_halts": {"ok": True, "rows": 0, "contract_participates": False},
+            },
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "data_ingress_latest_default_equities_schwab.json",
+        {
+            "timestamp_utc": holiday_utc.isoformat(),
+            "loop_state": "paused_session_gate",
+            "pause_reason": "holiday",
+        },
+    )
+
+    micro_row = svr._market_micro_row(tmp_path / "governance" / "health", holiday_utc)
+
+    assert micro_row["verification_status"] == "single_source_verified"
+    assert "local_micro_absent_market_closed" in micro_row["notes"]
+    assert micro_row["evidence"]["holiday_pause_observed"] is True
+
+
+def test_fx_market_verification_accepts_holiday_official_rate_fallback(tmp_path: Path) -> None:
+    holiday_utc = datetime(2026, 5, 25, 17, 30, tzinfo=timezone.utc)
+    _write_json(
+        tmp_path / "governance" / "health" / "fx_market_context_sync_latest.json",
+        {
+            "timestamp_utc": holiday_utc.isoformat(),
+            "ok": True,
+            "ok_source_count": 4,
+            "source_count": 5,
+            "official_pairs": 6,
+            "proxy_symbols_observed": 0,
+            "proxy_agreement_norm": 0.0,
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "data_ingress_latest_default_equities_schwab.json",
+        {
+            "timestamp_utc": holiday_utc.isoformat(),
+            "loop_state": "paused_session_gate",
+            "pause_reason": "holiday",
+        },
+    )
+
+    fx_row = svr._fx_market_row(tmp_path / "governance" / "health", holiday_utc)
+
+    assert fx_row["verification_status"] == "single_source_verified"
+    assert "market_proxy_absent_market_closed" in fx_row["notes"]
+    assert fx_row["evidence"]["official_rate_only_holiday_fallback"] is True
+    assert svr._row_has_actionable_notes(fx_row) is False

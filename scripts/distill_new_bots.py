@@ -114,6 +114,20 @@ def _curated_teacher_candidates(path: Path) -> list[dict[str, Any]]:
     return out
 
 
+def _blocked_teacher_ids(training_quality: dict[str, Any]) -> set[str]:
+    targeted = training_quality.get("targeted_actions") if isinstance(training_quality.get("targeted_actions"), dict) else {}
+    blocked_keys = (
+        "repair_runtime_input_bot_ids",
+        "runtime_input_depth_debt_bot_ids",
+        "quality_probation_bot_ids",
+        "targeted_retrain_bot_ids",
+    )
+    out: set[str] = set()
+    for key in blocked_keys:
+        out.update(str(item).strip() for item in targeted.get(key) or [] if str(item or "").strip())
+    return {item.lower() for item in out}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Teacher-student distillation planner for new bots.")
     parser.add_argument("--walk-forward", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "walk_forward_latest.json"))
@@ -128,12 +142,15 @@ def main() -> int:
     parser.add_argument("--teacher-min-registry-accuracy", type=float, default=0.65)
     parser.add_argument("--teacher-min-registry-quality", type=float, default=0.75)
     parser.add_argument("--teacher-quality", default=str(PROJECT_ROOT / "governance" / "distillation" / "teacher_quality_latest.json"))
+    parser.add_argument("--training-quality", default=str(PROJECT_ROOT / "governance" / "health" / "training_quality_control_latest.json"))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
     wf = _load_json(Path(args.walk_forward), default={})
     bots = (wf.get("bots") or {}) if isinstance(wf, dict) else {}
     registry = _load_json(Path(args.registry), default={})
+    training_quality = _load_json(Path(args.training_quality), default={})
+    blocked_teacher_ids = _blocked_teacher_ids(training_quality)
     role_by_bot = _role_map(registry)
     curated_teachers = _curated_teacher_candidates(Path(args.teacher_quality))
 
@@ -182,9 +199,13 @@ def main() -> int:
     )
 
     teacher_by_id: dict[str, dict[str, Any]] = {}
+    excluded_teacher_ids: list[str] = []
     for candidate in curated_teachers + teacher_candidates:
         bot_id = str(candidate.get("bot_id", "")).strip()
         if not bot_id:
+            continue
+        if bot_id.lower() in blocked_teacher_ids:
+            excluded_teacher_ids.append(bot_id)
             continue
         prev = teacher_by_id.get(bot_id)
         if prev is None or (
@@ -237,6 +258,7 @@ def main() -> int:
             "walk_forward": str(Path(args.walk_forward)),
             "registry": str(Path(args.registry)),
             "teacher_quality": str(Path(args.teacher_quality)),
+            "training_quality": str(Path(args.training_quality)),
             "teacher_min_forward_mean": args.teacher_min_forward_mean,
             "teacher_min_runs": args.teacher_min_runs,
             "teacher_max": args.teacher_max,
@@ -245,15 +267,24 @@ def main() -> int:
             "teacher_weight": args.teacher_weight,
             "teacher_min_registry_accuracy": args.teacher_min_registry_accuracy,
             "teacher_min_registry_quality": args.teacher_min_registry_quality,
+            "blocked_teacher_count": len(set(excluded_teacher_ids)),
         },
         "summary": {
             "teacher_count": len(teachers),
             "student_count": len(students),
             "assignment_count": len(assignments),
             "curated_teacher_count": len(curated_teachers),
+            "excluded_teacher_count": len(set(excluded_teacher_ids)),
         },
         "teachers": teachers,
+        "excluded_teachers": sorted(set(excluded_teacher_ids)),
         "assignments": assignments,
+        "quality_contract": {
+            "probation_or_repair_bots_may_teach": False,
+            "runtime_input_depth_debt_bots_may_teach": False,
+            "teacher_block_source": str(Path(args.training_quality)),
+            "student_count_target": "increase coverage by raising --student-max-runs and --teachers-per-student without allowing blocked teachers",
+        },
     }
 
     out_path = Path(args.out)

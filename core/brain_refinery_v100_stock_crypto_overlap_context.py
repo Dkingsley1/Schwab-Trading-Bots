@@ -11,12 +11,35 @@ from runtime_training_common import (
 )
 
 _OVERLAP_MODES = [
+    "shadow_equities",
     "shadow_aggressive_equities",
+    "shadow_intraday_aggressive_equities",
     "shadow_swing_aggressive_equities",
+    "shadow_conservative_equities",
+    "shadow_bond_equities",
     "shadow_crypto",
     "shadow_crypto_futures_crypto",
 ]
-_OVERLAP_SYMBOLS = ["SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD"]
+_OVERLAP_SYMBOLS = [
+    "SPY",
+    "QQQ",
+    "DIA",
+    "IWM",
+    "MDY",
+    "VOO",
+    "VTI",
+    "BTC-USD",
+    "ETH-USD",
+    "SOL-USD",
+    "XRP-USD",
+    "ADA-USD",
+    "DOT-USD",
+    "LTC-USD",
+    "AVAX-USD",
+    "LINK-USD",
+    "DOGE-USD",
+    "BCH-USD",
+]
 
 
 def build_features(panel):
@@ -141,13 +164,18 @@ def _runtime_sample_filter(sequence, idx, horizon):
         observation_feature(obs, "market_crypto_corr_confidence_norm"),
         observation_feature(obs, "fx_corr_confidence_norm"),
     )
+    corr_strength = max(
+        abs(_centered01(observation_feature(obs, "market_crypto_spy_corr_norm", 0.5))),
+        abs(_centered01(observation_feature(obs, "market_crypto_qqq_corr_norm", 0.5))),
+        abs(_centered01(observation_feature(obs, "fx_crypto_alignment_norm", 0.5))),
+    )
     return (
-        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.78
-        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.30
-        and corr_conf >= 0.22
-        and _overlap_context_signal(obs) >= 0.24
-        and _overlap_regime_gap(obs) >= 0.04
-        and abs(_overlap_bias(obs)) >= 0.10
+        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.72
+        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.34
+        and max(corr_conf, corr_strength) >= 0.08
+        and _overlap_context_signal(obs) >= 0.16
+        and _overlap_regime_gap(obs) >= -0.06
+        and abs(_overlap_bias(obs)) >= 0.04
     )
 
 
@@ -168,7 +196,7 @@ def _runtime_overlap_label(sequence, idx, horizon):
     signal = _overlap_context_signal(obs)
     bias = _overlap_bias(obs)
     regime_gap = _overlap_regime_gap(obs)
-    if signal < 0.24 or regime_gap < 0.04 or abs(bias) < 0.10:
+    if signal < 0.16 or regime_gap < -0.06 or abs(bias) < 0.04:
         return None
 
     expected_up = bias >= 0.0
@@ -176,8 +204,8 @@ def _runtime_overlap_label(sequence, idx, horizon):
     realized = future_realized_vol(sequence, idx, horizon)
     drawdown = abs(future_max_drawdown(sequence, idx, horizon))
     signed_ret = fwd_ret if expected_up else -fwd_ret
-    move_threshold = max(0.00055, 0.00110 - (0.00030 * signal))
-    if abs(fwd_ret) < move_threshold and realized < 0.020 and drawdown < 0.012:
+    move_threshold = max(0.00030, 0.00090 - (0.00035 * signal))
+    if abs(fwd_ret) < move_threshold and realized < 0.024 and drawdown < 0.014:
         return None
 
     success_score = (
@@ -185,18 +213,18 @@ def _runtime_overlap_label(sequence, idx, horizon):
         + (0.00075 * signal)
         + (0.00020 * regime_gap)
         + (0.00020 * _quote_quality(obs))
-        - (0.18 * realized)
-        - (0.24 * drawdown)
+        - (0.15 * realized)
+        - (0.21 * drawdown)
     )
     failure_score = (
         (-signed_ret)
         + (0.00065 * signal)
-        + (0.16 * realized)
-        + (0.20 * drawdown)
+        + (0.14 * realized)
+        + (0.18 * drawdown)
     )
-    if success_score >= 0.00055:
+    if success_score >= 0.00036:
         return 1.0 if expected_up else 0.0
-    if failure_score >= 0.00060:
+    if failure_score >= 0.00040:
         return 0.0 if expected_up else 1.0
     return None
 
@@ -247,15 +275,15 @@ def train_brain():
         symbol_allowlist=_OVERLAP_SYMBOLS,
         sample_filter=_runtime_sample_filter,
         confidence_builder=_runtime_confidence,
-        min_confidence=0.30,
+        min_confidence=0.22,
         sample_stride=1,
         lookback_days=90,
         window=18,
         horizon=4,
-        min_samples=96,
+        min_samples=160,
         min_sequences=4,
-        min_positive_samples=16,
-        min_negative_samples=16,
+        min_positive_samples=8,
+        min_negative_samples=8,
         acted_prob_threshold=0.66,
         fallback_trainer=_train_synthetic,
         allow_fallback_on_insufficient_data=False,
@@ -267,8 +295,8 @@ def train_brain():
         min_acted_accuracy=0.60,
         min_long_acted_count=4,
         min_short_acted_count=4,
-        min_accuracy_lift_over_majority=0.02,
-        min_precision_balance_score=0.28,
+        min_accuracy_lift_over_majority=0.015,
+        min_precision_balance_score=0.24,
     )
 
 

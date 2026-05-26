@@ -154,6 +154,29 @@ def test_platform_intelligence_expansion_builds_all_twelve_primary_sections(tmp_
     assert payload["recommended_env_overrides"]["PLATFORM_INTELLIGENCE_LAYER_VERSION"] == "2"
 
 
+def test_provider_rotation_treats_session_gate_as_paused_not_degraded(tmp_path: Path) -> None:
+    _seed_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "data_ingress_latest_dividend_equities_schwab.json",
+        {
+            "loop_state": "paused_session_gate",
+            "pause_gate": "session_gate",
+            "pause_reason": "weekend",
+            "total_counts": {"api_ok": 0, "api_error": 0},
+        },
+    )
+    (health / "data_ingress_latest_schwab_futures_equities_schwab.json").unlink()
+
+    payload = src.build_payload(tmp_path, max_rows=10)
+    provider = payload["sections"]["provider_rotation_failover_mesh"]
+
+    assert provider["overall_status"] == "ready"
+    assert provider["degraded_provider_count"] == 0
+    assert provider["providers"][0]["overall_status"] == "paused_session_gate"
+    assert provider["providers"][0]["failover_route"] == "session_gate_last_good_cache"
+
+
 def test_admission_downshifts_collection_and_blocks_training_under_swap(tmp_path: Path) -> None:
     _seed_project(tmp_path)
 

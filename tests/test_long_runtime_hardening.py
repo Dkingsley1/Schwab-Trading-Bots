@@ -41,7 +41,7 @@ def test_long_runtime_runtime_controls_surface_pressure(tmp_path: Path) -> None:
     _write_json(
         health / "live_readiness_smoke_latest.json",
         {
-            "timestamp_utc": "2026-04-09T16:00:00+00:00",
+            "timestamp_utc": separation_src.iso_now(),
             "ok": True,
             "broker_ready": True,
             "session_ready": True,
@@ -98,6 +98,47 @@ def test_long_runtime_runtime_controls_surface_pressure(tmp_path: Path) -> None:
     assert blackstart["overall_status"] == "blocked"
     assert blackstart["blocked_stage_count"] >= 1
     assert blackstart["recovery_contract"]["restart_sanity_ready"] is False
+
+
+def test_live_runtime_separation_uses_storage_control_steady_state_to_bound_hot_path_pressure(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "live_readiness_smoke_latest.json",
+        {
+            "timestamp_utc": separation_src.iso_now(),
+            "ok": True,
+            "broker_ready": True,
+            "session_ready": True,
+            "live_lane_running": True,
+        },
+    )
+    _write_json(health / "training_runtime_control_latest.json", {"overall_status": "ready", "snapshot_ready": True, "precompute_targets": []})
+    _write_json(project_root / "governance" / "walk_forward" / "coverage_seed_latest.json", {"coverage_shortfall_bots": 0})
+    _write_json(
+        health / "storage_tier_policy_latest.json",
+        {"overall_status": "blocked", "pressure": {"hot_path_over_budget_bytes": 25}},
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "backpressure_quality_score": 100.0,
+            "recovery_quality_score": 96.0,
+            "steady_state": {"target_status": {"steady_state_ready": True}},
+            "external_route_verification": {"verification_state": "ready"},
+        },
+    )
+    _write_json(health / "resource_guard_latest.json", {"swap_used_gb": 0.0, "memory_pressure_state": "green"})
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+
+    payload = separation_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["shared_host_pressure"]["contention_score"] == 0
+    assert payload["shared_host_pressure"]["signals"]["storage_hot_path_blocked"] is False
+    assert payload["shared_host_pressure"]["signals"]["storage_hot_path_bounded_by_control"] is True
 
 
 def test_blackstart_treats_warning_lease_as_operable_when_broker_is_ready(tmp_path: Path) -> None:
@@ -302,6 +343,39 @@ def test_sleeve_isolation_excludes_session_pauses_and_resolves_repaired_daily_ch
     assert isolation["sleeve_matrix"]["session_paused_lane_count"] == 2
     assert isolation["sleeve_matrix"]["running_lane_count"] == 1
     assert isolation["gates"]["unresolved_daily_verify_checks"] == []
+
+
+def test_storage_quota_guard_recommends_actions_for_decision_and_governance_breaches(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "storage_tier_policy_latest.json",
+        {
+            "by_family": {
+                "decisions": {"bytes": 64 * 1024**3},
+                "decision_explanations": {"bytes": 3 * 1024**3},
+                "sql_link_shards": {"bytes": 8 * 1024**3},
+                "content_store": {"bytes": 1 * 1024**3},
+            },
+            "by_service_role": {"governance_telemetry": {"bytes": 193 * 1024**3}},
+        },
+    )
+
+    quota = quota_src.build_payload(project_root)
+    summary = quota["quota_summary"]
+    actions = quota["recommended_actions"]
+    decisions = next(row for row in quota["lanes"] if row["family"] == "decisions")
+    governance = next(row for row in quota["lanes"] if row["family"] == "governance_telemetry")
+
+    assert quota["overall_status"] == "blocked"
+    assert summary["hard_breaches"] == 2
+    assert summary["blocked_families"] == ["decisions", "governance_telemetry"]
+    assert summary["worst_over_hard_gb"] > 100
+    assert decisions["over_hard_gb"] == 28.0
+    assert governance["over_hard_gb"] == 181.0
+    assert any("core decision drainer" in action for action in actions)
+    assert any("verbose governance telemetry" in action for action in actions)
+    assert any("heavy training gated" in action for action in actions)
 
 
 def test_alert_freeze_roster_and_chaos_controls(tmp_path: Path) -> None:

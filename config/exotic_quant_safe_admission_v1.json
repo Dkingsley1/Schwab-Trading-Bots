@@ -1,0 +1,150 @@
+{
+  "generated_at_utc": "2026-05-26T00:00:00+00:00",
+  "exotic_quant_safe_admission_version": "exotic_quant_safe_admission_v1",
+  "pack": {
+    "slug": "exotic_quant_safe_admission",
+    "display_name": "Exotic Quant Safe Admission Pack",
+    "sleeve_family": "exotic_quant_collection_only",
+    "objective": "Stage advanced quant and exotic option ideas as collection-only candidates with no live authority, no paper sizing by default, and explicit label gates before any widening.",
+    "paper_only": true,
+    "live_execution_allowed": false,
+    "initial_state": "collection_only",
+    "minimum_observations_before_training": 500,
+    "minimum_collection_days_before_training": 10,
+    "require_source_verification_for_training": true,
+    "require_backpressure_clearance_for_training": true,
+    "require_duplicate_alpha_clearance": true,
+    "require_fill_quality_evidence": true,
+    "max_initial_paper_size_norm": 0.0,
+    "admission_rules": [
+      "collect labels before training",
+      "training is blocked until source, fill, spread, and duplicate-alpha evidence are present",
+      "paper sizing starts at zero and requires profitability-control approval",
+      "live execution cannot be enabled by this pack",
+      "weak sleeves stay blocked from new risk until profitability controls clear",
+      "each candidate must emit no-trade counterfactual and harvest-regret labels"
+    ],
+    "strategies": [
+      {
+        "slug": "volatility_risk_premium_harvesting",
+        "display_name": "Volatility Risk Premium Harvesting",
+        "objective": "Measure implied-versus-realized volatility carry by tenor, skew, regime, event calendar, and hedge cost.",
+        "target_sleeves": ["volatility_arbitrage", "variance_volatility_swaps", "options_risk_intelligence_v2"],
+        "outputs": ["vrp_term_packet", "implied_realized_spread_score", "hedged_vol_carry_vote"],
+        "required_labels": ["implied_realized_vol_gap", "tenor_carry_bucket", "event_volatility_flag", "hedge_cost_bucket", "harvest_regret_bucket"]
+      },
+      {
+        "slug": "options_convexity_muscle",
+        "display_name": "Options Convexity Muscle",
+        "objective": "Collect convexity, skew, gamma, vanna, charm, and event-vol evidence before proposing defined-risk option candidates.",
+        "target_sleeves": ["single_name_options_event", "second_third_order_greeks", "gamma_scalping"],
+        "outputs": ["convexity_candidate", "gamma_vanna_score", "convexity_cost_guard"],
+        "required_labels": ["gamma_convexity_bucket", "vanna_charm_bucket", "skew_reset_flag", "event_window_risk", "fill_quality_bucket"]
+      },
+      {
+        "slug": "options_income_muscle",
+        "display_name": "Options Income Muscle",
+        "objective": "Score income-style option candidates by premium quality, assignment risk, dividend and borrow context, and drawdown tail.",
+        "target_sleeves": ["options_flow", "dividend_income", "structured_products"],
+        "outputs": ["options_income_candidate", "premium_quality_score", "assignment_risk_guard"],
+        "required_labels": ["premium_quality_bucket", "assignment_risk_bucket", "dividend_event_flag", "borrow_pressure_bucket", "tail_loss_bucket"]
+      },
+      {
+        "slug": "volatility_arbitrage_muscle",
+        "display_name": "Volatility Arbitrage Muscle",
+        "objective": "Convert volatility surface, dispersion, and event-vol evidence into collection-only arbitrage candidates.",
+        "target_sleeves": ["volatility_arbitrage", "dispersion_trading", "variance_volatility_swaps"],
+        "outputs": ["vol_arb_candidate", "surface_dislocation_score", "vol_arb_risk_guard"],
+        "required_labels": ["surface_dislocation_bucket", "iv_rv_spread_bucket", "dispersion_gap_bucket", "event_vol_reset_flag", "hedge_slippage_bucket"]
+      },
+      {
+        "slug": "options_risk_intelligence_v2",
+        "display_name": "Options Risk Intelligence V2",
+        "objective": "Validate options risk, Greeks, margin, assignment, liquidity, source quality, and replay realism before any option sleeve can widen.",
+        "target_sleeves": ["options_flow", "single_name_options_event", "options_on_futures"],
+        "outputs": ["options_risk_packet", "greek_margin_bucket", "option_replay_verdict"],
+        "required_labels": ["greek_margin_bucket", "assignment_risk_bucket", "spread_quality_bucket", "option_chain_source_quality", "replay_determinism_status"]
+      },
+      {
+        "slug": "cliquet_ratchet_options",
+        "display_name": "Cliquet And Ratchet Options",
+        "objective": "Track local-cap, global-floor, reset, and ratchet payoff behavior under path-dependent equity and index regimes.",
+        "target_sleeves": ["structured_products", "barrier_lookback_options", "quant_pricing_models"],
+        "outputs": ["ratchet_payoff_packet", "reset_path_quality_score", "cliquet_risk_guard"],
+        "required_labels": ["reset_window_bucket", "local_cap_global_floor_state", "path_dependency_bucket", "gap_risk_bucket", "pricing_model_dispersion"]
+      },
+      {
+        "slug": "quanto_compo_options",
+        "display_name": "Quanto And Compo Options",
+        "objective": "Score cross-currency and cross-asset option payoffs where FX beta, correlation, and volatility basis change the edge.",
+        "target_sleeves": ["rainbow_options", "international_macro", "cross_asset_basis_training"],
+        "outputs": ["quanto_compo_packet", "fx_equity_beta_score", "cross_currency_convexity_guard"],
+        "required_labels": ["fx_beta_bucket", "cross_currency_basis_bucket", "correlation_skew_bucket", "quanto_drift_adjustment", "hedge_cost_bucket"]
+      },
+      {
+        "slug": "vix_options_on_volatility",
+        "display_name": "VIX And Options On Volatility",
+        "objective": "Collect VIX, vol-of-vol, term-structure, and event shock labels before any volatility-option candidate can size.",
+        "target_sleeves": ["volatility", "variance_volatility_swaps", "black_swan_hedging"],
+        "outputs": ["vol_option_packet", "vix_term_structure_score", "vol_of_vol_guard"],
+        "required_labels": ["vix_term_structure_bucket", "vvix_proxy_bucket", "contango_backwardation_state", "event_shock_flag", "roll_decay_bucket"]
+      },
+      {
+        "slug": "dividend_borrow_early_exercise_intelligence",
+        "display_name": "Dividend Borrow And Early Exercise Intelligence",
+        "objective": "Detect dividend, borrow, assignment, hard-to-borrow, and early-exercise risk before income or convexity options are promoted.",
+        "target_sleeves": ["options_income_muscle", "dividend_income", "repo_securities_lending"],
+        "outputs": ["early_exercise_packet", "borrow_dividend_risk_score", "assignment_guard_vote"],
+        "required_labels": ["ex_dividend_window", "borrow_fee_bucket", "hard_to_borrow_flag", "early_exercise_moneyness", "assignment_outcome_bucket"]
+      },
+      {
+        "slug": "skew_surface_arbitrage",
+        "display_name": "Skew Surface Arbitrage",
+        "objective": "Map skew, smile, term-structure, local-vol, and surface-arbitrage signals with strict source and fill gates.",
+        "target_sleeves": ["volatility_arbitrage", "second_third_order_greeks", "vanna_volga_hedging"],
+        "outputs": ["skew_surface_packet", "surface_arbitrage_score", "skew_hedge_guard"],
+        "required_labels": ["skew_slope_bucket", "smile_curvature_bucket", "term_structure_bucket", "butterfly_arbitrage_flag", "surface_source_quality"]
+      },
+      {
+        "slug": "calendar_diagonal_spread_intelligence",
+        "display_name": "Calendar And Diagonal Spread Intelligence",
+        "objective": "Collect term-structure, theta, roll, event, and diagonal spread behavior before calendar-style paper candidates widen.",
+        "target_sleeves": ["compound_options", "options_income_muscle", "single_name_options_event"],
+        "outputs": ["calendar_spread_packet", "diagonal_roll_score", "term_decay_guard"],
+        "required_labels": ["front_back_vol_gap", "theta_decay_bucket", "roll_timing_bucket", "event_calendar_flag", "spread_liquidity_bucket"]
+      },
+      {
+        "slug": "gamma_theta_scalping_optimizer",
+        "display_name": "Gamma Theta Scalping Optimizer",
+        "objective": "Balance gamma capture, theta bleed, rebalance cost, spread quality, and realized-vol follow-through.",
+        "target_sleeves": ["gamma_scalping", "market_making_liquidity", "order_flow_market_microstructure"],
+        "outputs": ["gamma_theta_packet", "rebalance_cost_score", "scalping_viability_guard"],
+        "required_labels": ["gamma_capture_bucket", "theta_bleed_bucket", "rebalance_cost_bucket", "realized_vol_followthrough", "spread_crossing_cost"]
+      },
+      {
+        "slug": "dispersion_basket_optimizer",
+        "display_name": "Dispersion Basket Optimizer",
+        "objective": "Rank index-versus-single-name dispersion baskets by correlation, hedge cost, liquidity, crowding, and sector composition.",
+        "target_sleeves": ["dispersion_trading", "rainbow_options", "portfolio_construction"],
+        "outputs": ["dispersion_basket_packet", "single_name_basket_rank", "correlation_hedge_guard"],
+        "required_labels": ["index_single_name_vol_gap", "correlation_realization_bucket", "basket_liquidity_bucket", "sector_concentration_bucket", "hedge_slippage_bucket"]
+      },
+      {
+        "slug": "callable_autocallable_payoff_monitor",
+        "display_name": "Callable And Autocallable Payoff Monitor",
+        "objective": "Track callable, autocallable, barrier, coupon, memory, airbag, and issuer risk in structured payoff proxies.",
+        "target_sleeves": ["structured_products", "barrier_lookback_options", "xva_counterparty_margin"],
+        "outputs": ["autocall_payoff_packet", "coupon_barrier_state", "issuer_call_risk_guard"],
+        "required_labels": ["autocall_trigger_distance", "coupon_memory_state", "barrier_touch_risk", "issuer_credit_bucket", "secondary_liquidity_bucket"]
+      },
+      {
+        "slug": "bermudan_exercise_monte_carlo_policy",
+        "display_name": "Bermudan Exercise Monte Carlo Policy Layer",
+        "objective": "Use least-squares Monte Carlo and exercise-boundary evidence to evaluate Bermudan-style optionality without execution authority.",
+        "target_sleeves": ["quant_pricing_models", "martingale_flow_pricing", "swaptions"],
+        "outputs": ["bermudan_exercise_packet", "lsmc_policy_score", "exercise_boundary_guard"],
+        "required_labels": ["exercise_boundary_bucket", "continuation_value_gap", "path_count_quality", "model_dispersion_bucket", "exercise_regret_bucket"]
+      }
+    ]
+  }
+}

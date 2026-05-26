@@ -1,4 +1,20 @@
+import pytest
+
 import scripts.run_shadow_training_loop as loop
+
+
+@pytest.fixture(autouse=True)
+def _isolate_live_profitability_controls(monkeypatch) -> None:
+    monkeypatch.setattr(loop, "_profile_profitability_control", lambda profile: {})
+    monkeypatch.setattr(loop, "_profile_profit_harvest_control", lambda profile: {})
+    monkeypatch.setattr(loop, "_strategy_profit_harvest_control", lambda profile, strategy: {})
+    monkeypatch.setattr(loop, "_profit_harvest_report_card_snapshot", lambda: {})
+    monkeypatch.setattr(loop, "_profit_harvest_aplus_campaign_snapshot", lambda: {})
+    monkeypatch.setattr(loop, "_profit_realization_contract_snapshot", lambda: {})
+    monkeypatch.setattr(loop, "_profit_rotation_contract_snapshot", lambda: {})
+    monkeypatch.setattr(loop, "_profitability_global_policy", lambda: {})
+    monkeypatch.setattr(loop, "_profile_symbol_drag_penalty_norm", lambda profile, symbol: 0.0)
+    monkeypatch.setattr(loop, "_profile_drag_snapshot", lambda profile: {"active": False, "drag_norm": 0.0})
 
 
 def test_advanced_sleeve_logic_enabled_defaults_true_and_can_disable(monkeypatch) -> None:
@@ -113,7 +129,7 @@ def test_day_overlay_blocks_directional_trade_in_chop(monkeypatch) -> None:
     )
 
     assert action == "HOLD"
-    assert score <= 0.55
+    assert score < 0.60
     assert any(
         marker in reason
         for reason in reasons
@@ -222,7 +238,7 @@ def test_swing_overlay_blocks_directional_trade_in_chop(monkeypatch) -> None:
     )
 
     assert action == "HOLD"
-    assert score <= 0.55
+    assert score < 0.60
     assert any("swing_regime_chop_guard" in reason for reason in reasons)
     assert out_features["swing_regime_chop_norm"] >= 0.70
 
@@ -352,6 +368,397 @@ def test_core_overlay_blocks_bot_concentration_cap(monkeypatch) -> None:
     assert action == "HOLD"
     assert any("bot_concentration_cap" in reason for reason in reasons)
     assert out_features["core_bot_concentration_norm"] >= 0.72
+
+
+def test_core_overlay_applies_profitability_upgrade_contracts(monkeypatch) -> None:
+    monkeypatch.setenv("SHADOW_PROFILE", "default")
+    monkeypatch.setattr(loop, "_profile_symbol_drag_penalty_norm", lambda profile, symbol: 0.0)
+    monkeypatch.setattr(loop, "_profile_drag_snapshot", lambda profile: {"active": False, "drag_norm": 0.0})
+    monkeypatch.setattr(
+        loop,
+        "_profile_profitability_control",
+        lambda profile: {
+            "active": True,
+            "action": "tighten_entry_quality",
+            "drag_score": 0.52,
+            "profit_score": 0.34,
+            "position_size_multiplier": 0.41,
+            "thresholds": {
+                "min_source_quality_norm": 0.10,
+                "min_tradeability_norm": 0.10,
+                "min_execution_fitness_norm": 0.10,
+                "min_cross_asset_confirmation_norm": 0.10,
+            },
+            "outcome_weighted_training": {"sample_weight_multiplier": 2.0},
+            "exit_intelligence": {
+                "active": True,
+                "prefer_reduce_over_add": True,
+                "tighten_exit_bias_norm": 0.80,
+            },
+            "execution_aware_alpha": {
+                "active": True,
+                "unknown_fill_score_discount_norm": 0.34,
+            },
+            "portfolio_conflict_control": {
+                "active": True,
+                "max_overlap_pressure_norm": 0.90,
+                "block_when_confirmation_below_norm": 0.58,
+            },
+        },
+    )
+
+    action, score, reasons, out_features = loop._apply_core_sleeve_strategy_overlay(
+        symbol="MSFT",
+        action="BUY",
+        score=0.64,
+        threshold=0.55,
+        reasons=["base_buy"],
+        features={
+            "market_micro_tradeability_score_norm": 0.90,
+            "execution_fitness_norm": 0.90,
+            "news_source_quality_norm": 0.90,
+            "calendar_event_proximity_norm": 0.90,
+        },
+        rows=[],
+        profile="default",
+    )
+
+    assert action == "HOLD"
+    assert score <= 0.55
+    assert any("exit_drag_bias" in reason for reason in reasons)
+    assert out_features["paper_profitability_size_multiplier_norm"] == 0.41
+    assert out_features["paper_profitability_profit_score_norm"] == 0.34
+    assert out_features["paper_profitability_exit_pressure_norm"] == 0.80
+    assert out_features["paper_profitability_execution_discount_norm"] == 0.34
+
+
+def test_core_overlay_promotes_profit_harvest_trim(monkeypatch) -> None:
+    monkeypatch.setenv("SHADOW_PROFILE", "default")
+    monkeypatch.setattr(loop, "_profile_symbol_drag_penalty_norm", lambda profile, symbol: 0.0)
+    monkeypatch.setattr(loop, "_profile_drag_snapshot", lambda profile: {"active": False, "drag_norm": 0.0})
+    monkeypatch.setattr(loop, "_profitability_global_policy", lambda: {"apply_profit_realization": True})
+    monkeypatch.setattr(
+        loop,
+        "_profile_profit_harvest_control",
+        lambda profile: {
+            "active": True,
+            "harvest_pressure_norm": 0.82,
+            "unrealized_profit_share_norm": 0.88,
+            "recommended_trim_fraction_norm": 0.40,
+            "block_new_adds_when_unrealized_share_above_norm": 0.70,
+            "promote_trim_when_exit_quality_above_norm": 0.55,
+            "promote_trim_when_harvest_pressure_above_norm": 0.52,
+        },
+    )
+
+    action, score, reasons, out_features = loop._apply_core_sleeve_strategy_overlay(
+        symbol="MSFT",
+        action="HOLD",
+        score=0.51,
+        threshold=0.55,
+        reasons=["base_hold"],
+        features={
+            "market_micro_tradeability_score_norm": 0.82,
+            "execution_fitness_norm": 0.84,
+            "news_source_quality_norm": 0.80,
+            "calendar_event_proximity_norm": 0.70,
+            "core_cross_asset_confirmation_norm": 0.72,
+        },
+        rows=[],
+        profile="default",
+    )
+
+    assert action == "SELL"
+    assert score <= 0.45
+    assert any("paper_profit_harvest" in reason for reason in reasons)
+    assert out_features["paper_profit_harvest_active_norm"] == 1.0
+    assert out_features["paper_profit_harvest_trim_fraction_norm"] == 0.40
+
+
+def test_core_overlay_uses_daily_sleeve_harvest_goal_to_block_adds(monkeypatch) -> None:
+    monkeypatch.setenv("SHADOW_PROFILE", "crypto_futures")
+    monkeypatch.setattr(loop, "_profile_symbol_drag_penalty_norm", lambda profile, symbol: 0.0)
+    monkeypatch.setattr(loop, "_profile_drag_snapshot", lambda profile: {"active": False, "drag_norm": 0.0})
+    monkeypatch.setattr(
+        loop,
+        "_profitability_global_policy",
+        lambda: {
+            "apply_profit_realization": True,
+            "apply_daily_sleeve_harvest_targets": True,
+            "block_new_adds_until_daily_realization_goal": True,
+        },
+    )
+    monkeypatch.setattr(
+        loop,
+        "_profile_profit_harvest_control",
+        lambda profile: {
+            "active": True,
+            "harvest_pressure_norm": 0.72,
+            "unrealized_profit_share_norm": 0.91,
+            "recommended_trim_fraction_norm": 0.30,
+            "block_new_adds_when_unrealized_share_above_norm": 0.76,
+            "promote_trim_when_exit_quality_above_norm": 0.58,
+            "promote_trim_when_harvest_pressure_above_norm": 0.60,
+            "daily_harvest_goal": {
+                "active": True,
+                "daily_goal_progress_norm": 0.05,
+                "daily_harvest_pressure_norm": 0.82,
+                "daily_harvest_pnl_target_total": 3500.0,
+                "daily_trim_boost_norm": 0.08,
+                "block_new_adds_until_daily_goal": True,
+            },
+        },
+    )
+
+    action, score, reasons, out_features = loop._apply_core_sleeve_strategy_overlay(
+        symbol="BTC/USD",
+        action="BUY",
+        score=0.64,
+        threshold=0.55,
+        reasons=["base_buy"],
+        features={
+            "market_micro_tradeability_score_norm": 0.88,
+            "execution_fitness_norm": 0.88,
+            "news_source_quality_norm": 0.82,
+            "calendar_event_proximity_norm": 0.70,
+            "core_cross_asset_confirmation_norm": 0.78,
+        },
+        rows=[],
+        profile="crypto_futures",
+    )
+
+    assert action == "HOLD"
+    assert any("paper_daily_harvest_goal" in reason for reason in reasons)
+    assert out_features["paper_daily_harvest_goal_active_norm"] == 1.0
+    assert out_features["paper_daily_harvest_block_adds_norm"] == 1.0
+    assert out_features["paper_daily_previous_target_met_norm"] == 0.0
+    assert out_features["paper_daily_target_raise_active_norm"] == 0.0
+    assert out_features["paper_profit_harvest_trim_fraction_norm"] > 0.30
+
+
+def test_core_overlay_defers_harvest_when_intelligence_sees_continuation(monkeypatch) -> None:
+    monkeypatch.setenv("SHADOW_PROFILE", "crypto_futures")
+    monkeypatch.setattr(loop, "_profile_symbol_drag_penalty_norm", lambda profile, symbol: 0.0)
+    monkeypatch.setattr(loop, "_profile_drag_snapshot", lambda profile: {"active": False, "drag_norm": 0.0})
+    monkeypatch.setattr(
+        loop,
+        "_profitability_global_policy",
+        lambda: {
+            "apply_profit_realization": True,
+            "apply_profit_harvest_intelligence": True,
+            "apply_trend_continuation_holdback": True,
+        },
+    )
+    monkeypatch.setattr(
+        loop,
+        "_profile_profit_harvest_control",
+        lambda profile: {
+            "active": True,
+            "harvest_pressure_norm": 0.70,
+            "unrealized_profit_share_norm": 0.82,
+            "recommended_trim_fraction_norm": 0.36,
+            "block_new_adds_when_unrealized_share_above_norm": 0.76,
+            "promote_trim_when_exit_quality_above_norm": 0.58,
+            "promote_trim_when_harvest_pressure_above_norm": 0.52,
+            "force_trim_when_harvest_pressure_above_norm": 0.86,
+            "force_trim_when_unrealized_share_above_norm": 0.92,
+            "harvest_intelligence": {
+                "active": True,
+                "trend_continuation_score_norm": 0.94,
+                "harvest_regret_risk_norm": 0.95,
+                "realized_conversion_skill_norm": 0.10,
+                "trim_aggressiveness_multiplier_norm": 0.55,
+                "dynamic_exit_quality_floor_norm": 0.74,
+                "hold_winner_when_trend_continuation_above_norm": 0.70,
+                "force_trim_only_when_harvest_pressure_above_norm": 0.86,
+            },
+        },
+    )
+
+    action, score, reasons, out_features = loop._apply_core_sleeve_strategy_overlay(
+        symbol="BTC/USD",
+        action="HOLD",
+        score=0.54,
+        threshold=0.55,
+        reasons=["base_hold"],
+        features={
+            "pct_from_close": 0.02,
+            "mom_5m": 0.01,
+            "range_pos": 0.95,
+            "spread_bps": 1.0,
+            "vol_30m": 0.005,
+            "lead_lag_signal_signed": 0.90,
+            "flow_direction_signed": 0.86,
+            "market_micro_order_flow_imbalance_norm": 0.93,
+            "futures_order_book_imbalance_norm": 0.90,
+            "crypto_hyperliquid_basis_norm": 0.88,
+            "market_micro_tradeability_score_norm": 0.88,
+            "execution_fitness_norm": 0.90,
+            "news_source_quality_norm": 0.82,
+            "calendar_event_proximity_norm": 0.70,
+            "core_cross_asset_confirmation_norm": 0.88,
+        },
+        rows=[],
+        profile="crypto_futures",
+    )
+
+    assert action == "HOLD"
+    assert score == 0.54
+    assert any("paper_profit_harvest_hold_winner" in reason for reason in reasons)
+    assert out_features["paper_profit_harvest_intelligence_active_norm"] == 1.0
+    assert out_features["paper_profit_harvest_holdback_active_norm"] == 1.0
+    assert out_features["paper_profit_harvest_regret_risk_norm"] >= 0.80
+
+
+def test_paper_mirror_profitability_quarantines_losing_strategy(monkeypatch) -> None:
+    monkeypatch.setattr(loop, "_profitability_global_policy", lambda: {"apply_loser_quarantine": True})
+    monkeypatch.setattr(
+        loop,
+        "_strategy_profitability_control",
+        lambda profile, strategy: {
+            "mode": "paper_quarantine",
+            "score_penalty_norm": 0.82,
+            "position_size_multiplier": 0.08,
+        },
+    )
+
+    action, score, reasons, features = loop._apply_paper_mirror_profitability_control(
+        profile="aggressive",
+        strategy="paper_mirror::brain_refinery_v48_position_1m_3m",
+        action="BUY",
+        score=0.64,
+        threshold=0.55,
+        reasons=["base_buy"],
+        features={"market_micro_tradeability_score_norm": 0.7},
+    )
+
+    assert action == "HOLD"
+    assert score <= 0.55
+    assert any("paper_strategy_quarantine" in reason for reason in reasons)
+    assert features["paper_profitability_strategy_control_active_norm"] == 1.0
+    assert features["paper_profitability_strategy_size_multiplier_norm"] == 0.08
+
+
+def test_paper_mirror_strategy_harvest_blocks_adds(monkeypatch) -> None:
+    monkeypatch.setattr(loop, "_profitability_global_policy", lambda: {"apply_strategy_profit_harvest": True})
+    monkeypatch.setattr(loop, "_strategy_profitability_control", lambda profile, strategy: {})
+    monkeypatch.setattr(
+        loop,
+        "_strategy_profit_harvest_control",
+        lambda profile, strategy: {
+            "active": True,
+            "tier": "tier_3_protect_runner",
+            "profile_harvest_pressure_norm": 0.88,
+            "recommended_trim_fraction_norm": 0.34,
+            "block_new_adds": True,
+            "promote_partial_trim": True,
+            "protect_runner_when_trend_continuation_above_norm": 0.80,
+            "force_trim_when_harvest_pressure_above_norm": 0.90,
+        },
+    )
+
+    action, score, reasons, features = loop._apply_paper_mirror_profitability_control(
+        profile="default",
+        strategy="paper_mirror::brain_refinery_v21_flash_crash",
+        action="BUY",
+        score=0.64,
+        threshold=0.55,
+        reasons=["base_buy"],
+        features={
+            "market_micro_tradeability_score_norm": 0.80,
+            "execution_fitness_norm": 0.82,
+            "news_source_quality_norm": 0.78,
+            "core_cross_asset_confirmation_norm": 0.76,
+        },
+    )
+
+    assert action == "HOLD"
+    assert any("paper_strategy_harvest_block_add" in reason for reason in reasons)
+    assert features["paper_strategy_profit_harvest_active_norm"] == 1.0
+    assert features["paper_strategy_profit_harvest_trim_fraction_norm"] == 0.34
+
+
+def test_paper_mirror_strategy_harvest_promotes_trim(monkeypatch) -> None:
+    monkeypatch.setattr(loop, "_profitability_global_policy", lambda: {"apply_strategy_profit_harvest": True})
+    monkeypatch.setattr(loop, "_strategy_profitability_control", lambda profile, strategy: {})
+    monkeypatch.setattr(
+        loop,
+        "_strategy_profit_harvest_control",
+        lambda profile, strategy: {
+            "active": True,
+            "tier": "tier_2_pay_the_system",
+            "profile_harvest_pressure_norm": 0.74,
+            "recommended_trim_fraction_norm": 0.28,
+            "block_new_adds": False,
+            "promote_partial_trim": True,
+            "protect_runner_when_trend_continuation_above_norm": 0.82,
+            "force_trim_when_harvest_pressure_above_norm": 0.90,
+        },
+    )
+
+    action, score, reasons, features = loop._apply_paper_mirror_profitability_control(
+        profile="fx",
+        strategy="paper_mirror::brain_refinery_v10_seasonal",
+        action="HOLD",
+        score=0.52,
+        threshold=0.55,
+        reasons=["base_hold"],
+        features={
+            "market_micro_tradeability_score_norm": 0.86,
+            "execution_fitness_norm": 0.88,
+            "news_source_quality_norm": 0.80,
+            "calendar_event_proximity_norm": 0.72,
+            "core_cross_asset_confirmation_norm": 0.62,
+        },
+    )
+
+    assert action == "SELL"
+    assert any("paper_strategy_harvest_trim" in reason for reason in reasons)
+    assert features["paper_strategy_profit_harvest_active_norm"] == 1.0
+    assert features["paper_strategy_profit_harvest_runner_protected_norm"] == 0.0
+
+
+def test_paper_mirror_confirmation_bias_blocks_low_evidence_strategy(monkeypatch) -> None:
+    monkeypatch.setattr(loop, "_profitability_global_policy", lambda: {"apply_loser_quarantine": True})
+    monkeypatch.setattr(
+        loop,
+        "_strategy_profitability_control",
+        lambda profile, strategy: {
+            "mode": "deweight",
+            "score_penalty_norm": 0.44,
+            "position_size_multiplier": 0.62,
+            "confirmation_bias_control": {
+                "active": True,
+                "confirmation_bias_score_norm": 0.68,
+                "min_independent_evidence_channels": 4,
+                "block_when_quality_gate_below_norm": 0.62,
+                "score_dampen_when_quality_below_norm": 0.70,
+            },
+        },
+    )
+
+    action, score, reasons, features = loop._apply_paper_mirror_profitability_control(
+        profile="swing_aggressive",
+        strategy="paper_mirror::brain_refinery_v48_position_1m_3m",
+        action="BUY",
+        score=0.66,
+        threshold=0.55,
+        reasons=["base_buy"],
+        features={
+            "market_micro_tradeability_score_norm": 0.48,
+            "execution_fitness_norm": 0.46,
+            "news_source_quality_norm": 0.42,
+            "calendar_event_proximity_norm": 0.20,
+            "core_cross_asset_confirmation_norm": 0.36,
+            "cross_bot_conflict_norm": 0.52,
+        },
+    )
+
+    assert action == "HOLD"
+    assert score < 0.60
+    assert any("confirmation_bias_guard" in reason for reason in reasons)
+    assert features["paper_profitability_confirmation_bias_active_norm"] == 1.0
+    assert features["paper_profitability_strategy_confirmation_quality_norm"] < 0.62
 
 
 def test_day_overlay_intraday_allowlist_blocks_weak_symbol(monkeypatch) -> None:

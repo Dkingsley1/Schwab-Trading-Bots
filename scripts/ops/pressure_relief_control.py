@@ -23,6 +23,26 @@ else:
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "pressure_relief_control_latest.json"
 DEFAULT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.pressure_relief_override"
+SUPPORT_RENICE_PATTERNS: tuple[str, ...] = (
+    "yt-dlp",
+    "ffmpeg",
+    "scripts/ops/live_feed_tail.sh",
+    "scripts/link_jsonl_to_sql.py",
+    "scripts/ops/backpressure_slo_bot.py",
+    "scripts/ops/bot_quality_autopilot.py",
+    "scripts/ops/command_validity_bot.py",
+    "scripts/ops/commands_hygiene_bot.py",
+    "scripts/ops/coverage_gap_closer.py",
+    "scripts/ops/creative_cotenant_guard.py",
+    "scripts/ops/data_source_divergence_bot.py",
+    "scripts/ops/ingestion_storage_governor.py",
+    "scripts/ops/process_watchdog.py",
+    "scripts/ops/report_quality_guard.py",
+    "scripts/ops/runtime_gate_dashboard.py",
+    "scripts/ops/storage_quota_guard.py",
+    "scripts/ops/sql_link_shard_manager.py",
+    "scripts/ops/writer_cycle_coordinator.py",
+)
 
 PRESSURE_RELIEF_ITEMS: tuple[dict[str, Any], ...] = (
     {"id": "fast_health_read_only", "title": "Fast read-only health", "keys": ["OPS_HEALTH_FAST_ENABLED", "OPS_HEALTH_NO_REPORT_REFRESH"]},
@@ -310,6 +330,62 @@ def _env_for_tier(tier: str) -> dict[str, str]:
     return common
 
 
+def _support_hot_stabilization_overrides(runtime: dict[str, Any], tier: str, env: dict[str, str]) -> dict[str, Any]:
+    attribution = runtime.get("host_pressure_attribution") if isinstance(runtime.get("host_pressure_attribution"), dict) else {}
+    support_hot = bool(attribution.get("support_jobs_hot", False))
+    system_hot = bool(attribution.get("system_cotenant_hot", False))
+    external_hot = bool(attribution.get("external_pressure_dominant", False))
+    host_saturation = _safe_float(runtime.get("host_saturation_score"), 0.0)
+    active = bool(support_hot or system_hot or external_hot or host_saturation >= 56.0)
+    if not active:
+        return {
+            "active": False,
+            "reason": "support and macOS cotenant pressure are not hot",
+            "env_overrides": {},
+            "policy": "only tighten support maintenance when host pressure attribution asks for it",
+        }
+    collector_cap = 0.35 if system_hot or external_hot else 0.45 if support_hot else 0.55
+    if tier == "deep_relief":
+        collector_cap = min(collector_cap, 0.22)
+    current_ratio = _safe_float(env.get("BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"), 1.0)
+    support_nice = "16" if system_hot or external_hot else "14"
+    overrides = {
+        "OPS_SUPPORT_MAINTENANCE_STABILIZER_ACTIVE": "1",
+        "OPS_SUPPORT_MAINTENANCE_FREEZE": "1" if system_hot or external_hot else "0",
+        "OPS_SUPPORT_MAINTENANCE_COOLDOWN_SECONDS": "1800" if system_hot or external_hot else "900",
+        "OPS_SUPPORT_JOB_NICE": support_nice,
+        "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": f"{min(current_ratio, collector_cap):.2f}",
+        "COLD_START_COLLECTOR_SAMPLE_RATE": "0.12" if tier == "deep_relief" else "0.25",
+        "REPORT_REFRESH_DEBOUNCE_SECONDS": "2400",
+        "HEALTH_ARTIFACT_MIN_WRITE_SECONDS": "60",
+        "COMMAND_VALIDITY_MIN_INTERVAL_SECONDS": "5400",
+        "COMMANDS_HYGIENE_MIN_INTERVAL_SECONDS": "5400",
+        "DATA_SOURCE_DIVERGENCE_REFRESH_INTERVAL_SECONDS": "3600",
+        "PAPER_RUNTIME_CONTROL_REFRESH_SECONDS": "600",
+        "OPS_HEAVY_SUPPORT_OFF_HOURS_ONLY": "1",
+        "TRAINING_RESEARCH_PAUSE_ON_PRESSURE": "1",
+    }
+    reasons = []
+    if system_hot:
+        reasons.append("macos_system_cotenant_hot")
+    if external_hot:
+        reasons.append("external_or_foreground_cotenant_hot")
+    if support_hot:
+        reasons.append("support_maintenance_hot")
+    if host_saturation >= 56.0:
+        reasons.append("host_saturation_guarded")
+    return {
+        "active": True,
+        "reason": ",".join(reasons) or "host_pressure_guarded",
+        "host_saturation_score": round(host_saturation, 3),
+        "support_jobs_hot": support_hot,
+        "system_cotenant_hot": system_hot,
+        "external_pressure_dominant": external_hot,
+        "env_overrides": overrides,
+        "policy": "freeze_or_stretch_support_maintenance_before_widening_pcores_collectors_or_training",
+    }
+
+
 def _write_env_override(path: Path, env: dict[str, str]) -> bool:
     def assignment(name: str, value: str) -> str:
         return f"{name}={shlex.quote(str(value))}"
@@ -339,7 +415,7 @@ def _process_exists(pid: int) -> bool:
 
 
 def _renice_matching_processes(env: dict[str, str], *, apply: bool) -> dict[str, Any]:
-    patterns = ("yt-dlp", "ffmpeg", "scripts/ops/live_feed_tail.sh", "scripts/link_jsonl_to_sql.py")
+    patterns = SUPPORT_RENICE_PATTERNS
     try:
         completed = subprocess.run(["ps", "-axo", "pid,command"], check=False, capture_output=True, text=True, timeout=5)
     except Exception as exc:
@@ -375,6 +451,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     tier = _pressure_tier(runtime=runtime, memory=memory, swap=swap, global_halt=global_halt)
     sql_writer_coordination = _sql_writer_coordination(backpressure_fleet)
     env = _env_for_tier(tier)
+    support_stabilization = _support_hot_stabilization_overrides(runtime, tier, env)
+    env.update({str(key): str(value) for key, value in (support_stabilization.get("env_overrides") or {}).items()})
     if bool(sql_writer_coordination.get("concentrated_core_drain", False)):
         env.update(_concentrated_sql_drain_overrides())
     hour = _now_hour_local()
@@ -402,6 +480,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "backpressure": ingestion.get("backpressure") if isinstance(ingestion.get("backpressure"), dict) else {},
             "sql_writer_coordination": sql_writer_coordination,
         },
+        "support_maintenance_stabilization": support_stabilization,
         "quiet_window": {
             "enabled": env.get("MAINTENANCE_SLOT_QUIET_WINDOWS_ENABLED") == "1",
             "local_hour": hour,

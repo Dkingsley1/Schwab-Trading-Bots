@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import shlex
 import subprocess
@@ -48,12 +49,14 @@ PROFILE_PRESETS: Dict[str, Dict[str, str]] = {
         "ONE_NUMBERS_REFRESH_INTERVAL_SECONDS": "600",
         "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "120",
         "OPS_WATCHDOG_LAUNCHD_INTERVAL_SECONDS": "240",
-        "RESOURCE_GUARD_CREATIVE_APP_NAMES": "Final Cut Pro,Logic Pro",
+        "RESOURCE_GUARD_CREATIVE_APP_NAMES": "Final Cut Pro,Logic Pro,Music,iTunes",
+        "RESOURCE_GUARD_MUSIC_HOT_CPU_THRESHOLD": "45",
         "RESOURCE_GUARD_CREATIVE_HOT_CPU_THRESHOLD": "90",
         "RESOURCE_GUARD_BLOCK_ON_CREATIVE_SESSION_LEVELS": "active,dual_pro,hot",
         "RESOURCE_GUARD_OPTIONAL_BLOCK_ON_CREATIVE_SESSION_LEVELS": "active,dual_pro,hot",
         "RESOURCE_GUARD_REFRESH_BLOCK_ON_CREATIVE_SESSION_LEVELS": "active,dual_pro,hot",
         "MEMORY_EFFICIENCY_CREATIVE_ACTIVE_MAX_PROFILE": "air_safe",
+        "MEMORY_EFFICIENCY_CREATIVE_MUSIC_PROFILE": "air_safe",
         "MEMORY_EFFICIENCY_CREATIVE_HOT_PROFILE": "constrained",
         "MEMORY_EFFICIENCY_CREATIVE_DUAL_PROFILE": "constrained",
         "CREATIVE_AUDIO_SAMPLE_RATE_HZ": "96000",
@@ -92,12 +95,14 @@ PROFILE_PRESETS: Dict[str, Dict[str, str]] = {
         "ONE_NUMBERS_REFRESH_INTERVAL_SECONDS": "300",
         "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "180",
         "OPS_WATCHDOG_LAUNCHD_INTERVAL_SECONDS": "180",
-        "RESOURCE_GUARD_CREATIVE_APP_NAMES": "Final Cut Pro,Logic Pro",
+        "RESOURCE_GUARD_CREATIVE_APP_NAMES": "Final Cut Pro,Logic Pro,Music,iTunes",
+        "RESOURCE_GUARD_MUSIC_HOT_CPU_THRESHOLD": "45",
         "RESOURCE_GUARD_CREATIVE_HOT_CPU_THRESHOLD": "140",
         "RESOURCE_GUARD_BLOCK_ON_CREATIVE_SESSION_LEVELS": "dual_pro,hot",
         "RESOURCE_GUARD_OPTIONAL_BLOCK_ON_CREATIVE_SESSION_LEVELS": "active,dual_pro,hot",
         "RESOURCE_GUARD_REFRESH_BLOCK_ON_CREATIVE_SESSION_LEVELS": "dual_pro,hot",
         "MEMORY_EFFICIENCY_CREATIVE_ACTIVE_MAX_PROFILE": "air_safe",
+        "MEMORY_EFFICIENCY_CREATIVE_MUSIC_PROFILE": "air_safe",
         "MEMORY_EFFICIENCY_CREATIVE_HOT_PROFILE": "constrained",
         "MEMORY_EFFICIENCY_CREATIVE_DUAL_PROFILE": "constrained",
         "CREATIVE_AUDIO_SAMPLE_RATE_HZ": "96000",
@@ -136,12 +141,14 @@ PROFILE_PRESETS: Dict[str, Dict[str, str]] = {
         "ONE_NUMBERS_REFRESH_INTERVAL_SECONDS": "180",
         "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "120",
         "OPS_WATCHDOG_LAUNCHD_INTERVAL_SECONDS": "120",
-        "RESOURCE_GUARD_CREATIVE_APP_NAMES": "Final Cut Pro,Logic Pro",
+        "RESOURCE_GUARD_CREATIVE_APP_NAMES": "Final Cut Pro,Logic Pro,Music,iTunes",
+        "RESOURCE_GUARD_MUSIC_HOT_CPU_THRESHOLD": "45",
         "RESOURCE_GUARD_CREATIVE_HOT_CPU_THRESHOLD": "135",
         "RESOURCE_GUARD_BLOCK_ON_CREATIVE_SESSION_LEVELS": "dual_pro,hot",
         "RESOURCE_GUARD_OPTIONAL_BLOCK_ON_CREATIVE_SESSION_LEVELS": "dual_pro,hot",
         "RESOURCE_GUARD_REFRESH_BLOCK_ON_CREATIVE_SESSION_LEVELS": "dual_pro,hot",
         "MEMORY_EFFICIENCY_CREATIVE_ACTIVE_MAX_PROFILE": "pro_balanced",
+        "MEMORY_EFFICIENCY_CREATIVE_MUSIC_PROFILE": "air_safe",
         "MEMORY_EFFICIENCY_CREATIVE_HOT_PROFILE": "air_safe",
         "MEMORY_EFFICIENCY_CREATIVE_DUAL_PROFILE": "constrained",
         "CREATIVE_AUDIO_SAMPLE_RATE_HZ": "96000",
@@ -170,6 +177,22 @@ def _sysctl_text(name: str) -> str:
     return str(proc.stdout or "").strip()
 
 
+def _sysctl_int(name: str, default: int = 0) -> int:
+    text = _sysctl_text(name)
+    try:
+        return int(str(text).strip())
+    except Exception:
+        return int(default)
+
+
+def _positive_int(value: Any, default: int = 0) -> int:
+    try:
+        parsed = int(float(value))
+    except Exception:
+        return int(default)
+    return parsed if parsed > 0 else int(default)
+
+
 def _detect_hardware() -> Dict[str, Any]:
     system_name = platform.system()
     machine = platform.machine()
@@ -180,12 +203,32 @@ def _detect_hardware() -> Dict[str, Any]:
     except Exception:
         memory_gb = 0.0
     is_apple_silicon = system_name == "Darwin" and machine == "arm64"
+    physical_core_count = _sysctl_int("hw.physicalcpu", 0)
+    logical_core_count = _sysctl_int("hw.logicalcpu", 0) or int(os.cpu_count() or 0)
+    performance_core_count = _sysctl_int("hw.perflevel0.physicalcpu", 0)
+    efficiency_core_count = _sysctl_int("hw.perflevel1.physicalcpu", 0)
+    total_core_hint = physical_core_count or logical_core_count
+    if is_apple_silicon and performance_core_count <= 0 and total_core_hint > 0:
+        chip_lower = str(chip or "").lower()
+        if "max" in chip_lower or "ultra" in chip_lower or memory_gb >= 64.0:
+            performance_core_count = min(total_core_hint, 8)
+        elif "pro" in chip_lower or memory_gb >= 24.0:
+            performance_core_count = min(total_core_hint, 6)
+        else:
+            performance_core_count = min(total_core_hint, 4)
+        efficiency_core_count = max(total_core_hint - performance_core_count, 0)
+    elif performance_core_count > 0 and efficiency_core_count <= 0 and total_core_hint > 0:
+        efficiency_core_count = max(total_core_hint - performance_core_count, 0)
     return {
         "system": system_name,
         "machine": machine,
         "chip": chip,
         "memory_gb": memory_gb,
         "is_apple_silicon": is_apple_silicon,
+        "physical_core_count": physical_core_count,
+        "logical_core_count": logical_core_count,
+        "performance_core_count": performance_core_count,
+        "efficiency_core_count": efficiency_core_count,
     }
 
 
@@ -234,15 +277,102 @@ def _creative_audio_contract(tier: str) -> Dict[str, Any]:
     }
 
 
-def override_lines_for_tier(tier: str, hardware: Dict[str, Any]) -> list[str]:
+def _performance_core_contract(hardware: Dict[str, Any], tier: str) -> Dict[str, Any]:
     profile = PROFILE_PRESETS.get(str(tier), {})
+    is_apple_silicon = bool(hardware.get("is_apple_silicon", False))
+    physical_core_count = _positive_int(hardware.get("physical_core_count"), 0)
+    logical_core_count = _positive_int(hardware.get("logical_core_count"), 0)
+    performance_core_count = _positive_int(hardware.get("performance_core_count"), 0)
+    efficiency_core_count = _positive_int(hardware.get("efficiency_core_count"), 0)
+    total_core_hint = physical_core_count or logical_core_count or int(os.cpu_count() or 1)
+    if is_apple_silicon and performance_core_count <= 0:
+        chip_lower = str(hardware.get("chip") or "").lower()
+        if "max" in chip_lower or "ultra" in chip_lower or float(hardware.get("memory_gb") or 0.0) >= 64.0:
+            performance_core_count = min(total_core_hint, 8)
+        elif "pro" in chip_lower or float(hardware.get("memory_gb") or 0.0) >= 24.0:
+            performance_core_count = min(total_core_hint, 6)
+        else:
+            performance_core_count = min(total_core_hint, 4)
+        efficiency_core_count = max(total_core_hint - performance_core_count, 0)
+    primary_budget = max(performance_core_count or min(total_core_hint, 4), 1)
+    async_workers = _positive_int(profile.get("ASYNC_PIPELINE_WORKERS"), min(primary_budget, 4))
+    support_spillover_workers = min(max(efficiency_core_count, 0), 2)
+    return {
+        "policy": "performance_core_primary" if is_apple_silicon else "portable_scheduler_default",
+        "hard_affinity_supported": False,
+        "macos_hard_affinity_note": "macOS does not expose portable hard P-core pinning for these shell/Python workers; this policy is expressed through env budgets, worker caps, nice/QoS, and foreground governors.",
+        "scheduler_intent": "keep the SQL writer and hot backlog drain off macOS background taskpolicy unless foreground creative work is active",
+        "physical_core_count": physical_core_count,
+        "logical_core_count": logical_core_count,
+        "primary_performance_core_count": performance_core_count,
+        "primary_performance_core_budget": primary_budget,
+        "efficiency_spillover_core_budget": efficiency_core_count,
+        "support_spillover_workers": support_spillover_workers,
+        "foreground_app_reserve": 1,
+        "worker_budget_contract": {
+            "system_primary_workers": primary_budget,
+            "default_async_pipeline_workers": async_workers,
+            "baseline_sleeve_workers": primary_budget,
+            "support_spillover_workers": support_spillover_workers,
+            "foreground_governors_may_shrink": True,
+        },
+    }
+
+
+def _core_allocation_env(hardware: Dict[str, Any], tier: str) -> Dict[str, str]:
+    if str(tier) not in PROFILE_PRESETS:
+        return {}
+    contract = _performance_core_contract(hardware, tier)
+    primary_budget = _positive_int(contract.get("primary_performance_core_budget"), 1)
+    efficiency_budget = _positive_int(contract.get("efficiency_spillover_core_budget"), 0)
+    support_workers = _positive_int(contract.get("support_spillover_workers"), 0)
+    return {
+        "BOT_CPU_ALLOCATION_POLICY": str(contract.get("policy") or "performance_core_primary"),
+        "BOT_CPU_HARD_AFFINITY_SUPPORTED": "0",
+        "BOT_CPU_QOS_POLICY": "performance_core_primary_no_background_writer",
+        "BOT_CPU_EFFICIENCY_SATURATION_GUARD": "1",
+        "BOT_CPU_SPILLOVER_POLICY": "efficiency_core_low_priority_spillover",
+        "BOT_PERFORMANCE_CORE_PRIMARY_COUNT": str(_positive_int(contract.get("primary_performance_core_count"), primary_budget)),
+        "BOT_PERFORMANCE_CORE_TARGET": str(primary_budget),
+        "BOT_EFFICIENCY_CORE_SPILLOVER_COUNT": str(efficiency_budget),
+        "BOT_CPU_PRIMARY_WORKER_BUDGET": str(primary_budget),
+        "BOT_CPU_SUPPORT_SPILLOVER_WORKERS": str(support_workers),
+        "BOT_CPU_FOREGROUND_APP_RESERVE": str(_positive_int(contract.get("foreground_app_reserve"), 1)),
+        "SQL_LINK_WRITER_NICE": "0",
+        "SQL_LINK_WRITER_BACKGROUND_POLICY": "0",
+        "OPS_SQL_WRITER_NICE": "0",
+        "OPS_SQL_WRITER_BACKGROUND_POLICY": "0",
+        "BACKPRESSURE_DRAINER_NICE": "0",
+        "SLEEVE_WORKERS_BASELINE": str(primary_budget),
+        "SLEEVE_WORKERS_DIVIDEND": str(max(min(support_workers, 2), 1)),
+        "SLEEVE_WORKERS_BOND": str(max(min(support_workers, 2), 1)),
+        "SLEEVE_WORKERS_FX": str(max(min(support_workers, 2), 1)),
+        "SLEEVE_NICE_BASELINE": "0",
+        "SLEEVE_NICE_AGGRESSIVE": "0",
+        "SLEEVE_NICE_SPECIALIZED": "6",
+        "SLEEVE_NICE_DIVIDEND": "8",
+        "SLEEVE_NICE_DIVIDEND_CAPTURE": "8",
+        "SLEEVE_NICE_BOND": "8",
+        "SLEEVE_NICE_FX": "8",
+    }
+
+
+def _env_overrides_for_tier(tier: str, hardware: Dict[str, Any]) -> Dict[str, str]:
+    profile = PROFILE_PRESETS.get(str(tier), {})
+    env = dict(_core_allocation_env(hardware, tier))
+    env.update(profile)
+    return env
+
+
+def override_lines_for_tier(tier: str, hardware: Dict[str, Any]) -> list[str]:
+    env_overrides = _env_overrides_for_tier(tier, hardware)
     lines = [
         "# Auto-managed by scripts/ops/apple_silicon_profile.py",
         f"BOT_APPLE_SILICON_TIER={shlex.quote(str(tier))}",
         f"BOT_APPLE_SILICON_MEMORY_GB={shlex.quote(str(hardware.get('memory_gb', 0.0)))}",
         f"BOT_APPLE_SILICON_CHIP={shlex.quote(str(hardware.get('chip') or '').replace(' ', '_'))}",
     ]
-    for key, value in profile.items():
+    for key, value in env_overrides.items():
         lines.append(f"{key}={shlex.quote(str(value))}")
     return lines
 
@@ -264,6 +394,8 @@ def _write_override(path: Path, tier: str, hardware: Dict[str, Any]) -> bool:
 
 def build_payload(*, action: str, tier: str, hardware: Dict[str, Any], override_path: Path, changed: bool) -> Dict[str, Any]:
     unified_memory = _unified_memory_telemetry(hardware, tier)
+    performance_core_contract = _performance_core_contract(hardware, tier)
+    env_overrides = _env_overrides_for_tier(tier, hardware)
     notes = []
     if tier == "air_safe":
         notes.append("favor slower refresh cadence and tighter swap ceilings for MacBook Air and low-memory Apple Silicon")
@@ -275,6 +407,7 @@ def build_payload(*, action: str, tier: str, hardware: Dict[str, Any], override_
         notes.append("no Apple Silicon-specific override was applied on this hardware")
     notes.append("MLX remains the preferred live backend; profile overrides focus on storage, ingestion, and memory behavior")
     notes.append("Creative audio sessions pin the intended Logic Pro input/output contract to 96 kHz so runtime guards do not treat 48 kHz as the default.")
+    notes.append("Apple Silicon hosts use a performance-core-primary contract: detected P cores are the main worker budget, while efficiency cores are reserved for low-priority spillover and support work.")
     return {
         "timestamp_utc": _now_utc(),
         "ok": True,
@@ -285,9 +418,10 @@ def build_payload(*, action: str, tier: str, hardware: Dict[str, Any], override_
         "changed": bool(changed),
         "override_path": str(override_path),
         "override_exists": bool(override_path.exists()),
-        "env_overrides": PROFILE_PRESETS.get(tier, {}),
+        "env_overrides": env_overrides,
         "unified_memory_telemetry": unified_memory,
         "creative_audio_contract": _creative_audio_contract(tier),
+        "performance_core_contract": performance_core_contract,
         "notes": notes,
     }
 

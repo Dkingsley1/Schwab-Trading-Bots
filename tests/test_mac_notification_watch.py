@@ -43,12 +43,49 @@ def test_power_event_severity_and_heading() -> None:
 
 
 def test_recent_pmset_lines_handles_timeout(monkeypatch) -> None:
+    monkeypatch.setattr(watch, "_PMSET_POWER_LOG_CACHE", None)
+
     def _timeout(*args, **kwargs):
         raise watch.subprocess.TimeoutExpired(cmd="pmset", timeout=1.0)
 
     monkeypatch.setattr(watch.subprocess, "run", _timeout)
 
     assert watch._recent_pmset_lines() == []
+
+
+def test_recent_pmset_lines_uses_short_cache(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(watch, "_PMSET_POWER_LOG_CACHE", None)
+    monkeypatch.setenv(watch.PMSET_POWER_LOG_CACHE_SECONDS_ENV, "90")
+    monkeypatch.setattr(watch.time, "monotonic", lambda: 100.0 + len(calls))
+
+    class _Result:
+        returncode = 0
+        stdout = "2026-05-22 08:00:00 -0400 Sleep                Entering Sleep state due to 'Clamshell Sleep'\n"
+
+    def _run(*args, **kwargs):
+        calls.append(args)
+        return _Result()
+
+    monkeypatch.setattr(watch.subprocess, "run", _run)
+
+    first = watch._recent_pmset_lines()
+    second = watch._recent_pmset_lines()
+
+    assert first == second
+    assert len(calls) == 1
+
+
+def test_recent_pmset_lines_returns_cached_lines_on_timeout(monkeypatch) -> None:
+    monkeypatch.setattr(watch, "_PMSET_POWER_LOG_CACHE", (10.0, ["cached"]))
+    monkeypatch.setattr(watch.time, "monotonic", lambda: 200.0)
+
+    def _timeout(*args, **kwargs):
+        raise watch.subprocess.TimeoutExpired(cmd="pmset", timeout=1.0)
+
+    monkeypatch.setattr(watch.subprocess, "run", _timeout)
+
+    assert watch._recent_pmset_lines() == ["cached"]
 
 
 def test_notification_body_adds_action_hint_for_tripwire() -> None:
@@ -58,6 +95,154 @@ def test_notification_body_adds_action_hint_for_tripwire() -> None:
     assert "Tripwire triggered for all_sleeves" in body
     assert "Inspect: incident_timeline_latest.json" in body
     assert "Action: keep live halted and inspect the tripwire incidents." in body
+
+
+def test_all_sleeves_down_suppressed_when_launcher_is_recently_starting(monkeypatch, tmp_path: Path) -> None:
+    launcher = tmp_path / "all_sleeves_launcher_latest.json"
+    launcher.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "overall_status": "degraded",
+                "phase": "starting",
+                "launcher_pid": 12345,
+                "running_job_count": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(watch, "ALL_SLEEVES_LAUNCHER_PATH", launcher)
+
+    event = watch._all_sleeves_down_event(
+        {"status": [{"name": "all_sleeves", "running": 0, "heartbeat_ok": False, "alt_running": 0}]},
+        900.0,
+    )
+
+    assert event is None
+
+
+def test_all_sleeves_down_suppressed_during_watchdog_restart_handoff(monkeypatch, tmp_path: Path) -> None:
+    launcher = tmp_path / "all_sleeves_launcher_latest.json"
+    launcher.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime(2020, 1, 1, tzinfo=timezone.utc).isoformat(),
+                "overall_status": "stopped",
+                "phase": "stopped",
+                "launcher_pid": 0,
+                "running_job_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(watch, "ALL_SLEEVES_LAUNCHER_PATH", launcher)
+
+    event = watch._all_sleeves_down_event(
+        {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "status": [
+                {
+                    "name": "all_sleeves",
+                    "running": 0,
+                    "heartbeat_ok": False,
+                    "alt_running": 0,
+                    "restarted_pid": 12345,
+                    "restart_reason": "process_missing",
+                }
+            ],
+        },
+        900.0,
+    )
+
+    assert event is None
+
+
+def test_all_sleeves_down_suppressed_when_fanout_hold_intentionally_blocks_restart(monkeypatch, tmp_path: Path) -> None:
+    launcher = tmp_path / "all_sleeves_launcher_latest.json"
+    launcher.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(watch, "ALL_SLEEVES_LAUNCHER_PATH", launcher)
+
+    event = watch._all_sleeves_down_event(
+        {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "status": [
+                {
+                    "name": "all_sleeves",
+                    "running": 0,
+                    "heartbeat_ok": False,
+                    "alt_running": 0,
+                    "restart_skipped": "startup_not_ready",
+                    "reason": "process_fanout_guard_active",
+                }
+            ],
+        },
+        900.0,
+    )
+
+    assert event is None
+
+
+def test_all_sleeves_down_suppressed_when_creative_pause_is_intentional(monkeypatch, tmp_path: Path) -> None:
+    launcher = tmp_path / "all_sleeves_launcher_latest.json"
+    launcher.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(watch, "ALL_SLEEVES_LAUNCHER_PATH", launcher)
+
+    event = watch._all_sleeves_down_event(
+        {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "creative_cotenant_pause": {
+                "active": True,
+                "reason": "music_playback",
+                "creative_session_kind": "music_playback",
+                "creative_session_level": "active",
+            },
+            "watchdog_intelligence": {
+                "notification_policy": {"suppress_intentional_holds": True},
+                "exact_needs": [
+                    {
+                        "target": "all_sleeves",
+                        "status": "intentional_hold",
+                        "blocker": "music_playback",
+                    }
+                ],
+            },
+            "status": [
+                {
+                    "name": "all_sleeves",
+                    "running": 0,
+                    "heartbeat_ok": False,
+                    "alt_running": 0,
+                    "paused_by_creative_cotenant_guard": True,
+                    "restart_skipped": "creative_cotenant_pause_active",
+                    "reason": "music_playback",
+                }
+            ],
+        },
+        900.0,
+    )
+
+    assert event is None
+
+
+def test_all_sleeves_restart_storm_suppressed_while_launcher_is_recovering(monkeypatch, tmp_path: Path) -> None:
+    launcher = tmp_path / "all_sleeves_launcher_latest.json"
+    launcher.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "overall_status": "degraded",
+                "phase": "starting",
+                "launcher_pid": 12345,
+                "running_job_count": 9,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(watch, "ALL_SLEEVES_LAUNCHER_PATH", launcher)
+
+    event = watch._restart_storm_event({"restart_storms": [{"name": "all_sleeves"}]}, 900.0)
+
+    assert event is None
 
 
 def test_notification_body_adds_action_hint_for_guardrail_warning() -> None:

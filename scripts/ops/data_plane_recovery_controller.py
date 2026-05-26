@@ -50,6 +50,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     backlog_drain = load_json(health_root / "external_backlog_drain_latest.json")
     queue = load_json(health_root / "ingestion_priority_queue_latest.json")
     storage = load_json(health_root / "storage_tier_policy_latest.json")
+    storage_control = load_json(health_root / "ingestion_storage_control_latest.json")
     runtime = load_json(health_root / "live_runtime_separation_control_latest.json")
     writer_progress = load_json(health_root / "sql_link_service_progress_latest.json")
     snapshot_cache = load_json(health_root / "broker_truth_shared_snapshot_schwab_latest.json")
@@ -70,7 +71,18 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     pending_lines = _safe_int((queue.get("lane_counts") or {}).get("core", {}).get("pending_lines", queue.get("queue_depth", 0)), 0)
     drain_status = str(backlog_drain.get("overall_status") or "").strip().lower()
     runtime_clearance = str(((runtime.get("clearance_plan") or {}).get("clearance_state") or "")).strip().lower()
-    hot_path_over_budget = _safe_int(((storage.get("pressure") or {}).get("hot_path_over_budget_bytes", 0)), 0)
+    hot_path_over_budget_raw = _safe_int(((storage.get("pressure") or {}).get("hot_path_over_budget_bytes", 0)), 0)
+    storage_target_status = storage_control.get("steady_state", {}).get("target_status", {}) if isinstance(storage_control.get("steady_state"), dict) else {}
+    external_route = storage_control.get("external_route_verification") if isinstance(storage_control.get("external_route_verification"), dict) else {}
+    storage_steady_state_ready = bool(
+        str(storage_control.get("overall_status") or "").strip().lower() == "ready"
+        and str(storage_control.get("severity") or "").strip().lower() == "stable"
+        and bool(storage_target_status.get("steady_state_ready", False))
+        and _safe_int(storage_control.get("backpressure_quality_score"), 0) >= 95
+        and _safe_int(storage_control.get("recovery_quality_score"), 0) >= 88
+        and str(external_route.get("verification_state") or "").strip().lower() in {"ready", "verified", "curated_ready", "active_passthrough"}
+    )
+    hot_path_over_budget = 0 if storage_steady_state_ready else hot_path_over_budget_raw
     writer_busy = str(writer_progress.get("status") or "").strip().lower() in {"running", "busy"}
     snapshot_cache_ready = bool(snapshot_cache.get("fetched")) and bool(snapshot_cache.get("timestamp_utc"))
     snapshot_cache_ts = _parse_dt(snapshot_cache.get("timestamp_utc"))
@@ -96,15 +108,21 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     market_hours_guard = "market_hours_guard" in blocked_reasons
     follow_through_status = str(follow_through.get("status") or "").strip().lower()
     active_recovery = bool(writer_busy or drain_apply_requested or drain_progress_lines > 0 or follow_through_status in {"running", "waiting_for_writer", "polling"})
+    small_steady_queue = bool(
+        storage_steady_state_ready
+        and write_failure_count <= 0
+        and account_snapshot_count <= 0
+        and pending_lines <= 5000
+    )
 
     recovery_state = "stable"
     if write_failure_count > 0 or account_snapshot_count > 0:
         recovery_state = "needs_recovery"
-    if drain_status == "blocked" or hot_path_over_budget > 0:
+    if (drain_status == "blocked" and not small_steady_queue) or hot_path_over_budget > 0:
         recovery_state = "recovering_under_guard" if active_recovery else "blocked"
     elif active_recovery and recovery_state != "stable":
         recovery_state = "recovering_under_guard"
-    elif pending_lines > 0 and writer_busy:
+    elif pending_lines > 0 and writer_busy and not small_steady_queue:
         recovery_state = "recovering_under_guard"
 
     overall_status = "ready"
@@ -137,6 +155,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "external_backlog_status": drain_status,
         "runtime_clearance_state": runtime_clearance,
         "hot_path_over_budget_bytes": hot_path_over_budget,
+        "raw_hot_path_over_budget_bytes": hot_path_over_budget_raw,
+        "storage_steady_state_ready": bool(storage_steady_state_ready),
+        "small_steady_queue": bool(small_steady_queue),
         "recovery_contract": {
             "backlog_drain_required": write_failure_count > 0 or pending_lines > 0,
             "writer_handoff_required": hot_path_over_budget > 0,
@@ -175,6 +196,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "service_current_step": str(writer_progress.get("current_step") or ""),
             "writer_service_active": writer_busy,
             "hot_path_over_budget_bytes": hot_path_over_budget,
+            "raw_hot_path_over_budget_bytes": hot_path_over_budget_raw,
+            "storage_steady_state_ready": bool(storage_steady_state_ready),
             "preferred_mode": "single_writer_service" if hot_path_over_budget > 0 else "standard",
             "handoff_progress_state": ("active" if writer_busy else "idle"),
         },

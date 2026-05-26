@@ -62,3 +62,39 @@ def test_build_payload_counts_recent_tail_rows_only(tmp_path: Path) -> None:
     assert payload["rows_with_snapshot_id"] == 2
     assert payload["unique_snapshot_ids"] == 2
     assert payload["coverage_ratio"] == 1.0
+
+
+def test_build_payload_falls_back_to_runtime_training_snapshot(tmp_path: Path) -> None:
+    project_root = tmp_path
+    rows_path = project_root / "exports" / "training" / "runtime_training_snapshot_latest.jsonl"
+    _write_json(
+        project_root / "governance" / "health" / "shadow_loop_latest.json",
+        {"timestamp_utc": "2026-05-25T12:00:00+00:00", "symbols_total": 3},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "runtime_training_snapshot_latest.json",
+        {"rows_path": str(rows_path)},
+    )
+    _write_jsonl(
+        rows_path,
+        [
+            {"timestamp_utc": "2026-05-25T10:30:00+00:00", "snapshot_id": "btc"},
+            {"timestamp_utc": "2026-05-25T10:40:00+00:00", "snapshot_id": "eth"},
+            {"timestamp_utc": "2026-05-25T10:50:00+00:00", "snapshot_id": "sol"},
+        ],
+    )
+
+    payload = snapshot_coverage_sentinel.build_payload(
+        hours=2,
+        min_coverage_ratio=0.75,
+        project_root=project_root,
+        now=datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert payload["ok"] is True
+    assert payload["files_considered"] == 0
+    assert payload["primary_source_count"] == 1
+    assert payload["fallback_source_count"] == 0
+    assert payload["rows_scanned"] == 3
+    assert payload["rows_with_snapshot_id"] == 3
+    assert payload["coverage_ratio"] == 1.0

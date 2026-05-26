@@ -118,11 +118,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         contract_ok=required_contract_ok,
         snapshot_ready=required_snapshot_ready,
     )
-    verification_status = (
-        "ready"
-        if all_cross_verified
-        else ("degraded" if all_verified or bool(source_overall) else "missing")
-    )
+    verification_status = "ready" if all_verified else ("degraded" if bool(source_overall) else "missing")
+    verification_depth_status = "cross_verified" if all_cross_verified else "single_source_verified"
     quota_status = "ready"
     if cooldown["active"]:
         quota_status = "degraded" if required_snapshot_ready > 0 else "blocked"
@@ -140,7 +137,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "treat provider cooldowns as mesh-level state and serve last-good snapshots until the provider recovers" if cooldown["active"] else "",
             "raise required collector snapshot coverage so required lanes keep a usable last-good state during provider outages" if required_snapshot_ready < len(required_rows) else "",
             "repair required collector failures before trusting live context-driven decisions" if collector_contracts.get("required_failures") else "",
-            "cross-verify more sources so context lanes stop depending on single-provider freshness" if not all_cross_verified and bool(source_overall) else "",
+            "cross-verify more sources to raise optional verification depth from ready to A+"
+            if all_verified and not all_cross_verified and bool(source_overall)
+            else "",
             "keep optional collectors on a degraded path instead of letting them block the required context mesh" if int(collector_contracts.get("soft_failure_count", 0) or 0) > 0 else "",
         ]
     )
@@ -181,10 +180,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             },
             "verification_mesh": {
                 "status": verification_status,
+                "depth_status": verification_depth_status,
                 "summary": (
                     f"cross_verified={int(source_counts.get('cross_verified', 0) or 0)} "
-                    f"single_verified={int(source_counts.get('single_verified', 0) or 0)} "
-                    f"unverified={int(source_counts.get('single_unverified', 0) or 0)}"
+                    f"single_verified={int(source_counts.get('single_verified', source_counts.get('single_source_verified', 0)) or 0)} "
+                    f"unverified={int(source_counts.get('single_unverified', source_counts.get('single_source_unverified', 0)) or 0)}"
                 ),
                 "all_verified": all_verified,
                 "all_cross_verified": all_cross_verified,

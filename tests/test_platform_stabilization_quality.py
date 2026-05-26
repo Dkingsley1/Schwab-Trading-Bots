@@ -146,6 +146,34 @@ def test_platform_stabilization_quality_keeps_training_ready_only(tmp_path: Path
     assert payload["recommended_env_overrides"]["TRAINING_READY_ONLY_MICROBATCH_ENABLED"] == "1"
 
 
+def test_platform_stabilization_marks_duplicate_alpha_as_watch_when_novelty_contract_controls_overlap(tmp_path: Path) -> None:
+    _seed_project(tmp_path)
+    _write_json(
+        tmp_path / "governance" / "health" / "platform_intelligence_expansion_latest.json",
+        {
+            "overall_status": "needs_work",
+            "sections": {
+                "bot_data_quality_scores": {"overall_status": "ready", "average_quality_score": 88.0},
+                "duplicate_alpha_overlap_detector": {
+                    "overall_status": "needs_work",
+                    "overlap_cluster_count": 225,
+                    "high_overlap_cluster_count": 26,
+                    "novelty_contract": {"active": True, "review_required": True},
+                },
+                "execution_paper_trade_realism_layer": {"overall_status": "ready", "mae_bps": 12.0},
+                "provider_rotation_failover_mesh": {"overall_status": "ready", "degraded_provider_count": 0},
+            },
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    duplicate = payload["sections"]["duplicate_alpha_compression"]
+
+    assert duplicate["overall_status"] == "watch"
+    assert duplicate["controlled_by_novelty_contract"] is True
+    assert duplicate["high_overlap_cluster_count"] == 26
+
+
 def test_platform_stabilization_quality_requires_true_calm_before_expansion(tmp_path: Path) -> None:
     _seed_project(tmp_path)
     _write_json(
@@ -167,3 +195,40 @@ def test_platform_stabilization_quality_requires_true_calm_before_expansion(tmp_
     assert gate["pre_expansion_snapshot"]["host_saturation_score"] == 88.0
     assert payload["recommended_env_overrides"]["EXPANSION_CALM_BLOCKERS"] != "none"
     assert payload["recommended_env_overrides"]["ROSTER_EXPANSION_ALLOWED"] == "0"
+
+
+def test_platform_stabilization_uses_ready_storage_truth_over_stale_backpressure(tmp_path: Path) -> None:
+    _seed_project(tmp_path)
+    _write_json(
+        tmp_path / "governance" / "health" / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 251486,
+            "pending_lines_total": 251486,
+            "oldest_pending_age_seconds": 4928.503,
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.04,
+            "backpressure": {
+                "core_pending_lines": 65,
+                "deferred_pending_lines": 11941,
+                "cold_pending_lines": 0,
+                "support_pending_lines": 1,
+                "total_pending_lines": 12006,
+                "pending_lines_threshold": 15000,
+                "oldest_pending_age_seconds": 0.0,
+            },
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    metrics = payload["sections"]["backlog_drain_stabilizer"]["metrics"]
+
+    assert metrics["storage_live_authoritative"] is True
+    assert metrics["total_pending_lines"] == 12006
+    assert metrics["oldest_pending_age_seconds"] == 0.0
+    assert payload["sections"]["backlog_drain_stabilizer"]["queue_backpressure_active"] is False

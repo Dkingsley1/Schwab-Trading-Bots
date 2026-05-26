@@ -21,6 +21,13 @@ else:
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "commands_hygiene_latest.json"
 DEFAULT_CONTRACT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "commands_contract_latest.json"
 COMMAND_CONTRACT_SCHEMA_VERSION = 1
+MANUAL_OPERATOR_EXCLUDED_SECTIONS = {
+    "Platform Expansion",
+    "Macro And Media",
+}
+MANUAL_OPERATOR_EXCLUDED_TITLES = {
+    "Install nightly showcase and PDF refresh",
+}
 LEGACY_RUNBOOK_ALIASES = {
     "live": "Live Feed Views",
     "refresh": "Live Feed Refreshes",
@@ -109,9 +116,28 @@ def _alphabetized_inventory(sections: Iterable[dict[str, Any]]) -> list[dict[str
     return sorted_sections
 
 
+def _manual_operator_inventory(project_root: Path) -> list[dict[str, Any]]:
+    """Return only commands the operator is expected to paste manually."""
+    sections: list[dict[str, Any]] = []
+    excluded_sections = {_normalize_key(section) for section in MANUAL_OPERATOR_EXCLUDED_SECTIONS}
+    excluded_titles = {_normalize_key(title) for title in MANUAL_OPERATOR_EXCLUDED_TITLES}
+    for section in _commands_inventory(project_root):
+        heading = str(section.get("heading") or "")
+        if _normalize_key(heading) in excluded_sections:
+            continue
+        copied = dict(section)
+        copied["entries"] = [
+            dict(entry)
+            for entry in list(section.get("entries") or [])
+            if _normalize_key(str(entry.get("title") or "")) not in excluded_titles
+        ]
+        sections.append(copied)
+    return sections
+
+
 def build_command_contract(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
-    sections = _alphabetized_inventory(_commands_inventory(project_root))
+    sections = _alphabetized_inventory(_manual_operator_inventory(project_root))
     for section_index, section in enumerate(sections):
         section_name = str(section.get("heading") or "").strip()
         for entry_index, entry in enumerate(list(section.get("entries") or [])):
@@ -252,6 +278,16 @@ def _open_path_entry(
     return _command_entry(project_root, title, [f"open {target_path}"], notes=notes)
 
 
+def _open_report_entry(
+    project_root: Path,
+    title: str,
+    report_key: str,
+    *,
+    notes: Iterable[str] = (),
+) -> dict[str, Any]:
+    return _command_entry(project_root, title, [f"./scripts/ops/open_report_artifact.sh {report_key}"], notes=notes)
+
+
 def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
     bot_stack_pdf_path = project_root / "exports" / "bot_stack_status" / "latest.pdf"
     report_bundle_pdf_path = project_root / "exports" / "reports" / "report_pdf_bundle_latest.pdf"
@@ -284,8 +320,24 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
     bot_explainability_pdf_path = project_root / "exports" / "sql_reports" / "bot_explainability_latest.pdf"
     special_features_pdf_path = project_root / "exports" / "reports" / "showcase" / "special_features_latest.pdf"
     report_pdf_open_entries = [
-        _open_path_entry(project_root, "Open the report catalog PDF", report_bundle_pdf_path),
-        _open_path_entry(project_root, "Open the daily ops PDF", daily_ops_pdf_path),
+        _open_report_entry(
+            project_root,
+            "Open the report catalog PDF",
+            "report-catalog",
+            notes=[
+                f"Latest PDF path: `{report_bundle_pdf_path}`.",
+                "This rebuilds the documented report catalog first, then opens the report-ready bundle PDF with HTML fallback.",
+            ],
+        ),
+        _open_report_entry(
+            project_root,
+            "Open the daily ops PDF",
+            "daily-ops",
+            notes=[
+                f"Latest PDF path: `{daily_ops_pdf_path}`.",
+                "This refreshes the daily ops source, rebuilds the PDF bundle, then opens the report with markdown/JSON fallback.",
+            ],
+        ),
         _command_entry(
             project_root,
             "Open the paper performance PDF",
@@ -302,7 +354,15 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "This regenerates the current sentiment report, prefers the PDF artifact, and falls back to HTML or markdown if the PDF renderer is unavailable."
             ],
         ),
-        _open_path_entry(project_root, "Open the strategy attribution PDF", strategy_attribution_pdf_path),
+        _open_report_entry(
+            project_root,
+            "Open the strategy attribution PDF",
+            "strategy-attribution",
+            notes=[
+                f"Latest PDF path: `{strategy_attribution_pdf_path}`.",
+                "This refreshes strategy attribution, rebuilds the PDF bundle, and falls back to markdown or JSON evidence.",
+            ],
+        ),
         _command_entry(
             project_root,
             "Open the strategy inventory PDF",
@@ -324,10 +384,10 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
         _command_entry(
             project_root,
             "Open the quant model control PDF",
-            ["./scripts/ops/opsctl.sh quant-model-control --json", f"open {quant_model_control_pdf_path}"],
+            ["./scripts/ops/open_report_artifact.sh quant"],
             notes=[
                 f"Latest PDF path: `{quant_model_control_pdf_path}`.",
-                "This refreshes the advanced quant-model feature, MLX, resource-cap, and research-only policy report.",
+                "This refreshes the advanced quant-model feature, MLX, resource-cap, and research-only policy report, then opens the report-ready PDF.",
             ],
         ),
         _command_entry(
@@ -354,12 +414,13 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "This regenerates the timeline report, prefers the PDF artifact, and falls back to printable HTML if the PDF renderer is unavailable."
             ],
         ),
-        _open_path_entry(
+        _open_report_entry(
             project_root,
             "Open the system overview PDF",
-            system_overview_pdf_path,
+            "system-overview",
             notes=[
-                "This opens the week-by-week platform history and current-position overview PDF.",
+                f"Latest PDF path: `{system_overview_pdf_path}`.",
+                "This opens the week-by-week platform history and current-position overview PDF with markdown fallback.",
             ],
         ),
         _command_entry(
@@ -411,7 +472,15 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ],
         ),
         _open_path_entry(project_root, "Open the retrain scorecard PDF", retrain_scorecard_pdf_path),
-        _open_path_entry(project_root, "Open the daily runtime summary PDF", daily_runtime_summary_pdf_path),
+        _open_report_entry(
+            project_root,
+            "Open the daily runtime summary PDF",
+            "daily-runtime",
+            notes=[
+                f"Latest PDF path: `{daily_runtime_summary_pdf_path}`.",
+                "This rebuilds the PDF bundle and falls back to the runtime JSON artifact if the PDF is unavailable.",
+            ],
+        ),
         _command_entry(
             project_root,
             "Open the daily auto verify PDF",
@@ -447,7 +516,15 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "This regenerates the replay feature ablation evidence, renders the report PDF bundle, prefers the PDF artifact, and falls back to the latest JSON evidence if a PDF cannot be rendered."
             ],
         ),
-        _open_path_entry(project_root, "Open the state snapshot drills PDF", state_snapshot_pdf_path),
+        _open_report_entry(
+            project_root,
+            "Open the state snapshot drills PDF",
+            "state-snapshot",
+            notes=[
+                f"Latest PDF path: `{state_snapshot_pdf_path}`.",
+                "This rebuilds the state snapshot drill PDF and falls back to the latest drill JSON.",
+            ],
+        ),
         _command_entry(
             project_root,
             "Open the active bot stack PDF",
@@ -511,8 +588,24 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                     "When `--host 0.0.0.0` is used without `--token`, the server auto-generates a remote-access token for you.",
                 ],
             ),
-            _open_path_entry(project_root, "Open the One Numbers CSV in Numbers", one_numbers_csv_path),
-            _open_path_entry(project_root, "Open the One Numbers PDF", one_numbers_pdf_path),
+            _open_report_entry(
+                project_root,
+                "Open the One Numbers CSV in Numbers",
+                "one-numbers-csv",
+                notes=[
+                    f"Latest CSV path: `{one_numbers_csv_path}`.",
+                    "This refreshes One Numbers first so the CSV alias points at the freshest report day before opening it.",
+                ],
+            ),
+            _open_report_entry(
+                project_root,
+                "Open the One Numbers PDF",
+                "one-numbers",
+                notes=[
+                    f"Latest PDF path: `{one_numbers_pdf_path}`.",
+                    "This refreshes One Numbers, rebuilds the PDF bundle, and falls back to markdown or JSON evidence if needed.",
+                ],
+            ),
             _command_entry(
                 project_root,
                 "Refresh the special features and framework map reports",
@@ -554,7 +647,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "Broker Truth Step 2: restart the Schwab loops",
                 ["./scripts/ops/opsctl.sh feed-refresh --source schwab"],
                 notes=[
-                    "This forces the Schwab sleeves to pick up the refreshed token and republish their latest broker-truth snapshots.",
+                    "This ensures the supervised Schwab sleeves are running and lets them pick up the refreshed token without a hard bounce. Add `--force-restart` only when you intentionally want to restart the loops.",
                 ],
             ),
             _command_entry(
@@ -572,7 +665,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "Refresh the live loops without reinstalling the stack watchdog",
                 ["./scripts/ops/opsctl.sh livefeed-refresh"],
                 notes=[
-                    "`livefeed-refresh` is the all-feeds shortcut for the `feed-refresh` live-loop restart helper. It kills and restarts the relevant market-data loops. Use `./scripts/ops/opsctl.sh livefeed-refresh --dry-run` to validate the route without touching processes. If you want a full supervised stack refresh instead of a feed-loop refresh, use `./scripts/ops/opsctl.sh start --force-restart`.",
+                    "`livefeed-refresh` is the all-feeds shortcut for the `feed-refresh` health/ensure helper. It keeps already supervised loops running by default and only hard-bounces them when you add `--force-restart`. Use `./scripts/ops/opsctl.sh livefeed-refresh --dry-run` to validate the route without touching processes. If you want a full supervised stack refresh instead, use `./scripts/ops/opsctl.sh start --force-restart`.",
                 ],
             ),
             _command_entry(
@@ -645,6 +738,70 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/ops/opsctl.sh health-fast --json"],
                 notes=[
                     "This reads the latest health artifacts without starting report refreshes, daily verification, or PDF/report jobs.",
+                    "Associated bots/control layers: `runtime-gate-dashboard`, `master-infrastructure-supervisor`, `system-drift-guard`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Ask what backlog and runtime need next",
+                ["./scripts/ops/opsctl.sh system-needs --json"],
+                notes=[
+                    "Use this when you want the system to name the exact blocker, shard/file, next command, expected impact, risk, and stop condition.",
+                    "Associated bots/control layers: `system-needs-intelligence`, `autonomic-resource-governor`, `memory-pressure-intelligence`, `writer-process-intelligence`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply raw backlog refinement",
+                ["./scripts/ops/opsctl.sh raw-backlog-refiner --apply --json"],
+                notes=[
+                    "This expands raw backlog handling into five coordinated sections: measurement, hot-file mapping, focused drain handoff, intake relief, and safe stale/sparse cleanup.",
+                    "Associated bots/control layers: `raw-backlog-refiner`, `external-backlog-drain`, `ingestion-priority-queue`, `pressure-relief-control`, `stale-artifact-sweeper`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Check backlog writer and drainer status",
+                ["./scripts/ops/opsctl.sh writer-cycle-coordinator --json"],
+                notes=[
+                    "This is the read-only writer/drainer check. Use it before launching another catch-up cycle so a running single writer is not duplicated.",
+                    "Associated bots/control layers: `writer-cycle-coordinator`, `writer-process-intelligence`, `backpressure-drainer-fleet`, `ingestion-storage-governor`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply backlog writer catch-up waves",
+                ["./scripts/ops/opsctl.sh writer-cycle-coordinator --apply --json"],
+                notes=[
+                    "This lets the single writer run bounded catch-up waves and then hands off follow-through to the active drainer lane.",
+                    "Associated bots/control layers: `writer-cycle-coordinator`, `backpressure-drainer-fleet`, `storage-backpressure-autopilot`, `retention-debt-sheriff`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply autonomic P-core resource governor",
+                ["./scripts/ops/opsctl.sh autonomic-governor --apply --json"],
+                notes=[
+                    "This applies the host-aware budget for live loops, backlog writer, collectors, trainings, MLX/GPU jobs, reports, and foreground apps.",
+                    "Associated bots/control layers: `autonomic-resource-governor`, `host-capability-contract`, `os-adapter-layer`, `workload-class-registry`, `computer-task-intelligence`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply income operating platform controls",
+                ["./scripts/ops/opsctl.sh income-operating-platform --apply --json"],
+                notes=[
+                    "This refreshes the 10-lane income operating platform: promotion gate, realized profit engine, drawdown governor, paper/live fill gap, live-micro lock, withdrawal simulator, account rules, sleeve ranking, failure drills, and human dashboard.",
+                    "Associated bots/control layers: `income-operating-platform`, `income-readiness-control`, `paper-profitability-control`, `account-policy-context`, `chaos-drill-coordinator`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply memory pressure and multitasking controls",
+                ["./scripts/ops/opsctl.sh memory-pressure-intelligence --apply --json"],
+                notes=[
+                    "This refreshes unified-memory, compression, swap, observer-overhead, foreground-app, and P-core widening gates before backlog or training work expands.",
+                    "Associated bots/control layers: `memory-pressure-intelligence`, `autonomic-resource-governor`, `runtime-throttle`, `creative-cotenant-guard`.",
                 ],
             ),
             _command_entry(
@@ -653,6 +810,34 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/ops/opsctl.sh pressure-relief --apply --json"],
                 notes=[
                     "This writes the pressure-relief override used by runtime loading, maintenance guards, heavy feed TTL, SQL cadence, foreground-app awareness, macro capture niceness, MLX/quant caps, report caps, and quiet-window behavior.",
+                    "Associated bots/control layers: `pressure-relief-control`, `runtime-throttle`, `ingestion-storage-governor`, `mlx-intelligence-router`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply runtime throttle and P-core priority controls",
+                ["./scripts/ops/opsctl.sh runtime-throttle --apply --json"],
+                notes=[
+                    "This refreshes process priority, niceness, fanout limits, P-core feedback, and co-tenant headroom after the host pressure picture changes.",
+                    "Associated bots/control layers: `runtime-throttle`, `process-fanout-guard`, `memory-pressure-intelligence`, `autonomic-resource-governor`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Watch P-core/E-core load with low overhead",
+                ["sudo /Library/Frameworks/Python.framework/Versions/3.14/bin/asitop --interval 3 --show_cores 1"],
+                notes=[
+                    "Use this as the normal Apple Silicon watcher. The 3-second interval reduces observer overhead so the monitor is less likely to create the pressure it is measuring.",
+                    "Associated bots/control layers: external observer for `memory-pressure-intelligence`, `autonomic-resource-governor`, and `runtime-throttle`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Watch P-core/E-core load live/heavy",
+                ["sudo /Library/Frameworks/Python.framework/Versions/3.14/bin/asitop --interval 1 --show_cores 1"],
+                notes=[
+                    "Use this briefly when you need faster visual feedback. The memory intelligence layer can flag interval-1 asitop as observer overhead if it starts distorting CPU or memory pressure.",
+                    "Associated bots/control layers: external observer for `memory-pressure-intelligence`, `autonomic-resource-governor`, and `runtime-throttle`.",
                 ],
             ),
             _command_entry(project_root, "Validate documented commands", ["./scripts/ops/opsctl.sh command-validity --json"]),
@@ -1322,9 +1507,10 @@ def render_commands_markdown(project_root: Path = PROJECT_ROOT) -> str:
         "- paper mode is the operating default",
         "- no simulate variants are listed",
         "- no duplicate restart commands are listed when a broader command already covers them",
+        "- passive automation installers and expansion-pack reference commands are kept out of the operator-facing list",
     ]
     parts = ["\n".join(preamble)]
-    for section in _alphabetized_inventory(_commands_inventory(project_root)):
+    for section in _alphabetized_inventory(_manual_operator_inventory(project_root)):
         blocks = [f"## {section['heading']}"]
         intro_text = "\n".join(_trim_blank_edges(list(section.get("intro_lines") or []))).strip()
         if intro_text:

@@ -343,3 +343,47 @@ def test_promotion_quality_gate_resolves_fresh_snapshot_and_freshness_failures()
         "data_source_divergence_bot",
         "snapshot_coverage_sentinel",
     ]
+
+
+def test_promotion_quality_gate_resolves_remediated_daily_verify_in_idle_scope() -> None:
+    ok, failed_checks, details = promotion_quality_gate.evaluate_quality(
+        {"promote_ok": False, "considered_bots": 0, "fail_share": 0.0},
+        {
+            "ok": False,
+            "failed_checks": [
+                "feature_store_manifest",
+                "nightly_resilience_check",
+                "state_snapshot_drill",
+                "db_integrity",
+            ],
+        },
+        {"ok": True, "graduation_scope_active_count": 0},
+        {"ok": True},
+        {"ok": True},
+        {"ok": True},
+        {"ok": True},
+        feature_store_manifest={
+            "ok": True,
+            "strict_seed_ready": True,
+            "point_in_time_contract": {"seed_ready": True},
+            "contract_hashes": {"dataset_manifest_sha256": "a" * 64},
+        },
+        new_bot_admission_guard={"ok": True},
+        nightly_resilience_guard={"ok": False},
+        state_snapshot_drill={"ok": True},
+        db_integrity_guard={"ok": True},
+        max_fail_share=0.25,
+        min_considered_bots=4,
+        require_replay=True,
+        require_reconciliation_slo=True,
+    )
+
+    assert ok is True
+    assert failed_checks == []
+    assert details["daily_verify_unresolved_failed_checks"] == []
+    assert sorted(details["daily_verify_resolved_failed_checks"]) == [
+        "db_integrity",
+        "feature_store_manifest",
+        "nightly_resilience_check",
+        "state_snapshot_drill",
+    ]

@@ -13,6 +13,19 @@ SCOPE_EXEMPT_TOKENS = (
     "manual_collection_restore",
     "manual_canary_restore",
 )
+COLLECTION_ONLY_STATES = {
+    "data_collection_only",
+    "collection_only",
+    "collecting_only",
+    "paper_live_data",
+}
+PROMOTION_SCOPE_STATUSES = {
+    "candidate",
+    "challenger",
+    "master_candidate",
+    "probation",
+    "promotion_candidate",
+}
 
 
 def _load(path: Path) -> dict:
@@ -55,6 +68,20 @@ def _registry_row_map(sub_bots: list[dict]) -> dict[str, dict]:
 
 
 def _scope_exempt_reason(row: dict) -> str:
+    lifecycle_state = str(row.get("lifecycle_state") or "").strip().lower()
+    promotion_status = str(row.get("promotion_status") or "").strip().lower()
+    paper_or_shadow_requested = str(row.get("paper_trading") or row.get("shadow_mode") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if (
+        lifecycle_state in COLLECTION_ONLY_STATES
+        and promotion_status not in PROMOTION_SCOPE_STATUSES
+        and not paper_or_shadow_requested
+    ):
+        return "data_collection_only"
     tokens = " ".join(
         [
             str(row.get("reason", "") or ""),

@@ -4,15 +4,52 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `11a16cf93df61bbfb89a2cbcf0633d29097ff9397bae98fcebbe627aee5b010b`.
+Command contract hash: `b286d8cbf7a473ba6da4ba511060a5a73e1415ea13123d87613b264ffc3c9311`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
 - paper mode is the operating default
 - no simulate variants are listed
 - no duplicate restart commands are listed when a broader command already covers them
+- passive automation installers and expansion-pack reference commands are kept out of the operator-facing list
 
 ## Most Used
+
+### Apply autonomic P-core resource governor
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh autonomic-governor --apply --json
+```
+
+This applies the host-aware budget for live loops, backlog writer, collectors, trainings, MLX/GPU jobs, reports, and foreground apps.
+Associated bots/control layers: `autonomic-resource-governor`, `host-capability-contract`, `os-adapter-layer`, `workload-class-registry`, `computer-task-intelligence`.
+
+### Apply backlog writer catch-up waves
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh writer-cycle-coordinator --apply --json
+```
+
+This lets the single writer run bounded catch-up waves and then hands off follow-through to the active drainer lane.
+Associated bots/control layers: `writer-cycle-coordinator`, `backpressure-drainer-fleet`, `storage-backpressure-autopilot`, `retention-debt-sheriff`.
+
+### Apply income operating platform controls
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh income-operating-platform --apply --json
+```
+
+This refreshes the 10-lane income operating platform: promotion gate, realized profit engine, drawdown governor, paper/live fill gap, live-micro lock, withdrawal simulator, account rules, sleeve ranking, failure drills, and human dashboard.
+Associated bots/control layers: `income-operating-platform`, `income-readiness-control`, `paper-profitability-control`, `account-policy-context`, `chaos-drill-coordinator`.
+
+### Apply memory pressure and multitasking controls
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh memory-pressure-intelligence --apply --json
+```
+
+This refreshes unified-memory, compression, swap, observer-overhead, foreground-app, and P-core widening gates before backlog or training work expands.
+Associated bots/control layers: `memory-pressure-intelligence`, `autonomic-resource-governor`, `runtime-throttle`, `creative-cotenant-guard`.
 
 ### Apply pressure relief controls
 ```bash
@@ -21,6 +58,34 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 This writes the pressure-relief override used by runtime loading, maintenance guards, heavy feed TTL, SQL cadence, foreground-app awareness, macro capture niceness, MLX/quant caps, report caps, and quiet-window behavior.
+Associated bots/control layers: `pressure-relief-control`, `runtime-throttle`, `ingestion-storage-governor`, `mlx-intelligence-router`.
+
+### Apply raw backlog refinement
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh raw-backlog-refiner --apply --json
+```
+
+This expands raw backlog handling into five coordinated sections: measurement, hot-file mapping, focused drain handoff, intake relief, and safe stale/sparse cleanup.
+Associated bots/control layers: `raw-backlog-refiner`, `external-backlog-drain`, `ingestion-priority-queue`, `pressure-relief-control`, `stale-artifact-sweeper`.
+
+### Apply runtime throttle and P-core priority controls
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh runtime-throttle --apply --json
+```
+
+This refreshes process priority, niceness, fanout limits, P-core feedback, and co-tenant headroom after the host pressure picture changes.
+Associated bots/control layers: `runtime-throttle`, `process-fanout-guard`, `memory-pressure-intelligence`, `autonomic-resource-governor`.
+
+### Ask what backlog and runtime need next
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh system-needs --json
+```
+
+Use this when you want the system to name the exact blocker, shard/file, next command, expected impact, risk, and stop condition.
+Associated bots/control layers: `system-needs-intelligence`, `autonomic-resource-governor`, `memory-pressure-intelligence`, `writer-process-intelligence`.
 
 ### Attempt a safe global halt clear
 ```bash
@@ -44,7 +109,7 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh feed-refresh --source schwab
 ```
 
-This forces the Schwab sleeves to pick up the refreshed token and republish their latest broker-truth snapshots.
+This ensures the supervised Schwab sleeves are running and lets them pick up the refreshed token without a hard bounce. Add `--force-restart` only when you intentionally want to restart the loops.
 
 ### Broker Truth Step 3: verify broker readiness and lane statuses
 ```bash
@@ -53,6 +118,15 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 Healthy target: `ready_for_open=True`, `auth_ok=True`, and all Schwab broker-truth lanes reporting `status=ok` with `mismatch_count=0`.
+
+### Check backlog writer and drainer status
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh writer-cycle-coordinator --json
+```
+
+This is the read-only writer/drainer check. Use it before launching another catch-up cycle so a running single writer is not duplicated.
+Associated bots/control layers: `writer-cycle-coordinator`, `writer-process-intelligence`, `backpressure-drainer-fleet`, `ingestion-storage-governor`.
 
 ### Clear all halt flags now
 ```bash
@@ -77,6 +151,7 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 This reads the latest health artifacts without starting report refreshes, daily verification, or PDF/report jobs.
+Associated bots/control layers: `runtime-gate-dashboard`, `master-infrastructure-supervisor`, `system-drift-guard`.
 
 ### Keep the Mac awake
 ```bash
@@ -95,14 +170,20 @@ This refreshes the framework-map source, renders a deterministic PDF, and falls 
 ### Open the One Numbers CSV in Numbers
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/one_numbers/latest.csv
+./scripts/ops/open_report_artifact.sh one-numbers-csv
 ```
+
+Latest CSV path: `/Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/one_numbers/latest.csv`.
+This refreshes One Numbers first so the CSV alias points at the freshest report day before opening it.
 
 ### Open the One Numbers PDF
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/one_numbers/one_numbers_latest.pdf
+./scripts/ops/open_report_artifact.sh one-numbers
 ```
+
+Latest PDF path: `/Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/one_numbers/one_numbers_latest.pdf`.
+This refreshes One Numbers, rebuilds the PDF bundle, and falls back to markdown or JSON evidence if needed.
 
 ### Open the special features PDF
 ```bash
@@ -135,7 +216,7 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh livefeed-refresh
 ```
 
-`livefeed-refresh` is the all-feeds shortcut for the `feed-refresh` live-loop restart helper. It kills and restarts the relevant market-data loops. Use `./scripts/ops/opsctl.sh livefeed-refresh --dry-run` to validate the route without touching processes. If you want a full supervised stack refresh instead of a feed-loop refresh, use `./scripts/ops/opsctl.sh start --force-restart`.
+`livefeed-refresh` is the all-feeds shortcut for the `feed-refresh` health/ensure helper. It keeps already supervised loops running by default and only hard-bounces them when you add `--force-restart`. Use `./scripts/ops/opsctl.sh livefeed-refresh --dry-run` to validate the route without touching processes. If you want a full supervised stack refresh instead, use `./scripts/ops/opsctl.sh start --force-restart`.
 
 ### Refresh the special features and framework map reports
 ```bash
@@ -210,6 +291,24 @@ This is the normal supervised stop path. It does not automatically engage an eme
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh command-validity --json
 ```
+
+### Watch P-core/E-core load live/heavy
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+sudo /Library/Frameworks/Python.framework/Versions/3.14/bin/asitop --interval 1 --show_cores 1
+```
+
+Use this briefly when you need faster visual feedback. The memory intelligence layer can flag interval-1 asitop as observer overhead if it starts distorting CPU or memory pressure.
+Associated bots/control layers: external observer for `memory-pressure-intelligence`, `autonomic-resource-governor`, and `runtime-throttle`.
+
+### Watch P-core/E-core load with low overhead
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+sudo /Library/Frameworks/Python.framework/Versions/3.14/bin/asitop --interval 3 --show_cores 1
+```
+
+Use this as the normal Apple Silicon watcher. The 3-second interval reduces observer overhead so the monitor is less likely to create the pressure it is measuring.
+Associated bots/control layers: external observer for `memory-pressure-intelligence`, `autonomic-resource-governor`, and `runtime-throttle`.
 
 ## Data Context Syncs
 
@@ -373,260 +472,6 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh main-tail --lines 80
 ```
 
-## Macro And Media
-
-### Show macro auto-watch status
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh macro-auto-status --json
-```
-
-### Start the macro auto-watch lane
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh macro-auto-start --force-restart --youtube-channel-url "https://www.youtube.com/@federalreserve" --template fed --speaker "Federal Reserve" --source "Federal Reserve"
-```
-
-## Platform Expansion
-
-### Apply Platform Brain v4 Grande
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh platform-brain-v4 --apply --json
-```
-
-Adds the decision-brain layer: executive meta-orchestration, causal world modeling, experience memory v2, expansion simulation, priority ranking, self-upgrade planning, critic council, outcome verification, bot economics, data value scoring, training scheduling, and operator intent modeling.
-The layer is advisory/read-only, keeps MLX as default, and preserves paper-trade lock and live-execution separation.
-
-### Apply Platform Brain v5 Reflex Cortex
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh platform-brain-v5 --apply --json
-```
-
-Adds the reflex layer: temporal self-modeling, safe reflex routing, regret and outcome ledgering, scenario rehearsal, adaptive cadence, safe autonomy boundary, critic fusion, resource budgeting, data contract negotiation, bot curriculum, dependency mapping, and strategic roadmap synthesis.
-The layer stays advisory/read-only, keeps MLX as default, and preserves paper-trade lock with live execution disabled.
-
-### Apply the 12-layer platform intelligence control plane
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh platform-intelligence --apply --json
-```
-
-Adds the operational layer for bot lifecycle, data quality scoring, provider failover, backpressure prediction, duplicate-alpha detection, paper capacity, self-healing playbooks, sleeve masters, training readiness, regime routing, execution realism, and black-box recording.
-This writes the platform-intelligence override while keeping the layer advisory/read-only and MLX-first.
-
-### Apply the 14-muscle trading action systems pack
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh trading-muscles --apply --json
-```
-
-Adds 70 collect-only trading muscle bots across intraday momentum, mean reversion, swing trend, options convexity, options income, futures macro, crypto basis, volatility arbitrage, events, relative value, portfolio hedging, execution timing, position sizing, and exits/rebalancing.
-The pack generates trade-candidate, sizing, hedge, exit, and execution-rehearsal evidence only; training, paper trading, live trading, allocation, and execution stay blocked until 180 days, 75000 observations, and quality/risk/halts gates clear.
-
-### Apply the 14-organ platform organ systems pack
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh platform-organs --apply --json
-```
-
-Adds 70 collect-only platform organ bots across data quality, feature registry, replay lab, execution realism, portfolio brain, alpha decay, regime routing, research assimilation, promotion court, cockpit, resource metabolism, memory lymphatics, backpressure circulation, and audit immunity.
-The pack stays zero-weight, training-excluded, paper-disabled, live-disabled, and thin-sampled until 150 days, 60000 observations, and runtime/regression/operator gates clear.
-
-### Apply the 24-sleeve quant strategy gap pack
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh quant-strategy-gap --apply --json
-```
-
-Adds 24 practical tradable-alpha strategy sleeves with five collect-only bots each: event arb, relative value, carry, ETF/NAV, auction flow, dealer expiry, rates/credit/crypto basis, and liquidity simulation.
-The pack is zero-weight, training-excluded, paper-disabled, live-disabled, and thin-sampled until 120 days, 45000 observations, and strategy evidence gates clear.
-
-### Apply the alpha intelligence evolution pack
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh alpha-intelligence-evolution --apply --json
-```
-
-Adds the guarded alpha advancement layer: training readiness, execution reality, portfolio exposure, source confidence, research intake, duplicate-alpha novelty control, regime memory v2, dashboard v2, adapter mesh, and cleanup governor.
-The bots are collection-only with paper/live execution blocked until readiness, execution realism, source confidence, and duplicate-alpha gates clear.
-
-### Apply the apex self-awareness intelligence pack
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh apex-self-awareness-intelligence --apply --json
-```
-
-Adds the 46 guarded apex bots that bring the platform to 1000 total bots: deep self-modeling, meta-reasoning, experience memory, scenario oracles, upgrade foundry, causal alpha safety, resource autonomy, operator copilot, Grand Master collective intelligence, and research frontier scouting.
-The bots are collection-only with live execution, allocation, and training blocked until 120 days, 30000 observations, and safety/resource/memory gates clear.
-
-### Apply the coordination intelligence control-plane pack
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh coordination-intelligence --apply --json
-```
-
-Adds the guarded coordination layer: bot genome lineage, strategy conflict resolution, capital simulation, regime memory, research-to-bot intake, feature quality, adversarial paper-trade lab, sleeve master summaries, admission committee, and explainability dashboard.
-The bots are collection-only until their evidence, data-quality, and runtime thresholds clear.
-
-### Apply the deep recursive awareness pack
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh deep-recursive-awareness --apply --json
-```
-
-Adds the guarded recursive awareness layer: causal self-diagnosis, predictive runtime oracle, experience memory core, self-upgrade critic board, operator context governor, internal critic board, and living platform map.
-The bots are collection-only with live execution, allocation, and training blocked until 150 days, 36000 observations, and causal/runtime/memory/critic/operator-context gates clear.
-
-### Apply the intelligence layer advancement pack
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh intelligence-layer-advancement --apply --json
-```
-
-Adds the guarded meta-intelligence layer: metacognitive routing, counterfactual world models, alpha benchmarks, memory compression, critic debate, active learning, ensemble uncertainty, library routing, safety invariants, and self-improvement backlog planning.
-The bots are collection-only with paper/live execution blocked until benchmark, memory-quality, safety-invariant, and runtime-pressure gates clear.
-
-### Apply the settlement stabilization layer
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh platform-settlement-stabilization --apply --json
-```
-
-Adds the post-expansion settlement layer for queue decay, single-writer protection, market-hours cadence, global-halt clear readiness, paper collection floors, off-hours drain planning, and stabilization memory.
-This layer keeps MLX as default, leaves live execution disabled, and records whether each stabilization pass actually reduces pressure.
-
-### Apply the seven-part stabilization and quality layer
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh platform-stabilization --apply --json
-```
-
-Adds the guarded pre-expansion layer for backlog drainage, bot data quality, duplicate-alpha compression, paper-trade realism, provider cooldown/failover, ready-only microtraining, and expansion rehearsal.
-This writes the stabilization override, assigns infrastructure bots to each lane, keeps MLX as default, and keeps live execution disabled.
-
-### Arm the guarded 400 bot paper ramp
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh paper-400-ramp --apply --json
-```
-
-Plans the 400-bot paper target now and only writes the high paper caps after Monday 2026-05-11 when global halt, memory, runtime, and ingestion gates are clean.
-The controller keeps live execution blocked, paper-trade lock enabled, and explains any blocker in `governance/health/paper_400_ramp_latest.json`.
-
-### Preview Platform Brain v4 Grande
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh platform-brain-v4 --json
-```
-
-Use this to inspect the 12 brain sections, next-best command, ranked priorities, expansion simulations, and verification plan without writing overrides.
-
-### Preview Platform Brain v5 Reflex Cortex
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh platform-brain-v5 --json
-```
-
-Use this to inspect the reflex queue, safe-vs-operator-reviewed actions, scenario rehearsal, resource budgets, and roadmap without writing overrides.
-
-### Preview the 12-layer platform intelligence control plane
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh platform-intelligence --json
-```
-
-Use this to inspect all 12 platform sections and their latest artifacts without changing runtime overrides.
-
-### Preview the 14-muscle trading action systems pack
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh trading-muscles --json
-```
-
-Use this dry run to inspect the trading muscles, bot IDs, storage guardrails, and trade-candidate-only floor without changing the registry.
-
-### Preview the 14-organ platform organ systems pack
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh platform-organs --json
-```
-
-Use this dry run to inspect the organ systems, bot IDs, storage guardrails, and paper-only floors without changing the registry.
-
-### Preview the 24-sleeve quant strategy gap pack
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh quant-strategy-gap --json
-```
-
-Use this dry run to inspect planned strategy sleeves, bot IDs, storage guardrails, and paper-only floors without changing the registry.
-
-### Preview the alpha intelligence evolution pack
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh alpha-intelligence-evolution --json
-```
-
-Use the dry run to see planned alpha intelligence bots, data intakes, storage contracts, and self-awareness upgrades without changing the registry.
-
-### Preview the apex self-awareness intelligence pack
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh apex-self-awareness-intelligence --json
-```
-
-Use the dry run to see the 46 planned apex bots, 1000-bot target contract, storage limits, and paper-only guardrails without changing the registry.
-
-### Preview the coordination intelligence control-plane pack
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh coordination-intelligence --json
-```
-
-Use the dry run to see planned coordination bots, storage contracts, and paper-only guardrails without changing the registry.
-
-### Preview the deep recursive awareness pack
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh deep-recursive-awareness --json
-```
-
-Use the dry run to see the 28 planned recursive-awareness bots, data intakes, storage limits, and paper-only guardrails without changing the registry.
-
-### Preview the guarded 400 bot paper ramp
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh paper-400-ramp --json
-```
-
-Use this to see whether the ramp is planned, armed, or blocked before changing runtime overrides.
-
-### Preview the intelligence layer advancement pack
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh intelligence-layer-advancement --json
-```
-
-Use the dry run to see planned intelligence-layer bots, data intakes, storage contracts, and routing/safety guardrails without changing the registry.
-
-### Preview the settlement stabilization layer
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh platform-settlement-stabilization --json
-```
-
-Use this after a large expansion or during market hours to see whether the system is settling cleanly before adding more bots or training load.
-
-### Preview the seven-part stabilization and quality layer
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh platform-stabilization --json
-```
-
-Use this before another expansion to see the backlog, quality, duplicate-alpha, paper realism, provider, training, and rehearsal gates in one place.
-
 ## Reports And PDFs
 
 This section includes the generate commands plus direct open commands for each report PDF.
@@ -657,14 +502,6 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 Latest PDF path: `/Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/incident_review_packet_latest.pdf`.
 This writes the immutable incident review packet JSON and rebuilds its PDF companion through the deterministic send-out renderer.
-
-### Install nightly showcase and PDF refresh
-```bash
-cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/install_daily_log_refresh_launchd.sh
-```
-
-This installs the macOS launchd job that refreshes showcase docs, system explainers, and PDFs automatically each night.
 
 ### One Numbers report
 ```bash
@@ -709,14 +546,20 @@ This regenerates daily auto verify, renders the report PDF bundle, prefers the P
 ### Open the daily ops PDF
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/daily_ops_report_latest.pdf
+./scripts/ops/open_report_artifact.sh daily-ops
 ```
+
+Latest PDF path: `/Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/daily_ops_report_latest.pdf`.
+This refreshes the daily ops source, rebuilds the PDF bundle, then opens the report with markdown/JSON fallback.
 
 ### Open the daily runtime summary PDF
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/sql_reports/daily_runtime_summary_latest.pdf
+./scripts/ops/open_report_artifact.sh daily-runtime
 ```
+
+Latest PDF path: `/Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/sql_reports/daily_runtime_summary_latest.pdf`.
+This rebuilds the PDF bundle and falls back to the runtime JSON artifact if the PDF is unavailable.
 
 ### Open the expansion inventory PDF
 ```bash
@@ -804,12 +647,11 @@ This regenerates the timeline report, prefers the PDF artifact, and falls back t
 ### Open the quant model control PDF
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh quant-model-control --json
-open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/quant_model_control/quant_model_control_latest.pdf
+./scripts/ops/open_report_artifact.sh quant
 ```
 
 Latest PDF path: `/Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/quant_model_control/quant_model_control_latest.pdf`.
-This refreshes the advanced quant-model feature, MLX, resource-cap, and research-only policy report.
+This refreshes the advanced quant-model feature, MLX, resource-cap, and research-only policy report, then opens the report-ready PDF.
 
 ### Open the replay feature ablation PDF
 ```bash
@@ -822,8 +664,11 @@ This regenerates the replay feature ablation evidence, renders the report PDF bu
 ### Open the report catalog PDF
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/report_pdf_bundle_latest.pdf
+./scripts/ops/open_report_artifact.sh report-catalog
 ```
+
+Latest PDF path: `/Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/report_pdf_bundle_latest.pdf`.
+This rebuilds the documented report catalog first, then opens the report-ready bundle PDF with HTML fallback.
 
 ### Open the retrain scorecard PDF
 ```bash
@@ -850,14 +695,20 @@ This regenerates source verification, renders the report PDF bundle, prefers the
 ### Open the state snapshot drills PDF
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/state_snapshot_drills/state_snapshot_drills_latest.pdf
+./scripts/ops/open_report_artifact.sh state-snapshot
 ```
+
+Latest PDF path: `/Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/state_snapshot_drills/state_snapshot_drills_latest.pdf`.
+This rebuilds the state snapshot drill PDF and falls back to the latest drill JSON.
 
 ### Open the strategy attribution PDF
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/strategy_attribution_latest.pdf
+./scripts/ops/open_report_artifact.sh strategy-attribution
 ```
+
+Latest PDF path: `/Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/strategy_attribution_latest.pdf`.
+This refreshes strategy attribution, rebuilds the PDF bundle, and falls back to markdown or JSON evidence.
 
 ### Open the strategy inventory PDF
 ```bash
@@ -871,10 +722,11 @@ This regenerates the complete sleeve/strategy inventory from the system config, 
 ### Open the system overview PDF
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/system_overview/system_overview_weekly_platform_history_latest.pdf
+./scripts/ops/open_report_artifact.sh system-overview
 ```
 
-This opens the week-by-week platform history and current-position overview PDF.
+Latest PDF path: `/Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/reports/system_overview/system_overview_weekly_platform_history_latest.pdf`.
+This opens the week-by-week platform history and current-position overview PDF with markdown fallback.
 
 ### Open the training report PDF
 ```bash

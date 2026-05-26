@@ -1,0 +1,29 @@
+{
+  "timestamp_utc": "2026-05-24T00:25:08.944119+00:00",
+  "schema_version": 1,
+  "pack_version": "critical_three_bot_expansion_v1",
+  "pack_slug": "backlog_launcher_profitability_critical_three",
+  "bot_ids": [
+    "brain_refinery_v1648_backlog_pressure_oracle_guard",
+    "brain_refinery_v1649_sleeve_launcher_recovery_commander",
+    "brain_refinery_v1650_paper_profitability_attribution_teacher"
+  ],
+  "sleeve_profiles": [
+    "data_plane_backpressure_resilience",
+    "halt_recovery_stability",
+    "transaction_cost_slippage_intelligence"
+  ],
+  "safety_contract": {
+    "data_collection_only": true,
+    "execution_enabled": false,
+    "allocation_enabled": false,
+    "paper_trading_enabled": false,
+    "training_excluded_until_threshold": true,
+    "max_daily_mb_per_bot": 2,
+    "collection_throttle": "thin_digest",
+    "protected_volume_policy": "do_not_touch_/Volumes/VIDEO"
+  },
+  "applied": true,
+  "added_bot_count": 3,
+  "skipped_existing_bot_ids": []
+}

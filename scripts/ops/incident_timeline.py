@@ -101,7 +101,7 @@ def _severity_for_event(category: str, row: dict[str, Any]) -> str:
         return "critical"
     if any(token in state_bits for token in ("critical", "killswitch", "halt", "blocked", "liquidation")):
         return "critical"
-    if bool(row.get("ok")) is False or any(token in state_bits for token in ("warning", "degraded", "retry", "fail")):
+    if row.get("ok") is False or any(token in state_bits for token in ("warning", "degraded", "retry", "fail")):
         return "warning"
     return "info"
 

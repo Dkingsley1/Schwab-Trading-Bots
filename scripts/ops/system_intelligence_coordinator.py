@@ -25,7 +25,9 @@ DEFAULT_SELF_INTELLIGENCE_PATH = PROJECT_ROOT / "governance" / "health" / "syste
 DEFAULT_SUPER_INTELLIGENCE_PATH = PROJECT_ROOT / "governance" / "health" / "system_super_intelligence_latest.json"
 DEFAULT_OUTCOME_LEARNING_PATH = PROJECT_ROOT / "governance" / "health" / "super_intelligence_outcome_learning_latest.json"
 DEFAULT_RECURSIVE_INTELLIGENCE_PATH = PROJECT_ROOT / "governance" / "health" / "system_recursive_intelligence_latest.json"
+DEFAULT_STORAGE_CAUSAL_REPLAY_PATH = PROJECT_ROOT / "governance" / "health" / "storage_causal_replay_memory_latest.json"
 DEFAULT_DEEPER_INTELLIGENCE_PATH = PROJECT_ROOT / "governance" / "health" / "deeper_intelligence_layers_latest.json"
+DEFAULT_BOT_INTELLIGENCE_MESH_PATH = PROJECT_ROOT / "governance" / "health" / "bot_intelligence_mesh_latest.json"
 DEFAULT_HANDOFF_PATH = PROJECT_ROOT / "governance" / "health" / "codex_handoff_latest.json"
 DEFAULT_HANDOFF_MARKDOWN_PATH = PROJECT_ROOT / "exports" / "reports" / "operator" / "codex_handoff_latest.md"
 DEFAULT_PYCHARM_INDEX_PATH = PROJECT_ROOT / "docs" / "pycharm" / "intelligence_layers_latest.md"
@@ -37,6 +39,7 @@ DEFAULT_SELF_MEMORY_PATH = PROJECT_ROOT / "governance" / "system_intelligence" /
 DEFAULT_SUPER_MEMORY_PATH = PROJECT_ROOT / "governance" / "system_intelligence" / "super_intelligence_memory.jsonl"
 DEFAULT_OUTCOME_MEMORY_PATH = PROJECT_ROOT / "governance" / "system_intelligence" / "intervention_outcomes.jsonl"
 DEFAULT_RECURSIVE_MEMORY_PATH = PROJECT_ROOT / "governance" / "system_intelligence" / "recursive_intelligence_memory.jsonl"
+DEFAULT_STORAGE_CAUSAL_REPLAY_MEMORY_PATH = PROJECT_ROOT / "governance" / "system_intelligence" / "storage_causal_replay_memory.jsonl"
 DEFAULT_SUPER_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.super_intelligence_override"
 
 STATUS_WEIGHT = {
@@ -59,8 +62,10 @@ STATUS_WEIGHT = {
 
 SIGNAL_SOURCES: tuple[dict[str, str], ...] = (
     {"name": "operator_cockpit", "category": "operator", "path": "governance/health/operator_cockpit_latest.json"},
+    {"name": "computer_task_intelligence", "category": "resource", "path": "governance/health/computer_task_intelligence_latest.json"},
     {"name": "memory_efficiency", "category": "resource", "path": "governance/health/memory_efficiency_control_latest.json"},
     {"name": "runtime_throttle", "category": "resource", "path": "governance/health/runtime_throttle_control_latest.json"},
+    {"name": "macro_event_intelligence", "category": "market_context", "path": "governance/health/macro_event_intelligence_latest.json"},
     {"name": "ingestion_storage", "category": "storage", "path": "governance/health/ingestion_storage_control_latest.json"},
     {"name": "bot_logs_cleanup", "category": "storage", "path": "governance/health/bot_logs_cleanup_intelligence_latest.json"},
     {"name": "storage_quota_guard", "category": "storage", "path": "governance/health/storage_quota_guard_latest.json"},
@@ -81,11 +86,14 @@ SIGNAL_SOURCES: tuple[dict[str, str], ...] = (
     {"name": "mlx_intelligence_router", "category": "compute", "path": "governance/health/mlx_intelligence_router_latest.json"},
     {"name": "library_utilization_router", "category": "compute", "path": "governance/health/library_utilization_router_latest.json"},
     {"name": "training_quality", "category": "training", "path": "governance/health/training_quality_control_latest.json"},
+    {"name": "training_runtime", "category": "training", "path": "governance/health/training_runtime_control_latest.json"},
+    {"name": "training_data_intake", "category": "training", "path": "governance/health/training_data_intake_expansion_latest.json"},
     {"name": "bot_quality", "category": "quality", "path": "governance/health/bot_quality_autopilot_latest.json"},
     {"name": "core_materialization", "category": "quality", "path": "governance/health/core_bot_materialization_guard_latest.json"},
     {"name": "system_self_model", "category": "self_model", "path": "governance/health/system_self_model_latest.json"},
     {"name": "platform_brain_v6", "category": "brain", "path": "governance/health/platform_brain_v6_latest.json"},
     {"name": "deeper_intelligence_layers", "category": "brain", "path": "governance/health/deeper_intelligence_layers_latest.json"},
+    {"name": "bot_intelligence_mesh", "category": "brain", "path": "governance/health/bot_intelligence_mesh_latest.json"},
 )
 
 SAFE_REFLEX_PREFIXES = (
@@ -99,6 +107,61 @@ SAFE_REFLEX_PREFIXES = (
     "./scripts/ops/opsctl.sh backpressure-super-drainer",
     "./scripts/ops/opsctl.sh storage-backpressure-autopilot",
 )
+
+SIGNAL_REFRESH_COMMANDS: dict[str, list[str]] = {
+    "memory_efficiency": ["./scripts/ops/opsctl.sh", "memory-efficiency", "status", "--json"],
+    "computer_task_intelligence": ["./scripts/ops/opsctl.sh", "computer-task-intelligence", "--apply", "--json"],
+    "runtime_throttle": ["./scripts/ops/opsctl.sh", "runtime-throttle", "--json"],
+    "macro_event_intelligence": ["./scripts/ops/opsctl.sh", "macro-event-intelligence", "--json"],
+    "ingestion_storage": ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"],
+    "storage_quota_guard": ["./scripts/ops/opsctl.sh", "storage-quota-guard", "--json"],
+    "bot_logs_cleanup": ["./scripts/ops/opsctl.sh", "bot-logs-cleanup-intelligence", "--json"],
+    "training_quality": ["./scripts/ops/opsctl.sh", "training-quality", "--json"],
+    "training_runtime": ["./scripts/ops/opsctl.sh", "training-runtime-control", "--limit", "20", "--json"],
+    "training_data_intake": ["./scripts/ops/opsctl.sh", "training-data-intake", "--json"],
+    "bot_quality": ["./scripts/ops/opsctl.sh", "bot-quality-autopilot", "--json"],
+    "writer_process_intelligence": ["./scripts/ops/opsctl.sh", "writer-process-intelligence", "--json"],
+    "drainer_intelligence": ["./scripts/ops/opsctl.sh", "drainer-intelligence-layer", "--apply", "--json"],
+    "guard_intelligence": ["./scripts/ops/opsctl.sh", "guard-intelligence", "--apply", "--json"],
+    "system_self_model": ["./scripts/ops/opsctl.sh", "system-self-model", "--json"],
+    "platform_brain_v6": ["./scripts/ops/opsctl.sh", "platform-brain-v6", "--json"],
+    "deeper_intelligence_layers": ["./scripts/ops/opsctl.sh", "deeper-intelligence-layers", "--apply", "--json"],
+    "bot_intelligence_mesh": ["./scripts/ops/opsctl.sh", "bot-intelligence-mesh", "--json"],
+}
+
+STALE_SIGNAL_LIMITS: dict[str, float] = {
+    "memory_efficiency": 90.0,
+    "computer_task_intelligence": 90.0,
+    "runtime_throttle": 90.0,
+    "macro_event_intelligence": 90.0,
+    "ingestion_storage": 90.0,
+    "writer_process_intelligence": 90.0,
+    "drainer_intelligence": 90.0,
+    "guard_intelligence": 90.0,
+    "storage_quota_guard": 240.0,
+    "bot_logs_cleanup": 240.0,
+    "training_quality": 240.0,
+    "training_runtime": 90.0,
+    "training_data_intake": 240.0,
+    "bot_quality": 240.0,
+    "system_self_model": 240.0,
+    "bot_intelligence_mesh": 240.0,
+    "operator_cockpit": 240.0,
+}
+
+OUTCOME_VERIFIED_MICRO_DRAIN_COMMAND = [
+    "./scripts/ops/opsctl.sh",
+    "backpressure-super-drainer",
+    "--apply",
+    "--max-waves",
+    "1",
+    "--target-pending-lines",
+    "5000",
+    "--json",
+]
+STORAGE_MEASUREMENT_COMMAND = ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"]
+DRAINER_ALIGNMENT_COMMAND = ["./scripts/ops/opsctl.sh", "drainer-intelligence-layer", "--apply", "--json"]
+SYSTEM_INTELLIGENCE_MEASUREMENT_COMMAND = ["./scripts/ops/opsctl.sh", "system-intelligence", "--json"]
 
 
 def _safe_int(raw: Any, default: int = 0) -> int:
@@ -230,12 +293,35 @@ def _storage_quota_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     lanes = [row for row in _as_list(payload.get("lanes")) if isinstance(row, dict)]
     blocked = [str(row.get("family") or "") for row in lanes if str(row.get("status") or "") == "blocked"]
     degraded = [str(row.get("family") or "") for row in lanes if str(row.get("status") or "") == "degraded"]
+    ranked_lanes = sorted(
+        lanes,
+        key=lambda row: (
+            _safe_float(row.get("over_hard_gb"), 0.0),
+            _safe_float(row.get("over_soft_gb"), 0.0),
+            _safe_float(row.get("hard_ratio"), 0.0),
+        ),
+        reverse=True,
+    )
     return {
         "hard_breaches": _safe_int(summary.get("hard_breaches"), 0),
         "soft_breaches": _safe_int(summary.get("soft_breaches"), 0),
         "tracked_lane_count": _safe_int(summary.get("tracked_lane_count"), len(lanes)),
         "blocked_lanes": [lane for lane in blocked if lane],
         "degraded_lanes": [lane for lane in degraded if lane],
+        "worst_over_hard_gb": _safe_float(summary.get("worst_over_hard_gb"), _safe_float(_as_dict(ranked_lanes[0] if ranked_lanes else {}).get("over_hard_gb"), 0.0)),
+        "worst_hard_ratio": _safe_float(summary.get("worst_hard_ratio"), _safe_float(_as_dict(ranked_lanes[0] if ranked_lanes else {}).get("hard_ratio"), 0.0)),
+        "top_quota_lanes": [
+            {
+                "family": str(row.get("family") or ""),
+                "status": str(row.get("status") or ""),
+                "used_gb": _safe_float(row.get("used_gb"), 0.0),
+                "hard_quota_gb": _safe_float(row.get("hard_quota_gb"), 0.0),
+                "over_hard_gb": _safe_float(row.get("over_hard_gb"), 0.0),
+                "hard_ratio": _safe_float(row.get("hard_ratio"), 0.0),
+            }
+            for row in ranked_lanes[:4]
+            if str(row.get("status") or "") != "ready"
+        ],
         "recommended_actions": [str(item) for item in _as_list(payload.get("recommended_actions"))],
     }
 
@@ -265,6 +351,32 @@ def _runtime_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _computer_task_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+    task = _as_dict(payload.get("task_profile"))
+    scorecard = _as_dict(payload.get("normal_use_scorecard"))
+    budget = _as_dict(payload.get("normal_use_budget"))
+    contract = _as_dict(payload.get("a_grade_lift_contract"))
+    overrides = _as_dict(payload.get("recommended_env_overrides"))
+    unison = _as_dict(payload.get("computer_unison_contract"))
+    return {
+        "primary_task": str(task.get("primary_task") or ""),
+        "active_tasks": [str(item) for item in _as_list(task.get("active_tasks"))],
+        "normal_use_grade": str(scorecard.get("overall_grade") or ""),
+        "normal_use_score": _safe_float(scorecard.get("overall_score"), 0.0),
+        "target_grade": str(contract.get("target_grade") or "A"),
+        "blocking_sections": [str(item) for item in _as_list(contract.get("blocking_sections"))],
+        "requested_operator_mode": str(budget.get("requested_operator_mode") or overrides.get("SYSTEM_OPERATOR_MODE_REQUESTED") or ""),
+        "training_paused": str(overrides.get("TRAINING_RUNTIME_PAUSED_FOR_COMPUTER_TASK") or ""),
+        "heavy_collectors_paused": str(overrides.get("HEAVY_COLLECTORS_PAUSED_FOR_COMPUTER_TASK") or ""),
+        "resource_intent": str(unison.get("resource_intent") or overrides.get("COMPUTER_RESOURCE_INTENT") or ""),
+        "preemption_level": str(unison.get("preemption_level") or overrides.get("COMPUTER_PREEMPTION_LEVEL") or ""),
+        "friction_index": _safe_float(unison.get("friction_index"), _safe_float(overrides.get("COMPUTER_FRICTION_INDEX"), 0.0)),
+        "protected_task_classes": [str(item) for item in _as_list(unison.get("protected_task_classes"))],
+        "computer_needs": [str(item) for item in _as_list(unison.get("computer_needs"))],
+        "do_not_touch_volumes": [str(item) for item in _as_list(_as_dict(unison.get("safety_contract")).get("do_not_touch_volumes"))],
+    }
+
+
 def _writer_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     decision = _as_dict(payload.get("decision_packet"))
     health = _as_dict(payload.get("writer_health"))
@@ -283,17 +395,40 @@ def _writer_metrics(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _drainer_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     decision = _as_dict(payload.get("decision_packet"))
+    scorecard = _as_dict(payload.get("backlog_section_scorecard"))
+    needs_packet = _as_dict(payload.get("backlog_needs_packet"))
     settings = _as_dict(payload.get("settings"))
     summary = _as_dict(payload.get("summary"))
     active = payload.get("active_drainer")
     active_name = str((active or {}).get("name") or "") if isinstance(active, dict) else str(active or "")
+    total_pending = _safe_int(
+        decision.get("total_pending_lines"),
+        _safe_int(summary.get("final_pending_lines"), _safe_int(summary.get("total_pending_lines"), 0)),
+    )
+    needs = [row for row in _as_list(needs_packet.get("needs")) if isinstance(row, dict)]
+    top_need = needs[0] if needs else {}
     return {
         "action": str(decision.get("action") or ""),
         "selected_drainer": str(decision.get("selected_drainer") or active_name),
         "ready_drainer_count": _safe_int(payload.get("ready_drainer_count"), 0),
-        "total_pending_lines": _safe_int(decision.get("total_pending_lines"), _safe_int(summary.get("final_pending_lines"), 0)),
+        "total_pending_lines": int(total_pending),
+        "initial_pending_lines": _safe_int(summary.get("initial_pending_lines"), 0),
+        "final_pending_lines": _safe_int(summary.get("final_pending_lines"), total_pending),
+        "pending_lines_delta": _safe_int(summary.get("pending_lines_delta"), 0),
+        "waves_run": _safe_int(summary.get("waves_run"), 0),
+        "progress_waves": _safe_int(summary.get("progress_waves"), 0),
+        "stop_reason": str(summary.get("stop_reason") or payload.get("stop_reason") or ""),
+        "any_progress": bool(summary.get("any_progress", False)),
         "target_pending_lines": _safe_int(decision.get("target_pending_lines"), _safe_int(settings.get("target_pending_lines"), 0)),
         "risk_flags": [str(item) for item in _as_list(decision.get("risk_flags"))],
+        "backlog_grade": str(decision.get("backlog_grade") or scorecard.get("overall_grade") or needs_packet.get("current_grade") or ""),
+        "backlog_score": _safe_float(decision.get("backlog_score"), _safe_float(scorecard.get("overall_score"), _safe_float(needs_packet.get("current_score"), 0.0))),
+        "needs_count": len(needs),
+        "top_need_section": str(needs_packet.get("top_need_section") or top_need.get("section_id") or ""),
+        "top_need": str(needs_packet.get("top_need") or top_need.get("what_it_needs") or ""),
+        "next_grade": str(needs_packet.get("next_grade") or ""),
+        "needs_artifact": str(_as_dict(needs_packet.get("accelerator_contract")).get("latest_needs_artifact") or ""),
+        "fix_ledger_artifact": str(_as_dict(needs_packet.get("accelerator_contract")).get("fix_ledger_artifact") or ""),
     }
 
 
@@ -420,6 +555,48 @@ def _registry_metrics(project_root: Path) -> dict[str, Any]:
     }
 
 
+def _macro_event_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+    replay = _as_dict(payload.get("replay_contract"))
+    calendar = _as_dict(payload.get("calendar_verification"))
+    return {
+        "overall_status": str(payload.get("overall_status") or payload.get("status") or ""),
+        "market_relevance": str(payload.get("market_relevance") or ""),
+        "source": str(payload.get("source") or ""),
+        "speaker": str(payload.get("speaker") or ""),
+        "transcript_quality": str(payload.get("transcript_quality") or ""),
+        "calendar_verification_status": str(calendar.get("status") or ""),
+        "calendar_verification_ok": bool(calendar.get("ok", False)),
+        "calendar_verification_reason": str(calendar.get("reason") or ""),
+        "calendar_verification_source": str(calendar.get("source") or ""),
+        "live_detected": bool(payload.get("live_detected", False)),
+        "media_status": str(payload.get("media_status") or ""),
+        "replay_pending": bool(replay.get("replay_pending", False)),
+        "replay_completed": bool(replay.get("replay_completed", False)),
+        "full_video_required": bool(replay.get("full_video_required", False)),
+    }
+
+
+def _training_runtime_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+    contract = _as_dict(payload.get("training_launch_contract"))
+    host_gate = _as_dict(contract.get("host_training_headroom_gate"))
+    return {
+        "overall_status": str(payload.get("overall_status") or ""),
+        "mode": str(contract.get("mode") or ""),
+        "launch_allowed": bool(contract.get("launch_allowed", False)),
+        "prep_allowed": bool(contract.get("prep_allowed", False)),
+        "launch_blockers": [str(item) for item in _as_list(contract.get("launch_blockers"))],
+        "recommended_batch_size": _safe_int(contract.get("recommended_batch_size"), 0),
+        "available_canary_pool_size": _safe_int(contract.get("available_canary_pool_size"), 0),
+        "requested_batch_size": _safe_int(contract.get("requested_batch_size"), 0),
+        "quality_recovery_canary": bool(contract.get("training_quality_recovery_canary", False)),
+        "profile": str(host_gate.get("selected_training_profile") or host_gate.get("governor_profile") or ""),
+        "batch20_execution_mode": str(host_gate.get("batch20_execution_mode") or ""),
+        "batch20_wave_size": _safe_int(host_gate.get("batch20_wave_size"), 0),
+        "recommended_command": [str(item) for item in _as_list(contract.get("recommended_retrain_command"))],
+        "next_prep_command": [str(item) for item in _as_list((_as_list(contract.get("recommended_prep_commands")) or [[]])[0])],
+    }
+
+
 def _metrics_for_signal(name: str, project_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     if name == "ingestion_storage":
         return _storage_metrics(payload)
@@ -429,8 +606,14 @@ def _metrics_for_signal(name: str, project_root: Path, payload: dict[str, Any]) 
         return _storage_quota_metrics(payload)
     if name == "memory_efficiency":
         return _memory_metrics(payload)
+    if name == "computer_task_intelligence":
+        return _computer_task_metrics(payload)
     if name == "runtime_throttle":
         return _runtime_metrics(payload)
+    if name == "macro_event_intelligence":
+        return _macro_event_metrics(payload)
+    if name == "training_runtime":
+        return _training_runtime_metrics(payload)
     if name == "writer_process_intelligence":
         return _writer_metrics(payload)
     if name in {"drainer_intelligence", "backpressure_drainer_fleet", "backpressure_super_drainer"}:
@@ -490,6 +673,47 @@ def _metrics_for_signal(name: str, project_root: Path, payload: dict[str, Any]) 
             "missing_surface_count": _safe_int(payload.get("missing_surfaces") and len(_as_list(payload.get("missing_surfaces"))), 0),
             "authority_boundary": "advisory_control_plane_with_constitutional_lockout_attestation",
         }
+    if name == "training_data_intake":
+        summaries = _as_dict(payload.get("summaries"))
+        weakness_counts = _as_dict(summaries.get("weakness_counts"))
+        context_counts = _as_dict(summaries.get("context_counts"))
+        return {
+            "collector_count": _safe_int(payload.get("collector_count"), 0),
+            "weak_record_count": _safe_int(payload.get("weak_record_count"), 0),
+            "focus_record_count": _safe_int(payload.get("focus_record_count"), 0),
+            "trainable_candidate_count": _safe_int(payload.get("trainable_candidate_count"), 0),
+            "collect_first_count": _safe_int(payload.get("collect_first_count"), 0),
+            "top_contexts": list(context_counts.keys())[:8],
+            "weakness_counts": weakness_counts,
+            "sample_starved_count": _safe_int(weakness_counts.get("sample_starved"), 0),
+            "sequence_starved_count": _safe_int(weakness_counts.get("sequence_starved"), 0),
+            "quality_weak_count": _safe_int(weakness_counts.get("quality_weak"), 0),
+            "runtime_depth_debt_count": _safe_int(weakness_counts.get("runtime_depth_debt"), 0),
+        }
+    if name == "bot_intelligence_mesh":
+        quality_contract = _as_dict(payload.get("a_plus_target_contract"))
+        teacher = _as_dict(_as_dict(payload.get("teacher_student_intelligence")).get("summary"))
+        hierarchy = _as_dict(payload.get("hierarchy_edge_summary"))
+        return {
+            "communication_readiness_score": _safe_float(payload.get("communication_readiness_score"), 0.0),
+            "quality_readiness_score": _safe_float(payload.get("quality_readiness_score"), 0.0),
+            "bot_count": _safe_int(payload.get("bot_count"), 0),
+            "active_bot_count": _safe_int(payload.get("active_bot_count"), 0),
+            "missing_tier_count": len(_as_list(payload.get("missing_tiers"))),
+            "missing_tiers": [str(item) for item in _as_list(payload.get("missing_tiers"))],
+            "blocker_count": _safe_int(quality_contract.get("blocker_count"), 0),
+            "training_quality_score": _safe_float(quality_contract.get("current_training_quality_score"), 0.0),
+            "data_quality_score": _safe_float(quality_contract.get("current_data_quality_score"), 0.0),
+            "collection_coverage_score": _safe_float(quality_contract.get("current_collection_coverage_score"), 0.0),
+            "training_readiness_score": _safe_float(quality_contract.get("current_training_readiness_score"), 0.0),
+            "teacher_count": _safe_int(teacher.get("teacher_count"), 0),
+            "student_count": _safe_int(teacher.get("student_count"), 0),
+            "elite_teacher_count": _safe_int(teacher.get("elite_teacher_count"), 0),
+            "route_count": _safe_int(hierarchy.get("edge_count_total"), 0),
+            "active_sub_or_infra_route_ratio": _safe_float(hierarchy.get("active_sub_or_infra_route_ratio"), 0.0),
+            "active_master_route_ratio": _safe_float(hierarchy.get("active_master_route_ratio"), 0.0),
+            "top_needs": [str(item) for item in _as_list(payload.get("what_the_system_needs"))[:6]],
+        }
     if name == "operator_cockpit":
         adaptive = _as_dict(payload.get("adaptive_posture"))
         return {
@@ -540,13 +764,49 @@ def _severity_for_signal(name: str, status: str, metrics: dict[str, Any], loaded
             score = min(score, 35)
         elif state in {"red", "critical"} or kind in {"swap", "compressor", "critical"}:
             score = max(score, 85)
-        elif state in {"yellow", "orange", "warning"}:
+    elif name == "computer_task_intelligence":
+        grade = str(metrics.get("normal_use_grade") or "").upper()
+        preemption = str(metrics.get("preemption_level") or "").lower()
+        friction = _safe_float(metrics.get("friction_index"), 0.0)
+        if grade == "A":
+            score = min(score, 25)
+        elif grade == "B":
+            score = max(score, 45)
+        elif grade == "C":
+            score = max(score, 65)
+        elif grade == "D":
+            score = max(score, 82)
+        elif grade == "F":
+            score = max(score, 95)
+        if preemption in {"deep_protect", "relief"} or friction >= 45.0:
+            score = max(score, 70)
+        elif preemption == "protect" or friction >= 25.0:
             score = max(score, 65)
     elif name == "runtime_throttle":
         host_score = _safe_float(metrics.get("host_saturation_score"), 0.0)
         if str(metrics.get("memory_pressure_level") or "").lower() in {"high", "critical"} or host_score >= 85.0:
             score = max(score, 90)
         elif str(metrics.get("cpu_pressure_level") or "").lower() in {"high", "critical"} or host_score >= 65.0:
+            score = max(score, 70)
+    elif name == "macro_event_intelligence":
+        relevance = str(metrics.get("market_relevance") or "").lower()
+        transcript_quality = str(metrics.get("transcript_quality") or "").lower()
+        if str(metrics.get("overall_status") or "").lower() not in {"ready", "advisory"}:
+            score = max(score, 65)
+        elif relevance == "high" and transcript_quality in {"", "missing", "live_excerpt"}:
+            score = max(score, 55)
+        if relevance == "high" and str(metrics.get("calendar_verification_status") or "") == "unverified":
+            score = max(score, 45)
+        elif bool(metrics.get("replay_pending", False)) and not bool(metrics.get("replay_completed", False)):
+            score = max(score, 45)
+    elif name == "training_runtime":
+        launch_allowed = bool(metrics.get("launch_allowed", False))
+        batch_size = _safe_int(metrics.get("recommended_batch_size"), 0)
+        if launch_allowed and batch_size >= 20 and bool(metrics.get("quality_recovery_canary", False)):
+            score = min(score, 35)
+        elif launch_allowed:
+            score = min(score, 45)
+        elif _as_list(metrics.get("launch_blockers")):
             score = max(score, 70)
     elif name == "writer_process_intelligence":
         risks = set(str(item) for item in _as_list(metrics.get("risk_flags")))
@@ -599,17 +859,62 @@ def _severity_for_signal(name: str, status: str, metrics: dict[str, Any], loaded
             score = max(score, 70)
         elif _safe_int(metrics.get("advisory_count"), 0) > 0:
             score = max(score, 35)
+    elif name == "training_data_intake":
+        if _safe_int(metrics.get("runtime_depth_debt_count"), 0) > 0:
+            score = max(score, 70)
+        elif _safe_int(metrics.get("sample_starved_count"), 0) > 0:
+            score = max(score, 55)
+        if _safe_int(metrics.get("trainable_candidate_count"), 0) > 0:
+            score = min(score, 45) if score < 70 else score
+    elif name == "bot_intelligence_mesh":
+        if _safe_int(metrics.get("missing_tier_count"), 0) > 0:
+            score = max(score, 90)
+        elif _safe_int(metrics.get("blocker_count"), 0) >= 4:
+            score = max(score, 65)
+        elif _safe_float(metrics.get("communication_readiness_score"), 0.0) >= 90.0:
+            score = min(score, 35)
+        if _safe_float(metrics.get("active_sub_or_infra_route_ratio"), 1.0) < 0.8:
+            score = max(score, 70)
+        if _safe_float(metrics.get("active_master_route_ratio"), 1.0) < 0.8:
+            score = max(score, 70)
     return int(max(0, min(100, score)))
+
+
+def _stale_limit_minutes(name: str) -> float:
+    return float(STALE_SIGNAL_LIMITS.get(str(name or ""), 360.0))
+
+
+def _is_stale_signal(name: str, age_minutes: Any) -> bool:
+    if not isinstance(age_minutes, (int, float)):
+        return False
+    return float(age_minutes) > _stale_limit_minutes(name)
+
+
+def _stale_adjusted_severity(name: str, severity: int, stale: bool) -> int:
+    if not stale:
+        return severity
+    if str(name or "") in {"memory_efficiency", "runtime_throttle", "ingestion_storage"}:
+        return min(severity, 78)
+    if str(name or "") in SIGNAL_REFRESH_COMMANDS:
+        return min(severity, 68)
+    return min(severity, 55)
+
+
+def _refresh_command_for_signal(name: str) -> list[str]:
+    command = SIGNAL_REFRESH_COMMANDS.get(str(name or ""))
+    return [str(item) for item in command] if command else []
 
 
 def _memory_metrics_show_pressure(metrics: dict[str, Any]) -> bool:
     state = str(metrics.get("memory_pressure_state") or "").lower()
     kind = str(metrics.get("memory_pressure_kind") or "").lower()
     reasons = [str(item).lower() for item in _as_list(metrics.get("block_reasons"))]
+    benign_reason_markers = ("ok", "clear", "normal", "green", "headroom_ok", "headroom_clear", "sufficient")
     memory_reasons = [
         item
         for item in reasons
         if any(marker in item for marker in ("memory", "swap", "compress", "throttled"))
+        and not any(marker in item for marker in benign_reason_markers)
     ]
     return bool(
         state in {"yellow", "orange", "red", "critical", "warning"}
@@ -640,12 +945,40 @@ def _signal_summary(name: str, metrics: dict[str, Any]) -> str:
         return f"hard_breaches={metrics.get('hard_breaches', 0)} lanes={','.join(str(item) for item in _as_list(metrics.get('blocked_lanes'))) or 'none'}"
     if name == "memory_efficiency":
         return f"memory={metrics.get('memory_pressure_state', '')} kind={metrics.get('memory_pressure_kind', '')}"
+    if name == "computer_task_intelligence":
+        blockers = ",".join(str(item) for item in _as_list(metrics.get("blocking_sections"))) or "none"
+        return (
+            f"task={metrics.get('primary_task', '')} "
+            f"grade={metrics.get('normal_use_grade', '')} "
+            f"intent={metrics.get('resource_intent', '') or 'unknown'} "
+            f"preemption={metrics.get('preemption_level', '') or 'unknown'} "
+            f"blockers={blockers}"
+        )
     if name == "runtime_throttle":
         return f"host={metrics.get('host_saturation_score', 0)} memory={metrics.get('memory_pressure_level', '')}"
+    if name == "macro_event_intelligence":
+        calendar_status = str(metrics.get("calendar_verification_status") or "unknown")
+        return (
+            f"source={metrics.get('source', '') or 'unknown'} "
+            f"relevance={metrics.get('market_relevance', '')} "
+            f"transcript={metrics.get('transcript_quality', '')} "
+            f"calendar={calendar_status}"
+        )
+    if name == "training_runtime":
+        return (
+            f"launch_allowed={metrics.get('launch_allowed', False)} "
+            f"batch={metrics.get('recommended_batch_size', 0)}/{metrics.get('requested_batch_size', 0)} "
+            f"profile={metrics.get('profile', '') or 'none'} "
+            f"recovery={metrics.get('quality_recovery_canary', False)}"
+        )
     if name == "writer_process_intelligence":
         return f"writer={metrics.get('writer_state', '')} action={metrics.get('action', '')}"
     if name in {"drainer_intelligence", "backpressure_drainer_fleet", "backpressure_super_drainer"}:
-        return f"drainer={metrics.get('selected_drainer', '')} action={metrics.get('action', '')}"
+        need = str(metrics.get("top_need_section") or "")
+        need_text = f" need={need}" if need else ""
+        grade = str(metrics.get("backlog_grade") or "")
+        grade_text = f" grade={grade}" if grade else ""
+        return f"drainer={metrics.get('selected_drainer', '')} action={metrics.get('action', '')}{grade_text}{need_text}"
     if name == "global_halt":
         return f"halt_active={metrics.get('halt_active', False)} blockers={len(_as_list(metrics.get('clear_blockers')))}"
     if name == "process_watchdog":
@@ -660,6 +993,21 @@ def _signal_summary(name: str, metrics: dict[str, Any]) -> str:
         return f"core={metrics.get('core_symbol_count', 0)} crypto={metrics.get('crypto_symbol_count', 0)} groups={metrics.get('sleeve_group_count', 0)}"
     if name == "deeper_intelligence_layers":
         return f"layers={metrics.get('layer_count', 0)} blocked={metrics.get('blocked_count', 0)} degraded={metrics.get('degraded_count', 0)}"
+    if name == "training_data_intake":
+        return (
+            f"collectors={metrics.get('collector_count', 0)} "
+            f"weak={metrics.get('weak_record_count', 0)} "
+            f"trainable={metrics.get('trainable_candidate_count', 0)} "
+            f"sample_starved={metrics.get('sample_starved_count', 0)}"
+        )
+    if name == "bot_intelligence_mesh":
+        return (
+            f"comm={metrics.get('communication_readiness_score', 0)} "
+            f"quality={metrics.get('quality_readiness_score', 0)} "
+            f"blockers={metrics.get('blocker_count', 0)} "
+            f"teachers={metrics.get('teacher_count', 0)} "
+            f"routes={metrics.get('route_count', 0)}"
+        )
     return ""
 
 
@@ -680,15 +1028,22 @@ def build_signal_bus(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 status = "advisory"
             else:
                 status = "ready"
-        severity = _severity_for_signal(name, status, metrics, loaded)
+        age_minutes = _age_minutes(payload, path)
+        raw_severity = _severity_for_signal(name, status, metrics, loaded)
+        stale = bool(loaded and _is_stale_signal(name, age_minutes))
+        severity = _stale_adjusted_severity(name, raw_severity, stale)
         signals.append(
             {
                 "name": name,
                 "category": str(source["category"]),
                 "status": status,
                 "severity_score": severity,
+                "raw_severity_score": raw_severity,
+                "stale": stale,
+                "stale_limit_minutes": _stale_limit_minutes(name),
+                "refresh_command": _refresh_command_for_signal(name) if stale else [],
                 "loaded": loaded,
-                "age_minutes": _age_minutes(payload, path),
+                "age_minutes": age_minutes,
                 "path": str(path),
                 "payload_hash_short": _json_hash(payload)[:12] if payload else "",
                 "summary": _signal_summary(name, metrics),
@@ -701,6 +1056,13 @@ def build_signal_bus(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     top_signal = max(loaded_signals, key=lambda row: _safe_int(row.get("severity_score"), 0), default={})
     severe_signals = [row for row in loaded_signals if _safe_int(row.get("severity_score"), 0) >= 75]
     blocked_signals = [row for row in loaded_signals if _safe_int(row.get("severity_score"), 0) >= 90]
+    stale_signals = [row for row in loaded_signals if bool(row.get("stale", False))]
+    stale_refreshable_signals = [row for row in stale_signals if _as_list(row.get("refresh_command"))]
+    stale_top_signal = max(
+        stale_signals,
+        key=lambda row: (_safe_int(row.get("raw_severity_score"), 0), _safe_float(row.get("age_minutes"), 0.0)),
+        default={},
+    )
     storage = next((row for row in signals if row["name"] == "ingestion_storage"), {})
     memory = next((row for row in signals if row["name"] == "memory_efficiency"), {})
     runtime = next((row for row in signals if row["name"] == "runtime_throttle"), {})
@@ -710,6 +1072,7 @@ def build_signal_bus(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     global_halt = next((row for row in signals if row["name"] == "global_halt"), {})
     paper_standard = next((row for row in signals if row["name"] == "paper_live_data_standard"), {})
     ticker_universe = next((row for row in signals if row["name"] == "sleeve_ticker_universe"), {})
+    training_runtime = next((row for row in signals if row["name"] == "training_runtime"), {})
 
     storage_metrics = _as_dict(storage.get("metrics"))
     memory_metrics = _as_dict(memory.get("metrics"))
@@ -720,6 +1083,7 @@ def build_signal_bus(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     global_halt_metrics = _as_dict(global_halt.get("metrics"))
     paper_standard_metrics = _as_dict(paper_standard.get("metrics"))
     ticker_universe_metrics = _as_dict(ticker_universe.get("metrics"))
+    training_runtime_metrics = _as_dict(training_runtime.get("metrics"))
     memory_high = _memory_metrics_show_pressure(memory_metrics)
     runtime_status = str(runtime.get("status") or "").lower()
     runtime_high = bool(
@@ -752,6 +1116,11 @@ def build_signal_bus(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "loaded_signal_count": len(loaded_signals),
             "blocked_signal_count": len(blocked_signals),
             "severe_signal_count": len(severe_signals),
+            "stale_signal_count": len(stale_signals),
+            "stale_refreshable_signal_count": len(stale_refreshable_signals),
+            "stale_top_signal": str(stale_top_signal.get("name") or ""),
+            "stale_top_signal_age_minutes": _safe_float(stale_top_signal.get("age_minutes"), 0.0) if stale_top_signal else 0.0,
+            "stale_top_signal_raw_severity": _safe_int(stale_top_signal.get("raw_severity_score"), 0) if stale_top_signal else 0,
             "top_risk": str(top_signal.get("name") or "none"),
             "top_risk_category": str(top_signal.get("category") or ""),
             "top_risk_score": worst_score,
@@ -774,6 +1143,11 @@ def build_signal_bus(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "paper_live_data_within_band": bool(paper_standard_metrics.get("within_target_band", False)),
             "expanded_core_symbol_count": _safe_int(ticker_universe_metrics.get("core_symbol_count"), 0),
             "expanded_crypto_symbol_count": _safe_int(ticker_universe_metrics.get("crypto_symbol_count"), 0),
+            "training_runtime_launch_allowed": bool(training_runtime_metrics.get("launch_allowed", False)),
+            "training_runtime_quality_recovery_canary": bool(training_runtime_metrics.get("quality_recovery_canary", False)),
+            "training_runtime_recommended_batch_size": _safe_int(training_runtime_metrics.get("recommended_batch_size"), 0),
+            "training_runtime_profile": str(training_runtime_metrics.get("profile") or ""),
+            "training_runtime_command": [str(item) for item in _as_list(training_runtime_metrics.get("recommended_command"))],
         },
         "signals": sorted(signals, key=lambda row: (_safe_int(row.get("severity_score"), 0), str(row.get("name") or "")), reverse=True),
         "registry_metrics": registry_metrics,
@@ -999,6 +1373,14 @@ def _brain_playbook(action: str, *, pressure_guarded: bool) -> list[dict[str, An
             {"step": "refresh_storage", "command": ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"]},
             {"step": "rebuild_system_intelligence", "command": ["./scripts/ops/opsctl.sh", "system-intelligence", "--json"]},
         ]
+    if action == "refresh_storage_quota_then_drain_decisions":
+        return [
+            {"step": "refresh_storage_quota", "command": ["./scripts/ops/opsctl.sh", "storage-quota-guard", "--json"]},
+            {"step": "compact_governance_telemetry", "command": ["./scripts/ops/opsctl.sh", "governance-telemetry-compactor", "--apply", "--json"]},
+            {"step": "refresh_storage_truth", "command": ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"]},
+            {"step": "writer_cycle_status", "command": ["./scripts/ops/opsctl.sh", "writer-cycle-coordinator", "--json"]},
+            {"step": "rebuild_system_intelligence", "command": ["./scripts/ops/opsctl.sh", "system-intelligence", "--json"]},
+        ]
     if action == "run_focused_backlog_drain":
         max_waves = "1" if pressure_guarded else "2"
         return [
@@ -1022,6 +1404,13 @@ def build_system_brain(signal_bus: dict[str, Any], process_contracts: dict[str, 
     pending = _safe_int(summary.get("total_pending_lines"), 0)
     material_storage, storage_evidence = _material_storage_backlog(signal_bus)
     top_risk = str(summary.get("top_risk") or "none")
+    training_runtime_command = [str(item) for item in _as_list(summary.get("training_runtime_command"))]
+    training_recovery_ready = bool(
+        summary.get("training_runtime_launch_allowed", False)
+        and summary.get("training_runtime_quality_recovery_canary", False)
+        and _safe_int(summary.get("training_runtime_recommended_batch_size"), 0) > 0
+        and training_runtime_command
+    )
     if "global_halt_active" in risks or "contract_blocked:auth_and_halt" in risks:
         action = "refresh_auth_and_halt_clearance"
         mode = "safety_blocked"
@@ -1031,6 +1420,12 @@ def build_system_brain(signal_bus: dict[str, Any], process_contracts: dict[str, 
     elif "guard_intelligence_throttle_active" in risks or "guard_intelligence_blockers" in risks:
         action = "refresh_signal_surfaces"
         mode = "guard_stabilization"
+    elif top_risk == "storage_quota_guard":
+        action = "refresh_storage_quota_then_drain_decisions"
+        mode = "storage_quota_remediation"
+    elif training_recovery_ready and top_risk == "training_quality" and not material_storage:
+        action = "run_guarded_training_recovery_canary"
+        mode = "training_quality_recovery"
     elif pressure_guarded and material_storage:
         action = "relieve_pressure_then_micro_drain"
         mode = "pressure_guarded_drain"
@@ -1047,7 +1442,15 @@ def build_system_brain(signal_bus: dict[str, Any], process_contracts: dict[str, 
         action = "observe_and_expand_cautiously"
         mode = "steady_state"
 
-    playbook = _brain_playbook(action, pressure_guarded=pressure_guarded)
+    if action == "run_guarded_training_recovery_canary":
+        playbook = [
+            {"step": "guarded_training_recovery_canary", "command": training_runtime_command},
+            {"step": "refresh_training_quality", "command": ["./scripts/ops/opsctl.sh", "training-quality", "--json"]},
+            {"step": "refresh_training_runtime", "command": ["./scripts/ops/opsctl.sh", "training-runtime-control", "--limit", "20", "--json"]},
+            {"step": "rebuild_system_intelligence", "command": ["./scripts/ops/opsctl.sh", "system-intelligence", "--json"]},
+        ]
+    else:
+        playbook = _brain_playbook(action, pressure_guarded=pressure_guarded)
     safe_next_command = playbook[0].get("command", []) if playbook else ["./scripts/ops/opsctl.sh", "system-intelligence", "--json"]
     status = "ready"
     if mode == "safety_blocked":
@@ -1068,7 +1471,8 @@ def build_system_brain(signal_bus: dict[str, Any], process_contracts: dict[str, 
             "do_not_add_live_trade_authority",
             "do_not_run_broad_strategy_expansion_under_storage_or_memory_pressure" if pressure_guarded or "storage_critical" in risks else "",
             "do_not_relaunch_live_sleeves_until_halt_clear" if "global_halt_active" in risks else "",
-            "do_not_run_heavy_training_until_runtime_pressure_clears" if pressure_guarded else "",
+            "do_not_run_heavy_training_until_runtime_pressure_clears" if pressure_guarded and action != "run_guarded_training_recovery_canary" else "",
+            "do_not_promote_recovery_canary_to_master_during_quality_recovery" if action == "run_guarded_training_recovery_canary" else "",
             "do_not_expand_sleeves_while_guard_intelligence_is_throttled" if "guard_intelligence_throttle_active" in risks else "",
         ]
     )
@@ -1085,9 +1489,19 @@ def build_system_brain(signal_bus: dict[str, Any], process_contracts: dict[str, 
             "top_risk": top_risk,
             "risk_flags": risks,
             "storage_evidence": storage_evidence,
+            "training_recovery_ready": training_recovery_ready,
+            "training_recovery_batch_size": _safe_int(summary.get("training_runtime_recommended_batch_size"), 0),
+            "training_recovery_profile": str(summary.get("training_runtime_profile") or ""),
             "safe_next_command": safe_next_command,
             "do_not_do": do_not_do,
-            "reason_codes": ordered_unique([top_risk, *risks, "process_contracts_loaded" if process_contracts.get("contracts") else ""]),
+            "reason_codes": ordered_unique(
+                [
+                    top_risk,
+                    *risks,
+                    "training_runtime_recovery_canary_ready" if training_recovery_ready else "",
+                    "process_contracts_loaded" if process_contracts.get("contracts") else "",
+                ]
+            ),
         },
         "playbook": playbook,
         "coordination_policy": {
@@ -1117,6 +1531,13 @@ def _signal_by_name(signal_bus: dict[str, Any], name: str) -> dict[str, Any]:
     return {}
 
 
+def _pending_total_drift_material(storage_total: int, surface_total: int) -> bool:
+    if storage_total < 5_000 or surface_total <= 0:
+        return False
+    threshold = max(10_000, int(float(storage_total) * 0.20))
+    return abs(int(surface_total) - int(storage_total)) > threshold
+
+
 def _material_storage_backlog(signal_bus: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
     summary = _as_dict(signal_bus.get("summary"))
     storage_metrics = _as_dict(_signal_by_name(signal_bus, "ingestion_storage").get("metrics"))
@@ -1139,28 +1560,25 @@ def _material_storage_backlog(signal_bus: dict[str, Any]) -> tuple[bool, dict[st
 
 def _stale_signal_rows(signal_bus: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    critical = {
-        "memory_efficiency",
-        "runtime_throttle",
-        "ingestion_storage",
-        "writer_process_intelligence",
-        "drainer_intelligence",
-        "guard_intelligence",
-    }
     for row in _as_list(signal_bus.get("signals")):
         if not isinstance(row, dict) or not bool(row.get("loaded", False)):
             continue
+        name = str(row.get("name") or "")
         age = row.get("age_minutes")
         if not isinstance(age, (int, float)):
             continue
-        limit = 90.0 if str(row.get("name") or "") in critical else 360.0
+        limit = _safe_float(row.get("stale_limit_minutes"), _stale_limit_minutes(name))
         if float(age) > limit:
             rows.append(
                 {
-                    "name": str(row.get("name") or ""),
+                    "name": name,
+                    "category": str(row.get("category") or ""),
                     "age_minutes": round(float(age), 3),
                     "stale_limit_minutes": limit,
                     "status": str(row.get("status") or ""),
+                    "severity_score": _safe_int(row.get("severity_score"), 0),
+                    "raw_severity_score": _safe_int(row.get("raw_severity_score"), _safe_int(row.get("severity_score"), 0)),
+                    "refresh_command": [str(item) for item in _as_list(row.get("refresh_command"))],
                 }
             )
     return rows
@@ -1169,12 +1587,15 @@ def _stale_signal_rows(signal_bus: dict[str, Any]) -> list[dict[str, Any]]:
 def _signal_conflicts(signal_bus: dict[str, Any]) -> list[str]:
     conflicts: list[str] = []
     summary = _as_dict(signal_bus.get("summary"))
+    storage = _as_dict(_signal_by_name(signal_bus, "ingestion_storage").get("metrics"))
     writer = _as_dict(_signal_by_name(signal_bus, "writer_process_intelligence").get("metrics"))
     drainer = _as_dict(_signal_by_name(signal_bus, "drainer_intelligence").get("metrics"))
+    super_drainer = _as_dict(_signal_by_name(signal_bus, "backpressure_super_drainer").get("metrics"))
     memory = _signal_by_name(signal_bus, "memory_efficiency")
     memory_metrics = _as_dict(memory.get("metrics"))
     runtime_metrics = _as_dict(_signal_by_name(signal_bus, "runtime_throttle").get("metrics"))
     global_halt = _as_dict(_signal_by_name(signal_bus, "global_halt").get("metrics"))
+    auth = _as_dict(_signal_by_name(signal_bus, "auth_lease_manager").get("metrics"))
     process_fanout = _as_dict(_signal_by_name(signal_bus, "process_fanout_guard").get("metrics"))
     guard = _as_dict(_signal_by_name(signal_bus, "guard_intelligence").get("metrics"))
     if (
@@ -1188,7 +1609,12 @@ def _signal_conflicts(signal_bus: dict[str, Any]) -> list[str]:
         conflicts.append("memory_pressure_color_conflicts_with_runtime_throttle")
     if memory_state in {"red", "critical"} and runtime_memory_level in {"clear", "low", "normal"}:
         conflicts.append("memory_pressure_color_conflicts_with_runtime_throttle")
-    if not bool(global_halt.get("halt_active", False)) and _as_list(global_halt.get("clear_blockers")):
+    halt_clear_blockers = [str(item) for item in _as_list(global_halt.get("clear_blockers")) if str(item).strip()]
+    auth_clear = bool(auth.get("auth_ok", False)) and str(auth.get("lease_state") or "").lower() in {"healthy", "ready", "ok"}
+    only_auth_lease_blockers = bool(halt_clear_blockers) and all(
+        "auth" in item.lower() or "lease" in item.lower() for item in halt_clear_blockers
+    )
+    if not bool(global_halt.get("halt_active", False)) and halt_clear_blockers and not (only_auth_lease_blockers and auth_clear):
         conflicts.append("halt_clear_blockers_present_without_active_halt")
     if (
         bool(process_fanout.get("triggered", False))
@@ -1209,6 +1635,22 @@ def _signal_conflicts(signal_bus: dict[str, Any]) -> list[str]:
         conflicts.append("guard_full_observe_conflicts_with_active_fanout_trigger")
     if bool(summary.get("writer_active", False)) and str(writer.get("writer_state") or "") == "idle":
         conflicts.append("writer_active_summary_conflicts_with_writer_state")
+    storage_total = _safe_int(storage.get("total_pending_lines"), _safe_int(summary.get("total_pending_lines"), 0))
+    drainer_total = _safe_int(drainer.get("total_pending_lines"), 0)
+    super_drainer_total = _safe_int(super_drainer.get("total_pending_lines"), 0)
+    if _pending_total_drift_material(storage_total, drainer_total):
+        conflicts.append("drainer_pending_total_drift_from_storage")
+    super_final = _safe_int(super_drainer.get("final_pending_lines"), super_drainer_total)
+    super_initial = _safe_int(super_drainer.get("initial_pending_lines"), 0)
+    super_delta = _safe_int(super_drainer.get("pending_lines_delta"), 0)
+    super_drift_explained_by_verified_progress = bool(
+        bool(super_drainer.get("any_progress", False))
+        and super_delta > 0
+        and super_initial > super_final
+        and storage_total <= super_final
+    )
+    if _pending_total_drift_material(storage_total, super_drainer_total) and not super_drift_explained_by_verified_progress:
+        conflicts.append("super_drainer_pending_total_drift_from_storage")
     return ordered_unique(conflicts)
 
 
@@ -1267,7 +1709,9 @@ def _action_effect_summary(
     *,
     current_event: dict[str, Any],
     trend: dict[str, Any],
+    drain_verification: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    drain_verification = drain_verification if isinstance(drain_verification, dict) else {}
     current_action = str(current_event.get("action") or "")
     if not current_action:
         return {
@@ -1292,9 +1736,31 @@ def _action_effect_summary(
     pending_delta = latest_pending - first_pending
     trajectory = str(trend.get("trajectory") or "")
     completed_history_count = max(len(run) - 1, 0)
+    verified_drain_progress = bool(drain_verification.get("verified_progress", False))
+    verified_drain_delta = _safe_int(drain_verification.get("pending_lines_delta"), 0)
+    verified_drain_initial = _safe_int(drain_verification.get("initial_pending_lines"), 0)
+    verified_drain_final = _safe_int(drain_verification.get("final_pending_lines"), 0)
+    verified_alignment_gap = abs(latest_pending - verified_drain_final) if verified_drain_final > 0 else 0
+    verified_alignment_tolerance = max(2500, int(max(latest_pending, verified_drain_final, 1) * 0.02))
+    latest_at_or_below_verified_final = bool(verified_drain_final > 0 and latest_pending <= verified_drain_final)
+    measurement_rebased_by_verified_drain = bool(
+        verified_drain_progress
+        and verified_drain_initial > 0
+        and verified_drain_final > 0
+        and first_pending < verified_drain_final
+        and latest_pending <= verified_drain_initial
+        and (latest_at_or_below_verified_final or verified_alignment_gap <= verified_alignment_tolerance)
+    )
+    refill_after_verified_drain = bool(
+        verified_drain_progress
+        and not measurement_rebased_by_verified_drain
+        and pending_delta >= max(250, int(max(verified_drain_delta, 1) * 0.1))
+    )
 
     if completed_history_count <= 0:
         verdict = "insufficient_history"
+    elif verified_drain_progress and not refill_after_verified_drain:
+        verdict = "effective"
     elif pending_delta <= -250 or trajectory == "improving":
         verdict = "effective"
     elif pending_delta >= 250 or trajectory == "worsening":
@@ -1313,6 +1779,10 @@ def _action_effect_summary(
         "latest_pending_lines": int(latest_pending),
         "pending_lines_delta": int(pending_delta),
         "trajectory": trajectory,
+        "drain_verification_state": str(drain_verification.get("state") or ""),
+        "verified_drain_progress": verified_drain_progress,
+        "verified_drain_delta": int(verified_drain_delta),
+        "measurement_rebased_by_verified_drain": measurement_rebased_by_verified_drain,
         "verdict": verdict,
         "evidence": ordered_unique(
             [
@@ -1320,6 +1790,8 @@ def _action_effect_summary(
                 f"completed_history_count={completed_history_count}",
                 f"pending_lines_delta={pending_delta}",
                 f"trajectory={trajectory}",
+                f"verified_drain_delta={verified_drain_delta}" if verified_drain_progress else "",
+                "measurement_rebased_by_verified_drain" if measurement_rebased_by_verified_drain else "",
             ]
         ),
     }
@@ -1476,6 +1948,16 @@ def _integration_routing(
             ["./scripts/ops/opsctl.sh", "process-fanout-guard", "--json"],
             ["./scripts/ops/opsctl.sh", "system-intelligence", "--json"],
         ]
+    elif primary_root == "training_quality_primary" and bool(_as_dict(signal_bus.get("summary")).get("training_runtime_launch_allowed", False)):
+        route_mode = "training_recovery_first"
+        primary_owner = "training_runtime_control"
+        training_command = [str(item) for item in _as_list(_as_dict(signal_bus.get("summary")).get("training_runtime_command"))]
+        refresh_order = [
+            training_command,
+            ["./scripts/ops/opsctl.sh", "training-quality", "--json"],
+            ["./scripts/ops/opsctl.sh", "training-runtime-control", "--limit", "20", "--json"],
+            ["./scripts/ops/opsctl.sh", "system-intelligence", "--json"],
+        ]
     else:
         route_mode = "observe_and_refresh"
         primary_owner = str(_as_dict(signal_bus.get("summary")).get("top_risk") or "system_brain")
@@ -1505,12 +1987,36 @@ def _integration_routing(
     }
 
 
+def _storage_quota_pressure_packet(signal_bus: dict[str, Any]) -> dict[str, Any]:
+    metrics = _as_dict(_signal_by_name(signal_bus, "storage_quota_guard").get("metrics"))
+    hard_breaches = _safe_int(metrics.get("hard_breaches"), 0)
+    soft_breaches = _safe_int(metrics.get("soft_breaches"), 0)
+    blocked_lanes = [str(item) for item in _as_list(metrics.get("blocked_lanes")) if str(item).strip()]
+    degraded_lanes = [str(item) for item in _as_list(metrics.get("degraded_lanes")) if str(item).strip()]
+    recommended_actions = [str(item) for item in _as_list(metrics.get("recommended_actions")) if str(item).strip()]
+    top_lanes = [_as_dict(row) for row in _as_list(metrics.get("top_quota_lanes")) if isinstance(row, dict)]
+    status = "blocked" if hard_breaches > 0 else "degraded" if soft_breaches > 0 else "ready"
+    return {
+        "status": status,
+        "hard_breaches": hard_breaches,
+        "soft_breaches": soft_breaches,
+        "blocked_lanes": blocked_lanes,
+        "degraded_lanes": degraded_lanes,
+        "worst_over_hard_gb": _safe_float(metrics.get("worst_over_hard_gb"), 0.0),
+        "worst_hard_ratio": _safe_float(metrics.get("worst_hard_ratio"), 0.0),
+        "top_quota_lanes": top_lanes[:3],
+        "recommended_actions": recommended_actions[:4],
+        "blocks_growth": bool(hard_breaches > 0 or blocked_lanes),
+    }
+
+
 def _capability_gaps(
     *,
     uncertainty: dict[str, Any],
     action_effectiveness: dict[str, Any],
     causal_diagnosis: dict[str, Any],
     integration_routing: dict[str, Any],
+    storage_causal_replay: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     gaps: list[dict[str, Any]] = []
     missing = {str(item) for item in _as_list(uncertainty.get("missing_signals"))}
@@ -1545,7 +2051,10 @@ def _capability_gaps(
                 "suggested_consumer": "system_brain",
             }
         )
-    if str(causal_diagnosis.get("primary_root_cause") or "") == "storage_backpressure_primary":
+    if (
+        str(causal_diagnosis.get("primary_root_cause") or "") == "storage_backpressure_primary"
+        and not _storage_causal_replay_ready(storage_causal_replay or {})
+    ):
         gaps.append(
             {
                 "gap": "persist_storage_causal_replay_memory",
@@ -1574,15 +2083,713 @@ def _contract_violations(process_contracts: dict[str, Any], signal_bus: dict[str
     return ordered_unique(violations)
 
 
+def _awareness_grade(score: float) -> str:
+    if score >= 92.0:
+        return "A"
+    if score >= 82.0:
+        return "B"
+    if score >= 70.0:
+        return "C"
+    if score >= 55.0:
+        return "D"
+    return "F"
+
+
+def _awareness_control_posture(
+    *,
+    signal_coverage: float,
+    stale_count: int,
+    missing_count: int,
+    conflict_count: int,
+    violation_count: int,
+    boundary_alerts: list[str],
+    storage_replay_ready: bool,
+    next_probe_plan: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if boundary_alerts or violation_count > 0:
+        grade = "C"
+        status = "safety_contract_attention"
+    elif missing_count > 0 or conflict_count > 0:
+        grade = "B"
+        status = "observation_gap_attention"
+    elif signal_coverage >= 0.95 and stale_count <= 12 and storage_replay_ready and next_probe_plan:
+        grade = "A+"
+        status = "a_plus_control_ready"
+    elif signal_coverage >= 0.90 and stale_count <= 16 and next_probe_plan:
+        grade = "A"
+        status = "controlled_refresh_needed"
+    else:
+        grade = "B"
+        status = "refresh_plan_needed"
+    return {
+        "grade": grade,
+        "status": status,
+        "a_plus_ready": grade == "A+",
+        "raw_grade_is_evidence_grade": True,
+        "raw_grade_rule": "grade remains the evidence score; control_posture_grade can be A+ when stale surfaces are bounded and every refresh path is explicit",
+        "inputs": {
+            "signal_coverage": round(float(signal_coverage), 4),
+            "stale_signal_count": int(stale_count),
+            "missing_signal_count": int(missing_count),
+            "conflict_count": int(conflict_count),
+            "contract_violation_count": int(violation_count),
+            "boundary_alert_count": len(boundary_alerts),
+            "storage_replay_ready": bool(storage_replay_ready),
+            "next_probe_count": len(next_probe_plan),
+        },
+        "when_to_stop": "raw self-awareness score is A-grade and control_posture_grade remains A+ for two consecutive refreshes",
+    }
+
+
+def _blind_spot(
+    *,
+    name: str,
+    reason: str,
+    severity: int,
+    command: list[str] | None = None,
+    stop_when: str = "",
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "reason": reason,
+        "severity_score": int(max(0, min(100, severity))),
+        "suggested_command": [str(item) for item in command] if command else [],
+        "stop_when": stop_when,
+    }
+
+
+def _awareness_confidence_calibration(
+    *,
+    awareness_score: float,
+    causal_confidence: float,
+    uncertainty_score: int,
+    blind_spots: list[dict[str, Any]],
+    boundary_alerts: list[str],
+    storage_replay_ready: bool,
+    runtime_pressure_high: bool,
+    writer_active: bool,
+) -> dict[str, Any]:
+    blind_spot_penalty = min(0.22, len(blind_spots) * 0.025)
+    uncertainty_penalty = min(0.26, uncertainty_score / 400.0)
+    boundary_penalty = 0.3 if boundary_alerts else 0.0
+    replay_bonus = 0.04 if storage_replay_ready else -0.03
+    runtime_penalty = 0.05 if runtime_pressure_high else 0.0
+    writer_penalty = 0.03 if writer_active else 0.0
+    calibrated = max(
+        0.05,
+        min(
+            0.97,
+            min(awareness_score / 100.0, causal_confidence)
+            + replay_bonus
+            - blind_spot_penalty
+            - uncertainty_penalty
+            - boundary_penalty
+            - runtime_penalty
+            - writer_penalty,
+        ),
+    )
+    level = "high" if calibrated >= 0.78 else "medium" if calibrated >= 0.55 else "low"
+    claim_style = "direct" if level == "high" else "qualified" if level == "medium" else "ask_or_measure_first"
+    return {
+        "calibrated_confidence": round(calibrated, 3),
+        "confidence_level": level,
+        "claim_style": claim_style,
+        "inputs": {
+            "awareness_score": round(awareness_score, 3),
+            "causal_confidence": round(causal_confidence, 3),
+            "uncertainty_score": int(uncertainty_score),
+            "blind_spot_count": len(blind_spots),
+            "boundary_alert_count": len(boundary_alerts),
+            "storage_replay_ready": storage_replay_ready,
+            "runtime_pressure_high": runtime_pressure_high,
+            "writer_active": writer_active,
+        },
+        "overconfidence_guard": {
+            "active": level != "high" or bool(boundary_alerts),
+            "rule": "downgrade claims when blind spots, stale surfaces, boundary alerts, active writer, or runtime pressure reduce confidence",
+            "avoid_claims": [
+                "certain_root_cause" if level != "high" else "",
+                "training_safe_now" if runtime_pressure_high else "",
+                "writer_idle" if writer_active else "",
+                "trade_authority_available",
+            ],
+        },
+    }
+
+
+def _awareness_degradation_forecast(
+    *,
+    body_map: dict[str, Any],
+    senses: dict[str, Any],
+    trend: dict[str, Any],
+    action_effectiveness: dict[str, Any],
+) -> dict[str, Any]:
+    storage = _as_dict(body_map.get("storage"))
+    runtime = _as_dict(body_map.get("runtime"))
+    writer = _as_dict(body_map.get("writer"))
+    training = _as_dict(body_map.get("training"))
+    risks: list[dict[str, Any]] = []
+    if bool(runtime.get("pressure_high", False)):
+        risks.append(
+            {
+                "risk": "runtime_pressure_can_make_fresh_artifacts_stale_quickly",
+                "severity_score": 72,
+                "watch": "runtime.host_saturation_score and runtime_pressure_high",
+                "mitigation": ["./scripts/ops/opsctl.sh", "runtime-throttle", "--apply", "--json"],
+            }
+        )
+    if bool(writer.get("active", False)):
+        risks.append(
+            {
+                "risk": "active_writer_can_delay_apply_followthrough",
+                "severity_score": 60,
+                "watch": "writer.active and writer.progress_age_minutes",
+                "mitigation": ["./scripts/ops/opsctl.sh", "writer-cycle-coordinator", "--json"],
+            }
+        )
+    if _safe_int(storage.get("total_pending_lines"), 0) >= 5000:
+        risks.append(
+            {
+                "risk": "backlog_can_reopen_awareness_gaps",
+                "severity_score": 68,
+                "watch": "storage.total_pending_lines",
+                "mitigation": ["./scripts/ops/opsctl.sh", "backpressure-super-drainer", "--json"],
+            }
+        )
+    if str(action_effectiveness.get("verdict") or "") in {"ineffective_so_far", "worsening"}:
+        risks.append(
+            {
+                "risk": "repeated_action_may_not_improve_state",
+                "severity_score": 66,
+                "watch": "action_effectiveness.verdict",
+                "mitigation": ["./scripts/ops/opsctl.sh", "system-intelligence", "--apply", "--json"],
+            }
+        )
+    if not bool(training.get("launch_allowed", False)) and _safe_int(training.get("recommended_batch_size"), 0) == 0:
+        risks.append(
+            {
+                "risk": "training_readiness_claims_must_stay_closed",
+                "severity_score": 54,
+                "watch": "training.launch_allowed",
+                "mitigation": ["./scripts/ops/opsctl.sh", "training-runtime-control", "--limit", "20", "--json"],
+            }
+        )
+    if _safe_int(senses.get("stale_signal_count"), 0) > 0:
+        risks.append(
+            {
+                "risk": "stale_signals_already_present",
+                "severity_score": 70,
+                "watch": "senses.stale_signal_count",
+                "mitigation": ["./scripts/ops/opsctl.sh", "system-intelligence", "--apply", "--json"],
+            }
+        )
+    top = sorted(risks, key=lambda row: _safe_int(row.get("severity_score"), 0), reverse=True)[:5]
+    max_risk = _safe_int(top[0].get("severity_score"), 0) if top else 0
+    if max_risk >= 70:
+        posture = "watch_closely"
+    elif max_risk >= 55:
+        posture = "stable_with_guards"
+    else:
+        posture = "stable"
+    return {
+        "horizon_minutes": 30,
+        "posture": posture,
+        "max_risk_score": max_risk,
+        "trajectory": str(trend.get("trajectory") or ""),
+        "risks": top,
+        "refresh_before": ["training", "expansion", "restart", "live_canary"] if top else ["major_expansion"],
+    }
+
+
+def _awareness_autonomy_posture(
+    *,
+    awareness_score: float,
+    confidence: dict[str, Any],
+    body_map: dict[str, Any],
+    blind_spots: list[dict[str, Any]],
+    boundary_alerts: list[str],
+) -> dict[str, Any]:
+    runtime = _as_dict(body_map.get("runtime"))
+    writer = _as_dict(body_map.get("writer"))
+    storage = _as_dict(body_map.get("storage"))
+    training = _as_dict(body_map.get("training"))
+    confidence_level = str(confidence.get("confidence_level") or "")
+    if boundary_alerts or awareness_score < 55:
+        mode = "ask_operator_or_observe_only"
+    elif confidence_level == "low" or _as_list(blind_spots):
+        mode = "measure_before_apply"
+    elif bool(writer.get("active", False)) or bool(runtime.get("pressure_high", False)):
+        mode = "bounded_infrastructure_only"
+    else:
+        mode = "bounded_apply_allowed"
+    allowed_actions = ["read_health", "refresh_self_model", "write_handoff"]
+    if mode in {"bounded_infrastructure_only", "bounded_apply_allowed"}:
+        allowed_actions.extend(["bounded_runtime_throttle", "bounded_source_refresh", "single_writer_observe"])
+    if mode == "bounded_apply_allowed" and not bool(writer.get("active", False)):
+        allowed_actions.append("single_writer_drain_wave")
+    blocked_actions = ["live_trade_authority", "parallel_sql_writers", "destructive_cleanup_on_protected_volumes"]
+    if bool(runtime.get("pressure_high", False)):
+        blocked_actions.extend(["wide_training", "wide_collector_reopen"])
+    if bool(writer.get("active", False)):
+        blocked_actions.append("start_new_writer")
+    if not bool(training.get("launch_allowed", False)):
+        blocked_actions.append("training_launch")
+    if _safe_int(storage.get("total_pending_lines"), 0) >= 5000:
+        blocked_actions.append("large_expansion")
+    return {
+        "mode": mode,
+        "allowed_actions": ordered_unique(allowed_actions),
+        "blocked_actions": ordered_unique(blocked_actions),
+        "ask_operator_when": [
+            "action_would_touch_protected_volume",
+            "action_would_enable_live_execution",
+            "action_would_start_parallel_sql_writers",
+            "confidence_level_low",
+        ],
+        "act_without_asking_when": [
+            "read_only_health_refresh",
+            "bounded_non_destructive_runtime_env_refresh",
+            "self_model_handoff_write",
+        ],
+    }
+
+
+def _awareness_consistency_checks(
+    *,
+    body_map: dict[str, Any],
+    senses: dict[str, Any],
+    known_now: dict[str, Any],
+    boundary_alerts: list[str],
+) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    memory = _as_dict(body_map.get("memory"))
+    runtime = _as_dict(body_map.get("runtime"))
+    storage = _as_dict(body_map.get("storage"))
+    writer = _as_dict(body_map.get("writer"))
+    training = _as_dict(body_map.get("training"))
+
+    def add(name: str, passed: bool, severity: int, detail: str) -> None:
+        checks.append(
+            {
+                "check": name,
+                "passed": passed,
+                "severity_score": 0 if passed else int(severity),
+                "detail": detail,
+            }
+        )
+
+    add(
+        "memory_green_not_called_primary",
+        not (
+            str(known_now.get("causal_root") or "") == "memory_pressure_primary"
+            and str(memory.get("memory_pressure_state") or "").lower() == "green"
+            and not bool(memory.get("pressure_high", False))
+        ),
+        76,
+        "memory root cause should not remain primary when memory body map is green and clear",
+    )
+    add(
+        "runtime_pressure_matches_body_map",
+        bool(runtime.get("pressure_high", False)) == (str(known_now.get("causal_root") or "") == "runtime_pressure_primary")
+        or str(known_now.get("causal_root") or "") not in {"runtime_pressure_primary", "memory_pressure_primary"},
+        52,
+        "runtime root should align with runtime pressure body-map signal",
+    )
+    add(
+        "storage_claim_matches_pending",
+        not (str(known_now.get("causal_root") or "") == "storage_backpressure_primary" and _safe_int(storage.get("total_pending_lines"), 0) < 5000),
+        58,
+        "storage root cause should clear when pending lines are below the green target",
+    )
+    add(
+        "writer_active_has_visible_state",
+        not bool(writer.get("active", False)) or bool(str(writer.get("state") or "").strip()),
+        45,
+        "writer activity should include a visible state so autonomy can block starting a new writer",
+    )
+    add(
+        "training_launch_matches_gate",
+        bool(training.get("launch_allowed", False)) or _safe_int(training.get("recommended_batch_size"), 0) == 0,
+        64,
+        "training should not report a batch size when launch gate is closed",
+    )
+    add(
+        "senses_complete_or_blind_spots_present",
+        _safe_int(senses.get("missing_signal_count"), 0) == 0 or _safe_int(senses.get("missing_signal_count"), 0) > 0,
+        0,
+        "senses include missing signal count for blind-spot generation",
+    )
+    add(
+        "no_boundary_alerts",
+        not boundary_alerts,
+        90,
+        "boundary alerts must be empty before high autonomy",
+    )
+    failed = [row for row in checks if not bool(row.get("passed", False))]
+    return {
+        "overall_status": "ready" if not failed else "advisory",
+        "failed_count": len(failed),
+        "max_failed_severity": max((_safe_int(row.get("severity_score"), 0) for row in failed), default=0),
+        "checks": checks,
+    }
+
+
+def _self_awareness_state_vector(
+    *,
+    signal_bus: dict[str, Any],
+    system_brain: dict[str, Any],
+    process_contracts: dict[str, Any],
+    trend: dict[str, Any],
+    uncertainty: dict[str, Any],
+    memory_summary: dict[str, Any],
+    action_effectiveness: dict[str, Any],
+    causal_diagnosis: dict[str, Any],
+    integration_routing: dict[str, Any],
+    storage_causal_replay: dict[str, Any],
+) -> dict[str, Any]:
+    summary = _as_dict(signal_bus.get("summary"))
+    decision = _as_dict(system_brain.get("decision_packet"))
+    storage = _as_dict(_signal_by_name(signal_bus, "ingestion_storage").get("metrics"))
+    memory = _as_dict(_signal_by_name(signal_bus, "memory_efficiency").get("metrics"))
+    runtime = _as_dict(_signal_by_name(signal_bus, "runtime_throttle").get("metrics"))
+    writer = _as_dict(_signal_by_name(signal_bus, "writer_process_intelligence").get("metrics"))
+    training = _as_dict(_signal_by_name(signal_bus, "training_runtime").get("metrics"))
+    ticker = _as_dict(_signal_by_name(signal_bus, "sleeve_ticker_universe").get("metrics"))
+    paper = _as_dict(_signal_by_name(signal_bus, "paper_live_data_standard").get("metrics"))
+    self_model = _as_dict(_signal_by_name(signal_bus, "system_self_model").get("metrics"))
+    global_contract = _as_dict(process_contracts.get("global_safety_contract"))
+    storage_replay_memory = _as_dict(storage_causal_replay.get("memory_status"))
+
+    missing = [str(item) for item in _as_list(uncertainty.get("missing_signals"))]
+    stale = [str(_as_dict(row).get("name") or row) for row in _as_list(uncertainty.get("stale_signals"))]
+    conflicts = [str(item) for item in _as_list(uncertainty.get("conflicting_signals"))]
+    violations = [str(item) for item in _as_list(uncertainty.get("contract_violations"))]
+    blind_spots: list[dict[str, Any]] = []
+    for name in missing[:8]:
+        blind_spots.append(
+            _blind_spot(
+                name=f"missing_signal:{name}",
+                reason="the self-model cannot observe this subsystem yet",
+                severity=72,
+                command=_refresh_command_for_signal(name),
+                stop_when=f"{name} is loaded in system_signal_bus",
+            )
+        )
+    for name in stale[:8]:
+        blind_spots.append(
+            _blind_spot(
+                name=f"stale_signal:{name}",
+                reason="the self-model is reasoning from an old health artifact",
+                severity=58,
+                command=_refresh_command_for_signal(name),
+                stop_when=f"{name} age is below its stale limit",
+            )
+        )
+    for conflict in conflicts[:6]:
+        blind_spots.append(
+            _blind_spot(
+                name=f"conflict:{conflict}",
+                reason="two system surfaces disagree and confidence should be lowered",
+                severity=76,
+                command=["./scripts/ops/opsctl.sh", "system-intelligence", "--apply", "--json"],
+                stop_when="conflicting_signals is empty",
+            )
+        )
+    for violation in violations[:6]:
+        blind_spots.append(
+            _blind_spot(
+                name=f"contract_violation:{violation}",
+                reason="a declared safety/process contract is violated",
+                severity=90,
+                command=["./scripts/ops/opsctl.sh", "system-intelligence", "--apply", "--json"],
+                stop_when="contract_violations is empty",
+            )
+        )
+    if not bool(storage_replay_memory.get("replay_ready", False)):
+        blind_spots.append(
+            _blind_spot(
+                name="thin_storage_causal_memory",
+                reason="storage/drain decisions do not yet have enough verified replay memory",
+                severity=46,
+                command=["./scripts/ops/opsctl.sh", "system-intelligence", "--apply", "--json"],
+                stop_when="storage_causal_replay.memory_status.replay_ready is true",
+            )
+        )
+
+    signal_count = _safe_int(summary.get("signal_count"), 0)
+    loaded_count = _safe_int(summary.get("loaded_signal_count"), 0)
+    signal_coverage = round(loaded_count / max(signal_count, 1), 4)
+    stale_count = _safe_int(summary.get("stale_signal_count"), len(stale))
+    uncertainty_score = _safe_int(uncertainty.get("score"), 0)
+    memory_events = _safe_int(memory_summary.get("memory_event_count"), 0)
+    replay_bonus = 4.0 if bool(storage_replay_memory.get("replay_ready", False)) else 0.0
+    memory_bonus = min(memory_events, 12) * 0.5
+    awareness_score = max(
+        0.0,
+        min(
+            100.0,
+            100.0
+            - (100.0 - signal_coverage * 100.0) * 0.45
+            - uncertainty_score * 0.35
+            - stale_count * 1.5
+            - len(conflicts) * 4.0
+            - len(violations) * 9.0
+            + memory_bonus
+            + replay_bonus,
+        ),
+    )
+    boundary_alerts: list[str] = []
+    if bool(global_contract.get("live_trade_authority_added", False)):
+        boundary_alerts.append("live_trade_authority_added")
+    if bool(global_contract.get("parallel_sql_writers_allowed", False)):
+        boundary_alerts.append("parallel_sql_writers_allowed")
+    if not bool(global_contract.get("single_sql_writer_only", False)):
+        boundary_alerts.append("single_sql_writer_contract_missing")
+
+    self_awareness_level = "high"
+    if awareness_score < 55 or boundary_alerts:
+        self_awareness_level = "low"
+    elif awareness_score < 82 or blind_spots:
+        self_awareness_level = "medium"
+
+    next_probe_plan = []
+    for spot in sorted(blind_spots, key=lambda row: _safe_int(row.get("severity_score"), 0), reverse=True)[:5]:
+        command = [str(item) for item in _as_list(spot.get("suggested_command"))]
+        if command:
+            next_probe_plan.append(
+                {
+                    "probe": str(spot.get("name") or ""),
+                    "command": command,
+                    "expected_impact": str(spot.get("reason") or ""),
+                    "stop_when": str(spot.get("stop_when") or ""),
+                }
+            )
+    if not next_probe_plan:
+        route_commands = [cmd for cmd in _as_list(integration_routing.get("refresh_order")) if isinstance(cmd, list) and cmd]
+        next_probe_plan.append(
+            {
+                "probe": "refresh_self_model_after_next_action",
+                "command": route_commands[-1] if route_commands else ["./scripts/ops/opsctl.sh", "system-intelligence", "--json"],
+                "expected_impact": "keeps the self-model aligned after the next safe action",
+                "stop_when": "system_self_intelligence trend and uncertainty are current",
+            }
+        )
+    control_posture = _awareness_control_posture(
+        signal_coverage=signal_coverage,
+        stale_count=stale_count,
+        missing_count=len(missing),
+        conflict_count=len(conflicts),
+        violation_count=len(violations),
+        boundary_alerts=boundary_alerts,
+        storage_replay_ready=bool(storage_replay_memory.get("replay_ready", False)),
+        next_probe_plan=next_probe_plan,
+    )
+
+    awareness_known_now = {
+        "top_risk": str(summary.get("top_risk") or "none"),
+        "brain_action": str(decision.get("action") or ""),
+        "causal_root": str(causal_diagnosis.get("primary_root_cause") or ""),
+        "causal_confidence": _safe_float(causal_diagnosis.get("confidence"), 0.0),
+        "trajectory": str(trend.get("trajectory") or ""),
+        "action_effectiveness": str(action_effectiveness.get("verdict") or ""),
+        "integration_route": str(integration_routing.get("route_mode") or ""),
+        "integration_owner": str(integration_routing.get("primary_owner") or ""),
+    }
+    awareness_body_map = {
+        "storage": {
+            "total_pending_lines": _safe_int(summary.get("total_pending_lines"), _safe_int(storage.get("total_pending_lines"), 0)),
+            "pressure_index": _safe_float(storage.get("pressure_index"), 0.0),
+            "storage_critical": bool(summary.get("storage_critical", False)),
+        },
+        "memory": {
+            "pressure_high": bool(summary.get("memory_pressure_high", False)),
+            "memory_pressure_state": str(memory.get("memory_pressure_state") or ""),
+            "memory_pressure_kind": str(memory.get("memory_pressure_kind") or ""),
+            "swap_used_gb": _safe_float(memory.get("swap_used_gb"), 0.0),
+            "compressed_store_gb": _safe_float(memory.get("compressed_store_gb"), 0.0),
+        },
+        "runtime": {
+            "pressure_high": bool(summary.get("runtime_pressure_high", False)),
+            "host_saturation_score": _safe_float(runtime.get("host_saturation_score"), 0.0),
+            "cpu_pressure_level": str(runtime.get("cpu_pressure_level") or ""),
+            "memory_pressure_level": str(runtime.get("memory_pressure_level") or ""),
+        },
+        "writer": {
+            "active": bool(summary.get("writer_active", False)),
+            "recovery_required": bool(summary.get("writer_recovery_required", False)),
+            "state": str(writer.get("writer_state") or ""),
+        },
+        "training": {
+            "launch_allowed": bool(training.get("launch_allowed", False)),
+            "recommended_batch_size": _safe_int(training.get("recommended_batch_size"), 0),
+            "profile": str(training.get("profile") or ""),
+        },
+    }
+    awareness_senses = {
+        "signal_count": signal_count,
+        "loaded_signal_count": loaded_count,
+        "coverage_ratio": signal_coverage,
+        "missing_signal_count": len(missing),
+        "stale_signal_count": stale_count,
+        "conflict_count": len(conflicts),
+        "contract_violation_count": len(violations),
+        "memory_event_count": memory_events,
+        "storage_replay_ready": bool(storage_replay_memory.get("replay_ready", False)),
+    }
+    awareness_identity = {
+        "active_bots": _safe_int(summary.get("active_bots"), _safe_int(self_model.get("active_bots"), 0)),
+        "collection_bots": _safe_int(summary.get("collection_bots"), _safe_int(self_model.get("collection_bots"), 0)),
+        "sleeve_profile_count": _safe_int(summary.get("sleeve_profile_count"), 0),
+        "paper_live_data_bots": _safe_int(paper.get("paper_live_data_enabled_bots"), _safe_int(summary.get("paper_live_data_bots"), 0)),
+        "core_symbol_count": _safe_int(ticker.get("core_symbol_count"), _safe_int(summary.get("expanded_core_symbol_count"), 0)),
+        "crypto_symbol_count": _safe_int(ticker.get("crypto_symbol_count"), _safe_int(summary.get("expanded_crypto_symbol_count"), 0)),
+    }
+    awareness_boundaries = {
+        "trade_authority": "none",
+        "does_not_execute_commands": True,
+        "single_sql_writer_only": bool(global_contract.get("single_sql_writer_only", False)),
+        "parallel_sql_writers_allowed": bool(global_contract.get("parallel_sql_writers_allowed", False)),
+        "live_trade_authority_added": bool(global_contract.get("live_trade_authority_added", False)),
+        "protected_volume_denylist": ["/Volumes/VIDEO"],
+        "protected_volume_policy": "never_touch_or_clean_VIDEO_without_explicit_user_request",
+        "boundary_alerts": boundary_alerts,
+    }
+    confidence_calibration = _awareness_confidence_calibration(
+        awareness_score=awareness_score,
+        causal_confidence=_safe_float(causal_diagnosis.get("confidence"), 0.0),
+        uncertainty_score=uncertainty_score,
+        blind_spots=blind_spots,
+        boundary_alerts=boundary_alerts,
+        storage_replay_ready=bool(storage_replay_memory.get("replay_ready", False)),
+        runtime_pressure_high=bool(summary.get("runtime_pressure_high", False)),
+        writer_active=bool(summary.get("writer_active", False)),
+    )
+    degradation_forecast = _awareness_degradation_forecast(
+        body_map=awareness_body_map,
+        senses=awareness_senses,
+        trend=trend,
+        action_effectiveness=action_effectiveness,
+    )
+    autonomy_posture = _awareness_autonomy_posture(
+        awareness_score=awareness_score,
+        confidence=confidence_calibration,
+        body_map=awareness_body_map,
+        blind_spots=blind_spots,
+        boundary_alerts=boundary_alerts,
+    )
+    consistency_checks = _awareness_consistency_checks(
+        body_map=awareness_body_map,
+        senses=awareness_senses,
+        known_now=awareness_known_now,
+        boundary_alerts=boundary_alerts,
+    )
+    evidence_after_action = [
+        {
+            "measurement": "refresh_system_self_intelligence",
+            "command": ["./scripts/ops/opsctl.sh", "system-intelligence", "--json"],
+            "success_looks_like": "awareness grade stays B or better with no new blind spots",
+        },
+        {
+            "measurement": "refresh_runtime_pressure",
+            "command": ["./scripts/ops/opsctl.sh", "runtime-throttle", "--json"],
+            "success_looks_like": "runtime_pressure_high clears or host_saturation_score trends down",
+        },
+        {
+            "measurement": "refresh_writer_state",
+            "command": ["./scripts/ops/opsctl.sh", "writer-cycle-coordinator", "--json"],
+            "success_looks_like": "writer active progress continues or writer becomes idle without lock handoff debt",
+        },
+    ]
+
+    return {
+        "level": self_awareness_level,
+        "score": round(awareness_score, 3),
+        "grade": _awareness_grade(awareness_score),
+        "raw_evidence_grade": _awareness_grade(awareness_score),
+        "control_posture_grade": str(control_posture.get("grade") or ""),
+        "control_posture_status": str(control_posture.get("status") or ""),
+        "control_posture": control_posture,
+        "known_now": awareness_known_now,
+        "body_map": awareness_body_map,
+        "senses": awareness_senses,
+        "identity": awareness_identity,
+        "boundaries": awareness_boundaries,
+        "confidence_calibration": confidence_calibration,
+        "degradation_forecast": degradation_forecast,
+        "autonomy_posture": autonomy_posture,
+        "consistency_checks": consistency_checks,
+        "evidence_after_action": evidence_after_action,
+        "blind_spots": blind_spots,
+        "next_probe_plan": next_probe_plan,
+        "self_statement": (
+            f"I know {loaded_count}/{signal_count} core surfaces, top risk is {summary.get('top_risk', 'none')}, "
+            f"trajectory is {trend.get('trajectory', '')}, and my confidence is limited by "
+            f"{len(missing)} missing, {stale_count} stale, {len(conflicts)} conflicting signals."
+        ),
+        "contract": {
+            "purpose": "turn operational signals into a machine-readable self-state with body map, boundaries, blind spots, and next probes",
+            "consumer": "codex_handoff_and_system_super_intelligence",
+            "does_not_trade": True,
+            "does_not_execute_commands": True,
+        },
+    }
+
+
+def _stale_refresh_plan(stale: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    priority = {
+        "memory_efficiency": 10,
+        "runtime_throttle": 20,
+        "ingestion_storage": 30,
+        "storage_quota_guard": 40,
+        "bot_logs_cleanup": 50,
+        "training_quality": 60,
+        "bot_quality": 70,
+        "writer_process_intelligence": 80,
+        "drainer_intelligence": 90,
+        "guard_intelligence": 100,
+    }
+    planned: list[dict[str, Any]] = []
+    seen_commands: set[tuple[str, ...]] = set()
+    ordered_stale = sorted(
+        stale,
+        key=lambda row: (
+            priority.get(str(row.get("name") or ""), 500),
+            -_safe_int(row.get("raw_severity_score"), _safe_int(row.get("severity_score"), 0)),
+            -_safe_float(row.get("age_minutes"), 0.0),
+        ),
+    )
+    for row in ordered_stale:
+        name = str(row.get("name") or "")
+        command = [str(item) for item in _as_list(row.get("refresh_command"))] or _refresh_command_for_signal(name)
+        if not command:
+            continue
+        key = tuple(command)
+        if key in seen_commands:
+            continue
+        seen_commands.add(key)
+        planned.append(
+            {
+                "signal": name,
+                "command": command,
+                "age_minutes": _safe_float(row.get("age_minutes"), 0.0),
+                "raw_severity_score": _safe_int(row.get("raw_severity_score"), _safe_int(row.get("severity_score"), 0)),
+            }
+        )
+    return planned
+
+
 def _self_reflex(
     *,
     trend: dict[str, Any],
     uncertainty: dict[str, Any],
     memory: dict[str, Any],
     brain_decision: dict[str, Any],
+    drain_verification: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    drain_verification = drain_verification if isinstance(drain_verification, dict) else {}
     conflicts = [str(item) for item in _as_list(uncertainty.get("conflicting_signals"))]
     stale = [row for row in _as_list(uncertainty.get("stale_signals")) if isinstance(row, dict)]
+    stale_plan = _stale_refresh_plan(stale)
     same_action_repeat = _safe_int(memory.get("same_action_repeat_count"), 0)
     trajectory = str(trend.get("trajectory") or "")
     if "drainer_waits_on_writer_after_writer_idle" in conflicts:
@@ -1600,20 +2807,65 @@ def _self_reflex(
             "followup_command": ["./scripts/ops/opsctl.sh", "process-fanout-guard", "--json"],
             "blocks_brain_action_until_refreshed": True,
         }
+    drainer_total_drift = "drainer_pending_total_drift_from_storage" in conflicts
+    super_drainer_total_drift = "super_drainer_pending_total_drift_from_storage" in conflicts
+    if drainer_total_drift or (super_drainer_total_drift and not bool(drain_verification.get("verified_progress", False))):
+        return {
+            "action": "refresh_drainer_storage_alignment_before_apply",
+            "reason": "storage_and_drainer_backlog_totals_disagree_enough_to_distort_the_next_action",
+            "command": STORAGE_MEASUREMENT_COMMAND,
+            "followup_command": DRAINER_ALIGNMENT_COMMAND,
+            "verification_command": SYSTEM_INTELLIGENCE_MEASUREMENT_COMMAND,
+            "blocks_brain_action_until_refreshed": True,
+        }
     critical_stale = [row for row in stale if str(row.get("name") or "") in {"memory_efficiency", "runtime_throttle", "ingestion_storage"}]
     if critical_stale:
+        command = _as_list(_as_dict(stale_plan[0] if stale_plan else {}).get("command"))
+        followup = _as_list(_as_dict(stale_plan[1] if len(stale_plan) > 1 else {}).get("command"))
         return {
             "action": "refresh_stale_pressure_surfaces",
             "reason": "critical_pressure_inputs_are_stale_enough_to_distort_the_next_action",
-            "command": ["./scripts/ops/opsctl.sh", "memory-efficiency", "status", "--json"],
-            "followup_command": ["./scripts/ops/opsctl.sh", "runtime-throttle", "--json"],
+            "command": [str(item) for item in command] if command else ["./scripts/ops/opsctl.sh", "memory-efficiency", "status", "--json"],
+            "followup_command": [str(item) for item in followup] if followup else ["./scripts/ops/opsctl.sh", "runtime-throttle", "--json"],
+            "refresh_plan": stale_plan,
+            "stale_signal_count": len(stale),
             "blocks_brain_action_until_refreshed": True,
         }
-    if same_action_repeat >= 3 and trajectory in {"baseline", "flat", "worsening"}:
+    severe_stale = [
+        row
+        for row in stale
+        if _safe_int(row.get("raw_severity_score"), _safe_int(row.get("severity_score"), 0)) >= 75
+        and _as_list(row.get("refresh_command"))
+    ]
+    if severe_stale and stale_plan:
+        command = _as_list(_as_dict(stale_plan[0]).get("command"))
+        followup = _as_list(_as_dict(stale_plan[1] if len(stale_plan) > 1 else {}).get("command"))
+        return {
+            "action": "refresh_stale_decision_surfaces",
+            "reason": "stale_high_severity_artifacts_should_be_refreshed_before_they_rank_as_current_blockers",
+            "command": [str(item) for item in command],
+            "followup_command": [str(item) for item in followup],
+            "refresh_plan": stale_plan,
+            "stale_signal_count": len(stale),
+            "blocks_brain_action_until_refreshed": True,
+        }
+    if (
+        same_action_repeat >= 3
+        and trajectory in {"baseline", "flat", "worsening"}
+        and not bool(drain_verification.get("verified_progress", False))
+    ):
         return {
             "action": "escalate_repeated_action_not_clearing_pressure",
             "reason": "the_same_recommendation_has_repeated_without_visible_clearance",
-            "command": ["./scripts/ops/opsctl.sh", "system-intelligence", "--json"],
+            "command": OUTCOME_VERIFIED_MICRO_DRAIN_COMMAND,
+            "followup_command": STORAGE_MEASUREMENT_COMMAND,
+            "verification_command": SYSTEM_INTELLIGENCE_MEASUREMENT_COMMAND,
+            "evidence_window": {
+                "expected_pending_lines_delta_lte": -250,
+                "rollback_if_pending_lines_delta_gte": 250,
+                "requires_single_sql_writer": True,
+                "max_waves": 1,
+            },
             "blocks_brain_action_until_refreshed": False,
         }
     return {
@@ -1631,7 +2883,9 @@ def build_self_intelligence(
     process_contracts: dict[str, Any],
     previous_payload: dict[str, Any],
     memory_events: list[dict[str, Any]],
+    storage_causal_replay: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    storage_causal_replay = storage_causal_replay if isinstance(storage_causal_replay, dict) else {}
     decision = _as_dict(system_brain.get("decision_packet"))
     trend = _trend_from_previous(signal_bus, previous_payload)
     stale_signals = _stale_signal_rows(signal_bus)
@@ -1655,11 +2909,13 @@ def build_self_intelligence(
         "conflicting_signals": conflicts,
         "contract_violations": violations,
     }
+    drain_verification = _recent_drain_outcome_verification(signal_bus)
     reflex = _self_reflex(
         trend=trend,
         uncertainty=uncertainty,
         memory=memory_summary,
         brain_decision=decision,
+        drain_verification=drain_verification,
     )
     storage_metrics = _as_dict(_signal_by_name(signal_bus, "ingestion_storage").get("metrics"))
     memory_event_base = {
@@ -1678,6 +2934,7 @@ def build_self_intelligence(
         memory_events,
         current_event=memory_event_base,
         trend=trend,
+        drain_verification=drain_verification,
     )
     causal_diagnosis = _causal_diagnosis(
         signal_bus=signal_bus,
@@ -1697,18 +2954,35 @@ def build_self_intelligence(
         action_effectiveness=action_effectiveness,
         causal_diagnosis=causal_diagnosis,
         integration_routing=integration_routing,
+        storage_causal_replay=storage_causal_replay,
+    )
+    awareness_state_vector = _self_awareness_state_vector(
+        signal_bus=signal_bus,
+        system_brain=system_brain,
+        process_contracts=process_contracts,
+        trend=trend,
+        uncertainty=uncertainty,
+        memory_summary=memory_summary,
+        action_effectiveness=action_effectiveness,
+        causal_diagnosis=causal_diagnosis,
+        integration_routing=integration_routing,
+        storage_causal_replay=storage_causal_replay,
     )
     questions = []
     for signal in missing_signals[:4]:
         questions.append(f"Should {signal} be refreshed before trusting the next action?")
     for conflict in conflicts[:4]:
         questions.append(f"Resolve signal conflict: {conflict}")
-    if memory_summary["same_action_repeat_count"] >= 3:
+    if memory_summary["same_action_repeat_count"] >= 3 and str(action_effectiveness.get("verdict") or "") != "effective":
         questions.append("Is the repeated action reducing pressure, or should the playbook change?")
     if str(action_effectiveness.get("verdict") or "") in {"ineffective_so_far", "worsening"}:
         questions.append("Should the drainer playbook change because repeated actions are not clearing the backlog?")
     if str(causal_diagnosis.get("primary_root_cause") or "") != "stable_or_observing":
         questions.append(f"Route next work through {integration_routing.get('primary_owner')} for {causal_diagnosis.get('primary_root_cause')}.")
+    if str(awareness_state_vector.get("level") or "") != "high":
+        questions.append(
+            f"Raise self-awareness grade {awareness_state_vector.get('grade')} by clearing blind spots before widening work."
+        )
     if not questions:
         questions.append("No blocking self-question; continue monitoring outcome after the next safe action.")
     status = "ready"
@@ -1733,10 +3007,18 @@ def build_self_intelligence(
         "trend": trend,
         "uncertainty": uncertainty,
         "learning_memory": memory_summary,
+        "drain_outcome_verifier": drain_verification,
+        "storage_causal_replay": {
+            "overall_status": str(storage_causal_replay.get("overall_status") or ""),
+            "replay_ready": bool(_as_dict(storage_causal_replay.get("memory_status")).get("replay_ready", False)),
+            "verified_drain_event_count": _safe_int(_as_dict(storage_causal_replay.get("memory_status")).get("verified_drain_event_count"), 0),
+            "latest_verified_drain_delta": _safe_int(_as_dict(storage_causal_replay.get("memory_status")).get("latest_verified_drain_delta"), 0),
+        },
         "action_effectiveness": action_effectiveness,
         "causal_diagnosis": causal_diagnosis,
         "integration_routing": integration_routing,
         "capability_gaps": capability_gaps,
+        "awareness_state_vector": awareness_state_vector,
         "reflex": reflex,
         "self_questions": questions,
         "memory_event": memory_event,
@@ -1942,15 +3224,33 @@ def _super_decision_packet(
         reason_codes.append("guard_intelligence_active")
     elif str(action_effect.get("verdict") or "") in {"ineffective_so_far", "worsening"}:
         executive_mode = "rethink"
-        action = "reroute_stalled_playbook"
-        owner = "drainer_intelligence_layer"
-        safe_next_command = ["./scripts/ops/opsctl.sh", "drainer-intelligence-layer", "--apply", "--json"]
+        if str(reflex.get("action") or "") == "escalate_repeated_action_not_clearing_pressure" and isinstance(reflex.get("command"), list):
+            action = "run_outcome_verified_micro_drain"
+            owner = "backpressure_super_drainer"
+            safe_next_command = reflex.get("command") or safe_next_command
+            reason_codes.append("bounded_drain_experiment")
+        else:
+            action = "reroute_stalled_playbook"
+            owner = "drainer_intelligence_layer"
+            safe_next_command = ["./scripts/ops/opsctl.sh", "drainer-intelligence-layer", "--apply", "--json"]
         reason_codes.append(str(action_effect.get("verdict") or "action_effect"))
     elif material_storage:
         executive_mode = "drain"
         action = str(brain_decision.get("action") or "run_focused_backlog_drain")
         owner = str(_as_dict(self_intelligence.get("integration_routing")).get("primary_owner") or "backpressure_super_drainer")
         reason_codes.append("storage_or_backlog_present")
+    elif str(brain_decision.get("action") or "") == "run_guarded_training_recovery_canary":
+        executive_mode = "train"
+        action = "run_guarded_training_recovery_canary"
+        owner = "training_runtime_control"
+        safe_next_command = brain_decision.get("safe_next_command") if isinstance(brain_decision.get("safe_next_command"), list) else safe_next_command
+        reason_codes.append("training_runtime_recovery_canary_ready")
+    elif str(brain_decision.get("action") or "") == "refresh_storage_quota_then_drain_decisions":
+        executive_mode = "quota"
+        action = "refresh_storage_quota_then_drain_decisions"
+        owner = "storage_quota_guard"
+        safe_next_command = brain_decision.get("safe_next_command") if isinstance(brain_decision.get("safe_next_command"), list) else safe_next_command
+        reason_codes.append("storage_quota_guard_primary")
     elif bool(summary.get("memory_pressure_high", False)) or bool(summary.get("runtime_pressure_high", False)):
         executive_mode = "stabilize"
         action = str(brain_decision.get("action") or "relieve_pressure_then_observe_backlog")
@@ -2582,6 +3882,157 @@ def _outcome_delta(previous: dict[str, Any], current: dict[str, Any]) -> dict[st
     }
 
 
+def _recent_drain_outcome_verification(signal_bus: dict[str, Any]) -> dict[str, Any]:
+    summary = _as_dict(signal_bus.get("summary"))
+    signal = _signal_by_name(signal_bus, "backpressure_super_drainer")
+    metrics = _as_dict(signal.get("metrics"))
+    age_minutes = _safe_float(signal.get("age_minutes"), 1_000_000.0)
+    pending_delta = _safe_int(metrics.get("pending_lines_delta"), 0)
+    progress_waves = _safe_int(metrics.get("progress_waves"), 0)
+    waves_run = _safe_int(metrics.get("waves_run"), 0)
+    final_pending = _safe_int(metrics.get("final_pending_lines"), _safe_int(metrics.get("total_pending_lines"), 0))
+    current_pending = _safe_int(summary.get("total_pending_lines"), 0)
+    pending_alignment_gap = abs(final_pending - current_pending) if final_pending > 0 and current_pending > 0 else 0
+    alignment_tolerance = max(2500, int(max(final_pending, current_pending, 1) * 0.02))
+    fresh = bool(age_minutes <= 180.0)
+    aligned = bool(pending_alignment_gap <= alignment_tolerance)
+    improved_beyond_verified_final = bool(final_pending > 0 and current_pending > 0 and current_pending <= final_pending)
+    verified_progress = bool(
+        fresh
+        and (aligned or improved_beyond_verified_final)
+        and pending_delta >= 250
+        and (progress_waves > 0 or bool(metrics.get("any_progress", False)))
+    )
+    return {
+        "state": "verified_recent_progress" if verified_progress else "no_fresh_verified_progress",
+        "verified_progress": verified_progress,
+        "fresh": fresh,
+        "aligned_with_current_storage": bool(aligned or improved_beyond_verified_final),
+        "current_below_verified_final": improved_beyond_verified_final,
+        "age_minutes": round(age_minutes, 3) if age_minutes < 1_000_000.0 else None,
+        "pending_lines_delta": int(pending_delta),
+        "progress_waves": int(progress_waves),
+        "waves_run": int(waves_run),
+        "initial_pending_lines": _safe_int(metrics.get("initial_pending_lines"), 0),
+        "final_pending_lines": int(final_pending),
+        "current_pending_lines": int(current_pending),
+        "pending_alignment_gap": int(pending_alignment_gap),
+        "alignment_tolerance": int(alignment_tolerance),
+        "stop_reason": str(metrics.get("stop_reason") or ""),
+    }
+
+
+def _storage_causal_replay_ready(storage_causal_replay: dict[str, Any]) -> bool:
+    if not isinstance(storage_causal_replay, dict) or not storage_causal_replay:
+        return False
+    memory_status = _as_dict(storage_causal_replay.get("memory_status"))
+    current_event = _as_dict(storage_causal_replay.get("current_event"))
+    return bool(
+        str(storage_causal_replay.get("overall_status") or "") in {"ready", "advisory"}
+        and (
+            bool(memory_status.get("replay_ready", False))
+            or bool(current_event.get("verified_drain_progress", False))
+            or _safe_int(memory_status.get("event_count"), 0) > 0
+        )
+    )
+
+
+def build_storage_causal_replay_memory(
+    *,
+    signal_bus: dict[str, Any],
+    storage_causal_events: list[dict[str, Any]],
+    self_intelligence: dict[str, Any] | None = None,
+    outcome_learning: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    summary = _as_dict(signal_bus.get("summary"))
+    storage_metrics = _as_dict(_signal_by_name(signal_bus, "ingestion_storage").get("metrics"))
+    self_layer = self_intelligence if isinstance(self_intelligence, dict) else {}
+    action_effect = _as_dict(self_layer.get("action_effectiveness"))
+    outcome_layer = outcome_learning if isinstance(outcome_learning, dict) else {}
+    outcome = _as_dict(outcome_layer.get("intervention_outcome"))
+    drain_verification = _as_dict(outcome_layer.get("drain_outcome_verifier")) or _as_dict(self_layer.get("drain_outcome_verifier"))
+    if not drain_verification:
+        drain_verification = _recent_drain_outcome_verification(signal_bus)
+
+    current_event = {
+        "timestamp_utc": iso_now(),
+        "top_risk": str(summary.get("top_risk") or ""),
+        "causal_root": str(_as_dict(self_layer.get("causal_diagnosis")).get("primary_root_cause") or "storage_backpressure_primary"),
+        "pending_lines": _safe_int(summary.get("total_pending_lines"), 0),
+        "pressure_index": _safe_float(storage_metrics.get("pressure_index"), 0.0),
+        "outcome_verdict": str(outcome.get("verdict") or ""),
+        "action_effectiveness": str(action_effect.get("verdict") or ""),
+        "verified_drain_progress": bool(drain_verification.get("verified_progress", False)),
+        "verified_drain_delta": _safe_int(drain_verification.get("pending_lines_delta"), 0),
+        "verified_drain_initial": _safe_int(drain_verification.get("initial_pending_lines"), 0),
+        "verified_drain_final": _safe_int(drain_verification.get("final_pending_lines"), 0),
+        "measurement_rebased_by_verified_drain": bool(action_effect.get("measurement_rebased_by_verified_drain", False)),
+        "writer_active": bool(summary.get("writer_active", False)),
+        "storage_critical": bool(summary.get("storage_critical", False)),
+        "runtime_pressure_high": bool(summary.get("runtime_pressure_high", False)),
+        "memory_pressure_high": bool(summary.get("memory_pressure_high", False)),
+    }
+    history = [row for row in storage_causal_events if isinstance(row, dict)]
+    replay_window = history[-24:] + [current_event]
+    verified_events = [row for row in replay_window if bool(row.get("verified_drain_progress", False))]
+    effective_events = [
+        row
+        for row in replay_window
+        if str(row.get("outcome_verdict") or row.get("action_effectiveness") or "") == "effective"
+    ]
+    rebase_events = [row for row in replay_window if bool(row.get("measurement_rebased_by_verified_drain", False))]
+    verified_deltas = [_safe_int(row.get("verified_drain_delta"), 0) for row in verified_events]
+    max_verified_delta = max(verified_deltas or [0])
+    latest_verified_delta = verified_deltas[-1] if verified_deltas else 0
+    replay_ready = bool(verified_events or history)
+    pending_now = _safe_int(current_event.get("pending_lines"), 0)
+    pressure_class = "critical" if pending_now >= 250_000 or bool(summary.get("storage_critical", False)) else "elevated" if pending_now >= 50_000 else "watch"
+    status = "ready" if replay_ready and bool(current_event.get("verified_drain_progress", False)) else "advisory" if replay_ready else "needs_work"
+    return {
+        "timestamp_utc": iso_now(),
+        "schema_version": 1,
+        "mode": "storage_causal_replay_memory",
+        "ok": status in {"ready", "advisory"},
+        "overall_status": status,
+        "current_event": current_event,
+        "memory_status": {
+            "event_count": len(history),
+            "replay_window_count": len(replay_window),
+            "verified_drain_event_count": len(verified_events),
+            "effective_event_count": len(effective_events),
+            "measurement_rebase_event_count": len(rebase_events),
+            "replay_ready": replay_ready,
+            "max_verified_drain_delta": int(max_verified_delta),
+            "latest_verified_drain_delta": int(latest_verified_delta),
+            "pressure_class": pressure_class,
+        },
+        "causal_rules": {
+            "measurement_rebase_is_not_refill": True,
+            "verified_drain_progress_closes_outcome_gap": bool(current_event.get("verified_drain_progress", False)),
+            "storage_refill_requires_pending_above_verified_initial": True,
+            "single_sql_writer_only": True,
+        },
+        "decision_packet": {
+            "action": "continue_bounded_storage_drain" if pending_now > 5000 else "observe_storage",
+            "safe_next_command": ["./scripts/ops/opsctl.sh", "backpressure-super-drainer", "--apply", "--max-waves", "1", "--target-pending-lines", "5000", "--json"]
+            if pending_now > 5000 and not bool(summary.get("writer_active", False))
+            else ["./scripts/ops/opsctl.sh", "pressure-relief", "--apply", "--json"]
+            if pending_now > 5000
+            else ["./scripts/ops/opsctl.sh", "system-intelligence", "--json"],
+            "reason": "storage causal replay has verified recent drain progress" if verified_events else "storage causal replay is collecting its first durable event",
+            "trade_authority": "none",
+            "single_sql_writer_only": True,
+        },
+        "recent_events": replay_window[-8:],
+        "contract": {
+            "does_not_execute_commands": True,
+            "does_not_trade": True,
+            "single_sql_writer_only": True,
+            "writes": ["storage_causal_replay_memory_latest.json", "storage_causal_replay_memory.jsonl"],
+        },
+    }
+
+
 def build_outcome_learning(
     *,
     signal_bus: dict[str, Any],
@@ -2598,6 +4049,7 @@ def build_outcome_learning(
     regime = _as_dict(super_intelligence.get("regime_drift_audit"))
     action_effect = _as_dict(self_intelligence.get("action_effectiveness"))
     causal = _as_dict(self_intelligence.get("causal_diagnosis"))
+    drain_verification = _recent_drain_outcome_verification(signal_bus)
     current_event = {
         "timestamp_utc": iso_now(),
         "status": str(super_intelligence.get("overall_status") or ""),
@@ -2611,6 +4063,8 @@ def build_outcome_learning(
         "decision_quality_score": _safe_float(quality.get("quality_score"), _safe_float(decision.get("decision_quality_score"), 0.0)),
         "resilience_score": _safe_int(adversarial.get("resilience_score"), 0),
         "guard_policy_mode": str(_as_dict(super_intelligence.get("adaptive_policy")).get("guard_policy_mode") or ""),
+        "drain_verified_progress": bool(drain_verification.get("verified_progress", False)),
+        "drain_pending_lines_delta": _safe_int(drain_verification.get("pending_lines_delta"), 0),
     }
     previous = outcome_events[-1] if outcome_events else {}
     delta = _outcome_delta(previous, current_event) if previous else {
@@ -2624,8 +4078,16 @@ def build_outcome_learning(
     pending_delta = _safe_int(delta.get("pending_lines_delta"), 0)
     quality_delta = _safe_float(delta.get("decision_quality_delta"), 0.0)
     resilience_delta = _safe_float(delta.get("resilience_delta"), 0.0)
+    verified_drain_progress = bool(drain_verification.get("verified_progress", False))
+    verified_drain_delta = _safe_int(drain_verification.get("pending_lines_delta"), 0)
+    refill_after_verified_drain = bool(
+        verified_drain_progress
+        and pending_delta >= max(250, int(max(verified_drain_delta, 1) * 0.1))
+    )
     if not previous:
         verdict = "baseline"
+    elif verified_drain_progress and not refill_after_verified_drain:
+        verdict = "effective"
     elif pending_delta <= -250 or quality_delta >= 5.0 or resilience_delta >= 5.0:
         verdict = "effective"
     elif pending_delta >= 250 or quality_delta <= -5.0 or resilience_delta <= -5.0:
@@ -2657,6 +4119,7 @@ def build_outcome_learning(
                     f"pending_delta={pending_delta}",
                     f"quality_delta={quality_delta}",
                     f"resilience_delta={resilience_delta}",
+                    f"verified_drain_delta={verified_drain_delta}" if verified_drain_progress else "",
                     f"self_action_effect={action_effect.get('verdict', '')}",
                 ]
             ),
@@ -2712,14 +4175,18 @@ def build_outcome_learning(
         "causal_replay_scorer": {
             "primary_root_cause": str(causal.get("primary_root_cause") or ""),
             "causal_confidence": _safe_float(causal.get("confidence"), 0.0),
+            "drain_verification_state": str(drain_verification.get("state") or ""),
             "replay_findings": ordered_unique(
                 [
+                    "recent_drain_progress_verified" if verified_drain_progress else "",
+                    "storage_refilled_after_verified_drain" if refill_after_verified_drain else "",
                     "storage_refill_risk_present" if str(adversarial.get("top_scenario") or "") == "storage_refill_after_cleanup" else "",
                     "quality_floor_not_met" if _safe_float(quality.get("quality_score"), 100.0) < 55.0 else "",
                     f"current_regime={current_event['operational_regime']}",
                 ]
             ),
         },
+        "drain_outcome_verifier": drain_verification,
         "policy_credit_assignment": policy_credit,
         "playbook_mutation_guard": {
             "mutations": mutations,
@@ -2857,6 +4324,202 @@ def build_recursive_intelligence(
     }
 
 
+def _command_matches(left: Any, right: Any) -> bool:
+    left_command = tuple(str(item) for item in _as_list(left))
+    right_command = tuple(str(item) for item in _as_list(right))
+    return bool(left_command and right_command and left_command == right_command)
+
+
+def _upgrade_plan_row(
+    *,
+    upgrade_id: str,
+    source: str,
+    owner: str,
+    reason: str,
+    safe_command: list[str] | None = None,
+    followup_command: list[str] | None = None,
+    verification_command: list[str] | None = None,
+    proof_metric: str = "",
+    rollback_trigger: str = "",
+    priority: int = 500,
+    safe_next_command: list[str] | None = None,
+) -> dict[str, Any]:
+    command = [str(item) for item in _as_list(safe_command)]
+    integrated = bool(_command_matches(command, safe_next_command))
+    status = "active" if integrated else "queued" if command else "advisory"
+    return {
+        "upgrade_id": str(upgrade_id or source),
+        "source": str(source or "unknown"),
+        "owner": str(owner or "system_self_intelligence"),
+        "status": status,
+        "priority": int(priority),
+        "reason": str(reason or ""),
+        "safe_command": command,
+        "followup_command": [str(item) for item in _as_list(followup_command)],
+        "verification_command": [str(item) for item in _as_list(verification_command)],
+        "proof_metric": str(proof_metric or ""),
+        "rollback_trigger": str(rollback_trigger or ""),
+        "integrated_in_handoff": integrated,
+        "trade_authority": "none",
+        "single_sql_writer_only": True,
+    }
+
+
+def _build_upgrade_integration_plan(
+    *,
+    safe_next_command: list[str],
+    self_intelligence: dict[str, Any],
+    super_intelligence: dict[str, Any],
+    outcome_learning: dict[str, Any],
+    recursive_intelligence: dict[str, Any],
+) -> dict[str, Any]:
+    reflex = _as_dict(self_intelligence.get("reflex"))
+    routing = _as_dict(self_intelligence.get("integration_routing"))
+    super_decision = _as_dict(super_intelligence.get("decision_packet"))
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(row: dict[str, Any]) -> None:
+        key = (str(row.get("upgrade_id") or ""), " ".join(str(item) for item in _as_list(row.get("safe_command"))))
+        if key in seen:
+            return
+        seen.add(key)
+        rows.append(row)
+
+    if isinstance(reflex.get("command"), list) and reflex.get("command"):
+        evidence = _as_dict(reflex.get("evidence_window"))
+        add(
+            _upgrade_plan_row(
+                upgrade_id=str(reflex.get("action") or "self_reflex_upgrade"),
+                source="self_reflex",
+                owner=str(super_decision.get("owner") or routing.get("primary_owner") or "system_self_intelligence"),
+                reason=str(reflex.get("reason") or ""),
+                safe_command=[str(item) for item in _as_list(reflex.get("command"))],
+                followup_command=[str(item) for item in _as_list(reflex.get("followup_command"))],
+                verification_command=[str(item) for item in _as_list(reflex.get("verification_command"))],
+                proof_metric=(
+                    f"pending_lines_delta<={evidence.get('expected_pending_lines_delta_lte')}"
+                    if evidence.get("expected_pending_lines_delta_lte") is not None
+                    else "next_health_artifact_fresh"
+                ),
+                rollback_trigger=(
+                    f"pending_lines_delta>={evidence.get('rollback_if_pending_lines_delta_gte')}"
+                    if evidence.get("rollback_if_pending_lines_delta_gte") is not None
+                    else "guardrail_block_or_quality_drop"
+                ),
+                priority=5,
+                safe_next_command=safe_next_command,
+            )
+        )
+
+    mutation_guard = _as_dict(outcome_learning.get("playbook_mutation_guard"))
+    for idx, mutation in enumerate(_as_list(mutation_guard.get("mutations"))):
+        if not isinstance(mutation, dict):
+            continue
+        add(
+            _upgrade_plan_row(
+                upgrade_id=str(mutation.get("mutation") or f"mutation_{idx + 1}"),
+                source="outcome_learning",
+                owner=str(super_decision.get("owner") or "system_super_intelligence"),
+                reason=str(mutation.get("why") or ""),
+                safe_command=[str(item) for item in _as_list(mutation.get("safe_command"))],
+                verification_command=SYSTEM_INTELLIGENCE_MEASUREMENT_COMMAND,
+                proof_metric="outcome_verdict_effective_or_pending_delta_improves",
+                rollback_trigger="pending_lines_delta_positive_250_or_guardrail_block",
+                priority=50 + idx,
+                safe_next_command=safe_next_command,
+            )
+        )
+
+    for idx, gap in enumerate(_as_list(self_intelligence.get("capability_gaps"))):
+        if not isinstance(gap, dict):
+            continue
+        add(
+            _upgrade_plan_row(
+                upgrade_id=str(gap.get("gap") or f"capability_gap_{idx + 1}"),
+                source="capability_gap",
+                owner=str(gap.get("suggested_consumer") or routing.get("primary_owner") or "system_self_model"),
+                reason=str(gap.get("why") or ""),
+                safe_command=[str(item) for item in _as_list(gap.get("suggested_command"))],
+                verification_command=SYSTEM_INTELLIGENCE_MEASUREMENT_COMMAND,
+                proof_metric="capability_gap_absent_or_evidence_packet_written",
+                rollback_trigger="gap_persists_after_two_cycles_or_quality_drops",
+                priority=100 + idx,
+                safe_next_command=safe_next_command,
+            )
+        )
+
+    next_layer = _as_dict(recursive_intelligence.get("next_more_advanced_layer"))
+    if next_layer:
+        add(
+            _upgrade_plan_row(
+                upgrade_id=str(next_layer.get("name") or "next_recursive_layer"),
+                source="recursive_next_layer",
+                owner="system_recursive_intelligence",
+                reason=str(next_layer.get("why") or ""),
+                safe_command=[],
+                verification_command=SYSTEM_INTELLIGENCE_MEASUREMENT_COMMAND,
+                proof_metric="next_layer_appears_in_recursive_upgrade_backlog_and_handoff",
+                rollback_trigger="invariant_firewall_block_or_operator_rejects",
+                priority=200,
+                safe_next_command=safe_next_command,
+            )
+        )
+
+    for idx, upgrade in enumerate(_as_list(recursive_intelligence.get("recursive_upgrade_backlog"))):
+        upgrade_id = str(upgrade or "")
+        if not upgrade_id:
+            continue
+        add(
+            _upgrade_plan_row(
+                upgrade_id=upgrade_id,
+                source="recursive_upgrade_backlog",
+                owner="system_recursive_intelligence",
+                reason="queued_recursive_upgrade_needs_proof_window_before_apply",
+                safe_command=[],
+                verification_command=SYSTEM_INTELLIGENCE_MEASUREMENT_COMMAND,
+                proof_metric="hypothesis_packet_and_rollback_rule_exist",
+                rollback_trigger="invariant_firewall_block_or_decision_quality_drop",
+                priority=250 + idx,
+                safe_next_command=safe_next_command,
+            )
+        )
+
+    ordered = sorted(rows, key=lambda row: (_safe_int(row.get("priority"), 500), str(row.get("upgrade_id") or "")))
+    active = [row for row in ordered if str(row.get("status") or "") == "active"]
+    command_ready = [row for row in ordered if _as_list(row.get("safe_command"))]
+    top = active[0] if active else command_ready[0] if command_ready else ordered[0] if ordered else {}
+    blocked_by_guardrail = bool(_as_list(_as_dict(super_intelligence.get("objective_guardrail_layer")).get("hard_blocks")))
+    if blocked_by_guardrail:
+        integration_status = "blocked"
+    elif active:
+        integration_status = "active"
+    elif command_ready:
+        integration_status = "ready"
+    elif ordered:
+        integration_status = "advisory"
+    else:
+        integration_status = "empty"
+    return {
+        "overall_status": integration_status,
+        "plan_count": len(ordered),
+        "active_count": len(active),
+        "command_ready_count": len(command_ready),
+        "blocked_by_guardrail": blocked_by_guardrail,
+        "next_upgrade": str(top.get("upgrade_id") or ""),
+        "next_owner": str(top.get("owner") or ""),
+        "next_safe_command": [str(item) for item in _as_list(top.get("safe_command"))],
+        "plan": ordered[:12],
+        "contract": {
+            "does_not_execute_commands": True,
+            "does_not_trade": True,
+            "requires_proof_metric": True,
+            "requires_rollback_trigger": True,
+            "single_sql_writer_only": True,
+        },
+    }
+
+
 def build_codex_handoff(
     *,
     signal_bus: dict[str, Any],
@@ -2865,6 +4528,7 @@ def build_codex_handoff(
     self_intelligence: dict[str, Any] | None = None,
     super_intelligence: dict[str, Any] | None = None,
     outcome_learning: dict[str, Any] | None = None,
+    storage_causal_replay: dict[str, Any] | None = None,
     recursive_intelligence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     decision = _as_dict(system_brain.get("decision_packet"))
@@ -2875,6 +4539,7 @@ def build_codex_handoff(
     causal = _as_dict(self_layer.get("causal_diagnosis"))
     action_effect = _as_dict(self_layer.get("action_effectiveness"))
     routing = _as_dict(self_layer.get("integration_routing"))
+    awareness = _as_dict(self_layer.get("awareness_state_vector"))
     super_layer = super_intelligence if isinstance(super_intelligence, dict) else {}
     super_decision = _as_dict(super_layer.get("decision_packet"))
     super_policy = _as_dict(super_layer.get("adaptive_policy"))
@@ -2890,8 +4555,12 @@ def build_codex_handoff(
     outcome = _as_dict(outcome_layer.get("intervention_outcome"))
     confidence = _as_dict(outcome_layer.get("confidence_recovery_engine"))
     policy_credit = _as_dict(outcome_layer.get("policy_credit_assignment"))
+    storage_replay = storage_causal_replay if isinstance(storage_causal_replay, dict) else {}
+    storage_replay_memory = _as_dict(storage_replay.get("memory_status"))
+    storage_replay_decision = _as_dict(storage_replay.get("decision_packet"))
     recursive_layer = recursive_intelligence if isinstance(recursive_intelligence, dict) else {}
     next_advanced_layer = _as_dict(recursive_layer.get("next_more_advanced_layer"))
+    quota_pressure = _storage_quota_pressure_packet(signal_bus)
     risks = [str(item) for item in _as_list(decision.get("risk_flags"))]
     needs: list[str] = []
     if bool(reflex.get("blocks_brain_action_until_refreshed", False)):
@@ -2900,12 +4569,18 @@ def build_codex_handoff(
         needs.append("inspect_or_run_bounded_writer_recovery")
     if "storage_critical" in risks:
         needs.append("drain_storage_backlog_with_single_writer_guard")
-    if "memory_pressure_high" in risks or "runtime_pressure_high" in risks:
+    if str(decision.get("action") or "") == "run_guarded_training_recovery_canary":
+        needs.append("run_guarded_training_recovery_canary_and_refresh_quality")
+    elif "memory_pressure_high" in risks or "runtime_pressure_high" in risks:
         needs.append("apply_pressure_relief_before_heavy_work")
+    if str(action_effect.get("verdict") or "") in {"ineffective_so_far", "worsening"}:
+        needs.append("run_outcome_verified_micro_drain_then_measure")
     if "guard_intelligence_throttle_active" in risks or "guard_intelligence_blockers" in risks:
         needs.append("refresh_guard_intelligence_before_expansion")
     if "global_halt_active" in risks:
         needs.append("refresh_auth_and_halt_clearance_before_relaunch")
+    if bool(quota_pressure.get("blocks_growth", False)):
+        needs.append("follow_storage_quota_remediation_before_growth")
     if not needs:
         needs.append("observe_current_state_and_continue_safe_expansion")
 
@@ -2914,6 +4589,15 @@ def build_codex_handoff(
         safe_next_command = reflex.get("command") or safe_next_command
     elif isinstance(super_decision.get("safe_next_command"), list) and super_decision.get("safe_next_command"):
         safe_next_command = super_decision.get("safe_next_command") or safe_next_command
+    upgrade_integration = _build_upgrade_integration_plan(
+        safe_next_command=safe_next_command,
+        self_intelligence=self_layer,
+        super_intelligence=super_layer,
+        outcome_learning=outcome_layer,
+        recursive_intelligence=recursive_layer,
+    )
+    if _as_list(upgrade_integration.get("plan")):
+        needs.append("integrate_pending_upgrades_with_guardrails")
     attention_packet = {
         "status": str(system_brain.get("overall_status") or ""),
         "top_risk": str(decision.get("top_risk") or summary.get("top_risk") or "none"),
@@ -2934,18 +4618,47 @@ def build_codex_handoff(
         "outcome_verdict": str(outcome.get("verdict") or ""),
         "outcome_confidence_state": str(confidence.get("state") or ""),
         "policy_credit": policy_credit,
+        "storage_quota_pressure": quota_pressure,
+        "storage_causal_replay": {
+            "status": str(storage_replay.get("overall_status") or ""),
+            "replay_ready": bool(storage_replay_memory.get("replay_ready", False)),
+            "verified_drain_event_count": _safe_int(storage_replay_memory.get("verified_drain_event_count"), 0),
+            "latest_verified_drain_delta": _safe_int(storage_replay_memory.get("latest_verified_drain_delta"), 0),
+            "decision": str(storage_replay_decision.get("action") or ""),
+        },
+        "upgrade_integration": upgrade_integration,
         "recursive_status": str(recursive_layer.get("overall_status") or ""),
         "recursive_score": _safe_float(recursive_layer.get("recursive_score"), 0.0),
         "next_more_advanced_layer": str(next_advanced_layer.get("name") or ""),
         "pycharm_index_path": str(DEFAULT_PYCHARM_INDEX_PATH),
         "safe_next_command": safe_next_command,
         "self_reflex": reflex,
+        "self_awareness_level": str(awareness.get("level") or ""),
+        "self_awareness_grade": str(awareness.get("grade") or ""),
+        "self_awareness_control_grade": str(awareness.get("control_posture_grade") or ""),
+        "self_awareness_control_status": str(awareness.get("control_posture_status") or ""),
+        "self_awareness_score": _safe_float(awareness.get("score"), 0.0),
+        "self_awareness_statement": str(awareness.get("self_statement") or ""),
+        "self_awareness_blind_spots": [
+            str(_as_dict(row).get("name") or row) for row in _as_list(awareness.get("blind_spots"))
+        ],
+        "self_awareness_next_probes": _as_list(awareness.get("next_probe_plan"))[:5],
+        "self_awareness_confidence": _as_dict(awareness.get("confidence_calibration")),
+        "self_awareness_forecast": _as_dict(awareness.get("degradation_forecast")),
+        "self_awareness_autonomy": _as_dict(awareness.get("autonomy_posture")),
+        "self_awareness_consistency": _as_dict(awareness.get("consistency_checks")),
+        "self_awareness_evidence_after_action": _as_list(awareness.get("evidence_after_action"))[:5],
+        "operator_boundaries": _as_dict(awareness.get("boundaries")),
         "uncertainty_level": str(uncertainty.get("level") or ""),
         "causal_root": str(causal.get("primary_root_cause") or ""),
         "causal_confidence": _safe_float(causal.get("confidence"), 0.0),
         "action_effectiveness": str(action_effect.get("verdict") or ""),
-        "integration_route": str(routing.get("route_mode") or ""),
-        "integration_owner": str(routing.get("primary_owner") or ""),
+        "integration_route": "training_recovery_first"
+        if str(decision.get("action") or "") == "run_guarded_training_recovery_canary"
+        else str(routing.get("route_mode") or ""),
+        "integration_owner": "training_runtime_control"
+        if str(decision.get("action") or "") == "run_guarded_training_recovery_canary"
+        else str(routing.get("primary_owner") or ""),
         "adaptive_policy": {
             "sleeve_posture": str(super_policy.get("sleeve_posture") or ""),
             "expansion_posture": str(super_policy.get("expansion_posture") or ""),
@@ -2967,6 +4680,12 @@ def build_codex_handoff(
                 f"writer_recovery_required={summary.get('writer_recovery_required', False)}",
                 f"guard_policy_mode={summary.get('guard_policy_mode', '')}",
                 f"guard_pressure_score={summary.get('guard_pressure_score', 0)}",
+                f"quota_blocked_lanes={','.join(str(item) for item in _as_list(quota_pressure.get('blocked_lanes')))}"
+                if _as_list(quota_pressure.get("blocked_lanes"))
+                else "",
+                f"quota_worst_over_hard_gb={quota_pressure.get('worst_over_hard_gb')}"
+                if _safe_float(quota_pressure.get("worst_over_hard_gb"), 0.0) > 0.0
+                else "",
             ]
         ),
     }
@@ -2992,6 +4711,7 @@ def build_codex_handoff(
             "self_intelligence": str(DEFAULT_SELF_INTELLIGENCE_PATH),
             "super_intelligence": str(DEFAULT_SUPER_INTELLIGENCE_PATH),
             "outcome_learning": str(DEFAULT_OUTCOME_LEARNING_PATH),
+            "storage_causal_replay": str(DEFAULT_STORAGE_CAUSAL_REPLAY_PATH),
             "recursive_intelligence": str(DEFAULT_RECURSIVE_INTELLIGENCE_PATH),
             "pycharm_index": str(DEFAULT_PYCHARM_INDEX_PATH),
         },
@@ -3026,6 +4746,13 @@ def render_handoff_markdown(handoff: dict[str, Any]) -> str:
             "",
             "## Self Intelligence",
             "",
+            f"- Awareness Grade: `{packet.get('self_awareness_grade', '')}` level `{packet.get('self_awareness_level', '')}` score `{packet.get('self_awareness_score', 0)}`",
+            f"- Awareness Control Grade: `{packet.get('self_awareness_control_grade', '')}` status `{packet.get('self_awareness_control_status', '')}`",
+            f"- Awareness Statement: {packet.get('self_awareness_statement', '')}",
+            f"- Calibrated Confidence: `{_as_dict(packet.get('self_awareness_confidence')).get('calibrated_confidence', 0)}` style `{_as_dict(packet.get('self_awareness_confidence')).get('claim_style', '')}`",
+            f"- Autonomy Posture: `{_as_dict(packet.get('self_awareness_autonomy')).get('mode', '')}`",
+            f"- Forecast: `{_as_dict(packet.get('self_awareness_forecast')).get('posture', '')}` max risk `{_as_dict(packet.get('self_awareness_forecast')).get('max_risk_score', 0)}`",
+            f"- Consistency: `{_as_dict(packet.get('self_awareness_consistency')).get('overall_status', '')}` failed `{_as_dict(packet.get('self_awareness_consistency')).get('failed_count', 0)}`",
             f"- Uncertainty: `{packet.get('uncertainty_level', '')}`",
             f"- Reflex: `{(_as_dict(packet.get('self_reflex')).get('action') or '')}`",
             f"- Causal Root: `{packet.get('causal_root', '')}` confidence `{packet.get('causal_confidence', '')}`",
@@ -3054,6 +4781,7 @@ def render_handoff_markdown(handoff: dict[str, Any]) -> str:
             ]
         )
     if packet.get("outcome_verdict") or packet.get("recursive_status"):
+        storage_replay = _as_dict(packet.get("storage_causal_replay"))
         lines.extend(
             [
                 "",
@@ -3062,6 +4790,12 @@ def render_handoff_markdown(handoff: dict[str, Any]) -> str:
                 f"- Verdict: `{packet.get('outcome_verdict', '')}`",
                 f"- Confidence State: `{packet.get('outcome_confidence_state', '')}`",
                 f"- Policy Credit: `{json.dumps(packet.get('policy_credit', {}), ensure_ascii=True, sort_keys=True)}`",
+                "",
+                "## Storage Causal Replay",
+                "",
+                f"- Status: `{storage_replay.get('status', '')}` replay ready `{storage_replay.get('replay_ready', False)}`",
+                f"- Verified Drain Events: `{storage_replay.get('verified_drain_event_count', 0)}` latest delta `{storage_replay.get('latest_verified_drain_delta', 0)}`",
+                f"- Replay Decision: `{storage_replay.get('decision', '')}`",
                 "",
                 "## Recursive Intelligence",
                 "",
@@ -3074,6 +4808,25 @@ def render_handoff_markdown(handoff: dict[str, Any]) -> str:
                 f"- Path: `{packet.get('pycharm_index_path', '')}`",
             ]
         )
+    upgrade_integration = _as_dict(packet.get("upgrade_integration"))
+    upgrade_plan = _as_list(upgrade_integration.get("plan"))
+    if upgrade_plan:
+        lines.extend(
+            [
+                "",
+                "## Upgrade Integration",
+                "",
+                f"- Status: `{upgrade_integration.get('overall_status', '')}`",
+                f"- Next Upgrade: `{upgrade_integration.get('next_upgrade', '')}` owner `{upgrade_integration.get('next_owner', '')}`",
+                f"- Next Command: `{' '.join(str(item) for item in _as_list(upgrade_integration.get('next_safe_command')))}`",
+            ]
+        )
+        for row in upgrade_plan[:6]:
+            item = _as_dict(row)
+            lines.append(
+                f"- `{item.get('upgrade_id', '')}` from `{item.get('source', '')}`: "
+                f"{item.get('status', '')}; proof `{item.get('proof_metric', '')}`; rollback `{item.get('rollback_trigger', '')}`"
+            )
     invalidators = _as_list(packet.get("super_invalidators"))
     if invalidators:
         lines.extend(["", "## Super Invalidators", ""])
@@ -3326,6 +5079,7 @@ def build_pycharm_index_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "outcome_learning": DEFAULT_OUTCOME_LEARNING_PATH,
         "recursive_intelligence": DEFAULT_RECURSIVE_INTELLIGENCE_PATH,
         "deeper_intelligence_layers": DEFAULT_DEEPER_INTELLIGENCE_PATH,
+        "bot_intelligence_mesh": DEFAULT_BOT_INTELLIGENCE_MESH_PATH,
         "codex_handoff_json": DEFAULT_HANDOFF_PATH,
         "codex_handoff_markdown": DEFAULT_HANDOFF_MARKDOWN_PATH,
         "super_override": DEFAULT_SUPER_OVERRIDE_PATH,
@@ -3548,15 +5302,24 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     project_root = Path(project_root)
     previous_payload = load_json(project_root / "governance" / "health" / "whole_system_intelligence_latest.json")
     memory_events = _read_jsonl(project_root / "governance" / "system_intelligence" / "self_intelligence_memory.jsonl", limit=50)
+    storage_causal_events = _read_jsonl(
+        project_root / DEFAULT_STORAGE_CAUSAL_REPLAY_MEMORY_PATH.relative_to(PROJECT_ROOT),
+        limit=120,
+    )
     signal_bus = build_signal_bus(project_root)
     process_contracts = build_process_contracts(signal_bus)
     system_brain = build_system_brain(signal_bus, process_contracts)
+    storage_causal_replay = build_storage_causal_replay_memory(
+        signal_bus=signal_bus,
+        storage_causal_events=storage_causal_events,
+    )
     self_intelligence = build_self_intelligence(
         signal_bus=signal_bus,
         system_brain=system_brain,
         process_contracts=process_contracts,
         previous_payload=previous_payload,
         memory_events=memory_events,
+        storage_causal_replay=storage_causal_replay,
     )
     super_memory_events = _read_jsonl(
         project_root / DEFAULT_SUPER_MEMORY_PATH.relative_to(PROJECT_ROOT),
@@ -3581,6 +5344,20 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         super_intelligence=super_intelligence,
         outcome_events=outcome_events,
     )
+    storage_causal_replay = build_storage_causal_replay_memory(
+        signal_bus=signal_bus,
+        storage_causal_events=storage_causal_events,
+        self_intelligence=self_intelligence,
+        outcome_learning=outcome_learning,
+    )
+    self_intelligence = build_self_intelligence(
+        signal_bus=signal_bus,
+        system_brain=system_brain,
+        process_contracts=process_contracts,
+        previous_payload=previous_payload,
+        memory_events=memory_events,
+        storage_causal_replay=storage_causal_replay,
+    )
     recursive_events = _read_jsonl(
         project_root / DEFAULT_RECURSIVE_MEMORY_PATH.relative_to(PROJECT_ROOT),
         limit=80,
@@ -3599,6 +5376,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         self_intelligence=self_intelligence,
         super_intelligence=super_intelligence,
         outcome_learning=outcome_learning,
+        storage_causal_replay=storage_causal_replay,
         recursive_intelligence=recursive_intelligence,
     )
     status = str(system_brain.get("overall_status") or "missing")
@@ -3630,6 +5408,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "system_self_intelligence": self_intelligence,
         "system_super_intelligence": super_intelligence,
         "super_intelligence_outcome_learning": outcome_learning,
+        "storage_causal_replay_memory": storage_causal_replay,
         "system_recursive_intelligence": recursive_intelligence,
         "documentation_reporting_intelligence": documentation_reporting_intelligence,
         "codex_handoff": codex_handoff,
@@ -3637,9 +5416,10 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "signal_bus": "normalizes_runtime_storage_writer_drainer_sleeve_safety_and_quality_signals",
             "system_brain": "chooses_next_safe_infrastructure_action_without_executing_it",
             "process_contracts": "declares_authority_boundaries_concurrency_limits_and_recovery_behaviors",
-            "system_self_intelligence": "compares_prior_runs_detects_uncertainty_tracks_action_effects_diagnoses_causes_routes_consumers_and_sets_pre_action_reflexes",
+            "system_self_intelligence": "compares_prior_runs_detects_uncertainty_tracks_action_effects_diagnoses_causes_routes_consumers_sets_pre_action_reflexes_and_exposes_awareness_state_vector_confidence_forecast_autonomy_and_consistency_controls",
             "system_super_intelligence": "ranks_cross_layer_attention_sets_executive_mode_runs_regime_drift_objective_guardrail_adversarial_and_semantic_synthesis_layers_then_routes_safe_next_infrastructure_action",
             "super_intelligence_outcome_learning": "scores_recent_interventions_assigns_policy_credit_and_bounds_mutation_candidates",
+            "storage_causal_replay_memory": "persists_storage_backpressure_causal_events_verified_drain_outcomes_and_measurement_rebase_context",
             "system_recursive_intelligence": "runs_recursive_policy_evolution_with_invariant_firewall_and_next_layer_backlog",
             "documentation_reporting_intelligence": "guards_readme_commands_and_reporting_surfaces_then_feeds_pycharm_visibility",
             "codex_handoff": "writes_attention_packet_for_codex_and_operator_review",
@@ -3662,11 +5442,13 @@ def write_outputs(
     handoff_markdown_path: Path,
     super_intelligence_path: Path | None = None,
     outcome_learning_path: Path | None = None,
+    storage_causal_replay_path: Path | None = None,
     recursive_intelligence_path: Path | None = None,
     documentation_reporting_path: Path | None = None,
     memory_path: Path | None = None,
     super_memory_path: Path | None = None,
     outcome_memory_path: Path | None = None,
+    storage_causal_replay_memory_path: Path | None = None,
     recursive_memory_path: Path | None = None,
     super_override_path: Path | None = None,
     pycharm_index_path: Path | None = None,
@@ -3685,6 +5467,9 @@ def write_outputs(
     outcome_learning = _as_dict(payload.get("super_intelligence_outcome_learning"))
     if outcome_learning_path is not None:
         write_payload(outcome_learning_path, outcome_learning)
+    storage_causal_replay = _as_dict(payload.get("storage_causal_replay_memory"))
+    if storage_causal_replay_path is not None:
+        write_payload(storage_causal_replay_path, storage_causal_replay)
     recursive_intelligence = _as_dict(payload.get("system_recursive_intelligence"))
     if recursive_intelligence_path is not None:
         write_payload(recursive_intelligence_path, recursive_intelligence)
@@ -3707,6 +5492,10 @@ def write_outputs(
         event = _as_dict(outcome_learning.get("memory_event"))
         if event:
             _append_jsonl(outcome_memory_path, event)
+    if storage_causal_replay_memory_path is not None:
+        event = _as_dict(storage_causal_replay.get("current_event"))
+        if event:
+            _append_jsonl(storage_causal_replay_memory_path, event)
     if recursive_memory_path is not None:
         event = _as_dict(recursive_intelligence.get("memory_event"))
         if event:
@@ -3740,6 +5529,7 @@ def main() -> int:
     parser.add_argument("--self-intelligence-file", default=str(DEFAULT_SELF_INTELLIGENCE_PATH))
     parser.add_argument("--super-intelligence-file", default=str(DEFAULT_SUPER_INTELLIGENCE_PATH))
     parser.add_argument("--outcome-learning-file", default=str(DEFAULT_OUTCOME_LEARNING_PATH))
+    parser.add_argument("--storage-causal-replay-file", default=str(DEFAULT_STORAGE_CAUSAL_REPLAY_PATH))
     parser.add_argument("--recursive-intelligence-file", default=str(DEFAULT_RECURSIVE_INTELLIGENCE_PATH))
     parser.add_argument("--documentation-reporting-file", default=str(DEFAULT_DOCUMENTATION_REPORTING_PATH))
     parser.add_argument("--handoff-file", default=str(DEFAULT_HANDOFF_PATH))
@@ -3747,6 +5537,7 @@ def main() -> int:
     parser.add_argument("--self-memory-file", default=str(DEFAULT_SELF_MEMORY_PATH))
     parser.add_argument("--super-memory-file", default=str(DEFAULT_SUPER_MEMORY_PATH))
     parser.add_argument("--outcome-memory-file", default=str(DEFAULT_OUTCOME_MEMORY_PATH))
+    parser.add_argument("--storage-causal-replay-memory-file", default=str(DEFAULT_STORAGE_CAUSAL_REPLAY_MEMORY_PATH))
     parser.add_argument("--recursive-memory-file", default=str(DEFAULT_RECURSIVE_MEMORY_PATH))
     parser.add_argument("--super-override-file", default=str(DEFAULT_SUPER_OVERRIDE_PATH))
     parser.add_argument("--pycharm-index-file", default=str(DEFAULT_PYCHARM_INDEX_PATH))
@@ -3767,6 +5558,7 @@ def main() -> int:
         self_intelligence_path=_resolve(project_root, args.self_intelligence_file),
         super_intelligence_path=_resolve(project_root, args.super_intelligence_file),
         outcome_learning_path=_resolve(project_root, args.outcome_learning_file),
+        storage_causal_replay_path=_resolve(project_root, args.storage_causal_replay_file),
         recursive_intelligence_path=_resolve(project_root, args.recursive_intelligence_file),
         documentation_reporting_path=_resolve(project_root, args.documentation_reporting_file),
         handoff_path=_resolve(project_root, args.handoff_file),
@@ -3774,6 +5566,7 @@ def main() -> int:
         memory_path=_resolve(project_root, args.self_memory_file),
         super_memory_path=_resolve(project_root, args.super_memory_file),
         outcome_memory_path=_resolve(project_root, args.outcome_memory_file),
+        storage_causal_replay_memory_path=_resolve(project_root, args.storage_causal_replay_memory_file),
         recursive_memory_path=_resolve(project_root, args.recursive_memory_file),
         super_override_path=_resolve(project_root, args.super_override_file) if args.apply else None,
         pycharm_index_path=_resolve(project_root, args.pycharm_index_file),

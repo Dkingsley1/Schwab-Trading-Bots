@@ -18,6 +18,7 @@ DEFAULT_STATE_PATH = HEALTH_DIR / "mac_notification_watch_state.json"
 DEFAULT_PID_PATH = HEALTH_DIR / "mac_notification_watch.pid"
 TRIPWIRE_PATH = HEALTH_DIR / "shadow_watchdog_tripwire_latest.json"
 PROCESS_WATCHDOG_PATH = HEALTH_DIR / "process_watchdog_latest.json"
+ALL_SLEEVES_LAUNCHER_PATH = HEALTH_DIR / "all_sleeves_launcher_latest.json"
 STORAGE_GUARD_PATH = HEALTH_DIR / "storage_mount_guard_latest.json"
 CREATIVE_COTENANT_PATH = HEALTH_DIR / "creative_cotenant_guard_latest.json"
 SWAP_PRESSURE_GOVERNOR_PATH = HEALTH_DIR / "swap_pressure_governor_latest.json"
@@ -36,6 +37,7 @@ MAX_ALERT_AGE_SECONDS_ENV = "MAC_NOTIFICATION_WATCH_MAX_ALERT_AGE_SECONDS"
 IMESSAGE_MIN_SEVERITY_ENV = "MAC_NOTIFICATION_WATCH_IMESSAGE_MIN_SEVERITY"
 IMESSAGE_EVENT_ALLOWLIST_ENV = "MAC_NOTIFICATION_WATCH_IMESSAGE_EVENT_ALLOWLIST"
 MIN_REPEAT_SECONDS_ENV = "MAC_NOTIFICATION_WATCH_MIN_REPEAT_SECONDS"
+PMSET_POWER_LOG_CACHE_SECONDS_ENV = "MAC_NOTIFICATION_WATCH_PMSET_CACHE_SECONDS"
 DEFAULT_MAX_ALERT_AGE_SECONDS = 900.0
 DEFAULT_IMESSAGE_MIN_SEVERITY = "warn"
 DEFAULT_IMESSAGE_EVENT_ALLOWLIST = ""
@@ -45,12 +47,14 @@ TERMINAL_NOTIFIER_CANDIDATES = [
     "/usr/local/bin/terminal-notifier",
 ]
 PMSET_POWER_LOG_TAIL_LINES = 240
-PMSET_POWER_LOG_TIMEOUT_SECONDS = 8.0
+PMSET_POWER_LOG_TIMEOUT_SECONDS = 2.0
+PMSET_POWER_LOG_CACHE_SECONDS = 90.0
 PMSET_LINE_RE = re.compile(
     r"^(?P<stamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4})\s+"
     r"(?P<kind>\S+)\s+(?P<message>.*)$"
 )
 SEVERITY_RANK = {"info": 0, "warn": 1, "warning": 1, "critical": 2}
+_PMSET_POWER_LOG_CACHE: tuple[float, List[str]] | None = None
 
 
 def _clean_token(value: str) -> str:
@@ -487,22 +491,31 @@ def _parse_pmset_timestamp(raw: str) -> datetime | None:
 
 
 def _recent_pmset_lines(limit: int = PMSET_POWER_LOG_TAIL_LINES) -> List[str]:
+    global _PMSET_POWER_LOG_CACHE
     tail = max(int(limit), 1)
+    cache_seconds = max(_env_float(PMSET_POWER_LOG_CACHE_SECONDS_ENV, PMSET_POWER_LOG_CACHE_SECONDS), 0.0)
+    now = time.monotonic()
+    if _PMSET_POWER_LOG_CACHE is not None:
+        cached_at, cached_lines = _PMSET_POWER_LOG_CACHE
+        if cache_seconds > 0.0 and now - cached_at <= cache_seconds:
+            return cached_lines[-tail:]
     try:
         proc = subprocess.run(
-            ["/bin/zsh", "-lc", f"/usr/bin/pmset -g log | tail -n {tail}"],
+            ["/bin/zsh", "-lc", f"/usr/bin/pmset -g log | /usr/bin/tail -n {tail}"],
             capture_output=True,
             text=True,
             timeout=PMSET_POWER_LOG_TIMEOUT_SECONDS,
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return []
+        return _PMSET_POWER_LOG_CACHE[1][-tail:] if _PMSET_POWER_LOG_CACHE is not None else []
     except Exception:
-        return []
+        return _PMSET_POWER_LOG_CACHE[1][-tail:] if _PMSET_POWER_LOG_CACHE is not None else []
     if proc.returncode != 0:
-        return []
-    return [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
+        return _PMSET_POWER_LOG_CACHE[1][-tail:] if _PMSET_POWER_LOG_CACHE is not None else []
+    lines = [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
+    _PMSET_POWER_LOG_CACHE = (now, lines)
+    return lines[-tail:]
 
 
 def _power_event_candidates(max_age_seconds: float) -> List[Tuple[str, str]]:
@@ -569,11 +582,26 @@ def _global_halt_clear_event(payload: Dict[str, Any], max_age_seconds: float) ->
     return ("global_halt_cleared", f"GLOBAL_TRADING_HALT cleared automatically\nReason: {reason} ({decision})")
 
 
-def _restart_storm_event(payload: Dict[str, Any]) -> Tuple[str, str] | None:
+def _restart_storm_event(payload: Dict[str, Any], max_age_seconds: float) -> Tuple[str, str] | None:
     storms = payload.get("restart_storms", [])
     if not isinstance(storms, list) or not storms:
         return None
-    names = ",".join(str(x.get("name", "")) for x in storms if str(x.get("name", "")).strip()) or "unknown"
+    names_list: List[str] = []
+    for storm in storms:
+        if not isinstance(storm, dict):
+            continue
+        name = str(storm.get("name", "")).strip()
+        if not name:
+            continue
+        if name == "all_sleeves" and (
+            _launcher_recently_alive(max_age_seconds)
+            or _all_sleeves_restart_in_progress(payload, max_age_seconds)
+        ):
+            continue
+        names_list.append(name)
+    if not names_list:
+        return None
+    names = ",".join(names_list) or "unknown"
     return (f"restart_storm:{names}", f"Restart storm on {names}")
 
 
@@ -613,10 +641,85 @@ def _data_ingress_lane_summary() -> Dict[str, Any]:
     }
 
 
-def _all_sleeves_down_event(payload: Dict[str, Any]) -> Tuple[str, str] | None:
+def _launcher_recently_alive(max_age_seconds: float) -> bool:
+    payload = _read_json(ALL_SLEEVES_LAUNCHER_PATH)
+    if not payload or not _is_recent(payload, max_age_seconds):
+        return False
+    phase = str(payload.get("phase") or "").strip().lower()
+    status = str(payload.get("overall_status") or "").strip().lower()
+    running_jobs = int(payload.get("running_job_count", 0) or 0)
+    launcher_pid = int(payload.get("launcher_pid", 0) or 0)
+    if phase in {"starting", "running"} and launcher_pid > 0:
+        return True
+    if status in {"ready", "degraded"} and running_jobs > 0:
+        return True
+    return False
+
+
+def _all_sleeves_restart_in_progress(payload: Dict[str, Any], max_age_seconds: float) -> bool:
+    if payload and _is_recent(payload, min(max_age_seconds, 300.0)):
+        for row in payload.get("status", []) if isinstance(payload.get("status"), list) else []:
+            if str(row.get("name", "")).strip() != "all_sleeves":
+                continue
+            if int(row.get("restarted_pid", 0) or 0) > 0:
+                return True
+            reason = str(row.get("restart_reason", "")).strip()
+            if reason in {"process_missing", "parent_launcher_missing", "child_fanout_below_floor"}:
+                return True
+        for row in payload.get("restarts", []) if isinstance(payload.get("restarts"), list) else []:
+            if str(row.get("name", "")).strip() != "all_sleeves":
+                continue
+            ts_epoch = float(row.get("ts_epoch", 0.0) or 0.0)
+            if ts_epoch > 0.0 and 0.0 <= time.time() - ts_epoch <= min(max_age_seconds, 300.0):
+                return True
+    return False
+
+
+def _all_sleeves_intentional_hold(row: Dict[str, Any], payload: Dict[str, Any]) -> bool:
+    restart_skipped = str(row.get("restart_skipped", "")).strip()
+    reason = str(row.get("reason", "")).strip()
+    if bool(row.get("paused_by_creative_cotenant_guard", False)) or restart_skipped == "creative_cotenant_pause_active":
+        return True
+    if bool(row.get("paused_by_safety_flags", False)):
+        return True
+    if restart_skipped == "startup_not_ready" and reason in {
+        "process_fanout_guard_active",
+        "all_sleeves_explicitly_paused_by_operator_mode",
+        "all_sleeves_explicitly_paused_for_computer_task",
+    }:
+        return True
+
+    creative_pause = payload.get("creative_cotenant_pause") if isinstance(payload.get("creative_cotenant_pause"), dict) else {}
+    if bool(creative_pause.get("active", False)) and reason in {
+        str(creative_pause.get("reason") or "").strip(),
+        str(creative_pause.get("creative_session_kind") or "").strip(),
+        str(creative_pause.get("creative_session_level") or "").strip(),
+    }:
+        return True
+
+    intelligence = payload.get("watchdog_intelligence") if isinstance(payload.get("watchdog_intelligence"), dict) else {}
+    policy = intelligence.get("notification_policy") if isinstance(intelligence.get("notification_policy"), dict) else {}
+    if bool(policy.get("suppress_intentional_holds", False)):
+        for need in intelligence.get("exact_needs", []) if isinstance(intelligence.get("exact_needs"), list) else []:
+            if not isinstance(need, dict):
+                continue
+            if str(need.get("target") or "").strip() == "all_sleeves" and str(need.get("status") or "").strip() == "intentional_hold":
+                return True
+    return False
+
+
+def _all_sleeves_down_event(payload: Dict[str, Any], max_age_seconds: float) -> Tuple[str, str] | None:
     for row in payload.get("status", []) if isinstance(payload.get("status"), list) else []:
         if str(row.get("name", "")) == "all_sleeves" and int(row.get("running", 0) or 0) == 0:
             if (not bool(row.get("heartbeat_ok", False))) and int(row.get("alt_running", 0) or 0) == 0:
+                restart_skipped = str(row.get("restart_skipped", "")).strip()
+                reason = str(row.get("reason", "")).strip()
+                if _all_sleeves_intentional_hold(row, payload):
+                    return None
+                if restart_skipped == "startup_not_ready" and reason == "process_fanout_guard_active":
+                    return None
+                if _launcher_recently_alive(max_age_seconds) or _all_sleeves_restart_in_progress(payload, max_age_seconds):
+                    return None
                 lane_summary = _data_ingress_lane_summary()
                 lane_count = int(lane_summary.get("lane_count", 0) or 0)
                 post_window_count = int(lane_summary.get("post_window_count", 0) or 0)
@@ -781,8 +884,8 @@ def _event_candidates(max_age_seconds: float) -> List[Tuple[str, str]]:
         _tripwire_event(_read_json(TRIPWIRE_PATH)),
         _global_halt_event(),
         _global_halt_clear_event(_read_json(HALT_RECOVERY_PATH), max_age_seconds),
-        _restart_storm_event(_read_json(PROCESS_WATCHDOG_PATH)),
-        _all_sleeves_down_event(_read_json(PROCESS_WATCHDOG_PATH)),
+        _restart_storm_event(_read_json(PROCESS_WATCHDOG_PATH), max_age_seconds),
+        _all_sleeves_down_event(_read_json(PROCESS_WATCHDOG_PATH), max_age_seconds),
         _storage_event(_read_json(STORAGE_GUARD_PATH)),
         _creative_mode_event(_read_json(CREATIVE_COTENANT_PATH), max_age_seconds),
         _swap_pressure_event(_read_json(SWAP_PRESSURE_GOVERNOR_PATH), max_age_seconds),

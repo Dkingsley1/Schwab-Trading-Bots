@@ -142,6 +142,71 @@ def test_new_bot_admission_guard_ignores_inactive_probation_backlog_without_acti
     assert payload["blocking_candidate_count"] == 0
 
 
+def test_new_bot_admission_guard_ignores_plain_data_collection_only_rows(tmp_path: Path) -> None:
+    diagnostics_root = tmp_path / "governance" / "training_diagnostics"
+    _write_json(
+        diagnostics_root / "brain_refinery_v120_collector_latest.json",
+        {"status": "deferred_sample_starved", "sample_count": 0, "eligible_sequences": 0, "sequence_count": 0},
+    )
+
+    payload = src.build_payload(
+        registry={
+            "sub_bots": [
+                {
+                    "bot_id": "brain_refinery_v120_collector",
+                    "active": True,
+                    "lifecycle_state": "data_collection_only",
+                }
+            ]
+        },
+        walk_forward={"bots": {"brain_refinery_v120_collector": {"runs": 0, "status": "insufficient_runs"}}},
+        feature_store_manifest={"ok": False, "point_in_time_contract": {"complete": False}, "contract_hashes": {}},
+        replay_hash_registry_guard={"ok": False, "details": {}},
+        ownership_payload={},
+        diagnostics_root=diagnostics_root,
+        min_training_sample_count=40,
+        min_eligible_sequences=4,
+        min_walk_forward_runs=12,
+    )
+
+    assert payload["ok"] is True
+    assert payload["candidate_bot_count"] == 0
+    assert payload["blocking_candidate_count"] == 0
+    assert payload["global_prerequisites"]["global_failed_checks"] == []
+
+
+def test_new_bot_admission_guard_ignores_paper_live_data_without_explicit_promotion(tmp_path: Path) -> None:
+    diagnostics_root = tmp_path / "governance" / "training_diagnostics"
+    _write_json(
+        diagnostics_root / "brain_refinery_v35_paper_observer_latest.json",
+        {"status": "deferred_sample_starved", "sample_count": 0, "eligible_sequences": 0, "sequence_count": 0},
+    )
+
+    payload = src.build_payload(
+        registry={
+            "sub_bots": [
+                {
+                    "bot_id": "brain_refinery_v35_paper_observer",
+                    "active": True,
+                    "lifecycle_state": "paper_live_data",
+                }
+            ]
+        },
+        walk_forward={"bots": {"brain_refinery_v35_paper_observer": {"runs": 0, "status": "insufficient_runs"}}},
+        feature_store_manifest={"ok": False, "point_in_time_contract": {"complete": False}, "contract_hashes": {}},
+        replay_hash_registry_guard={"ok": False, "details": {}},
+        ownership_payload={},
+        diagnostics_root=diagnostics_root,
+        min_training_sample_count=40,
+        min_eligible_sequences=4,
+        min_walk_forward_runs=12,
+    )
+
+    assert payload["ok"] is True
+    assert payload["candidate_bot_count"] == 0
+    assert payload["blocking_candidate_count"] == 0
+
+
 def test_new_bot_admission_guard_targeted_advisory_scope_does_not_block_coverage_repair(tmp_path: Path) -> None:
     diagnostics_root = tmp_path / "governance" / "training_diagnostics"
     _write_json(

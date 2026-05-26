@@ -254,8 +254,8 @@ def _mode_env(mode: str, pressure_score: float) -> dict[str, str]:
         "GUARD_INTELLIGENCE_ENABLED": "1",
         "GUARD_INTELLIGENCE_POLICY_MODE": mode,
         "GUARD_INTELLIGENCE_PRESSURE_SCORE": f"{pressure_score:.4f}",
-        "PROCESS_FANOUT_GUARD_PRESERVE_CLEAR_COOLDOWN": "0",
-        "SHADOW_WATCHDOG_DIRECT_CHILD_SLEEVES": "1",
+        "PROCESS_FANOUT_GUARD_PRESERVE_CLEAR_COOLDOWN": "1",
+        "SHADOW_WATCHDOG_DIRECT_CHILD_SLEEVES": "0",
     }
     if mode == "protective_throttle":
         return {

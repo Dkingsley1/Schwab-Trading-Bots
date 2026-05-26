@@ -20,6 +20,7 @@ GUARD="$PROJECT_ROOT/scripts/ops/maintenance_slot_guard.py"
 SKIP_RC="${MAINTENANCE_SLOT_SKIP_EXIT_CODE:-75}"
 JITTER_MAX_SECONDS="${MAINTENANCE_SLOT_JITTER_MAX_SECONDS:-90}"
 NICE_LEVEL="${MAINTENANCE_SLOT_NICE_LEVEL:-${OPS_SUPPORT_JOB_NICE:-15}}"
+BACKGROUND_POLICY="${MAINTENANCE_SLOT_BACKGROUND_POLICY:-${OPS_SUPPORT_JOBS_BACKGROUND_POLICY:-1}}"
 
 if [[ "${MAINTENANCE_SLOT_DISABLE_JITTER:-0}" != "1" ]] && [[ "$JITTER_MAX_SECONDS" == <-> ]] && (( JITTER_MAX_SECONDS > 0 )); then
   sleep $(( RANDOM % (JITTER_MAX_SECONDS + 1) ))
@@ -45,7 +46,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if command -v taskpolicy >/dev/null 2>&1; then
+if [[ "$BACKGROUND_POLICY" == "1" ]] && command -v taskpolicy >/dev/null 2>&1; then
   taskpolicy -b nice -n "$NICE_LEVEL" "$@"
 else
   nice -n "$NICE_LEVEL" "$@"

@@ -130,6 +130,36 @@ def run_replay(payload: Dict[str, Any]) -> Dict[str, Any]:
         )
 
         vol = float(row.features.get("volatility_1m", row.features.get("vol", 0.0)) or 0.0)
+        kelly_signal_norm = None
+        strategy_conviction_norm = None
+        if float(row.features.get("quant_model_engine_available", 0.0) or 0.0) >= 0.5:
+            raw_kelly_signal = row.features.get("quant_kelly_fraction_norm", 0.5)
+            kelly_signal_base = min(max(float(raw_kelly_signal if raw_kelly_signal is not None else 0.5), 0.0), 1.0)
+            kelly_readiness = min(
+                max(
+                    float(row.features.get("quant_strategy_kelly_sizing_readiness_norm", kelly_signal_base) or kelly_signal_base),
+                    0.0,
+                ),
+                1.0,
+            )
+            portfolio_fit = min(
+                max(float(row.features.get("quant_strategy_portfolio_fit_norm", 0.5) or 0.5), 0.0),
+                1.0,
+            )
+            kelly_signal_norm = min(max(0.60 * kelly_signal_base + 0.25 * kelly_readiness + 0.15 * portfolio_fit, 0.0), 1.0)
+            strategy_conviction_norm = min(
+                max(
+                    float(
+                        row.features.get(
+                            "quant_strategy_risk_adjusted_conviction_norm",
+                            row.features.get("quant_strategy_selection_confidence_norm", kelly_signal_norm),
+                        )
+                        or kelly_signal_norm
+                    ),
+                    0.0,
+                ),
+                1.0,
+            )
         raw_qty = size_from_action(
             action=risk_action,
             score=row.score,
@@ -137,6 +167,8 @@ def run_replay(payload: Dict[str, Any]) -> Dict[str, Any]:
             volatility_1m=vol,
             equity_proxy=equity_proxy,
             max_notional_pct=max_notional_pct,
+            kelly_signal_norm=kelly_signal_norm,
+            strategy_conviction_norm=strategy_conviction_norm,
         )
         alloc_qty = allocate_quantity(
             raw_qty=raw_qty,

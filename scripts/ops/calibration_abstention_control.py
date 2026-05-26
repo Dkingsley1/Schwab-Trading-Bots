@@ -11,6 +11,15 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "calibration_abstention_control_latest.json"
 DEFAULT_OVERRIDE_PATH = PROJECT_ROOT / "governance" / "health" / "calibration_abstention_overrides_latest.json"
+BOT_NEEDS_CALIBRATION_ACTIONS = {
+    "apply_abstention_calibration",
+    "use_side_specific_thresholds",
+    "repair_long_precision",
+    "repair_short_precision",
+    "repair_precision_balance",
+    "repair_options_structure_precision",
+    "repair_guard_false_positive_control",
+}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -66,12 +75,13 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     label_audit = _load_json(project_root / "governance" / "health" / "training_label_audit_latest.json")
     training_quality = _load_json(project_root / "governance" / "health" / "training_quality_control_latest.json")
+    bot_needs = _load_json(project_root / "governance" / "health" / "bot_needs_intelligence_latest.json")
     existing_overrides = _load_json(DEFAULT_OVERRIDE_PATH if project_root == PROJECT_ROOT else project_root / "governance" / "health" / "calibration_abstention_overrides_latest.json")
     overacting = label_audit.get("active_overacting") if isinstance(label_audit.get("active_overacting"), list) else []
     underacting = label_audit.get("active_underacting") if isinstance(label_audit.get("active_underacting"), list) else []
     recommendations: list[dict[str, Any]] = []
 
-    for row in overacting[:10]:
+    for row in overacting:
         if not isinstance(row, dict):
             continue
         accuracy_lift = _safe_float(row.get("accuracy_lift_over_majority"), 0.0)
@@ -93,7 +103,43 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             }
         )
 
-    for row in underacting[:10]:
+    existing_recommendation_ids = {str(row.get("bot_id") or "").strip().lower() for row in recommendations if isinstance(row, dict)}
+    needs_rows = bot_needs.get("bot_needs") if isinstance(bot_needs.get("bot_needs"), list) else []
+    for row in needs_rows:
+        if not isinstance(row, dict):
+            continue
+        bot_id = str(row.get("bot_id") or "").strip()
+        if not bot_id or bot_id.lower() in existing_recommendation_ids:
+            continue
+        primary_need = str(row.get("primary_need") or "").strip()
+        if primary_need not in BOT_NEEDS_CALIBRATION_ACTIONS:
+            continue
+        evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+        accuracy_lift = _safe_float(evidence.get("accuracy_lift_over_majority"), 0.0)
+        acted_coverage = max(_safe_float(evidence.get("acted_coverage"), 0.0), 0.0)
+        acted_accuracy = max(_safe_float(evidence.get("acted_accuracy"), 0.0), 0.0)
+        precision_gap_bonus = 0.04 if primary_need in BOT_NEEDS_CALIBRATION_ACTIONS - {"apply_abstention_calibration"} else 0.0
+        guard_bonus = 0.02 if primary_need == "repair_guard_false_positive_control" else 0.0
+        confidence_uplift = round(min(0.25, 0.05 + max(-accuracy_lift, 0.0) * 1.5 + precision_gap_bonus + guard_bonus), 6)
+        target_acceptance_rate = round(max(0.05, min(0.18, acted_coverage * 0.72 if acted_coverage > 0 else 0.12)), 6)
+        recommendations.append(
+            {
+                "bot_id": bot_id,
+                "family": _infer_family(bot_id),
+                "mode": "tighten",
+                "acted_accuracy": round(acted_accuracy, 6),
+                "accuracy_lift_over_majority": round(accuracy_lift, 6),
+                "current_acceptance_rate": round(acted_coverage, 6),
+                "target_acceptance_rate": target_acceptance_rate,
+                "confidence_threshold_uplift": confidence_uplift,
+                "recommended_abstention_budget": round(max(0.0, 1.0 - target_acceptance_rate), 6),
+                "source": "bot_needs_intelligence",
+                "source_need": primary_need,
+            }
+        )
+        existing_recommendation_ids.add(bot_id.lower())
+
+    for row in underacting:
         if not isinstance(row, dict):
             continue
         acceptance_rate = max(_safe_float(row.get("acceptance_rate"), 0.0), 0.0)
@@ -173,11 +219,20 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     return payload
 
 
-def build_override_payload(control_payload: dict[str, Any]) -> dict[str, Any]:
+def build_override_payload(control_payload: dict[str, Any], existing_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     recommendations = control_payload.get("recommendations") if isinstance(control_payload.get("recommendations"), list) else []
     family_recommendations = control_payload.get("family_recommendations") if isinstance(control_payload.get("family_recommendations"), list) else []
-    bot_overrides: dict[str, dict[str, Any]] = {}
-    family_overrides: dict[str, dict[str, Any]] = {}
+    existing = existing_overrides if isinstance(existing_overrides, dict) else {}
+    bot_overrides: dict[str, dict[str, Any]] = {
+        str(bot_id): dict(value)
+        for bot_id, value in (existing.get("bot_overrides") or {}).items()
+        if isinstance(value, dict)
+    }
+    family_overrides: dict[str, dict[str, Any]] = {
+        str(family): dict(value)
+        for family, value in (existing.get("family_overrides") or {}).items()
+        if isinstance(value, dict)
+    }
 
     for row in recommendations:
         if not isinstance(row, dict):
@@ -236,7 +291,8 @@ def main() -> int:
 
     payload = build_payload(Path(args.project_root).resolve())
     if args.apply:
-        override_payload = build_override_payload(payload)
+        existing_override_payload = _load_json(Path(args.override_out).expanduser())
+        override_payload = build_override_payload(payload, existing_override_payload)
         _write_json(Path(args.override_out).expanduser(), override_payload)
         payload["applied_override_file"] = str(Path(args.override_out).expanduser())
         payload["applied_override_summary"] = {

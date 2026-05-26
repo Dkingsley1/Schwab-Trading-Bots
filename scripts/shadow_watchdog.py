@@ -40,6 +40,9 @@ HEALTH_PRUNE_LATEST = HEALTH_DIR / "shadow_watchdog_health_prune_latest.json"
 TRIPWIRE_LATEST = HEALTH_DIR / "shadow_watchdog_tripwire_latest.json"
 TRIPWIRE_EVENTS = WATCHDOG_DIR / "shadow_watchdog_tripwire_events.jsonl"
 PROCESS_FANOUT_OVERRIDE = PROJECT_ROOT / "config" / ".env.process_fanout_guard_override"
+OPERATOR_MODE_OVERRIDE = PROJECT_ROOT / "config" / ".env.operator_mode_override"
+COMPUTER_TASK_OVERRIDE = PROJECT_ROOT / "config" / ".env.computer_task_override"
+CREATIVE_PAUSE_LATEST = HEALTH_DIR / "creative_heavy_research_pause_latest.json"
 
 
 @dataclass
@@ -55,6 +58,7 @@ class Target:
     heartbeat_profiles: tuple[str, ...] = ()
     heartbeat_exclude_matches: Optional[tuple[str, ...]] = None
     allow_processless_heartbeat_live: bool = False
+    heartbeat_startup_grace_seconds: int = 0
     exclude_matches: tuple[str, ...] = ()
     terminate_excluded_conflicts: bool = True
     suppress_tripwire_when_parent_live: bool = False
@@ -80,11 +84,121 @@ def _process_fanout_guard_active() -> bool:
     return any(marker in text for marker in active_markers)
 
 
+def _operator_mode_guard_active() -> bool:
+    if _env_flag("TRAINING_RUNTIME_PAUSED_BY_OPERATOR_MODE", "0") or _env_flag("SHADOW_RESEARCH_PAUSED_BY_OPERATOR_MODE", "0"):
+        return True
+    try:
+        text = OPERATOR_MODE_OVERRIDE.read_text(encoding="utf-8")
+    except Exception:
+        text = ""
+    active_markers = (
+        "TRAINING_RUNTIME_PAUSED_BY_OPERATOR_MODE=1",
+        "TRAINING_RUNTIME_PAUSED_BY_OPERATOR_MODE='1'",
+        'TRAINING_RUNTIME_PAUSED_BY_OPERATOR_MODE="1"',
+        "SHADOW_RESEARCH_PAUSED_BY_OPERATOR_MODE=1",
+        "SHADOW_RESEARCH_PAUSED_BY_OPERATOR_MODE='1'",
+        'SHADOW_RESEARCH_PAUSED_BY_OPERATOR_MODE="1"',
+        "SYSTEM_OPERATOR_MODE=daily_driver",
+        "SYSTEM_OPERATOR_MODE='daily_driver'",
+        'SYSTEM_OPERATOR_MODE="daily_driver"',
+    )
+    return any(marker in text for marker in active_markers)
+
+
+def _computer_task_guard_active() -> bool:
+    if _env_flag("TRAINING_RUNTIME_PAUSED_FOR_COMPUTER_TASK", "0") or _env_flag("SHADOW_RESEARCH_PAUSED_FOR_COMPUTER_TASK", "0"):
+        return True
+    try:
+        text = COMPUTER_TASK_OVERRIDE.read_text(encoding="utf-8")
+    except Exception:
+        text = ""
+    active_markers = (
+        "TRAINING_RUNTIME_PAUSED_FOR_COMPUTER_TASK=1",
+        "TRAINING_RUNTIME_PAUSED_FOR_COMPUTER_TASK='1'",
+        'TRAINING_RUNTIME_PAUSED_FOR_COMPUTER_TASK="1"',
+        "SHADOW_RESEARCH_PAUSED_FOR_COMPUTER_TASK=1",
+        "SHADOW_RESEARCH_PAUSED_FOR_COMPUTER_TASK='1'",
+        'SHADOW_RESEARCH_PAUSED_FOR_COMPUTER_TASK="1"',
+        "COMPUTER_NORMAL_USE_GOVERNOR_ACTIVE=1",
+        "COMPUTER_NORMAL_USE_GOVERNOR_ACTIVE='1'",
+        'COMPUTER_NORMAL_USE_GOVERNOR_ACTIVE="1"',
+    )
+    return any(marker in text for marker in active_markers)
+
+
+def _creative_pause_guard_active(max_age_seconds: int = 900) -> bool:
+    if (
+        _env_flag("TRAINING_RUNTIME_PAUSED_FOR_CREATIVE", "0")
+        or _env_flag("SHADOW_RESEARCH_PAUSED_FOR_CREATIVE", "0")
+        or _env_flag("CREATIVE_HEAVY_RESEARCH_PAUSED", "0")
+    ):
+        return True
+    payload = _load_json(CREATIVE_PAUSE_LATEST)
+    if not payload or not bool(payload.get("active", False)):
+        return False
+    ts = _parse_ts(str(payload.get("timestamp_utc") or ""))
+    if ts is not None and (_now_utc() - ts).total_seconds() > max(int(max_age_seconds), 60):
+        return False
+    kind = str(payload.get("creative_session_kind") or "").strip().lower()
+    level = str(payload.get("creative_session_level") or "").strip().lower()
+    hard_pause = payload.get("hard_pause") if isinstance(payload.get("hard_pause"), dict) else {}
+    env_contract = payload.get("env_contract") if isinstance(payload.get("env_contract"), dict) else {}
+    return bool(
+        kind in {"music_playback", "music_playback_hot", "logic_pro", "logic_pro_hot", "final_cut_pro", "final_cut_pro_hot", "dual_pro"}
+        or level in {"active", "hot", "dual_pro", "cooldown"}
+        or hard_pause.get("active", False)
+        or str(env_contract.get("TRAINING_RUNTIME_PAUSED_FOR_CREATIVE") or "").strip() == "1"
+        or str(env_contract.get("SHADOW_RESEARCH_PAUSED_FOR_CREATIVE") or "").strip() == "1"
+    )
+
+
 def _target_suppressed_by_fanout_guard(target: Target) -> bool:
     if target.name in {"all_sleeves", "aggressive_modes"}:
         return True
     command = _format_start_cmd(target.start_cmd)
     return "scripts/run_all_sleeves.py" in command or "scripts/run_parallel_aggressive_modes.py" in command
+
+
+def _target_suppressed_by_creative_guard(target: Target) -> bool:
+    command = _format_start_cmd(target.start_cmd)
+    haystack = f"{target.name} {target.match} {command}"
+    return any(
+        token in haystack
+        for token in (
+            "scripts/run_all_sleeves.py",
+            "scripts/run_parallel_shadows.py",
+            "scripts/run_parallel_aggressive_modes.py",
+            "scripts/run_dividend_shadow.py",
+            "scripts/run_dividend_capture_shadow.py",
+            "scripts/run_bond_shadow.py",
+            "scripts/run_fx_shadow.py",
+            "scripts/run_shadow_training_loop.py",
+            "coinbase-start",
+            "coinbase-futures-start",
+            "schwab-futures-start",
+            "fx-start",
+        )
+    )
+
+
+def _restart_guard_active_for_target(target: Target) -> tuple[bool, str]:
+    if (_process_fanout_guard_active() or _operator_mode_guard_active() or _computer_task_guard_active()) and _target_suppressed_by_fanout_guard(target):
+        return True, "process_fanout_operator_or_computer_task_guard_active"
+    if _creative_pause_guard_active() and _target_suppressed_by_creative_guard(target):
+        return True, "creative_audio_pause_guard_active"
+    return False, ""
+
+
+def _restart_guard_note() -> str:
+    if _creative_pause_guard_active():
+        return "creative_audio_pause_guard_active"
+    if _process_fanout_guard_active() or _operator_mode_guard_active() or _computer_task_guard_active():
+        return "process_fanout_operator_or_computer_task_guard_active"
+    return ""
+
+
+def _target_suppressed_by_restart_guard(target: Target) -> bool:
+    return _restart_guard_active_for_target(target)[0]
 
 
 def _now_utc() -> datetime:
@@ -374,6 +488,75 @@ def _scan_process_rows() -> list[tuple[int, str]]:
             continue
         rows.append((pid, parts[1]))
     return rows
+
+
+def _parse_ps_etime_seconds(raw: str) -> Optional[float]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    days = 0
+    if "-" in text:
+        day_raw, text = text.split("-", 1)
+        try:
+            days = int(day_raw)
+        except Exception:
+            return None
+    parts = text.split(":")
+    try:
+        values = [int(part) for part in parts]
+    except Exception:
+        return None
+    if len(values) == 2:
+        hours = 0
+        minutes, seconds = values
+    elif len(values) == 3:
+        hours, minutes, seconds = values
+    else:
+        return None
+    return float((((days * 24) + hours) * 60 + minutes) * 60 + seconds)
+
+
+def _pid_elapsed_seconds(pid: int) -> Optional[float]:
+    try:
+        proc = subprocess.run(
+            ["ps", "-p", str(int(pid)), "-o", "etime="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    return _parse_ps_etime_seconds((proc.stdout or "").strip().splitlines()[-1] if proc.stdout else "")
+
+
+def _oldest_process_elapsed_seconds(pids: list[int]) -> Optional[float]:
+    ages = [
+        age
+        for pid in pids
+        for age in [_pid_elapsed_seconds(pid)]
+        if age is not None
+    ]
+    if not ages:
+        return None
+    return max(ages)
+
+
+def _heartbeat_startup_grace_active(
+    target: Target,
+    *,
+    proc_live: bool,
+    hb_required: bool,
+    hb_ok: bool,
+    process_age_seconds: Optional[float],
+) -> bool:
+    grace = max(int(target.heartbeat_startup_grace_seconds or 0), 0)
+    if grace <= 0 or not proc_live or not hb_required or hb_ok:
+        return False
+    if process_age_seconds is None:
+        return False
+    return float(process_age_seconds) < float(grace)
 
 
 def _find_matching_rows(rows: list[tuple[int, str]], match: str, exclude_matches: Iterable[str] = ()) -> list[tuple[int, str]]:
@@ -926,21 +1109,35 @@ def _run_iteration(
 
         hb_ok, hb_count, hb_age, hb_live_count = _heartbeat_health(target, rows_by_pid)
         hb_required = bool(target.heartbeat_glob and target.heartbeat_stale_seconds > 0)
+        process_age_seconds = _oldest_process_elapsed_seconds(pids) if pids else None
+        startup_grace_active = _heartbeat_startup_grace_active(
+            target,
+            proc_live=proc_live,
+            hb_required=hb_required,
+            hb_ok=hb_ok,
+            process_age_seconds=process_age_seconds,
+        )
         live = (
             hb_ok and (proc_live or (target.allow_processless_heartbeat_live and hb_live_count > 0))
         ) if hb_required else proc_live
+        if startup_grace_active:
+            live = True
 
         note_parts = []
         if proc_live:
             note_parts.append("process_live")
         else:
             note_parts.append("process_missing")
+        if process_age_seconds is not None:
+            note_parts.append(f"process_age_s={process_age_seconds:.1f}")
         if hb_required:
             note_parts.append(f"heartbeat_ok={hb_ok}")
             note_parts.append(f"heartbeat_count={hb_count}")
             note_parts.append(f"heartbeat_live_process_count={hb_live_count}")
             if hb_age is not None:
                 note_parts.append(f"heartbeat_age_s={hb_age:.1f}")
+            if startup_grace_active:
+                note_parts.append(f"startup_grace_s={target.heartbeat_startup_grace_seconds}")
         if conflicting_pids:
             note_parts.append(f"conflicting_excluded_pids={len(conflicting_pids)}")
 
@@ -956,6 +1153,9 @@ def _run_iteration(
             "action": "none",
             "note": ",".join(note_parts),
         }
+        if startup_grace_active:
+            entry["heartbeat_startup_grace_active"] = True
+            entry["process_age_seconds"] = round(float(process_age_seconds or 0.0), 3)
         if conflicting_pids:
             entry["conflicting_match_pids"] = conflicting_pids
             entry["conflicting_match_cmds"] = [_note_safe(cmd, limit=220) for _, cmd in conflicting_matches[:6]]
@@ -972,30 +1172,32 @@ def _run_iteration(
             overall_rc = 1
             entry["action"] = "error"
             entry["note"] = entry["note"] + ",missing_start_command"
-        elif _process_fanout_guard_active() and _target_suppressed_by_fanout_guard(target):
-            entry["action"] = "suppressed"
-            entry["note"] = entry["note"] + ",process_fanout_guard_active"
-        elif not _can_restart(target, now_ts, max_restarts_per_window, restart_window_seconds):
-            overall_rc = 1
-            entry["action"] = "throttled"
-            entry["note"] = entry["note"] + ",restart_rate_limit"
         else:
-            if proc_live:
-                _terminate_pids(pids)
-            ok, start_detail = _start_target(target.start_cmd, dry_run=dry_run)
-            start_cmd_text = _format_start_cmd(target.start_cmd)
-            if start_cmd_text:
-                entry["start_cmd"] = start_cmd_text
-            if ok:
-                target.restart_times.append(now_ts)
-                entry["action"] = "restart"
-                entry["note"] = entry["note"] + ",restart_attempted"
-                entry["start_detail"] = start_detail
-            else:
+            restart_guard_active, restart_guard_reason = _restart_guard_active_for_target(target)
+            if restart_guard_active:
+                entry["action"] = "suppressed"
+                entry["note"] = entry["note"] + f",{restart_guard_reason}"
+            elif not _can_restart(target, now_ts, max_restarts_per_window, restart_window_seconds):
                 overall_rc = 1
-                entry["action"] = "error"
-                entry["start_error"] = start_detail
-                entry["note"] = entry["note"] + f",restart_failed={_note_safe(start_detail)}"
+                entry["action"] = "throttled"
+                entry["note"] = entry["note"] + ",restart_rate_limit"
+            else:
+                if proc_live:
+                    _terminate_pids(pids)
+                ok, start_detail = _start_target(target.start_cmd, dry_run=dry_run)
+                start_cmd_text = _format_start_cmd(target.start_cmd)
+                if start_cmd_text:
+                    entry["start_cmd"] = start_cmd_text
+                if ok:
+                    target.restart_times.append(now_ts)
+                    entry["action"] = "restart"
+                    entry["note"] = entry["note"] + ",restart_attempted"
+                    entry["start_detail"] = start_detail
+                else:
+                    overall_rc = 1
+                    entry["action"] = "error"
+                    entry["start_error"] = start_detail
+                    entry["note"] = entry["note"] + f",restart_failed={_note_safe(start_detail)}"
 
         entries.append(entry)
 
@@ -1258,7 +1460,11 @@ def main() -> int:
             heartbeat_stale_seconds=max(args.schwab_heartbeat_stale_seconds, 30),
             min_healthy_heartbeats=max(args.schwab_min_heartbeats, 1),
             heartbeat_profiles=("conservative", "aggressive"),
-            allow_processless_heartbeat_live=True,
+            allow_processless_heartbeat_live=bool(args.allow_schwab_standby_heartbeats),
+            heartbeat_startup_grace_seconds=max(
+                int(os.getenv("SHADOW_WATCHDOG_SCHWAB_STARTUP_GRACE_SECONDS", "420")),
+                60,
+            ),
             suppress_tripwire_when_parent_live=True,
             exclude_matches=_schwab_live_heartbeat_exclude_matches(
                 simulate_schwab=bool(args.simulate_schwab),

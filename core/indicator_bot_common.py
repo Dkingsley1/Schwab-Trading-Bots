@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
+
+_PROJECT_ROOT_FOR_IMPORTS = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT_FOR_IMPORTS) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT_FOR_IMPORTS))
+
 from core.ml_backend_contract import detect_installed_backends, resolve_backend_contract
 
 _MLX_IMPORT_ERROR: Optional[Exception] = None
@@ -309,6 +314,85 @@ def split_data(X, y, train_ratio=0.7, val_ratio=0.15):
     X_val, y_val = X[n_train : n_train + n_val], y[n_train : n_train + n_val]
     X_test, y_test = X[n_train + n_val :], y[n_train + n_val :]
     return X_train, y_train, X_val, y_val, X_test, y_test
+
+
+def _runtime_split_plan(labels_np: np.ndarray, train_ratio=0.7, val_ratio=0.15) -> Dict[str, Any]:
+    labels = np.asarray(labels_np, dtype=np.float32).reshape(-1)
+    n = int(labels.size)
+    n_train = int(n * train_ratio)
+    n_val = int(n * val_ratio)
+    chronological = {
+        "train_idx": np.arange(0, n_train, dtype=np.int32),
+        "val_idx": np.arange(n_train, n_train + n_val, dtype=np.int32),
+        "test_idx": np.arange(n_train + n_val, n, dtype=np.int32),
+    }
+
+    def _split_stats(indices: np.ndarray) -> Dict[str, Any]:
+        split_labels = labels[indices] if int(indices.size) else np.zeros((0,), dtype=np.float32)
+        positives = int(np.sum(split_labels >= 0.5))
+        count = int(split_labels.size)
+        return {
+            "count": count,
+            "positive_samples": positives,
+            "negative_samples": int(count - positives),
+            "positive_rate": float(np.mean(split_labels)) if count else 0.0,
+        }
+
+    overall_positive_rate = float(np.mean(labels)) if n else 0.0
+    chronological_stats = {key.removesuffix("_idx"): _split_stats(value) for key, value in chronological.items()}
+    base_meta = {
+        "strategy": "chronological",
+        "overall_positive_rate": float(overall_positive_rate),
+        "chronological_stats": chronological_stats,
+        "fallback_reason": "",
+    }
+    if n < 40 or overall_positive_rate <= 0.05 or overall_positive_rate >= 0.95:
+        return {**chronological, **base_meta}
+
+    drift_limit = 0.22
+    min_side_count = 2
+    fallback_reasons: List[str] = []
+    for split_name in ("val", "test"):
+        stats = chronological_stats[split_name]
+        if int(stats["count"]) <= 0:
+            fallback_reasons.append(f"{split_name}_empty")
+            continue
+        if int(stats["positive_samples"]) < min_side_count or int(stats["negative_samples"]) < min_side_count:
+            fallback_reasons.append(f"{split_name}_one_sided")
+        if abs(float(stats["positive_rate"]) - overall_positive_rate) > drift_limit:
+            fallback_reasons.append(f"{split_name}_label_drift")
+    if not fallback_reasons:
+        return {**chronological, **base_meta}
+
+    positive_idx = np.where(labels >= 0.5)[0].astype(np.int32)
+    negative_idx = np.where(labels < 0.5)[0].astype(np.int32)
+    if int(positive_idx.size) < 6 or int(negative_idx.size) < 6:
+        return {**chronological, **base_meta, "fallback_reason": "insufficient_class_count_for_stratified_split"}
+
+    def _class_splits(indices: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        count = int(indices.size)
+        class_train = int(count * train_ratio)
+        class_val = int(count * val_ratio)
+        return indices[:class_train], indices[class_train : class_train + class_val], indices[class_train + class_val :]
+
+    pos_train, pos_val, pos_test = _class_splits(positive_idx)
+    neg_train, neg_val, neg_test = _class_splits(negative_idx)
+    stratified = {
+        "train_idx": np.sort(np.concatenate([pos_train, neg_train])).astype(np.int32),
+        "val_idx": np.sort(np.concatenate([pos_val, neg_val])).astype(np.int32),
+        "test_idx": np.sort(np.concatenate([pos_test, neg_test])).astype(np.int32),
+    }
+    stratified_stats = {key.removesuffix("_idx"): _split_stats(value) for key, value in stratified.items()}
+    if any(int(stratified_stats[name]["count"]) <= 0 for name in ("train", "val", "test")):
+        return {**chronological, **base_meta, "fallback_reason": "empty_stratified_split"}
+    return {
+        **stratified,
+        "strategy": "stratified_chronological",
+        "overall_positive_rate": float(overall_positive_rate),
+        "chronological_stats": chronological_stats,
+        "stratified_stats": stratified_stats,
+        "fallback_reason": ",".join(sorted(set(fallback_reasons))),
+    }
 
 
 def make_windowed_dataset(
@@ -1472,6 +1556,15 @@ def train_indicator_bot(
     epochs: int = 220,
     batch_size: int = 128,
     patience: int = 18,
+    acted_prob_threshold: float = 0.65,
+    min_long_precision: float = 0.0,
+    min_short_precision: float = 0.0,
+    require_both_sides_precision: bool = False,
+    min_acted_accuracy: float = 0.0,
+    min_accuracy_lift_over_majority: Optional[float] = None,
+    min_precision_balance_score: float = 0.0,
+    min_acted_coverage: Optional[float] = None,
+    max_acted_coverage: Optional[float] = None,
 ) -> TradingBrain:
     _require_mlx_runtime(f"training {run_tag}")
     np.random.seed(42)
@@ -1555,6 +1648,8 @@ def train_indicator_bot(
 
         if val_loss < best_val:
             best_val = val_loss
+            best_epoch = epoch
+            best_params = _snapshot_model_params(brain)
             patience_left = patience
         else:
             patience_left -= 1
@@ -1562,20 +1657,80 @@ def train_indicator_bot(
                 print("Early stopping.")
                 break
 
+    if best_params:
+        _restore_model_params(brain, best_params)
+
+    if distillation_enabled and teacher_soft_val is not None:
+        val_soft = np.where(np.isfinite(teacher_soft_val), teacher_soft_val, np.asarray(y_val).reshape(-1))
+        val_hard = np.asarray(y_val).reshape(-1)
+        y_val_effective = mx.array((((1.0 - teacher_weight) * val_hard) + (teacher_weight * val_soft)).reshape(-1, 1), dtype=mx.float32)
+    else:
+        y_val_effective = y_val
+    val_loss = float(loss_fn(brain, X_val, y_val_effective))
+    val_pred_probs_np = np.asarray(mx.sigmoid(brain(X_val))).reshape(-1) if X_val.shape[0] else np.zeros((0,), dtype=np.float32)
+    y_val_np = np.asarray(y_val).reshape(-1)
+    acted_threshold = float(min(max(acted_prob_threshold, 0.5), 0.95))
+    selection_min_acted_coverage = 0.02 if min_acted_coverage is None else float(min_acted_coverage)
+    selection_max_acted_coverage = 0.48 if max_acted_coverage is None else float(max_acted_coverage)
+    long_acted_threshold, short_acted_threshold, threshold_meta = _select_calibrated_action_thresholds(
+        val_pred_probs_np,
+        y_val_np,
+        default_threshold=acted_threshold,
+        min_long_precision=min_long_precision,
+        min_short_precision=min_short_precision,
+        require_both_sides_precision=require_both_sides_precision,
+        min_acted_accuracy=min_acted_accuracy,
+        min_accuracy_lift_over_majority=min_accuracy_lift_over_majority,
+        min_precision_balance_score=min_precision_balance_score,
+        min_acted_coverage=selection_min_acted_coverage,
+        max_acted_coverage=selection_max_acted_coverage,
+    )
     preds = mx.sigmoid(brain(X_test))
     pred_probs_np = np.asarray(preds).reshape(-1)
     y_test_np = np.asarray(y_test).reshape(-1)
     y_all_np = np.asarray(y).reshape(-1)
     dataset_positive_rate = float(np.mean(y_all_np)) if y_all_np.size else 0.0
-    acted_threshold = 0.65
     quality_metrics = _classification_quality_metrics(
         pred_probs_np,
         y_test_np,
-        acted_threshold=acted_threshold,
+        long_acted_threshold=long_acted_threshold,
+        short_acted_threshold=short_acted_threshold,
         positive_rate=dataset_positive_rate,
     )
     acc = float(quality_metrics["test_accuracy"])
     print(f"Test accuracy: {acc:.4f}")
+    quality_failures: List[str] = []
+    acted_accuracy = float(quality_metrics["acted_accuracy"])
+    accuracy_lift_over_majority = float(quality_metrics["accuracy_lift_over_majority"])
+    long_precision = float(quality_metrics["long_precision"])
+    short_precision = float(quality_metrics["short_precision"])
+    precision_balance_score = float(quality_metrics["precision_balance_score"])
+    acted_coverage = float(quality_metrics["acted_coverage"])
+    long_acted_count = int(quality_metrics["long_acted_count"])
+    short_acted_count = int(quality_metrics["short_acted_count"])
+    if long_precision < float(min_long_precision):
+        quality_failures.append(f"long_precision={long_precision:.4f} < min_long_precision={float(min_long_precision):.4f}")
+    if short_precision < float(min_short_precision):
+        quality_failures.append(f"short_precision={short_precision:.4f} < min_short_precision={float(min_short_precision):.4f}")
+    if require_both_sides_precision and (long_acted_count <= 0 or short_acted_count <= 0):
+        quality_failures.append(
+            f"require_both_sides_precision long_acted_count={long_acted_count} short_acted_count={short_acted_count}"
+        )
+    if acted_accuracy < float(min_acted_accuracy):
+        quality_failures.append(f"acted_accuracy={acted_accuracy:.4f} < min_acted_accuracy={float(min_acted_accuracy):.4f}")
+    if min_accuracy_lift_over_majority is not None and accuracy_lift_over_majority < float(min_accuracy_lift_over_majority):
+        quality_failures.append(
+            "accuracy_lift_over_majority="
+            f"{accuracy_lift_over_majority:.4f} < min_accuracy_lift_over_majority={float(min_accuracy_lift_over_majority):.4f}"
+        )
+    if precision_balance_score < float(min_precision_balance_score):
+        quality_failures.append(
+            f"precision_balance_score={precision_balance_score:.4f} < min_precision_balance_score={float(min_precision_balance_score):.4f}"
+        )
+    if min_acted_coverage is not None and acted_coverage < float(min_acted_coverage):
+        quality_failures.append(f"acted_coverage={acted_coverage:.4f} < min_acted_coverage={float(min_acted_coverage):.4f}")
+    if max_acted_coverage is not None and acted_coverage > float(max_acted_coverage):
+        quality_failures.append(f"acted_coverage={acted_coverage:.4f} > max_acted_coverage={float(max_acted_coverage):.4f}")
 
     config = {
         "window": window,
@@ -1587,13 +1742,34 @@ def train_indicator_bot(
         "input_dim": int(X.shape[1]),
         "num_points": num_points,
         "features": feature_names,
+        "acted_prob_threshold": float(long_acted_threshold),
+        "short_acted_prob_threshold": float(short_acted_threshold),
+        "acted_threshold_calibration": threshold_meta,
+        "quality_guard": {
+            "min_long_precision": float(min_long_precision),
+            "min_short_precision": float(min_short_precision),
+            "require_both_sides_precision": bool(require_both_sides_precision),
+            "min_acted_accuracy": float(min_acted_accuracy),
+            "min_accuracy_lift_over_majority": (
+                None if min_accuracy_lift_over_majority is None else float(min_accuracy_lift_over_majority)
+            ),
+            "min_precision_balance_score": float(min_precision_balance_score),
+            "min_acted_coverage": None if min_acted_coverage is None else float(min_acted_coverage),
+            "max_acted_coverage": None if max_acted_coverage is None else float(max_acted_coverage),
+        },
     }
     metrics = {
         "best_val_loss": float(best_val),
         "final_val_loss": float(val_loss),
+        "best_epoch": int(best_epoch),
         "test_accuracy": float(acc),
         **quality_metrics,
     }
+    if quality_failures:
+        metrics["quality_failures"] = quality_failures
+        raise RuntimeError(
+            f"synthetic_training_quality_guard_failed run_tag={run_tag} " + "; ".join(quality_failures)
+        )
     if distillation_enabled:
         metrics["distillation_active"] = True
         metrics["distillation_teacher_count"] = len(used_teacher_ids)
@@ -1666,6 +1842,8 @@ def train_price_indicator_bot(
     loss_and_grad_fn = nn.value_and_grad(brain, loss_fn)
 
     best_val = float("inf")
+    best_epoch = -1
+    best_params = _snapshot_model_params(brain)
     patience_left = patience
 
     print("Training...")
@@ -1701,6 +1879,8 @@ def train_price_indicator_bot(
             print(f"Epoch {epoch} | Train {total_loss / max(batches, 1):.6f} | Val {val_loss:.6f}")
         if val_loss < best_val:
             best_val = val_loss
+            best_epoch = epoch
+            best_params = _snapshot_model_params(brain)
             patience_left = patience
         else:
             patience_left -= 1
@@ -1708,16 +1888,36 @@ def train_price_indicator_bot(
                 print("Early stopping.")
                 break
 
+    if best_params:
+        _restore_model_params(brain, best_params)
+
+    if distillation_enabled and teacher_soft_val is not None:
+        val_soft = np.where(np.isfinite(teacher_soft_val), teacher_soft_val, np.asarray(y_val).reshape(-1))
+        val_hard = np.asarray(y_val).reshape(-1)
+        y_val_effective = mx.array((((1.0 - teacher_weight) * val_hard) + (teacher_weight * val_soft)).reshape(-1, 1), dtype=mx.float32)
+    else:
+        y_val_effective = y_val
+    val_loss = float(loss_fn(brain, X_val, y_val_effective))
+    val_pred_probs_np = np.asarray(mx.sigmoid(brain(X_val))).reshape(-1) if X_val.shape[0] else np.zeros((0,), dtype=np.float32)
+    y_val_np = np.asarray(y_val).reshape(-1)
+    acted_threshold = 0.65
+    long_acted_threshold, short_acted_threshold, threshold_meta = _select_calibrated_action_thresholds(
+        val_pred_probs_np,
+        y_val_np,
+        default_threshold=acted_threshold,
+        min_acted_coverage=0.02,
+        max_acted_coverage=0.48,
+    )
     preds = mx.sigmoid(brain(X_test))
     pred_probs_np = np.asarray(preds).reshape(-1)
     y_test_np = np.asarray(y_test).reshape(-1)
     y_all_np = np.asarray(y).reshape(-1)
     dataset_positive_rate = float(np.mean(y_all_np)) if y_all_np.size else 0.0
-    acted_threshold = 0.65
     quality_metrics = _classification_quality_metrics(
         pred_probs_np,
         y_test_np,
-        acted_threshold=acted_threshold,
+        long_acted_threshold=long_acted_threshold,
+        short_acted_threshold=short_acted_threshold,
         positive_rate=dataset_positive_rate,
     )
     acc = float(quality_metrics["test_accuracy"])
@@ -1733,6 +1933,9 @@ def train_price_indicator_bot(
         "input_dim": int(X.shape[1]),
         "num_points": int(len(prices)),
         "features": feature_names,
+        "acted_prob_threshold": float(long_acted_threshold),
+        "short_acted_prob_threshold": float(short_acted_threshold),
+        "acted_threshold_calibration": threshold_meta,
         "distillation": {
             "enabled": bool(distillation_enabled),
             "teacher_ids": used_teacher_ids,
@@ -1742,6 +1945,7 @@ def train_price_indicator_bot(
     metrics = {
         "best_val_loss": float(best_val),
         "final_val_loss": float(val_loss),
+        "best_epoch": int(best_epoch),
         "test_accuracy": float(acc),
         **quality_metrics,
     }
@@ -2053,12 +2257,23 @@ def train_runtime_indicator_bot(
 
     X = mx.array(X_np, dtype=mx.float32)
     y = mx.array(y_np, dtype=mx.float32)
-    X_train, y_train, X_val, y_val, X_test, y_test = split_data(X, y)
-    n_train = int(sample_count * 0.7)
-    n_val = int(sample_count * 0.15)
-    sample_confidence_train = sample_confidence[:n_train]
-    sample_confidence_val = sample_confidence[n_train : n_train + n_val]
-    sample_confidence_test = sample_confidence[n_train + n_val :]
+    split_plan = _runtime_split_plan(labels_np)
+    train_idx = np.asarray(split_plan["train_idx"], dtype=np.int32)
+    val_idx = np.asarray(split_plan["val_idx"], dtype=np.int32)
+    test_idx = np.asarray(split_plan["test_idx"], dtype=np.int32)
+
+    def _take_rows(array, indices: np.ndarray):
+        if int(indices.size) <= 0:
+            return array[:0]
+        return mx.take(array, mx.array(indices, dtype=mx.int32), axis=0)
+
+    X_train, y_train = _take_rows(X, train_idx), _take_rows(y, train_idx)
+    X_val, y_val = _take_rows(X, val_idx), _take_rows(y, val_idx)
+    X_test, y_test = _take_rows(X, test_idx), _take_rows(y, test_idx)
+    sample_confidence_train = sample_confidence[train_idx]
+    sample_confidence_val = sample_confidence[val_idx]
+    sample_confidence_test = sample_confidence[test_idx]
+    runtime_meta["split_plan"] = {key: value for key, value in split_plan.items() if not str(key).endswith("_idx")}
 
     brain = TradingBrain(int(X.shape[1]))
     mx.eval(brain.parameters())
@@ -2491,22 +2706,24 @@ def _classification_quality_metrics(
     pred_probs = np.asarray(pred_probs_np, dtype=np.float32).reshape(-1)
     y_true = np.asarray(y_true_np, dtype=np.float32).reshape(-1)
     pred_labels = (pred_probs > 0.5).astype(np.float32)
+    threshold_floor = 1e-6
+    threshold_ceiling = 1.0 - threshold_floor
     symmetric_threshold = float(min(max(float(acted_threshold), 0.5), 0.95))
     long_threshold = float(
         min(
             max(float(long_acted_threshold if long_acted_threshold is not None else symmetric_threshold), 0.5),
-            0.95,
+            threshold_ceiling,
         )
     )
     short_threshold = float(
         max(
             min(float(short_acted_threshold if short_acted_threshold is not None else (1.0 - symmetric_threshold)), 0.5),
-            0.05,
+            threshold_floor,
         )
     )
     if short_threshold > long_threshold:
         long_threshold = symmetric_threshold
-        short_threshold = 1.0 - symmetric_threshold
+        short_threshold = max(1.0 - symmetric_threshold, threshold_floor)
 
     test_accuracy = float(np.mean((pred_labels == y_true).astype(np.float32))) if y_true.size else 0.0
     used_positive_rate = float(np.mean(y_true)) if positive_rate is None and y_true.size else float(positive_rate or 0.0)
@@ -2622,6 +2839,57 @@ def _select_calibrated_action_thresholds(
             "candidate_count": 0,
         }
 
+    finite_probs = pred_probs[np.isfinite(pred_probs)]
+    data_long_candidates: set[float] = set()
+    data_short_candidates: set[float] = set()
+    if finite_probs.size:
+        clipped_probs = np.clip(finite_probs.astype(np.float64), 1e-6, 1.0 - 1e-6)
+        coverage_points = {
+            0.005,
+            0.01,
+            0.02,
+            0.03,
+            0.04,
+            0.05,
+            0.08,
+            0.10,
+            0.12,
+            0.15,
+            0.18,
+            0.20,
+            0.24,
+            0.28,
+            0.32,
+            0.36,
+            0.40,
+            0.45,
+            0.50,
+        }
+        if min_acted_coverage is not None:
+            min_cov = float(min_acted_coverage)
+            coverage_points.update({min_cov, min_cov * 0.5, min_cov * 1.5})
+        if max_acted_coverage is not None:
+            max_cov = float(max_acted_coverage)
+            coverage_points.update({max_cov, max_cov * 0.5, max_cov * 0.75})
+        if min_acted_coverage is not None and max_acted_coverage is not None:
+            coverage_points.add(0.5 * (float(min_acted_coverage) + float(max_acted_coverage)))
+        n_probs = max(int(clipped_probs.size), 1)
+        coverage_points.update(
+            {
+                float(min_long_acted_count) / n_probs,
+                float(min_short_acted_count) / n_probs,
+                float(min_long_acted_count + min_short_acted_count) / n_probs,
+            }
+        )
+        for raw_coverage in coverage_points:
+            coverage = float(min(max(raw_coverage, 1.0 / n_probs), 0.5))
+            lower_tail = float(np.quantile(clipped_probs, coverage))
+            upper_tail = float(np.quantile(clipped_probs, 1.0 - coverage))
+            for value in (lower_tail, np.nextafter(lower_tail, -np.inf), np.nextafter(lower_tail, np.inf)):
+                data_short_candidates.add(float(min(max(value, 1e-6), 0.5)))
+            for value in (upper_tail, np.nextafter(upper_tail, np.inf), np.nextafter(upper_tail, -np.inf)):
+                data_long_candidates.add(float(min(max(value, 0.5), 1.0 - 1e-6)))
+
     long_candidates = sorted(
         {
             float(default_threshold),
@@ -2651,11 +2919,19 @@ def _select_calibrated_action_thresholds(
             0.90,
             0.92,
             0.94,
+            0.96,
+            0.98,
+            0.99,
         }
+        | data_long_candidates
     )
     short_candidates = sorted(
         {
             float(1.0 - default_threshold),
+            0.01,
+            0.02,
+            0.03,
+            0.04,
             0.06,
             0.08,
             0.10,
@@ -2682,6 +2958,7 @@ def _select_calibrated_action_thresholds(
             0.49,
             0.50,
         }
+        | data_short_candidates
     )
 
     def _candidate_key(metrics: Dict[str, Any], long_threshold: float, short_threshold: float) -> tuple:
@@ -2781,6 +3058,7 @@ def _select_calibrated_action_thresholds(
         "selected_short_threshold": float(best_short_threshold),
         "default_threshold": float(default_threshold),
         "candidate_count": int(len(long_candidates) * len(short_candidates)),
+        "data_driven_candidate_count": int(len(data_long_candidates) * len(data_short_candidates)),
         "validation_metrics": best_metrics,
     }
 

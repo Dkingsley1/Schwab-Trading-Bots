@@ -52,7 +52,7 @@ def test_super_drainer_previews_bounded_waves_without_parallel_writer(tmp_path: 
     )
     monkeypatch.setattr(src.coordinator_src, "writer_state_snapshot", lambda *args, **kwargs: {"active": False})
 
-    payload = src.build_payload(project_root, apply=False, max_waves=4, target_pending_lines=5000)
+    payload = src.build_payload(project_root, apply=False, max_waves=4, target_pending_lines=5000, sql_manager_timeout_cap_seconds=420)
 
     assert payload["overall_status"] == "ready"
     assert payload["guardrails"]["single_writer_only"] is True
@@ -64,6 +64,7 @@ def test_super_drainer_previews_bounded_waves_without_parallel_writer(tmp_path: 
     assert payload["grandmaster_context_packet"]["active_drainer"] == "core_decision_drainer"
     assert payload["drainer_intelligence_layer"]["decision_packet"]["action"] == "run_bounded_wave"
     assert payload["grandmaster_context_packet"]["intelligence_action"] == "run_bounded_wave"
+    assert payload["settings"]["sql_manager_timeout_cap_seconds"] == 420
     assert "backpressure_super_drainer" in payload["assigned_infrabots"]
     assert "drainer_intelligence_layer" in payload["assigned_infrabots"]
 
@@ -87,9 +88,12 @@ def test_super_drainer_applies_one_wave_until_target_is_cleared(tmp_path: Path, 
     )
     monkeypatch.setattr(src.coordinator_src, "writer_state_snapshot", lambda *args, **kwargs: {"active": False})
 
+    coordinator_commands: list[list[str]] = []
+
     def _fake_run(cmd: list[str], *, cwd: Path, payload_path: Path | None = None, timeout_sec: int) -> dict:
         joined = " ".join(cmd)
         if "writer_cycle_coordinator.py" in joined:
+            coordinator_commands.append(cmd)
             payload = {
                 "overall_status": "applied_with_followups",
                 "summary": {"partial_progress": True, "writer_merged_rows_delta": 38000},
@@ -105,13 +109,56 @@ def test_super_drainer_applies_one_wave_until_target_is_cleared(tmp_path: Path, 
 
     monkeypatch.setattr(src, "_run_json_command", _fake_run)
 
-    payload = src.build_payload(project_root, apply=True, max_waves=3, target_pending_lines=5000)
+    payload = src.build_payload(project_root, apply=True, max_waves=3, target_pending_lines=5000, sql_manager_timeout_cap_seconds=420)
 
     assert payload["overall_status"] == "applied"
+    assert payload["final_pending_lines"] == 4000
+    assert payload["pending_lines_delta"] == 38000
     assert payload["summary"]["waves_run"] == 1
     assert payload["summary"]["pending_lines_delta"] == 38000
     assert payload["stop_reason"] == "target_cleared"
     assert payload["waves"][0]["coordinator_step"]["status"] == "applied_with_followups"
+    assert coordinator_commands
+    assert "--sql-manager-timeout-cap-seconds" in coordinator_commands[0]
+    assert coordinator_commands[0][coordinator_commands[0].index("--sql-manager-timeout-cap-seconds") + 1] == "420"
+
+
+def test_super_drainer_surfaces_snapshot_lag_when_writer_merges_but_pending_snapshot_is_flat(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    snapshots = iter(
+        [
+            {"total_pending_lines": 42000, "core_pending_lines": 42000},
+            {"total_pending_lines": 42000, "core_pending_lines": 42000},
+            {"total_pending_lines": 42000, "core_pending_lines": 42000},
+        ]
+    )
+
+    monkeypatch.setattr(src, "_storage_snapshot", lambda _project_root: next(snapshots))
+    monkeypatch.setattr(src.drainer_src, "build_payload", lambda *args, **kwargs: _ready_drainer_payload())
+    monkeypatch.setattr(
+        src.coordinator_src,
+        "build_payload",
+        lambda *args, **kwargs: {"overall_status": "ready", "actionable": True, "live_drainer_ready": True},
+    )
+    monkeypatch.setattr(src.coordinator_src, "writer_state_snapshot", lambda *args, **kwargs: {"active": True})
+
+    def _fake_run(cmd: list[str], *, cwd: Path, payload_path: Path | None = None, timeout_sec: int) -> dict:
+        payload = {
+            "overall_status": "applied",
+            "writer_state_after_wait": {"merged_rows_this_cycle": 12000},
+        }
+        return {"cmd": cmd, "rc": 0, "duration_ms": 5.0, "payload": payload, "stdout_tail": "", "stderr_tail": "", "timed_out": False}
+
+    monkeypatch.setattr(src, "_run_json_command", _fake_run)
+
+    payload = src.build_payload(project_root, apply=True, max_waves=1, target_pending_lines=5000)
+
+    assert payload["overall_status"] == "applied_with_followups"
+    assert payload["final_pending_lines"] == 42000
+    assert payload["pending_lines_delta"] == 0
+    assert payload["snapshot_reconciliation"]["writer_progress_observed"] is True
+    assert payload["snapshot_reconciliation"]["likely_snapshot_lag"] is True
+    assert payload["snapshot_reconciliation"]["latest_merged_rows_observed"] == 12000
 
 
 def test_super_drainer_stops_when_wave_makes_no_progress(tmp_path: Path, monkeypatch) -> None:
@@ -170,4 +217,32 @@ def test_super_drainer_writes_memory_feedback(tmp_path: Path) -> None:
     assert memory_path.exists()
     assert memory["latest_event"]["active_drainer"] == "core_decision_drainer"
     assert memory["recent_progress_rate"] == 1.0
+    assert memory["latest_event"]["pending_lines_net_change"] == -38000
+    assert memory["latest_event"]["refill_detected"] is False
     assert memory["memory_contract"].startswith("remember_drainer_waves")
+
+
+def test_super_drainer_memory_flags_refill_after_drain_wave(tmp_path: Path) -> None:
+    payload = {
+        "timestamp_utc": "2026-05-04T12:05:00+00:00",
+        "overall_status": "applied_with_followups",
+        "active_drainer": "core_decision_drainer",
+        "target_met_final": False,
+        "drainer_strategy": {"pressure_class": "critical"},
+        "summary": {
+            "initial_pending_lines": 34504,
+            "final_pending_lines": 36333,
+            "pending_lines_delta": 0,
+            "waves_run": 1,
+            "progress_waves": 1,
+            "stop_reason": "max_waves_reached",
+        },
+    }
+    memory_path = tmp_path / "governance" / "health" / "backpressure_super_drainer_memory_latest.json"
+
+    memory = src.write_memory(payload, memory_path)
+
+    assert memory["latest_event"]["pending_lines_net_change"] == 1829
+    assert memory["latest_event"]["refill_detected"] is True
+    assert memory["recent_refill_event_count"] == 1
+    assert memory["recent_refill_rate"] == 1.0

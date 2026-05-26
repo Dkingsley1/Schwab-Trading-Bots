@@ -123,11 +123,65 @@ def _commit_if_needed(conn: sqlite3.Connection, *, commit: bool) -> None:
         conn.commit()
 
 
+def _corrupt_db_quarantine_path(path: Path, *, suffix: str = "") -> Path:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    suffix_text = str(suffix or "")
+    return path.with_name(f"{path.name}.corrupt_{stamp}{suffix_text}")
+
+
+def _quarantine_corrupt_db(path: Path) -> list[str]:
+    moved: list[str] = []
+    db_path = path.resolve(strict=False) if path.is_symlink() else path
+    for suffix in ("", "-wal", "-shm"):
+        candidate = Path(f"{db_path}{suffix}")
+        if not candidate.exists():
+            continue
+        target = _corrupt_db_quarantine_path(db_path, suffix=suffix)
+        try:
+            candidate.rename(target)
+            moved.append(str(target))
+        except Exception:
+            pass
+    return moved
+
+
+def _is_corrupt_sqlite_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return (
+        "database disk image is malformed" in msg
+        or "file is not a database" in msg
+        or "not a database" in msg
+        or "invalid page number" in msg
+        or "rowid" in msg
+    )
+
+
+def _assert_sqlite_quick_check_ok(conn: sqlite3.Connection) -> None:
+    row = conn.execute("PRAGMA quick_check(1)").fetchone()
+    result = str(row[0] if row else "").strip()
+    if result and result.lower() != "ok":
+        raise sqlite3.DatabaseError(result)
+
+
 def connect(project_root: Path = PROJECT_ROOT, *, db_path: Path | str | None = None, timeout_seconds: float = 30.0) -> sqlite3.Connection:
     path = resolve_db_path(project_root, db_path=db_path)
-    conn = _shared_connect_sqlite(path, project_root=project_root, timeout_seconds=timeout_seconds)
-    ensure_schema(conn)
-    return conn
+    try:
+        conn = _shared_connect_sqlite(path, project_root=project_root, timeout_seconds=timeout_seconds)
+        ensure_schema(conn)
+        _assert_sqlite_quick_check_ok(conn)
+        return conn
+    except sqlite3.DatabaseError as exc:
+        if not _is_corrupt_sqlite_error(exc):
+            raise
+        try:
+            conn.close()  # type: ignore[possibly-undefined]
+        except Exception:
+            pass
+        _quarantine_corrupt_db(path)
+        conn = _shared_connect_sqlite(path, project_root=project_root, timeout_seconds=timeout_seconds)
+        ensure_schema(conn)
+        _assert_sqlite_quick_check_ok(conn)
+        return conn
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:

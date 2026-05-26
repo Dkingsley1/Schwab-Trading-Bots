@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,60 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return float(default)
+
+
+def _parse_dt(raw: Any) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _first_item(live_macro: dict[str, Any]) -> dict[str, Any]:
+    items = live_macro.get("items")
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict):
+                return item
+    return {}
+
+
+def _event_excerpt(live_macro: dict[str, Any]) -> str:
+    item = _first_item(live_macro)
+    for key in ("excerpt", "summary", "content", "headline"):
+        text = str(live_macro.get(key) or item.get(key) or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _media_current_for_event(live_macro: dict[str, Any], media: dict[str, Any]) -> bool:
+    if not media:
+        return True
+    item = _first_item(live_macro)
+    event_ts = _parse_dt(live_macro.get("published") or item.get("published") or live_macro.get("timestamp_utc"))
+    media_ts = _parse_dt(media.get("timestamp_utc") or media.get("published"))
+    if event_ts and media_ts and media_ts < event_ts:
+        return False
+
+    event_url = str(live_macro.get("url") or item.get("url") or "").strip().lower()
+    media_url = str(media.get("youtube_url") or media.get("video_url") or media.get("resolved_video_url") or "").strip().lower()
+    if event_url and media_url and event_url == media_url:
+        return True
+
+    event_source = str(live_macro.get("source") or item.get("source") or "").strip().lower()
+    media_source = str(media.get("source") or "").strip().lower()
+    event_speaker = str(live_macro.get("speaker") or item.get("speaker") or "").strip().lower()
+    media_speaker = str(media.get("speaker") or "").strip().lower()
+    if event_source and media_source and (event_source in media_source or media_source in event_source):
+        return True
+    if event_speaker and media_speaker and (event_speaker in media_speaker or media_speaker in event_speaker):
+        return True
+
+    return not bool(event_ts and media_ts)
 
 
 def _collect_replay_text(markers: list[Any]) -> str:
@@ -87,6 +142,115 @@ def _infer_media_status(media: dict[str, Any], media_latest: dict[str, Any]) -> 
     return "missing"
 
 
+def _calendar_verification(status: dict[str, Any]) -> dict[str, Any]:
+    enabled = bool(status.get("calendar_correlation_enabled", False) or status.get("correlate_with_schwab_calendar", False))
+    ok = bool(status.get("calendar_correlation_ok", False))
+    reason = str(status.get("calendar_correlation_reason") or ("disabled" if not enabled else "")).strip()
+    source = str(status.get("calendar_correlation_source") or "").strip()
+    if ok:
+        verification_status = "verified"
+    elif enabled:
+        verification_status = "unverified"
+    else:
+        verification_status = "not_requested"
+    return {
+        "enabled": enabled,
+        "ok": ok,
+        "status": verification_status,
+        "reason": reason,
+        "source": source,
+        "event_title": str(status.get("calendar_event_title") or "").strip(),
+        "event_time_utc": str(status.get("calendar_event_time_utc") or "").strip(),
+        "event_minutes_delta": _safe_float(status.get("calendar_event_minutes_delta"), 0.0),
+        "matched_terms": [str(item) for item in status.get("calendar_matched_terms", []) if str(item).strip()]
+        if isinstance(status.get("calendar_matched_terms"), list)
+        else [],
+    }
+
+
+def _event_identity_text(live_macro: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("template", "source", "speaker", "headline", "summary", "content", "excerpt"):
+        value = str(live_macro.get(key) or "").strip()
+        if value:
+            parts.append(value)
+    symbols = live_macro.get("symbols")
+    if isinstance(symbols, list):
+        parts.extend(str(symbol or "").strip() for symbol in symbols if str(symbol or "").strip())
+    items = live_macro.get("items")
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for key in ("source", "speaker", "headline", "summary", "content", "publisher"):
+                value = str(item.get(key) or "").strip()
+                if value:
+                    parts.append(value)
+            item_symbols = item.get("symbols")
+            if isinstance(item_symbols, list):
+                parts.extend(str(symbol or "").strip() for symbol in item_symbols if str(symbol or "").strip())
+    return " ".join(parts).lower()
+
+
+def _calendar_identity_text(verification: dict[str, Any]) -> str:
+    parts = [
+        str(verification.get("source") or ""),
+        str(verification.get("event_title") or ""),
+        str(verification.get("reason") or ""),
+    ]
+    matched_terms = verification.get("matched_terms")
+    if isinstance(matched_terms, list):
+        parts.extend(str(term or "") for term in matched_terms)
+    return " ".join(part for part in parts if part).lower()
+
+
+def _guard_calendar_verification_event_match(
+    live_macro: dict[str, Any],
+    verification: dict[str, Any],
+) -> dict[str, Any]:
+    if not verification.get("enabled"):
+        return verification
+    live_text = _event_identity_text(live_macro)
+    event_is_earnings = "earnings" in live_text or "earnings_call" in live_text or "company earnings call" in live_text
+    event_is_nvda = "nvda" in live_text or "nvidia" in live_text
+    if not (event_is_earnings and event_is_nvda):
+        return verification
+
+    calendar_text = _calendar_identity_text(verification)
+    calendar_looks_fed = any(token in calendar_text for token in ("fomc", "federal reserve", "fed "))
+    calendar_has_nvda = "nvda" in calendar_text or "nvidia" in calendar_text
+    if not calendar_looks_fed or calendar_has_nvda:
+        return verification
+
+    guarded = dict(verification)
+    prior_reason = str(guarded.get("reason") or "wrong_calendar_event").strip()
+    guarded.update(
+        {
+            "ok": False,
+            "status": "unverified",
+            "reason": f"calendar_event_mismatch:{prior_reason}",
+            "mismatch": True,
+            "mismatch_expected_terms": ["nvidia", "nvda", "earnings"],
+            "mismatch_actual_terms": [
+                token
+                for token in ("federal reserve", "fomc")
+                if token in calendar_text
+            ],
+        }
+    )
+    return guarded
+
+
+def _official_release_context(live_macro: dict[str, Any]) -> bool:
+    text = _event_identity_text(live_macro)
+    item = _first_item(live_macro)
+    url = str(live_macro.get("url") or item.get("url") or "").strip().lower()
+    official_source = any(token in text for token in ("nvidia ir", "investor relations"))
+    official_url = any(token in url for token in ("nvidia.com", "nvidianews.nvidia.com", "globenewswire.com"))
+    earnings_context = any(token in text for token in ("earnings", "results", "guidance", "post-earnings"))
+    return bool(earnings_context and (official_source or official_url))
+
+
 def build_payload(
     project_root: Path = PROJECT_ROOT,
     *,
@@ -99,13 +263,20 @@ def build_payload(
     media = load_json(health_root / "live_macro_media_status.json")
     media_latest = load_json(media_latest_path)
     live_macro = load_json(live_macro_path)
+    media_context_status = "aligned"
+    if not _media_current_for_event(live_macro, media):
+        media = {}
+        media_context_status = "stale_or_different_event"
+    if not _media_current_for_event(live_macro, media_latest):
+        media_latest = {}
+        media_context_status = "stale_or_different_event"
 
     live_detected = bool(status.get("live_detected", False) or state.get("live_detected", False))
     replay_pending = bool(status.get("post_live_replay_pending", False) or state.get("post_live_replay_pending", False))
     replay_completed = bool(status.get("post_live_replay_completed", False) or state.get("post_live_replay_completed", False))
     replay_completed = replay_completed or _infer_manual_replay_completed(live_macro, media, media_latest)
     transcript_quality = "missing"
-    excerpt = str(live_macro.get("excerpt") or live_macro.get("summary") or "").strip()
+    excerpt = _event_excerpt(live_macro)
     transcript_quality_norm = max(
         _safe_float(media_latest.get("transcript_quality_norm"), 0.0),
         _safe_float(media.get("transcript_quality_norm"), 0.0),
@@ -132,6 +303,8 @@ def build_payload(
         transcript_quality = "asr_transcript"
     if excerpt and transcript_quality == "missing":
         transcript_quality = "live_excerpt"
+    if transcript_quality == "live_excerpt" and _official_release_context(live_macro):
+        transcript_quality = "official_release"
     if replay_completed:
         transcript_quality = "full_replay"
 
@@ -141,8 +314,10 @@ def build_payload(
     sentiment_hint = _safe_float(live_macro.get("sentiment_hint"), 0.0)
     shock_hint = _safe_float(live_macro.get("shock_hint"), 0.0)
     media_status = _infer_media_status(media, media_latest)
+    calendar_verification = _guard_calendar_verification_event_match(live_macro, _calendar_verification(status))
 
-    overall_status = "ready" if (live_detected or replay_completed or media_status in {"running", "ready"} or transcript_quality_norm >= 0.55) else "degraded"
+    bulletin_present = bool(excerpt or _first_item(live_macro))
+    overall_status = "ready" if (bulletin_present or live_detected or replay_completed or media_status in {"running", "ready"} or transcript_quality_norm >= 0.55) else "degraded"
     market_relevance = "high" if abs(sentiment_hint) >= 0.5 or shock_hint >= 0.8 else ("medium" if abs(sentiment_hint) >= 0.2 else "low")
 
     recommended_actions = ordered_unique(
@@ -151,6 +326,12 @@ def build_payload(
             "run the completed-video replay pass before treating the live sentiment as final" if replay_pending and not replay_completed else "",
             "promote the post-replay summary into the macro bulletin lane when transcript quality reaches full_replay" if replay_completed else "",
             "prefer caption-aligned or replay transcripts over raw live excerpts before escalating macro sentiment into the trading lane" if transcript_quality in {"missing", "live_excerpt"} else "",
+            "treat Schwab calendar verification as unconfirmed and rely on the official event source until the Schwab calendar adapter exposes an earnings-calendar method"
+            if calendar_verification.get("status") == "unverified"
+            else "",
+            "retarget the macro auto watcher to the NVIDIA IR preset before using calendar verification for this earnings event"
+            if bool(calendar_verification.get("mismatch", False))
+            else "",
         ]
     )
 
@@ -172,6 +353,8 @@ def build_payload(
         "transcript_source": transcript_source,
         "live_detected": live_detected,
         "media_status": media_status,
+        "media_context_status": media_context_status,
+        "calendar_verification": calendar_verification,
         "excerpt": excerpt,
         "replay_contract": {
             "replay_pending": replay_pending,

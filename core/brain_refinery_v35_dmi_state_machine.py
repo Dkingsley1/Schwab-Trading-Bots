@@ -252,17 +252,17 @@ def _runtime_sample_filter(sequence, idx, horizon):
     is_crypto = _is_crypto_symbol(obs)
     bias = _direction_bias(obs)
     directional_support, opposing_support = _directional_trend_support(obs, bias)
-    min_quote_agreement = 0.74 if is_crypto else 0.78
-    max_quote_deviation = 0.34 if is_crypto else 0.28
-    max_spread_bps = 46.0 if is_crypto else 34.0
+    min_quote_agreement = 0.72 if is_crypto else 0.74
+    max_quote_deviation = 0.36 if is_crypto else 0.32
+    max_spread_bps = 48.0 if is_crypto else 38.0
     min_queue_depth = 0.0
-    min_directional_support = 0.14 if is_crypto else 0.16
-    min_bias = 0.05 if is_crypto else 0.07
-    min_support_gap = -0.02 if is_crypto else 0.00
-    min_agreement = 0.40 if is_crypto else 0.44
-    max_instability = 0.84 if is_crypto else 0.78
+    min_directional_support = 0.12 if is_crypto else 0.13
+    min_bias = 0.04 if is_crypto else 0.05
+    min_support_gap = -0.04 if is_crypto else -0.02
+    min_agreement = 0.36 if is_crypto else 0.38
+    max_instability = 0.88 if is_crypto else 0.84
     agreement = _trend_directional_agreement(obs, bias)
-    if not is_crypto and abs(bias) >= 0.18 and agreement < 0.56:
+    if not is_crypto and abs(bias) >= 0.18 and agreement < 0.52:
         return False
     return (
         observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= min_quote_agreement
@@ -308,9 +308,9 @@ def _runtime_trend_label(sequence, idx, horizon):
     bias = _direction_bias(obs)
     is_crypto = _is_crypto_symbol(obs)
     directional_support, opposing_support = _directional_trend_support(obs, bias)
-    min_directional_support = 0.14 if is_crypto else 0.16
-    min_bias = 0.05 if is_crypto else 0.07
-    min_support_gap = -0.02 if is_crypto else 0.00
+    min_directional_support = 0.12 if is_crypto else 0.13
+    min_bias = 0.04 if is_crypto else 0.05
+    min_support_gap = -0.04 if is_crypto else -0.02
     if directional_support < min_directional_support or abs(bias) < min_bias:
         return None
     if (directional_support - opposing_support) < min_support_gap:
@@ -318,9 +318,9 @@ def _runtime_trend_label(sequence, idx, horizon):
 
     agreement = _trend_directional_agreement(obs, bias)
     instability = _trend_instability(obs)
-    min_agreement = 0.40 if is_crypto else 0.44
-    max_instability = 0.84 if is_crypto else 0.78
-    if not is_crypto and instability > 0.66:
+    min_agreement = 0.36 if is_crypto else 0.38
+    max_instability = 0.88 if is_crypto else 0.84
+    if not is_crypto and instability > 0.78:
         return None
     if agreement < min_agreement or instability > max_instability:
         return None
@@ -331,17 +331,17 @@ def _runtime_trend_label(sequence, idx, horizon):
     drawdown = abs(future_max_drawdown(sequence, idx, horizon))
     signed_ret = fwd_ret if expected_up else -fwd_ret
     move_threshold = (
-        max(0.00028, 0.00080 - (0.00058 * directional_support))
+        max(0.00022, 0.00064 - (0.00042 * directional_support))
         if is_crypto
-        else max(0.00040, 0.00100 - (0.00060 * directional_support))
+        else max(0.00030, 0.00084 - (0.00048 * directional_support))
     )
     move_threshold += (
         (0.00010 * max(0.0, 0.56 - agreement))
         + (0.00008 * instability)
         + (0.00008 * opposing_support)
     )
-    realized_floor = 0.020 if is_crypto else 0.015
-    drawdown_floor = 0.0130 if is_crypto else 0.0100
+    realized_floor = 0.026 if is_crypto else 0.020
+    drawdown_floor = 0.0170 if is_crypto else 0.0130
     if abs(fwd_ret) < move_threshold and realized < realized_floor and drawdown < drawdown_floor:
         return None
 
@@ -373,11 +373,11 @@ def _runtime_trend_label(sequence, idx, horizon):
         + (0.00018 * max(opposing_support - directional_support, 0.0))
     )
     if is_crypto:
-        success_gate = 0.00040
-        failure_gate = 0.00054
+        success_gate = 0.00032
+        failure_gate = 0.00042
     else:
-        success_gate = 0.00048
-        failure_gate = 0.00062
+        success_gate = 0.00040
+        failure_gate = 0.00052
     success_gate += (0.00010 * max(0.0, 0.56 - agreement)) + (0.00008 * instability)
     failure_gate += (0.00008 * max(0.0, 0.54 - agreement)) + (0.00008 * instability)
     if success_score >= success_gate:
@@ -433,17 +433,17 @@ def train_brain():
         symbol_allowlist=_LIQUID_TREND_SYMBOLS,
         sample_filter=_runtime_sample_filter,
         confidence_builder=_runtime_confidence,
-        min_confidence=0.46,
-        sample_stride=4,
+        min_confidence=0.38,
+        sample_stride=1,
         lookback_days=60,
-        window=18,
-        horizon=6,
+        window=14,
+        horizon=5,
         batch_size=16,
-        min_samples=80,
+        min_samples=128,
         min_sequences=4,
-        min_positive_samples=20,
-        min_negative_samples=20,
-        acted_prob_threshold=0.70,
+        min_positive_samples=24,
+        min_negative_samples=24,
+        acted_prob_threshold=0.74,
         fallback_trainer=_train_synthetic,
         allow_fallback_on_insufficient_data=False,
         max_best_val_loss=0.6900,
@@ -451,9 +451,9 @@ def train_brain():
         min_long_precision=0.52,
         min_short_precision=0.52,
         require_both_sides_precision=True,
-        min_acted_accuracy=0.60,
-        min_long_acted_count=4,
-        min_short_acted_count=4,
+        min_acted_accuracy=0.58,
+        min_long_acted_count=3,
+        min_short_acted_count=3,
         min_accuracy_lift_over_majority=0.02,
         min_precision_balance_score=0.30,
         max_acted_coverage=0.30,

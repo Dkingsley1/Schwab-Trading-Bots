@@ -256,16 +256,25 @@ def build_payload(
         training_status = str(training_quality.get("overall_status") or training_status)
 
     overall_status = "ready"
-    if training_status == "blocked" or qualified_teachers <= 0 or students_without_teachers > 0:
+    if training_status == "blocked" or qualified_teachers <= 0 or students_without_teachers > 0 or repair_ids:
         overall_status = "blocked"
     elif quality_queue or elite_teachers <= 0 or coverage_shortfall_bots > 0:
-        overall_status = "degraded"
+        overall_status = "needs_work"
 
     if apply and attempts:
-        if any(int(row.get("rc", 1)) != 0 for row in attempts):
+        def _attempt_hard_failed(row: dict[str, Any]) -> bool:
+            if bool(row.get("timed_out", False)):
+                return True
+            if int(row.get("rc", 1)) == 0:
+                return False
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            status = str(payload.get("overall_status") or "").strip().lower()
+            return status not in {"ready", "advisory", "degraded", "needs_work", "needs_attention"}
+
+        if any(_attempt_hard_failed(row) for row in attempts):
             overall_status = "blocked"
         elif overall_status != "ready":
-            overall_status = "degraded"
+            overall_status = "needs_work"
 
     recommended_actions = ordered_unique(
         [

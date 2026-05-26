@@ -35,6 +35,20 @@ def rolling_std(x, window):
         out[i] = np.std(x[start:i+1])
     return out
 
+def rolling_mean(x, window):
+    out = np.zeros_like(x)
+    for i in range(len(x)):
+        start = max(0, i - window + 1)
+        out[i] = np.mean(x[start:i+1])
+    return out
+
+def rolling_max(x, window):
+    out = np.zeros_like(x)
+    for i in range(len(x)):
+        start = max(0, i - window + 1)
+        out[i] = np.max(x[start:i+1])
+    return out
+
 # -----------------------------
 # Model
 # -----------------------------
@@ -162,11 +176,19 @@ def simulate_garch(n=5000):
     alpha = 0.08
     beta = 0.90
     var = 0.0001
+    regime = 1.0
+    prev_ret = 0.0
     for i in range(1, n):
+        if i % 1400 == 0:
+            regime *= -1.0
         eps = np.sqrt(var) * np.random.randn()
-        ret = eps
+        vol_state = np.sqrt(var)
+        momentum = np.tanh(prev_ret / (vol_state + 1e-8))
+        drift = (0.00012 * regime) + (0.00008 * momentum) - (0.00005 * (vol_state > 0.018))
+        ret = drift + eps
         var = omega + alpha * (eps ** 2) + beta * var
         prices[i] = max(0.1, prices[i-1] * np.exp(ret))
+        prev_ret = ret
     return prices
 
 # -----------------------------
@@ -178,19 +200,63 @@ FEATURE_SOURCE = "prices"
 def build_features(prices):
     returns = np.log(prices[1:] / prices[:-1])
     returns = np.concatenate([[0.0], returns])
-    sma = np.convolve(prices, np.ones(10) / 10, mode="same")
+    sma = rolling_mean(prices, 30)
     ema10 = ema(prices, 10)
+    ema30 = ema(prices, 30)
     rsi14 = rsi(prices, 14)
-    vol10 = rolling_std(returns, 10)
-    return np.stack([returns, sma, ema10, rsi14, vol10], axis=1)
+    vol8 = rolling_std(returns, 8)
+    vol20 = rolling_std(returns, 20)
+    vol60 = rolling_std(returns, 60)
+    vol_ratio = vol8 / (vol60 + 1e-8)
+    vol_slope = np.diff(vol20, prepend=vol20[0])
+    shock = np.abs(returns) / (vol20 + 1e-8)
+    trend = (ema10 - ema30) / (prices + 1e-8)
+    drawdown = (prices - rolling_max(prices, 80)) / (rolling_max(prices, 80) + 1e-8)
+    reversion_z = (prices - sma) / (rolling_std(prices, 30) + 1e-8)
+    return np.stack(
+        [
+            returns,
+            np.abs(returns),
+            returns * returns,
+            trend,
+            rsi14 / 100.0,
+            vol8,
+            vol20,
+            vol_ratio,
+            vol_slope,
+            shock,
+            drawdown,
+            reversion_z,
+        ],
+        axis=1,
+    )
 
 
 def train_brain():
     return train_price_indicator_bot(
         run_tag="brain_refinery_v20_garch",
-        feature_names=["returns", "sma10", "ema10", "rsi14", "vol10"],
+        feature_names=[
+            "returns",
+            "abs_returns",
+            "squared_returns",
+            "ema_trend_10_30",
+            "rsi14_norm",
+            "vol8",
+            "vol20",
+            "vol_ratio_8_60",
+            "vol_slope_20",
+            "shock_vs_vol20",
+            "drawdown_80",
+            "reversion_z_30",
+        ],
         feature_builder=build_features,
         price_simulator=simulate_garch,
+        num_points=9000,
+        window=48,
+        horizon=2,
+        learning_rate=0.0008,
+        epochs=260,
+        patience=24,
     )
 
 if __name__ == "__main__":

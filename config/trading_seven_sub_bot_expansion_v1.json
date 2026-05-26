@@ -1,0 +1,41 @@
+{
+  "timestamp_utc": "2026-05-24T00:40:06.701808+00:00",
+  "schema_version": 1,
+  "pack_version": "trading_seven_sub_bot_expansion_v1",
+  "pack_slug": "seven_collect_first_trading_sub_bots",
+  "bot_ids": [
+    "brain_refinery_v1654_intraday_momentum_continuation_trader",
+    "brain_refinery_v1655_intraday_mean_reversion_chop_filter_trader",
+    "brain_refinery_v1656_swing_breakout_quality_trader",
+    "brain_refinery_v1657_options_vol_crush_reversal_trader",
+    "brain_refinery_v1658_crypto_spot_momentum_chop_switch",
+    "brain_refinery_v1659_futures_macro_followthrough_trader",
+    "brain_refinery_v1660_fx_rates_cross_asset_confirmation_trader"
+  ],
+  "sleeve_profiles": [
+    "intraday_aggressive",
+    "swing_aggressive",
+    "options_aggressive",
+    "crypto_spot",
+    "futures_macro",
+    "fx"
+  ],
+  "bot_roles": [
+    "signal_sub_bot",
+    "options_sub_bot",
+    "futures_sub_bot"
+  ],
+  "safety_contract": {
+    "data_collection_only": true,
+    "execution_enabled": false,
+    "allocation_enabled": false,
+    "paper_trading_enabled": false,
+    "training_excluded_until_threshold": true,
+    "max_daily_mb_per_bot": 2,
+    "collection_throttle": "thin_digest",
+    "protected_volume_policy": "do_not_touch_/Volumes/VIDEO"
+  },
+  "applied": true,
+  "added_bot_count": 7,
+  "skipped_existing_bot_ids": []
+}

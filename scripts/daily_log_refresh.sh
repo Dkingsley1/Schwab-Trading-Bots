@@ -189,6 +189,7 @@ cp "$DAILY_RUNTIME_SUMMARY_JSON" "$PROJECT_ROOT/governance/health/daily_runtime_
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/regime_segmented_validate.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/new_bot_graduation_gate.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/leak_overfit_guard.py" || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/overfitting_awareness_layer.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/promotion_readiness_summary.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/canary_diagnostics_loop.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/promotion_bottleneck_focus.py" || true

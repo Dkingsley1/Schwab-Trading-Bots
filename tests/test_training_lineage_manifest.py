@@ -219,6 +219,53 @@ def test_training_lineage_manifest_degrades_when_recovery_contract_is_seeded(tmp
     assert payload["repairable_lineage_contract"]["lineage_recovery_ready"] is True
 
 
+def test_training_lineage_manifest_credits_stronger_provisional_packet_lineage(tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    feature_store_root = tmp_path / "governance" / "feature_store"
+    champion_root = tmp_path / "governance" / "champion_challenger"
+
+    _write_json(
+        feature_store_root / "latest.json",
+        {
+            "ok": True,
+            "lineage_schema_version": 2,
+            "dataset_contract": {"rows_sha256": "rows-hash"},
+            "point_in_time_contract": {"dataset_join_keys": ["snapshot_id", "symbol"]},
+        },
+    )
+    _write_json(health_root / "replay_hash_registry_guard_latest.json", {"ok": True})
+    _write_json(health_root / "paper_replay_drill_latest.json", {"ok": False})
+    _write_json(health_root / "replay_end_to_end_latest.json", {"ok": False})
+    _write_json(health_root / "promotion_quality_gate_latest.json", {"ok": False})
+    _write_json(health_root / "training_report_latest.json", {"summary": {"confirmed_training_success": False}})
+    _write_json(health_root / "snapshot_coverage_latest.json", {"ok": True})
+    _write_json(tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json", {"ok": False, "family_size": 454, "correction_method": "benjamini_hochberg_fdr", "failed_checks": ["no_valid_rows"]})
+    _write_json(tmp_path / "governance" / "research" / "decay_monitor_latest.json", {"overall_status": "needs_work"})
+    _write_json(
+        champion_root / "promotion_packet_latest.json",
+        {
+            "committee_packet_seed_ready": True,
+            "packet_complete": False,
+            "signature": {"verified": False},
+            "replayability_contract": {
+                "dataset_hash": "dataset-hash",
+                "model_hash": "model-hash",
+                "replay_hash": "replay-hash",
+                "bundle_hash": "bundle-hash",
+                "hash_bundle_complete": True,
+                "exact_replay_ready": False,
+            },
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["stronger_provisional_lineage_ready"] is True
+    assert payload["lineage_score"] >= 82.5
+    assert payload["promotion_packet_ready"] is False
+    assert "exact_replay_ready" in payload["missing_contracts"]
+
+
 def test_training_lineage_manifest_uses_signed_packet_replayability_fallback(tmp_path: Path) -> None:
     health_root = tmp_path / "governance" / "health"
     experiments_root = tmp_path / "governance" / "experiments"

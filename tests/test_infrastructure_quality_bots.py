@@ -95,6 +95,60 @@ def test_teacher_quality_guard_prefers_strong_performers_and_excludes_probation(
     assert all(row["bot_id"] != "brain_refinery_v43_intraday_ultrafast_proxy" for row in payload["qualified_teachers"])
 
 
+def test_teacher_quality_guard_excludes_overfit_risk_teachers(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v10_seasonal"
+    _write_json(
+        project_root / "governance" / "walk_forward" / "walk_forward_latest.json",
+        {"bots": {bot_id: {"runs": 14, "forward_mean": 0.59, "delta": 0.02, "trading_quality_score": 0.84, "status": "pass"}}},
+    )
+    _write_json(
+        project_root / "master_bot_registry.json",
+        {
+            "sub_bots": [
+                {
+                    "bot_id": bot_id,
+                    "bot_role": "signal_sub_bot",
+                    "active": True,
+                    "lifecycle_state": "active",
+                    "test_accuracy": 0.62,
+                    "quality_score": 0.86,
+                }
+            ]
+        },
+    )
+    _write_json(project_root / "governance" / "health" / "training_quality_control_latest.json", {"targeted_actions": {}})
+    _write_json(project_root / "governance" / "health" / "paper_performance_latest.json", {"sleeve_latest": []})
+    _write_json(
+        project_root / "governance" / "health" / "overfitting_awareness_latest.json",
+        {
+            "overall_status": "guarded",
+            "risk_bot_count": 1,
+            "hard_risk_bot_count": 0,
+            "bot_risk": [
+                {
+                    "bot_id": bot_id,
+                    "status": "overfit_watch",
+                    "risk_score": 0.62,
+                    "train_forward_gap": 0.11,
+                    "policy": {"may_teach": False, "may_promote": False, "requires_generalization_canary": True},
+                }
+            ],
+        },
+    )
+    _write_json(
+        project_root / "governance" / "distillation" / "teacher_student_plan_latest.json",
+        {"assignments": [{"student_bot_id": "brain_refinery_v50_student", "student_role": "signal_sub_bot"}]},
+    )
+
+    payload = teacher_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "blocked"
+    assert payload["summary"]["overfit_blocked_teacher_count"] == 1
+    assert all(row["bot_id"] != bot_id for row in payload["qualified_teachers"])
+    assert any(row["reason"] == "overfit_risk_blocked" for row in payload["excluded_bots"])
+
+
 def test_distill_new_bots_prefers_curated_teacher_pool(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     walk_forward_path = project_root / "governance" / "walk_forward" / "walk_forward_latest.json"
@@ -321,10 +375,10 @@ def test_infrastructure_autofix_bot_builds_safe_apply_plan(tmp_path: Path) -> No
     names = [row["name"] for row in payload["repair_plan"]]
     assert payload["overall_status"] == "blocked"
     assert "daily_verify_auto_remediation" in names
-    assert "storage_backpressure_autopilot" in names
+    assert "storage_pressure_clearance" in names
     assert "schwab_education_refresh" in names
     assert "options_flow_efficiency" in names
-    assert "premarket_token_guard" in names
+    assert "schwab_auth_supervisor" in names
     assert "bot_quality_autopilot" in names
     assert payload["metrics"]["storage_total_pending_lines"] == 62000
     assert payload["metrics"]["storage_total_drain_minutes"] == 22.5
