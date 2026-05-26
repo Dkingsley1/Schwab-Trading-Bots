@@ -82,6 +82,24 @@ def _safe_load_json(path: Path, default: Mapping[str, Any] | None = None) -> dic
     return payload if isinstance(payload, dict) else dict(default or {})
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _support_cooldown_status(reason: str) -> dict[str, Any]:
+    return {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "schema_version": CORRELATION_SCHEMA_VERSION,
+        "ok": True,
+        "status": "skipped",
+        "reason": reason,
+        "files_scanned": 0,
+        "rows_scanned": 0,
+        "aligned_pairs": 0,
+        "policy": "optional_market_crypto_correlation_yields_to_host_saturation_guard",
+    }
+
+
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         out = float(value)
@@ -1587,7 +1605,20 @@ def main() -> int:
         help="Optional wall-clock timeout for unattended ops runs.",
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--force", action="store_true", help="Run even when optional support maintenance is frozen.")
     args = parser.parse_args()
+
+    if not args.force and (
+        _env_flag("OPS_SUPPORT_MAINTENANCE_FREEZE", "0")
+        or _env_flag("OPS_HEAVY_SUPPORT_OFF_HOURS_ONLY", "0")
+    ):
+        status = _support_cooldown_status("host_saturation_support_cooldown")
+        _write_json(PROJECT_ROOT / "governance" / "health" / "market_crypto_correlation_sync_latest.json", status)
+        if args.json:
+            print(json.dumps(status, ensure_ascii=True))
+        else:
+            print("market_crypto_correlation skipped reason=host_saturation_support_cooldown")
+        return 0
 
     LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     lock_fh = open(LOCK_PATH, "a+", encoding="utf-8")

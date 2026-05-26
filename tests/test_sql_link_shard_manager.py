@@ -3,6 +3,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -48,6 +49,50 @@ def test_retention_maintenance_pause_can_clear_with_normal_override(tmp_path, mo
     paused, env = shard_manager._retention_maintenance_paused_for_swap(override_path=override)
     assert paused is False
     assert env["RETENTION_MAINTENANCE_PAUSED_FOR_SWAP"] == "0"
+
+
+def test_queue_retention_inline_vacuum_is_explicit(monkeypatch) -> None:
+    monkeypatch.delenv("SQL_LINK_SERVICE_QUEUE_VACUUM_INLINE_ENABLED", raising=False)
+    assert shard_manager._queue_retention_inline_vacuum_enabled() is False
+
+    monkeypatch.setenv("SQL_LINK_SERVICE_QUEUE_VACUUM_INLINE_ENABLED", "1")
+    assert shard_manager._queue_retention_inline_vacuum_enabled() is True
+
+
+def test_queue_retention_inline_cleanup_is_bounded(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Result:
+        returncode = 0
+        stdout = "{}"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["timeout"] = kwargs.get("timeout")
+        return Result()
+
+    monkeypatch.setenv("SQL_LINK_SERVICE_QUEUE_INLINE_MAX_ROWS", "12345")
+    monkeypatch.setenv("SQL_LINK_SERVICE_QUEUE_RETENTION_TIMEOUT_SECONDS", "17")
+    monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
+
+    rc, out, err = shard_manager._run_queue_retention(
+        db_path="queue.sqlite3",
+        acked_days=7,
+        batch_size=25000,
+        max_rows=240000,
+        cleanup_consumer_state_days=30,
+        prune_orphans=True,
+        orphan_days=14,
+        vacuum=False,
+    )
+
+    assert rc == 0
+    assert out == "{}"
+    assert err == ""
+    assert captured["timeout"] == 17
+    cmd = [str(item) for item in captured["cmd"]]
+    assert cmd[cmd.index("--max-rows") + 1] == "12345"
 
 
 def _create_shard_jsonl_db(path: Path) -> None:
@@ -340,6 +385,7 @@ def test_build_shards_separates_fast_trading_streams() -> None:
                     "crypto_runtime",
                     "crypto_trading_fast",
                     "crypto_trading",
+                    "risk_support",
                     "governance",
                     "support_watchdog",
                     "schema_violations",
@@ -368,6 +414,7 @@ def test_build_shards_separates_fast_trading_streams() -> None:
     assert shards["crypto_explanations"]["merge_hot_days"] == 3
     assert shards["crypto_explanations"]["merge_priority"] == "low"
     assert "shadow_pnl_attribution_" in str(shards["crypto_shadow_attribution"]["path_contains"])
+    assert "governance/channels/risk/" in str(shards["crypto_shadow_attribution"]["path_not_contains"])
     assert shards["crypto_shadow_attribution"]["merge_to_primary"] is False
     assert shards["runtime"]["include_streams"] == "governance"
     assert "governance/channels/runtime/" in str(shards["runtime"]["path_contains"])
@@ -418,11 +465,18 @@ def test_build_shards_separates_fast_trading_streams() -> None:
     assert "shadow_intraday_aggressive_" in str(shards["trading"]["path_not_contains"])
     assert "governance_walk_forward" in str(shards["governance"]["include_streams"])
     assert "governance/watchdog/" in str(shards["governance"]["path_not_contains"])
+    assert "governance/channels/risk/" in str(shards["governance"]["path_not_contains"])
     assert "governance/channels/runtime/" in str(shards["governance"]["path_not_contains"])
     assert "channel_schema_violations_" in str(shards["governance"]["path_not_contains"])
     assert shards["governance"]["max_lines_per_file"] == 8000
     assert shards["governance"]["state_checkpoint_lines"] == 2000
     assert shards["governance"]["merge_max_jsonl_rows"] == 6000
+    assert shards["risk_support"]["include_streams"] == "governance"
+    assert "governance/channels/risk/" in str(shards["risk_support"]["path_contains"])
+    assert shards["risk_support"]["max_lines_per_file"] == 400000
+    assert shards["risk_support"]["state_checkpoint_lines"] == 16000
+    assert shards["risk_support"]["merge_max_jsonl_rows"] == 0
+    assert shards["risk_support"]["merge_to_primary"] is False
     assert shards["support_watchdog"]["include_streams"] == "governance_watchdog"
     assert "governance/watchdog/" in str(shards["support_watchdog"]["path_contains"])
     assert shards["support_watchdog"]["max_lines_per_file"] == 96000
@@ -446,9 +500,22 @@ def test_load_active_request_sanitizes_live_drain_overrides(tmp_path) -> None:
                     "request_kind": "external_backlog_drain",
                     "requested_at": "2026-04-17T11:00:00+00:00",
                     "expires_utc": "2099-04-18T12:00:00+00:00",
-                    "env_overrides": {
+                "env_overrides": {
                     "SQL_LINK_SERVICE_SHARDS": "health_fast,runtime,trading",
                     "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "25",
+                    "SQL_LINK_SERVICE_SINGLE_WRITER_ONLY": "1",
+                    "SQL_LINK_SERVICE_PREPROCESS_WORKERS": "4",
+                    "INGEST_MAX_BYTES_PER_FILE": "67108864",
+                    "SQLITE_BATCH_MAX_BYTES": "16777216",
+                    "BOT_OPS_SQLITE_CACHE_SIZE_KB": "8192",
+                    "BACKLOG_PCORE_ALLOCATION_ACTIVE": "1",
+                    "BACKLOG_DRAIN_SINGLE_WRITER_ONLY": "1",
+                    "BACKLOG_PCORE_PREPROCESS_WORKERS": "4",
+                    "BACKLOG_PCORE_BURST_MODE": "daily_driver_5",
+                    "BACKLOG_PCORE_BURST_REASON": "normal daily-driver headroom",
+                    "TRAINING_PCORE_ALLOWED_WHEN_BACKLOG_GREEN": "1",
+                    "TRAINING_PCORE_MAX_WORKERS": "2",
+                    "TRAINING_PCORE_NICE": "8",
                     "BAD_KEY": "ignore-me",
                 },
             }
@@ -461,6 +528,18 @@ def test_load_active_request_sanitizes_live_drain_overrides(tmp_path) -> None:
     assert payload["request_kind"] == "external_backlog_drain"
     assert payload["env_overrides"]["SQL_LINK_SERVICE_SHARDS"] == "health_fast,runtime,trading"
     assert payload["env_overrides"]["SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"] == "25"
+    assert payload["env_overrides"]["INGEST_MAX_BYTES_PER_FILE"] == "67108864"
+    assert payload["env_overrides"]["SQLITE_BATCH_MAX_BYTES"] == "16777216"
+    assert payload["env_overrides"]["BOT_OPS_SQLITE_CACHE_SIZE_KB"] == "8192"
+    assert payload["env_overrides"]["BACKLOG_PCORE_ALLOCATION_ACTIVE"] == "1"
+    assert payload["env_overrides"]["SQL_LINK_SERVICE_PREPROCESS_WORKERS"] == "4"
+    assert payload["env_overrides"]["BACKLOG_PCORE_BURST_MODE"] == "daily_driver_5"
+    p_core = shard_manager._p_core_drain_contract(payload)
+    assert p_core["active"] is True
+    assert p_core["single_writer_only"] is True
+    assert p_core["preprocess_worker_budget"] == 4
+    assert p_core["p_core_burst_intelligence"]["mode"] == "daily_driver_5"
+    assert p_core["training_pcore_gate"]["max_workers"] == 2
     assert "BAD_KEY" not in payload["env_overrides"]
 
 
@@ -472,6 +551,7 @@ def test_effective_cycle_args_applies_live_request_env() -> None:
         low_priority_merge_skip_gb=120.0,
         merge_max_seconds_per_cycle=60.0,
         shard_link_timeout_seconds=180,
+        preprocess_workers=1,
         auto_wal_checkpoint=True,
         wal_checkpoint_threshold_gb=2.0,
         wal_checkpoint_trigger_growth_gb=1.5,
@@ -497,15 +577,48 @@ def test_effective_cycle_args_applies_live_request_env() -> None:
             "SQL_LINK_SERVICE_INTERVAL_SECONDS": "12",
             "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "25",
             "SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS": "45",
+            "SQL_LINK_SERVICE_PREPROCESS_WORKERS": "4",
             "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "240000",
         },
     )
 
     assert effective.shards == "health_fast,runtime,trading"
     assert effective.interval_seconds == 12
+    assert effective.preprocess_workers == 4
     assert effective.merge_max_seconds_per_cycle == 25.0
     assert effective.shard_link_timeout_seconds == 45
     assert effective.hot_retention_batch_size == 240000
+
+
+def test_cycle_runtime_overrides_reads_live_runtime_guard(tmp_path, monkeypatch) -> None:
+    runtime_override = tmp_path / ".env.runtime_resource_guard_override"
+    pressure_override = tmp_path / ".env.pressure_relief_override"
+    runtime_override.write_text(
+        "\n".join(
+            [
+                "SQL_LINK_SERVICE_HOST_COOLING_ACTIVE=1",
+                "SQL_LINK_SERVICE_PREPROCESS_WORKERS=1",
+                "SQL_LINK_SERVICE_INTERVAL_SECONDS=120",
+                "BAD_KEY=ignored",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    pressure_override.write_text(
+        "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE=20\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(shard_manager, "RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH", runtime_override)
+    monkeypatch.setattr(shard_manager, "PRESSURE_RELIEF_OVERRIDE_PATH", pressure_override)
+
+    overrides = shard_manager._cycle_runtime_overrides({"env_overrides": {"SQL_LINK_SERVICE_PREPROCESS_WORKERS": "2"}})
+
+    assert overrides["SQL_LINK_SERVICE_HOST_COOLING_ACTIVE"] == "1"
+    assert overrides["SQL_LINK_SERVICE_PREPROCESS_WORKERS"] == "2"
+    assert overrides["SQL_LINK_SERVICE_INTERVAL_SECONDS"] == "120"
+    assert overrides["SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"] == "20"
+    assert "BAD_KEY" not in overrides
 
 
 def test_run_shard_links_records_timeout_and_continues(tmp_path, monkeypatch) -> None:
@@ -550,6 +663,112 @@ def test_run_shard_links_records_timeout_and_continues(tmp_path, monkeypatch) ->
     assert results[0]["timeout_seconds"] == 1
 
 
+def test_run_shard_links_uses_preprocess_worker_budget(tmp_path, monkeypatch) -> None:
+    shards = []
+    for idx, name in enumerate(["trading", "aggressive_trading", "crypto_trading"]):
+        shards.append(
+            {
+                "name": name,
+                "sqlite_db": tmp_path / f"{name}.sqlite3",
+                "state_file": tmp_path / f"{name}_state.json",
+                "health_file": tmp_path / f"{name}_health.json",
+                "journal_file": tmp_path / f"{name}_journal.jsonl",
+                "journal_events_file": tmp_path / f"{name}_journal_events.jsonl",
+                "invalid_log_file": tmp_path / f"{name}_invalid.jsonl",
+                "include_streams": "decisions",
+                "path_contains": f"decisions/{idx}/",
+                "skip_json_files": True,
+                "max_files": 1,
+                "max_lines_per_file": 100,
+                "state_checkpoint_lines": 10,
+            }
+        )
+    monkeypatch.setattr(
+        shard_manager,
+        "_quarantine_shard_artifacts",
+        lambda **kwargs: {"triggered": False},
+    )
+    lock = threading.Lock()
+    active = {"count": 0, "max": 0}
+
+    def fake_run(*_args, **_kwargs):
+        with lock:
+            active["count"] += 1
+            active["max"] = max(active["max"], active["count"])
+        time.sleep(0.05)
+        with lock:
+            active["count"] -= 1
+        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
+
+    results = shard_manager._run_shard_links(
+        shards=shards,
+        link_mode="sqlite",
+        sqlite_timeout_seconds=30,
+        sqlite_lock_retries=0,
+        sqlite_lock_retry_delay_seconds=0.1,
+        shard_link_timeout_seconds=5,
+        preprocess_workers=3,
+    )
+
+    assert [row["shard"] for row in results] == ["trading", "aggressive_trading", "crypto_trading"]
+    assert active["max"] > 1
+    assert all(row["parallel_preprocess"] is True for row in results)
+    assert all(row["preprocess_worker_count"] == 3 for row in results)
+
+
+def test_timed_out_shard_with_confirmed_rows_is_merge_eligible() -> None:
+    result = {
+        "rc": 124,
+        "timed_out": True,
+        "health": {
+            "sqlite": {
+                "inserted": 2943,
+                "pending_lines": 0,
+            }
+        },
+    }
+
+    assert shard_manager._shard_link_merge_eligible(result) is True
+    assert shard_manager._shard_link_hard_failed(result) is False
+
+
+def test_timed_out_shard_without_health_progress_is_hard_failed() -> None:
+    result = {
+        "rc": 124,
+        "timed_out": True,
+        "health": {
+            "sqlite": {
+                "inserted": 0,
+                "pending_lines": 12,
+            }
+        },
+    }
+
+    assert shard_manager._shard_link_merge_eligible(result) is False
+    assert shard_manager._shard_link_hard_failed(result) is True
+
+
+def test_merge_followup_summary_recommends_catch_up_for_capped_or_budgeted_merge() -> None:
+    summary = shard_manager._merge_followup_summary(
+        merge_results=[
+            {"shard": "trading", "merge_capped": True},
+            {"shard": "aggressive_trading", "reason": "merge_cycle_budget_exhausted:60.1s"},
+        ],
+        shard_results=[
+            {"shard": "crypto_trading", "rc": 124, "timed_out": True, "health": {"sqlite": {"inserted": 12, "pending_lines": 0}}},
+        ],
+    )
+
+    assert summary["followup_needed"] is True
+    assert summary["catch_up_recommended"] is True
+    assert summary["merge_capped_count"] == 1
+    assert summary["merge_budget_exhausted_count"] == 1
+    assert summary["partial_timeout_shard_count"] == 1
+    assert "merge_row_cap_remaining" in summary["followup_reasons"]
+
+
 def test_build_shards_reads_hourly_hot_retention_overrides(monkeypatch) -> None:
     monkeypatch.setenv("SQL_LINK_SERVICE_SHARD_EXPLANATIONS_HOT_RETENTION_HOT_HOURS", "2")
     monkeypatch.setenv("SQL_LINK_SERVICE_SHARD_EXPLANATIONS_HOT_RETENTION_MAX_ROWS", "900000")
@@ -583,6 +802,75 @@ def test_build_shards_uses_heat_map_to_expand_hot_shard_capacity(monkeypatch) ->
     assert shards["explanations"]["heat_promotion_candidate"] is True
     assert shards["explanations"]["last_heat_score"] == 3.4
     assert shards["explanations"]["max_files"] == int(shard_manager.DEFAULT_SHARD_DEFS["explanations"]["max_files"]) + 2
+
+
+def test_prioritize_shards_for_linking_moves_sentinel_and_hot_pending_first(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("SQL_LINK_SERVICE_SHARD_ORDER_MODE", raising=False)
+    monkeypatch.delenv("SQL_LINK_SERVICE_ADAPTIVE_SHARD_ORDER", raising=False)
+    trading_health = tmp_path / "trading_health.json"
+    data_health = tmp_path / "data_health.json"
+    trading_health.write_text(json.dumps({"sqlite": {"pending_lines": 24000}}), encoding="utf-8")
+    data_health.write_text(json.dumps({"sqlite": {"pending_lines": 48000}}), encoding="utf-8")
+    shards = [
+        {"name": "data", "health_file": data_health, "merge_priority": "low", "merge_to_primary": False},
+        {"name": "health_fast", "health_file": tmp_path / "health_fast.json"},
+        {"name": "trading", "health_file": trading_health, "last_heat_score": 1.5},
+        {"name": "explanations", "health_file": tmp_path / "explanations.json", "merge_priority": "low"},
+    ]
+
+    ordered, plan = shard_manager._prioritize_shards_for_linking(shards)
+
+    assert [row["name"] for row in ordered][:2] == ["health_fast", "trading"]
+    assert [row["name"] for row in ordered].index("data") < [row["name"] for row in ordered].index("explanations")
+    assert plan["enabled"] is True
+    assert plan["policy"] == "adaptive_hot_pending_sentinel_first"
+    trading_row = next(row for row in plan["priority_rows"] if row["shard"] == "trading")
+    assert trading_row["pending_lines"] == 24000
+
+
+def test_prioritize_shards_for_linking_can_preserve_stable_order(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SQL_LINK_SERVICE_SHARD_ORDER_MODE", "stable")
+    shards = [
+        {"name": "data", "health_file": tmp_path / "data.json"},
+        {"name": "health_fast", "health_file": tmp_path / "health.json"},
+        {"name": "trading", "health_file": tmp_path / "trading.json"},
+    ]
+
+    ordered, plan = shard_manager._prioritize_shards_for_linking(shards)
+
+    assert [row["name"] for row in ordered] == ["data", "health_fast", "trading"]
+    assert plan["enabled"] is False
+    assert plan["policy"] == "stable_config_order"
+
+
+def test_write_service_progress_exposes_shard_link_queue_details(tmp_path, monkeypatch) -> None:
+    progress_path = tmp_path / "progress.json"
+    monkeypatch.setattr(shard_manager, "PROGRESS_HEALTH", progress_path)
+    shards = [{"name": "health_fast"}, {"name": "trading"}, {"name": "data"}]
+    shard_results = [
+        {"shard": "health_fast", "timed_out": False},
+        {"shard": "trading", "timed_out": True},
+    ]
+
+    shard_manager._write_service_progress(
+        cycle_started_utc="2026-05-26T13:00:00+00:00",
+        current_step="shard_linking",
+        lock_path=tmp_path / "writer.lock",
+        primary_db=tmp_path / "primary.sqlite3",
+        shards=shards,
+        shard_results=shard_results,
+        merge_results=[],
+        shard_link_plan={"policy": "adaptive_hot_pending_sentinel_first", "planned_order": ["health_fast", "trading", "data"]},
+    )
+
+    payload = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert payload["planned_shard_count"] == 3
+    assert payload["completed_shard_count"] == 2
+    assert payload["pending_shard_count"] == 1
+    assert payload["pending_shards"] == ["data"]
+    assert payload["timed_out_shard_count"] == 1
+    assert payload["timed_out_shards"] == ["trading"]
+    assert payload["shard_link_plan"]["policy"] == "adaptive_hot_pending_sentinel_first"
 
 
 def test_build_shards_fails_open_when_heat_map_unavailable(monkeypatch) -> None:
@@ -729,6 +1017,7 @@ def test_build_shards_splits_crypto_paths_from_generic_shards(tmp_path, monkeypa
     assert "shadow_crypto/" in str(by_name["crypto_trading"]["path_contains"])
     assert "shadow_crypto/" in str(by_name["trading"]["path_not_contains"])
     assert "default_crypto_coinbase" in str(by_name["crypto_governance"]["path_contains"])
+    assert "governance/channels/risk/" in str(by_name["crypto_governance"]["path_not_contains"])
     assert "default_crypto_schwab" in str(by_name["governance"]["path_not_contains"])
     assert "governance/watchdog/" in str(by_name["governance"]["path_not_contains"])
     assert by_name["support_watchdog"]["include_streams"] == "governance_watchdog"

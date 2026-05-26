@@ -34,6 +34,22 @@ def _recent_fixture_day(offset_days: int = 1) -> tuple[datetime, str]:
     return base, base.strftime("%Y%m%d")
 
 
+def test_main_skips_optional_sync_when_support_maintenance_is_frozen(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(corr_ctx, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(corr_ctx, "LOCK_PATH", tmp_path / "governance" / "locks" / "market_crypto_correlation.lock")
+    monkeypatch.setenv("OPS_SUPPORT_MAINTENANCE_FREEZE", "1")
+    monkeypatch.setattr(sys, "argv", ["collect_market_crypto_correlation_context.py", "--json"])
+
+    rc = corr_ctx.main()
+    output = json.loads(capsys.readouterr().out)
+    status = json.loads((tmp_path / "governance" / "health" / "market_crypto_correlation_sync_latest.json").read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert output["status"] == "skipped"
+    assert output["reason"] == "host_saturation_support_cooldown"
+    assert status["policy"] == "optional_market_crypto_correlation_yields_to_host_saturation_guard"
+
+
 def test_collect_market_crypto_correlation_context_joins_stock_and_crypto_roots(tmp_path: Path) -> None:
     project_root = tmp_path / "repo"
     external_root = tmp_path / "external"

@@ -125,6 +125,11 @@ def test_runtime_throttle_control_protects_core_lanes_and_flags_support_jobs(tmp
     assert payload["host_saturation_score"] >= 56.0
     assert payload["protected_workloads"]["categories"] == ["live_execution", "research_training"]
     assert payload["support_trim_candidates"][0]["category"] == "support_maintenance"
+    governor = payload["runtime_saturation_governor_v2"]
+    assert governor["mode"] == "runtime_saturation_governor_v2"
+    assert governor["training_policy"]["training_paused"] is True
+    assert governor["training_policy"]["max_parallel_trainings"] == 0
+    assert governor["paper_live_data_policy"]["protect_paper_execution_queue"] is True
     assert payload["upgrade_track"]["upgradeable"] is True
     assert any("off-hours throttle windows" in action for action in payload["recommended_actions"])
 
@@ -256,7 +261,7 @@ def test_runtime_throttle_counts_only_explicit_paper_live_data_capacity(tmp_path
     assert counts["paper_tagged_count"] == 2
 
 
-def test_runtime_throttle_apply_keeps_sql_writer_drain_friendly(tmp_path: Path) -> None:
+def test_runtime_throttle_apply_cools_sql_writer_when_backlog_is_green(tmp_path: Path) -> None:
     health_root = tmp_path / "governance" / "health"
     _write_json(
         health_root / "resource_guard_latest.json",
@@ -308,10 +313,12 @@ def test_runtime_throttle_apply_keeps_sql_writer_drain_friendly(tmp_path: Path) 
     assert payload["throttle_profile"] == "protect_live"
     assert payload["storage_stabilization"]["drain_friendly_sql_required"] is True
     assert result["storage_drain_active"] is True
-    assert "SQL_LINK_SERVICE_INTERVAL_SECONDS=12" in override
-    assert "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS=30" in override
-    assert "SQL_LINK_SERVICE_QUEUE_MIN_INTERVAL_SECONDS=180" in override
-    assert "SQL_LINK_SERVICE_INTERVAL_SECONDS=180" not in override
+    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_HOST_COOLING_ACTIVE"] == "1"
+    assert "SQL_LINK_SERVICE_HOST_COOLING_ACTIVE=1" in override
+    assert "SQL_LINK_SERVICE_INTERVAL_SECONDS=180" in override
+    assert "SQL_LINK_SERVICE_INTERVAL_SECONDS=12" not in override
+    assert "OPS_SUPPORT_JOB_NICE=20" in override
+    assert "SUPPORT_MAINTENANCE_CONCURRENCY=1" in override
 
 
 def test_runtime_throttle_coordinates_concentrated_core_sql_drain(tmp_path: Path) -> None:
@@ -405,6 +412,73 @@ def test_heavy_livefeed_is_operator_observability_not_support_trim() -> None:
     assert tail_row["priority_tier"] == "operator_visible"
     assert tail_row["throttle_candidate"] is False
 
+    tail_c_row = src._classify_process("tail -c 262144 -F logs/a.log logs/b.log")
+
+    assert tail_c_row["category"] == "operator_observability"
+    assert tail_c_row["priority_tier"] == "operator_visible"
+    assert tail_c_row["throttle_candidate"] is False
+
+    awk_row = src._classify_process("awk -v max 1100 -v limit 0 -v color 1")
+
+    assert awk_row["category"] == "operator_observability"
+    assert awk_row["priority_tier"] == "operator_visible"
+    assert awk_row["throttle_candidate"] is False
+
+
+def test_runtime_throttle_classifies_swap_governor_as_support() -> None:
+    row = src._classify_process(
+        "/opt/homebrew/bin/python scripts/ops/swap_pressure_governor.py --apply --json"
+    )
+
+    assert row["category"] == "support_maintenance"
+    assert row["priority_tier"] == "throttle_first"
+    assert row["throttle_candidate"] is True
+
+
+def test_runtime_throttle_surfaces_p_core_backlog_feedback(tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_json(health_root / "resource_guard_latest.json", {})
+    _write_json(health_root / "memory_efficiency_control_latest.json", {})
+    _write_json(health_root / "live_runtime_separation_control_latest.json", {})
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "pressure_index": 1.2,
+            "severity": "critical",
+            "backpressure": {"core_pending_lines": 42000, "total_pending_lines": 53000},
+            "backlog_relief_contract": {
+                "p_core_backlog_allocation_contract": {
+                    "active": True,
+                    "policy": "p_core_preprocess_single_sql_writer",
+                    "preprocess_worker_budget": 4,
+                    "training_pcore_gate": {"allowed_when_backlog_green": True, "max_workers": 2},
+                }
+            },
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        runtime_snapshot={
+            "cpu_count": 10,
+            "load_averages": {"one_minute": 2.0, "five_minutes": 2.0, "fifteen_minutes": 2.0},
+            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "vm_stat": {},
+            "top_processes": [
+                {"pid": 1, "nice": 8, "cpu_percent": 5.0, "category": "support_maintenance", "priority_tier": "throttle_first"},
+                {"pid": 2, "nice": 0, "cpu_percent": 4.0, "category": "operator_observability", "priority_tier": "operator_visible"},
+            ],
+            "category_cpu": {},
+            "category_counts": {},
+        },
+    )
+
+    feedback = payload["p_core_runtime_feedback"]
+    assert feedback["active"] is True
+    assert feedback["preprocess_worker_budget"] == 4
+    assert feedback["single_writer_only"] is True
+    assert feedback["top_process_nice_distribution"] == {"8": 1, "0": 1}
+
 
 def test_project_path_does_not_misclassify_maintenance_as_pycharm() -> None:
     row = src._classify_process(
@@ -423,6 +497,116 @@ def test_pycharm_app_is_still_interactive_cotenant() -> None:
     assert row["category"] == "interactive_cotenant"
     assert row["priority_tier"] == "external_cotenant"
     assert row["throttle_candidate"] is False
+
+
+def test_operator_observers_are_not_unknown_pressure() -> None:
+    for command in (
+        "/opt/homebrew/bin/btop",
+        "/Library/Frameworks/Python.framework/Versions/3.14/bin/asitop --interval 3",
+        "/System/Applications/Utilities/Activity Monitor.app/Contents/MacOS/Activity Monitor",
+        "/opt/homebrew/bin/python -m pytest tests/test_runtime_throttle_control.py -q",
+    ):
+        row = src._classify_process(command)
+        assert row["category"] == "operator_observability"
+        assert row["priority_tier"] == "operator_visible"
+        assert row["throttle_candidate"] is False
+
+
+def test_support_throttle_uses_support_nice_not_research_nice(monkeypatch) -> None:
+    monkeypatch.setenv("RUNTIME_THROTTLE_RESEARCH_NICE", "6")
+
+    target = src._target_nice_for_candidate(
+        {"category": "support_maintenance", "throttle_candidate": True},
+        {"OPS_SUPPORT_JOB_NICE": "16"},
+    )
+
+    assert target == 16
+
+
+def test_runtime_throttle_attributes_macos_system_pressure(tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 1.2})
+    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
+    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+
+    classified = src._classify_process("/usr/libexec/spotlightknowledged.updater -u")
+    assert classified["category"] == "system_cotenant"
+    assert classified["priority_tier"] == "external_system"
+    assert classified["throttle_candidate"] is False
+
+    payload = src.build_payload(
+        tmp_path,
+        runtime_snapshot={
+            "cpu_count": 10,
+            "load_averages": {"one_minute": 9.0, "five_minutes": 6.0, "fifteen_minutes": 4.0},
+            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "vm_stat": {},
+            "top_processes": [
+                {
+                    "pid": 707,
+                    "nice": 0,
+                    "cpu_percent": 91.0,
+                    "mem_percent": 0.4,
+                    "elapsed": "02:03",
+                    "command": "/usr/libexec/spotlightknowledged.updater -u",
+                    **classified,
+                },
+                {
+                    "pid": 808,
+                    "nice": 6,
+                    "cpu_percent": 18.0,
+                    "mem_percent": 0.8,
+                    "elapsed": "00:30",
+                    "command": "python scripts/link_jsonl_to_sql.py --mode sqlite",
+                    "category": "support_maintenance",
+                    "priority_tier": "throttle_first",
+                    "throttle_candidate": True,
+                },
+            ],
+            "category_cpu": {"system_cotenant": 91.0, "support_maintenance": 18.0},
+            "category_counts": {"system_cotenant": 1, "support_maintenance": 1},
+        },
+    )
+
+    attribution = payload["host_pressure_attribution"]
+    assert payload["throttle_domains"]["system_cotenant"]["cpu_percent"] == 91.0
+    assert attribution["external_pressure_dominant"] is True
+    assert attribution["system_cotenant_hot"] is True
+    assert attribution["dominant_bucket"] == "macos_system"
+    assert attribution["hot_external_processes"][0]["pid"] == 707
+    assert any("Spotlight" in action for action in payload["recommended_actions"])
+
+
+def test_runtime_throttle_attributes_pmset_log_as_macos_system_pressure(tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 1.2})
+    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
+    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+
+    classified = src._classify_process("/usr/bin/pmset -g log")
+    assert classified["category"] == "system_cotenant"
+    assert classified["priority_tier"] == "external_system"
+    assert classified["throttle_candidate"] is False
+
+    payload = src.build_payload(
+        tmp_path,
+        runtime_snapshot={
+            "cpu_count": 10,
+            "load_averages": {"one_minute": 6.0, "five_minutes": 5.0, "fifteen_minutes": 3.0},
+            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "vm_stat": {},
+            "top_processes": [
+                {"pid": 909, "nice": 0, "cpu_percent": 55.0, "mem_percent": 0.1, "elapsed": "00:04", "command": "/usr/bin/pmset -g log", **classified}
+            ],
+            "category_cpu": {"system_cotenant": 55.0},
+            "category_counts": {"system_cotenant": 1},
+        },
+    )
+
+    attribution = payload["host_pressure_attribution"]
+    assert attribution["system_cotenant_hot"] is True
+    assert attribution["dominant_bucket"] == "macos_system"
+    assert attribution["unknown_cpu_percent"] == 0.0
 
 
 def test_storage_control_plane_helpers_are_support_throttle_candidates() -> None:
@@ -707,6 +891,214 @@ def test_runtime_throttle_consumes_memory_cotenant_awareness(tmp_path: Path) -> 
     assert result["env_override_count"] >= 5
 
 
+def test_runtime_throttle_marks_low_pressure_external_soft_cap_advisory(tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
+    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
+    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "recommended_operating_mode": "live_full",
+            "pressure_index": 0.316,
+            "severity": "stable",
+            "storage": {"backlog_drain_status": "steady_state"},
+            "backpressure": {"core_pending_lines": 709, "total_pending_lines": 944},
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        runtime_snapshot={
+            "cpu_count": 10,
+            "load_averages": {"one_minute": 6.0, "five_minutes": 4.0, "fifteen_minutes": 4.8},
+            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "vm_stat": {},
+            "top_processes": [
+                {
+                    "pid": 303,
+                    "nice": 0,
+                    "cpu_percent": 36.0,
+                    "mem_percent": 1.0,
+                    "elapsed": "00:02",
+                    "command": "Codex",
+                    "category": "interactive_cotenant",
+                    "priority_tier": "external_cotenant",
+                    "throttle_candidate": False,
+                }
+            ],
+            "category_cpu": {"interactive_cotenant": 36.0},
+            "category_counts": {"interactive_cotenant": 1},
+        },
+    )
+
+    assert payload["throttle_profile"] == "soft_cap"
+    assert payload["overall_status"] == "advisory"
+    assert payload["host_pressure_attribution"]["external_pressure_dominant"] is True
+    assert payload["soft_cap_advisory_reclassification"]["active"] is True
+
+
+def test_runtime_throttle_marks_guarded_foreground_sustain_as_advisory(tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
+    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
+    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "recommended_operating_mode": "live_full",
+            "pressure_index": 0.66,
+            "severity": "stable",
+            "storage": {"backlog_drain_status": "steady_state"},
+            "backpressure": {
+                "core_pending_lines": 9949,
+                "total_pending_lines": 16493,
+                "pending_lines_threshold": 15000,
+                "oldest_pending_age_seconds": 1.0,
+                "oldest_age_threshold_seconds": 240.0,
+            },
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        runtime_snapshot={
+            "cpu_count": 10,
+            "load_averages": {"one_minute": 12.0, "five_minutes": 5.0, "fifteen_minutes": 4.0},
+            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "vm_stat": {},
+            "top_processes": [
+                {
+                    "pid": 303,
+                    "nice": 0,
+                    "cpu_percent": 110.0,
+                    "mem_percent": 1.0,
+                    "elapsed": "00:02",
+                    "command": "Codex",
+                    "category": "interactive_cotenant",
+                    "priority_tier": "external_cotenant",
+                    "throttle_candidate": False,
+                }
+            ],
+            "category_cpu": {"interactive_cotenant": 110.0},
+            "category_counts": {"interactive_cotenant": 1},
+        },
+    )
+
+    assert payload["throttle_profile"] == "sustain"
+    assert payload["overall_status"] == "advisory"
+    assert payload["ok"] is True
+    advisory = payload["soft_cap_advisory_reclassification"]
+    assert advisory["active"] is True
+    assert advisory["reason"] == "foreground_cotenant_pressure_is_guarded_advisory_not_bot_runtime_degradation"
+    assert advisory["measurements"]["foreground_guarded"] is True
+
+
+def test_runtime_throttle_marks_niced_support_pressure_as_advisory(tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
+    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
+    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "recommended_operating_mode": "live_full",
+            "pressure_index": 0.01,
+            "severity": "stable",
+            "storage": {"backlog_drain_status": "steady_state"},
+            "backpressure": {"core_pending_lines": 68, "total_pending_lines": 77},
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        runtime_snapshot={
+            "cpu_count": 10,
+            "load_averages": {"one_minute": 12.0, "five_minutes": 5.0, "fifteen_minutes": 4.0},
+            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "vm_stat": {},
+            "top_processes": [
+                {
+                    "pid": 303,
+                    "nice": 16,
+                    "cpu_percent": 85.0,
+                    "mem_percent": 1.0,
+                    "elapsed": "00:02",
+                    "command": "python scripts/link_jsonl_to_sql.py",
+                    "category": "support_maintenance",
+                    "priority_tier": "throttle_first",
+                    "throttle_candidate": True,
+                }
+            ],
+            "category_cpu": {"support_maintenance": 85.0},
+            "category_counts": {"support_maintenance": 1},
+        },
+    )
+
+    assert payload["throttle_profile"] == "sustain"
+    assert payload["overall_status"] == "advisory"
+    assert payload["host_pressure_attribution"]["support_hot_low_priority"] is True
+    advisory = payload["soft_cap_advisory_reclassification"]
+    assert advisory["active"] is True
+    assert advisory["reason"] == "support_pressure_is_already_niced_and_guarded_advisory"
+    assert advisory["measurements"]["support_low_priority_guarded"] is True
+    assert advisory["measurements"]["storage_fresh_overflow"] is True
+
+
+def test_runtime_throttle_marks_operator_observability_pressure_as_advisory(tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
+    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
+    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "recommended_operating_mode": "live_full",
+            "pressure_index": 0.01,
+            "severity": "stable",
+            "storage": {"backlog_drain_status": "steady_state"},
+            "backpressure": {"core_pending_lines": 68, "total_pending_lines": 77},
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        runtime_snapshot={
+            "cpu_count": 10,
+            "load_averages": {"one_minute": 12.0, "five_minutes": 5.0, "fifteen_minutes": 4.0},
+            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "vm_stat": {},
+            "top_processes": [
+                {
+                    "pid": 303,
+                    "nice": 0,
+                    "cpu_percent": 92.0,
+                    "mem_percent": 1.0,
+                    "elapsed": "00:02",
+                    "command": "python scripts/ops/system_intelligence_coordinator.py --json",
+                    "category": "operator_observability",
+                    "priority_tier": "operator_visible",
+                    "throttle_candidate": False,
+                }
+            ],
+            "category_cpu": {"operator_observability": 92.0},
+            "category_counts": {"operator_observability": 1},
+        },
+    )
+
+    assert payload["overall_status"] == "advisory"
+    assert payload["host_pressure_attribution"]["protected_work_hot"] is False
+    assert payload["host_pressure_attribution"]["operator_observability_hot"] is True
+    advisory = payload["soft_cap_advisory_reclassification"]
+    assert advisory["active"] is True
+    assert advisory["reason"] == "operator_observability_pressure_is_guarded_advisory"
+    assert advisory["measurements"]["operator_observability_guarded"] is True
+
+
 def test_runtime_throttle_consumes_mlx_intelligence_router_caps(tmp_path: Path) -> None:
     health_root = tmp_path / "governance" / "health"
     _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
@@ -774,6 +1166,36 @@ def test_runtime_throttle_consumes_mlx_intelligence_router_caps(tmp_path: Path) 
     assert "MLX_INTELLIGENCE_ROUTER_ENABLED=1" in override
     assert "MLX_INTELLIGENCE_TENSOR_BATCH_CAP=48" in override
     assert result["env_override_count"] >= 4
+
+
+def test_runtime_throttle_keeps_blocked_mlx_router_safety_caps_active() -> None:
+    contract = src._mlx_intelligence_contract(
+        {
+            "overall_status": "blocked",
+            "library_coverage": {"coverage_ratio": 0.75},
+            "route_coverage": {"route_coverage_ratio": 0.8},
+            "runtime_caps": {
+                "profile": "protect_live",
+                "max_concurrent_mlx_jobs": 1,
+                "tensor_batch_cap": 16,
+                "embedding_batch_cap": 32,
+                "graph_node_cap": 3000,
+                "audio_minutes_per_job_cap": 12,
+                "heavy_vlm_enabled": False,
+                "compile_mode": "off",
+                "p_core_allocation_aware": True,
+                "p_core_allocation_mode": "foreground_protect",
+                "p_core_preprocess_workers": 4,
+                "p_core_coordination_policy": "backlog_burst_owns_p_cores_mlx_runs_light",
+            },
+        }
+    )
+
+    assert contract["active"] is True
+    assert contract["status"] == "blocked"
+    assert contract["p_core_allocation_aware"] is True
+    assert contract["p_core_allocation_mode"] == "foreground_protect"
+    assert contract["p_core_preprocess_workers"] == 4
 
 
 def test_runtime_throttle_consumes_library_utilization_router_caps_and_keeps_mlx_default(tmp_path: Path) -> None:
@@ -850,6 +1272,9 @@ def test_runtime_throttle_consumes_library_utilization_router_caps_and_keeps_mlx
 
 
 def test_protect_live_downshifts_simulated_shadow_training_loops(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BOT_CPU_EFFICIENCY_SATURATION_GUARD", "0")
+    monkeypatch.delenv("RUNTIME_THROTTLE_RESEARCH_NICE", raising=False)
+    monkeypatch.delenv("RUNTIME_THROTTLE_USE_TASKPOLICY_BACKGROUND", raising=False)
     health_root = tmp_path / "governance" / "health"
     _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "yellow", "swap_used_gb": 9.0})
     _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "degraded"})
@@ -910,3 +1335,57 @@ def test_protect_live_downshifts_simulated_shadow_training_loops(tmp_path: Path,
     assert any(cmd[:3] == ["renice", "-n", "15"] for cmd in calls)
     assert "SHADOW_LOOP_PRESSURE_INTERVAL_FLOOR_ENABLED=1" in override
     assert "SHADOW_LOOP_PROTECT_LIVE_EXTRA_INTERVAL_SECONDS=30" in override
+
+
+def test_efficiency_guard_keeps_research_throttle_off_background_taskpolicy(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BOT_CPU_EFFICIENCY_SATURATION_GUARD", "1")
+    monkeypatch.setenv("SLEEVE_NICE_SPECIALIZED", "8")
+    monkeypatch.delenv("RUNTIME_THROTTLE_USE_TASKPOLICY_BACKGROUND", raising=False)
+    health_root = tmp_path / "governance" / "health"
+    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "yellow", "swap_used_gb": 9.0})
+    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "degraded"})
+    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    runtime_snapshot = {
+        "cpu_count": 10,
+        "load_averages": {"one_minute": 13.5, "five_minutes": 12.0, "fifteen_minutes": 11.0},
+        "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+        "vm_stat": {},
+        "top_processes": [
+            {
+                "pid": 4242,
+                "nice": 8,
+                "cpu_percent": 33.0,
+                "mem_percent": 6.7,
+                "elapsed": "39:34",
+                "command": "python scripts/run_shadow_training_loop.py --broker schwab --profile gpu_quant_acceleration",
+                "category": "research_training",
+                "priority_tier": "protected",
+                "throttle_candidate": False,
+            }
+        ],
+        "category_cpu": {"research_training": 33.0},
+        "category_counts": {"research_training": 1},
+    }
+    calls: list[list[str]] = []
+
+    def fake_run_apply(command: list[str]) -> dict:
+        calls.append(command)
+        return {"command": command, "returncode": 0, "ok": True, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(src, "_run_apply_command", fake_run_apply)
+    monkeypatch.setattr(src.os, "kill", lambda pid, sig: None)
+
+    payload = src.build_payload(tmp_path, runtime_snapshot=runtime_snapshot)
+    result = src.apply_runtime_guard(
+        tmp_path,
+        payload,
+        override_path=tmp_path / "config" / ".env.runtime_resource_guard_override",
+        registry_path=tmp_path / "master_bot_registry.json",
+        max_renice_processes=4,
+    )
+
+    process = result["process_throttle"]["processes"][0]
+    assert process["target_nice"] == 8
+    assert process["renice"]["skipped"] is True
+    assert process["taskpolicy"]["skipped"] is True
+    assert calls == []
