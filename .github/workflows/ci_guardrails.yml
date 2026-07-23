@@ -38,6 +38,7 @@ jobs:
             scripts/ops/live_canary_readiness_contract.py \
             scripts/ops/paper_live_data_standard.py \
             scripts/ops/production_flow_smoke.py \
+            scripts/ops/production_quality_control.py \
             scripts/ops/source_mutation_guard.py
 
       - name: CLI smoke (help)
@@ -54,6 +55,7 @@ jobs:
           python scripts/ops/live_canary_readiness_contract.py --help >/dev/null
           python scripts/ops/paper_live_data_standard.py --help >/dev/null
           python scripts/ops/production_flow_smoke.py --help >/dev/null
+          python scripts/ops/production_quality_control.py --help >/dev/null
           python scripts/ops/source_mutation_guard.py --help >/dev/null
 
       - name: Gate smoke fixtures

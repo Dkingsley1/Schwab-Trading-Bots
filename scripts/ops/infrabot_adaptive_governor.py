@@ -253,6 +253,15 @@ def _capability_registry() -> list[dict[str, Any]]:
             success_artifact="governance/health/live_canary_readiness_contract_latest.json",
         ),
         _capability(
+            capability_id="production_quality_control",
+            title="Production Quality Control",
+            owns=["production_quality_bar", "safe_repair_ordering", "live_canary_blocker_remediation"],
+            command=_opsctl("production-quality", "--apply", "--refresh-contract", "--json"),
+            apply_safe=True,
+            safe_under_pressure=True,
+            success_artifact="governance/health/production_quality_control_latest.json",
+        ),
+        _capability(
             capability_id="source_mutation_guard",
             title="Source Mutation Guard",
             owns=["runtime_source_mutation_guard", "protected_source_dirty", "canonical_source_write_contract"],
@@ -698,6 +707,7 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
     paper_runtime = _health(project_root, "runtime_paper_regression_guard_latest.json")
     paper_backlog = _health(project_root, "paper_execution_backlog_relief_latest.json")
     live_canary_readiness = _health(project_root, "live_canary_readiness_contract_latest.json")
+    production_quality = _health(project_root, "production_quality_control_latest.json")
     source_verification = _health(project_root, "source_verification_latest.json")
     provider_mesh = _health(project_root, "provider_mesh_latest.json")
     market_explainer = _health(project_root, "market_move_explainer_latest.json")
@@ -803,11 +813,14 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
                 ],
                 target_capabilities=[
                     "live_canary_readiness_contract",
+                    "production_quality_control",
                     "paper_profitability_control",
+                    "paper_performance_refresh",
                     "paper_execution_truth_layer",
                     "runtime_paper_regression_guard",
                     "paper_ramp_guard",
                     "broker_auth_supervisor",
+                    "daily_verify_auto_remediation",
                     "storage_backpressure_autopilot",
                     "source_mutation_guard",
                     "production_flow_smoke",
@@ -1388,6 +1401,7 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
             "paper_execution_truth_layer": bool(paper_truth),
             "runtime_paper_regression_guard": bool(paper_runtime),
             "live_canary_readiness_contract": bool(live_canary_readiness),
+            "production_quality_control": bool(production_quality),
             "source_verification": bool(source_verification),
             "provider_mesh": bool(provider_mesh),
             "market_move_explainer": bool(market_explainer),
@@ -1584,6 +1598,7 @@ def _route_policy(
                 "master_infrastructure_supervisor",
                 "infrastructure_autofix",
                 "live_canary_readiness_contract",
+                "production_quality_control",
                 "operator_cockpit",
             ],
         },

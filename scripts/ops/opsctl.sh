@@ -1360,6 +1360,9 @@ case "$cmd" in
   live-canary-readiness|canary-readiness-contract|production-hardening-bar)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_canary_readiness_contract.py" "$@"
     ;;
+  production-quality|production-quality-control|production-hardening-quality)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/production_quality_control.py" "$@"
+    ;;
   live-money-readiness|live-money-contract|faithful-live-money)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_money_readiness_contract.py" "$@"
     ;;
@@ -1763,6 +1766,9 @@ case "$cmd" in
       sql_maint_args+=(--no-auto-vacuum)
     fi
     exec "$PY" "$PROJECT_ROOT/scripts/sqlite_performance_maintenance.py" "${sql_maint_args[@]}"
+    ;;
+  health-gates|health-gate-refresh)
+    exec "$PY" "$PROJECT_ROOT/scripts/health_gates.py" "$@"
     ;;
   health)
     exec "$PY" "$PROJECT_ROOT/scripts/daily_auto_verify.py" --json "$@"
@@ -2903,6 +2909,7 @@ opsctl commands:
   promotion-quality-gate|promotion-gate [--json]
   autonomy-control [--json]
   live-canary-readiness|canary-readiness-contract|production-hardening-bar [--apply] [--json]
+  production-quality|production-quality-control|production-hardening-quality [--apply] [--refresh-contract] [--execute-safe-repairs] [--max-actions N] [--max-execute-actions N] [--json]
   live-money-readiness|live-money-contract|faithful-live-money [--target-date YYYY-MM-DD] [--json]
   paper-400-ramp|paper-ramp-400|paper-cap-400 [--apply] [--promote-roster] [--today YYYY-MM-DD] [--json]
   paper-execution-truth|paper-truth [--json]
@@ -3051,6 +3058,7 @@ opsctl commands:
   hot-lane-retention-control [--apply] [--target-free-gb N] [--hot-total-thin-gb N] [--json]
   storage-retention-unison [--apply] [--raw-max-files N] [--raw-max-gb N] [--cleanup-max-delete-gb N] [--telemetry-max-gb N] [--lifecycle-max-gb N] [--decision-max-gb N] [--target-free-gb N] [--json]
   sql-maint|sqlite-maint [--vacuum] [--json]
+  health-gates|health-gate-refresh [--json]
   health
   py314-canary|py314-ready|py314-migration-audit [--refresh-deps] [--skip-install] [--json]
   doctor

@@ -123,10 +123,15 @@ def test_infrabot_adaptive_governor_surfaces_live_canary_readiness_bar(tmp_path:
     assert "live_canary_readiness_bar" in needs
     assert needs["live_canary_readiness_bar"]["severity"] == "critical"
     assert "live_canary_readiness_contract" in needs["live_canary_readiness_bar"]["target_capabilities"]
+    assert "production_quality_control" in needs["live_canary_readiness_bar"]["target_capabilities"]
+    assert "paper_performance_refresh" in needs["live_canary_readiness_bar"]["target_capabilities"]
+    assert "daily_verify_auto_remediation" in needs["live_canary_readiness_bar"]["target_capabilities"]
 
     routes = {row["capability_id"]: row for row in payload["adaptive_policy_router"]["routes"]}
     assert routes["live_canary_readiness_contract"]["action"] == "advisory_only"
     assert routes["live_canary_readiness_contract"]["command"] == ["./scripts/ops/opsctl.sh", "live-canary-readiness", "--apply", "--json"]
+    assert routes["production_quality_control"]["action"] == "run_now"
+    assert routes["production_quality_control"]["command"] == ["./scripts/ops/opsctl.sh", "production-quality", "--apply", "--refresh-contract", "--json"]
 
 
 def test_infrabot_adaptive_governor_apply_writes_contracts_and_feedback(tmp_path: Path) -> None:
