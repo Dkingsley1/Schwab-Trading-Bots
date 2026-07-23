@@ -1,0 +1,632 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import platform
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable
+
+if __package__ in {None, ""}:
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from scripts.ops.long_runtime_common import iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
+else:
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    from .long_runtime_common import iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
+
+
+DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "unattended_soak_readiness_latest.json"
+DEFAULT_TARGET_DAYS = 30.0
+DEFAULT_EXTERNAL_ROOT = Path("/Volumes/BOT_LOGS/schwab_trading_bot")
+DiskSnapshotFn = Callable[[Path], dict[str, Any]]
+MANAGED_WARNING_NAMES = {
+    "host_not_on_ac_power_operator_approved_battery_override",
+    "zero_touch_remote_pager_missing_mobile_operator_coverage_active",
+}
+
+
+def _safe_float(raw: Any, default: float = 0.0) -> float:
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
+def _safe_int(raw: Any, default: int = 0) -> int:
+    try:
+        return int(float(raw))
+    except Exception:
+        return int(default)
+
+
+def _env_truthy(name: str) -> bool:
+    return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "on", "operator_approved"}
+
+
+def _warning_is_managed_for_soak(warning: Any) -> bool:
+    text = str(warning or "")
+    return bool(text in MANAGED_WARNING_NAMES or text.endswith("_overridden_by_caffeinate_guard"))
+
+
+def _dict(raw: Any) -> dict[str, Any]:
+    return raw if isinstance(raw, dict) else {}
+
+
+def _grade(score: float) -> str:
+    value = max(min(float(score), 100.0), 0.0)
+    if value >= 97.0:
+        return "A+"
+    if value >= 93.0:
+        return "A"
+    if value >= 85.0:
+        return "B"
+    if value >= 75.0:
+        return "C"
+    if value >= 65.0:
+        return "D"
+    return "F"
+
+
+def _disk_snapshot(path: Path) -> dict[str, Any]:
+    probe = Path(path).expanduser()
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        usage = shutil.disk_usage(probe)
+    except Exception:
+        return {"path": str(path), "probe_path": str(probe), "exists": bool(path.exists()), "free_gb": 0.0, "used_pct": 100.0}
+    used_pct = 100.0 * float(usage.used) / max(float(usage.total), 1.0)
+    return {
+        "path": str(path),
+        "probe_path": str(probe),
+        "exists": bool(path.exists()),
+        "total_gb": round(float(usage.total) / (1024.0**3), 3),
+        "free_gb": round(float(usage.free) / (1024.0**3), 3),
+        "used_gb": round(float(usage.used) / (1024.0**3), 3),
+        "used_pct": round(used_pct, 3),
+    }
+
+
+def _run_text(cmd: list[str], *, timeout_sec: int = 5) -> str:
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=max(int(timeout_sec), 1))
+    except Exception:
+        return ""
+    return (proc.stdout or "").strip()
+
+
+def _parse_pmset_custom(text: str) -> dict[str, dict[str, str]]:
+    profiles: dict[str, dict[str, str]] = {}
+    current = ""
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.endswith(":"):
+            current = line[:-1].strip()
+            profiles.setdefault(current, {})
+            continue
+        parts = line.split()
+        if len(parts) < 2 or not current:
+            continue
+        profiles.setdefault(current, {})[parts[0]] = parts[-1]
+    return profiles
+
+
+def _process_has_caffeinate(process_text: str | None = None) -> bool:
+    text = process_text if process_text is not None else _run_text(["/bin/ps", "-axo", "command"], timeout_sec=5)
+    lowered = str(text or "").lower()
+    return "/usr/bin/caffeinate" in lowered or " caffeinate " in f" {lowered} "
+
+
+def _host_power_contract(
+    *,
+    pmset_custom_text: str | None = None,
+    pmset_batt_text: str | None = None,
+    process_text: str | None = None,
+) -> dict[str, Any]:
+    system = platform.system()
+    custom_text = pmset_custom_text if pmset_custom_text is not None else _run_text(["/usr/bin/pmset", "-g", "custom"])
+    batt_text = pmset_batt_text if pmset_batt_text is not None else _run_text(["/usr/bin/pmset", "-g", "batt"])
+    profiles = _parse_pmset_custom(custom_text)
+    ac = profiles.get("AC Power", {})
+    caffeinate_active = _process_has_caffeinate(process_text)
+    ac_attached = "AC Power" in str(batt_text or "") or "AC attached" in str(batt_text or "")
+    battery_override_allowed = _env_truthy("BOT_UNATTENDED_SOAK_ALLOW_BATTERY")
+    battery_override_reason = os.getenv("BOT_UNATTENDED_SOAK_BATTERY_REASON", "").strip()
+
+    blockers: list[str] = []
+    warnings: list[str] = []
+    managed_controls: list[str] = []
+    if system == "Darwin" and not custom_text:
+        warnings.append("pmset_custom_unavailable")
+    if system == "Darwin" and not ac_attached:
+        if battery_override_allowed:
+            warnings.append("host_not_on_ac_power_operator_approved_battery_override")
+            managed_controls.append("host_not_on_ac_power_operator_approved_battery_override")
+        else:
+            blockers.append("host_not_on_ac_power")
+
+    sleep = _safe_float(ac.get("sleep"), -1.0)
+    disksleep = _safe_float(ac.get("disksleep"), -1.0)
+    standby = _safe_float(ac.get("standby"), 0.0)
+    autopoweroff = _safe_float(ac.get("autopoweroff"), 0.0)
+    sleep_blockers: list[str] = []
+    if system == "Darwin":
+        if sleep < 0:
+            warnings.append("host_sleep_setting_unknown")
+        elif sleep != 0.0:
+            sleep_blockers.append("host_sleep_not_disabled_on_ac")
+        if disksleep > 0.0:
+            sleep_blockers.append("disk_sleep_not_disabled_on_ac")
+        if standby > 0.0:
+            sleep_blockers.append("host_standby_not_disabled_on_ac")
+        if autopoweroff > 0.0:
+            sleep_blockers.append("host_autopoweroff_not_disabled_on_ac")
+
+    if sleep_blockers and caffeinate_active:
+        managed_controls.extend(f"{item}_overridden_by_caffeinate_guard" for item in sleep_blockers)
+    else:
+        blockers.extend(sleep_blockers)
+
+    status = "ready" if not blockers else "blocked"
+    scored_warnings = [item for item in warnings if not _warning_is_managed_for_soak(item)]
+    score = max(100.0 - (18.0 * len(blockers)) - (4.0 * len(scored_warnings)), 0.0)
+    return {
+        "status": status,
+        "ready": status == "ready",
+        "score": round(score, 2),
+        "grade": _grade(score),
+        "system": system,
+        "ac_attached": bool(ac_attached),
+        "battery_override_allowed": bool(battery_override_allowed),
+        "battery_override_reason": battery_override_reason,
+        "caffeinate_active": bool(caffeinate_active),
+        "pmset_profiles": profiles,
+        "settings": {
+            "sleep": ac.get("sleep", ""),
+            "disksleep": ac.get("disksleep", ""),
+            "standby": ac.get("standby", ""),
+            "autopoweroff": ac.get("autopoweroff", ""),
+            "ttyskeepawake": ac.get("ttyskeepawake", ""),
+            "tcpkeepalive": ac.get("tcpkeepalive", ""),
+        },
+        "blockers": blockers,
+        "warnings": warnings,
+        "managed_warnings": [item for item in warnings if _warning_is_managed_for_soak(item)],
+        "managed_controls": managed_controls,
+        "recommended_command": (
+            "scripts/install_caffeinate_launchd.sh or sudo pmset -a sleep 0 disksleep 0 standby 0 autopoweroff 0"
+            if blockers
+            else ""
+        ),
+    }
+
+
+def _external_root(project_root: Path, health_root: Path) -> Path:
+    mount_guard = load_json(health_root / "storage_mount_guard_latest.json")
+    raw = str(mount_guard.get("external_root") or os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT") or "").strip()
+    return Path(raw).expanduser() if raw else DEFAULT_EXTERNAL_ROOT
+
+
+def _storage_contract(
+    *,
+    project_root: Path,
+    target_days: float,
+    disk_snapshot_fn: DiskSnapshotFn = _disk_snapshot,
+) -> dict[str, Any]:
+    health_root = project_root / "governance" / "health"
+    retention = load_json(health_root / "storage_retention_unison_latest.json")
+    ingestion = load_json(health_root / "ingestion_storage_control_latest.json")
+    cleanup = load_json(health_root / "bot_logs_cleanup_intelligence_latest.json")
+    resilience = load_json(health_root / "storage_resilience_control_latest.json")
+    mount_guard = load_json(health_root / "storage_mount_guard_latest.json")
+    external_root = _external_root(project_root, health_root)
+    disk = disk_snapshot_fn(external_root)
+
+    retention_contract = retention.get("continuous_run_contract") if isinstance(retention.get("continuous_run_contract"), dict) else {}
+    ingestion_contract = ingestion.get("continuous_run_soak_contract") if isinstance(ingestion.get("continuous_run_soak_contract"), dict) else {}
+    effective_daily = max(
+        _safe_float(retention_contract.get("effective_daily_growth_gb"), 0.0),
+        _safe_float(retention_contract.get("min_daily_growth_gb"), 0.5),
+        0.5,
+    )
+    pressure_free = max(_safe_float(retention_contract.get("pressure_free_gb"), 64.0), 0.0)
+    buffer_gb = max(_safe_float(retention_contract.get("safety_buffer_gb"), 32.0), 0.0)
+    required_free = round(pressure_free + buffer_gb + (effective_daily * max(float(target_days), 1.0)), 3)
+    current_free = _safe_float(disk.get("free_gb"), _safe_float(retention_contract.get("current_external_free_gb"), 0.0))
+    projected_free = _safe_float(cleanup.get("projected_free_gb"), current_free)
+    margin = round(current_free - required_free, 3)
+    projected_margin = round(projected_free - required_free, 3)
+
+    blockers: list[str] = []
+    warnings: list[str] = []
+    managed_controls: list[str] = []
+    if current_free <= 0.0:
+        blockers.append("external_free_space_unknown")
+    if current_free < required_free:
+        blockers.append("storage_margin_not_30_day_ready")
+        if projected_margin >= 0.0 and _safe_float(cleanup.get("selected_reclaimable_gb"), 0.0) > 0.0:
+            warnings.append("storage_cleanup_plan_available_not_applied")
+    if not bool(retention_contract.get("ready", False)):
+        blockers.append("storage_retention_contract_not_ready")
+    ingestion_soak_ready = bool(ingestion_contract.get("ready", False) or ingestion_contract.get("soak_ready", False))
+    if not ingestion_soak_ready:
+        blockers.append("ingestion_soak_contract_not_ready")
+    if not bool(resilience.get("ok", False)):
+        blockers.append("storage_resilience_not_ready")
+    if bool(mount_guard.get("external_low_space", False)):
+        warnings.append("storage_mount_guard_low_space")
+
+    failed_db_checks = []
+    for row in resilience.get("database_integrity_checks") if isinstance(resilience.get("database_integrity_checks"), list) else []:
+        if isinstance(row, dict) and bool(row.get("present", False)) and not bool(row.get("ok", False)):
+            failed_db_checks.append(str(row.get("db_path") or "unknown"))
+    if failed_db_checks:
+        blockers.append("storage_database_integrity_errors")
+
+    status = "ready" if not blockers else "blocked"
+    score = max(100.0 - (12.0 * len(blockers)) - (3.0 * len(warnings)), 0.0)
+    return {
+        "status": status,
+        "ready": status == "ready",
+        "score": round(score, 2),
+        "grade": _grade(score),
+        "target_days": round(float(target_days), 3),
+        "external_root": str(external_root),
+        "disk": disk,
+        "required_external_free_gb": required_free,
+        "current_external_free_gb": round(current_free, 3),
+        "available_margin_gb": margin,
+        "projected_margin_gb": projected_margin,
+        "effective_daily_growth_gb": round(effective_daily, 4),
+        "retention_status": str(retention_contract.get("status") or ""),
+        "ingestion_status": str(ingestion_contract.get("status") or ""),
+        "ingestion_soak_ready": ingestion_soak_ready,
+        "resilience_status": str(resilience.get("overall_status") or ""),
+        "failed_database_integrity_checks": failed_db_checks,
+        "blockers": ordered_unique(blockers),
+        "warnings": ordered_unique(warnings),
+    }
+
+
+def _paper_soak_auth_ready(auth: dict[str, Any], schwab_auth: dict[str, Any], broker: dict[str, Any]) -> bool:
+    broker_state = _dict(auth.get("broker_state"))
+    lease_budget = _dict(auth.get("lease_budget"))
+    token = _dict(schwab_auth.get("token"))
+    broker_preflight = _dict(broker.get("preflight_checks"))
+    lease_expires = max(
+        _safe_float(auth.get("expires_in_seconds"), 0.0),
+        _safe_float(lease_budget.get("expires_in_seconds"), 0.0),
+        _safe_float(token.get("expires_in_seconds"), 0.0),
+        _safe_float(broker.get("token_expires_in_seconds"), 0.0),
+    )
+    ready_floor = max(
+        _safe_float(schwab_auth.get("min_ready_expires_seconds"), 0.0),
+        _safe_float(token.get("min_ready_expires_seconds"), 0.0),
+        _safe_float(_dict(schwab_auth.get("regression_contract")).get("schwab_token_ready_floor_seconds"), 0.0),
+        900.0,
+    )
+    critical_floor = max(_safe_float(lease_budget.get("critical_lease_seconds"), 0.0), 600.0)
+    token_ready = bool(
+        bool(schwab_auth.get("token_ready", False))
+        or bool(token.get("ready", False))
+        or bool(broker_preflight.get("token_ready_for_open", False))
+        or bool(broker.get("ready_for_open", False))
+    )
+    readiness_refresh_needed = bool(
+        bool(schwab_auth.get("readiness_refresh_needed", False))
+        or bool(token.get("readiness_refresh_needed", False))
+        or bool(broker_preflight.get("readiness_refresh_needed_after", False))
+        or lease_expires < ready_floor
+    )
+    network_ok = bool(
+        broker.get("network_ok", True) is not False
+        and broker_state.get("network_ok", True) is not False
+    )
+    broker_operable = bool(bool(broker.get("ready_for_open", False)) or bool(broker_state.get("broker_operable", False)))
+    configured_for_refresh = bool(
+        broker_state.get("configured_for_refresh", True) is not False
+        and (token_ready or bool(token) or bool(broker_preflight.get("token_exists", False)))
+    )
+    return bool(
+        token_ready
+        and not readiness_refresh_needed
+        and network_ok
+        and broker_operable
+        and configured_for_refresh
+        and lease_expires >= critical_floor
+    )
+
+
+def _runtime_contract(project_root: Path) -> dict[str, Any]:
+    health_root = project_root / "governance" / "health"
+    process = load_json(health_root / "process_watchdog_latest.json")
+    live_runtime = load_json(health_root / "live_runtime_separation_control_latest.json")
+    auth = load_json(health_root / "auth_lease_manager_latest.json")
+    schwab_auth = load_json(health_root / "schwab_auth_supervisor_latest.json")
+    broker = load_json(health_root / "broker_readiness_latest.json")
+    blockers: list[str] = []
+    warnings: list[str] = []
+    managed_controls: list[str] = []
+    if str(process.get("overall_status") or "").lower() != "ready":
+        blockers.append("process_watchdog_not_ready")
+    if process.get("restart_storms"):
+        blockers.append("restart_storms_present")
+    if process.get("alerts"):
+        warnings.append("process_watchdog_alerts_present")
+    live_runtime_status = str(live_runtime.get("overall_status") or "").lower()
+    live_plane = live_runtime.get("live_plane") if isinstance(live_runtime.get("live_plane"), dict) else {}
+    clearance_plan = live_runtime.get("clearance_plan") if isinstance(live_runtime.get("clearance_plan"), dict) else {}
+    release_contract = live_runtime.get("release_contract") if isinstance(live_runtime.get("release_contract"), dict) else {}
+    clearance_state = str(clearance_plan.get("clearance_state") or "").strip().lower()
+    cold_lane_deferred = bool(
+        live_runtime_status == "degraded"
+        and bool(live_plane.get("ready", False))
+        and bool(live_plane.get("broker_ready", False))
+        and bool(live_plane.get("session_ready", False))
+        and bool(live_plane.get("live_lane_running", False))
+        and clearance_state in {"awaiting_cold_lane", "managed_cold_lane_deferred", "managed_coverage_stage_deferred", "protect_live", "ready"}
+    )
+    paper_soak_live_release_deferred = bool(
+        live_runtime_status == "degraded"
+        and bool(release_contract.get("live_lane_should_be_read_only", False))
+        and bool(live_plane.get("broker_ready", False))
+        and bool(live_plane.get("session_ready", False))
+        and clearance_state in {"awaiting_cold_lane", "managed_cold_lane_deferred", "managed_coverage_stage_deferred", "protect_live"}
+    )
+    if live_runtime_status == "blocked":
+        blockers.append("live_runtime_separation_blocked")
+    elif cold_lane_deferred:
+        managed_controls.append("live_plane_ready_cold_lane_refresh_deferred")
+    elif paper_soak_live_release_deferred:
+        managed_controls.append("paper_soak_live_money_locked_cold_lane_deferred")
+    elif live_runtime_status == "degraded":
+        warnings.append("live_runtime_separation_degraded")
+    paper_auth_ready = _paper_soak_auth_ready(auth, schwab_auth, broker)
+    if auth and not bool(auth.get("ok", False)) and not paper_auth_ready:
+        blockers.append("auth_lease_not_ready")
+    if broker and not bool(broker.get("ready_for_open", broker.get("ok", True))):
+        warnings.append("broker_readiness_not_ready_for_open")
+    status = "ready" if not blockers else "blocked"
+    score = max(100.0 - (15.0 * len(blockers)) - (4.0 * len(warnings)), 0.0)
+    return {
+        "status": status,
+        "ready": status == "ready",
+        "score": round(score, 2),
+        "grade": _grade(score),
+        "process_watchdog_status": str(process.get("overall_status") or ""),
+        "live_runtime_status": str(live_runtime.get("overall_status") or ""),
+        "auth_status": str(auth.get("overall_status") or auth.get("status") or ""),
+        "strict_auth_ready": bool(auth.get("ok", False)),
+        "paper_soak_auth_ready": bool(paper_auth_ready),
+        "broker_ready_for_open": bool(broker.get("ready_for_open", False)),
+        "restart_storm_count": len(process.get("restart_storms") or []),
+        "alert_count": len(process.get("alerts") or []),
+        "blockers": blockers,
+        "warnings": warnings,
+        "managed_controls": managed_controls,
+    }
+
+
+def _livefeed_remote_viewer_ready(livefeed_guard: dict[str, Any]) -> bool:
+    if not livefeed_guard:
+        return False
+    health = livefeed_guard.get("health") if isinstance(livefeed_guard.get("health"), dict) else {}
+    blockers = livefeed_guard.get("blockers") if isinstance(livefeed_guard.get("blockers"), list) else []
+    status = str(livefeed_guard.get("overall_status") or livefeed_guard.get("status") or "").strip().lower()
+    return bool(livefeed_guard.get("ok", health.get("ok", False))) and status in {"ready", "running"} and not blockers
+
+
+def _alerting_contract(project_root: Path) -> dict[str, Any]:
+    health_root = project_root / "governance" / "health"
+    ladder = load_json(health_root / "notification_escalation_ladder_latest.json")
+    livefeed_guard = load_json(health_root / "livefeed_refresh_guard_latest.json")
+    blockers: list[str] = []
+    warnings: list[str] = []
+    managed_controls: list[str] = []
+    backlog = ladder.get("critical_backlog") if isinstance(ladder.get("critical_backlog"), dict) else {}
+    grouped_unsent = _safe_int(backlog.get("grouped_unsent_count"), 0)
+    grouped_unacked = _safe_int(backlog.get("grouped_unacked_count"), 0)
+    attended_runtime_ready = bool(ladder.get("attended_runtime_ready", False))
+    zero_touch_unattended_ready = bool(ladder.get("unattended_runtime_ready", False))
+    phone_bridge_ready = bool(ladder.get("phone_bridge_ready", False))
+    remote_pager_ready = bool(ladder.get("remote_pager_ready", False))
+    livefeed_ready = bool(ladder.get("livefeed_remote_viewer_ready", False)) or _livefeed_remote_viewer_ready(livefeed_guard)
+    mobile_operator_coverage_ready = bool(ladder.get("mobile_operator_coverage_ready", False)) or bool(
+        phone_bridge_ready
+        and livefeed_ready
+        and grouped_unsent == 0
+        and grouped_unacked == 0
+    )
+    if not ladder:
+        blockers.append("notification_ladder_missing")
+    if ladder and not attended_runtime_ready:
+        blockers.append("attended_alert_path_not_ready")
+    if ladder and not zero_touch_unattended_ready and not mobile_operator_coverage_ready:
+        blockers.append("unattended_remote_pager_not_ready")
+    if grouped_unsent > 0:
+        blockers.append("critical_alerts_unsent")
+    if grouped_unacked > 0:
+        blockers.append("critical_alerts_unacked")
+    if ladder and mobile_operator_coverage_ready and not zero_touch_unattended_ready:
+        managed_controls.append("daily_mobile_operator_coverage_active_without_zero_touch_remote_pager")
+    elif ladder and phone_bridge_ready and not remote_pager_ready:
+        warnings.append("phone_bridge_ready_but_remote_pager_missing")
+    status = "ready" if not blockers else "blocked"
+    score = max(100.0 - (18.0 * len(blockers)) - (4.0 * len(warnings)), 0.0)
+    return {
+        "status": status,
+        "ready": status == "ready",
+        "score": round(score, 2),
+        "grade": _grade(score),
+        "attended_runtime_ready": attended_runtime_ready,
+        "unattended_runtime_ready": zero_touch_unattended_ready,
+        "zero_touch_unattended_ready": zero_touch_unattended_ready,
+        "mobile_operator_coverage_ready": mobile_operator_coverage_ready,
+        "livefeed_remote_viewer_ready": livefeed_ready,
+        "operator_coverage_model": (
+            "zero_touch_remote_pager"
+            if zero_touch_unattended_ready
+            else (
+                "daily_supervised_mobile_operator"
+                if mobile_operator_coverage_ready
+                else ("attended_alerts_only" if attended_runtime_ready else "not_ready")
+            )
+        ),
+        "remote_pager_ready": remote_pager_ready,
+        "phone_bridge_ready": phone_bridge_ready,
+        "critical_backlog": backlog,
+        "blockers": blockers,
+        "warnings": warnings,
+        "managed_controls": managed_controls,
+    }
+
+
+def _freshness_contract(project_root: Path) -> dict[str, Any]:
+    health_root = project_root / "governance" / "health"
+    paths = {
+        "storage_retention_unison": health_root / "storage_retention_unison_latest.json",
+        "ingestion_storage_control": health_root / "ingestion_storage_control_latest.json",
+        "process_watchdog": health_root / "process_watchdog_latest.json",
+        "notification_escalation_ladder": health_root / "notification_escalation_ladder_latest.json",
+        "livefeed_refresh_guard": health_root / "livefeed_refresh_guard_latest.json",
+        "storage_resilience_control": health_root / "storage_resilience_control_latest.json",
+    }
+    rows: dict[str, dict[str, Any]] = {}
+    warnings: list[str] = []
+    for name, path in paths.items():
+        payload = load_json(path)
+        age = payload_age_minutes(payload, path)
+        rows[name] = {"path": str(path), "present": bool(payload), "age_minutes": round(float(age), 3) if age is not None else None}
+        if not payload:
+            warnings.append(f"{name}_missing")
+        elif age is not None and age > 180.0:
+            warnings.append(f"{name}_stale")
+    status = "ready" if not warnings else "watch"
+    score = max(100.0 - (4.0 * len(warnings)), 0.0)
+    return {
+        "status": status,
+        "ready": status == "ready",
+        "score": round(score, 2),
+        "grade": _grade(score),
+        "warnings": warnings,
+        "artifacts": rows,
+    }
+
+
+def build_payload(
+    project_root: Path = PROJECT_ROOT,
+    *,
+    target_days: float = DEFAULT_TARGET_DAYS,
+    pmset_custom_text: str | None = None,
+    pmset_batt_text: str | None = None,
+    process_text: str | None = None,
+    disk_snapshot_fn: DiskSnapshotFn = _disk_snapshot,
+) -> dict[str, Any]:
+    target = max(float(target_days), 1.0)
+    storage = _storage_contract(project_root=project_root, target_days=target, disk_snapshot_fn=disk_snapshot_fn)
+    host = _host_power_contract(pmset_custom_text=pmset_custom_text, pmset_batt_text=pmset_batt_text, process_text=process_text)
+    runtime = _runtime_contract(project_root)
+    alerting = _alerting_contract(project_root)
+    freshness = _freshness_contract(project_root)
+    sections = {
+        "storage": storage,
+        "host_power": host,
+        "runtime_loops": runtime,
+        "alerting": alerting,
+        "artifact_freshness": freshness,
+    }
+    blockers = ordered_unique(
+        list(storage.get("blockers") or [])
+        + list(host.get("blockers") or [])
+        + list(runtime.get("blockers") or [])
+        + list(alerting.get("blockers") or [])
+    )
+    warnings = ordered_unique(
+        list(storage.get("warnings") or [])
+        + list(host.get("warnings") or [])
+        + list(runtime.get("warnings") or [])
+        + list(alerting.get("warnings") or [])
+        + list(freshness.get("warnings") or [])
+    )
+    scored_warnings = [item for item in warnings if not _warning_is_managed_for_soak(item)]
+    managed_warnings = [item for item in warnings if _warning_is_managed_for_soak(item)]
+    managed_controls = ordered_unique(
+        list(host.get("managed_controls") or [])
+        + list(runtime.get("managed_controls") or [])
+        + list(alerting.get("managed_controls") or [])
+    )
+    section_scores = [_safe_float(row.get("score"), 92.0) for row in sections.values() if isinstance(row, dict)]
+    base_score = sum(section_scores) / max(len(section_scores), 1)
+    score = max(min(base_score - (6.0 * len(blockers)) - (1.5 * len(scored_warnings)), 100.0), 0.0)
+    status = "ready" if not blockers else "blocked"
+    return {
+        "timestamp_utc": iso_now(),
+        "schema_version": 1,
+        "ok": status == "ready",
+        "overall_status": status,
+        "overall_score": round(score, 2),
+        "overall_grade": _grade(score),
+        "target_days": round(target, 3),
+        "safe_to_leave_unattended": bool(status == "ready"),
+        "live_money_readiness": "locked_not_evaluated_by_soak_readiness",
+        "blockers": blockers,
+        "warnings": warnings,
+        "managed_warnings": managed_warnings,
+        "managed_controls": managed_controls,
+        "scored_warnings": scored_warnings,
+        "sections": sections,
+        "control_env": {
+            "BOT_UNATTENDED_SOAK_ACTIVE": "1",
+            "BOT_UNATTENDED_SOAK_TARGET_DAYS": str(round(target, 3)),
+            "BOT_UNATTENDED_SOAK_READY": "1" if status == "ready" else "0",
+            "BOT_LIVE_MONEY_LOCKED_DURING_SOAK": "1",
+        },
+        "recommended_commands": [
+            ["./scripts/ops/opsctl.sh", "storage-retention-unison", "--apply", "--soak-days", str(round(target, 3)), "--json"],
+            ["./scripts/ops/opsctl.sh", "bot-logs-cleanup-intelligence", "--apply", "--target-free-gb", "125", "--max-tier", "2", "--json"],
+            ["./scripts/install_caffeinate_launchd.sh"],
+            ["./scripts/ops/opsctl.sh", "notification-escalation-ladder", "--json"],
+            ["./scripts/ops/opsctl.sh", "storage-resilience-control", "--fast", "--json"],
+        ],
+        "next_action": (
+            "all unattended soak gates are ready; leave live money locked and let the soak run"
+            if status == "ready"
+            else "clear blockers before leaving the 30-day soak unattended"
+        ),
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Publish a single 30-day unattended soak readiness contract.")
+    parser.add_argument("--project-root", default=str(PROJECT_ROOT))
+    parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
+    parser.add_argument("--target-days", type=float, default=float(os.getenv("UNATTENDED_SOAK_TARGET_DAYS", str(DEFAULT_TARGET_DAYS))))
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+
+    payload = build_payload(Path(args.project_root).resolve(), target_days=float(args.target_days))
+    out_path = Path(args.out_file).expanduser()
+    write_payload(out_path, payload)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=True))
+    else:
+        print(
+            "unattended_soak_readiness "
+            f"status={payload.get('overall_status', '')} "
+            f"grade={payload.get('overall_grade', '')} "
+            f"target_days={payload.get('target_days', 0)}"
+        )
+    return 0 if bool(payload.get("ok", False)) else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

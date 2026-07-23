@@ -27,6 +27,10 @@ DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "system_summary_auto
 DEFAULT_STEP_TIMEOUT_SEC = int(os.environ.get("SYSTEM_SUMMARY_AUTOPILOT_STEP_TIMEOUT_SECONDS", "300"))
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -80,15 +84,23 @@ def _run(cmd: list[str], timeout_sec: int = DEFAULT_STEP_TIMEOUT_SEC) -> dict[st
 def build_payload(project_root: Path = PROJECT_ROOT, step_timeout_sec: int = DEFAULT_STEP_TIMEOUT_SEC) -> dict[str, Any]:
     chrome_guard = _load_json(project_root / "governance" / "health" / "chrome_headless_guard_latest.json")
     policy = str(chrome_guard.get("timeline_pdf_policy") or "allow").strip().lower()
+    quiet_mode = bool(
+        _env_flag("CHROME_HEADLESS_QUIET_MODE", "0")
+        or not _env_flag("REPORT_HEADLESS_BROWSER_RENDER_ENABLED", "1")
+    )
+    if quiet_mode:
+        policy = "suppress"
     render_pdf = policy != "suppress"
     allow_gui = policy not in {"suppress", "headless_only"}
+    refresh_supporting = not quiet_mode and not _env_flag("OPS_HEALTH_NO_REPORT_REFRESH", "0")
 
     summary_cmd = [
         str(PY),
         str(project_root / "scripts" / "ops" / "system_summary_report.py"),
-        "--refresh-supporting-artifacts",
         "--json",
     ]
+    if refresh_supporting:
+        summary_cmd.append("--refresh-supporting-artifacts")
     if render_pdf:
         summary_cmd.append("--render-pdf")
     else:
@@ -141,6 +153,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, step_timeout_sec: int = DEF
         "ok": overall_status != "blocked",
         "overall_status": overall_status,
         "chrome_policy": policy,
+        "quiet_mode_active": quiet_mode,
+        "refresh_supporting_artifacts": refresh_supporting,
         "render_pdf": render_pdf,
         "allow_gui_pdf_renderer": allow_gui,
         "step_timeout_sec": step_timeout_sec,

@@ -3,6 +3,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.incident_auto_halt import evaluate_incident
+import scripts.paper_replay_drill as paper_replay_drill
 from scripts.promotion_quality_gate import evaluate_quality
 from scripts.replay_end_to_end_deterministic import run_replay
 import scripts.pager_alert_router as pager_alert_router
@@ -358,6 +360,70 @@ class OpsQualityIncidentTests(unittest.TestCase):
             self.assertFalse(payload["hash_match"])
             self.assertIn("expected_hash_mismatch", payload["failed_checks"])
 
+    def test_paper_replay_drill_normalizes_paper_execution_result(self) -> None:
+        row = {
+            "timestamp_utc": "2026-06-11T13:00:00+00:00",
+            "mode": "paper",
+            "intent_message_id": "intent-1",
+            "intent": {"target_mode": "paper", "intent_kind": "paper_mirror"},
+            "result": {
+                "decision": {
+                    "timestamp_utc": "2026-06-11T13:00:01+00:00",
+                    "strategy": "paper_mirror::bot_a",
+                    "symbol": "AAPL",
+                    "action": "BUY",
+                    "quantity": 2,
+                    "model_score": 0.61,
+                    "threshold": 0.55,
+                    "decision_id": "decision-1",
+                    "metadata": {"bot_id": "bot_a"},
+                }
+            },
+        }
+
+        normalized = paper_replay_drill._normalize_execution_result(row)
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["mode"], "paper")
+        self.assertEqual(normalized["symbol"], "AAPL")
+        self.assertEqual(normalized["decision_id"], "decision-1")
+        self.assertEqual(normalized["metadata_bot_id"], "bot_a")
+
+    def test_paper_replay_drill_recognizes_stale_skip_results_as_non_samples(self) -> None:
+        row = {
+            "timestamp_utc": "2026-06-11T13:00:00+00:00",
+            "mode": "paper",
+            "result_status": "STALE_INTENT_SKIPPED",
+            "result": {"reason": "stale_execution_intent"},
+        }
+
+        self.assertTrue(paper_replay_drill._is_stale_execution_result(row))
+        self.assertIsNone(paper_replay_drill._normalize_execution_result(row))
+
+    def test_paper_replay_drill_normalizes_paper_execution_intent(self) -> None:
+        row = {
+            "message_id": "intent-1",
+            "target_mode": "paper",
+            "symbol": "BTC-USD",
+            "action": "SELL",
+            "quantity": 1,
+            "model_score": 0.57,
+            "threshold": 0.54,
+            "strategy": "paper_mirror_futures::bot_b",
+            "metadata": {"bot_id": "bot_b"},
+            "timestamp_utc": "2026-06-11T13:05:00+00:00",
+        }
+
+        normalized = paper_replay_drill._normalize_execution_intent(row)
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["mode"], "paper")
+        self.assertEqual(normalized["symbol"], "BTC-USD")
+        self.assertEqual(normalized["decision_id"], "intent-1")
+        self.assertEqual(normalized["metadata_bot_id"], "bot_b")
+
 
     def test_pager_alert_router_send_reports_pushover_success(self) -> None:
         payload = {"severity": "critical", "event": "tripwire", "message": "Tripwire active"}
@@ -400,6 +466,39 @@ class OpsQualityIncidentTests(unittest.TestCase):
         self.assertFalse(result["configured"]["pushover"])
         self.assertFalse(result["any_configured"])
         self.assertFalse(result["any_sent"])
+
+    def test_pager_alert_router_rejects_placeholder_webhook_url(self) -> None:
+        pager_alert_router._webhook_url = lambda: "https://example.invalid/pager"
+        pager_alert_router._pushover_config = lambda: {
+            "token": "",
+            "user": "",
+            "device": "",
+            "priority": "0",
+            "sound": "",
+        }
+
+        result = pager_alert_router.send({"severity": "critical", "event": "tripwire", "message": "Tripwire active"})
+
+        self.assertFalse(result["configured"]["webhook"])
+        self.assertEqual(result["config_errors"]["webhook"], "placeholder_webhook_url")
+        self.assertFalse(result["any_configured"])
+        self.assertFalse(result["any_sent"])
+
+    def test_pager_alert_router_records_webhook_delivery_error(self) -> None:
+        original_urlopen = pager_alert_router.urllib.request.urlopen
+        pager_alert_router._LAST_DELIVERY_ERRORS.clear()
+
+        def fail_urlopen(*_args, **_kwargs):
+            raise urllib.error.URLError("dns failed")
+
+        try:
+            pager_alert_router.urllib.request.urlopen = fail_urlopen
+            ok = pager_alert_router._post_json("https://alerts.example.org/pager", {"event": "tripwire"})
+        finally:
+            pager_alert_router.urllib.request.urlopen = original_urlopen
+
+        self.assertFalse(ok)
+        self.assertIn("dns failed", pager_alert_router._LAST_DELIVERY_ERRORS["webhook"])
 
 
 

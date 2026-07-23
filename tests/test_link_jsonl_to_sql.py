@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "link_jsonl_to_sql.py"
@@ -17,6 +18,19 @@ SPEC.loader.exec_module(MODULE)
 
 
 class LinkJsonlToSqlTests(unittest.TestCase):
+    def test_ingest_cooldown_yields_when_host_load_exceeds_cap(self) -> None:
+        sleeps: list[float] = []
+        with mock.patch.object(MODULE.os, "getloadavg", return_value=(9.5, 7.0, 6.0)):
+            with mock.patch.object(MODULE.time, "sleep", side_effect=lambda seconds: sleeps.append(seconds)):
+                slept = MODULE._ingest_cooldown_sleep(
+                    base_sleep_seconds=0.05,
+                    host_load_soft_cap=6.0,
+                    host_load_sleep_seconds=0.5,
+                )
+
+        self.assertEqual(slept, 0.5)
+        self.assertEqual(sleeps, [0.5])
+
     def test_journal_event_honors_pressure_budget_flags(self) -> None:
         keys = [
             "INGEST_JOURNAL_DAILY_ENABLED",
@@ -157,6 +171,12 @@ class LinkJsonlToSqlTests(unittest.TestCase):
         self.assertIn("source_day_utc", cols)
         self.assertIn("source_stream", cols)
         self.assertIn("source_partition_key", cols)
+        self.assertIn("source_broker", cols)
+        self.assertIn("source_provider", cols)
+        self.assertIn("source_venue", cols)
+        self.assertIn("asset_class", cols)
+        self.assertIn("routing_lane", cols)
+        self.assertIn("source_quality_label", cols)
 
     def test_sync_file_to_sqlite_writes_correlation_columns(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -234,6 +254,118 @@ class LinkJsonlToSqlTests(unittest.TestCase):
         self.assertEqual(dead_letter_count, 1)
         self.assertEqual(schema_drift_count, 1)
         self.assertIsNotNone(watermark)
+
+    def test_sync_file_to_sqlite_writes_route_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db_path = root / "ingest.sqlite3"
+            jsonl_path = root / "governance" / "channels" / "api" / "default_crypto_coinbase" / "api_20260624.jsonl"
+            jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+            jsonl_path.write_text(
+                json.dumps(
+                    {
+                        "timestamp_utc": "2026-06-24T14:30:00+00:00",
+                        "symbol": "BTC-USD",
+                        "broker": "coinbase",
+                        "source_provider": "coinbase_ticker",
+                        "source_venue": "coinbase",
+                        "asset_class": "crypto",
+                        "routing_lane": "coinbase_crypto",
+                        "source_quality_label": "exchange_native",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                MODULE._ensure_sqlite_schema(conn, "jsonl_records")
+                result = MODULE._sync_file_to_sqlite(
+                    conn,
+                    "jsonl_records",
+                    root,
+                    jsonl_path,
+                    start_line=0,
+                    start_offset_bytes=0,
+                    dry_run=False,
+                    lock_retries=0,
+                    lock_retry_delay_seconds=0.01,
+                    latency_all=None,
+                    latency_stream=None,
+                    invalid_log_path=None,
+                    invalid_sample_limit=0,
+                    run_id="",
+                    iter_id="",
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT source_broker, source_provider, source_venue, asset_class, routing_lane, source_quality_label FROM jsonl_records"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(result["inserted"], 1)
+        self.assertEqual(
+            row,
+            ("coinbase", "coinbase_ticker", "coinbase", "crypto", "coinbase_crypto", "exchange_native"),
+        )
+
+    def test_sync_file_to_sqlite_infers_signal_generation_source_path_route(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db_path = root / "ingest.sqlite3"
+            jsonl_path = root / "governance" / "events" / "signal_generation_20260624.jsonl"
+            jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+            jsonl_path.write_text(
+                json.dumps(
+                    {
+                        "timestamp_utc": "2026-06-24T20:31:49+00:00",
+                        "event": "signal_generation",
+                        "signal_quality": "bad_signal",
+                        "source_path": str(
+                            root
+                            / "decisions"
+                            / "shadow_intraday_aggressive_equities"
+                            / "trade_decisions_20260624.jsonl"
+                        ),
+                        "symbol": "VGIT",
+                        "strategy": "master_futures_bot",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                MODULE._ensure_sqlite_schema(conn, "jsonl_records")
+                result = MODULE._sync_file_to_sqlite(
+                    conn,
+                    "jsonl_records",
+                    root,
+                    jsonl_path,
+                    start_line=0,
+                    start_offset_bytes=0,
+                    dry_run=False,
+                    lock_retries=0,
+                    lock_retry_delay_seconds=0.01,
+                    latency_all=None,
+                    latency_stream=None,
+                    invalid_log_path=None,
+                    invalid_sample_limit=0,
+                    run_id="",
+                    iter_id="",
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT source_broker, source_provider, source_venue, asset_class, routing_lane, source_quality_label FROM jsonl_records"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(result["inserted"], 1)
+        self.assertEqual(row, ("schwab", "schwab", "schwab", "equities", "schwab_equities", "broker_native"))
 
     def test_sync_file_to_sqlite_uses_inode_identity_after_channel_rotation(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -486,6 +618,178 @@ class LinkJsonlToSqlTests(unittest.TestCase):
         self.assertEqual(payload["filters"]["oversize_payload_bytes"], 262144)
         self.assertEqual(payload["filters"]["sqlite_batch_max_bytes"], 4194304)
         self.assertEqual(payload["sqlite"]["inserted"], 1)
+
+    def test_fresh_idle_health_fast_path_skips_recent_zero_pending_shard(self) -> None:
+        keys = [
+            "SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS",
+            "SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS",
+            "SQL_LINK_SERVICE_SKIP_IDLE_SENTINELS",
+        ]
+        old_env = {key: os.environ.get(key) for key in keys}
+        try:
+            os.environ["SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS"] = "1"
+            os.environ["SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS"] = "120"
+            os.environ["SQL_LINK_SERVICE_SKIP_IDLE_SENTINELS"] = "0"
+            with tempfile.TemporaryDirectory() as td:
+                health_file = (
+                    Path(td)
+                    / "governance"
+                    / "health"
+                    / "jsonl_sql_ingestion_health_data_latest.json"
+                )
+                health_file.parent.mkdir(parents=True, exist_ok=True)
+                health_file.write_text(
+                    json.dumps(
+                        {
+                            "timestamp_utc": MODULE._now_utc(),
+                            "overall_status": "ready",
+                            "sqlite": {"pending_lines": 0},
+                            "sqlite_json_files": {"pending_files": 0},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                allowed, detail = MODULE._fresh_idle_health_fast_path_allowed(health_file)
+
+            self.assertTrue(allowed)
+            self.assertEqual(detail["reason"], "fresh_idle_health")
+            self.assertEqual(detail["shard"], "data")
+        finally:
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_fresh_idle_health_fast_path_does_not_skip_dirty_health(self) -> None:
+        keys = [
+            "SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS",
+            "SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS",
+            "SQL_LINK_SERVICE_SKIP_IDLE_SENTINELS",
+        ]
+        old_env = {key: os.environ.get(key) for key in keys}
+        try:
+            os.environ["SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS"] = "1"
+            os.environ["SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS"] = "120"
+            os.environ["SQL_LINK_SERVICE_SKIP_IDLE_SENTINELS"] = "0"
+            with tempfile.TemporaryDirectory() as td:
+                health_file = (
+                    Path(td)
+                    / "governance"
+                    / "health"
+                    / "jsonl_sql_ingestion_health_governance_latest.json"
+                )
+                health_file.parent.mkdir(parents=True, exist_ok=True)
+                health_file.write_text(
+                    json.dumps(
+                        {
+                            "timestamp_utc": MODULE._now_utc(),
+                            "overall_status": "ready",
+                            "sqlite": {"pending_lines": 0, "invalid": 1},
+                            "sqlite_json_files": {"pending_files": 0},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                allowed, detail = MODULE._fresh_idle_health_fast_path_allowed(health_file)
+
+            self.assertFalse(allowed)
+            self.assertEqual(detail["reason"], "last_health_has_ingestion_errors")
+            self.assertEqual(detail["shard"], "governance")
+            self.assertEqual(detail["counts"]["invalid"], 1)
+        finally:
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_fresh_idle_health_fast_path_yields_to_stale_decision_catch_up(self) -> None:
+        keys = [
+            "SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS",
+            "SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS",
+            "SQL_LINK_SERVICE_STALE_DECISION_SOURCE_CATCH_UP",
+        ]
+        old_env = {key: os.environ.get(key) for key in keys}
+        try:
+            os.environ["SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS"] = "1"
+            os.environ["SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS"] = "120"
+            os.environ["SQL_LINK_SERVICE_STALE_DECISION_SOURCE_CATCH_UP"] = "1"
+            with tempfile.TemporaryDirectory() as td:
+                health_file = (
+                    Path(td)
+                    / "governance"
+                    / "health"
+                    / "jsonl_sql_ingestion_health_trading_latest.json"
+                )
+                health_file.parent.mkdir(parents=True, exist_ok=True)
+                health_file.write_text(
+                    json.dumps(
+                        {
+                            "timestamp_utc": MODULE._now_utc(),
+                            "overall_status": "ready",
+                            "sqlite": {"pending_lines": 0},
+                            "sqlite_json_files": {"pending_files": 0},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                allowed, detail = MODULE._fresh_idle_health_fast_path_allowed(
+                    health_file,
+                    path_contains=["decisions/shadow_conservative_equities/trade_decisions_20260604.jsonl"],
+                )
+
+            self.assertFalse(allowed)
+            self.assertEqual(detail["reason"], "stale_decision_catch_up")
+            self.assertEqual(detail["shard"], "trading")
+        finally:
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_fresh_idle_health_fast_path_keeps_sentinel_shards_running(self) -> None:
+        keys = [
+            "SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS",
+            "SQL_LINK_SERVICE_SKIP_IDLE_SENTINELS",
+        ]
+        old_env = {key: os.environ.get(key) for key in keys}
+        try:
+            os.environ["SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS"] = "1"
+            os.environ["SQL_LINK_SERVICE_SKIP_IDLE_SENTINELS"] = "0"
+            with tempfile.TemporaryDirectory() as td:
+                health_file = (
+                    Path(td)
+                    / "governance"
+                    / "health"
+                    / "jsonl_sql_ingestion_health_health_fast_latest.json"
+                )
+                health_file.parent.mkdir(parents=True, exist_ok=True)
+                health_file.write_text(
+                    json.dumps(
+                        {
+                            "timestamp_utc": MODULE._now_utc(),
+                            "overall_status": "ready",
+                            "sqlite": {"pending_lines": 0},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                allowed, detail = MODULE._fresh_idle_health_fast_path_allowed(health_file)
+
+            self.assertFalse(allowed)
+            self.assertEqual(detail["reason"], "sentinel_shard")
+        finally:
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     def test_discover_jsonl_files_prioritizes_decision_streams(self) -> None:
         with tempfile.TemporaryDirectory() as td:

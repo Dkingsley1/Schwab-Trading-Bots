@@ -9,6 +9,7 @@ from scripts.ops import host_self_benchmark
 from scripts.ops import memory_pressure_intelligence
 from scripts.ops import migration_readiness_report
 from scripts.ops import os_adapter_layer
+from scripts.ops import runtime_throttle_control
 from scripts.ops import system_needs_intelligence
 from scripts.ops import workload_class_registry
 
@@ -149,6 +150,51 @@ def test_autonomic_governor_prioritizes_backlog_and_writes_override(tmp_path: Pa
     assert "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO=0.12" in override
 
 
+def test_autonomic_governor_honors_six_p_core_user_reserve_target(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("AUTONOMIC_PCORE_USER_APP_RESERVE_TARGET", "6")
+    health = tmp_path / "governance" / "health"
+    _write_json(health / "host_capability_contract_latest.json", _host_payload())
+    _write_json(health / "os_adapter_layer_latest.json", os_adapter_layer.build_payload(host=_host_payload()))
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "backpressure": {
+                "core_pending_lines": 30_000,
+                "support_pending_lines": 0,
+                "deferred_pending_lines": 0,
+                "total_pending_lines": 30_000,
+                "oldest_pending_age_seconds": 1200,
+                "pending_lines_threshold": 5000,
+            },
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {"overall_status": "advisory", "memory_pressure_level": "normal", "p_core_runtime_feedback": {"preprocess_worker_budget": 6}},
+    )
+    _write_json(health / "mlx_intelligence_router_latest.json", {"overall_status": "ready", "runtime_caps": {"max_concurrent_mlx_jobs": 1}})
+    _write_json(health / "computer_task_intelligence_latest.json", {"session_context": {"open_apps": [], "co_running_level": "none"}})
+
+    payload = governor.build_payload(tmp_path)
+    result = governor.write_outputs(
+        payload,
+        out_path=health / "autonomic_resource_governor_latest.json",
+        override_path=tmp_path / "config" / ".env.autonomic_resource_governor_override",
+        apply=True,
+    )
+    allocation = payload["host_lane_budget"]["p_core_allocation_contract"]
+
+    assert payload["host_lane_budget"]["selected_p_core_preprocess_workers"] == 2
+    assert allocation["user_app_reserved_p_cores"] == 6
+    assert allocation["user_app_reserve_target_p_cores"] == 6
+    assert payload["host_lane_budget"]["p_core_widening_controller"]["user_reserve_worker_cap"] == 2
+    override = (tmp_path / "config" / ".env.autonomic_resource_governor_override").read_text(encoding="utf-8")
+    assert result["applied"] is True
+    assert "AUTONOMIC_PCORE_USER_APP_RESERVE_TARGET=6" in override
+    assert "BACKLOG_PCORE_USER_APP_RESERVE_TARGET=6" in override
+
+
 def test_autonomic_governor_steps_up_collectors_and_training_when_backlog_is_green(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
     _write_json(health / "host_capability_contract_latest.json", _host_payload())
@@ -174,7 +220,7 @@ def test_autonomic_governor_steps_up_collectors_and_training_when_backlog_is_gre
         {"overall_status": "ready", "memory_pressure_level": "normal", "p_core_runtime_feedback": {"preprocess_worker_budget": 3}},
     )
     _write_json(health / "writer_cycle_coordinator_latest.json", {"drain_effectiveness": {"status": "strong_progress", "merged_rows": 2500}})
-    _write_json(health / "mlx_intelligence_router_latest.json", {"overall_status": "ready", "runtime_caps": {"max_concurrent_mlx_jobs": 2, "compile_mode": "canary_first"}})
+    _write_json(health / "mlx_intelligence_router_latest.json", {"overall_status": "ready", "runtime_caps": {"max_concurrent_mlx_jobs": 2, "compile_mode": "direct_stable"}})
     _write_json(health / "computer_task_intelligence_latest.json", {"session_context": {"open_apps": [], "co_running_level": "none"}})
     _write_json(health / "host_self_benchmark_latest.json", {"self_tuned_limits": {"recommended_p_core_preprocess_workers": 6}})
     _write_json(
@@ -233,7 +279,7 @@ def test_autonomic_governor_reads_watchdog_intelligence_before_training(tmp_path
         {"overall_status": "ready", "memory_pressure_level": "normal", "p_core_runtime_feedback": {"preprocess_worker_budget": 3}},
     )
     _write_json(health / "writer_cycle_coordinator_latest.json", {"drain_effectiveness": {"status": "strong_progress", "merged_rows": 1000}})
-    _write_json(health / "mlx_intelligence_router_latest.json", {"overall_status": "ready", "runtime_caps": {"max_concurrent_mlx_jobs": 2, "compile_mode": "canary_first"}})
+    _write_json(health / "mlx_intelligence_router_latest.json", {"overall_status": "ready", "runtime_caps": {"max_concurrent_mlx_jobs": 2, "compile_mode": "direct_stable"}})
     _write_json(health / "computer_task_intelligence_latest.json", {"session_context": {"open_apps": [], "co_running_level": "none"}})
     _write_json(health / "host_self_benchmark_latest.json", {"self_tuned_limits": {"recommended_p_core_preprocess_workers": 6}})
     _write_json(
@@ -283,6 +329,145 @@ def test_autonomic_governor_reads_watchdog_intelligence_before_training(tmp_path
     assert payload["budgets"]["training"]["allowed"] is False
     assert payload["what_do_you_need"]["items"][0]["blocker"] == "watchdog_heartbeat_stale"
     assert payload["integration_contract"]["reads_watchdog_intelligence"] is True
+
+
+def test_autonomic_governor_keeps_micro_canary_open_for_nonblocking_watchdog_advisory(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(health / "host_capability_contract_latest.json", _host_payload())
+    _write_json(health / "os_adapter_layer_latest.json", os_adapter_layer.build_payload(host=_host_payload()))
+    _write_json(health / "workload_class_registry_latest.json", workload_class_registry.build_payload())
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "backpressure": {
+                "core_pending_lines": 0,
+                "support_pending_lines": 0,
+                "deferred_pending_lines": 0,
+                "total_pending_lines": 0,
+                "oldest_pending_age_seconds": 0,
+                "pending_lines_threshold": 15000,
+            },
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {
+            "overall_status": "advisory",
+            "memory_pressure_level": "normal",
+            "compute_pressure_level": "high",
+            "host_saturation_score": 50.0,
+            "p_core_runtime_feedback": {"preprocess_worker_budget": 4},
+        },
+    )
+    _write_json(health / "writer_cycle_coordinator_latest.json", {"writer_state_before": {"active": False, "running": False}})
+    _write_json(health / "mlx_intelligence_router_latest.json", {"overall_status": "ready", "runtime_caps": {"max_concurrent_mlx_jobs": 1}})
+    _write_json(health / "computer_task_intelligence_latest.json", {"session_context": {"open_apps": [], "co_running_level": "none"}})
+    _write_json(health / "host_self_benchmark_latest.json", {"self_tuned_limits": {"recommended_p_core_preprocess_workers": 4}})
+    _write_json(
+        health / "memory_pressure_intelligence_latest.json",
+        {
+            "overall_status": "advisory",
+            "classification": {"status": "foreground_headroom", "recommended_p_core_worker_cap": 4},
+            "reopen_gate": {
+                "safe_to_widen_p_core_workers": False,
+                "safe_for_training": False,
+                "small_canary_training_safe": True,
+                "small_canary_max_parallel_trainings": 1,
+                "training_batch_cap": 1,
+                "training_profile": "coverage_micro_canary",
+            },
+            "multitasking_headroom": {"level": "background_available", "collector_ratio_cap": 0.55},
+        },
+    )
+    _write_json(
+        health / "watchdog_intelligence_latest.json",
+        {
+            "overall_status": "degraded",
+            "active_issue_count": 1,
+            "restart_storm_count": 0,
+            "alert_count": 0,
+            "exact_needs": [{"severity": "advisory", "risk_level": "low", "blocker": "observer_noise"}],
+        },
+    )
+    _write_json(
+        health / "autonomic_resource_governor_latest.json",
+        {"stability_state": {"consecutive_green_samples": 2, "consecutive_runtime_clear_samples": 1, "consecutive_writer_idle_samples": 2}},
+    )
+
+    payload = governor.build_payload(tmp_path)
+    training = payload["budgets"]["training"]
+
+    assert payload["budgets"]["watchdogs"]["healthy"] is False
+    assert training["allowed"] is True
+    assert training["watchdog_training_blocked"] is False
+    assert training["profile"] == "coverage_micro_canary"
+
+
+def test_autonomic_governor_treats_intentionally_held_sleeves_as_nonblocking_for_training(tmp_path: Path) -> None:
+    payload = {
+        "overall_status": "degraded",
+        "active_issue_count": 0,
+        "restart_storm_count": 0,
+        "alert_count": 0,
+        "exact_needs": [
+            {"target": "all_sleeves", "status": "intentional_hold", "blocker": "training_window", "risk_level": "low"},
+            {
+                "target": "baseline_parallel",
+                "source": "all_sleeves_launcher_readiness",
+                "blocker": "exited",
+                "risk_level": "medium",
+            },
+            {
+                "target": "fx",
+                "source": "all_sleeves_launcher_readiness",
+                "blocker": "exited",
+                "risk_level": "low",
+            },
+        ],
+    }
+
+    assert governor._watchdog_blocking_needs(payload) == []
+    assert governor._watchdog_blocks_training(payload) is False
+
+
+def test_autonomic_storage_metrics_trust_explicit_empty_sql_overlay_over_stale_raw_live() -> None:
+    metrics = governor._storage_metrics(
+        {
+            "overall_status": "blocked",
+            "severity": "critical",
+            "pressure_index": 259.871,
+            "backpressure": {
+                "total_pending_lines": 12585,
+                "core_pending_lines": 7686,
+                "deferred_pending_lines": 4899,
+                "oldest_pending_age_seconds": 62368.944,
+                "pending_lines_threshold": 15000,
+                "effective_raw_live": {
+                    "total_pending_lines": 12585,
+                    "core_pending_lines": 7686,
+                    "deferred_pending_lines": 4899,
+                    "oldest_pending_age_seconds": 62368.944,
+                },
+            },
+            "sql_ingestion_pending_overlay": {
+                "active": True,
+                "fresh_source_count": 18,
+                "explicit_empty_source_count": 18,
+                "stale_pending_lines": 0,
+                "total_pending_lines": 0,
+                "files_with_pending": 0,
+                "oldest_pending_age_seconds": 0.0,
+                "top_pending_files": [],
+            },
+        }
+    )
+
+    assert metrics["total_pending_lines"] == 0
+    assert metrics["core_pending_lines"] == 0
+    assert metrics["oldest_pending_age_seconds"] == 0.0
+    assert metrics["green"] is True
+    assert metrics["green_gate"]["direct_sql_overlay_clear"] is True
 
 
 def test_autonomic_governor_allows_batch20_guarded_waves_under_soft_runtime_pressure(tmp_path: Path) -> None:
@@ -468,6 +653,116 @@ def test_autonomic_governor_uses_host_pressure_attribution_as_control_signal(tmp
     assert payload["integration_contract"]["uses_runtime_pressure_attribution"] is True
 
 
+def test_autonomic_governor_allows_micro_canary_from_current_green_storage_when_full_headroom_is_soaking(
+    tmp_path: Path,
+) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(health / "host_capability_contract_latest.json", _host_payload())
+    _write_json(health / "os_adapter_layer_latest.json", os_adapter_layer.build_payload(host=_host_payload()))
+    _write_json(health / "workload_class_registry_latest.json", workload_class_registry.build_payload())
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "needs_work",
+            "severity": "stable",
+            "storage_plane_contract": {
+                "allowed_work": {"training": True},
+                "blocked_work": ["storage_resilience_refresh"],
+            },
+            "backpressure": {
+                "core_pending_lines": 0,
+                "support_pending_lines": 0,
+                "deferred_pending_lines": 0,
+                "total_pending_lines": 0,
+                "oldest_pending_age_seconds": 0.0,
+                "pending_lines_threshold": 15000,
+                "effective_raw_live": {
+                    "core_pending_lines": 0,
+                    "total_pending_lines": 0,
+                    "oldest_pending_age_seconds": 0.0,
+                    "source": "fresh_empty_sql_ingestion_overlay",
+                },
+            },
+            "backlog_truth": {"sql_overlay": {"total_pending_lines": 0}},
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {
+            "overall_status": "degraded",
+            "memory_pressure_level": "normal",
+            "compute_pressure_level": "high",
+            "host_saturation_score": 46.0,
+            "p_core_runtime_feedback": {"preprocess_worker_budget": 5},
+            "host_pressure_attribution": {
+                "bot_owned_cpu_percent": 18.0,
+                "paper_execution_cpu_percent": 0.0,
+                "research_training_cpu_percent": 0.0,
+                "throttle_candidate_support_cpu_percent": 0.0,
+                "operator_observability_cpu_percent": 18.0,
+                "external_cpu_percent": 80.0,
+                "macos_system_cpu_percent": 36.0,
+                "foreground_app_cpu_percent": 42.0,
+                "dominant_bucket": "foreground_apps",
+                "external_pressure_dominant": True,
+                "support_jobs_hot": False,
+                "protected_work_hot": False,
+            },
+            "runtime_saturation_governor_v2": {
+                "training_policy": {
+                    "mode": "micro_canary_only",
+                    "training_paused": False,
+                    "max_parallel_trainings": 1,
+                    "micro_canary_allowed": True,
+                }
+            },
+        },
+    )
+    _write_json(health / "writer_cycle_coordinator_latest.json", {"writer_state_before": {"active": False, "running": False}})
+    _write_json(health / "mlx_intelligence_router_latest.json", {"overall_status": "ready", "runtime_caps": {"max_concurrent_mlx_jobs": 1}})
+    _write_json(health / "computer_task_intelligence_latest.json", {"session_context": {"open_apps": [], "co_running_level": "none"}})
+    _write_json(health / "host_self_benchmark_latest.json", {"self_tuned_limits": {"recommended_p_core_preprocess_workers": 6}})
+    _write_json(
+        health / "memory_pressure_intelligence_latest.json",
+        {
+            "overall_status": "advisory",
+            "classification": {"status": "foreground_headroom", "recommended_p_core_worker_cap": 5},
+            "reopen_gate": {
+                "safe_to_widen_p_core_workers": True,
+                "safe_for_training": False,
+                "small_canary_training_safe": True,
+                "small_batch_training_safe": True,
+                "training_batch_cap": 2,
+                "training_profile": "coverage_small_canary",
+                "consecutive_memory_clear_samples": 1,
+            },
+            "trend": {"status": "cooling"},
+            "multitasking_headroom": {
+                "active": False,
+                "level": "interactive_developer",
+                "collector_ratio_cap": 0.28,
+                "training_allowed_by_multitasking": True,
+                "training_max_parallel_trainings": 2,
+            },
+        },
+    )
+    _write_json(
+        health / "autonomic_resource_governor_latest.json",
+        {"stability_state": {"consecutive_green_samples": 0, "consecutive_runtime_clear_samples": 0, "consecutive_writer_idle_samples": 0}},
+    )
+
+    payload = governor.build_payload(tmp_path)
+    training = payload["budgets"]["training"]
+    reentry = training["reentry_gate"]
+
+    assert payload["backlog_green_gate"]["status"] == "green"
+    assert reentry["micro_green_samples_ok"] is True
+    assert reentry["micro_host_pressure_allows_training"] is True
+    assert training["allowed"] is True
+    assert training["profile"] == "coverage_micro_canary"
+    assert reentry["max_parallel_trainings"] == 1
+
+
 def test_runtime_pressure_attribution_treats_low_pressure_operator_activity_as_advisory() -> None:
     source = governor._runtime_pressure_attribution_policy(
         {
@@ -494,13 +789,41 @@ def test_runtime_pressure_attribution_treats_low_pressure_operator_activity_as_a
     assert source["collector_ratio_cap"] == 0.35
 
 
+def test_runtime_pressure_attribution_treats_low_pressure_system_activity_as_advisory() -> None:
+    source = governor._runtime_pressure_attribution_policy(
+        {
+            "overall_status": "ready",
+            "memory_pressure_level": "normal",
+            "compute_pressure_level": "normal",
+            "host_saturation_score": 27.0,
+            "throttle_profile": "observe",
+            "host_pressure_attribution": {
+                "external_pressure_dominant": False,
+                "system_cotenant_hot": True,
+                "support_jobs_hot": False,
+                "protected_work_hot": False,
+                "operator_observability_hot": True,
+                "dominant_bucket": "bot_owned",
+                "foreground_app_cpu_percent": 25.0,
+            },
+        }
+    )
+
+    assert source["mode"] == "macos_system_advisory"
+    assert source["low_pressure_system_advisory"] is True
+    assert source["training_allowed"] is True
+    assert source["collector_reopen_allowed"] is True
+    assert source["p_core_widen_allowed"] is True
+    assert source["collector_ratio_cap"] == 0.35
+
+
 def test_runtime_pressure_attribution_treats_guarded_foreground_activity_as_advisory() -> None:
     source = governor._runtime_pressure_attribution_policy(
         {
             "overall_status": "advisory",
             "memory_pressure_level": "normal",
-            "compute_pressure_level": "elevated",
-            "host_saturation_score": 60.0,
+            "compute_pressure_level": "high",
+            "host_saturation_score": 66.0,
             "throttle_profile": "sustain",
             "host_pressure_attribution": {
                 "external_pressure_dominant": True,
@@ -549,6 +872,102 @@ def test_runtime_pressure_attribution_treats_niced_support_work_as_advisory() ->
     assert source["collector_ratio_cap"] == 0.28
 
 
+def test_runtime_pressure_attribution_treats_niced_support_with_secondary_system_as_advisory() -> None:
+    source = governor._runtime_pressure_attribution_policy(
+        {
+            "overall_status": "degraded",
+            "memory_pressure_level": "normal",
+            "compute_pressure_level": "elevated",
+            "host_saturation_score": 74.0,
+            "throttle_profile": "sustain",
+            "host_pressure_attribution": {
+                "external_pressure_dominant": False,
+                "bot_owned_pressure_dominant": True,
+                "support_pressure_dominant": True,
+                "system_secondary_to_bot_owned": True,
+                "support_trim_required": True,
+                "system_cotenant_hot": True,
+                "support_jobs_hot": True,
+                "support_hot_low_priority": True,
+                "protected_work_hot": True,
+                "protected_pressure_dominant": False,
+                "dominant_bucket": "bot_owned",
+                "foreground_app_cpu_percent": 40.0,
+            },
+        }
+    )
+
+    assert source["mode"] == "support_maintenance_niced_advisory"
+    assert source["guarded_niced_support_advisory"] is True
+    assert source["training_allowed"] is True
+    assert source["collector_reopen_allowed"] is True
+    assert source["p_core_widen_allowed"] is False
+
+
+def test_runtime_pressure_attribution_trims_support_before_macos_when_bot_owned_dominates() -> None:
+    source = governor._runtime_pressure_attribution_policy(
+        {
+            "overall_status": "degraded",
+            "memory_pressure_level": "normal",
+            "compute_pressure_level": "elevated",
+            "host_saturation_score": 62.0,
+            "throttle_profile": "sustain",
+            "host_pressure_attribution": {
+                "bot_owned_cpu_percent": 360.0,
+                "external_cpu_percent": 220.0,
+                "macos_system_cpu_percent": 150.0,
+                "throttle_candidate_support_cpu_percent": 225.0,
+                "external_pressure_dominant": False,
+                "bot_owned_pressure_dominant": True,
+                "system_secondary_to_bot_owned": True,
+                "support_trim_required": True,
+                "system_cotenant_hot": True,
+                "support_jobs_hot": True,
+                "support_hot_low_priority": False,
+                "protected_work_hot": True,
+                "dominant_bucket": "bot_owned",
+                "foreground_app_cpu_percent": 60.0,
+            },
+        }
+    )
+
+    assert source["mode"] == "trim_support_maintenance"
+    assert source["bot_owned_pressure_dominant"] is True
+    assert source["system_secondary_to_bot_owned"] is True
+    assert source["support_trim_required"] is True
+    assert source["training_allowed"] is False
+    assert source["collector_reopen_allowed"] is False
+
+
+def test_runtime_pressure_attribution_treats_foreground_system_mix_as_guarded_advisory() -> None:
+    source = governor._runtime_pressure_attribution_policy(
+        {
+            "overall_status": "degraded",
+            "memory_pressure_level": "normal",
+            "compute_pressure_level": "elevated",
+            "host_saturation_score": 47.0,
+            "throttle_profile": "soft_cap",
+            "host_pressure_attribution": {
+                "external_pressure_dominant": True,
+                "bot_owned_pressure_dominant": False,
+                "system_cotenant_hot": True,
+                "support_jobs_hot": False,
+                "operator_observability_hot": True,
+                "protected_work_hot": False,
+                "dominant_bucket": "foreground_apps",
+                "foreground_app_cpu_percent": 120.0,
+                "macos_system_cpu_percent": 54.0,
+            },
+        }
+    )
+
+    assert source["mode"] == "operator_foreground_guarded_advisory"
+    assert source["foreground_system_guarded"] is True
+    assert source["training_allowed"] is True
+    assert source["collector_reopen_allowed"] is True
+    assert source["p_core_widen_allowed"] is True
+
+
 def test_runtime_pressure_attribution_treats_operator_observability_as_advisory() -> None:
     source = governor._runtime_pressure_attribution_policy(
         {
@@ -571,6 +990,34 @@ def test_runtime_pressure_attribution_treats_operator_observability_as_advisory(
 
     assert source["mode"] == "operator_observability_guarded_advisory"
     assert source["guarded_operator_observability_advisory"] is True
+    assert source["training_allowed"] is True
+    assert source["collector_reopen_allowed"] is True
+    assert source["p_core_widen_allowed"] is True
+    assert source["collector_ratio_cap"] == 0.28
+
+
+def test_runtime_pressure_attribution_treats_bounded_protected_work_as_advisory() -> None:
+    source = governor._runtime_pressure_attribution_policy(
+        {
+            "overall_status": "advisory",
+            "memory_pressure_level": "normal",
+            "compute_pressure_level": "normal",
+            "host_saturation_score": 38.0,
+            "throttle_profile": "soft_cap",
+            "host_pressure_attribution": {
+                "external_pressure_dominant": True,
+                "system_cotenant_hot": False,
+                "support_jobs_hot": False,
+                "operator_observability_hot": True,
+                "protected_work_hot": True,
+                "dominant_bucket": "bot_owned",
+                "foreground_app_cpu_percent": 80.0,
+            },
+        }
+    )
+
+    assert source["mode"] == "protected_work_guarded_advisory"
+    assert source["guarded_protected_work_advisory"] is True
     assert source["training_allowed"] is True
     assert source["collector_reopen_allowed"] is True
     assert source["p_core_widen_allowed"] is True
@@ -601,6 +1048,39 @@ def test_runtime_pressure_attribution_allows_micro_training_when_only_support_jo
     assert source["collector_reopen_allowed"] is True
     assert source["p_core_widen_allowed"] is False
     assert source["collector_ratio_cap"] == 0.28
+
+
+def test_runtime_throttle_treats_ytdlp_metadata_probe_as_throttleable_support() -> None:
+    row = runtime_throttle_control._classify_process(
+        "/opt/homebrew/bin/yt-dlp --dump-single-json --no-playlist https://www.youtube.com/watch?v=test"
+    )
+
+    assert row["category"] == "support_maintenance"
+    assert row["priority_tier"] == "throttle_first"
+    assert row["throttle_candidate"] is True
+
+
+def test_runtime_throttle_does_not_call_allocation_only_compression_high_pressure() -> None:
+    resource_guard = {
+        "memory_pressure_state": "green",
+        "memory_pressure_kind": "none",
+        "swap_used_gb": 1.8,
+    }
+    memory_efficiency = {
+        "overall_status": "blocked",
+        "reasons": ["storage_pressure_critical", "compressed_memory_high"],
+        "memory_snapshot": {
+            "memory_pressure_state": "green",
+            "memory_pressure_kind": "none",
+            "memory_free_pct": 52.0,
+            "swap_used_gb": 1.8,
+            "compressed_store_gb": 24.0,
+            "compressor_gb": 10.7,
+        },
+        "cotenant_awareness": {"memory_pressure_clear": True},
+    }
+
+    assert runtime_throttle_control._memory_pressure_level(resource_guard, memory_efficiency) == "normal"
 
 
 def test_autonomic_governor_caps_p_core_workers_when_memory_pressure_rises(tmp_path: Path) -> None:
@@ -671,6 +1151,58 @@ def test_memory_pressure_intelligence_reserves_headroom_for_creative_apps(tmp_pa
     assert payload["reopen_gate"]["safe_for_training"] is False
 
 
+def test_memory_pressure_intelligence_treats_safe_media_headroom_as_managed_control(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    host = _host_payload()
+    host["body_map"]["memory"] = {
+        "memory_gb": 64,
+        "swap_used_gb": 0.2,
+        "pressure_level": "normal",
+        "memory_snapshot": {
+            "compressed_store_gb": 2.4,
+            "compressor_gb": 2.4,
+            "swap_used_gb": 0.2,
+            "memory_pressure_kind": "none",
+        },
+    }
+    _write_json(health / "host_capability_contract_latest.json", host)
+    _write_json(health / "runtime_throttle_control_latest.json", {"overall_status": "ready", "memory_pressure_level": "normal"})
+    _write_json(
+        health / "memory_efficiency_latest.json",
+        {
+            "overall_status": "ready",
+            "memory_snapshot": {
+                "compressed_store_gb": 2.4,
+                "compressor_gb": 2.4,
+                "swap_used_gb": 0.2,
+                "memory_pressure_kind": "none",
+            },
+        },
+    )
+    _write_json(
+        health / "computer_task_intelligence_latest.json",
+        {"timestamp_utc": "2099-01-01T00:00:00+00:00", "session_context": {"open_apps": ["Music"], "creative_level": "active"}},
+    )
+    _write_json(
+        health / "memory_pressure_intelligence_latest.json",
+        {
+            "timestamp_utc": "2099-01-01T00:00:00+00:00",
+            "reopen_gate": {"consecutive_memory_clear_samples": 1, "consecutive_cooling_samples": 0},
+            "snapshot": {"compressed_pressure_gb": 2.4, "swap_used_gb": 0.2, "pages_throttled": 0},
+        },
+    )
+
+    payload = memory_pressure_intelligence.build_payload(tmp_path)
+
+    assert payload["classification"]["status"] == "foreground_headroom"
+    assert payload["reopen_gate"]["safe_to_widen_p_core_workers"] is True
+    assert payload["what_do_you_need"]["status"] == "clear"
+    assert payload["what_do_you_need"]["items"] == []
+    assert payload["managed_controls"][0]["id"] == "foreground_app_headroom_reserved"
+    assert payload["managed_controls"][0]["status"] == "managed"
+    assert payload["managed_controls"][0]["app_classes"] == ["media_playback"]
+
+
 def test_memory_pressure_intelligence_allows_micro_canary_under_warm_background_memory(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
     host = _host_payload()
@@ -698,6 +1230,149 @@ def test_memory_pressure_intelligence_allows_micro_canary_under_warm_background_
     assert payload["reopen_gate"]["safe_for_training"] is False
     assert payload["reopen_gate"]["small_canary_training_safe"] is True
     assert payload["workload_guidance"]["small_canary_training_allowed_by_memory"] is True
+
+
+def test_memory_pressure_intelligence_uses_compressor_pressure_for_high_free_memory(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    host = _host_payload()
+    host["body_map"]["memory"] = {
+        "memory_gb": 32,
+        "swap_used_gb": 1.8,
+        "pressure_level": "normal",
+        "memory_snapshot": {
+            "compressed_store_gb": 6.0,
+            "compressor_gb": 7.0,
+            "swap_used_gb": 1.8,
+            "memory_free_pct": 85.0,
+            "memory_pressure_kind": "none",
+        },
+    }
+    _write_json(health / "host_capability_contract_latest.json", host)
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "memory_pressure_level": "high",
+            "p_core_runtime_feedback": {
+                "p_core_burst_intelligence": {
+                    "inputs": {
+                        "compressed_store_gb": 24.0,
+                        "swap_used_gb": 1.8,
+                        "pages_throttled": 0,
+                        "memory_pressure_kind": "none",
+                    }
+                }
+            },
+        },
+    )
+    _write_json(
+        health / "memory_efficiency_latest.json",
+        {
+            "overall_status": "blocked",
+            "memory_snapshot": {
+                "compressed_store_gb": 24.0,
+                "compressor_gb": 10.7,
+                "swap_used_gb": 1.8,
+                "memory_free_pct": 85.0,
+                "memory_pressure_kind": "none",
+            },
+        },
+    )
+    _write_json(health / "computer_task_intelligence_latest.json", {"session_context": {"open_apps": [], "creative_level": "none"}})
+    _write_json(
+        health / "memory_pressure_intelligence_latest.json",
+        {
+            "reopen_gate": {"consecutive_memory_clear_samples": 0, "consecutive_cooling_samples": 0},
+            "snapshot": {"compressed_pressure_gb": 10.8, "swap_used_gb": 1.8, "pages_throttled": 0},
+        },
+    )
+
+    payload = memory_pressure_intelligence.build_payload(tmp_path)
+
+    assert payload["snapshot"]["compressed_store_gb"] == 24.0
+    assert payload["snapshot"]["compressed_pressure_gb"] == 10.7
+    assert payload["classification"]["status"] == "soft_guard"
+    assert payload["reopen_gate"]["small_batch_training_safe"] is True
+    assert payload["reopen_gate"]["training_batch_cap"] == 2
+
+
+def test_memory_pressure_intelligence_allows_one_bot_canary_under_bounded_compression_relief(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    host = _host_payload()
+    host["body_map"]["memory"] = {
+        "memory_gb": 32,
+        "swap_used_gb": 2.6,
+        "pressure_level": "elevated",
+        "memory_snapshot": {"compressed_store_gb": 18.5, "swap_used_gb": 2.6, "memory_pressure_kind": "none"},
+    }
+    _write_json(health / "host_capability_contract_latest.json", host)
+    _write_json(health / "runtime_throttle_control_latest.json", {"overall_status": "degraded", "memory_pressure_level": "elevated"})
+    _write_json(health / "memory_efficiency_latest.json", {"overall_status": "needs_work", "memory_snapshot": {"compressed_store_gb": 18.5, "swap_used_gb": 2.6}})
+    _write_json(health / "computer_task_intelligence_latest.json", {"session_context": {"open_apps": [], "creative_level": "none"}})
+    _write_json(
+        health / "memory_pressure_intelligence_latest.json",
+        {
+            "reopen_gate": {"consecutive_memory_clear_samples": 0, "consecutive_cooling_samples": 0},
+            "snapshot": {"compressed_store_gb": 18.5, "swap_used_gb": 2.6, "pages_throttled": 0},
+        },
+    )
+
+    payload = memory_pressure_intelligence.build_payload(tmp_path)
+
+    assert payload["classification"]["status"] == "compression_relief"
+    assert payload["reopen_gate"]["safe_for_training"] is False
+    assert payload["reopen_gate"]["compression_relief_micro_canary_safe"] is True
+    assert payload["reopen_gate"]["small_canary_training_safe"] is True
+    assert payload["reopen_gate"]["training_batch_cap"] == 1
+    assert payload["reopen_gate"]["training_profile"] == "coverage_micro_canary"
+
+
+def test_memory_pressure_intelligence_allows_batch20_waves_under_high_free_compression_relief(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    host = _host_payload()
+    host["body_map"]["memory"] = {
+        "memory_gb": 32,
+        "swap_used_gb": 1.8,
+        "pressure_level": "elevated",
+        "memory_snapshot": {
+            "compressed_store_gb": 18.8,
+            "swap_used_gb": 1.8,
+            "memory_free_pct": 85.0,
+            "memory_pressure_kind": "none",
+        },
+    }
+    _write_json(health / "host_capability_contract_latest.json", host)
+    _write_json(health / "runtime_throttle_control_latest.json", {"overall_status": "degraded", "memory_pressure_level": "elevated"})
+    _write_json(
+        health / "memory_efficiency_latest.json",
+        {"overall_status": "needs_work", "memory_snapshot": {"compressed_store_gb": 18.8, "swap_used_gb": 1.8, "memory_free_pct": 85.0}},
+    )
+    _write_json(health / "computer_task_intelligence_latest.json", {"session_context": {"open_apps": [], "creative_level": "none"}})
+    _write_json(
+        health / "memory_pressure_intelligence_latest.json",
+        {
+            "reopen_gate": {"consecutive_memory_clear_samples": 0, "consecutive_cooling_samples": 0},
+            "snapshot": {"compressed_store_gb": 18.8, "swap_used_gb": 1.8, "pages_throttled": 0},
+        },
+    )
+
+    payload = memory_pressure_intelligence.build_payload(tmp_path)
+
+    assert payload["classification"]["status"] == "compression_relief"
+    assert payload["classification"]["recommended_p_core_worker_cap"] == 3
+    assert payload["reopen_gate"]["safe_for_training"] is False
+    assert payload["reopen_gate"]["compression_relief_micro_canary_safe"] is True
+    assert payload["reopen_gate"]["compression_relief_batch20_wave_training_safe"] is True
+    assert payload["reopen_gate"]["batch20_training_safe"] is True
+    assert payload["reopen_gate"]["batch20_execution_mode"] == "sequential_memory_guarded_waves"
+    assert payload["reopen_gate"]["batch20_wave_size"] == 3
+    assert payload["reopen_gate"]["batch20_requires_between_target_memory_recheck"] is True
+    assert payload["reopen_gate"]["batch30_training_safe"] is True
+    assert payload["reopen_gate"]["batch30_execution_mode"] == "sequential_memory_guarded_waves"
+    assert payload["reopen_gate"]["batch30_wave_size"] == 3
+    assert payload["reopen_gate"]["batch30_requires_between_target_memory_recheck"] is True
+    assert payload["reopen_gate"]["training_batch_cap"] == 30
+    assert payload["reopen_gate"]["training_profile"] == "coverage_batch30_canary"
 
 
 def test_memory_pressure_intelligence_ignores_stale_host_foreground_when_computer_task_is_fresh(tmp_path: Path) -> None:
@@ -769,8 +1444,9 @@ def test_memory_pressure_intelligence_opens_batch20_after_clear_soak(tmp_path: P
     assert payload["classification"]["status"] == "clear"
     assert payload["reopen_gate"]["batch10_training_safe"] is True
     assert payload["reopen_gate"]["batch20_training_safe"] is True
-    assert payload["reopen_gate"]["training_batch_cap"] == 20
-    assert payload["workload_guidance"]["training_profile"] == "coverage_batch20_canary"
+    assert payload["reopen_gate"]["batch30_training_safe"] is True
+    assert payload["reopen_gate"]["training_batch_cap"] == 30
+    assert payload["workload_guidance"]["training_profile"] == "coverage_batch30_canary"
 
 
 def test_memory_pressure_intelligence_allows_batch20_as_memory_guarded_waves_when_headroom_is_high(tmp_path: Path) -> None:
@@ -814,6 +1490,71 @@ def test_memory_pressure_intelligence_allows_batch20_as_memory_guarded_waves_whe
     assert payload["reopen_gate"]["training_batch_cap"] == 20
 
 
+def test_memory_pressure_intelligence_reopens_pcores_for_stale_allocation_high_water(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    host = _host_payload()
+    host["body_map"]["memory"] = {
+        "memory_gb": 32,
+        "swap_used_gb": 7.645,
+        "pressure_level": "elevated",
+        "compressor_gb": 0.386,
+        "memory_snapshot": {
+            "compressed_store_gb": 19.552,
+            "compressor_gb": 0.386,
+            "swap_used_gb": 7.645,
+            "memory_free_pct": 91.0,
+            "memory_pressure_kind": "none",
+        },
+    }
+    _write_json(health / "host_capability_contract_latest.json", host)
+    _write_json(health / "runtime_throttle_control_latest.json", {"overall_status": "degraded", "memory_pressure_level": "elevated"})
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "ready",
+            "memory_snapshot": {
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "none",
+                "memory_free_pct": 91.0,
+                "swap_used_gb": 0.185,
+                "compressed_store_gb": 8.0,
+                "compressor_gb": 0.386,
+                "allocation_relief_active": True,
+            },
+        },
+    )
+    _write_json(
+        health / "swap_pressure_governor_latest.json",
+        {
+            "swap_pressure": {
+                "tier": "normal",
+                "swap_used_gb": 0.185,
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "none",
+            }
+        },
+    )
+    _write_json(health / "computer_task_intelligence_latest.json", {"session_context": {"open_apps": [], "creative_level": "none"}})
+    _write_json(
+        health / "memory_pressure_intelligence_latest.json",
+        {
+            "timestamp_utc": "2026-05-21T00:00:00+00:00",
+            "reopen_gate": {"consecutive_memory_clear_samples": 1, "consecutive_cooling_samples": 0},
+            "snapshot": {"compressed_store_gb": 19.552, "swap_used_gb": 7.645, "pages_throttled": 0},
+        },
+    )
+
+    payload = memory_pressure_intelligence.build_payload(tmp_path)
+
+    assert payload["snapshot"]["memory_truth_reconciliation"]["active"] is True
+    assert payload["snapshot"]["raw_allocation_snapshot"]["swap_used_gb"] == 7.645
+    assert payload["snapshot"]["swap_used_gb"] == 0.185
+    assert payload["snapshot"]["compressed_store_gb"] == 8.0
+    assert payload["classification"]["status"] == "clear"
+    assert payload["classification"]["recommended_p_core_worker_cap"] == 7
+    assert payload["reopen_gate"]["safe_to_widen_p_core_workers"] is True
+
+
 def test_memory_pressure_intelligence_allows_batch20_on_single_deep_green_sample(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
     host = _host_payload()
@@ -850,7 +1591,160 @@ def test_memory_pressure_intelligence_allows_batch20_on_single_deep_green_sample
     assert payload["reopen_gate"]["single_sample_deep_green_batch_widening"] is True
     assert payload["reopen_gate"]["batch20_training_safe"] is True
     assert payload["reopen_gate"]["batch20_execution_mode"] == "sequential_memory_guarded_waves"
-    assert payload["reopen_gate"]["training_batch_cap"] == 20
+    assert payload["reopen_gate"]["batch30_training_safe"] is True
+    assert payload["reopen_gate"]["batch30_execution_mode"] == "sequential_memory_guarded_waves"
+    assert payload["reopen_gate"]["training_batch_cap"] == 30
+
+
+def test_memory_pressure_intelligence_opens_weekend_media_soft_guard_batch_waves(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TRAINING_WEEKEND_BATCH_WINDOW", "1")
+    health = tmp_path / "governance" / "health"
+    host = _host_payload()
+    host["body_map"]["memory"] = {
+        "memory_gb": 32,
+        "swap_used_gb": 2.58,
+        "pressure_level": "normal",
+        "memory_snapshot": {
+            "compressed_store_gb": 9.7,
+            "compressor_gb": 1.1,
+            "swap_used_gb": 2.58,
+            "memory_free_pct": 92.0,
+            "memory_pressure_kind": "none",
+        },
+    }
+    _write_json(health / "host_capability_contract_latest.json", host)
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {"overall_status": "ready", "memory_pressure_level": "normal"},
+    )
+    _write_json(
+        health / "memory_efficiency_latest.json",
+        {
+            "overall_status": "ready",
+            "memory_snapshot": {
+                "compressed_store_gb": 9.7,
+                "compressor_gb": 1.1,
+                "swap_used_gb": 2.58,
+                "memory_free_pct": 92.0,
+                "memory_pressure_kind": "none",
+            },
+        },
+    )
+    _write_json(health / "computer_task_intelligence_latest.json", {"session_context": {"open_apps": ["Music"], "creative_level": "none"}})
+    _write_json(
+        health / "memory_pressure_intelligence_latest.json",
+        {
+            "reopen_gate": {"consecutive_memory_clear_samples": 0, "consecutive_cooling_samples": 0},
+            "snapshot": {"compressed_pressure_gb": 1.1, "swap_used_gb": 2.58, "pages_throttled": 0},
+        },
+    )
+
+    payload = memory_pressure_intelligence.build_payload(tmp_path)
+
+    assert payload["classification"]["status"] == "soft_guard"
+    assert payload["multitasking_headroom"]["weekend_media_training_window"] is True
+    assert payload["multitasking_headroom"]["training_max_parallel_trainings"] == 30
+    assert payload["reopen_gate"]["weekend_large_batch_window"] is True
+    assert payload["reopen_gate"]["batch20_training_safe"] is True
+    assert payload["reopen_gate"]["batch30_training_safe"] is True
+    assert payload["reopen_gate"]["batch30_execution_mode"] == "sequential_memory_guarded_waves"
+    assert payload["reopen_gate"]["training_batch_cap"] == 30
+
+
+def test_autonomic_governor_allows_weekend_media_large_batch_while_user_active() -> None:
+    gate = governor._training_reentry_gate(
+        {
+            "green": True,
+            "total_pending_lines": 1200,
+            "target_pending_lines": 15000,
+            "oldest_pending_age_seconds": 8,
+            "severity": "ready",
+            "green_gate": {"line_green": True, "age_green": True},
+        },
+        {
+            "overall_status": "ready",
+            "memory_pressure_level": "normal",
+            "compute_pressure_level": "elevated",
+            "host_saturation_score": 47.0,
+        },
+        {"user_active": True},
+        {"overall_status": "ready"},
+        {"writer_state_before": {"current_step": "complete", "status": "ok", "running": False}},
+        {"status": "improving"},
+        {"consecutive_green_samples": 3, "trend_regressing": False},
+        {
+            "safe_for_training": False,
+            "batch10_training_safe": True,
+            "batch20_training_safe": True,
+            "batch20_execution_mode": "sequential_memory_guarded_waves",
+            "batch30_training_safe": True,
+            "batch30_execution_mode": "sequential_memory_guarded_waves",
+            "multitasking_training_cap": 30,
+            "multitasking_headroom_level": "media_playback",
+            "weekend_large_batch_window": True,
+        },
+        {"training_allowed": True, "mode": "clear", "attribution": {}},
+    )
+
+    assert gate["allowed"] is True
+    assert gate["mode"] == "batch30_canary"
+    assert gate["profile"] == "coverage_batch30_canary"
+    assert gate["max_parallel_trainings"] == 30
+    assert gate["user_active_large_batch_allowed"] is True
+    assert "foreground_user_apps_active" not in gate["blockers"]
+
+
+def test_autonomic_governor_allows_weekend_batch_when_control_plane_support_is_hot() -> None:
+    gate = governor._training_reentry_gate(
+        {
+            "green": True,
+            "total_pending_lines": 1200,
+            "target_pending_lines": 15000,
+            "oldest_pending_age_seconds": 8,
+            "severity": "ready",
+            "green_gate": {"line_green": True, "age_green": True},
+        },
+        {
+            "overall_status": "degraded",
+            "memory_pressure_level": "normal",
+            "compute_pressure_level": "elevated",
+            "host_saturation_score": 49.0,
+        },
+        {"user_active": True},
+        {"overall_status": "ready"},
+        {"writer_state_before": {"current_step": "complete", "status": "ok", "running": False}},
+        {"status": "improving"},
+        {"consecutive_green_samples": 3, "trend_regressing": False},
+        {
+            "safe_for_training": False,
+            "batch10_training_safe": True,
+            "batch20_training_safe": True,
+            "batch20_execution_mode": "sequential_memory_guarded_waves",
+            "batch30_training_safe": True,
+            "batch30_execution_mode": "sequential_memory_guarded_waves",
+            "multitasking_training_cap": 30,
+            "multitasking_headroom_level": "media_playback",
+            "weekend_large_batch_window": True,
+        },
+        {
+            "training_allowed": False,
+            "mode": "trim_support_maintenance",
+            "support_jobs_hot": True,
+            "support_hot_low_priority": True,
+            "protected_work_hot": False,
+            "attribution": {
+                "hot_support_processes": [
+                    {"command_excerpt": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/scripts/ops/creative_cotenant_guard.py"}
+                ]
+            },
+        },
+    )
+
+    assert gate["allowed"] is True
+    assert gate["mode"] == "batch30_canary"
+    assert gate["weekend_control_plane_pressure_allowed"] is True
+    assert gate["micro_host_pressure_allows_training"] is True
+    assert "host_pressure_attribution_not_clear" not in gate["blockers"]
 
 
 def test_autonomic_governor_consumes_memory_intelligence_and_limits_e_core_spillover(tmp_path: Path) -> None:
@@ -968,6 +1862,285 @@ def test_autonomic_governor_allows_micro_canary_when_backlog_green_and_writer_ac
     assert training["profile"] == "coverage_micro_canary"
     assert training["reentry_gate"]["writer_active_green_safe"] is True
     assert training["reentry_gate"]["writer_idle_required"] is False
+
+
+def test_autonomic_governor_allows_micro_canary_when_live_backlog_green_but_overlay_lags_under_system_pressure(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(health / "host_capability_contract_latest.json", _host_payload())
+    _write_json(health / "os_adapter_layer_latest.json", os_adapter_layer.build_payload(host=_host_payload()))
+    _write_json(health / "workload_class_registry_latest.json", workload_class_registry.build_payload())
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "needs_work",
+            "severity": "stable",
+            "backpressure": {
+                "core_pending_lines": 1323,
+                "support_pending_lines": 15,
+                "deferred_pending_lines": 734,
+                "total_pending_lines": 2057,
+                "oldest_pending_age_seconds": 65.0,
+                "pending_lines_threshold": 15000,
+            },
+            "backlog_truth": {"sql_overlay": {"total_pending_lines": 29141}},
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "memory_pressure_level": "elevated",
+            "compute_pressure_level": "high",
+            "host_saturation_score": 92.5,
+            "p_core_runtime_feedback": {"preprocess_worker_budget": 3},
+            "host_pressure_attribution": {
+                "bot_owned_cpu_percent": 80.2,
+                "external_cpu_percent": 175.6,
+                "macos_system_cpu_percent": 20.5,
+                "foreground_app_cpu_percent": 66.4,
+                "dominant_bucket": "bot_owned",
+                "external_pressure_dominant": False,
+                "system_cotenant_hot": False,
+                "support_jobs_hot": True,
+                "hot_support_processes": [
+                    {
+                        "pid": 101,
+                        "nice": 0,
+                        "cpu_percent": 89.1,
+                        "command_excerpt": "/opt/homebrew/bin/python scripts/ops/creative_cotenant_guard.py",
+                    }
+                ],
+                "protected_work_hot": False,
+            },
+        },
+    )
+    _write_json(health / "writer_cycle_coordinator_latest.json", {"writer_state_before": {"active": False, "running": False}})
+    _write_json(health / "mlx_intelligence_router_latest.json", {"overall_status": "ready", "runtime_caps": {"max_concurrent_mlx_jobs": 1}})
+    _write_json(health / "computer_task_intelligence_latest.json", {"session_context": {"open_apps": [], "co_running_level": "none"}})
+    _write_json(health / "host_self_benchmark_latest.json", {"self_tuned_limits": {"recommended_p_core_preprocess_workers": 3}})
+    _write_json(
+        health / "memory_pressure_intelligence_latest.json",
+        {
+            "overall_status": "advisory",
+            "classification": {"status": "compression_relief", "recommended_p_core_worker_cap": 3},
+            "reopen_gate": {
+                "safe_to_widen_p_core_workers": False,
+                "safe_for_training": False,
+                "small_canary_training_safe": True,
+                "small_canary_max_parallel_trainings": 1,
+                "compression_relief_micro_canary_safe": True,
+                "training_batch_cap": 1,
+                "training_profile": "coverage_micro_canary",
+                "consecutive_memory_clear_samples": 0,
+            },
+            "trend": {"status": "flat"},
+            "multitasking_headroom": {"level": "background_available", "collector_ratio_cap": 0.55},
+        },
+    )
+    _write_json(
+        health / "autonomic_resource_governor_latest.json",
+        {"stability_state": {"consecutive_green_samples": 0, "consecutive_runtime_clear_samples": 0, "consecutive_writer_idle_samples": 18}},
+    )
+
+    payload = governor.build_payload(tmp_path)
+    training = payload["budgets"]["training"]
+
+    assert training["allowed"] is True
+    assert training["mode"] == "micro_canary"
+    assert training["profile"] == "coverage_micro_canary"
+    assert training["reentry_gate"]["micro_backlog_green"] is True
+    assert training["reentry_gate"]["micro_host_pressure_allows_training"] is True
+    assert training["reentry_gate"]["runtime_micro_clear"] is True
+    assert training["reentry_gate"]["support_hot_is_control_plane"] is True
+    assert training["reentry_gate"]["max_parallel_trainings"] == 1
+
+
+def test_autonomic_governor_prearms_storage_requested_pcore_pump_while_writer_active(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("AUTONOMIC_PCORE_USER_APP_RESERVE_TARGET", "5")
+    monkeypatch.setenv("BACKLOG_PCORE_USER_APP_RESERVE_TARGET", "5")
+    health = tmp_path / "governance" / "health"
+    _write_json(health / "host_capability_contract_latest.json", _host_payload())
+    _write_json(health / "os_adapter_layer_latest.json", os_adapter_layer.build_payload(host=_host_payload()))
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "backpressure": {
+                "core_pending_lines": 2_100_000,
+                "support_pending_lines": 0,
+                "deferred_pending_lines": 1_900_000,
+                "total_pending_lines": 4_400_000,
+                "oldest_pending_age_seconds": 29_000,
+                "pending_lines_threshold": 15000,
+            },
+            "backlog_truth": {"sql_overlay": {"total_pending_lines": 2_200_000}},
+            "backlog_relief_contract": {
+                "p_core_backlog_allocation_contract": {
+                    "preprocess_worker_budget": 3,
+                    "shard_link_writer_lanes": 3,
+                    "p_core_burst_intelligence": {
+                        "mode": "guarded_backlog_probe_3",
+                        "reason": "severe backlog with normal memory",
+                    },
+                }
+            },
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "host_saturation_score": 59.5,
+            "compute_pressure_level": "high",
+            "memory_pressure_level": "normal",
+            "p_core_runtime_feedback": {"preprocess_worker_budget": 2},
+        },
+    )
+    _write_json(
+        health / "writer_cycle_coordinator_latest.json",
+        {
+            "writer_state_before": {
+                "active": True,
+                "running": True,
+                "current_step": "shard_linking",
+                "completed_shard_count": 15,
+                "planned_shard_count": 26,
+                "progress_age_minutes": 0.1,
+            },
+            "summary": {"writer_progress_observed": True},
+            "drain_effectiveness": {"status": "progress", "merged_rows": 5000},
+        },
+    )
+    _write_json(health / "mlx_intelligence_router_latest.json", {"overall_status": "advisory", "runtime_caps": {"max_concurrent_mlx_jobs": 1}})
+    _write_json(health / "computer_task_intelligence_latest.json", {"session_context": {"open_apps": [], "co_running_level": "none"}})
+    _write_json(health / "host_self_benchmark_latest.json", {"self_tuned_limits": {"recommended_p_core_preprocess_workers": 4}})
+    _write_json(
+        health / "memory_pressure_intelligence_latest.json",
+        {
+            "overall_status": "advisory",
+            "classification": {"status": "soft_guard", "recommended_p_core_worker_cap": 4},
+            "reopen_gate": {"safe_to_widen_p_core_workers": False, "safe_for_training": False, "consecutive_memory_clear_samples": 0},
+            "trend": {"status": "flat"},
+            "multitasking_headroom": {"level": "background_available", "collector_ratio_cap": 0.55},
+        },
+    )
+    _write_json(
+        health / "autonomic_resource_governor_latest.json",
+        {"stability_state": {"consecutive_green_samples": 0, "consecutive_runtime_clear_samples": 0, "consecutive_writer_idle_samples": 0}},
+    )
+
+    payload = governor.build_payload(tmp_path)
+
+    assert payload["host_lane_budget"]["selected_p_core_preprocess_workers"] == 3
+    assert payload["host_lane_budget"]["p_core_widening_controller"]["mode"] == "hold_active_writer_prearmed_storage_target"
+    assert payload["host_lane_budget"]["p_core_widening_controller"]["storage_requested_workers"] == 3
+    assert payload["budgets"]["backlog_writer"]["p_core_preprocess_workers"] == 3
+
+
+def test_autonomic_governor_keeps_fourth_backlog_worker_when_compression_is_allocation_only(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("AUTONOMIC_PCORE_USER_APP_RESERVE_TARGET", "5")
+    monkeypatch.setenv("BACKLOG_PCORE_USER_APP_RESERVE_TARGET", "5")
+    health = tmp_path / "governance" / "health"
+    host = _host_payload()
+    host["body_map"]["memory"] = {
+        "memory_gb": 64,
+        "swap_used_gb": 1.4,
+        "pressure_level": "normal",
+        "memory_snapshot": {
+            "compressed_store_gb": 16.9,
+            "compressor_gb": 5.3,
+            "compressed_pressure_gb": 5.3,
+            "swap_used_gb": 1.4,
+            "memory_pressure_kind": "none",
+        },
+    }
+    _write_json(health / "host_capability_contract_latest.json", host)
+    _write_json(health / "os_adapter_layer_latest.json", os_adapter_layer.build_payload(host=host))
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "backpressure": {
+                "core_pending_lines": 440_000,
+                "support_pending_lines": 0,
+                "deferred_pending_lines": 200,
+                "total_pending_lines": 440_200,
+                "oldest_pending_age_seconds": 120_000,
+                "pending_lines_threshold": 5000,
+            },
+            "backlog_truth": {"sql_overlay": {"total_pending_lines": 440_200}},
+            "backlog_relief_contract": {
+                "p_core_backlog_allocation_contract": {
+                    "preprocess_worker_budget": 4,
+                    "shard_link_writer_lanes": 4,
+                    "p_core_burst_intelligence": {
+                        "mode": "guarded_backlog_probe_4",
+                        "reason": "borrow one reserved P-core for extreme backlog when memory is allocation-only",
+                    },
+                }
+            },
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "throttle_profile": "protect_live",
+            "host_saturation_score": 42.0,
+            "compute_pressure_level": "elevated",
+            "memory_pressure_level": "normal",
+            "p_core_runtime_feedback": {
+                "preprocess_worker_budget": 4,
+                "p_core_burst_intelligence": {
+                    "mode": "guarded_backlog_probe_4",
+                    "user_app_reserve": {"elastic_loan_allowed": True, "elastic_loan_worker_cap": 4},
+                    "inputs": {
+                        "compressed_store_gb": 16.9,
+                        "compressor_gb": 5.3,
+                        "compressed_pressure_gb": 5.3,
+                        "swap_used_gb": 1.4,
+                        "pages_throttled": 0,
+                        "memory_pressure_kind": "none",
+                    },
+                },
+            },
+        },
+    )
+    _write_json(
+        health / "writer_cycle_coordinator_latest.json",
+        {
+            "writer_state_before": {"active": False, "running": False, "current_step": "complete", "status": "ok"},
+            "drain_effectiveness": {"status": "strong_progress", "merged_rows": 6000},
+        },
+    )
+    _write_json(health / "mlx_intelligence_router_latest.json", {"overall_status": "advisory", "runtime_caps": {"max_concurrent_mlx_jobs": 1}})
+    _write_json(health / "computer_task_intelligence_latest.json", {"session_context": {"open_apps": [], "co_running_level": "none"}})
+    _write_json(health / "host_self_benchmark_latest.json", {"self_tuned_limits": {"recommended_p_core_preprocess_workers": 6}})
+    _write_json(
+        health / "memory_pressure_intelligence_latest.json",
+        {
+            "overall_status": "advisory",
+            "classification": {
+                "status": "compression_relief",
+                "recommended_p_core_worker_cap": 3,
+                "reason": "compressed memory is elevated enough to hold P-core width",
+            },
+            "reopen_gate": {"safe_to_widen_p_core_workers": False, "safe_for_training": False, "consecutive_memory_clear_samples": 0},
+            "trend": {"status": "flat"},
+            "multitasking_headroom": {"level": "background_available", "collector_ratio_cap": 0.55},
+        },
+    )
+    _write_json(health / "autonomic_resource_governor_latest.json", {"stability_state": {"consecutive_green_samples": 0, "consecutive_runtime_clear_samples": 0, "consecutive_writer_idle_samples": 1}})
+
+    payload = governor.build_payload(tmp_path)
+    widening = payload["host_lane_budget"]["p_core_widening_controller"]
+
+    assert payload["host_lane_budget"]["selected_p_core_preprocess_workers"] == 4
+    assert widening["storage_requested_workers"] == 4
+    assert widening["max_safe_workers"] == 4
+    assert widening["elastic_reserve_loan_allowed"] is True
+    assert widening["memory_pressure_controller"]["allocation_only_compression"] is True
+    assert widening["memory_pressure_controller"]["max_memory_safe_workers"] == 4
 
 
 def test_autonomic_governor_allows_batch10_when_backlog_and_memory_are_clear(tmp_path: Path) -> None:
@@ -1207,6 +2380,52 @@ def test_system_needs_includes_runtime_pressure_attribution_frames(tmp_path: Pat
     assert payload["frames_of_reference"]["host_pressure_attribution"]["system_cotenant_hot"] is True
 
 
+def test_system_needs_falls_back_to_health_surface_repairs(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(health / "autonomic_resource_governor_latest.json", {"what_do_you_need": {"items": []}})
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "overall_status": "degraded",
+            "process_watchdog": {
+                "all_sleeves_effective_runtime": {
+                    "status": "needs_repair",
+                    "launcher_live": False,
+                    "child_fanout_ok": False,
+                    "heartbeat_fresh": False,
+                }
+            },
+        },
+    )
+    _write_json(
+        health / "collector_contracts_latest.json",
+        {
+            "required_failures": ["official_macro_context", "market_micro_context"],
+            "soft_failures": [],
+        },
+    )
+    _write_json(
+        health / "health_gates_latest.json",
+        {
+            "hard_gates": {"ingestion_backpressure_overload": True, "collector_contracts": True},
+            "inputs": {
+                "collector_required_failures": ["official_macro_context", "market_micro_context"],
+                "backpressure_storage_control_override": {"active": False},
+            },
+        },
+    )
+
+    payload = system_needs_intelligence.build_payload(tmp_path, fix_log_path=health / "system_needs_fix_log.jsonl")
+    blockers = {row["blocker"] for row in payload["what_do_you_need"]}
+
+    assert payload["overall_status"] == "needs_action"
+    assert payload["needs"] == payload["what_do_you_need"]
+    assert "all_sleeves_launcher_fanout_needs_repair" in blockers
+    assert "collector_contracts_required_failures" in blockers
+    assert "ingestion_backpressure_health_gate_needs_reconciliation" in blockers
+    assert payload["next_command"][1] == "start"
+
+
 def test_system_needs_surfaces_ready_batch20_training_action(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -1275,6 +2494,174 @@ def test_system_needs_turns_training_runtime_blockers_into_exact_needs(tmp_path:
     assert payload["overall_status"] == "needs_action"
     assert payload["what_do_you_need"][0]["blocker"] == "training_runtime_writer_progress_stale_before_training"
     assert payload["what_do_you_need"][0]["command"][1] == "writer-cycle-coordinator"
+
+
+def test_system_needs_manages_training_expansion_blockers_during_green_soak(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(health / "autonomic_resource_governor_latest.json", {"what_do_you_need": {"items": []}})
+    _write_json(
+        health / "unattended_soak_readiness_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "overall_grade": "A+",
+            "safe_to_leave_unattended": True,
+            "blockers": [],
+            "warnings": [],
+        },
+    )
+    _write_json(
+        health / "runtime_paper_regression_guard_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "paper_stage": "blocked",
+            "paper_armed": False,
+            "paper_blocked": True,
+            "failed_guard_count": 0,
+            "failed_guards": [],
+        },
+    )
+    _write_json(
+        health / "training_runtime_control_latest.json",
+        {
+            "overall_status": "degraded",
+            "training_launch_contract": {
+                "launch_allowed": False,
+                "requested_batch_size": 8,
+                "launch_blockers": [
+                    "pretraining_drain_buffer_active",
+                    "autonomic_training_budget_closed",
+                    "training_quality_blocked",
+                ],
+                "recommended_prep_commands": [
+                    ["./scripts/ops/opsctl.sh", "writer-cycle-coordinator", "--json"],
+                    ["./scripts/ops/opsctl.sh", "memory-pressure-intelligence", "--apply", "--json"],
+                ],
+            },
+        },
+    )
+
+    payload = system_needs_intelligence.build_payload(tmp_path, fix_log_path=health / "system_needs_fix_log.jsonl")
+
+    assert payload["overall_status"] == "ready"
+    assert payload["what_do_you_need"] == []
+    assert {row["blocker"] for row in payload["managed_controls"]} == {
+        "training_runtime_pretraining_drain_buffer_active",
+        "training_runtime_autonomic_training_budget_closed",
+        "training_runtime_training_quality_blocked",
+    }
+    assert {row["managed_control_state"] for row in payload["managed_controls"]} == {
+        "training_expansion_parked_for_unattended_soak",
+    }
+    assert payload["frames_of_reference"]["soak_management_context"]["enabled"] is True
+
+
+def test_system_needs_manages_optional_mlx_cap_during_green_soak(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "autonomic_resource_governor_latest.json",
+        {
+            "what_do_you_need": {
+                "items": [
+                    {
+                        "blocker": "mlx_or_gpu_lane_capped",
+                        "exact_file": "governance/health/mlx_intelligence_router_latest.json",
+                        "exact_shard": "",
+                        "command": ["./scripts/ops/opsctl.sh", "mlx-intelligence-router", "--apply", "--json"],
+                        "expected_impact": "defer optional MLX capacity",
+                        "risk_level": "low",
+                        "stop_when": "MLX route is ready",
+                    }
+                ]
+            }
+        },
+    )
+    _write_json(
+        health / "unattended_soak_readiness_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "overall_grade": "A+",
+            "safe_to_leave_unattended": True,
+            "blockers": [],
+            "warnings": [],
+        },
+    )
+    _write_json(
+        health / "runtime_paper_regression_guard_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "paper_stage": "blocked",
+            "paper_armed": False,
+            "paper_blocked": True,
+            "failed_guard_count": 0,
+            "failed_guards": [],
+        },
+    )
+
+    payload = system_needs_intelligence.build_payload(tmp_path, fix_log_path=health / "system_needs_fix_log.jsonl")
+
+    assert payload["overall_status"] == "ready"
+    assert payload["what_do_you_need"] == []
+    assert payload["managed_controls"][0]["blocker"] == "mlx_or_gpu_lane_capped"
+    assert payload["managed_controls"][0]["managed_control_state"] == "optional_mlx_capacity_deferred_during_unattended_soak"
+
+
+def test_system_needs_manages_foreground_memory_headroom_during_green_soak(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(health / "autonomic_resource_governor_latest.json", {"what_do_you_need": {"items": []}})
+    _write_json(
+        health / "memory_pressure_intelligence_latest.json",
+        {
+            "overall_status": "advisory",
+            "classification": {"status": "foreground_headroom"},
+            "what_do_you_need": {
+                "items": [
+                    {
+                        "blocker": "foreground_app_headroom_reserved",
+                        "exact_file": "governance/health/memory_pressure_intelligence_latest.json",
+                        "exact_shard": "classification.foreground_headroom",
+                        "command": ["./scripts/ops/opsctl.sh", "memory-pressure-intelligence", "--apply", "--json"],
+                        "expected_impact": "keep foreground app headroom while paper soak remains green",
+                        "risk_level": "low",
+                        "stop_when": "foreground headroom is no longer reserved",
+                    }
+                ]
+            },
+        },
+    )
+    _write_json(
+        health / "unattended_soak_readiness_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "overall_grade": "A+",
+            "safe_to_leave_unattended": True,
+            "blockers": [],
+            "warnings": [],
+        },
+    )
+    _write_json(
+        health / "runtime_paper_regression_guard_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "paper_stage": "armed",
+            "paper_armed": True,
+            "paper_blocked": False,
+            "failed_guard_count": 0,
+            "failed_guards": [],
+        },
+    )
+
+    payload = system_needs_intelligence.build_payload(tmp_path, fix_log_path=health / "system_needs_fix_log.jsonl")
+
+    assert payload["overall_status"] == "ready"
+    assert payload["what_do_you_need"] == []
+    assert payload["managed_controls"][0]["blocker"] == "foreground_app_headroom_reserved"
+    assert payload["managed_controls"][0]["managed_control_state"] == "foreground_headroom_reserved_for_unattended_soak"
 
 
 def test_system_needs_routes_training_quota_blocker_to_storage_quota_guard(tmp_path: Path) -> None:

@@ -14,12 +14,12 @@ import subprocess
 import sys
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -33,7 +33,15 @@ except Exception:
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 PROJECT_ROOT_PATH = Path(PROJECT_ROOT)
 STORAGE_PRESSURE_OVERRIDE_PATH = PROJECT_ROOT_PATH / "config" / ".env.storage_pressure_override"
+HOT_LANE_RETENTION_OVERRIDE_PATH = PROJECT_ROOT_PATH / "config" / ".env.hot_lane_retention_override"
 STORAGE_OVERRIDE_PATH = PROJECT_ROOT_PATH / "config" / ".env.storage_override"
+RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH = PROJECT_ROOT_PATH / "config" / ".env.runtime_resource_guard_override"
+DYNAMIC_STORAGE_OVERRIDE_PATHS = (
+    STORAGE_PRESSURE_OVERRIDE_PATH,
+    HOT_LANE_RETENTION_OVERRIDE_PATH,
+    STORAGE_OVERRIDE_PATH,
+    RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH,
+)
 _DYNAMIC_STORAGE_OVERRIDE_CACHE: Dict[str, Any] = {
     "checked_at_monotonic": 0.0,
     "fingerprint": (),
@@ -143,6 +151,7 @@ _PAPER_RUNTIME_CONTROLS_CACHE: Dict[str, Any] = {
         "profitability_strategy_controls": {},
         "profitability_global_policy": {},
         "profitability_upgrade_lanes": [],
+        "raw_profitability_a_recovery_contract": {},
         "master_grandmaster_training_contract": {},
         "profit_harvest_strategy_controls": {},
         "profit_harvest_position_ledger": {},
@@ -905,6 +914,8 @@ def _canary_id_overrides() -> set[str]:
 
 
 def _is_canary_bot(bot: SubBot, canary_ids: set[str]) -> bool:
+    if not _bot_master_vote_eligible(bot):
+        return False
     if bool(bot.promoted):
         return True
     bot_id = str(bot.bot_id or "").strip().lower()
@@ -1884,6 +1895,7 @@ def _paper_runtime_controls_snapshot() -> Dict[str, Any]:
     grand_master_profit_harvest_awareness_contract: Dict[str, Any] = {}
     profit_realization_contract: Dict[str, Any] = {}
     max_grade_push_contract: Dict[str, Any] = {}
+    raw_profitability_a_recovery_contract: Dict[str, Any] = {}
     master_grandmaster_training_contract: Dict[str, Any] = {}
     if profitability_control_path.exists():
         try:
@@ -1944,6 +1956,7 @@ def _paper_runtime_controls_snapshot() -> Dict[str, Any]:
             ("profit_harvest_aplus_campaign", "profit_harvest_aplus_campaign"),
             ("grand_master_profit_harvest_awareness_contract", "grand_master_profit_harvest_awareness_contract"),
             ("max_grade_push_contract", "max_grade_push_contract"),
+            ("raw_profitability_a_recovery_contract", "raw_profitability_a_recovery_contract"),
         ):
             raw_contract = profitability_payload.get(key_name) if isinstance(profitability_payload, dict) else {}
             if not isinstance(raw_contract, dict):
@@ -1974,6 +1987,8 @@ def _paper_runtime_controls_snapshot() -> Dict[str, Any]:
                 grand_master_profit_harvest_awareness_contract = raw_contract
             elif target_name == "max_grade_push_contract":
                 max_grade_push_contract = raw_contract
+            elif target_name == "raw_profitability_a_recovery_contract":
+                raw_profitability_a_recovery_contract = raw_contract
         raw_profit_realization_contract = (
             profitability_payload.get("profit_realization_contract")
             if isinstance(profitability_payload, dict)
@@ -2026,6 +2041,7 @@ def _paper_runtime_controls_snapshot() -> Dict[str, Any]:
         "grand_master_profit_harvest_awareness_contract": grand_master_profit_harvest_awareness_contract,
         "profit_realization_contract": profit_realization_contract,
         "max_grade_push_contract": max_grade_push_contract,
+        "raw_profitability_a_recovery_contract": raw_profitability_a_recovery_contract,
         "master_grandmaster_training_contract": master_grandmaster_training_contract,
     }
     cache["loaded_at"] = now_ts
@@ -2061,6 +2077,57 @@ def _profitability_global_policy() -> Dict[str, Any]:
     snapshot = _paper_runtime_controls_snapshot()
     policy = snapshot.get("profitability_global_policy") if isinstance(snapshot.get("profitability_global_policy"), dict) else {}
     return policy if isinstance(policy, dict) else {}
+
+
+def _coinbase_paper_probation_allows_weak_profile(profile: str) -> bool:
+    prof = str(profile or "").strip().lower()
+    return bool(
+        prof
+        and _env_flag("COINBASE_PAPER_PROBATION_ENABLED", "0")
+        and _env_flag("TOP_BOT_PAPER_TRADING_ENABLED", "0")
+        and os.getenv("SHADOW_BROKER", "").strip().lower() == "coinbase"
+        and prof in _csv_set(os.getenv("COINBASE_PAPER_PROBATIONARY_PROFILES", "default,crypto_futures"))
+    )
+
+
+def _paper_mirror_env_value_for_broker(broker: str, profile: str, suffix: str, default: str = "") -> str:
+    suffix_key = str(suffix or "").strip().upper()
+    broker_key = str(broker or "").strip().lower()
+    profile_key = str(profile or "").strip().lower()
+    candidate_names: List[str] = []
+
+    if broker_key == "coinbase":
+        if profile_key == "crypto_futures":
+            candidate_names.extend(
+                [
+                    f"COINBASE_FUTURES_TOP_BOT_PAPER_TRADING_{suffix_key}",
+                    f"COINBASE_TOP_BOT_PAPER_TRADING_{suffix_key}",
+                ]
+            )
+        else:
+            candidate_names.append(f"COINBASE_TOP_BOT_PAPER_TRADING_{suffix_key}")
+    elif broker_key == "schwab":
+        if profile_key == "schwab_futures":
+            candidate_names.append(f"SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_{suffix_key}")
+        else:
+            candidate_names.append(f"SCHWAB_TOP_BOT_PAPER_TRADING_{suffix_key}")
+
+    candidate_names.append(f"TOP_BOT_PAPER_TRADING_{suffix_key}")
+    for name in candidate_names:
+        raw = os.getenv(name)
+        if raw is not None and str(raw).strip():
+            return str(raw).strip()
+    return str(default)
+
+
+def _raw_profitability_a_recovery_contract() -> Dict[str, Any]:
+    snapshot = _paper_runtime_controls_snapshot()
+    contract = (
+        snapshot.get("raw_profitability_a_recovery_contract")
+        if isinstance(snapshot.get("raw_profitability_a_recovery_contract"), dict)
+        else {}
+    )
+    return contract if isinstance(contract, dict) else {}
 
 
 def _profile_profit_harvest_control(profile: str) -> Dict[str, Any]:
@@ -2222,7 +2289,7 @@ def _profile_profitability_upper_layer_features(profile: str) -> Dict[str, float
     active = 1.0 if bool(control.get("active", False)) else 0.0
     profit_score = _clamp01(float(control.get("profit_score", 0.5) or 0.5))
     drag = _clamp01(float(control.get("drag_score", 0.0) or 0.0))
-    size_multiplier = _clamp01(float(control.get("position_size_multiplier", 1.0) or 1.0))
+    size_multiplier = _clamp01(_to_float(control.get("position_size_multiplier"), 1.0))
     sample_weight = _clamp01(float(outcome_training.get("sample_weight_multiplier", 1.0) or 1.0) / 3.0)
     exit_pressure = _clamp01(float(exit_contract.get("tighten_exit_bias_norm", 0.0) or 0.0))
     execution_discount = _clamp01(float(execution_contract.get("unknown_fill_score_discount_norm", 0.0) or 0.0))
@@ -2441,7 +2508,7 @@ def _apply_paper_mirror_profitability_control(
 
     mode = str(control.get("mode") or "").strip().lower()
     penalty = _clamp01(float(control.get("score_penalty_norm", 0.0) or 0.0))
-    size_multiplier = _clamp01(float(control.get("position_size_multiplier", 1.0) or 1.0))
+    size_multiplier = _clamp01(_to_float(control.get("position_size_multiplier"), 1.0))
     confirmation_contract = (
         control.get("confirmation_bias_control")
         if isinstance(control.get("confirmation_bias_control"), dict)
@@ -2568,6 +2635,101 @@ def _apply_tradeability_realism_control(
     if penalty >= 0.20:
         return action_key, adjusted_score, list(reasons) + [f"execution_realism_penalty={penalty:.3f}"]
     return action_key, adjusted_score, list(reasons)
+
+
+def _csv_set(raw: str) -> set[str]:
+    return {part.strip().lower() for part in str(raw or "").split(",") if part.strip()}
+
+
+def _market_posture_runtime_control(
+    *,
+    profile: str,
+    action: str,
+    score: float,
+    threshold: float,
+    reasons: List[str],
+    features: Dict[str, float],
+) -> tuple[str, float, List[str], Dict[str, float]]:
+    if not _env_flag("MARKET_POSTURE_CONTROL_ENABLED", "0"):
+        return str(action or "HOLD").upper(), float(score), list(reasons), {}
+
+    state = str(os.getenv("MARKET_POSTURE_STATE", "adaptive") or "adaptive").strip().lower()
+    risk_appetite = str(os.getenv("MARKET_POSTURE_RISK_APPETITE", "selective") or "selective").strip().lower()
+    profile_key = str(profile or "default").strip().lower() or "default"
+    aggressive_profiles = _csv_set(
+        os.getenv(
+            "MARKET_POSTURE_AGGRESSIVE_PROFILES",
+            "aggressive,intraday_aggressive,swing_aggressive,crypto_futures,schwab_futures",
+        )
+    )
+    defensive_profiles = _csv_set(
+        os.getenv(
+            "MARKET_POSTURE_DEFENSIVE_PROFILES",
+            "bond,conservative,dividend,long_term_core_etf,long_term_dividend",
+        )
+    )
+    action_key = str(action or "HOLD").upper()
+    new_action = action_key
+    new_score = float(score)
+    new_reasons = list(reasons)
+    risk_on = _clamp01(float(features.get("flow_risk_on_norm", features.get("breadth_risk_on_norm", 0.0)) or 0.0))
+    risk_off = _clamp01(float(features.get("flow_risk_off_norm", features.get("breadth_risk_off_norm", 0.0)) or 0.0))
+    defensive_rotation = _clamp01(float(features.get("flow_defensive_rotation_norm", 0.0) or 0.0))
+    confirmation = _clamp01(
+        max(
+            float(features.get("core_cross_asset_confirmation_norm", features.get("cross_asset_confirmation_norm", 0.0)) or 0.0),
+            float(features.get("lead_lag_confirmation_norm", 0.0) or 0.0),
+        )
+    )
+    edge = _clamp01(float(features.get("allocation_trade_edge_norm", 0.0) or 0.0))
+    delta_floor = _clamp01(float(os.getenv("MARKET_POSTURE_BUY_RISK_ON_EDGE_DELTA", "0.06") or 0.06))
+    confirmation_floor = _clamp01(float(os.getenv("MARKET_POSTURE_BUY_CONFIRMATION_FLOOR", "0.55") or 0.55))
+    defensive_buy_floor = _clamp01(float(os.getenv("MARKET_POSTURE_DEFENSIVE_BUY_RISK_OFF_FLOOR", "0.16") or 0.16))
+    aggressive_entry_mult = _clamp01(float(os.getenv("MARKET_POSTURE_AGGRESSIVE_ENTRY_MULT", "0.72") or 0.72))
+    defensive_state = state in {"defensive_hold_momentum_faded", "protective_tightening", "defensive_watch"}
+    rerisk_ok = bool(
+        risk_on >= (risk_off + delta_floor)
+        and confirmation >= confirmation_floor
+        and (edge > 0.0 or abs(float(score) - 0.5) >= 0.08)
+    )
+    defensive_buy_ok = bool(max(risk_off, defensive_rotation) >= defensive_buy_floor and confirmation >= max(0.44, confirmation_floor - 0.10))
+
+    if action_key == "BUY" and defensive_state and profile_key in aggressive_profiles and not rerisk_ok:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons.extend(
+            [
+                f"market_posture_block_aggressive_buy state={state}",
+                f"risk_on={risk_on:.3f} risk_off={risk_off:.3f} confirmation={confirmation:.3f}",
+            ]
+        )
+    elif action_key == "BUY" and profile_key in aggressive_profiles and aggressive_entry_mult < 0.999 and not rerisk_ok:
+        new_score = 0.5 + ((new_score - 0.5) * max(aggressive_entry_mult, 0.10))
+        if not ((new_score > threshold) if action_key == "BUY" else (new_score < (1.0 - threshold))):
+            new_action = "HOLD"
+        new_reasons.append(f"market_posture_aggressive_entry_mult={aggressive_entry_mult:.3f}")
+    elif action_key == "BUY" and profile_key in defensive_profiles and not defensive_buy_ok:
+        new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+        new_reasons.extend(
+            [
+                f"market_posture_defensive_buy_requires_risk_off floor={defensive_buy_floor:.3f}",
+                f"risk_off={risk_off:.3f} defensive_rotation={defensive_rotation:.3f}",
+            ]
+        )
+    elif action_key == "HOLD" and defensive_state and profile_key in defensive_profiles:
+        new_reasons.append(f"market_posture_defensive_hold_ok state={state}")
+
+    overlay = {
+        "market_posture_control_active_norm": 1.0,
+        "market_posture_defensive_state_norm": 1.0 if defensive_state else 0.0,
+        "market_posture_risk_on_norm": risk_on,
+        "market_posture_risk_off_norm": risk_off,
+        "market_posture_defensive_rotation_norm": defensive_rotation,
+        "market_posture_confirmation_norm": confirmation,
+        "market_posture_rerisk_ok_norm": 1.0 if rerisk_ok else 0.0,
+        "market_posture_aggressive_entry_mult_norm": aggressive_entry_mult,
+        "market_posture_low_appetite_norm": 1.0 if risk_appetite == "low" else 0.0,
+    }
+    return new_action, float(new_score), new_reasons, overlay
 
 
 def _regime_dislocation_norm(features: Dict[str, float]) -> float:
@@ -5701,7 +5863,7 @@ def _master_vote_variant(
     paper_master_profit = _clamp01(float(features.get("paper_profitability_master_profit_score_norm", 0.5) or 0.5))
     paper_master_drag = _clamp01(float(features.get("paper_profitability_master_drag_norm", 0.0) or 0.0))
     paper_master_risk = _clamp01(float(features.get("paper_profitability_master_risk_norm", 0.0) or 0.0))
-    paper_master_size = _clamp01(float(features.get("paper_profitability_master_size_multiplier_norm", 1.0) or 1.0))
+    paper_master_size = _clamp01(_to_float(features.get("paper_profitability_master_size_multiplier_norm"), 1.0))
     micro_open = _clamp01(float(features.get("market_micro_opening_auction_norm", 0.0) or 0.0))
     micro_close = _clamp01(float(features.get("market_micro_closing_auction_norm", 0.0) or 0.0))
     micro_rel_vol = _clamp01(float(features.get("market_micro_relative_volume_norm", 0.0) or 0.0))
@@ -5990,7 +6152,7 @@ def _grand_master_vote(
     paper_grandmaster_execution_discount = _clamp01(
         float(features.get("paper_profitability_grandmaster_execution_discount_norm", 0.0) or 0.0)
     )
-    paper_grandmaster_size = _clamp01(float(features.get("paper_profitability_grandmaster_size_multiplier_norm", 1.0) or 1.0))
+    paper_grandmaster_size = _clamp01(_to_float(features.get("paper_profitability_grandmaster_size_multiplier_norm"), 1.0))
     quant_strategy_available = max(
         quant_strategy_selection,
         quant_strategy_fit,
@@ -6896,7 +7058,7 @@ def _options_roll_manager(
         if not isinstance(leg, dict):
             continue
         side = str(leg.get("side", "") or "").upper()
-        opt_type = str(leg.get("option_type", "") or "").upper()
+        opt_type = str(leg.get("option_type") or leg.get("type") or "").upper()
         strike = float(leg.get("strike", 0.0) or 0.0)
         if "SELL" not in side or strike <= 0.0 or px <= 0.0:
             continue
@@ -8921,10 +9083,22 @@ def _external_ingestion_extra_interval_seconds(project_root: str) -> int:
     if os.getenv("SHADOW_LOOP_PRESSURE_INTERVAL_FLOOR_ENABLED", "1").strip() == "0":
         return 0
 
-    max_extra = max(_safe_env_int("SHADOW_LOOP_MAX_DYNAMIC_EXTRA_INTERVAL_SECONDS", 75), 0)
-    protect_live_extra = max(_safe_env_int("SHADOW_LOOP_PROTECT_LIVE_EXTRA_INTERVAL_SECONDS", 30), 0)
-    queue_extra = max(_safe_env_int("SHADOW_LOOP_QUEUE_BACKPRESSURE_EXTRA_INTERVAL_SECONDS", 15), 0)
-    high_compute_extra = max(_safe_env_int("SHADOW_LOOP_HIGH_COMPUTE_EXTRA_INTERVAL_SECONDS", 20), 0)
+    def _dynamic_int(name: str, default: int) -> int:
+        try:
+            raw = _dynamic_storage_value(name, str(default))
+        except Exception:
+            raw = os.getenv(name, str(default))
+        try:
+            return int(float(str(raw or default)))
+        except Exception:
+            return int(default)
+
+    max_extra = max(_dynamic_int("SHADOW_LOOP_MAX_DYNAMIC_EXTRA_INTERVAL_SECONDS", 75), 0)
+    protect_live_extra = max(_dynamic_int("SHADOW_LOOP_PROTECT_LIVE_EXTRA_INTERVAL_SECONDS", 30), 0)
+    queue_extra = max(_dynamic_int("SHADOW_LOOP_QUEUE_BACKPRESSURE_EXTRA_INTERVAL_SECONDS", 15), 0)
+    high_compute_extra = max(_dynamic_int("SHADOW_LOOP_HIGH_COMPUTE_EXTRA_INTERVAL_SECONDS", 20), 0)
+    sustain_extra = max(_dynamic_int("SHADOW_LOOP_SUSTAIN_EXTRA_INTERVAL_SECONDS", 15), 0)
+    soft_cap_extra = max(_dynamic_int("SHADOW_LOOP_SOFT_CAP_EXTRA_INTERVAL_SECONDS", 5), 0)
     extra = 0
 
     backpressure = _load_health_payload(project_root, "ingestion_backpressure_latest.json")
@@ -8936,7 +9110,15 @@ def _external_ingestion_extra_interval_seconds(project_root: str) -> int:
     compute_level = str(runtime.get("compute_pressure_level") or "").strip().lower()
     if profile == "protect_live":
         extra = max(extra, protect_live_extra)
+    elif profile == "sustain":
+        extra = max(extra, sustain_extra)
+    elif profile == "soft_cap":
+        extra = max(extra, soft_cap_extra)
     if compute_level == "high":
+        extra = max(extra, high_compute_extra)
+    saturation = runtime.get("runtime_saturation_governor_v2") if isinstance(runtime.get("runtime_saturation_governor_v2"), dict) else {}
+    training_policy = saturation.get("training_policy") if isinstance(saturation.get("training_policy"), dict) else {}
+    if bool(training_policy.get("training_paused", False)):
         extra = max(extra, high_compute_extra)
 
     storage = _load_health_payload(project_root, "ingestion_storage_control_latest.json")
@@ -8952,6 +9134,170 @@ def _external_ingestion_extra_interval_seconds(project_root: str) -> int:
         extra = max(extra, queue_extra)
 
     return min(extra, max_extra)
+
+
+def _runtime_training_pause_contract(project_root: str) -> Dict[str, Any]:
+    runtime = _load_health_payload(project_root, "runtime_throttle_control_latest.json")
+    saturation = runtime.get("runtime_saturation_governor_v2") if isinstance(runtime.get("runtime_saturation_governor_v2"), dict) else {}
+    training_policy = saturation.get("training_policy") if isinstance(saturation.get("training_policy"), dict) else {}
+    try:
+        dynamic_overrides = _dynamic_storage_overrides()
+
+        def _runtime_pause_flag(name: str, default: bool = False) -> bool:
+            raw = dynamic_overrides.get(name)
+            if raw is None and dynamic_overrides:
+                return bool(default)
+            if raw is None:
+                raw = os.getenv(name, "1" if default else "0")
+            return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+        def _runtime_pause_value(name: str, default: str = "") -> str:
+            raw = dynamic_overrides.get(name)
+            if raw is None and dynamic_overrides:
+                return str(default)
+            if raw is None:
+                raw = os.getenv(name, default)
+            return str(raw or "").strip()
+
+        pause_flag = _runtime_pause_flag("TRAINING_RUNTIME_PAUSED_FOR_HOST_HEADROOM", False)
+        backlog_pause_flag = _runtime_pause_flag("TRAINING_RUNTIME_PAUSED_FOR_BACKLOG", False)
+        heavy_collector_pause_flag = _runtime_pause_flag("HEAVY_COLLECTORS_PAUSED_FOR_BACKLOG", False)
+        shadow_loop_pause_flag = _runtime_pause_flag("SHADOW_LOOP_PAUSED_FOR_BACKLOG", False)
+        report_refresh_pause_flag = _runtime_pause_flag("REPORT_REFRESH_PAUSED_FOR_BACKLOG", False)
+        governor_mode = _runtime_pause_value("TRAINING_RUNTIME_GOVERNOR_MODE", "")
+        raw_sleep = _runtime_pause_value("SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS", "60")
+    except Exception:
+        pause_flag = os.getenv("TRAINING_RUNTIME_PAUSED_FOR_HOST_HEADROOM", "0").strip().lower() in {"1", "true", "yes", "on"}
+        backlog_pause_flag = os.getenv("TRAINING_RUNTIME_PAUSED_FOR_BACKLOG", "0").strip().lower() in {"1", "true", "yes", "on"}
+        heavy_collector_pause_flag = os.getenv("HEAVY_COLLECTORS_PAUSED_FOR_BACKLOG", "0").strip().lower() in {"1", "true", "yes", "on"}
+        shadow_loop_pause_flag = os.getenv("SHADOW_LOOP_PAUSED_FOR_BACKLOG", "0").strip().lower() in {"1", "true", "yes", "on"}
+        report_refresh_pause_flag = os.getenv("REPORT_REFRESH_PAUSED_FOR_BACKLOG", "0").strip().lower() in {"1", "true", "yes", "on"}
+        governor_mode = os.getenv("TRAINING_RUNTIME_GOVERNOR_MODE", "")
+        raw_sleep = os.getenv("SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS", "60")
+    runtime_paused = bool(training_policy.get("training_paused", False))
+    backlog_paused = bool(backlog_pause_flag or heavy_collector_pause_flag or shadow_loop_pause_flag)
+    normalized_governor_mode = str(governor_mode or "").strip().lower()
+    paused = bool(
+        pause_flag
+        or backlog_paused
+        or runtime_paused
+        or normalized_governor_mode in {"paused_for_host_headroom", "paused_for_backlog", "paused_for_storage_backpressure"}
+    )
+    try:
+        sleep_seconds = int(float(str(raw_sleep or "60")))
+    except Exception:
+        sleep_seconds = 60
+    sleep_seconds = min(max(sleep_seconds, 10), 300)
+    reason = str(training_policy.get("reason") or governor_mode or "").strip()
+    if not reason:
+        if backlog_pause_flag or shadow_loop_pause_flag:
+            reason = "storage_backpressure_backlog"
+        elif heavy_collector_pause_flag:
+            reason = "heavy_collectors_paused_for_backlog"
+        elif report_refresh_pause_flag:
+            reason = "report_refresh_paused_for_backlog"
+        else:
+            reason = "runtime_host_headroom"
+    return {
+        "paused": paused,
+        "sleep_seconds": sleep_seconds,
+        "reason": reason,
+        "runtime_training_paused": runtime_paused,
+        "host_headroom_paused": bool(pause_flag),
+        "backlog_paused": backlog_paused,
+        "training_paused_for_backlog": bool(backlog_pause_flag),
+        "heavy_collectors_paused_for_backlog": bool(heavy_collector_pause_flag),
+        "report_refresh_paused_for_backlog": bool(report_refresh_pause_flag),
+        "governor_mode": str(governor_mode or ""),
+    }
+
+
+def _paper_live_data_runtime_pause_bypass_contract(
+    project_root: str,
+    *,
+    broker: str,
+    profile: str,
+    runtime_pause: Dict[str, Any],
+) -> Dict[str, Any]:
+    broker_key = str(broker or "").strip().lower()
+    profile_key = str(profile or "").strip().lower()
+    blockers: List[str] = []
+    paused = bool(runtime_pause.get("paused", False))
+    if not paused:
+        blockers.append("runtime_not_paused")
+    if not broker_key:
+        blockers.append("missing_broker")
+    if not profile_key:
+        blockers.append("missing_profile")
+    if bool(runtime_pause.get("backlog_paused", False)):
+        blockers.append("backlog_paused")
+    if bool(runtime_pause.get("training_paused_for_backlog", False)):
+        blockers.append("training_paused_for_backlog")
+    if bool(runtime_pause.get("heavy_collectors_paused_for_backlog", False)):
+        blockers.append("heavy_collectors_paused_for_backlog")
+    governor_mode = str(runtime_pause.get("governor_mode") or "").strip().lower()
+    if governor_mode in {"paused_for_backlog", "paused_for_storage_backpressure"}:
+        blockers.append(f"governor_mode_{governor_mode}")
+
+    top_bot_enabled = _env_flag("TOP_BOT_PAPER_TRADING_ENABLED", "0")
+    market_data_only = _env_flag("MARKET_DATA_ONLY", "1")
+    live_orders_enabled = _env_flag("ALLOW_ORDER_EXECUTION", "0")
+    if not top_bot_enabled:
+        blockers.append("top_bot_paper_disabled")
+    if not market_data_only or live_orders_enabled:
+        blockers.append("live_execution_not_locked")
+
+    ramp = _load_health_payload(project_root, "paper_400_ramp_latest.json")
+    ramp_armed = bool(ramp.get("ok", False)) and bool(ramp.get("armed", False))
+    runtime = _load_health_payload(project_root, "runtime_throttle_control_latest.json")
+    saturation = runtime.get("runtime_saturation_governor_v2") if isinstance(runtime.get("runtime_saturation_governor_v2"), dict) else {}
+    paper_policy = saturation.get("paper_live_data_policy") if isinstance(saturation.get("paper_live_data_policy"), dict) else {}
+    paper_execution_paused = bool(paper_policy.get("paper_execution_consumer_paused", False))
+    paper_execution_allowed = paper_policy.get("paper_execution_allowed", True) is not False
+    protect_paper_lane = bool(
+        paper_policy.get("protect_paper_execution_queue", False)
+        or paper_policy.get("protect_live_execution_read_only", False)
+    )
+    if not ramp_armed:
+        blockers.append("paper_ramp_not_armed")
+    if paper_execution_paused or not paper_execution_allowed:
+        blockers.append("paper_execution_policy_paused")
+    if not protect_paper_lane:
+        blockers.append("paper_lane_not_protected")
+
+    return {
+        "allowed": not blockers,
+        "blockers": blockers,
+        "broker": broker_key,
+        "profile": profile_key,
+        "paused": paused,
+        "runtime_reason": str(runtime_pause.get("reason") or ""),
+        "governor_mode": governor_mode,
+        "top_bot_enabled": top_bot_enabled,
+        "market_data_only": market_data_only,
+        "live_orders_enabled": live_orders_enabled,
+        "ramp_armed": ramp_armed,
+        "paper_execution_allowed": paper_execution_allowed,
+        "paper_execution_paused": paper_execution_paused,
+        "protect_paper_lane": protect_paper_lane,
+    }
+
+
+def _paper_live_data_runtime_pause_bypass(
+    project_root: str,
+    *,
+    broker: str,
+    profile: str,
+    runtime_pause: Dict[str, Any],
+) -> bool:
+    return bool(
+        _paper_live_data_runtime_pause_bypass_contract(
+            project_root,
+            broker=broker,
+            profile=profile,
+            runtime_pause=runtime_pause,
+        ).get("allowed", False)
+    )
 
 
 
@@ -11070,6 +11416,7 @@ def _apply_core_sleeve_strategy_overlay(
     profitability_control = _profile_profitability_control(prof)
     profit_harvest_control = _profile_profit_harvest_control(prof)
     profitability_global_policy = _profitability_global_policy()
+    raw_a_recovery_contract = _raw_profitability_a_recovery_contract()
     profile_kill_switch_norm = _clamp01(float(profile_drag.get("drag_norm", 0.0) or 0.0))
     lead_signal = _clamp11(float(features.get("lead_lag_signal_signed", 0.0) or 0.0))
     flow_direction = _clamp11(float(features.get("flow_direction_signed", 0.0) or 0.0))
@@ -11135,6 +11482,41 @@ def _apply_core_sleeve_strategy_overlay(
     if new_action in {"BUY", "SELL"} and bool(profile_drag.get("active", False)):
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"profile_kill_switch_drag={profile_kill_switch_norm:.3f}"]
+    if (
+        new_action == "BUY"
+        and bool(raw_a_recovery_contract.get("active", False))
+        and str(profitability_global_policy.get("apply_raw_profitability_a_recovery", "true")).strip().lower() != "false"
+    ):
+        enforcement = (
+            raw_a_recovery_contract.get("runtime_enforcement")
+            if isinstance(raw_a_recovery_contract.get("runtime_enforcement"), dict)
+            else {}
+        )
+        raw_min_quality = _clamp01(float(enforcement.get("min_quality_gate_norm", 0.72) or 0.72))
+        raw_min_tradeability = _clamp01(float(enforcement.get("min_tradeability_norm", 0.58) or 0.58))
+        raw_min_execution = _clamp01(float(enforcement.get("min_execution_fitness_norm", 0.58) or 0.58))
+        raw_min_confirmation = _clamp01(float(enforcement.get("min_cross_asset_confirmation_norm", 0.56) or 0.56))
+        raw_max_overlap = _clamp01(float(enforcement.get("max_overlap_pressure_norm", 0.58) or 0.58))
+        raw_recovery_breaches: List[str] = []
+        if (
+            bool(profitability_control.get("active", False))
+            and bool(enforcement.get("block_new_entries_on_weak_profiles", True))
+            and not _coinbase_paper_probation_allows_weak_profile(prof)
+        ):
+            raw_recovery_breaches.append(f"weak_profile={prof}")
+        if profitability_quality_gate < raw_min_quality:
+            raw_recovery_breaches.append(f"quality={profitability_quality_gate:.3f}<{raw_min_quality:.3f}")
+        if tradeability < raw_min_tradeability:
+            raw_recovery_breaches.append(f"tradeability={tradeability:.3f}<{raw_min_tradeability:.3f}")
+        if execution_fitness < raw_min_execution:
+            raw_recovery_breaches.append(f"execution={execution_fitness:.3f}<{raw_min_execution:.3f}")
+        if cross_asset_confirmation < raw_min_confirmation:
+            raw_recovery_breaches.append(f"confirmation={cross_asset_confirmation:.3f}<{raw_min_confirmation:.3f}")
+        if overlap_pressure > raw_max_overlap:
+            raw_recovery_breaches.append(f"overlap={overlap_pressure:.3f}>{raw_max_overlap:.3f}")
+        if raw_recovery_breaches:
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [f"raw_profitability_a_recovery_gate {';'.join(raw_recovery_breaches[:5])}"]
     if new_action in {"BUY", "SELL"} and bool(profitability_control.get("active", False)):
         action_mode = str(profitability_control.get("action") or "").strip().lower()
         min_source = _clamp01(float(profitability_thresholds.get("min_source_quality_norm", 0.0) or 0.0))
@@ -11154,9 +11536,22 @@ def _apply_core_sleeve_strategy_overlay(
         if min_catalyst > 0.0 and profitability_catalyst < min_catalyst:
             breaches.append(f"catalyst={profitability_catalyst:.3f}<{min_catalyst:.3f}")
         runtime_policy = profitability_control.get("runtime_policy") if isinstance(profitability_control.get("runtime_policy"), dict) else {}
+        loser_contract = profitability_control.get("loser_quarantine") if isinstance(profitability_control.get("loser_quarantine"), dict) else {}
         exit_contract = profitability_control.get("exit_intelligence") if isinstance(profitability_control.get("exit_intelligence"), dict) else {}
         portfolio_contract = profitability_control.get("portfolio_conflict_control") if isinstance(profitability_control.get("portfolio_conflict_control"), dict) else {}
         confirmation_contract = profitability_control.get("confirmation_bias_control") if isinstance(profitability_control.get("confirmation_bias_control"), dict) else {}
+        raw_new_entry_cap = profitability_control.get("new_entry_cap", 1)
+        try:
+            new_entry_cap = int(float(raw_new_entry_cap if raw_new_entry_cap is not None else 1))
+        except (TypeError, ValueError):
+            new_entry_cap = 1
+        profile_blocks_new_entries = bool(
+            action_mode == "quarantine_new_entries"
+            or bool(profitability_control.get("block_new_entries", False))
+            or bool(loser_contract.get("block_new_entries", False))
+            or new_entry_cap <= 0
+            or bool(runtime_policy.get("block_all_new_entries_until_clean_refresh", False))
+        )
         if (
             str(profitability_global_policy.get("apply_exit_intelligence", "true")).strip().lower() != "false"
             and bool(exit_contract.get("active", False))
@@ -11192,9 +11587,19 @@ def _apply_core_sleeve_strategy_overlay(
                 breaches.append(f"confirmation_quality={confirm_quality:.3f}<{block_floor:.3f}")
             if min_channels > 0 and confirm_channels < min_channels:
                 breaches.append(f"confirmation_channels={confirm_channels}/{min_channels}")
-        if action_mode == "quarantine_new_entries":
+        if (
+            new_action == "BUY"
+            and profile_blocks_new_entries
+            and str(profitability_global_policy.get("block_new_entries_on_quarantined_profiles", "true")).strip().lower()
+            != "false"
+            and not _coinbase_paper_probation_allows_weak_profile(prof)
+        ):
             new_action, new_score = _force_action_score("HOLD", new_score, threshold)
             new_reasons = new_reasons + [f"paper_profitability_quarantine drag={float(profitability_control.get('drag_score', 0.0) or 0.0):.3f}"]
+        elif action_mode == "quarantine_new_entries" and new_action == "SELL":
+            new_reasons = new_reasons + [
+                f"paper_profitability_reduce_only_quarantine drag={float(profitability_control.get('drag_score', 0.0) or 0.0):.3f}"
+            ]
         elif breaches:
             new_action, new_score = _force_action_score("HOLD", new_score, threshold)
             new_reasons = new_reasons + [f"paper_profitability_gate {';'.join(breaches[:4])}"]
@@ -11214,6 +11619,26 @@ def _apply_core_sleeve_strategy_overlay(
         trim_pressure_floor = _clamp01(float(profit_harvest_control.get("promote_trim_when_harvest_pressure_above_norm", 0.52) or 0.52))
         force_pressure = _clamp01(float(profit_harvest_control.get("force_trim_when_harvest_pressure_above_norm", 0.72) or 0.72))
         force_share = _clamp01(float(profit_harvest_control.get("force_trim_when_unrealized_share_above_norm", 0.86) or 0.86))
+        raw_d_recovery_enabled = bool(profitability_global_policy.get("apply_raw_d_recovery_ladder", False))
+        raw_d_no_force = bool(profitability_global_policy.get("do_not_force_trades_for_raw_recovery", False))
+        raw_d_force_harvest_allowed = bool(
+            raw_d_recovery_enabled
+            and not raw_d_no_force
+            and str(profitability_global_policy.get("force_profit_harvest_on_raw_d", "false")).strip().lower()
+            not in {"", "0", "false", "no"}
+        )
+        raw_d_pressure = _clamp01(float(profitability_global_policy.get("raw_d_recovery_pressure_norm", 0.0) or 0.0))
+        raw_d_trim_boost = _clamp01(float(profitability_global_policy.get("raw_d_recovery_trim_boost_norm", 0.0) or 0.0))
+        if raw_d_recovery_enabled:
+            trim_boost = max(raw_d_trim_boost, 0.06 * max(raw_d_pressure, 0.50))
+            trim_fraction = _clamp(trim_fraction + trim_boost, 0.05, 0.78)
+            trim_floor = _clamp01(trim_floor - (0.08 * max(raw_d_pressure, 0.50)))
+            trim_pressure_floor = _clamp01(trim_pressure_floor - (0.10 * max(raw_d_pressure, 0.50)))
+            if raw_d_force_harvest_allowed:
+                force_pressure = _clamp01(force_pressure - (0.08 * max(raw_d_pressure, 0.50)))
+                force_share = _clamp01(force_share - (0.06 * max(raw_d_pressure, 0.50)))
+            if bool(profitability_global_policy.get("block_widening_while_raw_d", False)):
+                block_add_share = min(block_add_share, _clamp01(block_add_share - (0.04 * max(raw_d_pressure, 0.50))))
         harvest_campaign = _profit_harvest_aplus_campaign_snapshot()
         campaign_directives = (
             harvest_campaign.get("profile_directives")
@@ -11379,6 +11804,10 @@ def _apply_core_sleeve_strategy_overlay(
         out_features["paper_daily_harvest_block_adds_norm"] = 1.0 if daily_goal_block_adds else 0.0
         out_features["paper_daily_previous_target_met_norm"] = 1.0 if daily_goal_enabled and previous_daily_target_met else 0.0
         out_features["paper_daily_target_raise_active_norm"] = 1.0 if daily_goal_enabled and daily_target_raise_active else 0.0
+        out_features["paper_raw_d_recovery_active_norm"] = 1.0 if raw_d_recovery_enabled else 0.0
+        out_features["paper_raw_d_recovery_pressure_norm"] = raw_d_pressure if raw_d_recovery_enabled else 0.0
+        out_features["paper_raw_d_recovery_trim_boost_norm"] = raw_d_trim_boost if raw_d_recovery_enabled else 0.0
+        out_features["paper_raw_d_recovery_no_force_norm"] = 1.0 if raw_d_no_force else 0.0
         out_features["paper_harvest_aplus_campaign_active_norm"] = 1.0 if campaign_enabled else 0.0
         out_features["paper_harvest_aplus_campaign_pressure_norm"] = (
             _clamp01(float(campaign_directive.get("campaign_pressure_norm", 0.0) or 0.0)) if campaign_enabled else 0.0
@@ -11421,8 +11850,11 @@ def _apply_core_sleeve_strategy_overlay(
                 f"paper_profit_harvest_trim pressure={harvest_pressure:.3f}",
                 f"trim_fraction={trim_fraction:.3f}",
             ]
+            if raw_d_recovery_enabled:
+                new_reasons = new_reasons + [f"raw_d_recovery_pressure={raw_d_pressure:.3f}"]
         elif (
             new_action in {"BUY", "HOLD"}
+            and raw_d_force_harvest_allowed
             and exit_quality >= max(0.50, trim_floor - 0.08)
             and (harvest_pressure >= force_pressure or unrealized_share >= force_share)
         ):
@@ -11431,11 +11863,15 @@ def _apply_core_sleeve_strategy_overlay(
                 f"paper_profit_harvest_force_trim pressure={harvest_pressure:.3f}",
                 f"unrealized_share={unrealized_share:.3f}",
             ]
+            if raw_d_recovery_enabled:
+                new_reasons = new_reasons + [f"raw_d_recovery_pressure={raw_d_pressure:.3f}"]
         elif new_action == "SELL" and harvest_pressure > 0.0:
             new_reasons = new_reasons + [
                 f"paper_profit_harvest_sell_ok pressure={harvest_pressure:.3f}",
                 f"trim_fraction={trim_fraction:.3f}",
             ]
+            if raw_d_recovery_enabled:
+                new_reasons = new_reasons + [f"raw_d_recovery_pressure={raw_d_pressure:.3f}"]
     else:
         out_features.setdefault("paper_profit_harvest_active_norm", 0.0)
         out_features.setdefault("paper_daily_harvest_goal_active_norm", 0.0)
@@ -11445,6 +11881,10 @@ def _apply_core_sleeve_strategy_overlay(
         out_features.setdefault("paper_daily_harvest_block_adds_norm", 0.0)
         out_features.setdefault("paper_daily_previous_target_met_norm", 0.0)
         out_features.setdefault("paper_daily_target_raise_active_norm", 0.0)
+        out_features.setdefault("paper_raw_d_recovery_active_norm", 0.0)
+        out_features.setdefault("paper_raw_d_recovery_pressure_norm", 0.0)
+        out_features.setdefault("paper_raw_d_recovery_trim_boost_norm", 0.0)
+        out_features.setdefault("paper_raw_d_recovery_no_force_norm", 0.0)
 
     if prof in {"", "default"}:
         dependency = default_dependency
@@ -11662,7 +12102,7 @@ def _apply_core_sleeve_strategy_overlay(
     out_features["profile_kill_switch_norm"] = profile_kill_switch_norm
     out_features["paper_profitability_control_active_norm"] = 1.0 if bool(profitability_control.get("active", False)) else 0.0
     out_features["paper_profitability_quality_gate_norm"] = profitability_quality_gate
-    out_features["paper_profitability_size_multiplier_norm"] = _clamp01(float(profitability_control.get("position_size_multiplier", 1.0) or 1.0))
+    out_features["paper_profitability_size_multiplier_norm"] = _clamp01(_to_float(profitability_control.get("position_size_multiplier"), 1.0))
     outcome_training = profitability_control.get("outcome_weighted_training") if isinstance(profitability_control.get("outcome_weighted_training"), dict) else {}
     exit_contract = profitability_control.get("exit_intelligence") if isinstance(profitability_control.get("exit_intelligence"), dict) else {}
     execution_contract = profitability_control.get("execution_aware_alpha") if isinstance(profitability_control.get("execution_aware_alpha"), dict) else {}
@@ -12444,6 +12884,10 @@ def _emit_critical_alert(
     }
     if details:
         row["details"] = dict(details)
+        for expiry_key in ("cooldown_until_utc", "expires_at_utc"):
+            expiry_value = details.get(expiry_key)
+            if expiry_value:
+                row[expiry_key] = expiry_value
 
     _append_jsonl(_critical_alert_events_path(project_root), row)
     safe_write_json_atomic(
@@ -12494,6 +12938,47 @@ def _emit_critical_alert(
                 pass
 
     return {"sent": True, "suppressed": False, "key": key}
+
+
+def _clear_critical_alert_latest(
+    *,
+    project_root: str,
+    broker: str,
+    event: Optional[str] = None,
+) -> Dict[str, Any]:
+    path = Path(_critical_alert_latest_path(project_root, broker))
+    payload = _load_json_dict(path)
+    if not payload:
+        return {"cleared": False, "reason": "missing_or_unreadable", "path": str(path)}
+    if event is not None and str(payload.get("event", "") or "") != str(event):
+        return {
+            "cleared": False,
+            "reason": "event_mismatch",
+            "path": str(path),
+            "event": str(payload.get("event", "") or ""),
+        }
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return {"cleared": False, "reason": "missing", "path": str(path)}
+    except Exception as exc:
+        return {"cleared": False, "reason": f"{type(exc).__name__}:{exc}", "path": str(path)}
+
+    _append_jsonl(
+        _event_bus_path(project_root),
+        {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "event": "critical_alert_cleared",
+            "broker": broker,
+            "profile": str(payload.get("profile") or _shadow_profile_name() or "default"),
+            "domain": str(payload.get("domain") or _shadow_domain_name(broker=broker)),
+            "alert_event": str(payload.get("event") or ""),
+            "message": str(payload.get("message") or ""),
+            "severity": str(payload.get("severity") or ""),
+            "path": str(path),
+        },
+    )
+    return {"cleared": True, "path": str(path)}
 
 
 def _broker_truth_latest_path(project_root: str, broker: str) -> str:
@@ -12548,6 +13033,30 @@ def _find_securities_account(payload: Any) -> Dict[str, Any]:
     return {}
 
 
+def _iter_securities_accounts(payload: Any) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    seen: Set[int] = set()
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            account = node.get("securitiesAccount")
+            if isinstance(account, dict):
+                ident = id(account)
+                if ident not in seen:
+                    seen.add(ident)
+                    rows.append(account)
+            accounts = node.get("accounts")
+            if isinstance(accounts, list):
+                for child in accounts:
+                    _walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                _walk(child)
+
+    _walk(payload)
+    return rows
+
+
 def _balance_float(row: Dict[str, Any], key: str) -> float:
     try:
         value = float(row.get(key, 0.0) or 0.0)
@@ -12568,42 +13077,57 @@ def _first_positive_balance(rows: List[Dict[str, Any]], keys: List[str]) -> floa
 
 
 def _extract_account_metrics(payload: Any) -> Dict[str, float]:
-    account = _find_securities_account(payload)
-    current_balances = account.get("currentBalances") if isinstance(account.get("currentBalances"), dict) else {}
-    projected_balances = account.get("projectedBalances") if isinstance(account.get("projectedBalances"), dict) else {}
-    initial_balances = account.get("initialBalances") if isinstance(account.get("initialBalances"), dict) else {}
-    balance_rows = [current_balances, projected_balances, initial_balances]
-
     numeric: Dict[str, List[float]] = {}
     _collect_numeric_key_values(payload, numeric)
 
-    equity = _first_positive_balance(
-        balance_rows,
-        ["liquidationValue", "equity", "accountValue"],
-    ) or _pick_metric_candidate(numeric, ["liquidationvalue", "netliquidation", "equity", "accountvalue"])
-    cash_balance = _first_positive_balance(
-        balance_rows,
-        ["cashBalance", "cashAvailableForTrading", "moneyMarketFund", "totalCash"],
-    ) or _pick_metric_candidate(numeric, ["cashbalance", "cashavailable", "moneymarketfund"])
-    buying_power = _first_positive_balance(
-        [current_balances, projected_balances],
-        ["buyingPower", "buyingPowerNonMarginableTrade", "stockBuyingPower", "dayTradingBuyingPower"],
-    ) or _first_positive_balance(
-        [initial_balances],
-        ["buyingPower", "buyingPowerNonMarginableTrade", "stockBuyingPower", "dayTradingBuyingPower"],
-    ) or _pick_metric_candidate(numeric, ["buyingpower"])
-    available_funds = _first_positive_balance(
-        [current_balances, projected_balances, initial_balances],
-        ["availableFunds", "availableFundsNonMarginableTrade", "cashAvailableForTrading", "availableTrading"],
-    ) or _pick_metric_candidate(numeric, ["availablefunds", "cashavailablefortrading", "availabletrading"])
-    initial_margin = _first_positive_balance(
-        balance_rows,
-        ["initialMarginRequirement", "initialRequirement", "initialMargin"],
-    ) or _pick_metric_candidate(numeric, ["initialmargin", "initialrequirement"])
-    maintenance_margin = _first_positive_balance(
-        balance_rows,
-        ["maintenanceRequirement", "maintenanceMarginRequirement", "maintenanceMargin"],
-    ) or _pick_metric_candidate(numeric, ["maintenancemargin", "maintenancerequirement"])
+    accounts = _iter_securities_accounts(payload)
+    if not accounts:
+        account = _find_securities_account(payload)
+        accounts = [account] if account else []
+
+    equity = 0.0
+    cash_balance = 0.0
+    buying_power = 0.0
+    available_funds = 0.0
+    initial_margin = 0.0
+    maintenance_margin = 0.0
+    for account in accounts:
+        current_balances = account.get("currentBalances") if isinstance(account.get("currentBalances"), dict) else {}
+        projected_balances = account.get("projectedBalances") if isinstance(account.get("projectedBalances"), dict) else {}
+        initial_balances = account.get("initialBalances") if isinstance(account.get("initialBalances"), dict) else {}
+        balance_rows = [current_balances, projected_balances, initial_balances]
+
+        equity += _first_positive_balance(balance_rows, ["liquidationValue", "equity", "accountValue"])
+        cash_balance += _first_positive_balance(
+            balance_rows,
+            ["cashBalance", "cashAvailableForTrading", "moneyMarketFund", "totalCash"],
+        )
+        buying_power += _first_positive_balance(
+            [current_balances, projected_balances],
+            ["buyingPower", "buyingPowerNonMarginableTrade", "stockBuyingPower", "dayTradingBuyingPower"],
+        ) or _first_positive_balance(
+            [initial_balances],
+            ["buyingPower", "buyingPowerNonMarginableTrade", "stockBuyingPower", "dayTradingBuyingPower"],
+        )
+        available_funds += _first_positive_balance(
+            [current_balances, projected_balances, initial_balances],
+            ["availableFunds", "availableFundsNonMarginableTrade", "cashAvailableForTrading", "availableTrading"],
+        )
+        initial_margin += _first_positive_balance(
+            balance_rows,
+            ["initialMarginRequirement", "initialRequirement", "initialMargin"],
+        )
+        maintenance_margin += _first_positive_balance(
+            balance_rows,
+            ["maintenanceRequirement", "maintenanceMarginRequirement", "maintenanceMargin"],
+        )
+
+    equity = equity or _pick_metric_candidate(numeric, ["liquidationvalue", "netliquidation", "equity", "accountvalue"])
+    cash_balance = cash_balance or _pick_metric_candidate(numeric, ["cashbalance", "cashavailable", "moneymarketfund"])
+    buying_power = buying_power or _pick_metric_candidate(numeric, ["buyingpower"])
+    available_funds = available_funds or _pick_metric_candidate(numeric, ["availablefunds", "cashavailablefortrading", "availabletrading"])
+    initial_margin = initial_margin or _pick_metric_candidate(numeric, ["initialmargin", "initialrequirement"])
+    maintenance_margin = maintenance_margin or _pick_metric_candidate(numeric, ["maintenancemargin", "maintenancerequirement"])
 
     return {
         "equity": float(max(equity, 0.0)),
@@ -12632,6 +13156,193 @@ def _manual_position_map(manual_payload: Dict[str, Any]) -> Dict[str, float]:
             continue
         out[sym_key] = float(qty)
     return out
+
+
+def _broker_truth_account_snapshot_proof(fetched: Dict[str, Any], payload: Any) -> Dict[str, Any]:
+    account_count = 0
+    discovered_account_count = 0
+    failed_account_count = 0
+    mode = ""
+    has_account_node = False
+    partial = False
+
+    if isinstance(payload, dict):
+        mode = str(payload.get("account_snapshot_mode") or fetched.get("account_snapshot_mode") or "")
+        accounts = payload.get("accounts")
+        if isinstance(accounts, list):
+            account_count = len([row for row in accounts if isinstance(row, dict)])
+            has_account_node = account_count > 0
+        elif isinstance(payload.get("securitiesAccount"), dict):
+            account_count = 1
+            has_account_node = True
+        elif any(key in payload for key in ("positions", "orderStrategies", "orders")):
+            account_count = 1
+            has_account_node = True
+        account_count = max(int(_to_float(payload.get("account_count", fetched.get("account_count", account_count)), account_count) or 0), account_count)
+        discovered_account_count = int(
+            _to_float(payload.get("discovered_account_count", fetched.get("discovered_account_count", account_count)), account_count)
+            or 0
+        )
+        failed_account_count = int(_to_float(payload.get("failed_account_count", fetched.get("failed_account_count", 0)), 0) or 0)
+        partial = bool(payload.get("partial", fetched.get("account_snapshot_partial", False)))
+    elif isinstance(payload, list):
+        account_count = len([row for row in payload if isinstance(row, dict)])
+        discovered_account_count = account_count
+        has_account_node = account_count > 0
+        mode = str(fetched.get("account_snapshot_mode") or "account_list")
+    else:
+        mode = str(fetched.get("account_snapshot_mode") or "")
+        account_count = int(_to_float(fetched.get("account_count", 0), 0) or 0)
+        discovered_account_count = int(_to_float(fetched.get("discovered_account_count", account_count), account_count) or 0)
+        failed_account_count = int(_to_float(fetched.get("failed_account_count", 0), 0) or 0)
+
+    if discovered_account_count <= 0 and account_count > 0:
+        discovered_account_count = account_count
+    proof_ok = bool(has_account_node and account_count > 0)
+    return {
+        "account_snapshot_proof_ok": proof_ok,
+        "account_snapshot_mode": mode,
+        "account_count": int(account_count),
+        "discovered_account_count": int(discovered_account_count),
+        "failed_account_count": int(failed_account_count),
+        "account_snapshot_partial": bool(partial or failed_account_count > 0),
+        "has_account_node": bool(has_account_node),
+    }
+
+
+def _collect_order_status_counts(payload: Any) -> Dict[str, int]:
+    counts: Counter[str] = Counter()
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            if any(key in node for key in ("orderId", "orderStrategyType", "enteredTime", "closeTime")):
+                status = str(node.get("status") or "UNKNOWN").strip().upper() or "UNKNOWN"
+                counts[status] += 1
+            for key in ("orderStrategies", "orders", "childOrderStrategies"):
+                child = node.get(key)
+                if isinstance(child, (list, dict)):
+                    _walk(child)
+            account = node.get("securitiesAccount")
+            if isinstance(account, dict):
+                _walk(account)
+            accounts = node.get("accounts")
+            if isinstance(accounts, list):
+                _walk(accounts)
+        elif isinstance(node, list):
+            for child in node:
+                _walk(child)
+
+    _walk(payload)
+    return dict(sorted(counts.items()))
+
+
+def _account_reference_markers(payload: Any) -> List[str]:
+    markers: List[str] = []
+    for account in _iter_securities_accounts(payload):
+        for key in ("accountNumber", "accountId", "hashValue", "accountHash"):
+            text = str(account.get(key) or "").strip()
+            if text:
+                markers.append(text[-8:])
+        broker_account = account.get("_broker_account") if isinstance(account.get("_broker_account"), dict) else {}
+        for key in ("account_reference", "account_hash", "account_tail"):
+            text = str(broker_account.get(key) or "").strip()
+            if text:
+                markers.append(text[-8:])
+    return sorted(set(markers))
+
+
+def _broker_truth_reconcile_v2(
+    *,
+    fetched: Dict[str, Any],
+    payload: Any,
+    snapshot_proof: Dict[str, Any],
+    positions_map: Dict[str, float],
+    open_order_ids: List[str],
+    account_metrics: Dict[str, float],
+    manual_positions: Dict[str, float],
+    mismatch_examples: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    account_count = int(snapshot_proof.get("account_count", 0) or 0)
+    discovered_account_count = int(snapshot_proof.get("discovered_account_count", account_count) or account_count)
+    failed_account_count = int(snapshot_proof.get("failed_account_count", 0) or 0)
+    references = _account_reference_markers(payload)
+    order_status_counts = _collect_order_status_counts(payload)
+    filled_order_count = sum(
+        int(count)
+        for status, count in order_status_counts.items()
+        if status in {"FILLED", "EXECUTED", "DONE_FOR_DAY"}
+    )
+    pending_order_count = sum(
+        int(count)
+        for status, count in order_status_counts.items()
+        if status in {"WORKING", "QUEUED", "PENDING_ACTIVATION", "ACCEPTED", "AWAITING_PARENT_ORDER"}
+    )
+    cash_balance = _to_float(account_metrics.get("cash_balance"), 0.0)
+    buying_power = _to_float(account_metrics.get("buying_power"), 0.0)
+    available_funds = _to_float(account_metrics.get("available_funds"), 0.0)
+    equity = _to_float(account_metrics.get("equity"), 0.0)
+    has_balance_truth = any(value > 0.0 for value in (cash_balance, buying_power, available_funds, equity))
+    cache_age = _to_float(fetched.get("_shared_snapshot_cache_age_seconds"), 0.0)
+    max_cache_age = max(_to_float(os.getenv("BROKER_TRUTH_SHARED_SNAPSHOT_STALE_FALLBACK_MAX_AGE_SECONDS", "240"), 240.0), 1.0)
+    stale = bool(cache_age > max_cache_age or fetched.get("_shared_snapshot_stale_fallback", False))
+    account_coverage_ratio = (
+        max(min((account_count - failed_account_count) / max(discovered_account_count, 1), 1.0), 0.0)
+        if discovered_account_count > 0
+        else 0.0
+    )
+    truth_score = 0.0
+    truth_score += 0.30 if bool(snapshot_proof.get("account_snapshot_proof_ok", False)) else 0.0
+    truth_score += 0.20 * account_coverage_ratio
+    truth_score += 0.18 if has_balance_truth else 0.0
+    truth_score += 0.14 if positions_map or manual_positions == {} else 0.06
+    truth_score += 0.08 if order_status_counts or open_order_ids == [] else 0.0
+    truth_score += 0.10 if not stale else 0.0
+    truth_score = round(max(0.0, min(truth_score, 1.0)), 6)
+    grade = "A" if truth_score >= 0.90 else "B" if truth_score >= 0.78 else "C" if truth_score >= 0.62 else "D"
+    if mismatch_examples:
+        grade = "C" if grade in {"A", "B"} else grade
+    if not bool(snapshot_proof.get("account_snapshot_proof_ok", False)):
+        grade = "F"
+    return {
+        "schema_version": 2,
+        "truth_score": truth_score,
+        "truth_grade": grade,
+        "account_identity": {
+            "account_count": account_count,
+            "discovered_account_count": discovered_account_count,
+            "failed_account_count": failed_account_count,
+            "coverage_ratio": round(account_coverage_ratio, 6),
+            "redacted_account_markers": references[:20],
+        },
+        "balance_truth": {
+            "has_balance_truth": bool(has_balance_truth),
+            "cash_balance": float(cash_balance),
+            "buying_power": float(buying_power),
+            "available_funds": float(available_funds),
+            "equity": float(equity),
+        },
+        "order_truth": {
+            "open_order_count": int(len(open_order_ids)),
+            "filled_order_count": int(filled_order_count),
+            "pending_order_count": int(pending_order_count),
+            "status_counts": order_status_counts,
+        },
+        "position_truth": {
+            "position_count": int(len(positions_map)),
+            "manual_position_count": int(len(manual_positions)),
+            "mismatch_count": int(len(mismatch_examples)),
+        },
+        "paper_ledger_delta": {
+            "delta_symbol_count": int(len(mismatch_examples)),
+            "delta_examples": mismatch_examples[:10],
+        },
+        "freshness": {
+            "shared_snapshot_cache_hit": bool(fetched.get("_shared_snapshot_cache_hit", False)),
+            "shared_snapshot_cache_age_seconds": float(cache_age),
+            "stale_snapshot": bool(stale),
+        },
+        "policy": "broker_truth_reconcile_v2_is_read_only_and_never_grants_execution_authority",
+    }
 
 
 def _broker_margin_available_proxy(broker_truth: Dict[str, Any], lane: str) -> float:
@@ -13318,6 +14029,7 @@ def _fetch_broker_truth_snapshot(
         "mismatch_examples": [],
         "account_metrics": {},
         "capital_flow": _default_capital_flow_state(),
+        "broker_truth_reconcile_v2": {},
     }
 
     manual_positions = _manual_position_map(manual_payload)
@@ -13328,6 +14040,18 @@ def _fetch_broker_truth_snapshot(
         out["positions"] = dict(sorted(manual_positions.items())[:40])
         out["position_count"] = len(manual_positions)
         out["status"] = "manual_only"
+        out["broker_truth_reconcile_v2"] = {
+            "schema_version": 2,
+            "truth_score": 0.45 if manual_positions else 0.25,
+            "truth_grade": "D",
+            "account_identity": {"account_count": 0, "discovered_account_count": 0, "failed_account_count": 0, "coverage_ratio": 0.0, "redacted_account_markers": []},
+            "balance_truth": {"has_balance_truth": False, "cash_balance": 0.0, "buying_power": 0.0, "available_funds": 0.0, "equity": 0.0},
+            "order_truth": {"open_order_count": 0, "filled_order_count": 0, "pending_order_count": 0, "status_counts": {}},
+            "position_truth": {"position_count": len(manual_positions), "manual_position_count": len(manual_positions), "mismatch_count": 0},
+            "paper_ledger_delta": {"delta_symbol_count": 0, "delta_examples": []},
+            "freshness": {"shared_snapshot_cache_hit": False, "shared_snapshot_cache_age_seconds": 0.0, "stale_snapshot": False},
+            "policy": "manual_overrides_do_not_replace_live_broker_truth",
+        }
         return out
 
     try:
@@ -13359,9 +14083,45 @@ def _fetch_broker_truth_snapshot(
         return out
 
     payload = fetched.get("payload")
+    snapshot_proof = _broker_truth_account_snapshot_proof(fetched, payload)
+    if not bool(snapshot_proof.get("account_snapshot_proof_ok", False)):
+        out.update(
+            {
+                "ok": False,
+                "status": "empty_snapshot",
+                "source": "schwab_accounts_snapshot",
+                "error": "empty_or_unrecognized_accounts_snapshot",
+                "account_snapshot_mode": str(snapshot_proof.get("account_snapshot_mode") or ""),
+                "account_count": int(snapshot_proof.get("account_count", 0) or 0),
+                "discovered_account_count": int(snapshot_proof.get("discovered_account_count", 0) or 0),
+                "failed_account_count": int(snapshot_proof.get("failed_account_count", 0) or 0),
+                "account_snapshot_partial": bool(snapshot_proof.get("account_snapshot_partial", False)),
+                "account_snapshot_proof": snapshot_proof,
+                "broker_truth_reconcile_v2": _broker_truth_reconcile_v2(
+                    fetched=fetched,
+                    payload=payload,
+                    snapshot_proof=snapshot_proof,
+                    positions_map={},
+                    open_order_ids=[],
+                    account_metrics={},
+                    manual_positions=manual_positions,
+                    mismatch_examples=[],
+                ),
+            }
+        )
+        if bool(fetched.get("_shared_snapshot_cache_hit", False)):
+            out["shared_snapshot_cache_hit"] = True
+            out["shared_snapshot_cache_age_seconds"] = float(fetched.get("_shared_snapshot_cache_age_seconds", 0.0) or 0.0)
+        if bool(fetched.get("_shared_snapshot_write_failed", False)):
+            out["shared_snapshot_write_failed"] = True
+        if bool(fetched.get("_shared_snapshot_write_skipped", False)):
+            out["shared_snapshot_write_skipped"] = True
+            out["shared_snapshot_write_skip_reason"] = str(fetched.get("_shared_snapshot_write_skip_reason") or "")
+        return out
     positions_rows = trader._extract_all_positions_from_payload(payload)
     open_order_ids = trader._extract_open_order_ids_from_payload(payload)
     account_metrics = _extract_account_metrics(payload)
+    payload_meta = payload if isinstance(payload, dict) else {}
     previous_metrics = (
         previous_state.get("account_metrics")
         if isinstance(previous_state, dict) and isinstance(previous_state.get("account_metrics"), dict)
@@ -13405,6 +14165,22 @@ def _fetch_broker_truth_snapshot(
             "open_orders_total": int(len(open_order_ids)),
             "positions": {k: float(v) for k, v in sorted_positions[:60]},
             "account_metrics": dict(account_metrics),
+            "account_snapshot_mode": str(snapshot_proof.get("account_snapshot_mode") or ""),
+            "account_count": int(snapshot_proof.get("account_count", 0) or 0),
+            "discovered_account_count": int(snapshot_proof.get("discovered_account_count", 0) or 0),
+            "failed_account_count": int(snapshot_proof.get("failed_account_count", 0) or 0),
+            "account_snapshot_partial": bool(snapshot_proof.get("account_snapshot_partial", False)),
+            "account_snapshot_proof": snapshot_proof,
+            "broker_truth_reconcile_v2": _broker_truth_reconcile_v2(
+                fetched=fetched,
+                payload=payload,
+                snapshot_proof=snapshot_proof,
+                positions_map=positions_map,
+                open_order_ids=open_order_ids,
+                account_metrics=account_metrics,
+                manual_positions=manual_positions,
+                mismatch_examples=mismatch_examples,
+            ),
             "capital_flow": dict(capital_flow),
             "mismatch_count": int(len(mismatch_examples)),
             "mismatch_examples": mismatch_examples[:20],
@@ -13460,7 +14236,7 @@ def _dynamic_storage_overrides() -> Dict[str, str]:
         if isinstance(values, dict):
             return dict(values)
     fingerprint = []
-    for path in (STORAGE_PRESSURE_OVERRIDE_PATH, STORAGE_OVERRIDE_PATH):
+    for path in DYNAMIC_STORAGE_OVERRIDE_PATHS:
         try:
             stat = path.stat()
             fingerprint.append((str(path), int(stat.st_mtime_ns), int(stat.st_size)))
@@ -13471,7 +14247,7 @@ def _dynamic_storage_overrides() -> Dict[str, str]:
         values = cache.get("values")
         return dict(values) if isinstance(values, dict) else {}
     merged: Dict[str, str] = {}
-    for path in (STORAGE_PRESSURE_OVERRIDE_PATH, STORAGE_OVERRIDE_PATH):
+    for path in DYNAMIC_STORAGE_OVERRIDE_PATHS:
         merged.update(_parse_env_override_file(path))
     cache["checked_at_monotonic"] = now_monotonic
     cache["fingerprint"] = tuple(fingerprint)
@@ -13491,6 +14267,36 @@ def _dynamic_storage_value(name: str, default: str = "") -> str:
     if raw is None:
         raw = os.getenv(name, default)
     return str(raw or "").strip()
+
+
+def _apply_runtime_research_self_nice() -> Dict[str, Any]:
+    raw = (
+        _dynamic_storage_value("RUNTIME_RESEARCH_TRAINING_NICE", "")
+        or _dynamic_storage_value("RUNTIME_THROTTLE_RESEARCH_NICE", "")
+        or _dynamic_storage_value("TRAINING_PCORE_NICE", "")
+    )
+    if not raw:
+        return {"applied": False, "reason": "no_runtime_research_nice_target"}
+    try:
+        target = int(float(raw))
+    except Exception:
+        return {"applied": False, "reason": "invalid_runtime_research_nice_target", "raw": str(raw)}
+    target = min(max(target, 0), 20)
+    try:
+        current = int(os.nice(0))
+    except Exception as exc:
+        return {"applied": False, "reason": f"read_current_nice_failed:{exc.__class__.__name__}", "target_nice": target}
+    if target <= current:
+        return {"applied": False, "reason": "current_nice_at_or_above_target", "current_nice": current, "target_nice": target}
+    try:
+        os.nice(target - current)
+    except Exception as exc:
+        return {"applied": False, "reason": f"set_nice_failed:{exc.__class__.__name__}", "current_nice": current, "target_nice": target}
+    try:
+        new_nice = int(os.nice(0))
+    except Exception:
+        new_nice = target
+    return {"applied": True, "reason": "runtime_research_nice_applied", "previous_nice": current, "target_nice": target, "current_nice": new_nice}
 
 
 _HOT_CHANNEL_PRIMARY_TARGETS = {"runtime", "api", "loop_state", "gate", "ingress"}
@@ -14266,6 +15072,7 @@ def run_loop(
         raise RuntimeError(f"Unsupported market-data broker: {broker} supported={supported_text}")
     paper_execution_broker = normalize_broker_name(broker_runtime.broker_for_role("paper"))
 
+    os.environ["SHADOW_BROKER"] = broker
     os.environ["SHADOW_DOMAIN"] = _shadow_domain_name(broker=broker)
 
     run_seed = (
@@ -14691,12 +15498,22 @@ def run_loop(
             )
         return out
 
-
+    current_profile = (_shadow_profile_name() or "default").strip().lower()
     paper_mirror_enabled = os.getenv("TOP_BOT_PAPER_TRADING_ENABLED", "0").strip() == "1"
-    paper_mirror_top_n = max(int(os.getenv("TOP_BOT_PAPER_TRADING_TOP_N", "2")), 0)
-    paper_mirror_min_accuracy = float(os.getenv("TOP_BOT_PAPER_TRADING_MIN_ACC", "0.0"))
-    paper_mirror_all_active = os.getenv("PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS", "0").strip() == "1"
-    paper_mirror_profiles_raw = os.getenv("TOP_BOT_PAPER_TRADING_PROFILES", "").strip()
+    paper_mirror_top_n = max(
+        int(_paper_mirror_env_value_for_broker(broker, current_profile, "TOP_N", "2")),
+        0,
+    )
+    paper_mirror_min_accuracy = float(
+        _paper_mirror_env_value_for_broker(broker, current_profile, "MIN_ACC", "0.0")
+    )
+    paper_mirror_all_active = os.getenv("PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS", "1").strip() == "1"
+    paper_mirror_profiles_raw = _paper_mirror_env_value_for_broker(
+        broker,
+        current_profile,
+        "PROFILES",
+        "",
+    ).strip()
     paper_mirror_profiles = {
         x.strip().lower() for x in paper_mirror_profiles_raw.split(",") if x.strip()
     }
@@ -14716,7 +15533,6 @@ def run_loop(
         DEFAULT_PAPER_OPTIONS_PROFILE_ALLOWLIST,
     ).strip()
     paper_mirror_options_profiles = _paper_options_profile_allowlist()
-    current_profile = (_shadow_profile_name() or "default").strip().lower()
     profile_is_options_on_futures = current_profile in {"options_on_futures", "options_on_futures_aggressive"}
     profile_is_exotic_derivative = (
         is_exotic_derivative_sleeve(current_profile)
@@ -15275,6 +16091,44 @@ def run_loop(
         iter_ingress["api_ok"] = 0
         iter_ingress["api_error"] = 0
 
+        runtime_pause = _runtime_training_pause_contract(PROJECT_ROOT)
+        runtime_pause_bypass_contract = _paper_live_data_runtime_pause_bypass_contract(
+            PROJECT_ROOT,
+            broker=broker,
+            profile=current_profile,
+            runtime_pause=runtime_pause,
+        )
+        runtime_pause_bypassed = bool(runtime_pause_bypass_contract.get("allowed", False))
+        if bool(runtime_pause.get("paused", False)) and not runtime_pause_bypassed:
+            pause_reason = str(runtime_pause.get("reason") or "runtime_host_headroom")
+            sleep_seconds = int(runtime_pause.get("sleep_seconds") or 60)
+            pause_bypass_blockers = ",".join(runtime_pause_bypass_contract.get("blockers") or ["unknown"])
+            _set_loop_state("paused_runtime_training", reason=pause_reason, sleep_seconds=sleep_seconds)
+            _write_heartbeat(
+                project_root=PROJECT_ROOT,
+                broker=broker,
+                iter_count=iter_count,
+                symbols_total=len(symbols),
+                context_total=len(context_symbols),
+                state="paused_runtime_training",
+            )
+            _publish_ingress_state(pause_gate="runtime_training_governor", pause_reason=pause_reason)
+            print(
+                f"[RuntimeTrainingGate] paused reason={pause_reason} "
+                f"bypass_blockers={pause_bypass_blockers} sleep={sleep_seconds}s"
+            )
+            time.sleep(sleep_seconds)
+            continue
+        if runtime_pause_bypassed:
+            _log_gate(
+                "*",
+                "runtime_training_pause_bypass",
+                True,
+                reason=str(runtime_pause.get("reason") or "paper_live_data_protected"),
+                broker=broker,
+                profile=current_profile,
+            )
+
         if manual_trade_reconcile_enabled and (iter_count == 1 or (iter_count % manual_trade_reconcile_refresh_iters) == 0):
             manual_trade_overrides = _load_manual_trade_overrides(PROJECT_ROOT, broker)
 
@@ -15299,12 +16153,24 @@ def run_loop(
                 source="run_shadow_training_loop.broker_truth",
             )
 
-            if not bool(broker_truth_state.get("ok", False)):
+            if bool(broker_truth_state.get("ok", False)):
+                _clear_critical_alert_latest(
+                    project_root=PROJECT_ROOT,
+                    broker=broker,
+                    event="broker_truth_reconcile",
+                )
+            elif not bool(broker_truth_state.get("ok", False)):
                 broker_truth_status = str(broker_truth_state.get("status", "broker_truth_failed") or "broker_truth_failed")
                 broker_truth_source = str(broker_truth_state.get("source", "") or "")
                 broker_truth_soft_failure = bool(broker_truth_state.get("soft_failure", False))
                 broker_truth_alert_suppressed = bool(broker_truth_state.get("alert_suppressed", False))
                 alert_severity = "warn" if broker_truth_soft_failure else "critical"
+                if broker_truth_alert_suppressed:
+                    _clear_critical_alert_latest(
+                        project_root=PROJECT_ROOT,
+                        broker=broker,
+                        event="broker_truth_reconcile",
+                    )
                 if not broker_truth_alert_suppressed:
                     _emit_critical_alert(
                         project_root=PROJECT_ROOT,
@@ -16163,6 +17029,8 @@ def run_loop(
         extended_quant_snapshot = _load_external_context_category("extended_quant_context")
         tastytrade_snapshot = _load_external_context_category("options_flow_context")
         crypto_market_snapshot = _load_external_context_category("crypto_market_context")
+        schwab_symbol_news_snapshot = _load_external_context_category("schwab_symbol_news")
+        ticker_news_context_snapshot = _load_external_context_category("ticker_news_context")
         market_crypto_correlation_snapshot = _load_external_context_category("market_crypto_correlation")
         fx_market_snapshot = _load_external_context_category("fx_market_context")
         dividend_drip_snapshot = _load_external_context_category("dividend_drip_state")
@@ -16448,6 +17316,8 @@ def run_loop(
                 sec_edgar_snapshot,
                 extended_quant_snapshot,
                 crypto_market_snapshot,
+                schwab_symbol_news_snapshot,
+                ticker_news_context_snapshot,
             ):
                 news_features = _merge_external_context_news_features(news_features, extra_snapshot, symbol=symbol)
                 calendar_features = _merge_external_context_calendar_features(calendar_features, extra_snapshot)
@@ -16509,6 +17379,8 @@ def run_loop(
             external_context_features.update(_external_context_feature_set(extended_quant_snapshot, symbol=symbol))
             external_context_features.update(_external_context_feature_set(tastytrade_snapshot, symbol=symbol))
             external_context_features.update(_external_context_feature_set(crypto_market_snapshot, symbol=symbol))
+            external_context_features.update(_external_context_feature_set(schwab_symbol_news_snapshot, symbol=symbol))
+            external_context_features.update(_external_context_feature_set(ticker_news_context_snapshot, symbol=symbol))
             external_context_features.update(_external_context_feature_set(market_crypto_correlation_snapshot, symbol=symbol))
             external_context_features.update(_external_context_feature_set(fx_market_snapshot, symbol=symbol))
             external_context_features.update(_external_context_feature_set(quant_model_control_snapshot, symbol=symbol))
@@ -17560,6 +18432,29 @@ def run_loop(
                     "manual_trade_position_qty_norm": _clamp01(abs(float(manual_reconcile_meta.get("position_qty", 0.0) or 0.0)) / 500.0),
                 }
 
+            gm_action, gm_score, gm_reasons, market_posture_overlay = _market_posture_runtime_control(
+                profile=profile_name,
+                action=gm_action,
+                score=gm_score,
+                threshold=gm_threshold,
+                reasons=gm_reasons,
+                features=shared_features,
+            )
+            if market_posture_overlay:
+                shared_features = {**shared_features, **market_posture_overlay}
+                _log_gate(
+                    symbol,
+                    "market_posture_control",
+                    (gm_action not in {"BUY", "SELL"})
+                    or bool(market_posture_overlay.get("market_posture_rerisk_ok_norm", 0.0))
+                    or not bool(market_posture_overlay.get("market_posture_defensive_state_norm", 0.0)),
+                    reason=str(os.getenv("MARKET_POSTURE_STATE", "adaptive") or "adaptive"),
+                    risk_on_norm=float(market_posture_overlay.get("market_posture_risk_on_norm", 0.0) or 0.0),
+                    risk_off_norm=float(market_posture_overlay.get("market_posture_risk_off_norm", 0.0) or 0.0),
+                    confirmation_norm=float(market_posture_overlay.get("market_posture_confirmation_norm", 0.0) or 0.0),
+                    rerisk_ok_norm=float(market_posture_overlay.get("market_posture_rerisk_ok_norm", 0.0) or 0.0),
+                )
+
             if iter_count < symbol_regime_cooldown_until_iter.get(symbol, 0):
                 gm_action = "HOLD"
                 gm_score = 0.5 + 0.5 * (gm_score - 0.5)
@@ -17753,6 +18648,7 @@ def run_loop(
                 lane_new_until = max(lane_prev_until, now_ts + lane_cooldown)
                 lane_kill_until_ts[lane_key] = lane_new_until
                 if lane_new_until > lane_prev_until + 1e-6:
+                    lane_until_utc = datetime.fromtimestamp(lane_new_until, timezone.utc).isoformat()
                     _emit_critical_alert(
                         project_root=PROJECT_ROOT,
                         broker=broker,
@@ -17764,6 +18660,8 @@ def run_loop(
                             "lane": lane_key,
                             "reasons": lane_trigger_reasons,
                             "cooldown_seconds": int(lane_cooldown),
+                            "cooldown_until_utc": lane_until_utc,
+                            "expires_at_utc": lane_until_utc,
                         },
                         severity="critical",
                     )
@@ -17927,7 +18825,7 @@ def run_loop(
                 if sizing_quant_strategy_conviction_norm is not None:
                     gm_reasons.append(f"quant_strategy_conviction={sizing_quant_strategy_conviction_norm:.3f}")
                 paper_profitability_size_multiplier = _clamp01(
-                    float(shared_features.get("paper_profitability_size_multiplier_norm", 1.0) or 1.0)
+                    _to_float(shared_features.get("paper_profitability_size_multiplier_norm"), 1.0)
                 )
                 if paper_profitability_size_multiplier < 0.999:
                     raw_qty = round(raw_qty * paper_profitability_size_multiplier, 6)
@@ -18651,6 +19549,7 @@ def run_loop(
                     new_until = max(prev_until, time.time() + lane_cd)
                     lane_kill_until_ts[lane_for_result] = new_until
                     if new_until > prev_until + 1e-6:
+                        lane_until_utc = datetime.fromtimestamp(new_until, timezone.utc).isoformat()
                         _emit_critical_alert(
                             project_root=PROJECT_ROOT,
                             broker=broker,
@@ -18663,6 +19562,8 @@ def run_loop(
                                 "streak": int(lane_loss_streak.get(lane_for_result, 0) or 0),
                                 "max_streak": int(lane_max_losses),
                                 "cooldown_seconds": int(lane_cd),
+                                "cooldown_until_utc": lane_until_utc,
+                                "expires_at_utc": lane_until_utc,
                             },
                             severity="critical",
                         )
@@ -19155,6 +20056,14 @@ def main() -> None:
         help="Minutes to wait before retrying a quarantined symbol.",
     )
     args = parser.parse_args()
+    nice_result = _apply_runtime_research_self_nice()
+    if bool(nice_result.get("applied", False)):
+        print(
+            "[RuntimeNice] "
+            f"previous={nice_result.get('previous_nice')} "
+            f"target={nice_result.get('target_nice')} "
+            f"current={nice_result.get('current_nice')}"
+        )
 
     profile_override = (args.profile or "").strip().lower()
     if profile_override:

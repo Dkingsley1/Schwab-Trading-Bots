@@ -7,11 +7,17 @@ import scripts.run_all_sleeves as run_all_sleeves
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 COMMANDS_PATH = PROJECT_ROOT / "COMMANDS.md"
 OPSCTL_PATH = PROJECT_ROOT / "scripts" / "ops" / "opsctl.sh"
+LOAD_RUNTIME_ENV_PATH = PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh"
 LIVE_FEED_TAIL_PATH = PROJECT_ROOT / "scripts" / "ops" / "live_feed_tail.sh"
+LIVE_FEED_LAUNCHD_PATH = PROJECT_ROOT / "scripts" / "ops" / "run_livefeed_local_launchd.sh"
+LIVE_FEED_HEAVY_GUARDED_PATH = PROJECT_ROOT / "scripts" / "ops" / "live_feed_heavy_guarded.sh"
 WATCHDOG_INSTALL_PATH = PROJECT_ROOT / "scripts" / "install_shadow_watchdog_launchd.sh"
 INFRA_INSTALL_PATH = PROJECT_ROOT / "scripts" / "install_infra_stack_launchd.sh"
 OPS_AUTOMATION_INSTALL_PATH = PROJECT_ROOT / "scripts" / "ops" / "install_ops_automation_launchd.sh"
+STARTUP_PROMPT_INSTALL_PATH = PROJECT_ROOT / "scripts" / "install_startup_start_prompt_launchd.sh"
+STARTUP_PROMPT_RUN_PATH = PROJECT_ROOT / "scripts" / "ops" / "run_startup_start_prompt_launchd.sh"
 STORAGE_BACKPRESSURE_AUTOPILOT_RUN_PATH = PROJECT_ROOT / "scripts" / "ops" / "run_storage_backpressure_autopilot_launchd.sh"
+RUNTIME_SMOOTH_MODE_RUN_PATH = PROJECT_ROOT / "scripts" / "ops" / "run_runtime_smooth_mode_launchd.sh"
 RETRAIN_DAILY_PATH = PROJECT_ROOT / "scripts" / "retrain_daily_small_batch.sh"
 RETRAIN_WEEKLY_PATH = PROJECT_ROOT / "scripts" / "retrain_weekly_full_sweep.sh"
 
@@ -45,18 +51,47 @@ def test_ops_automation_installer_includes_context_jobs() -> None:
     assert "run_grade_regression_autopilot_launchd.sh" in text
     assert "run_section_grade_autopilot_launchd.sh" in text
     assert "run_creative_cotenant_guard_launchd.sh" in text
+    assert "run_runtime_smooth_mode_launchd.sh" in text
+    assert "com.dankingsley.ops.runtime_smooth_mode" in text
+    assert "RUNTIME_SMOOTH_MODE_INTERVAL_SECONDS" in text
+    assert "ops_runtime_smooth_mode.out.log" in text
     assert "com.dankingsley.ops.master_infrastructure_supervisor" in text
+
+
+def test_runtime_smooth_mode_launchd_applies_memory_and_runtime_controls() -> None:
+    text = _read(RUNTIME_SMOOTH_MODE_RUN_PATH)
+
+    assert "runtime_smooth_mode_launchd.lock" in text
+    assert "RUNTIME_SMOOTH_MODE_LOCK_ROOT" in text
+    assert "RUNTIME_SMOOTH_MODE_LOCK_STALE_SECONDS" in text
+    assert "RUNTIME_SMOOTH_MODE_AUTOMATIC" in text
+    assert "memory-pressure-intelligence --apply --json" in text
+    assert "runtime-throttle --apply --json" in text
+    assert "exec /usr/bin/nice" not in text
 
 
 def test_storage_backpressure_autopilot_launchd_runs_multi_cycle_clearance() -> None:
     text = _read(STORAGE_BACKPRESSURE_AUTOPILOT_RUN_PATH)
 
+    assert "backlog_drain_uniform_process.py" in text
+    assert "load_runtime_env.sh" in text
     assert "--max-cycles" in text
     assert "STORAGE_BACKPRESSURE_AUTOPILOT_MAX_CYCLES" in text
     assert "--target-pending-lines" in text
     assert "STORAGE_BACKPRESSURE_AUTOPILOT_TARGET_PENDING_LINES" in text
     assert "--target-retention-debt-gb" in text
     assert "STORAGE_BACKPRESSURE_AUTOPILOT_TARGET_RETENTION_DEBT_GB" in text
+
+
+def test_uniform_backlog_drain_process_is_late_loaded_and_exposed() -> None:
+    opsctl = _read(OPSCTL_PATH)
+    loader = _read(LOAD_RUNTIME_ENV_PATH)
+
+    assert "backlog-drain-uniform-process|uniform-drain-process" in opsctl
+    assert "backlog_drain_uniform_process.py" in opsctl
+    assert ".env.backlog_drain_uniform_override" in loader
+    assert loader.index(".env.backlog_pcore_accelerator_override") < loader.index(".env.backlog_drain_uniform_override")
+    assert loader.index(".env.load_shape_smooth_override") < loader.index(".env.backlog_drain_uniform_override")
 
 
 def test_run_all_sleeves_uses_signal_handlers() -> None:
@@ -87,6 +122,23 @@ def test_run_all_sleeves_child_nice_targets_are_parent_relative() -> None:
 def test_run_all_sleeves_child_nice_does_not_try_to_lift_above_parent() -> None:
     assert run_all_sleeves._relative_nice_increment_for_target(4, parent_nice=5) == 0
     assert run_all_sleeves._nice_prefix_for_target(4, parent_nice=5) == ["nice", "-n", "0"]
+
+
+def test_run_all_sleeves_paper_executor_uses_runtime_nice(monkeypatch) -> None:
+    monkeypatch.setenv("PAPER_EXECUTION_RUNTIME_NICE", "18")
+
+    assert run_all_sleeves._paper_executor_target_nice(6) == 18
+    assert run_all_sleeves._nice_prefix_for_target(
+        run_all_sleeves._paper_executor_target_nice(6),
+        parent_nice=5,
+    ) == ["nice", "-n", "13"]
+
+
+def test_run_all_sleeves_paper_executor_nice_falls_back_to_baseline(monkeypatch) -> None:
+    monkeypatch.setenv("PAPER_EXECUTION_RUNTIME_NICE", "not-an-int")
+    monkeypatch.delenv("PAPER_SHADOW_RUNTIME_NICE", raising=False)
+
+    assert run_all_sleeves._paper_executor_target_nice(6) == 6
 
 
 def test_paper_trade_lock_disables_live_executor(monkeypatch) -> None:
@@ -181,6 +233,51 @@ def test_run_all_sleeves_heartbeat_watch_detects_stale_payload(tmp_path) -> None
 
     assert stale is True
     assert reason == "payload_stale"
+
+
+def test_run_all_sleeves_keeps_paper_lane_alive_for_paused_heartbeat(monkeypatch) -> None:
+    monkeypatch.setenv("PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED", "0")
+    monkeypatch.setenv("PAPER_EXECUTION_RUNTIME_PAUSED_FOR_PRESSURE", "1")
+    monkeypatch.delenv("PAPER_RECONCILIATION_HEARTBEAT_WHEN_PAUSED", raising=False)
+
+    assert run_all_sleeves._paper_execution_consumer_enabled() is True
+
+    monkeypatch.setenv("PAPER_RECONCILIATION_HEARTBEAT_WHEN_PAUSED", "0")
+
+    assert run_all_sleeves._paper_execution_consumer_enabled() is False
+
+
+def test_run_all_sleeves_recycles_execution_lane_on_code_change(tmp_path) -> None:
+    watched = tmp_path / "base_trader.py"
+    watched.write_text("# v1\n", encoding="utf-8")
+    spec = run_all_sleeves.JobSpec(
+        "paper_executor",
+        [],
+        {},
+        breaker_group="core",
+        max_runtime_seconds=0,
+        code_watch_paths=(watched,),
+    )
+
+    recycle, reason = run_all_sleeves._job_recycle_due(spec, started_at=100.0, now_ts=120.0)
+
+    assert recycle is True
+    assert reason == "code_changed:base_trader.py"
+
+
+def test_run_all_sleeves_recycles_execution_lane_on_max_runtime() -> None:
+    spec = run_all_sleeves.JobSpec(
+        "paper_executor",
+        [],
+        {},
+        breaker_group="core",
+        max_runtime_seconds=60,
+    )
+
+    recycle, reason = run_all_sleeves._job_recycle_due(spec, started_at=100.0, now_ts=161.0)
+
+    assert recycle is True
+    assert reason == "max_runtime_seconds=60"
 
 
 def test_run_all_sleeves_launcher_health_marks_degraded_children() -> None:
@@ -341,7 +438,9 @@ def test_run_all_sleeves_launcher_health_treats_clean_exits_as_session_parked() 
     assert clean["volatility"] is True
 
 
-def test_run_all_sleeves_process_fanout_policy_parks_optional_sleeves(tmp_path: Path) -> None:
+def test_run_all_sleeves_process_fanout_policy_parks_optional_sleeves(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("RUN_ALL_SLEEVES_SPECIALIZED_PROFILE_ALLOWLIST", raising=False)
+    monkeypatch.delenv("PAPER_SOAK_SPECIALIZED_ALLOWLIST_BYPASS_FANOUT", raising=False)
     override = tmp_path / "override.env"
     override.write_text(
         "\n".join(
@@ -363,7 +462,66 @@ def test_run_all_sleeves_process_fanout_policy_parks_optional_sleeves(tmp_path: 
     assert run_all_sleeves._job_parked_by_fanout_policy("baseline_parallel", policy) is False
 
 
-def test_run_all_sleeves_applies_process_fanout_policy_before_building_specs() -> None:
+def test_run_all_sleeves_cpu_pressure_guard_narrows_specialized_to_paper_allowlist(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("RUN_ALL_SLEEVES_SPECIALIZED_PROFILE_ALLOWLIST", "volatility,pairs_correlation,unknown_profile")
+    monkeypatch.setenv("PAPER_SOAK_SPECIALIZED_ALLOWLIST_BYPASS_FANOUT", "1")
+    override = tmp_path / "override.env"
+    override.write_text(
+        "\n".join(
+            [
+                "PROCESS_FANOUT_GUARD_ACTIVE=1",
+                "PROCESS_FANOUT_GUARD_REASON=runtime_cpu_pressure",
+                "RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES=0",
+                "OPS_WATCHDOG_ALL_SLEEVES_WITH_AGGRESSIVE=0",
+                "RUN_ALL_SLEEVES_WITH_DIVIDEND_CAPTURE=0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class Args:
+        with_specialized_sleeves = True
+        with_aggressive_modes = True
+        with_dividend_capture = True
+
+    args = Args()
+    policy = run_all_sleeves._process_fanout_policy(override)
+    changes = run_all_sleeves._apply_process_fanout_policy_to_args(args, policy)
+
+    assert policy["specialized_allowlist_profiles"] == ["volatility", "pairs_correlation"]
+    assert run_all_sleeves._specialized_profiles_for_launch() == ("volatility", "pairs_correlation")
+    assert run_all_sleeves._job_parked_by_fanout_policy("volatility", policy) is False
+    assert run_all_sleeves._job_parked_by_fanout_policy("earnings_event", policy) is True
+    assert changes == ["specialized_sleeves_allowlist_only", "aggressive_modes", "dividend_capture"]
+    assert args.with_specialized_sleeves is True
+    assert args.with_aggressive_modes is False
+    assert args.with_dividend_capture is False
+
+
+def test_run_all_sleeves_memory_pressure_guard_overrides_paper_allowlist(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("RUN_ALL_SLEEVES_SPECIALIZED_PROFILE_ALLOWLIST", "volatility,pairs_correlation")
+    monkeypatch.setenv("PAPER_SOAK_SPECIALIZED_ALLOWLIST_BYPASS_FANOUT", "1")
+    override = tmp_path / "override.env"
+    override.write_text(
+        "\n".join(
+            [
+                "PROCESS_FANOUT_GUARD_ACTIVE=1",
+                "PROCESS_FANOUT_GUARD_REASON=memory_pressure",
+                "RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES=0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    policy = run_all_sleeves._process_fanout_policy(override)
+
+    assert policy["specialized_allowlist_bypass_enabled"] is False
+    assert run_all_sleeves._job_parked_by_fanout_policy("volatility", policy) is True
+
+
+def test_run_all_sleeves_applies_process_fanout_policy_before_building_specs(monkeypatch) -> None:
+    monkeypatch.delenv("RUN_ALL_SLEEVES_SPECIALIZED_PROFILE_ALLOWLIST", raising=False)
+    monkeypatch.delenv("PAPER_SOAK_SPECIALIZED_ALLOWLIST_BYPASS_FANOUT", raising=False)
     class Args:
         with_specialized_sleeves = True
         with_aggressive_modes = True
@@ -438,7 +596,7 @@ def test_commands_start_stop_section_uses_stack_entrypoint() -> None:
 
     assert "### Start the full live stack" in text
     assert "./scripts/ops/opsctl.sh start" in text
-    assert "### Refresh the live loops without reinstalling the stack watchdog" in text
+    assert "### Refresh the livefeed mirror without restarting sleeves" in text
     assert "./scripts/ops/opsctl.sh livefeed-refresh" in text
     assert "### Stop the stack" in text
     assert "### Validate documented commands" in text
@@ -447,13 +605,66 @@ def test_commands_start_stop_section_uses_stack_entrypoint() -> None:
     assert "./scripts/ops/opsctl.sh system-drift-guard --json" in text
     assert "### Repair safe cross-system drift surfaces" in text
     assert "./scripts/ops/opsctl.sh system-drift-autopilot --apply --json" in text
-    assert "### Heavy live feed view across all sections" in text
-    assert "./scripts/ops/opsctl.sh feed --source all --heavy" in text
-    assert "### Heavy infrastructure live feed view" in text
-    assert "./scripts/ops/opsctl.sh feed --source infra --heavy --lines 160" in text
-    assert "### Light live feed tail for all feeds" in text
+    assert "### Heavy operator livefeed view" in text
+    assert "./scripts/ops/opsctl.sh feed --source main --heavy --no-heavy-ttl --color --red-actions" in text
+    assert "### Heavy live feed with file diagnostics" in text
+    assert "./scripts/ops/opsctl.sh feed --source main --heavy --show-files --no-heavy-ttl --color --red-actions" in text
     assert "### Active bot stack PDF" in text
     assert "./scripts/ops/open_report_artifact.sh botstack" in text
+
+
+def test_startup_start_prompt_launchd_is_guarded_and_discoverable() -> None:
+    runner = _read(STARTUP_PROMPT_RUN_PATH)
+    installer = _read(STARTUP_PROMPT_INSTALL_PATH)
+    opsctl = _read(OPSCTL_PATH)
+
+    assert "display notification" in runner
+    assert 'buttons {"No", "Yes"}' in runner
+    assert "giving up after $TIMEOUT_SECONDS" in runner
+    assert "startup_start_prompt_latest.json" in runner
+    assert "paper-lock --apply --json" in runner
+    assert "start_args=(start)" in runner
+    assert "STARTUP_START_PROMPT_FORCE_RESTART" in runner
+    assert "STARTUP_START_PROMPT_NO_BROWSER" in runner
+    assert "SCHWAB_AUTH_BROWSER_DISABLED=1" in runner
+    assert "SCHWAB_AUTH_ALLOW_BROWSER_OPEN=0" in runner
+    assert "PREMARKET_TOKEN_BROWSER_AUTH_DISABLED=1" in runner
+    assert "CHROME_HEADLESS_QUIET_MODE=1" in runner
+    assert "REPORT_HEADLESS_BROWSER_RENDER_ENABLED=0" in runner
+    assert "PROJECT_TIMELINE_AUTO_RENDER_PDF=0" in runner
+    assert "BROWSER=/usr/bin/false" in runner
+    assert "--dry-run" in runner
+    assert "without showing the dialog or starting the stack" in runner
+
+    assert "com.dankingsley.startup_start_prompt" in installer
+    assert "run_startup_start_prompt_launchd.sh" in installer
+    assert "<key>RunAtLoad</key>" in installer
+    assert "<key>KeepAlive</key>" in installer
+    assert "<false/>" in installer
+    assert "STARTUP_START_PROMPT_TIMEOUT_SECONDS" in installer
+    assert "STARTUP_START_PROMPT_NO_BROWSER" in installer
+    assert "SCHWAB_AUTH_BROWSER_DISABLED" in installer
+    assert "SCHWAB_AUTH_ALLOW_BROWSER_OPEN" in installer
+    assert "PREMARKET_TOKEN_BROWSER_AUTH_DISABLED" in installer
+    assert "CHROME_HEADLESS_QUIET_MODE" in installer
+    assert "REPORT_HEADLESS_BROWSER_RENDER_ENABLED" in installer
+    assert "PROJECT_TIMELINE_AUTO_RENDER_PDF" in installer
+    assert "--no-kickstart|--next-login-only" in installer
+
+    assert "startup-start-prompt|startup-prompt|login-start-prompt" in opsctl
+    assert "startup-start-prompt-test|startup-prompt-test|login-start-prompt-test" in opsctl
+    assert "install_startup_start_prompt_launchd.sh" in opsctl
+    assert "run_startup_start_prompt_launchd.sh" in opsctl
+    assert "startup-start-prompt [--install|--uninstall]" in opsctl
+    assert "[--no-browser|--allow-browser]" in opsctl
+
+
+def test_browser_quiet_override_keeps_soak_reports_from_spawning_headless_chrome() -> None:
+    override = _read(PROJECT_ROOT / "config" / ".env.browser_quiet_override")
+
+    assert "CHROME_HEADLESS_QUIET_MODE=1" in override
+    assert "REPORT_HEADLESS_BROWSER_RENDER_ENABLED=0" in override
+    assert "PROJECT_TIMELINE_AUTO_RENDER_PDF=0" in override
 
 
 def test_start_stack_blocks_cleanly_on_operator_stop_or_global_halt() -> None:
@@ -509,6 +720,8 @@ def test_livefeed_refresh_starts_fx_when_all_source_requested() -> None:
     assert 'if [[ "$SOURCE" == "fx" || "$SOURCE" == "schwab" || "$SOURCE" == "all" ]]; then' not in text
     assert "livefeed-refresh|live-feed-refresh [paper default] [--dry-run] [--force-restart]" in text
     assert "livefeed_refresh_completed source=$SOURCE" in text
+    assert "livefeed-refresh-guard" in text
+    assert "livefeed_refresh_guard.py" in text
 
 
 def test_feed_refresh_is_supervised_ensure_by_default() -> None:
@@ -520,6 +733,11 @@ def test_feed_refresh_is_supervised_ensure_by_default() -> None:
     assert "feed_refresh_already_running" in text
     assert "all_sleeves_running" in text
     assert "action=kept_running" in text
+    assert 'grep -F "scripts/run_all_sleeves.py"' in text
+    assert 'grep -v "scripts/shadow_watchdog.py"' in text
+    assert "kill_livefeed_local_mirror()" in text
+    assert 'kill -9 "$pid"' in text
+    assert "local_mirror_alive = any" in text
     assert 'if [[ "$LIVEFEED_FORCE_RESTART" == "1" ]]; then\n        kill_schwab_live_loops' in text
     assert '"$PROJECT_ROOT/scripts/ops/opsctl.sh" schwab-futures-start --paper --live-data' in text
     assert '"$PROJECT_ROOT/scripts/ops/opsctl.sh" coinbase-start --paper --live-data' in text
@@ -578,6 +796,11 @@ def test_opsctl_exposes_commands_hygiene() -> None:
     assert "deep_recursive_awareness_expansion.py" in text
     assert "paper-400-ramp|paper-ramp-400|paper-cap-400" in text
     assert "paper_400_ramp_control.py" in text
+    assert "account-position-study [--json] [--day YYYYMMDD] [--profiles CSV]" in text
+    assert "covered-call-roll-watch [--json] [--today YYYY-MM-DD]" in text
+    assert "schwab-account-snapshot-refresh [--json] [--skip-derived]" in text
+    assert "notify-test [--enable-imessage]" in text
+    assert "spacex-ipo-watch [--json] [--loop] [--symbol SPCX]" in text
     assert ".env.paper_400_ramp_override" in _read(PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh")
     assert "platform-intelligence|platform-intelligence-expansion|bot-admission|bot-lifecycle-manager" in text
     assert "platform_intelligence_expansion.py" in text
@@ -683,6 +906,8 @@ def test_runtime_env_and_storage_guard_support_mount_candidates() -> None:
     assert 'diskutil mount reason=' in guard_text
     assert 'handleObservedDiskAppeared' in guard_text
     assert 'startMountPollTimer' in guard_text
+    assert 'confirmDisappearAndRestartLocal' in guard_text
+    assert 'external_still_available_after_disappear' in guard_text
     assert 'storage-switch-external --no-refresh' in guard_text
     assert 'storage-transition-coordinator --transition-mode external --apply --json' in guard_text
     assert 'storage-switch-local --no-refresh local-after-eject' in guard_text
@@ -751,7 +976,7 @@ def test_options_paper_profile_defaults_are_narrowed() -> None:
     assert expected in opsctl
 
 
-def test_paper_mirror_all_active_defaults_to_calm_mode() -> None:
+def test_paper_mirror_all_active_defaults_to_all_eligible_paper() -> None:
     opsctl = _read(OPSCTL_PATH)
     runtime_env = _read(PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh")
     start_stack = _read(PROJECT_ROOT / "scripts" / "ops" / "start_stack.sh")
@@ -759,10 +984,10 @@ def test_paper_mirror_all_active_defaults_to_calm_mode() -> None:
     process_watchdog = _read(PROJECT_ROOT / "scripts" / "ops" / "process_watchdog.py")
 
     for text in (opsctl, runtime_env, start_stack):
-        assert 'PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0' in text
-        assert 'PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1' not in text
-    assert 'os.getenv("PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS", "0")' in shadow_loop
-    assert "env.setdefault('PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS', '0')" in process_watchdog
+        assert 'PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1' in text
+        assert 'PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0' not in text
+    assert 'os.getenv("PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS", "1")' in shadow_loop
+    assert "env.setdefault('PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS', '1')" in process_watchdog
     assert "--require-coinbase-futures" in process_watchdog
     assert "OPS_WATCHDOG_REQUIRE_COINBASE_FUTURES', '1'" in process_watchdog
     assert "shadow_loop_default_crypto_coinbase_*.json" in process_watchdog
@@ -791,6 +1016,20 @@ def test_runtime_env_has_keychain_handoff_and_calm_support_defaults() -> None:
     assert 'OPS_SUPPORT_JOBS_BACKGROUND_POLICY="${OPS_SUPPORT_JOBS_BACKGROUND_POLICY:-1}"' in runtime_env
     assert 'SUPPORT_MAINTENANCE_CONCURRENCY="${SUPPORT_MAINTENANCE_CONCURRENCY:-2}"' in runtime_env
     assert runtime_env.index(".env.guard_intelligence_override") < runtime_env.index(".env.process_fanout_guard_override")
+    assert ".env.load_shape_smooth_override" in runtime_env
+    assert runtime_env.index(".env.accelerator_always_on_override") < runtime_env.index(".env.load_shape_smooth_override")
+
+
+def test_load_shape_smooth_override_caps_backlog_pressure_without_disabling_drain() -> None:
+    override = _read(PROJECT_ROOT / "config" / ".env.load_shape_smooth_override")
+
+    assert "RUNTIME_SMOOTH_MODE_AUTOMATIC=1" in override
+    assert "MAINTENANCE_SLOT_SMOOTH_GATE_ENABLED=1" in override
+    assert "SQL_LINK_SERVICE_SINGLE_WRITER_ONLY=1" in override
+    assert "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES=2" in override
+    assert "SQL_LINK_WRITER_NICE=4" in override
+    assert "MAINTENANCE_SLOT_RUNTIME_ROOT=$PROJECT_ROOT/runtime/maintenance_slots" in override
+    assert "storage_backpressure_autopilot" in override
 
 
 def test_shadow_watchdog_defaults_cover_fx_and_dividend_capture() -> None:
@@ -838,12 +1077,41 @@ def test_live_feed_tail_has_memory_aware_heavy_defaults() -> None:
     assert "LIVE_FEED_HEAVY_PRESSURE_LINES" in text
     assert "LIVE_FEED_DECISION_FILE_MODE_PRESSURE" in text
     assert "LIVE_FEED_INCLUDE_WATCHDOG_LOG_DEFAULT" in text
+    assert "LIVE_FEED_INCLUDE_COINBASE_WATCHDOG_LOG" in text
+    assert "LIVE_FEED_STATUS_SNAPSHOT_DEFAULT" in text
+    assert "LIVE_FEED_SHOW_FILE_LIST_DEFAULT" in text
+    assert "LIVE_FEED_SUPPRESS_FUTURES_SPECIALIST_INTENTS_DEFAULT" in text
+    assert "LIVE_FEED_SUPPRESS_JSON_FRAGMENTS_DEFAULT" in text
+    assert "LIVE_FEED_SUPPRESS_TAIL_HEADERS_DEFAULT" in text
+    assert "LIVE_FEED_DEDUP_REPEATED_LINES_DEFAULT" in text
+    assert "LIVE_FEED_SHOW_KEEPALIVE_DEFAULT" in text
+    assert "LIVE_FEED_VISIBLE_KEEPALIVE_ALLOWED" in text
+    assert "LIVE_FEED_IMPORTANT_ONLY_DEFAULT" in text
     assert "LIVE_FEED_COLOR" in text
     assert "LIVE_FEED_COLOR_PALETTE" in text
     assert "--color|--highlight" in text
     assert "--no-color|--no-highlight" in text
     assert "--red-only|--red" in text
     assert "--semantic-color|--semantic-colors" in text
+    assert "--status-snapshot" in text
+    assert "--no-status-snapshot" in text
+    assert "--show-files" in text
+    assert "--hide-files" in text
+    assert "--show-futures-specialist-intents" in text
+    assert "--hide-futures-specialist-intents" in text
+    assert "--show-json-fragments" in text
+    assert "--hide-json-fragments" in text
+    assert "--show-tail-headers" in text
+    assert "--hide-tail-headers" in text
+    assert "--dedupe-repeats" in text
+    assert "--no-dedupe-repeats" in text
+    assert "--show-keepalive" in text
+    assert "--hide-keepalive" in text
+    assert "--important-only" in text
+    assert "--all-feed-events" in text
+    assert "--heavy-ttl" in text
+    assert "--no-heavy-ttl" in text
+    assert "--heavy-ttl-seconds" in text
     assert "COLOR_ENABLED" in text
     assert "COLOR_PALETTE" in text
     assert "highlight_enabled" in text
@@ -853,8 +1121,70 @@ def test_live_feed_tail_has_memory_aware_heavy_defaults() -> None:
     assert "LIVE_FEED_HEAVY_TAIL_BYTES" in text
     assert "LIVE_FEED_HEAVY_BOOTSTRAP_MAX_LINES" in text
     assert "LIVE_FEED_HEAVY_SNAPSHOT_MAX_LINES" in text
+    assert "LIVE_FEED_HEAVY_KEEPALIVE_SECONDS_DEFAULT" in text
+    assert "LIVE_FEED_KEEPALIVE_DECISION_SNAPSHOT" in text
+    assert "LIVE_FEED_KEEPALIVE_DECISION_EVERY" in text
+    assert "LIVE_FEED_DECISION_SNAPSHOT_MAX_LINES" in text
+    assert "LIVE_FEED_DECISION_SNAPSHOT_TAIL_BYTES" in text
     assert "LIVE_FEED_MAX_LINE_CHARS" in text
     assert "LIVE_FEED_DECISION_MAX_AGE_HOURS" in text
+    assert "LIVEFEED_HEALTH_FILE" in text
+    assert "LIVEFEED_HEALTH_WRITER" in text
+    assert "livefeed_local_latest.json" in text
+    assert "status_snapshot" in text
+    assert "show_file_list" in text
+    assert "tail_probe_ok" in text
+    assert "tail -n 0" in text
+    assert "skipped_file_count" in text
+    assert "live_feed_files_skipped" in text
+    assert "suppress_futures_specialist_intents" in text
+    assert "suppress_json_fragments" in text
+    assert "suppress_tail_headers" in text
+    assert "dedup_repeated_lines" in text
+    assert "show_keepalive" in text
+    assert "visible_keepalive_allowed" in text
+    assert "emit_live_feed_keepalive \"0\"" in text
+    assert "emit_livefeed_decision_paper_snapshot" in text
+    assert "truncate_live_lines 0 0" in text
+    assert 'important_override="${2:-$IMPORTANT_ONLY}"' in text
+    assert "[decision-latest]" in text
+    assert "[paper]" in text
+    assert "[paper-data]" in text
+    assert "[paper-profit]" in text
+    assert 'raw_state = "recovery_debt" if control_ready and raw_evidence_based else "needs_attention"' in text
+    assert "raw_blocking_soak={as_bool(raw_blocking_soak)}" in text
+    assert "raw_gap_to_a={as_num(raw_gap_to_a)}" in text
+    assert "weak_zero_entry={as_bool(runtime_enforcement.get('block_new_entries_on_weak_profiles'))}" in text
+    assert "reduce_only_open={as_bool(runtime_enforcement.get('keep_sells_and_reduce_only_paths_open'))}" in text
+    assert "[paper-truth]" in text
+    assert "prioritize_heavy_livefeed_files" in text
+    assert "execution_lane_paper_latest.json" in text
+    assert "paper_live_data_standard_latest.json" in text
+    assert "paper_execution_truth_layer_latest.json" in text
+    assert "next_keepalive_seconds" in text
+    assert "keepalive_count=0" in text
+    assert "important_only" in text
+    assert "important_operator_line" in text
+    assert "important_pat" in text
+    assert "live_feed_files_hidden" in text
+    assert "emit_livefeed_status_snapshot" in text
+    assert "env_broker_config" in text
+    assert "[broker]" in text
+    assert "[auth]" in text
+    assert "[schwab-auth]" in text
+    assert "drop_stale_bootstrap_state_lines" in text
+    assert "run_filtered_state_safe_snapshot" in text
+    assert "spacex_ipo_downside_watch_latest.json" in text
+    assert "macro_event_intelligence_latest.json" in text
+    assert "live_macro_latest.json" in text
+    assert "mac_notification_watch_state.json" in text
+    assert "remote_alert_control_latest.json" in text
+    assert "runtime_throttle_control_latest.json" in text
+    assert "write_livefeed_health \"running\"" in text
+    assert '"writer_mode":"local_mirror"' in text
+    assert "include_coinbase_watchdog_log" in text
+    assert "HEAVY_TTL_ENABLED_OVERRIDE" in text
+    assert "HEAVY_TTL_SECONDS_OVERRIDE" in text
     assert 'tail -c "$HEAVY_TAIL_BYTES"' in text
     assert "truncate_live_lines" in text
     assert "colorize_line" in text
@@ -878,6 +1208,17 @@ def test_live_feed_tail_has_memory_aware_heavy_defaults() -> None:
     assert "driver" in text
     assert "human_length" in text
     assert "looks_like_json_fragment" in text
+    assert "suppressible_futures_specialist_intent" in text
+    assert "compact_infra_noise_line" in text
+    assert "[StorageRoute]" in text
+    assert "autosync_skipped_external_low_space" in text
+    assert "free_gb" in text
+    assert "min_gb" in text
+    assert "[ShadowLock] busy" in text
+    assert "owner_pid" in text
+    assert "symbols" in text
+    assert "tail_file_header" in text
+    assert "normalized_repeat_key" in text
     assert "[json-fragment skipped" in text
     assert "strategy=? score=?" not in text
     assert "--heavy" in text
@@ -890,6 +1231,34 @@ def test_live_feed_tail_has_memory_aware_heavy_defaults() -> None:
     assert "capped_files" in text
     assert 'if [[ "$DECISION_FILE_MODE" == "latest_only" ]]' in text
     assert 'if [[ "$INCLUDE_WATCHDOG_LOG" == "1" ]]; then' in text
+
+
+def test_livefeed_launchd_wrapper_targets_existing_tail_script() -> None:
+    text = _read(LIVE_FEED_LAUNCHD_PATH)
+
+    assert "load_runtime_env.sh" in text
+    assert "LIVE_FEED_INCLUDE_COINBASE_WATCHDOG_LOG" in text
+    assert 'LIVEFEED_LOCAL_SOURCE:-main' in text
+    assert 'LIVEFEED_LOCAL_LINES:-80' in text
+    assert 'LIVEFEED_LOCAL_HEAVY:-0' in text
+    assert 'live_feed_tail.sh" "${args[@]}"' in text
+
+
+def test_guarded_heavy_livefeed_does_not_disable_visible_keepalive() -> None:
+    text = _read(LIVE_FEED_HEAVY_GUARDED_PATH)
+
+    assert "LIVE_FEED_KEEPALIVE_SECONDS=20" in text
+    assert "LIVE_FEED_SHOW_KEEPALIVE_DEFAULT=0" not in text
+
+
+def test_notification_override_pages_tripwire_and_restart_storms() -> None:
+    env_text = _read(PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh")
+    override = _read(PROJECT_ROOT / "config" / ".env.notification_override")
+
+    assert ".env.notification_override" in env_text
+    assert "MAC_NOTIFICATION_WATCH_IMESSAGE_MIN_SEVERITY=critical" in override
+    assert "tripwire" in override
+    assert "restart_storm" in override
 
 
 def test_retrain_entrypoints_stamp_trigger_source_and_logs() -> None:
@@ -906,3 +1275,6 @@ def test_retrain_entrypoints_stamp_trigger_source_and_logs() -> None:
     assert 'RETRAIN_LAUNCH_LOG_PATH="$RUN_LOG"' in weekly
     assert 'exec > >(tee -a "$RUN_LOG") 2>&1' in daily
     assert 'exec > >(tee -a "$RUN_LOG") 2>&1' in weekly
+    assert "overnight-training-window" in weekly
+    assert 'OVERNIGHT_TRAINING_WINDOW_TARGET="${OVERNIGHT_TRAINING_WINDOW_TARGET:-100}"' in weekly
+    assert "--window-target" in weekly

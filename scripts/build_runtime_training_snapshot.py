@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import gzip
 import gc
 import hashlib
 import json
 import os
 import sys
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24,7 +26,22 @@ import runtime_training_common as rtc
 
 DEFAULT_ROWS_PATH = PROJECT_ROOT / "exports" / "training" / "runtime_training_snapshot_latest.jsonl"
 DEFAULT_HEALTH_PATH = PROJECT_ROOT / "governance" / "health" / "runtime_training_snapshot_latest.json"
+DEFAULT_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "runtime_training_snapshot.lock"
 _FILE_HASH_CHUNK_BYTES = 1024 * 1024
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(float(os.getenv(name, str(default))))
+    except Exception:
+        return int(default)
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except Exception:
+        return float(default)
 
 
 def _sha256_file(path: Path) -> str:
@@ -48,6 +65,63 @@ def _load_json(path: Path) -> dict[str, Any]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _acquire_single_flight_lock(
+    lock_path: Path,
+    *,
+    project_root: Path,
+    health_path: Path,
+    rows_path: Path,
+) -> tuple[Any | None, dict[str, Any]]:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.seek(0)
+        existing = handle.read().strip()
+        try:
+            age_seconds = max(time.time() - lock_path.stat().st_mtime, 0.0)
+        except Exception:
+            age_seconds = 0.0
+        payload = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "ok": True,
+            "overall_status": "already_running",
+            "already_running": True,
+            "project_root": str(project_root),
+            "health_path": str(health_path),
+            "rows_path": str(rows_path),
+            "lock_path": str(lock_path),
+            "lock_age_seconds": round(float(age_seconds), 3),
+            "existing_lock": existing,
+            "single_flight_contract": {
+                "active": True,
+                "prevents_duplicate_snapshot_builders": True,
+                "policy": "return already_running instead of launching overlapping runtime-training snapshot scans",
+            },
+        }
+        handle.close()
+        return None, payload
+    handle.seek(0)
+    handle.truncate()
+    handle.write(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "argv": sys.argv,
+                "project_root": str(project_root),
+                "health_path": str(health_path),
+                "rows_path": str(rows_path),
+            },
+            ensure_ascii=True,
+        )
+        + "\n"
+    )
+    handle.flush()
+    return handle, {}
 
 
 def _parse_ts(raw: str) -> datetime | None:
@@ -102,6 +176,40 @@ def _reusable_snapshot_payload(
     payload["reused"] = True
     payload["reuse_reason"] = "fresh_compatible_snapshot"
     payload["age_minutes"] = round(float(age_minutes), 4)
+    return payload
+
+
+def _light_refresh_existing_snapshot_payload(
+    summary: dict[str, Any],
+    *,
+    project_root: Path,
+    health_path: Path,
+    lookback_days: int,
+    mode_allowlist: list[str],
+    symbol_allowlist: list[str],
+    prefer_sqlite: bool,
+) -> dict[str, Any]:
+    if not _summary_config_compatible(
+        summary,
+        project_root=project_root,
+        lookback_days=lookback_days,
+        mode_allowlist=mode_allowlist,
+        symbol_allowlist=symbol_allowlist,
+        prefer_sqlite=prefer_sqlite,
+    ):
+        return {}
+    if int(summary.get("sequence_count", 0) or 0) <= 0 or int(summary.get("row_count", 0) or 0) <= 0:
+        return {}
+    rows_path = Path(str(summary.get("rows_path") or "")).expanduser()
+    if not rows_path.exists():
+        return {}
+    payload = dict(summary)
+    payload["timestamp_utc"] = datetime.now(timezone.utc).isoformat()
+    payload["health_path"] = str(health_path)
+    payload["reused"] = True
+    payload["reuse_reason"] = "light_refresh_existing_snapshot"
+    payload["build_mode"] = "light_metadata_refresh"
+    payload["age_minutes"] = 0.0
     return payload
 
 
@@ -238,8 +346,27 @@ def _window_candidate_paths(
     return sorted(chosen.values())
 
 
-def _iter_json_rows(paths: Iterable[Path]) -> Iterable[dict[str, Any]]:
+def _path_mtime_sort_key(path: Path) -> tuple[float, str]:
+    try:
+        mtime = path.stat().st_mtime
+    except Exception:
+        mtime = 0.0
+    return (float(mtime), str(path))
+
+
+def _iter_json_rows(
+    paths: Iterable[Path],
+    *,
+    max_rows: int = 0,
+    deadline_monotonic: float | None = None,
+    stats: dict[str, Any] | None = None,
+) -> Iterable[dict[str, Any]]:
+    parsed_rows = 0
     for path in paths:
+        if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+            if stats is not None:
+                stats["timed_out"] = True
+            break
         try:
             if path.suffix == ".gz":
                 handle_cm = gzip.open(path, "rt", encoding="utf-8")
@@ -247,6 +374,16 @@ def _iter_json_rows(paths: Iterable[Path]) -> Iterable[dict[str, Any]]:
                 handle_cm = path.open("r", encoding="utf-8")
             with handle_cm as handle:
                 for line in handle:
+                    if max_rows > 0 and parsed_rows >= max_rows:
+                        if stats is not None:
+                            stats["row_limit_hit"] = True
+                        return
+                    if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                        if stats is not None:
+                            stats["timed_out"] = True
+                        return
+                    if stats is not None:
+                        stats["candidate_line_count"] = int(stats.get("candidate_line_count", 0) or 0) + 1
                     line = line.strip()
                     if not line:
                         continue
@@ -255,8 +392,13 @@ def _iter_json_rows(paths: Iterable[Path]) -> Iterable[dict[str, Any]]:
                     except Exception:
                         continue
                     if isinstance(row, dict):
+                        parsed_rows += 1
+                        if stats is not None:
+                            stats["candidate_json_row_count"] = int(stats.get("candidate_json_row_count", 0) or 0) + 1
                         yield row
         except Exception:
+            if stats is not None:
+                stats["candidate_file_error_count"] = int(stats.get("candidate_file_error_count", 0) or 0) + 1
             continue
 
 
@@ -266,17 +408,17 @@ def _normalize_runtime_observation(
     since_utc: datetime,
     mode_allowlist: list[str],
     symbol_allowlist: list[str],
+    price_sidecar: dict[str, Any] | None = None,
 ) -> tuple[tuple[str, str], dict[str, Any]] | None:
-    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-    if str(metadata.get("layer") or "").strip().lower() != "grand_master":
-        return None
-    strategy = str(row.get("strategy") or "").strip().lower()
-    if strategy not in rtc._ROOT_STRATEGY_PRIORITY:
+    metadata = rtc._runtime_row_metadata(row)
+    strategy = rtc._runtime_row_strategy(row, metadata)
+    strategy_priority = rtc._runtime_strategy_priority(strategy, metadata)
+    if strategy_priority is None:
         return None
     ts = _parse_ts(row.get("timestamp_utc"))
     if ts is None or ts < since_utc:
         return None
-    mode = str(row.get("mode") or "").strip().lower()
+    mode = rtc._runtime_row_mode(row, metadata)
     symbol = str(row.get("symbol") or "").strip().upper()
     if not mode or not symbol:
         return None
@@ -289,19 +431,32 @@ def _normalize_runtime_observation(
     if ("market_data_ok" in gates) and (not bool(gates.get("market_data_ok"))):
         return None
 
-    features = row.get("features") if isinstance(row.get("features"), dict) else {}
-    price = rtc._safe_float(features.get("last_price"), 0.0)
+    snapshot_ids = rtc._runtime_snapshot_id_candidates(row, metadata)
+    features = rtc._runtime_row_features(row)
+    price = rtc._runtime_row_price(row, features)
+    if price_sidecar:
+        sidecar_context = rtc._lookup_runtime_sidecar_context(
+            price_sidecar,
+            symbol=symbol,
+            snapshot_ids=snapshot_ids,
+            ts=ts,
+        )
+        sidecar_price = rtc._runtime_sidecar_entry_price(sidecar_context)
+        if price <= 0.0 and sidecar_price > 0.0:
+            price = sidecar_price
+        if sidecar_context:
+            features = rtc._runtime_features_with_sidecar_context(features, sidecar_context)
     if price <= 0.0:
         return None
 
-    snapshot_id = str(metadata.get("snapshot_id") or row.get("snapshot_id") or row.get("parent_decision_id") or "").strip()
+    snapshot_id = snapshot_ids[0] if snapshot_ids else ""
     if not snapshot_id:
         snapshot_id = f"{symbol}:{ts.isoformat()}"
 
     obs = {
         "timestamp_utc": ts.isoformat(),
         "strategy": strategy,
-        "strategy_priority": rtc._ROOT_STRATEGY_PRIORITY[strategy],
+        "strategy_priority": int(strategy_priority),
         "snapshot_id": snapshot_id,
         "ts_epoch": float(ts.timestamp()),
         "price": price,
@@ -335,14 +490,44 @@ def _merge_candidate_rows_into_sequences(
     since_utc: datetime,
     mode_allowlist: list[str],
     symbol_allowlist: list[str],
-) -> int:
+    max_runtime_seconds: float = 0.0,
+    max_candidate_rows: int = 0,
+) -> tuple[int, dict[str, Any]]:
+    started = time.monotonic()
+    deadline = started + max_runtime_seconds if max_runtime_seconds > 0 else None
+    candidate_paths = sorted(candidate_paths, key=_path_mtime_sort_key, reverse=True)
+    scan_stats: dict[str, Any] = {
+        "candidate_scan_budget_seconds": round(float(max_runtime_seconds), 3),
+        "candidate_scan_max_rows": int(max_candidate_rows),
+        "candidate_source_count": len(candidate_paths),
+        "candidate_scan_timed_out": False,
+        "candidate_scan_row_limit_hit": False,
+        "candidate_line_count": 0,
+        "candidate_json_row_count": 0,
+        "candidate_file_error_count": 0,
+    }
+    price_sidecar: dict[str, Any] = {}
+    if candidate_paths and rtc._env_flag("RUNTIME_TRAIN_PRICE_SIDECAR_ENABLED", True):
+        sidecar_max_rows = max(rtc._safe_int(os.getenv("RUNTIME_TRAIN_PRICE_SIDECAR_MAX_ROWS"), 5000), 0)
+        price_sidecar = rtc._build_runtime_price_sidecar_from_rows(
+            rtc._iter_runtime_price_sidecar_rows(candidate_paths, max_rows=sidecar_max_rows),
+            max_rows=sidecar_max_rows,
+        )
+
     best_by_snapshot: dict[tuple[str, str, str], dict[str, Any]] = {}
-    for row in _iter_json_rows(candidate_paths):
+    row_iter_stats: dict[str, Any] = {}
+    for row in _iter_json_rows(
+        candidate_paths,
+        max_rows=max(int(max_candidate_rows), 0),
+        deadline_monotonic=deadline,
+        stats=row_iter_stats,
+    ):
         normalized = _normalize_runtime_observation(
             row,
             since_utc=since_utc,
             mode_allowlist=mode_allowlist,
             symbol_allowlist=symbol_allowlist,
+            price_sidecar=price_sidecar,
         )
         if normalized is None:
             continue
@@ -351,6 +536,15 @@ def _merge_candidate_rows_into_sequences(
         prev = best_by_snapshot.get(key)
         if prev is None or int(obs.get("strategy_priority", 99)) < int(prev.get("strategy_priority", 99)):
             best_by_snapshot[key] = obs
+    scan_stats.update(
+        {
+            "candidate_scan_timed_out": bool(row_iter_stats.get("timed_out", False)),
+            "candidate_scan_row_limit_hit": bool(row_iter_stats.get("row_limit_hit", False)),
+            "candidate_line_count": int(row_iter_stats.get("candidate_line_count", 0) or 0),
+            "candidate_json_row_count": int(row_iter_stats.get("candidate_json_row_count", 0) or 0),
+            "candidate_file_error_count": int(row_iter_stats.get("candidate_file_error_count", 0) or 0),
+        }
+    )
 
     gap_fill_context = rtc._load_runtime_gap_fill_context(project_root)
     merged_row_count = 0
@@ -390,7 +584,11 @@ def _merge_candidate_rows_into_sequences(
                 )
             )
             base_sequences[key] = existing
-    return int(merged_row_count)
+    scan_stats["candidate_scan_elapsed_seconds"] = round(float(time.monotonic() - started), 3)
+    scan_stats["candidate_scan_partial"] = bool(
+        scan_stats["candidate_scan_timed_out"] or scan_stats["candidate_scan_row_limit_hit"]
+    )
+    return int(merged_row_count), scan_stats
 
 
 def _incremental_snapshot_sequences(
@@ -402,6 +600,8 @@ def _incremental_snapshot_sequences(
     mode_allowlist: list[str],
     symbol_allowlist: list[str],
     prefer_sqlite: bool,
+    max_runtime_seconds: float = 0.0,
+    max_candidate_rows: int = 0,
 ) -> tuple[dict[tuple[str, str], list[dict[str, Any]]], dict[str, Any]] | None:
     if not _summary_config_compatible(
         summary,
@@ -441,13 +641,15 @@ def _incremental_snapshot_sequences(
         }
 
     since_utc = datetime.now(timezone.utc) - timedelta(days=max(int(lookback_days), 1))
-    merged_row_count = _merge_candidate_rows_into_sequences(
+    merged_row_count, scan_stats = _merge_candidate_rows_into_sequences(
         base_sequences,
         candidate_paths=candidate_paths,
         project_root=project_root,
         since_utc=since_utc,
         mode_allowlist=mode_allowlist,
         symbol_allowlist=symbol_allowlist,
+        max_runtime_seconds=max_runtime_seconds,
+        max_candidate_rows=max_candidate_rows,
     )
 
     return base_sequences, {
@@ -456,7 +658,51 @@ def _incremental_snapshot_sequences(
         "incremental_source_count": len(candidate_paths),
         "incremental_source_paths": [str(path) for path in candidate_paths[:20]],
         "incremental_row_count": int(merged_row_count),
+        "incremental_partial": bool(scan_stats.get("candidate_scan_partial", False)),
+        "incremental_scan": scan_stats,
     }
+
+
+def _full_refresh_sequences(
+    project_root: Path,
+    *,
+    lookback_days: int,
+    mode_allowlist: list[str],
+    symbol_allowlist: list[str],
+    prefer_sqlite: bool,
+    max_observation_rows: int,
+) -> tuple[dict[tuple[str, str], list[dict[str, Any]]], dict[str, Any]]:
+    sequences = rtc.load_runtime_observation_sequences(
+        project_root,
+        lookback_days=max(int(lookback_days), 1),
+        mode_allowlist=mode_allowlist,
+        symbol_allowlist=symbol_allowlist,
+        prefer_sqlite=bool(prefer_sqlite),
+        allow_snapshot=False,
+        max_observation_rows=max(int(max_observation_rows), 0) or None,
+    )
+    meta: dict[str, Any] = {"build_mode": "full_refresh"}
+    if sequences or not bool(prefer_sqlite):
+        return sequences, meta
+
+    fallback_sequences = rtc.load_runtime_observation_sequences(
+        project_root,
+        lookback_days=max(int(lookback_days), 1),
+        mode_allowlist=mode_allowlist,
+        symbol_allowlist=symbol_allowlist,
+        prefer_sqlite=False,
+        allow_snapshot=False,
+        max_observation_rows=max(int(max_observation_rows), 0) or None,
+    )
+    if fallback_sequences:
+        return fallback_sequences, {
+            "build_mode": "full_refresh_jsonl_fallback",
+            "sqlite_empty_fallback": True,
+            "fallback_reason": "sqlite_preferred_snapshot_returned_zero_sequences",
+        }
+    meta["sqlite_empty_fallback"] = True
+    meta["fallback_reason"] = "sqlite_and_jsonl_sources_returned_zero_sequences"
+    return sequences, meta
 
 
 def _seeded_snapshot_sequences(
@@ -525,7 +771,7 @@ def _seeded_snapshot_sequences(
             "seed_backfill_row_count": 0,
         }
 
-    merged_row_count = _merge_candidate_rows_into_sequences(
+    merged_row_count, scan_stats = _merge_candidate_rows_into_sequences(
         base_sequences,
         candidate_paths=candidate_paths,
         project_root=project_root,
@@ -540,6 +786,8 @@ def _seeded_snapshot_sequences(
         "seed_source_count": len(candidate_paths),
         "seed_source_paths": [str(path) for path in candidate_paths[:20]],
         "seed_backfill_row_count": int(merged_row_count),
+        "seed_backfill_partial": bool(scan_stats.get("candidate_scan_partial", False)),
+        "seed_backfill_scan": scan_stats,
     }
 
 
@@ -591,6 +839,34 @@ def _coverage_summary(sequences: dict[tuple[str, str], list[dict[str, Any]]]) ->
     }
 
 
+def _limit_snapshot_sequences(
+    sequences: dict[tuple[str, str], list[dict[str, Any]]],
+    *,
+    max_sequences: int,
+    max_rows_per_sequence: int,
+) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    sequence_cap = max(int(max_sequences), 0)
+    row_cap = max(int(max_rows_per_sequence), 0)
+    ranked = sorted(sequences.items(), key=lambda item: (-len(item[1]), item[0][0], item[0][1]))
+    if sequence_cap:
+        ranked = ranked[:sequence_cap]
+    out: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for key, rows in ranked:
+        rows_sorted = sorted(
+            list(rows),
+            key=lambda item: (
+                float(item.get("ts_epoch", 0.0)),
+                int(item.get("strategy_priority", 99)),
+                str(item.get("snapshot_id") or ""),
+            ),
+        )
+        if row_cap and len(rows_sorted) > row_cap:
+            rows_sorted = rows_sorted[-row_cap:]
+        if rows_sorted:
+            out[key] = rows_sorted
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build a canonical runtime-training snapshot for future retrains.")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
@@ -601,19 +877,53 @@ def main() -> int:
     parser.add_argument("--reuse-if-fresh-minutes", type=int, default=int(os.getenv("RUNTIME_TRAIN_SNAPSHOT_REUSE_IF_FRESH_MINUTES", "360")))
     parser.add_argument("--rows-path", default=str(DEFAULT_ROWS_PATH))
     parser.add_argument("--health-path", default=str(DEFAULT_HEALTH_PATH))
+    parser.add_argument("--lock-path", default=str(DEFAULT_LOCK_PATH))
     parser.add_argument("--seed-health-path", default=os.getenv("RUNTIME_TRAIN_SNAPSHOT_SEED_HEALTH_PATH", ""))
+    parser.add_argument("--max-observation-rows", type=int, default=int(os.getenv("RUNTIME_TRAIN_SNAPSHOT_MAX_OBSERVATION_ROWS", "80000")))
+    parser.add_argument("--max-sequences", type=int, default=int(os.getenv("RUNTIME_TRAIN_SNAPSHOT_MAX_SEQUENCES", "1200")))
+    parser.add_argument("--max-rows-per-sequence", type=int, default=int(os.getenv("RUNTIME_TRAIN_SNAPSHOT_MAX_ROWS_PER_SEQUENCE", "600")))
+    parser.add_argument(
+        "--incremental-max-runtime-seconds",
+        type=float,
+        default=_env_float("RUNTIME_TRAIN_INCREMENTAL_MAX_RUNTIME_SECONDS", 180.0),
+        help="Maximum seconds to scan incremental JSONL candidates before committing a partial refresh.",
+    )
+    parser.add_argument(
+        "--incremental-max-candidate-rows",
+        type=int,
+        default=_env_int("RUNTIME_TRAIN_INCREMENTAL_MAX_CANDIDATE_ROWS", 25000),
+        help="Maximum valid JSONL candidate rows to parse during incremental refresh; 0 disables the row cap.",
+    )
+    parser.add_argument("--light-refresh-existing", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
     project_root = Path(args.project_root).resolve()
     rows_path = Path(args.rows_path).expanduser()
     health_path = Path(args.health_path).expanduser()
+    lock_path = Path(args.lock_path).expanduser()
     default_seed_path = Path(DEFAULT_HEALTH_PATH).expanduser()
     seed_health_path = Path(args.seed_health_path).expanduser() if str(args.seed_health_path).strip() else None
     if seed_health_path is None and health_path != default_seed_path:
         seed_health_path = default_seed_path
     mode_allowlist = _parse_csv(args.mode_allowlist)
     symbol_allowlist = _parse_csv(args.symbol_allowlist)
+    lock_handle, already_running = _acquire_single_flight_lock(
+        lock_path,
+        project_root=project_root,
+        health_path=health_path,
+        rows_path=rows_path,
+    )
+    if already_running:
+        if args.json:
+            print(json.dumps(already_running, ensure_ascii=True))
+        else:
+            print(
+                "runtime_training_snapshot already_running=1 "
+                f"lock_path={already_running.get('lock_path', '')}"
+            )
+        return 0
+    _ = lock_handle
 
     current_summary = _load_json(health_path)
     reusable = _reusable_snapshot_payload(
@@ -635,6 +945,28 @@ def main() -> int:
             )
         return 0
 
+    if args.light_refresh_existing:
+        light_refresh = _light_refresh_existing_snapshot_payload(
+            current_summary,
+            project_root=project_root,
+            health_path=health_path,
+            lookback_days=max(int(args.lookback_days), 1),
+            mode_allowlist=mode_allowlist,
+            symbol_allowlist=symbol_allowlist,
+            prefer_sqlite=bool(args.prefer_sqlite),
+        )
+        if light_refresh:
+            health_path.parent.mkdir(parents=True, exist_ok=True)
+            health_path.write_text(json.dumps(light_refresh, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            if args.json:
+                print(json.dumps(light_refresh, ensure_ascii=True))
+            else:
+                print(
+                    f"runtime_training_snapshot light_refresh=1 sequences={int(light_refresh.get('sequence_count', 0) or 0)} "
+                    f"rows={int(light_refresh.get('row_count', 0) or 0)} rows_path={light_refresh.get('rows_path', '')}"
+                )
+            return 0
+
     incremental_meta: dict[str, Any] = {}
     incremental = _incremental_snapshot_sequences(
         current_summary,
@@ -644,6 +976,8 @@ def main() -> int:
         mode_allowlist=mode_allowlist,
         symbol_allowlist=symbol_allowlist,
         prefer_sqlite=bool(args.prefer_sqlite),
+        max_runtime_seconds=max(float(args.incremental_max_runtime_seconds), 0.0),
+        max_candidate_rows=max(int(args.incremental_max_candidate_rows), 0),
     )
     if incremental is not None:
         sequences, incremental_meta = incremental
@@ -664,15 +998,20 @@ def main() -> int:
         if seeded is not None:
             sequences, incremental_meta = seeded
         else:
-            sequences = rtc.load_runtime_observation_sequences(
+            sequences, incremental_meta = _full_refresh_sequences(
                 project_root,
                 lookback_days=max(int(args.lookback_days), 1),
                 mode_allowlist=mode_allowlist,
                 symbol_allowlist=symbol_allowlist,
                 prefer_sqlite=bool(args.prefer_sqlite),
-                allow_snapshot=False,
+                max_observation_rows=max(int(args.max_observation_rows), 0),
             )
-            incremental_meta = {"build_mode": "full_refresh"}
+
+    sequences = _limit_snapshot_sequences(
+        sequences,
+        max_sequences=max(int(args.max_sequences), 0),
+        max_rows_per_sequence=max(int(args.max_rows_per_sequence), 0),
+    )
 
     rows_path.parent.mkdir(parents=True, exist_ok=True)
     row_count = 0
@@ -694,13 +1033,22 @@ def main() -> int:
         "mode_allowlist": mode_allowlist,
         "symbol_allowlist": symbol_allowlist,
         "prefer_sqlite": bool(args.prefer_sqlite),
+        "max_observation_rows": max(int(args.max_observation_rows), 0),
+        "max_sequences": max(int(args.max_sequences), 0),
+        "max_rows_per_sequence": max(int(args.max_rows_per_sequence), 0),
         "rows_path": str(rows_path),
         "health_path": str(health_path),
+        "lock_path": str(lock_path),
         "jsonl_discovery_manifest": str(project_root / "governance" / "health" / "jsonl_discovery_manifest_latest.json"),
         "rows_sha256": _sha256_file(rows_path),
         "sequence_count": int(sequence_count),
         "row_count": int(row_count),
         "coverage": coverage,
+        "single_flight_contract": {
+            "active": True,
+            "prevents_duplicate_snapshot_builders": True,
+            "lock_path": str(lock_path),
+        },
     }
     payload.update(incremental_meta)
     health_path.parent.mkdir(parents=True, exist_ok=True)

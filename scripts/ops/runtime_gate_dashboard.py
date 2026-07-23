@@ -110,6 +110,11 @@ def _artifact_config(project_root: Path) -> Dict[str, Dict[str, Any]]:
             "max_age_minutes": _days_to_minutes(2.0),
             "required": False,
         },
+        "hdf5_training_cache": {
+            "paths": [project_root / "governance" / "health" / "hdf5_training_cache_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
         "training_runtime_control": {
             "paths": [project_root / "governance" / "health" / "training_runtime_control_latest.json"],
             "max_age_minutes": _days_to_minutes(2.0),
@@ -242,6 +247,11 @@ def _artifact_config(project_root: Path) -> Dict[str, Dict[str, Any]]:
         },
         "remote_alert_control": {
             "paths": [project_root / "governance" / "health" / "remote_alert_control_latest.json"],
+            "max_age_minutes": _days_to_minutes(1.0),
+            "required": False,
+        },
+        "coordination_state_control": {
+            "paths": [project_root / "governance" / "health" / "coordination_state_latest.json"],
             "max_age_minutes": _days_to_minutes(1.0),
             "required": False,
         },
@@ -579,6 +589,22 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             "active_supportability_score": float(supportability.get("active_supportability_score", 0.0) or 0.0),
             "implemented_improvement_count": int(payload.get("implemented_improvement_count", 0) or 0),
         }
+    if name == "hdf5_training_cache":
+        cache = payload.get("cache") if isinstance(payload.get("cache"), dict) else {}
+        freshness = payload.get("freshness_gate") if isinstance(payload.get("freshness_gate"), dict) else {}
+        schema = payload.get("schema_validation") if isinstance(payload.get("schema_validation"), dict) else {}
+        benchmark = payload.get("performance_benchmark") if isinstance(payload.get("performance_benchmark"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "fresh": bool(freshness.get("fresh", False)),
+            "schema_ok": bool(schema.get("ok", False)),
+            "row_count": int(cache.get("row_count", 0) or 0),
+            "feature_count": int(cache.get("feature_count", 0) or 0),
+            "sequence_count": int(cache.get("sequence_count", 0) or 0),
+            "h5_size_bytes": int(cache.get("h5_size_bytes", 0) or 0),
+            "benchmark_status": str(benchmark.get("status", "") or ""),
+            "speedup_ratio": float(benchmark.get("speedup_ratio", 0.0) or 0.0),
+        }
     if name == "ingestion_storage_control":
         backpressure = payload.get("backpressure") if isinstance(payload.get("backpressure"), dict) else {}
         storage = payload.get("storage") if isinstance(payload.get("storage"), dict) else {}
@@ -622,6 +648,7 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "overall_status": str(payload.get("overall_status", "") or ""),
             "recommended_now": bool(payload.get("recommended_now", False)),
+            "material_drain_recommended": bool(payload.get("material_drain_recommended", False)),
             "apply_executed": bool(payload.get("apply_executed", False)),
             "writer_busy": bool(payload.get("writer_busy", False)),
             "off_hours_active": bool(off_hours.get("active", False)),
@@ -964,6 +991,22 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             "unacked_critical": int(critical.get("unacked_count", 0) or 0),
             "unsent_critical": int(critical.get("unsent_count", 0) or 0),
         }
+    if name == "coordination_state_control":
+        policies = payload.get("policies") if isinstance(payload.get("policies"), dict) else {}
+        live = policies.get("live_orders") if isinstance(policies.get("live_orders"), dict) else {}
+        paper = policies.get("paper_execution") if isinstance(policies.get("paper_execution"), dict) else {}
+        heavy = policies.get("heavy_viewer") if isinstance(policies.get("heavy_viewer"), dict) else {}
+        training = policies.get("training_launch") if isinstance(policies.get("training_launch"), dict) else {}
+        terminal = policies.get("terminal_restart") if isinstance(policies.get("terminal_restart"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "coordination_mode": str(payload.get("coordination_mode", "") or ""),
+            "live_orders_allowed": bool(live.get("allowed", False)),
+            "paper_execution_allowed": bool(paper.get("allowed", False)),
+            "heavy_viewer_allowed": bool(heavy.get("allowed", False)),
+            "training_launch_allowed": bool(training.get("allowed", False)),
+            "terminal_restart_safe": bool(terminal.get("safe", False)),
+        }
     if name == "storage_quota_guard":
         quota = payload.get("quota_summary") if isinstance(payload.get("quota_summary"), dict) else {}
         return {
@@ -1077,20 +1120,298 @@ def _artifact_contract(artifacts: Dict[str, Dict[str, Any]], name: str) -> Dict[
     }
 
 
-def _severity_from_attention(attention: list[str]) -> int:
-    if any(item.endswith("_missing") for item in attention):
-        return 3
-    degraded_markers = (
-        "_stale",
-        "_not_ok",
-        "health_gates_hard_gate_triggered",
-        "daily_auto_verify_not_ok",
+_ADVISORY_ATTENTION = {
+    "memory_efficiency_control_needs_work",
+    "retrain_artifact_freshness_not_ok",
+    "infrastructure_autofix_bot_blocked",
+    "live_runtime_separation_control_needs_work",
+    "rolling_restart_controller_blocked",
+    "blackstart_recovery_needs_work",
+    "coordination_state_control_blocked",
+    "promotion_not_ready",
+    "training_quality_control_blocked",
+    "platform_control_plane_upgrade_required",
+    "daily_verify_auto_remediation_pending",
+    "infrastructure_autofix_bot_needs_work",
+    "artifact_freshness_slo_blocked",
+    "runtime_snapshot_cache_control_needs_work",
+    "chaos_drill_coordinator_needs_work",
+}
+
+_CRITICAL_ATTENTION = {
+    "health_gates_hard_gate_triggered",
+    "global_killswitch_not_ok",
+}
+
+_DEGRADED_ATTENTION = {
+    "daily_auto_verify_not_ok",
+    "session_ready_not_ok",
+    "health_gates_not_ok",
+    "sql_link_service_not_ok",
+    "ingestion_storage_control_blocked",
+    "ingestion_storage_governor_critical",
+    "sql_primary_route_drift",
+    "storage_split_brain_needs_review",
+}
+
+_ATTENTION_OWNER_ACTIONS: dict[str, dict[str, Any]] = {
+    "daily_auto_verify_not_ok": {
+        "owner": "daily_verify_auto_remediation_bot",
+        "command": ["./scripts/ops/opsctl.sh", "daily-verify-remediation", "--apply", "--json"],
+        "timeout_seconds": 180,
+        "success_condition": "daily_auto_verify_latest.ok is true or failed checks resolve through mapped owner artifacts",
+    },
+    "retrain_artifact_freshness_not_ok": {
+        "owner": "retrain_artifact_freshness_guard",
+        "command": ["python", "scripts/retrain_artifact_freshness_guard.py", "--json"],
+        "timeout_seconds": 180,
+        "success_condition": "retrain_artifact_freshness_latest.ok is true or sample sufficiency is advisory-only while daily verify is clean",
+    },
+    "memory_efficiency_control_needs_work": {
+        "owner": "memory_efficiency_control",
+        "command": ["./scripts/ops/opsctl.sh", "memory-efficiency", "apply", "--json"],
+        "timeout_seconds": 90,
+        "success_condition": "memory pressure remains green; compressed-store-only findings stay advisory",
+    },
+    "ingestion_storage_control_blocked": {
+        "owner": "storage_backpressure_autopilot",
+        "command": ["./scripts/ops/opsctl.sh", "storage-backpressure-autopilot", "--apply", "--quick-bounded", "--json"],
+        "timeout_seconds": 240,
+        "success_condition": "ingestion_storage_control_latest.overall_status is ready and pressure_index is below critical",
+    },
+    "infrastructure_autofix_bot_blocked": {
+        "owner": "infrastructure_autofix_bot",
+        "command": ["./scripts/ops/opsctl.sh", "infrastructure-autofix", "--apply", "--json"],
+        "timeout_seconds": 180,
+        "success_condition": "infrastructure_autofix_bot_latest.overall_status is ready or no critical runtime gate depends on it",
+    },
+    "infrastructure_autofix_bot_needs_work": {
+        "owner": "infrastructure_autofix_bot",
+        "command": ["./scripts/ops/opsctl.sh", "infrastructure-autofix", "--apply", "--json"],
+        "timeout_seconds": 180,
+        "success_condition": "infrastructure_autofix_bot findings remain advisory while hot-path readiness is green",
+    },
+    "live_runtime_separation_control_needs_work": {
+        "owner": "live_runtime_separation_control",
+        "command": ["./scripts/ops/opsctl.sh", "live-runtime-separation", "--json"],
+        "timeout_seconds": 90,
+        "success_condition": "live runtime separation is ready or live execution is locked/read-only",
+    },
+    "rolling_restart_controller_blocked": {
+        "owner": "rolling_restart_controller",
+        "command": ["./scripts/ops/opsctl.sh", "rolling-restart", "--json"],
+        "timeout_seconds": 90,
+        "success_condition": "restart is not due, or due restart is advisory while critical lanes are healthy",
+    },
+    "blackstart_recovery_needs_work": {
+        "owner": "blackstart_recovery",
+        "command": ["./scripts/ops/opsctl.sh", "blackstart-recovery", "--json"],
+        "timeout_seconds": 90,
+        "success_condition": "blackstart recovery is ready or degraded only by non-critical drill freshness",
+    },
+    "coordination_state_control_blocked": {
+        "owner": "coordination_state_control",
+        "command": ["./scripts/ops/opsctl.sh", "coordination-status", "--json"],
+        "timeout_seconds": 90,
+        "success_condition": "coordination_state_latest is ready or blocks are advisory while global/live execution gates are clear",
+    },
+    "artifact_freshness_slo_blocked": {
+        "owner": "artifact_freshness_slo",
+        "command": ["./scripts/ops/opsctl.sh", "artifact-freshness-slo", "--json"],
+        "timeout_seconds": 90,
+        "success_condition": "required stale artifacts are not hot-path blockers while health-fast, watchdog, and storage remain green",
+    },
+    "runtime_snapshot_cache_control_needs_work": {
+        "owner": "runtime_snapshot_cache_control",
+        "command": ["./scripts/ops/opsctl.sh", "runtime-snapshot-cache", "--json"],
+        "timeout_seconds": 90,
+        "success_condition": "runtime snapshot cache is ready or remains advisory while collection/paper runtime is healthy",
+    },
+    "chaos_drill_coordinator_needs_work": {
+        "owner": "chaos_drill_coordinator",
+        "command": ["./scripts/ops/opsctl.sh", "chaos-drills", "--json"],
+        "timeout_seconds": 90,
+        "success_condition": "overdue drills stay advisory and do not block the current guarded paper/data path",
+    },
+}
+
+
+_GREEN_SOAK_MANAGED_ATTENTION_REASONS = {
+    "promotion_not_ready": "promotion_deferred_while_paper_soak_is_green",
+    "bot_quality_autopilot_blocked": "bot_quality_retrain_queue_deferred_while_training_budget_is_closed",
+    "runtime_snapshot_cache_control_needs_work": "snapshot_cache_upstream_training_freshness_deferred_while_snapshot_is_ready",
+    "roster_resilience_planner_needs_work": "roster_coverage_topoff_deferred_while_paper_soak_is_green",
+    "chaos_drill_coordinator_blocked": "disruptive_recovery_drills_deferred_while_paper_soak_is_green",
+    "chaos_drill_coordinator_needs_work": "disruptive_recovery_drills_deferred_while_paper_soak_is_green",
+}
+
+
+def _safe_int(raw: Any, default: int = 0) -> int:
+    try:
+        return int(float(raw))
+    except Exception:
+        return int(default)
+
+
+def _dashboard_soak_context(project_root: Path) -> dict[str, Any]:
+    health = project_root / "governance" / "health"
+    soak = _load_json(health / "unattended_soak_readiness_latest.json")
+    paper_guard = _load_json(health / "runtime_paper_regression_guard_latest.json")
+    health_fast = _load_json(health / "health_fast_latest.json")
+    soak_status = str(soak.get("overall_status") or soak.get("status") or "").strip().lower()
+    soak_grade = str(soak.get("overall_grade") or soak.get("grade") or "").strip().upper()
+    soak_ready = bool(soak.get("safe_to_leave_unattended", False)) and soak_status in {"ready", "ok", "healthy"}
+    if soak_grade and soak_grade not in {"A", "A+"}:
+        soak_ready = False
+    paper_status = str(paper_guard.get("overall_status") or paper_guard.get("status") or "").strip().lower()
+    paper_clean = (
+        bool(paper_guard.get("ok", False))
+        and paper_status in {"ready", "ok", "healthy"}
+        and _safe_int(paper_guard.get("failed_guard_count"), 0) <= 0
+        and not (paper_guard.get("failed_guards") if isinstance(paper_guard.get("failed_guards"), list) else [])
+        and bool(paper_guard.get("paper_armed", False))
+        and not bool(paper_guard.get("paper_blocked", False))
     )
-    if any(any(marker in item for marker in degraded_markers) for item in attention):
+    health_status = str(health_fast.get("overall_status") or health_fast.get("status") or "").strip().lower()
+    return {
+        "enabled": bool(soak_ready and paper_clean and health_status in {"ready", "ok", "healthy"}),
+        "soak_ready": bool(soak_ready),
+        "soak_status": soak_status,
+        "soak_grade": soak_grade,
+        "paper_guard_clean": bool(paper_clean),
+        "paper_guard_status": paper_status,
+        "paper_stage": str(paper_guard.get("paper_stage") or ""),
+        "paper_armed": bool(paper_guard.get("paper_armed", False)),
+        "paper_blocked": bool(paper_guard.get("paper_blocked", False)),
+        "health_fast_status": health_status,
+    }
+
+
+def _snapshot_cache_ready_for_soak(artifacts: Dict[str, Dict[str, Any]]) -> bool:
+    summary = artifacts.get("runtime_snapshot_cache_control", {}).get("summary", {})
+    cache = summary.get("cache_health") if isinstance(summary.get("cache_health"), dict) else {}
+    if bool(summary.get("snapshot_ready", False)):
+        return True
+    return bool(cache.get("snapshot_ready", False)) and bool(cache.get("snapshot_exists", True))
+
+
+def _roster_resilience_ready_for_soak(artifacts: Dict[str, Dict[str, Any]]) -> bool:
+    summary = artifacts.get("roster_resilience_planner", {}).get("summary", {})
+    contract = summary.get("a_plus_contract") if isinstance(summary.get("a_plus_contract"), dict) else {}
+    bench = summary.get("bench") if isinstance(summary.get("bench"), dict) else {}
+    active_supportable = _safe_int(
+        contract.get("active_supportable_bots"),
+        _safe_int(bench.get("active_supportable_bots"), 0),
+    )
+    active_target = _safe_int(contract.get("active_supportable_target"), 0)
+    bench_depth = _safe_int(contract.get("bench_depth"), _safe_int(bench.get("bench_depth"), 0))
+    bench_target = _safe_int(contract.get("bench_depth_target"), 0)
+    return bool(active_supportable >= active_target and bench_depth >= bench_target)
+
+
+def _attention_managed_by_green_soak(
+    item: str,
+    artifacts: Dict[str, Dict[str, Any]],
+    context: dict[str, Any],
+) -> str:
+    if not bool(context.get("enabled", False)):
+        return ""
+    reason = _GREEN_SOAK_MANAGED_ATTENTION_REASONS.get(str(item or "").strip())
+    if not reason:
+        return ""
+    if item == "runtime_snapshot_cache_control_needs_work" and not _snapshot_cache_ready_for_soak(artifacts):
+        return ""
+    if item == "roster_resilience_planner_needs_work" and not _roster_resilience_ready_for_soak(artifacts):
+        return ""
+    return reason
+
+
+def _split_green_soak_managed_attention(
+    attention: list[str],
+    artifacts: Dict[str, Dict[str, Any]],
+    context: dict[str, Any],
+) -> tuple[list[str], list[dict[str, Any]]]:
+    active: list[str] = []
+    managed: list[dict[str, Any]] = []
+    for item in attention:
+        reason = _attention_managed_by_green_soak(item, artifacts, context)
+        if not reason:
+            active.append(item)
+            continue
+        managed.append(
+            {
+                "attention": item,
+                "managed_control_state": reason,
+                "managed_by": "unattended_soak_readiness",
+                "soak_ready": bool(context.get("soak_ready", False)),
+                "paper_guard_clean": bool(context.get("paper_guard_clean", False)),
+                "paper_stage": str(context.get("paper_stage") or ""),
+                "paper_armed": bool(context.get("paper_armed", False)),
+                "action_policy": "keep_visible_but_do_not_degrade_dashboard_until_soak_or_paper_guard_fails",
+                "when_to_unmanage": (
+                    "surface as dashboard attention if unattended soak is no longer ready, paper regression guards fail, "
+                    "health-fast is not ready, or the item becomes a safety/storage/auth/live-paper blocker."
+                ),
+            }
+        )
+    return active, managed
+
+
+def _attention_tier(item: str) -> str:
+    text = str(item or "").strip()
+    if not text:
+        return "advisory"
+    if text in _ADVISORY_ATTENTION:
+        return "advisory"
+    if text in _CRITICAL_ATTENTION or text.endswith("_missing"):
+        return "critical"
+    if text in _DEGRADED_ATTENTION:
+        return "degraded"
+    if text.endswith("_stale") or text.endswith("_not_ok"):
+        return "degraded"
+    if text.endswith("_blocked"):
+        return "degraded"
+    return "watch"
+
+
+def _attention_tiers(attention: list[str]) -> dict[str, list[str]]:
+    tiers: dict[str, list[str]] = {"critical": [], "degraded": [], "watch": [], "advisory": []}
+    for item in attention:
+        tiers.setdefault(_attention_tier(item), []).append(item)
+    return tiers
+
+
+def _severity_from_attention(attention: list[str]) -> int:
+    tiers = _attention_tiers(attention)
+    if tiers["critical"]:
+        return 3
+    if tiers["degraded"]:
         return 2
-    if attention:
+    if tiers["watch"]:
         return 1
     return 0
+
+
+def _remediation_actions(attention: list[str]) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in attention:
+        key = str(item or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        action = dict(_ATTENTION_OWNER_ACTIONS.get(key) or {})
+        if not action:
+            action = {
+                "owner": "operator_review",
+                "command": ["./scripts/ops/opsctl.sh", "dashboard", "--json"],
+                "timeout_seconds": 60,
+                "success_condition": "owner mapping required before this item can block operational status",
+            }
+        action["attention"] = key
+        action["tier"] = _attention_tier(key)
+        actions.append(action)
+    return actions
 
 
 def _registry_summary(project_root: Path) -> Dict[str, Any]:
@@ -1302,7 +1623,42 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             attention.append(f"{name}_not_ok")
             severity = max(severity, 2)
 
+    hdf5_artifact = artifacts.get("hdf5_training_cache") if isinstance(artifacts.get("hdf5_training_cache"), dict) else {}
+    hdf5_summary = hdf5_artifact.get("summary") if isinstance(hdf5_artifact.get("summary"), dict) else {}
+    if hdf5_artifact.get("exists") and (
+        str(hdf5_summary.get("overall_status") or "") != "ready"
+        or not bool(hdf5_summary.get("fresh", False))
+        or not bool(hdf5_summary.get("schema_ok", False))
+    ):
+        attention.append("hdf5_training_cache_not_fresh")
+        severity = max(severity, 1)
+
     health_inputs = artifacts.get("health_gates", {}).get("summary", {}).get("inputs", {})
+    storage_backpressure_override = (
+        health_inputs.get("backpressure_storage_control_override")
+        if isinstance(health_inputs.get("backpressure_storage_control_override"), dict)
+        else {}
+    )
+    queue_override_clear = bool(
+        storage_backpressure_override.get("active", False)
+        and not bool(storage_backpressure_override.get("overload", False))
+        and not bool(storage_backpressure_override.get("line_pressure", False))
+        and not bool(storage_backpressure_override.get("file_pressure", False))
+        and not bool(storage_backpressure_override.get("age_pressure", False))
+    )
+    if queue_override_clear and isinstance(artifacts.get("ingestion_priority_queue"), dict):
+        queue_artifact = artifacts["ingestion_priority_queue"]
+        queue_summary = queue_artifact.get("summary") if isinstance(queue_artifact.get("summary"), dict) else {}
+        queue_artifact["summary"] = {
+            **queue_summary,
+            "raw_queue_depth": int(queue_summary.get("queue_depth", 0) or 0),
+            "raw_core_pending_lines": int(queue_summary.get("core_pending_lines", 0) or 0),
+            "queue_depth": 0,
+            "core_pending_lines": int(storage_backpressure_override.get("pending_lines", 0) or 0),
+            "effective_source": str(storage_backpressure_override.get("source") or "storage_backpressure_override"),
+            "raw_queue_suppressed_by_storage_overlay": True,
+        }
+        artifacts["ingestion_priority_queue"] = queue_artifact
     if artifacts.get("health_gates", {}).get("summary", {}).get("hard_gate_triggered"):
         attention.append("health_gates_hard_gate_triggered")
         severity = max(severity, 2)
@@ -1341,10 +1697,15 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         attention.append("ingestion_storage_governor_critical")
         severity = max(severity, 1)
     drain_summary = artifacts.get("external_backlog_drain", {}).get("summary", {})
+    drain_material = bool(
+        drain_summary.get("recommended_now", False)
+        or drain_summary.get("material_drain_recommended", False)
+        or int(drain_summary.get("aged_candidate_files", 0) or 0) > 0
+    )
     if bool(drain_summary.get("recommended_now", False)):
         attention.append("external_backlog_drain_recommended")
         severity = max(severity, 1)
-    if bool(drain_summary.get("writer_busy", False)):
+    if bool(drain_summary.get("writer_busy", False)) and drain_material:
         attention.append("external_backlog_drain_writer_busy")
         severity = max(severity, 1)
     follow_through_status = str(drain_summary.get("follow_through_status", "") or "")
@@ -1354,7 +1715,10 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         severity = max(severity, 1)
     retry_summary = artifacts.get("external_backlog_retry_bot", {}).get("summary", {})
     retry_status = str(retry_summary.get("overall_status", "") or "")
-    if retry_status in {"blocked", "apply_failed", "applied_with_followups"}:
+    retry_has_material_followup = bool(retry_summary.get("backlog_needed", False)) and drain_material
+    if retry_status in {"blocked", "apply_failed"} or (
+        retry_status == "applied_with_followups" and retry_has_material_followup
+    ):
         attention.append("external_backlog_retry_bot_followups")
         severity = max(severity, 1)
     memory_summary = artifacts.get("memory_efficiency_control", {}).get("summary", {})
@@ -1407,6 +1771,7 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         "artifact_freshness_slo",
         "runtime_snapshot_cache_control",
         "remote_alert_control",
+        "coordination_state_control",
         "storage_quota_guard",
         "release_freeze_guard",
         "roster_resilience_planner",
@@ -1455,6 +1820,15 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
                 }
                 artifacts["session_ready"] = session_ready_artifact
 
+    raw_attention = list(attention)
+    soak_management_context = _dashboard_soak_context(project_root)
+    attention, managed_controls = _split_green_soak_managed_attention(
+        attention,
+        artifacts,
+        soak_management_context,
+    )
+    attention_tiers = _attention_tiers(attention)
+    remediation_actions = _remediation_actions(attention)
     severity = _severity_from_attention(attention)
 
     status_map = {
@@ -1470,6 +1844,7 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     killswitch_summary = artifacts.get("global_killswitch", {}).get("summary", {})
     training_summary = artifacts.get("training_report", {}).get("summary", {})
     training_quality_summary = artifacts.get("training_quality_control", {}).get("summary", {})
+    hdf5_training_summary = artifacts.get("hdf5_training_cache", {}).get("summary", {})
     storage_summary = artifacts.get("ingestion_storage_control", {}).get("summary", {})
     governor_summary = artifacts.get("ingestion_storage_governor", {}).get("summary", {})
     drain_summary = artifacts.get("external_backlog_drain", {}).get("summary", {})
@@ -1489,6 +1864,7 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         "artifact_freshness_slo": artifacts.get("artifact_freshness_slo", {}).get("summary", {}),
         "runtime_snapshot_cache_control": artifacts.get("runtime_snapshot_cache_control", {}).get("summary", {}),
         "remote_alert_control": artifacts.get("remote_alert_control", {}).get("summary", {}),
+        "coordination_state_control": artifacts.get("coordination_state_control", {}).get("summary", {}),
         "storage_quota_guard": artifacts.get("storage_quota_guard", {}).get("summary", {}),
         "release_freeze_guard": artifacts.get("release_freeze_guard", {}).get("summary", {}),
         "roster_resilience_planner": artifacts.get("roster_resilience_planner", {}).get("summary", {}),
@@ -1507,6 +1883,11 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             "status": status_map.get(severity, "unknown"),
             "ok": severity == 0,
             "attention": attention,
+            "raw_attention": raw_attention,
+            "attention_tiers": attention_tiers,
+            "remediation_actions": remediation_actions,
+            "managed_controls": managed_controls,
+            "soak_management_context": soak_management_context,
         },
         "data_quality_score": float(health_summary.get("data_quality_score", 0.0) or 0.0),
         "health_gate_triggered": bool(health_summary.get("hard_gate_triggered", False)),
@@ -1546,6 +1927,7 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             "quality_score": float(training_quality_summary.get("training_quality_score", 0.0) or 0.0),
             "top_priorities": training_quality_summary.get("top_priorities") if isinstance(training_quality_summary.get("top_priorities"), list) else [],
             "active_supportability_score": float(training_quality_summary.get("active_supportability_score", 0.0) or 0.0),
+            "hdf5_cache": hdf5_training_summary if isinstance(hdf5_training_summary, dict) else {},
         },
         "storage": {
             **storage_contract,

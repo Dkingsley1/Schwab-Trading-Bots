@@ -30,7 +30,7 @@ MANUAL_OPERATOR_EXCLUDED_TITLES = {
 }
 LEGACY_RUNBOOK_ALIASES = {
     "live": "Live Feed Views",
-    "refresh": "Live Feed Refreshes",
+    "refresh": "Most Used",
     "health": "Status And Health",
     "retrain": "Retrain",
     "analysis": "Strategy Research",
@@ -99,12 +99,58 @@ def _stable_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+MOST_USED_PINNED_TITLES = [
+    "Keep the Mac awake",
+    "Start the full live stack",
+    "Start the full live stack (fresh supervised restart)",
+    "Stop the stack",
+]
+
+COMMAND_SEARCH_TERMS = [
+    "start",
+    "stop",
+    "paper",
+    "profitability",
+    "soak",
+    "halt",
+    "auth",
+    "schwab",
+    "coinbase",
+    "livefeed",
+    "storage",
+    "dashboard",
+    "runtime",
+    "watchdog",
+    "backlog",
+    "retrain",
+    "reports",
+    "startup",
+    "login",
+    "notification",
+]
+
+
+def _entry_sort_key(section_heading: str, entry: dict[str, Any]) -> tuple[int, str]:
+    title = str(entry.get("title") or "")
+    normalized_title = _normalize_key(title)
+    if _normalize_key(section_heading) == "most used":
+        pinned = {
+            _normalize_key(pinned_title): index
+            for index, pinned_title in enumerate(MOST_USED_PINNED_TITLES)
+        }
+        if normalized_title in pinned:
+            return pinned[normalized_title], normalized_title
+        return len(MOST_USED_PINNED_TITLES), normalized_title
+    return 0, normalized_title
+
+
 def _alphabetized_inventory(sections: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     sorted_sections: list[dict[str, Any]] = []
     for section in sections:
         copied = dict(section)
         entries = [dict(entry) for entry in list(copied.get("entries") or [])]
-        entries.sort(key=lambda entry: _normalize_key(str(entry.get("title") or "")))
+        section_heading = str(copied.get("heading") or "")
+        entries.sort(key=lambda entry: _entry_sort_key(section_heading, entry))
         copied["entries"] = entries
         sorted_sections.append(copied)
     sorted_sections.sort(
@@ -186,6 +232,95 @@ def build_command_contract(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         **contract_base,
         "contract_hash": _stable_hash(contract_base),
     }
+
+
+def _slugify_search_token(raw: str) -> str:
+    token = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(raw or ""))
+    return "-".join(part for part in token.split("-") if part)
+
+
+def _html_attr(raw: str) -> str:
+    return (
+        str(raw or "")
+        .replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _compact_search_text(raw: str, *, max_len: int = 180) -> str:
+    text = " ".join(str(raw or "").split())
+    if max_len > 0 and len(text) > max_len:
+        return text[: max_len - 3].rstrip() + "..."
+    return text
+
+
+def _render_command_search_index(contract: dict[str, Any]) -> list[str]:
+    entries = [dict(entry) for entry in list(contract.get("entries") or [])]
+    lines = [
+        "",
+        f"Search coverage: `{len(entries)}` generated command entries from the current command contract.",
+        "",
+        '<datalist id="command-search-index-options">',
+    ]
+    for entry in entries:
+        section = str(entry.get("section") or "")
+        title = str(entry.get("title") or "")
+        lines.append(f'  <option value="{_html_attr(title)} ({_html_attr(section)})"></option>')
+    lines.extend(
+        [
+            "</datalist>",
+            "",
+            f"<details>",
+            f"<summary>Generated command search index ({len(entries)} commands; rebuilt by commands-hygiene)</summary>",
+            "",
+            "Each row is generated from `governance/health/commands_contract_latest.json`, so added, removed, renamed, or cleaned-up commands change this index automatically.",
+            "",
+        ]
+    )
+    for entry in entries:
+        section = str(entry.get("section") or "").strip()
+        title = str(entry.get("title") or "").strip()
+        fingerprint = str(entry.get("fingerprint") or "").strip()
+        command_lines = [str(line or "") for line in list(entry.get("command_lines") or []) if str(line or "").strip()]
+        opsctl = ", ".join(str(item) for item in list(entry.get("opsctl_subcommands") or []) if str(item or "").strip())
+        scripts = ", ".join(str(item) for item in list(entry.get("script_paths") or []) if str(item or "").strip())
+        first_command = _compact_search_text(command_lines[0] if command_lines else "")
+        lines.append(
+            "- "
+            f"search-entry:{fingerprint} "
+            f"section:`{section}` "
+            f"section_key:`{_slugify_search_token(section)}` "
+            f"title:{title} "
+            f"title_key:`{_slugify_search_token(title)}` "
+            f"opsctl:`{opsctl or 'none'}` "
+            f"scripts:`{scripts or 'none'}` "
+            f"first_command:`{first_command}`"
+        )
+    lines.append("</details>")
+    return lines
+
+
+def _render_pycharm_search_strip(contract: dict[str, Any]) -> list[str]:
+    sections = ordered_unique(
+        _slugify_search_token(str(entry.get("section") or ""))
+        for entry in list(contract.get("entries") or [])
+    )
+    section_terms = [section for section in sections if section][:12]
+    quick_terms = ordered_unique([*COMMAND_SEARCH_TERMS, *section_terms])[:28]
+    return [
+        "**Search Bar**",
+        "",
+        '<input type="search" list="command-search-index-options" placeholder="PyCharm: press Command+F or Ctrl+F, then search any command, section, opsctl alias, or script path" style="width: 100%; padding: 8px;" />',
+        "",
+        "PyCharm note: the field above is a visible search landing strip in Markdown preview; the reliable editor search is `Command+F` on Mac or `Ctrl+F` elsewhere.",
+        "",
+        "Fast search tokens: " + " ".join(f"`{term}`" for term in quick_terms) + ".",
+        "",
+        "Useful compound searches: `paper profitability`, `global halt`, `token refresh`, `livefeed heavy`, `storage prune`, `soak readiness`.",
+        *_render_command_search_index(contract),
+    ]
 
 
 def _parse_commands_sections(text: str) -> tuple[list[str], list[dict[str, Any]]]:
@@ -572,6 +707,14 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Stop the stack",
+                ["./scripts/ops/opsctl.sh stop"],
+                notes=[
+                    "This is the normal supervised stop path. It does not automatically engage an emergency operator halt.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Runtime mode switchboard",
                 ['PY="$(zsh ./scripts/ops/runtime_python.sh)"', 'SWITCHBOARD_MODES="shadow,paper" "$PY" scripts/run_mode_switchboard.py'],
                 notes=[
@@ -654,7 +797,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 project_root,
                 "Broker Truth Step 3: verify broker readiness and lane statuses",
                 [
-                    """/Users/dankingsley/PycharmProjects/schwab_trading_bot/.venv312/bin/python -c "from pathlib import Path; import json; root=Path('/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/health'); broker=json.loads((root/'broker_readiness_latest.json').read_text()); print(f'ready_for_open={broker.get(\\\"ready_for_open\\\")} auth_ok={broker.get(\\\"auth_ok\\\")} token_warning_level={broker.get(\\\"token_warning_level\\\")}'); print('lane,status,mismatch_count,error'); [print(f'{p.name.replace(\\\"broker_truth_\\\", \\\"\\\").replace(\\\"_latest.json\\\", \\\"\\\")},{json.loads(p.read_text()).get(\\\"status\\\", \\\"\\\")},{int(json.loads(p.read_text()).get(\\\"mismatch_count\\\", 0) or 0)},{json.loads(p.read_text()).get(\\\"error\\\") or \\\"\\\"}') for p in sorted(root.glob('broker_truth_*_latest.json')) if 'shared_snapshot' not in p.name]\""""
+                    """/Users/dankingsley/PycharmProjects/schwab_trading_bot/.venv314/bin/python -c "from pathlib import Path; import json; root=Path('/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/health'); broker=json.loads((root/'broker_readiness_latest.json').read_text()); print(f'ready_for_open={broker.get(\\\"ready_for_open\\\")} auth_ok={broker.get(\\\"auth_ok\\\")} token_warning_level={broker.get(\\\"token_warning_level\\\")}'); print('lane,status,mismatch_count,error'); [print(f'{p.name.replace(\\\"broker_truth_\\\", \\\"\\\").replace(\\\"_latest.json\\\", \\\"\\\")},{json.loads(p.read_text()).get(\\\"status\\\", \\\"\\\")},{int(json.loads(p.read_text()).get(\\\"mismatch_count\\\", 0) or 0)},{json.loads(p.read_text()).get(\\\"error\\\") or \\\"\\\"}') for p in sorted(root.glob('broker_truth_*_latest.json')) if 'shared_snapshot' not in p.name]\""""
                 ],
                 notes=[
                     "Healthy target: `ready_for_open=True`, `auth_ok=True`, and all Schwab broker-truth lanes reporting `status=ok` with `mismatch_count=0`.",
@@ -662,18 +805,19 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
-                "Refresh the live loops without reinstalling the stack watchdog",
+                "Refresh the livefeed mirror without restarting sleeves",
                 ["./scripts/ops/opsctl.sh livefeed-refresh"],
                 notes=[
-                    "`livefeed-refresh` is the all-feeds shortcut for the `feed-refresh` health/ensure helper. It keeps already supervised loops running by default and only hard-bounces them when you add `--force-restart`. Use `./scripts/ops/opsctl.sh livefeed-refresh --dry-run` to validate the route without touching processes. If you want a full supervised stack refresh instead, use `./scripts/ops/opsctl.sh start --force-restart`.",
+                    "`livefeed-refresh` is the operator-safe livefeed repair path. It refreshes the supervised local livefeed mirror and validates `governance/health/livefeed_local_latest.json` without restarting sleeve loops. Use `feed-refresh --source ... --stack-refresh` only when you intentionally want loop start/recovery work.",
                 ],
             ),
             _command_entry(
                 project_root,
-                "Stop the stack",
-                ["./scripts/ops/opsctl.sh stop"],
+                "Repair and restart the livefeed mirror",
+                ["./scripts/ops/opsctl.sh livefeed-refresh-guard --apply --force-restart --freshness-minutes 10 --json"],
                 notes=[
-                    "This is the normal supervised stop path. It does not automatically engage an emergency operator halt.",
+                    "Use this when the terminal livefeed starts showing stale output, escaped JSON fragments, token blobs, or mid-line storage payloads.",
+                    "This validates every livefeed refresh route, restarts only the supervised local mirror, and checks `governance/health/livefeed_local_latest.json`; it does not restart sleeve loops or change paper/live execution authority.",
                 ],
             ),
             _command_entry(
@@ -752,6 +896,34 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Run the architecture upgrade scoreboard",
+                ["./scripts/ops/opsctl.sh architecture-upgrade-scoreboard --json"],
+                notes=[
+                    "This scores the current architecture expansion layers against their proof artifacts and separates bounded recovery from true blockers.",
+                    "Associated bots/control layers: `architecture-upgrade-scoreboard`, `system-architecture-contract-graph`, `system-drift-guard`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Run adversarial system drills",
+                ["./scripts/ops/opsctl.sh system-adversarial-drills --run-probes --json"],
+                notes=[
+                    "This runs safe read-only probes and ranks cross-layer weak points without enabling live execution or launching duplicate storage drains.",
+                    "Add `--apply` when you want the drill result artifact written to `governance/drills/system_adversarial_drill_results_latest.json`.",
+                    "Associated bots/control layers: `system-adversarial-drill-autopilot`, `health-fast`, `system-drift-guard`, `master-infra-supervisor`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Run intense system drills",
+                ["./scripts/ops/opsctl.sh system-intense-drills --apply --json"],
+                notes=[
+                    "This executes the existing intense drill suite and writes the improvement plan, using safe improvements only when explicitly requested.",
+                    "Associated bots/control layers: `system-intense-drill-autopilot`, `runtime-throttle`, `incident-closeout`, `live-canary-control`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Apply raw backlog refinement",
                 ["./scripts/ops/opsctl.sh raw-backlog-refiner --apply --json"],
                 notes=[
@@ -797,6 +969,42 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Check capital rotation control",
+                ["./scripts/ops/opsctl.sh capital-rotation-control --json"],
+                notes=[
+                    "This builds the paper-only capital movement map: sleeve inflow/outflow pressure, weak-sleeve outflow, paper tilt recommendations, and live-money promotion blockers.",
+                    "Associated bots/control layers: `capital-rotation-control`, `capital-growth-intelligence`, `capital-growth-awareness`, `paper-profitability-control`, `whole-system-governor`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Check Schwab indicator intelligence",
+                ["./scripts/ops/opsctl.sh schwab-indicator-intelligence --json"],
+                notes=[
+                    "This builds the Schwab thinkorswim study/strategy catalog, classifies each item by market circumstance, and maps advisory usage to sleeve families.",
+                    "Associated bots/control layers: `schwab-indicator-intelligence`, `indicator-bot-common`, `sleeve-strategy-coverage`, `system-self-model`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Check 12-lane system expansion execution",
+                ["./scripts/ops/opsctl.sh system-expansion-execution --json"],
+                notes=[
+                    "This builds the 12-lane expansion execution layer: predictive stability, self-healing routes, stale-surface repair, Schwab feature bridge, collector utility, sleeve safe modes, deficiency repair, hot-path storage, capital simulation, promotion ledger, dependency hardening, and operator memory.",
+                    "Associated bots/control layers: `system-expansion-execution`, `system-architecture-contract-graph`, `schwab-indicator-intelligence`, `capital-rotation-control`, `system-self-model`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Build the paper evidence packet",
+                ["./scripts/ops/opsctl.sh evidence-packet --json"],
+                notes=[
+                    "This builds the repeatable 30/60/90-day paper evidence packet with sleeve attribution, drawdown/income controls, realized-profit conversion, ops stability, and promotion lineage.",
+                    "Associated bots/control layers: `paper-performance`, `sleeve-profitability-dashboard`, `paper-profitability-control`, `income-operating-platform`, `promotion-quality-gate`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Apply memory pressure and multitasking controls",
                 ["./scripts/ops/opsctl.sh memory-pressure-intelligence --apply --json"],
                 notes=[
@@ -824,6 +1032,15 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Check support maintenance yield gate",
+                ["./scripts/ops/opsctl.sh support-maintenance-gate --json"],
+                notes=[
+                    "This reports whether support, report, media, and maintenance jobs should yield to memory pressure and Mac fluidity controls.",
+                    "Associated bots/control layers: `support-maintenance-gate`, `runtime-throttle`, `memory-efficiency-control`, `swap-pressure-governor`.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Watch P-core/E-core load with low overhead",
                 ["sudo /Library/Frameworks/Python.framework/Versions/3.14/bin/asitop --interval 3 --show_cores 1"],
                 notes=[
@@ -841,6 +1058,157 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ],
             ),
             _command_entry(project_root, "Validate documented commands", ["./scripts/ops/opsctl.sh command-validity --json"]),
+        ),
+        _section(
+            "Accounts And Positions",
+            _command_entry(
+                project_root,
+                "Refresh Schwab account positions",
+                ["./scripts/ops/opsctl.sh schwab-account-snapshot-refresh --json"],
+                notes=[
+                    "Refreshes the shared Schwab account snapshot so Roth/cash account holdings, equities, and option legs are visible to the position-study and covered-call layers.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Study all visible account positions",
+                ["./scripts/ops/opsctl.sh account-position-study --json"],
+                notes=[
+                    "Builds `governance/health/account_position_study_latest.json` from all visible Schwab accounts, account aliases, recent sleeve decisions, and covered-call roll context.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Watch covered-call roll windows",
+                ["./scripts/ops/opsctl.sh covered-call-roll-watch --json"],
+                notes=[
+                    "Evaluates held covered calls against account aliases, DTE windows, ITM depth, hard roll targets, and per-underlying preferences before publishing roll alerts.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review account policy context",
+                ["./scripts/ops/opsctl.sh account-policy-context --json"],
+                notes=[
+                    "Summarizes account-level rules and constraints so Roth/cash position logic stays separated from strategy and roll-watch interpretation.",
+                ],
+            ),
+        ),
+        _section(
+            "Event Watches",
+            _command_entry(
+                project_root,
+                "Run the SpaceX/SPCX downside watch once",
+                ["./scripts/ops/opsctl.sh spacex-ipo-watch --json"],
+                notes=[
+                    "Reads the current SPCX/SpaceX quote context and writes the monitoring-only downside artifact without creating an order instruction.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Install the SpaceX/SPCX IPO downside watcher",
+                ["./scripts/ops/opsctl.sh spacex-ipo-watch-install --poll-seconds 30 --symbol SPCX --until-utc 2026-06-13T01:00:00+00:00"],
+                notes=[
+                    "Installs the launchd watcher for first-print, high-watermark, IPO-price, spread, and proxy weakness alerts; policy remains monitoring-only with automatic execution disabled.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Run macro event intelligence",
+                ["./scripts/ops/opsctl.sh macro-event-intelligence --json"],
+                notes=[
+                    "Checks active macro/event bulletins, calendar verification, market relevance, and event-watch context used by the livefeed status snapshot.",
+                ],
+            ),
+        ),
+        _section(
+            "Notifications And Alerts",
+            _command_entry(
+                project_root,
+                "Send a test iMessage notification",
+                ['./scripts/ops/opsctl.sh notify-test --enable-imessage --imessage-recipient "you@example.com" --imessage-min-severity critical'],
+                notes=[
+                    "Use this after changing the recipient or iMessage allowlist; replace the recipient with the phone/email address that receives iMessage.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Start the Mac notification and iMessage watcher",
+                ['./scripts/ops/opsctl.sh notify-start --enable-imessage --imessage-recipient "you@example.com" --imessage-min-severity critical'],
+                notes=[
+                    "Installs and starts the macOS notification watcher with iMessage delivery enabled for critical allowed events.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Install the startup Yes/No bot start prompt",
+                ["./scripts/ops/opsctl.sh startup-start-prompt --install --no-kickstart --no-browser"],
+                notes=[
+                    "Arms a login-time macOS banner plus Yes/No prompt for starting `schwab_trading_bot` through the guarded `opsctl start` path.",
+                    "The startup prompt path suppresses Schwab browser auth, GUI Chrome opens, headless Chrome PDF/render helpers, and timeline auto-PDF work.",
+                    "The default install waits until the next login so it does not unexpectedly prompt or restart the stack right now.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Dry-run the startup Yes/No bot start prompt",
+                ["./scripts/ops/opsctl.sh startup-start-prompt-test --dry-run --delay-seconds 0"],
+                notes=[
+                    "Verifies the startup prompt state artifact without showing the GUI prompt or starting the trading stack.",
+                ],
+            ),
+            _command_entry(project_root, "Stop the notification watcher", ["./scripts/ops/opsctl.sh notify-stop"]),
+            _command_entry(
+                project_root,
+                "Review remote alert control",
+                ["./scripts/ops/opsctl.sh remote-alert-control --json"],
+                notes=[
+                    "Summarizes critical alert backlog, iMessage bridge state, unacked alerts, and remote-notification readiness.",
+                ],
+            ),
+        ),
+        _section(
+            "Paper Trading",
+            _command_entry(
+                project_root,
+                "Review guarded 400 bot paper ramp",
+                ["./scripts/ops/opsctl.sh paper-400-ramp --json"],
+                notes=[
+                    "Shows whether the 400-bot paper ramp is planned, armed, promoted, or blocked before writing runtime overrides.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Arm or promote the guarded 400 bot paper ramp",
+                ["./scripts/ops/opsctl.sh paper-400-ramp --apply --promote-roster --json"],
+                notes=[
+                    "Writes the guarded paper caps and promotes eligible registry rows only when global halt, memory, runtime, and ingestion gates are clean.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Check paper runtime regression guard",
+                ["./scripts/ops/opsctl.sh runtime-paper-regression-guard --json"],
+                notes=[
+                    "Verifies runtime throttle, resource guard, paper-ramp, support niceness, and paper execution pause contracts after a ramp or degradation fix.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply the paper live-data standard",
+                ["./scripts/ops/opsctl.sh paper-live-data-standard --apply --json"],
+                notes=[
+                    "Reapplies the paper-only live-data standard so eligible sleeves can observe real market data while live execution remains blocked.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply paper profitability controls",
+                ["./scripts/ops/opsctl.sh paper-profitability-control --apply --json"],
+                notes=[
+                    "Refreshes the profitability, weak-profile containment, and promotion-readiness controls that feed the paper evidence packet.",
+                ],
+            ),
         ),
         _section(
             "Storage",
@@ -874,38 +1242,27 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(project_root, "Safe-eject the external BOT_LOGS drive", ["./scripts/ops/opsctl.sh storage-safe-eject"]),
         ),
         _section(
-            "Live Feed Refreshes",
-            _command_entry(project_root, "Refresh all live feeds", ["./scripts/ops/opsctl.sh livefeed-refresh"]),
-            _command_entry(project_root, "Refresh Schwab equities, Schwab futures, and FX", ["./scripts/ops/opsctl.sh feed-refresh --source schwab"]),
-            _command_entry(project_root, "Refresh Coinbase spot and Coinbase futures", ["./scripts/ops/opsctl.sh feed-refresh --source coinbase"]),
-            _command_entry(project_root, "Refresh FX only", ["./scripts/ops/opsctl.sh feed-refresh --source fx"]),
-        ),
-        _section(
             "Live Feed Views",
             _command_entry(
                 project_root,
-                "Heavy live feed view across all sections",
-                ["./scripts/ops/opsctl.sh feed --source all --heavy"],
+                "Heavy operator livefeed view",
+                ["./scripts/ops/opsctl.sh feed --source main --heavy --no-heavy-ttl --color --red-actions"],
                 notes=[
-                    "Use this as the primary all-feeds operator view when you want sleeve logs, decision streams, highlighted health states, and infrastructure health artifacts in one window.",
-                    "Heavy views use a red-only highlight by default while preserving `[ALERT]`, `[WATCH]`, `[OK]`, and `[FLOW]` labels; pass `--no-color` only when redirecting clean text to a file.",
+                    "Use this as the primary operator view when you want decisions plus important storage, backpressure, auth, halt, and alert messages in one window.",
+                    "The `--red-actions` palette keeps the feed red-dominant while leaving `BUY` green and `SELL` red.",
                     "If the Mac is running an `air_safe` or `constrained` memory-efficiency profile, the feed automatically trims decision fanout and uses a lower default line budget unless you pass your own `--lines` or `--no-memory-aware`.",
+                    "The feed now probes files before following them; unreadable logs are skipped and counted instead of cutting off the stream.",
+                    "Escaped JSON fragments are hidden by default so byte-tail startup cannot flood the terminal with `stdout_tail`, token, or storage-route payloads; add `--show-json-fragments` only for raw formatter debugging.",
                 ],
             ),
-            _command_entry(project_root, "Heavy infrastructure live feed view", ["./scripts/ops/opsctl.sh feed --source infra --heavy --lines 160"]),
-            _command_entry(project_root, "Heavy main live feed view", ["./scripts/ops/opsctl.sh feed --source main --heavy"]),
-            _command_entry(project_root, "Heavy Schwab live feed view", ["./scripts/ops/opsctl.sh feed --source schwab --heavy"]),
-            _command_entry(project_root, "Heavy Coinbase live feed view", ["./scripts/ops/opsctl.sh feed --source coinbase --heavy"]),
-            _command_entry(project_root, "Heavy futures live feed view", ["./scripts/ops/opsctl.sh feed --source futures --heavy"]),
-            _command_entry(project_root, "Heavy FX live feed view", ["./scripts/ops/opsctl.sh feed --source fx --heavy"]),
-            _command_entry(project_root, "Light live feed tail for all feeds", ["./scripts/ops/opsctl.sh feed --source all --lines 80"]),
-            _command_entry(project_root, "Live feed tail for Schwab, Coinbase, and futures", ["./scripts/ops/opsctl.sh main-tail --lines 80"]),
-            _command_entry(project_root, "Live feed tail for Schwab", ["./scripts/ops/opsctl.sh schwab-tail --lines 80"]),
-            _command_entry(project_root, "Live feed tail for Coinbase", ["./scripts/ops/opsctl.sh coinbase-tail --lines 80"]),
-            _command_entry(project_root, "Live feed tail for all futures sleeves", ["./scripts/ops/opsctl.sh futures-tail --lines 80"]),
-            _command_entry(project_root, "Live feed tail for Schwab futures", ["./scripts/ops/opsctl.sh schwab-futures-tail --lines 80"]),
-            _command_entry(project_root, "Live feed tail for Coinbase futures", ["./scripts/ops/opsctl.sh coinbase-futures-tail --lines 80"]),
-            _command_entry(project_root, "Live feed tail for FX", ["./scripts/ops/opsctl.sh fx-tail --lines 80"]),
+            _command_entry(
+                project_root,
+                "Heavy live feed with file diagnostics",
+                ["./scripts/ops/opsctl.sh feed --source main --heavy --show-files --no-heavy-ttl --color --red-actions"],
+                notes=[
+                    "Use this when the feed looks sparse or cut off; it prints followed files plus any skipped unreadable file paths and keeps the operator tab open without the pressure-relief heavy-feed TTL.",
+                ],
+            ),
         ),
         _section(
             "Schwab Auth",
@@ -983,6 +1340,14 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Review system plumbing control",
+                ["./scripts/ops/opsctl.sh system-plumbing-control --json"],
+                notes=[
+                    "Publishes the shared queue, storage, writer, data-plane, and paper/live boundary contract used to diagnose present degradation.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Review Codex project guardrails",
                 ["./scripts/ops/opsctl.sh codex-project-guard --staged --json"],
                 notes=[
@@ -1010,10 +1375,27 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Apply system architecture hardening",
+                ["./scripts/ops/opsctl.sh system-architecture-hardening --apply --json"],
+                notes=[
+                    "Writes the cross-layer architecture hardening artifact and read-only guardrails for queue, storage, runtime, paper/live, and reporting contracts.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Master infrastructure supervisor",
                 ["./scripts/ops/opsctl.sh master-infra-supervisor --json"],
                 notes=[
                     "This parent check watches child infrastructure bots, command routes, storage health, report jobs, and One Numbers original-start coverage as one dependency graph.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Adapt infrabots to current system needs",
+                ["./scripts/ops/opsctl.sh infrabot-adaptive-governor --apply --json"],
+                notes=[
+                    "This publishes the shared needs contract, capability registry, adaptive policy router, safety guard, and feedback ledger used to keep infrabots aligned with current degradation.",
+                    "The apply form writes coordination contracts only; it does not launch repair fanout, retraining, live execution, or competing SQLite writers.",
                 ],
             ),
             _command_entry(
@@ -1078,6 +1460,54 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/ops/opsctl.sh golden-replay-regression --json"],
                 notes=[
                     "This compares deterministic replay against the golden replay pack or the seeded replay hash fallback.",
+                ],
+            ),
+        ),
+        _section(
+            "Strategy Research",
+            _command_entry(
+                project_root,
+                "Review the 10-layer deep quant advisory upgrade",
+                ["./scripts/ops/opsctl.sh deep-quant-layer-upgrade --json"],
+                notes=[
+                    "Installs and reports the 10 deeper quant layers: residual alpha, meta-labeling, conformal abstention, execution-cost decay, crowding/cross-impact, changepoints, systematic flow, robust optimization, special situations, and research governance.",
+                    "The layer pack is collection-only and advisory-only; paper, live, allocation, execution, and training intake stay blocked until promotion gates clear.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Apply the 10-layer dual-mode library efficiency upgrade",
+                ["./scripts/ops/opsctl.sh library-efficiency-deepening --apply --json"],
+                notes=[
+                    "Installs the 10 library-efficiency layers across both MLX and non-MLX libraries: routing, columnar data, MLX inference, incremental feature cache, pricing kernels, econometrics, tabular alpha, graph impact, path signatures, and benchmark-cost governance.",
+                    "The contracts apply to both paper rehearsal and live advisory parity; paper/live execution authority remains disabled until runtime, promotion, and broker live gates clear.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Push advancement until the safety guard pauses it",
+                ["./scripts/ops/opsctl.sh safety-bounded-advancement-frontier --apply --json"],
+                notes=[
+                    "Applies the next 10 safe control-plane frontier stages: route assimilation, freshness DAG, cache ownership, cost ledger, paper/live parity witness, incremental feature reuse, pricing reuse, cross-impact graphing, route retirement, and soak/pause guard.",
+                    "The command intentionally stops at advisory/control-plane scope when promotion evidence, active training, or live authority gates say the system needs a soak period.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Push the 12-domain whole-system frontier",
+                ["./scripts/ops/opsctl.sh whole-system-safety-frontier --apply --json"],
+                notes=[
+                    "Applies the safe control-plane frontier for promotion evidence, paper/live fill truth, feature cache, storage/backpressure, livefeed reliability, account positions, risk exposure graph, benchmark cost, model retirement court, A+ cockpit, notifications, and disaster-recovery replay.",
+                    "This command stops before execution authority, allocation authority, training intake, new high-volume collectors, heavy replay, or automatic model deletion.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Push system efficiency until the safety guard pauses it",
+                ["./scripts/ops/opsctl.sh system-efficiency-frontier --apply --json"],
+                notes=[
+                    "Applies the safe system-efficiency frontier for backend routing, runtime and memory caps, storage/write pressure, feature caching, livefeed trimming, training scheduling, report rendering, alert noise, paper execution truth, model route lifecycle, replay proof, and operator command flow.",
+                    "This command is low-churn control-plane work only; it stops before execution authority, allocation authority, training intake, new high-volume collectors, heavy replay, destructive cleanup, or automatic model deletion.",
                 ],
             ),
         ),
@@ -1508,6 +1938,8 @@ def render_commands_markdown(project_root: Path = PROJECT_ROOT) -> str:
         "- no simulate variants are listed",
         "- no duplicate restart commands are listed when a broader command already covers them",
         "- passive automation installers and expansion-pack reference commands are kept out of the operator-facing list",
+        "",
+        *_render_pycharm_search_strip(contract),
     ]
     parts = ["\n".join(preamble)]
     for section in _alphabetized_inventory(_manual_operator_inventory(project_root)):
@@ -1587,7 +2019,7 @@ resolve_section() {
   local raw="${1:-}"
   case "$raw" in
     live) print -r -- "Live Feed Views" ;;
-    refresh) print -r -- "Live Feed Refreshes" ;;
+    refresh) print -r -- "Most Used" ;;
     health) print -r -- "Status And Health" ;;
     retrain) print -r -- "Retrain" ;;
     analysis) print -r -- "Strategy Research" ;;

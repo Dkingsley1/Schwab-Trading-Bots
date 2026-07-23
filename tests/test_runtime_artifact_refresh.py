@@ -67,6 +67,57 @@ def test_runtime_artifact_refresh_is_degraded_when_outputs_exist_but_one_is_bloc
     assert payload["error_step_count"] == 0
 
 
+def test_runtime_artifact_refresh_treats_managed_production_locks_as_ready(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    champion = tmp_path / "governance" / "champion_challenger"
+    specs = [
+        {"name": "live_money_readiness_contract", "payload_path": health / "live_money_readiness_contract_latest.json", "cmd": ["live-money"]},
+        {"name": "promotion_packet_builder", "payload_path": champion / "promotion_packet_latest.json", "cmd": ["packet"]},
+        {"name": "retrain_schema_compatibility", "payload_path": health / "retrain_schema_compatibility_latest.json", "cmd": ["schema"]},
+    ]
+
+    def runner(spec: dict, project_root: Path) -> dict:
+        path = Path(spec["payload_path"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if spec["name"] == "live_money_readiness_contract":
+            payload = {
+                "ok": False,
+                "overall_status": "blocked",
+                "live_money_locked": True,
+                "blocking_reasons": ["target_window_not_complete"],
+                "grade_summary": {"below_floor_sections": [], "not_ready_sections": []},
+            }
+            rc = 2
+        elif spec["name"] == "promotion_packet_builder":
+            payload = {
+                "ok": False,
+                "promotion_scope": {"target_count": 0, "trained_bot_ids": [], "failure_count": 0},
+                "committee_packet_seed_ready": True,
+                "replayability_contract": {"hash_bundle_complete": True, "exact_replay_ready": True},
+                "gate_results": {
+                    "training_success_confirmed": True,
+                    "feature_store_manifest_strict_ok": True,
+                },
+            }
+            rc = 2
+        else:
+            payload = {
+                "ok": True,
+                "overall_status": "degraded",
+                "compatibility_seed_ready": True,
+                "failed_checks": [],
+                "drifted_fields": [],
+            }
+            rc = 0
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return {"cmd": list(spec["cmd"]), "rc": rc, "payload": payload, "stdout_tail": "", "stderr_tail": "", "duration_ms": 1.0}
+
+    payload = runtime_artifact_refresh.build_payload(tmp_path, specs=specs, runner=runner)
+
+    assert payload["overall_status"] == "ready"
+    assert [row["status"] for row in payload["steps"]] == ["ready_locked", "ready_seeded", "ready_seeded"]
+
+
 def test_runtime_artifact_refresh_step_specs_include_training_storage_and_hardening_contracts(tmp_path: Path) -> None:
     specs = runtime_artifact_refresh._step_specs(tmp_path)
     names = [row["name"] for row in specs]
@@ -80,6 +131,13 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert "session_ready" in names
     assert "storage_failback_sync" in names
     assert "promotion_autopilot_packet" in names
+    assert "source_verification" in names
+    assert "paper_profitability_control" in names
+    assert "paper_replay_drill" in names
+    assert "paper_execution_truth" in names
+    assert "retrain_schema_compatibility" in names
+    assert "promotion_packet_builder" in names
+    assert "promotion_quality_gate" in names
     assert "canary_rollout_guard" in names
     assert "ingestion_storage_control" in names
     assert "storage_resilience_control" in names
@@ -88,7 +146,10 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert "incident_closeout_autopilot" in names
     assert "live_canary_control" in names
     assert "live_readiness_smoke" in names
+    assert "live_money_readiness_contract" in names
     assert "runtime_throttle_control" in names
+    assert "regime_control_plane" in names
+    assert "market_cycle_extraction_engine" in names
     assert "chrome_headless_guard" in names
     assert "multiple_testing_guard" in names
 

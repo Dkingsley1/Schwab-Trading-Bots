@@ -13,8 +13,25 @@ def _isolate_live_profitability_controls(monkeypatch) -> None:
     monkeypatch.setattr(loop, "_profit_realization_contract_snapshot", lambda: {})
     monkeypatch.setattr(loop, "_profit_rotation_contract_snapshot", lambda: {})
     monkeypatch.setattr(loop, "_profitability_global_policy", lambda: {})
+    monkeypatch.setattr(loop, "_raw_profitability_a_recovery_contract", lambda: {})
     monkeypatch.setattr(loop, "_profile_symbol_drag_penalty_norm", lambda profile, symbol: 0.0)
     monkeypatch.setattr(loop, "_profile_drag_snapshot", lambda profile: {"active": False, "drag_norm": 0.0})
+
+
+def test_coinbase_paper_mirror_env_prefers_coinbase_specific_allowlist(monkeypatch) -> None:
+    sentinel = "__paper_profile_disabled_by_profitability_quarantine__"
+    monkeypatch.setenv("TOP_BOT_PAPER_TRADING_PROFILES", sentinel)
+    monkeypatch.setenv("TOP_BOT_PAPER_TRADING_TOP_N", "700")
+    monkeypatch.setenv("COINBASE_TOP_BOT_PAPER_TRADING_PROFILES", "default")
+    monkeypatch.setenv("COINBASE_TOP_BOT_PAPER_TRADING_TOP_N", "50")
+    monkeypatch.setenv("COINBASE_FUTURES_TOP_BOT_PAPER_TRADING_PROFILES", "crypto_futures")
+    monkeypatch.setenv("COINBASE_FUTURES_TOP_BOT_PAPER_TRADING_TOP_N", "30")
+
+    assert loop._paper_mirror_env_value_for_broker("coinbase", "default", "PROFILES") == "default"
+    assert loop._paper_mirror_env_value_for_broker("coinbase", "default", "TOP_N") == "50"
+    assert loop._paper_mirror_env_value_for_broker("coinbase", "crypto_futures", "PROFILES") == "crypto_futures"
+    assert loop._paper_mirror_env_value_for_broker("coinbase", "crypto_futures", "TOP_N") == "30"
+    assert loop._paper_mirror_env_value_for_broker("schwab", "default", "PROFILES") == sentinel
 
 
 def test_advanced_sleeve_logic_enabled_defaults_true_and_can_disable(monkeypatch) -> None:
@@ -475,6 +492,65 @@ def test_core_overlay_promotes_profit_harvest_trim(monkeypatch) -> None:
     assert out_features["paper_profit_harvest_trim_fraction_norm"] == 0.40
 
 
+def test_core_overlay_raw_d_recovery_raises_harvest_urgency(monkeypatch) -> None:
+    monkeypatch.setenv("SHADOW_PROFILE", "default")
+    monkeypatch.setattr(loop, "_profile_symbol_drag_penalty_norm", lambda profile, symbol: 0.0)
+    monkeypatch.setattr(loop, "_profile_drag_snapshot", lambda profile: {"active": False, "drag_norm": 0.0})
+    monkeypatch.setattr(
+        loop,
+        "_profitability_global_policy",
+        lambda: {
+            "apply_profit_realization": True,
+            "apply_raw_d_recovery_ladder": True,
+            "force_profit_harvest_on_raw_d": False,
+            "do_not_force_trades_for_raw_recovery": True,
+            "block_widening_while_raw_d": True,
+            "raw_d_recovery_pressure_norm": 1.0,
+            "raw_d_recovery_trim_boost_norm": 0.12,
+        },
+    )
+    monkeypatch.setattr(
+        loop,
+        "_profile_profit_harvest_control",
+        lambda profile: {
+            "active": True,
+            "harvest_pressure_norm": 0.55,
+            "unrealized_profit_share_norm": 0.80,
+            "recommended_trim_fraction_norm": 0.30,
+            "block_new_adds_when_unrealized_share_above_norm": 0.95,
+            "promote_trim_when_exit_quality_above_norm": 0.58,
+            "promote_trim_when_harvest_pressure_above_norm": 0.60,
+            "force_trim_when_harvest_pressure_above_norm": 0.74,
+            "force_trim_when_unrealized_share_above_norm": 0.94,
+        },
+    )
+
+    action, score, reasons, out_features = loop._apply_core_sleeve_strategy_overlay(
+        symbol="MSFT",
+        action="HOLD",
+        score=0.51,
+        threshold=0.55,
+        reasons=["base_hold"],
+        features={
+            "market_micro_tradeability_score_norm": 0.86,
+            "execution_fitness_norm": 0.86,
+            "news_source_quality_norm": 0.86,
+            "calendar_event_proximity_norm": 0.72,
+            "core_cross_asset_confirmation_norm": 0.76,
+        },
+        rows=[],
+        profile="default",
+    )
+
+    assert action == "SELL"
+    assert any("raw_d_recovery_pressure" in reason for reason in reasons)
+    assert not any("paper_profit_harvest_force_trim" in reason for reason in reasons)
+    assert out_features["paper_raw_d_recovery_active_norm"] == 1.0
+    assert out_features["paper_raw_d_recovery_no_force_norm"] == 1.0
+    assert out_features["paper_raw_d_recovery_pressure_norm"] == 1.0
+    assert out_features["paper_profit_harvest_trim_fraction_norm"] > 0.30
+
+
 def test_core_overlay_uses_daily_sleeve_harvest_goal_to_block_adds(monkeypatch) -> None:
     monkeypatch.setenv("SHADOW_PROFILE", "crypto_futures")
     monkeypatch.setattr(loop, "_profile_symbol_drag_penalty_norm", lambda profile, symbol: 0.0)
@@ -893,6 +969,94 @@ def test_core_overlay_blocks_broad_risk_buy_on_live_macro_headwind(monkeypatch) 
     assert action == "HOLD"
     assert score <= 0.55
     assert any("core_live_macro_headwind" in reason for reason in reasons)
+
+
+def test_core_overlay_allows_coinbase_paper_probation_to_retest_weak_profile(monkeypatch) -> None:
+    monkeypatch.setenv("SHADOW_PROFILE", "default")
+    monkeypatch.setattr(
+        loop,
+        "_profile_profitability_control",
+        lambda profile: {
+            "active": True,
+            "action": "quarantine_new_entries",
+            "block_new_entries": True,
+            "new_entry_cap": 0,
+            "thresholds": {
+                "min_source_quality_norm": 0.70,
+                "min_tradeability_norm": 0.70,
+                "min_execution_fitness_norm": 0.70,
+                "min_cross_asset_confirmation_norm": 0.56,
+                "min_event_proximity_norm": 0.70,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        loop,
+        "_raw_profitability_a_recovery_contract",
+        lambda: {
+            "active": True,
+            "runtime_enforcement": {
+                "block_new_entries_on_weak_profiles": True,
+                "min_quality_gate_norm": 0.72,
+                "min_tradeability_norm": 0.58,
+                "min_execution_fitness_norm": 0.58,
+                "min_cross_asset_confirmation_norm": 0.56,
+                "max_overlap_pressure_norm": 0.58,
+            },
+        },
+    )
+    features = {
+        "market_micro_tradeability_score_norm": 0.82,
+        "execution_fitness_norm": 0.83,
+        "news_source_quality_norm": 0.86,
+        "calendar_event_proximity_norm": 0.80,
+        "cross_asset_confirmation_norm": 0.84,
+        "core_cross_asset_confirmation_norm": 0.84,
+        "lead_lag_confirmation_norm": 0.90,
+        "lead_lag_signal_signed": 0.90,
+        "flow_direction_signed": 0.90,
+        "flow_conviction_norm": 0.90,
+        "ctx_SPY_pct_from_close": 0.012,
+        "ctx_QQQ_pct_from_close": 0.012,
+        "ctx_IWM_pct_from_close": 0.010,
+        "cross_bot_conflict_norm": 0.02,
+        "core_portfolio_overlap_pressure_norm": 0.12,
+    }
+
+    blocked_action, _, blocked_reasons, _ = loop._apply_core_sleeve_strategy_overlay(
+        symbol="ETH-USD",
+        action="BUY",
+        score=0.76,
+        threshold=0.55,
+        reasons=["base_buy"],
+        features=features,
+        rows=[],
+        profile="default",
+    )
+
+    assert blocked_action == "HOLD"
+    assert any("weak_profile=default" in reason for reason in blocked_reasons)
+
+    monkeypatch.setenv("SHADOW_BROKER", "coinbase")
+    monkeypatch.setenv("TOP_BOT_PAPER_TRADING_ENABLED", "1")
+    monkeypatch.setenv("COINBASE_PAPER_PROBATION_ENABLED", "1")
+    monkeypatch.setenv("COINBASE_PAPER_PROBATIONARY_PROFILES", "default,crypto_futures")
+
+    action, score, reasons, _ = loop._apply_core_sleeve_strategy_overlay(
+        symbol="ETH-USD",
+        action="BUY",
+        score=0.76,
+        threshold=0.55,
+        reasons=["base_buy"],
+        features=features,
+        rows=[],
+        profile="default",
+    )
+
+    assert action == "BUY"
+    assert score == pytest.approx(0.76)
+    assert not any("weak_profile=default" in reason for reason in reasons)
+    assert not any("paper_profitability_quarantine" in reason for reason in reasons)
 
 
 def test_day_overlay_blocks_buy_on_live_macro_headwind(monkeypatch) -> None:

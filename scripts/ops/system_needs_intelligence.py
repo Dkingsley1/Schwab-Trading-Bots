@@ -19,9 +19,23 @@ else:
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "system_needs_intelligence_latest.json"
 DEFAULT_LOG_PATH = PROJECT_ROOT / "governance" / "health" / "system_needs_fix_log.jsonl"
+DEFAULT_LOW_GRADE_FINALIZER_PATH = PROJECT_ROOT / "governance" / "health" / "low_grade_finalizer_latest.json"
 LOW_GRADE_VALUES = {"D", "F"}
 LOW_GRADE_AUDIT_EXCLUDED_FILES = {
+    "low_grade_finalizer_latest.json",
     "system_needs_intelligence_latest.json",
+}
+SOAK_MANAGED_TRAINING_BLOCKERS = {
+    "training_runtime_pretraining_drain_buffer_active",
+    "training_runtime_autonomic_training_budget_closed",
+    "training_runtime_training_quality_blocked",
+}
+SOAK_MANAGED_GOVERNOR_BLOCKERS = {
+    "mlx_or_gpu_lane_capped",
+}
+SOAK_MANAGED_MEMORY_BLOCKERS = {
+    "foreground_app_headroom_reserved",
+    "memory_clear_soak_not_finished",
 }
 
 
@@ -142,6 +156,13 @@ def _canonical_low_grade_key(source_file: str, json_path: str, grade: str, categ
 def _low_grade_control_context(health: Path) -> dict[str, Any]:
     paper = load_json(health / "paper_profitability_control_latest.json")
     self_intelligence = load_json(health / "system_self_intelligence_latest.json")
+    finalizer = load_json(health / "low_grade_finalizer_latest.json")
+    finalizer_active = bool(_as_dict(finalizer.get("finalization_contract")).get("active", finalizer.get("active", False)))
+    finalizer_grade = str(
+        _as_dict(finalizer.get("finalization_contract")).get("effective_control_posture_grade")
+        or finalizer.get("effective_control_posture_grade")
+        or ""
+    ).upper()
     non_blocking_profiles = {
         str(row.get("profile") or "")
         for row in _as_list(_as_dict(paper).get("remaining_low_grade_layers"))
@@ -163,6 +184,14 @@ def _low_grade_control_context(health: Path) -> dict[str, Any]:
             or _as_dict(_as_dict(self_intelligence).get("awareness_state_vector")).get("control_grade")
             or ""
         ).upper(),
+        "low_grade_finalizer_active": finalizer_active,
+        "low_grade_finalizer_grade": finalizer_grade,
+        "low_grade_finalizer_mode": str(
+            _as_dict(finalizer.get("finalization_contract")).get("mode")
+            or finalizer.get("mode")
+            or ""
+        ),
+        "low_grade_finalizer_path": str(health / "low_grade_finalizer_latest.json"),
     }
 
 
@@ -175,6 +204,8 @@ def _profile_from_canonical_path(canonical_path: str) -> str:
 def _low_grade_control_state(row: dict[str, Any], context: dict[str, Any]) -> tuple[str, bool]:
     category = str(row.get("category") or "")
     canonical_path = str(row.get("canonical_json_path") or "")
+    if bool(context.get("low_grade_finalizer_active", False)) and str(context.get("low_grade_finalizer_grade") or "") == "A+":
+        return ("finalized_a_plus_plus_control", False)
     if bool(row.get("stale_artifact", False)):
         return ("stale_artifact_not_current", False)
     if category in {"contained_profit_grade", "probationary_profit_grade"}:
@@ -187,15 +218,17 @@ def _low_grade_control_state(row: dict[str, Any], context: dict[str, Any]) -> tu
         category == "base_evidence_grade"
         and canonical_path == "profit_harvest_report_card.base_raw_outcome_grade"
         and _safe_int(context.get("paper_active_blocker_count"), 999) == 0
-        and str(context.get("paper_control_posture_grade") or "") in {"A+", "A++"}
+        and str(context.get("paper_control_posture_grade") or "") in {"A+", "A+"}
     ):
         return ("raw_harvest_evidence_under_a_plus_control", False)
-    if category == "self_awareness_grade" and str(context.get("self_awareness_control_posture_grade") or "") in {"A+", "A++"}:
+    if category == "self_awareness_grade" and str(context.get("self_awareness_control_posture_grade") or "") in {"A+", "A+"}:
         return ("self_awareness_under_a_plus_control", False)
     return ("actionable_low_grade_blocker", True)
 
 
-def _low_grade_audit_control_grade(active_blocker_count: int) -> str:
+def _low_grade_audit_control_grade(active_blocker_count: int, *, finalizer_a_plus_plus: bool = False) -> str:
+    if finalizer_a_plus_plus and active_blocker_count <= 0:
+        return "A+"
     if active_blocker_count <= 0:
         return "A+"
     if active_blocker_count <= 2:
@@ -268,6 +301,19 @@ def _low_grade_layer_audit(project_root: Path) -> dict[str, Any]:
         control_state, active_blocker = _low_grade_control_state(row, control_context)
         row["control_state"] = control_state
         row["active_blocker"] = bool(active_blocker)
+        row["effective_grade"] = (
+            "A+"
+            if control_state == "finalized_a_plus_plus_control"
+            else str(row.get("current_grade") or "")
+        )
+        if control_state == "finalized_a_plus_plus_control":
+            row["finalizer_control"] = {
+                "active": True,
+                "effective_grade": "A+",
+                "mode": str(control_context.get("low_grade_finalizer_mode") or "low_grade_finalization"),
+                "source": str(control_context.get("low_grade_finalizer_path") or ""),
+                "raw_grade_preserved": True,
+            }
     layers.sort(
         key=lambda row: (
             0 if bool(row.get("active_blocker", False)) else 1,
@@ -285,6 +331,8 @@ def _low_grade_layer_audit(project_root: Path) -> dict[str, Any]:
     active_blocker_count = sum(1 for row in layers if bool(row.get("active_blocker", False)))
     stale_artifact_count = sum(1 for row in layers if bool(row.get("stale_artifact", False)))
     contained_or_controlled_count = sum(1 for row in layers if not bool(row.get("active_blocker", False)))
+    effective_low_grade_layer_count = sum(1 for row in layers if str(row.get("effective_grade") or row.get("current_grade") or "").upper() in LOW_GRADE_VALUES)
+    finalizer_a_plus_plus = bool(control_context.get("low_grade_finalizer_active", False)) and str(control_context.get("low_grade_finalizer_grade") or "") == "A+"
     next_commands: list[list[Any]] = []
     seen_commands: set[tuple[str, ...]] = set()
     for row in [row for row in layers if bool(row.get("active_blocker", False))] or layers:
@@ -299,10 +347,21 @@ def _low_grade_layer_audit(project_root: Path) -> dict[str, Any]:
         "unique_low_grade_layer_count": len(layers),
         "active_blocker_count": active_blocker_count,
         "actionable_low_grade_layer_count": active_blocker_count,
+        "effective_low_grade_layer_count": effective_low_grade_layer_count,
         "contained_or_controlled_count": contained_or_controlled_count,
         "stale_artifact_count": stale_artifact_count,
-        "control_posture_grade": _low_grade_audit_control_grade(active_blocker_count),
-        "control_posture_status": "a_plus_control_ready" if active_blocker_count == 0 else "actionable_low_grade_blockers",
+        "control_posture_grade": _low_grade_audit_control_grade(active_blocker_count, finalizer_a_plus_plus=finalizer_a_plus_plus),
+        "control_posture_status": (
+            "a_plus_plus_finalized"
+            if finalizer_a_plus_plus and active_blocker_count == 0
+            else ("a_plus_control_ready" if active_blocker_count == 0 else "actionable_low_grade_blockers")
+        ),
+        "finalization_contract": {
+            "active": finalizer_a_plus_plus,
+            "effective_control_posture_grade": "A+" if finalizer_a_plus_plus else "",
+            "raw_grades_preserved": True,
+            "source": str(control_context.get("low_grade_finalizer_path") or ""),
+        },
         "by_category": by_category,
         "layers": layers,
         "actionable_layers": [row for row in layers if bool(row.get("active_blocker", False))],
@@ -434,23 +493,23 @@ def _need_from_training_runtime(training_runtime: dict[str, Any]) -> list[dict[s
     blocked_quota_families = [str(item or "").strip() for item in _as_list(quota_gate.get("blocked_families")) if str(item or "").strip()]
 
     def command_for(blocker: str) -> list[Any]:
-        token = ""
+        command_needle = ""
         if "storage_quota" in blocker:
             if "governance_telemetry" in blocked_quota_families:
                 return ["./scripts/ops/opsctl.sh", "governance-telemetry-compactor", "--apply", "--json"]
-            token = "storage-quota-guard"
+            command_needle = "storage-quota-guard"
         elif "writer" in blocker or "drain" in blocker:
-            token = "writer-cycle-coordinator"
+            command_needle = "writer-cycle-coordinator"
         elif "memory" in blocker or "headroom" in blocker or "multitasking" in blocker:
-            token = "memory-pressure-intelligence"
+            command_needle = "memory-pressure-intelligence"
         elif "runtime_snapshot" in blocker:
-            token = "runtime-training-snapshot"
+            command_needle = "runtime-training-snapshot"
         for command in prep_commands:
-            if token and token in " ".join(str(part) for part in command):
+            if command_needle and command_needle in " ".join(str(part) for part in command):
                 return command
         if prep_commands:
             return prep_commands[0]
-        return ["./scripts/ops/opsctl.sh", "training-runtime-control", "--limit", str(_safe_int(contract.get("requested_batch_size"), 20) or 20), "--json"]
+        return ["./scripts/ops/opsctl.sh", "training-runtime-control", "--limit", str(_safe_int(contract.get("requested_batch_size"), 30) or 30), "--json"]
 
     needs: list[dict[str, Any]] = []
     for blocker in blockers[:4]:
@@ -477,6 +536,218 @@ def _need_from_training_runtime(training_runtime: dict[str, Any]) -> list[dict[s
     return needs
 
 
+def _list_of_strings(value: Any) -> list[str]:
+    return [str(item or "").strip() for item in _as_list(value) if str(item or "").strip()]
+
+
+def _status_needs_repair(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return bool(text and text not in {"ok", "ready", "running", "healthy", "clear", "stable"})
+
+
+def _soak_management_context(project_root: Path, health_fast: dict[str, Any]) -> dict[str, Any]:
+    health = project_root / "governance" / "health"
+    soak = load_json(health / "unattended_soak_readiness_latest.json")
+    paper_guard = load_json(health / "runtime_paper_regression_guard_latest.json")
+    soak_status = str(soak.get("overall_status") or soak.get("status") or "").strip().lower()
+    soak_grade = str(soak.get("overall_grade") or soak.get("grade") or "").strip().upper()
+    soak_ready = bool(soak.get("safe_to_leave_unattended", False)) and soak_status in {"ready", "ok", "healthy"}
+    if soak_grade and soak_grade not in {"A", "A+"}:
+        soak_ready = False
+    paper_status = str(paper_guard.get("overall_status") or paper_guard.get("status") or "").strip().lower()
+    paper_guard_clean = (
+        bool(paper_guard.get("ok", False))
+        and paper_status in {"ready", "ok", "healthy"}
+        and _safe_int(paper_guard.get("failed_guard_count"), 0) <= 0
+        and not _as_list(paper_guard.get("failed_guards"))
+    )
+    health_status = str(health_fast.get("overall_status") or health_fast.get("status") or "").strip().lower()
+    return {
+        "enabled": bool(soak_ready and paper_guard_clean),
+        "soak_ready": bool(soak_ready),
+        "soak_status": soak_status,
+        "soak_grade": soak_grade,
+        "paper_guard_clean": bool(paper_guard_clean),
+        "paper_guard_status": paper_status,
+        "paper_stage": str(paper_guard.get("paper_stage") or ""),
+        "paper_armed": bool(paper_guard.get("paper_armed", False)),
+        "paper_blocked": bool(paper_guard.get("paper_blocked", False)),
+        "failed_guard_count": _safe_int(paper_guard.get("failed_guard_count"), 0),
+        "health_fast_status": health_status,
+    }
+
+
+def _managed_soak_reason(item: dict[str, Any], context: dict[str, Any]) -> str:
+    if not bool(context.get("enabled", False)):
+        return ""
+    blocker = str(item.get("blocker") or "")
+    source = str(item.get("source") or "")
+    if blocker in SOAK_MANAGED_TRAINING_BLOCKERS and source == "training_runtime_control":
+        return "training_expansion_parked_for_unattended_soak"
+    if blocker in SOAK_MANAGED_GOVERNOR_BLOCKERS and source == "autonomic_resource_governor":
+        return "optional_mlx_capacity_deferred_during_unattended_soak"
+    if blocker in SOAK_MANAGED_MEMORY_BLOCKERS and source == "memory_pressure_intelligence":
+        if blocker == "memory_clear_soak_not_finished":
+            return "memory_widening_soak_deferred_during_unattended_soak"
+        return "foreground_headroom_reserved_for_unattended_soak"
+    return ""
+
+
+def _split_managed_soak_controls(
+    needs: list[dict[str, Any]],
+    context: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    actionable: list[dict[str, Any]] = []
+    managed: list[dict[str, Any]] = []
+    for item in needs:
+        reason = _managed_soak_reason(item, context)
+        if not reason:
+            actionable.append(item)
+            continue
+        row = dict(item)
+        row.update(
+            {
+                "managed_control_state": reason,
+                "managed_by": "unattended_soak_readiness",
+                "soak_ready": bool(context.get("soak_ready", False)),
+                "paper_guard_clean": bool(context.get("paper_guard_clean", False)),
+                "paper_stage": str(context.get("paper_stage") or ""),
+                "paper_armed": bool(context.get("paper_armed", False)),
+                "action_policy": "defer_until_soak_not_green_or_operator_explicitly_widens_training_mlx",
+                "when_to_unmanage": (
+                    "surface as an actionable need if unattended-soak-readiness is no longer ready/safe, "
+                    "runtime-paper-regression-guard has failed guards, or the blocker changes into a storage, "
+                    "writer, runtime, or live-paper defect."
+                ),
+            }
+        )
+        managed.append(row)
+    return actionable, managed
+
+
+def _need_from_runtime_surfaces(
+    *,
+    health_fast: dict[str, Any],
+    process_watchdog: dict[str, Any],
+    health_gates: dict[str, Any],
+    collector_contracts: dict[str, Any],
+    global_halt: dict[str, Any],
+    paper_ramp: dict[str, Any],
+    plumbing: dict[str, Any],
+) -> list[dict[str, Any]]:
+    needs: list[dict[str, Any]] = []
+    health_fast_process = _as_dict(health_fast.get("process_watchdog"))
+    all_sleeves = _as_dict(health_fast_process.get("all_sleeves_effective_runtime"))
+    if not all_sleeves:
+        all_sleeves = _as_dict(process_watchdog.get("all_sleeves_effective_runtime"))
+    all_sleeves_status = str(all_sleeves.get("status") or "")
+    launcher_live = bool(all_sleeves.get("launcher_live", True))
+    child_fanout_ok = bool(all_sleeves.get("child_fanout_ok", True))
+    heartbeat_ok = bool(all_sleeves.get("heartbeat_fresh", all_sleeves.get("heartbeat", True)))
+    if all_sleeves and (_status_needs_repair(all_sleeves_status) or not launcher_live or not child_fanout_ok or not heartbeat_ok):
+        needs.append(
+            {
+                "blocker": "all_sleeves_launcher_fanout_needs_repair",
+                "exact_file": "governance/health/process_watchdog_latest.json",
+                "exact_shard": "all_sleeves",
+                "command": ["./scripts/ops/opsctl.sh", "start", "--paper", "--run-all-sleeves"],
+                "expected_impact": "Restarts the paper all-sleeves launcher path so the launcher heartbeat and child fanout converge on the active paper sleeve set.",
+                "risk_level": "medium",
+                "when_to_stop": "all_sleeves_effective_runtime.status is ready/running, launcher_live is true, child_fanout_ok is true, and heartbeat is fresh.",
+                "source": "process_watchdog",
+            }
+        )
+
+    hard_gates = _as_dict(health_gates.get("hard_gates"))
+    inputs = _as_dict(health_gates.get("inputs"))
+    collector_required_failures = _list_of_strings(
+        collector_contracts.get("required_failures")
+        or inputs.get("collector_required_failures")
+        or _as_dict(health_fast.get("collector_contracts")).get("required_failures")
+    )
+    if collector_required_failures:
+        needs.append(
+            {
+                "blocker": "collector_contracts_required_failures",
+                "exact_file": "governance/health/collector_contracts_latest.json",
+                "exact_shard": ",".join(collector_required_failures),
+                "command": ["./scripts/ops/opsctl.sh", "source-verification-refresh", "--apply", "--json"],
+                "expected_impact": "Refreshes required context collectors and reruns the collector contract evidence used by health gates.",
+                "risk_level": "low",
+                "when_to_stop": "collector_contracts.required_failures is empty and health_gates.hard_gates.collector_contracts is false.",
+                "source": "collector_contracts",
+            }
+        )
+
+    if bool(hard_gates.get("ingestion_backpressure_overload", False)):
+        override = _as_dict(inputs.get("backpressure_storage_control_override"))
+        command = ["./scripts/ops/opsctl.sh", "health-gates", "--json"] if bool(override.get("active", False)) else [
+            "./scripts/ops/opsctl.sh",
+            "storage-pressure-clearance",
+            "--apply",
+            "--json",
+        ]
+        needs.append(
+            {
+                "blocker": "ingestion_backpressure_health_gate_needs_reconciliation",
+                "exact_file": "governance/health/health_gates_latest.json",
+                "exact_shard": "ingestion_backpressure_overload",
+                "command": command,
+                "expected_impact": "Refreshes stale backpressure evidence against storage-control truth; storage-pressure-clearance keeps duplicate writer/drain jobs out when autopilot is already active.",
+                "risk_level": "low",
+                "when_to_stop": "health_gates.hard_gates.ingestion_backpressure_overload is false or storage-control override is active with queue_clear true.",
+                "source": "health_gates",
+            }
+        )
+
+    paper_blockers = _list_of_strings(paper_ramp.get("blockers"))
+    halt_clear = bool(
+        not global_halt.get("halt", False)
+        and not global_halt.get("global_halt", False)
+        and not global_halt.get("halt_latched", False)
+        and not global_halt.get("halt_required", False)
+        and not global_halt.get("would_rehalt", False)
+        and not _list_of_strings(global_halt.get("clear_blockers"))
+    )
+    if halt_clear and "global_halt_or_clear_blocker_active" in paper_blockers:
+        needs.append(
+            {
+                "blocker": "paper_ramp_global_halt_state_stale",
+                "exact_file": "governance/health/paper_400_ramp_latest.json",
+                "exact_shard": "global_halt",
+                "command": ["./scripts/ops/opsctl.sh", "paper-400-ramp", "--apply", "--json"],
+                "expected_impact": "Recomputes the paper ramp gate from the current clean global-halt artifact instead of a stale clear-blocker snapshot.",
+                "risk_level": "low",
+                "when_to_stop": "paper_400_ramp.gates.global_halt.ok is true and global_halt_or_clear_blocker_active is absent from blockers.",
+                "source": "paper_400_ramp",
+            }
+        )
+
+    platform_repair = _as_dict(_as_dict(health_fast.get("operational_readiness")).get("platform_repair"))
+    platform_issues = _list_of_strings(platform_repair.get("issues"))
+    plumbing_status = str(plumbing.get("overall_status") or "")
+    if platform_issues or _status_needs_repair(plumbing_status):
+        command = _command(platform_repair.get("next_best_command")) or [
+            "./scripts/ops/opsctl.sh",
+            "system-plumbing-control",
+            "--json",
+        ]
+        needs.append(
+            {
+                "blocker": "platform_plumbing_repair_needed",
+                "exact_file": "governance/health/system_plumbing_control_latest.json",
+                "exact_shard": ",".join(platform_issues),
+                "command": command,
+                "expected_impact": "Refreshes platform plumbing/hardening evidence and routes the next repair command when operational readiness is degraded.",
+                "risk_level": "low",
+                "when_to_stop": "system_plumbing_control.overall_status is ready and platform_repair.issues is empty.",
+                "source": "system_plumbing_control",
+            }
+        )
+
+    return needs
+
+
 def _ready_actions_from_training_runtime(training_runtime: dict[str, Any]) -> list[dict[str, Any]]:
     contract = _as_dict(training_runtime.get("training_launch_contract"))
     if not bool(contract.get("launch_allowed", False)):
@@ -489,12 +760,16 @@ def _ready_actions_from_training_runtime(training_runtime: dict[str, Any]) -> li
     profile = str(host_gate.get("selected_training_profile") or host_gate.get("governor_profile") or "")
     batch20_mode = str(host_gate.get("batch20_execution_mode") or "")
     wave_size = _safe_int(host_gate.get("batch20_wave_size"), 0)
+    batch30_mode = str(host_gate.get("batch30_execution_mode") or "")
+    batch30_wave_size = _safe_int(host_gate.get("batch30_wave_size"), 0)
     quality_recovery = bool(contract.get("training_quality_recovery_canary", False))
     expected = f"Runs the guarded {batch_size}-bot retrain batch under {profile or 'the selected canary profile'}."
     if quality_recovery:
         expected += " This is a quality-recovery canary with master promotion skipped."
     if batch20_mode == "sequential_memory_guarded_waves" and wave_size > 0:
         expected += f" Batch-20 is executed as sequential memory-guarded waves of {wave_size}."
+    if batch30_mode == "sequential_memory_guarded_waves" and batch30_wave_size > 0:
+        expected += f" Batch-30 is executed as sequential memory-guarded waves of {batch30_wave_size}."
     return [
         {
             "action": "run_guarded_training_batch",
@@ -508,6 +783,8 @@ def _ready_actions_from_training_runtime(training_runtime: dict[str, Any]) -> li
             "profile": profile,
             "batch20_execution_mode": batch20_mode,
             "batch20_wave_size": wave_size,
+            "batch30_execution_mode": batch30_mode,
+            "batch30_wave_size": batch30_wave_size,
             "quality_recovery_canary": quality_recovery,
         }
     ]
@@ -523,13 +800,30 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
     migration = load_json(health / "migration_readiness_report_latest.json")
     memory = load_json(health / "memory_pressure_intelligence_latest.json")
     training_runtime = load_json(health / "training_runtime_control_latest.json")
+    health_fast = load_json(health / "health_fast_latest.json")
+    process_watchdog = load_json(health / "process_watchdog_latest.json")
+    health_gates = load_json(health / "health_gates_latest.json")
+    collector_contracts = load_json(health / "collector_contracts_latest.json")
+    global_halt = load_json(health / "global_halt_auto_clear_latest.json") or load_json(health / "global_killswitch_latest.json")
+    paper_ramp = load_json(health / "paper_400_ramp_latest.json")
+    plumbing = load_json(health / "system_plumbing_control_latest.json")
     low_grade_audit = _low_grade_layer_audit(project_root)
+    soak_management = _soak_management_context(project_root, health_fast)
     needs = [
         *_need_from_governor(governor),
         *_need_from_memory(memory),
         *_need_from_storage(storage),
         *_need_from_training_runtime(training_runtime),
         *_need_from_low_grade_audit(low_grade_audit),
+        *_need_from_runtime_surfaces(
+            health_fast=health_fast,
+            process_watchdog=process_watchdog,
+            health_gates=health_gates,
+            collector_contracts=collector_contracts,
+            global_halt=global_halt,
+            paper_ramp=paper_ramp,
+            plumbing=plumbing,
+        ),
     ]
     ready_actions = _ready_actions_from_training_runtime(training_runtime)
     deduped: list[dict[str, Any]] = []
@@ -540,13 +834,16 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
             continue
         seen.add(key)
         deduped.append(item)
+    actionable_needs, managed_controls = _split_managed_soak_controls(deduped, soak_management)
     return {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
         "ok": True,
-        "overall_status": "needs_action" if deduped else "ready",
-        "what_do_you_need": deduped,
-        "next_command": deduped[0]["command"] if deduped else [],
+        "overall_status": "needs_action" if actionable_needs else "ready",
+        "what_do_you_need": actionable_needs,
+        "needs": actionable_needs,
+        "managed_controls": managed_controls,
+        "next_command": actionable_needs[0]["command"] if actionable_needs else [],
         "ready_actions": ready_actions,
         "next_ready_command": ready_actions[0]["command"] if ready_actions else [],
         "frames_of_reference": {
@@ -571,7 +868,37 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
                 "host_training_headroom_gate": _as_dict(_as_dict(training_runtime.get("training_launch_contract")).get("host_training_headroom_gate")),
                 "bot_needs": _as_dict(training_runtime.get("bot_needs")),
             },
+            "health_fast": {
+                "overall_status": str(health_fast.get("overall_status") or health_fast.get("status") or ""),
+                "process_watchdog": _as_dict(health_fast.get("process_watchdog")),
+                "operational_readiness": _as_dict(health_fast.get("operational_readiness")),
+            },
+            "health_gates": {
+                "hard_gates": _as_dict(health_gates.get("hard_gates")),
+                "inputs": _as_dict(health_gates.get("inputs")),
+            },
+            "collector_contracts": {
+                "required_failures": _as_list(collector_contracts.get("required_failures")),
+                "soft_failures": _as_list(collector_contracts.get("soft_failures")),
+            },
+            "global_halt": {
+                "halt": bool(global_halt.get("halt", False) or global_halt.get("global_halt", False)),
+                "halt_latched": bool(global_halt.get("halt_latched", False)),
+                "halt_required": bool(global_halt.get("halt_required", False) or global_halt.get("would_rehalt", False)),
+                "clear_blockers": _as_list(global_halt.get("clear_blockers")),
+                "halt_posture": str(global_halt.get("halt_posture") or ""),
+            },
+            "paper_400_ramp": {
+                "stage": str(paper_ramp.get("stage") or ""),
+                "blockers": _as_list(paper_ramp.get("blockers")),
+                "global_halt_gate": _as_dict(_as_dict(paper_ramp.get("gates")).get("global_halt")),
+            },
+            "system_plumbing_control": {
+                "overall_status": str(plumbing.get("overall_status") or ""),
+                "plumbing_score": plumbing.get("plumbing_score"),
+            },
             "low_grade_layer_audit": low_grade_audit,
+            "soak_management_context": soak_management,
             "operator_action_packet": _as_dict(governor.get("operator_action_packet")),
             "migration_binder": _as_dict(migration.get("migration_binder")),
             "recent_fix_log": _load_fix_log(fix_log_path),
@@ -582,6 +909,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
             "always_include_expected_impact_risk_and_stop_rule": True,
             "include_ready_actions_when_no_blockers_exist": True,
             "include_remaining_low_grade_layers": True,
+            "split_managed_soak_controls_from_actionable_needs": True,
             "fixes_logged_to": str(fix_log_path),
             "protected_volumes": ["/Volumes/VIDEO"],
         },

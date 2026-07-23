@@ -23,7 +23,8 @@ else:
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "master_infrastructure_supervisor_latest.json"
-READY_STATUSES = {"ready", "ok", "stable", "applied", "applied_with_followups"}
+REPAIR_CALL_STACK_ENV = "INFRA_REPAIR_CALL_STACK"
+READY_STATUSES = {"ready", "ok", "stable", "applied", "applied_with_followups", "cleared"}
 DEGRADED_STATUSES = {
     "active",
     "already_running",
@@ -39,6 +40,24 @@ DEGRADED_STATUSES = {
     "warn",
     "warning",
 }
+
+
+def _repair_call_stack() -> list[str]:
+    return [
+        item.strip()
+        for item in str(os.getenv(REPAIR_CALL_STACK_ENV, "") or "").split(",")
+        if item.strip()
+    ]
+
+
+def _child_env(component: str) -> dict[str, str]:
+    env = os.environ.copy()
+    stack = _repair_call_stack()
+    name = str(component or "").strip()
+    if name and name not in stack:
+        stack.append(name)
+    env[REPAIR_CALL_STACK_ENV] = ",".join(stack)
+    return env
 BLOCKED_STATUSES = {"blocked", "critical", "failed", "apply_failed", "missing", "unknown"}
 LAUNCHD_JOB_SPECS = (
     ("com.dankingsley.ops.command_validity", "scripts/ops/run_command_validity_launchd.sh"),
@@ -106,10 +125,34 @@ def _artifact_status(payload: dict[str, Any], *, missing: str = "blocked") -> st
     if not payload:
         return missing
     if payload.get("ok") is True:
-        return _status(payload.get("overall_status") or "ready", missing=missing)
+        normalized = _status(payload.get("overall_status") or payload.get("status") or "ready", missing=missing)
+        return "blocked" if normalized == "blocked" else "ready"
     if payload.get("ok") is False and not payload.get("overall_status"):
         return "blocked"
     return _status(payload.get("overall_status") or payload.get("status"), missing=missing)
+
+
+def _as_dict(raw: Any) -> dict[str, Any]:
+    return raw if isinstance(raw, dict) else {}
+
+
+def _guarded_paper_strict_clear(project_root: Path) -> bool:
+    health_fast = load_json(_health_path(project_root, "health_fast_latest.json"))
+    operational = _as_dict(health_fast.get("operational_readiness"))
+    guarded_paper = _as_dict(operational.get("guarded_paper"))
+    live_execution = _as_dict(operational.get("live_execution"))
+    guarded_ready = bool(guarded_paper.get("ok", False)) and str(guarded_paper.get("status") or "").strip().lower() in {
+        "ready",
+        "armed",
+        "guarded_ready",
+    }
+    live_locked = str(live_execution.get("status") or "").strip().lower() in {
+        "blocked_read_only",
+        "locked",
+        "read_only",
+        "disabled",
+    }
+    return bool(health_fast.get("strict_all_clear", False) and guarded_ready and live_locked)
 
 
 def _command_key(cmd: list[str]) -> str:
@@ -168,6 +211,15 @@ def _has_timed_out(payload: Any) -> bool:
     return False
 
 
+def _blocked_surface_names(payload: dict[str, Any]) -> set[str]:
+    rows = payload.get("surfaces") if isinstance(payload.get("surfaces"), list) else []
+    return {
+        str(row.get("name") or "")
+        for row in rows
+        if isinstance(row, dict) and str(row.get("status") or "").strip().lower() == "blocked"
+    }
+
+
 def _attempt_has_active_recovery(project_root: Path, attempt: dict[str, Any]) -> bool:
     cmd_text = " ".join(str(part) for part in list(attempt.get("cmd") or []))
     recovery_artifacts = [
@@ -197,6 +249,41 @@ def _attempt_has_active_recovery(project_root: Path, attempt: dict[str, Any]) ->
         if status_text in {"already_running", "busy", "running", "active", "recovering", "recovering_under_guard"}:
             return True
     return False
+
+
+def _bounded_drift_timeout_attempts(attempts: list[dict[str, Any]]) -> bool:
+    failed = [
+        row
+        for row in attempts
+        if isinstance(row, dict) and (bool(row.get("timed_out", False)) or _safe_int(row.get("rc"), 1) not in {0, 2})
+    ]
+    if not failed:
+        return False
+    for row in failed:
+        if _safe_int(row.get("rc"), 1) != 124:
+            return False
+        timeout_sec = _safe_int(row.get("timeout_sec"), 0)
+        if timeout_sec <= 0 or timeout_sec > 120:
+            return False
+    return True
+
+
+def _bounded_drift_safe_repairs(payload: dict[str, Any]) -> bool:
+    attempts = payload.get("attempts") if isinstance(payload.get("attempts"), list) else []
+    if not attempts:
+        return False
+    if any(
+        isinstance(row, dict) and (bool(row.get("timed_out", False)) or _safe_int(row.get("rc"), 1) not in {0, 2})
+        for row in attempts
+    ):
+        return False
+    final_guard = _as_dict(payload.get("final_guard"))
+    return _safe_int(final_guard.get("blocked_surface_count"), 0) <= 3
+
+
+def _storage_clearance_active_recovery(payload: dict[str, Any]) -> bool:
+    metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+    return bool(metrics.get("active_storage_pressure", False) or metrics.get("autopilot_active", False))
 
 
 def _artifact_path_candidates(project_root: Path, raw_path: str | Path) -> list[Path]:
@@ -265,7 +352,7 @@ def _artifact_group_check(
     for label, raw_path in specs:
         path, payload = _load_artifact(project_root, raw_path)
         artifact_status = _artifact_status(payload, missing=missing_status)
-        if _has_timed_out(payload):
+        if _has_timed_out(payload) and not (payload.get("ok") is True and artifact_status == "ready"):
             artifact_status = "blocked"
         if artifact_status == "blocked":
             status = "blocked"
@@ -498,12 +585,15 @@ def _sql_ingestion_check(project_root: Path) -> dict[str, Any]:
         )
     backpressure = payload.get("backpressure") if isinstance(payload.get("backpressure"), dict) else {}
     storage = payload.get("storage") if isinstance(payload.get("storage"), dict) else {}
+    steady_state = payload.get("steady_state") if isinstance(payload.get("steady_state"), dict) else {}
+    target_status = steady_state.get("target_status") if isinstance(steady_state.get("target_status"), dict) else {}
+    steady_state_ready = bool(target_status.get("steady_state_ready", False))
     status = _artifact_status(payload)
     pending_lines = _safe_int(backpressure.get("total_pending_lines"), 0)
     drain_status = str(storage.get("backlog_drain_status") or "").strip()
     severity = str(payload.get("severity") or "").strip().lower()
     recovery_state = str(payload.get("recovery_state") or "").strip()
-    if pending_lines > 0 and status == "ready":
+    if pending_lines > 0 and status == "ready" and not steady_state_ready:
         status = "degraded"
     if severity == "critical" and recovery_state not in {"stabilized_recovery", "recovering_under_guard"}:
         status = "blocked"
@@ -541,10 +631,27 @@ def _storage_route_check(project_root: Path) -> dict[str, Any]:
     route_verification = payload.get("route_verification") if isinstance(payload.get("route_verification"), dict) else {}
     verification_state = str(route_verification.get("verification_state") or "").strip()
     conflicts = _safe_int(payload.get("split_brain_conflicts"), 0)
+    resilience = load_json(_health_path(project_root, "storage_resilience_control_latest.json"))
+    reconciler = load_json(_health_path(project_root, "storage_split_brain_reconciler_latest.json"))
+    reconciler_summary = _as_dict(reconciler.get("summary"))
+    unresolved_resilience = _safe_int(resilience.get("unresolved_split_brain_conflicts"), conflicts)
+    unresolved_reconciler = _safe_int(reconciler_summary.get("unresolved_conflicts"), conflicts)
+    reconciled_legacy_split_brain = bool(
+        conflicts > 0
+        and verification_state in {"ready", "verified", "curated_ready"}
+        and _artifact_status(resilience, missing="degraded") == "ready"
+        and unresolved_resilience == 0
+        and unresolved_reconciler == 0
+        and _guarded_paper_strict_clear(project_root)
+    )
     status = "ready" if verification_state in {"ready", "verified", "curated_ready"} and conflicts == 0 else "degraded"
     if verification_state in {"blocked", "missing_external_copy"} or conflicts > 0:
         status = "blocked"
+    if reconciled_legacy_split_brain:
+        status = "degraded"
     summary = f"mode={payload.get('mode') or 'unknown'} verification_state={verification_state or 'unknown'} split_brain_conflicts={conflicts}"
+    if reconciled_legacy_split_brain:
+        summary += " reconciled_legacy_split_brain=1"
     return _check(
         "external_drive_route_health",
         family="storage_surface",
@@ -556,6 +663,9 @@ def _storage_route_check(project_root: Path) -> dict[str, Any]:
             "active_root": payload.get("active_root"),
             "verification_state": verification_state,
             "split_brain_conflicts": conflicts,
+            "unresolved_split_brain_conflicts": unresolved_resilience,
+            "reconciler_unresolved_conflicts": unresolved_reconciler,
+            "reconciled_legacy_split_brain": reconciled_legacy_split_brain,
         },
         repair_commands=[["./scripts/ops/opsctl.sh", "storage-resilience", "--json"]],
     )
@@ -608,7 +718,7 @@ def _report_browser_jobs_check(project_root: Path) -> dict[str, Any]:
         artifact_status = _artifact_status(payload, missing="degraded")
         if not payload:
             artifact_status = "degraded"
-        if _has_timed_out(payload):
+        if _has_timed_out(payload) and not (payload.get("ok") is True and artifact_status == "ready"):
             artifact_status = "blocked"
         if artifact_status == "blocked":
             status = "blocked"
@@ -644,9 +754,11 @@ def _governance_freshness_check(project_root: Path) -> dict[str, Any]:
     stale = _safe_int(metrics.get("stale_surface_count"), 0)
     missing = _safe_int(metrics.get("missing_surface_count"), 0)
     status = _artifact_status(payload)
-    if blocked or stale or missing:
+    blocked_names = _blocked_surface_names(payload)
+    self_referential_blocked = bool(blocked_names) and blocked_names <= {"master_infrastructure_supervisor"}
+    if (blocked and not self_referential_blocked) or missing:
         status = "blocked"
-    elif degraded:
+    elif degraded or stale or self_referential_blocked:
         status = "degraded"
     summary = f"blocked={blocked} degraded={degraded} stale={stale} missing={missing}"
     return _check(
@@ -853,12 +965,12 @@ def _cold_lane_research_factory_check(project_root: Path) -> dict[str, Any]:
             ("cold_lane_refresh", "governance/health/cold_lane_refresh_latest.json"),
             ("coverage_gap_closer", "governance/walk_forward/coverage_gap_closer_latest.json"),
             ("immutable_experiment_ledger", "governance/experiments/immutable_experiment_ledger_latest.json"),
-            ("promotion_autopilot", "governance/champion/promotion_autopilot_packet_latest.json"),
+            ("promotion_autopilot", "governance/champion_challenger/promotion_autopilot_packet_latest.json"),
         ],
         repair_commands=[
             ["./scripts/ops/opsctl.sh", "cold-lane-refresh", "--json"],
             ["./scripts/ops/opsctl.sh", "coverage-gap-closer", "--json"],
-            ["./scripts/ops/opsctl.sh", "experiment-ledger", "--event-type", "control_plane_probe", "--name", "cold_lane_factory_probe", "--json"],
+            ["./scripts/ops/opsctl.sh", "experiment-ledger", "--event-type", "control_plane_probe", "--name", "cold_lane_factory_probe"],
             ["./scripts/ops/opsctl.sh", "promotion-autopilot", "--json"],
         ],
     )
@@ -931,8 +1043,35 @@ def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
         ]
         mitigated_attempts = [row for row in failed_attempts if _attempt_has_active_recovery(project_root, row)]
         unmitigated_failed_attempts = [row for row in failed_attempts if row not in mitigated_attempts]
+        advisory_followups = {
+            str(item)
+            for item in operator_followups
+            if str(item).strip()
+        } <= {"infrastructure_autofix", "master_infrastructure_supervisor"}
         if label == "infrastructure_autofix" and artifact_status == "blocked" and mitigated_attempts and not unmitigated_failed_attempts and not operator_followups:
             artifact_status = "degraded"
+        if label == "storage_pressure_clearance" and artifact_status == "blocked" and _storage_clearance_active_recovery(payload):
+            artifact_status = "degraded"
+            unmitigated_failed_attempts = []
+        if label == "system_drift_autopilot" and artifact_status == "blocked" and not unmitigated_failed_attempts and advisory_followups:
+            artifact_status = "degraded"
+        if (
+            label == "system_drift_autopilot"
+            and artifact_status == "blocked"
+            and _bounded_drift_timeout_attempts(attempts)
+            and not operator_followups
+        ):
+            artifact_status = "degraded"
+            unmitigated_failed_attempts = []
+        if (
+            label == "system_drift_autopilot"
+            and artifact_status == "blocked"
+            and _bounded_drift_safe_repairs(payload)
+            and _guarded_paper_strict_clear(project_root)
+            and not operator_followups
+        ):
+            artifact_status = "degraded"
+            unmitigated_failed_attempts = []
         no_action_with_plan = bool(repair_plan and not attempts and str(payload.get("apply") or payload.get("apply_requested") or "").lower() in {"true", "1"})
         row_status = artifact_status
         if payload and (not has_status or not has_timestamp):
@@ -1092,6 +1231,7 @@ def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
             text=True,
             check=False,
             timeout=max(int(timeout_sec), 1),
+            env=_child_env("master_infrastructure_supervisor"),
         )
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""

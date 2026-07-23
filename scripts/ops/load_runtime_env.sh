@@ -74,6 +74,7 @@ for candidate in \
   "$PROJECT_ROOT/config/.env.host_profile_override" \
   "$PROJECT_ROOT/config/.env.memory_efficiency_override" \
   "$PROJECT_ROOT/config/.env.runtime_resource_guard_override" \
+  "$PROJECT_ROOT/config/.env.python314_runtime_override" \
   "$PROJECT_ROOT/config/.env.pressure_relief_override" \
   "$PROJECT_ROOT/config/.env.guard_intelligence_override" \
   "$PROJECT_ROOT/config/.env.process_fanout_guard_override" \
@@ -85,18 +86,34 @@ for candidate in \
   "$PROJECT_ROOT/config/.env.frontier_intelligence_override" \
   "$PROJECT_ROOT/config/.env.platform_stabilization_quality_override" \
   "$PROJECT_ROOT/config/.env.platform_settlement_stabilization_override" \
+  "$PROJECT_ROOT/config/.env.data_intelligence_override" \
   "$PROJECT_ROOT/config/.env.sleeve_ticker_universe_override" \
   "$PROJECT_ROOT/config/.env.paper_live_data_standard_override" \
+  "$PROJECT_ROOT/config/.env.paper_execution_calibration_override" \
   "$PROJECT_ROOT/config/.env.paper_400_ramp_override" \
   "$PROJECT_ROOT/config/.env.swap_pressure_override" \
   "$PROJECT_ROOT/config/.env.browser_quiet_override" \
   "$PROJECT_ROOT/config/.env.storage_pressure_override" \
+  "$PROJECT_ROOT/config/.env.hot_lane_retention_override" \
   "$PROJECT_ROOT/config/.env.storage_target_override" \
   "$PROJECT_ROOT/config/.env.storage_override" \
+  "$PROJECT_ROOT/config/.env.notification_override" \
+  "$PROJECT_ROOT/config/.env.unattended_soak_override" \
   "$PROJECT_ROOT/config/.env.computer_task_override" \
   "$PROJECT_ROOT/config/.env.memory_pressure_intelligence_override" \
   "$PROJECT_ROOT/config/.env.autonomic_resource_governor_override" \
-  "$PROJECT_ROOT/config/.env.operator_mode_override"; do
+  "$PROJECT_ROOT/config/.env.market_posture_control_override" \
+  "$PROJECT_ROOT/config/.env.operating_platform_upgrade_override" \
+  "$PROJECT_ROOT/config/.env.distributed_cell_architecture_override" \
+  "$PROJECT_ROOT/config/.env.cell_federation_intelligence_override" \
+  "$PROJECT_ROOT/config/.env.low_grade_finalizer_override" \
+  "$PROJECT_ROOT/config/.env.operator_mode_override" \
+  "$PROJECT_ROOT/config/.env.backlog_pump_infrabots_override" \
+  "$PROJECT_ROOT/config/.env.backlog_pcore_accelerator_override" \
+  "$PROJECT_ROOT/config/.env.accelerator_always_on_override" \
+  "$PROJECT_ROOT/config/.env.load_shape_smooth_override" \
+  "$PROJECT_ROOT/config/.env.backlog_drain_uniform_override" \
+  "$PROJECT_ROOT/config/.env.operator_drain_max_override"; do
   if load_file "$candidate"; then
     LOADED_FILES+=("${candidate#$PROJECT_ROOT/}")
   fi
@@ -154,11 +171,14 @@ export BOT_LOGS_EXTERNAL_MOUNT_CANDIDATES="${BOT_LOGS_EXTERNAL_MOUNT_CANDIDATES:
 export BOT_LOGS_EXTERNAL_VOLUME_NAME="${BOT_LOGS_EXTERNAL_VOLUME_NAME:-BOT_LOGS}"
 export MARKET_DATA_ONLY="${MARKET_DATA_ONLY:-1}"
 export ALLOW_ORDER_EXECUTION="${ALLOW_ORDER_EXECUTION:-0}"
+export TOP_BOT_ENABLE_LIVE_EXECUTION="${TOP_BOT_ENABLE_LIVE_EXECUTION:-0}"
+export EXECUTION_LANE_LIVE_ENABLED="${EXECUTION_LANE_LIVE_ENABLED:-0}"
+export RUN_ALL_SLEEVES_WITH_LIVE_EXECUTOR="${RUN_ALL_SLEEVES_WITH_LIVE_EXECUTOR:-0}"
 export DATA_BROKER="${DATA_BROKER:-schwab}"
 export TOP_BOT_PAPER_TRADING_ENABLED="${TOP_BOT_PAPER_TRADING_ENABLED:-1}"
 export TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED="${TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED:-1}"
 export TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES="${TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES:-default,aggressive,intraday_aggressive,swing_aggressive,options_on_futures,options_on_futures_aggressive}"
-export PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"
+export PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1}"
 export PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"
 export PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"
 export LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"
@@ -166,9 +186,11 @@ export LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"
 export LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"
 export LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"
 export LOG_FUTURES_MASTER_DECISIONS="${LOG_FUTURES_MASTER_DECISIONS:-1}"
-export PREMARKET_TOKEN_MIN_EXPIRES_SECONDS="${PREMARKET_TOKEN_MIN_EXPIRES_SECONDS:-600}"
+export PREMARKET_TOKEN_MIN_EXPIRES_SECONDS="${PREMARKET_TOKEN_MIN_EXPIRES_SECONDS:-1500}"
+export PREMARKET_TOKEN_READY_MIN_EXPIRES_SECONDS="${PREMARKET_TOKEN_READY_MIN_EXPIRES_SECONDS:-900}"
 export PREMARKET_TOKEN_CHECK_INTERVAL_SECONDS="${PREMARKET_TOKEN_CHECK_INTERVAL_SECONDS:-600}"
 export SCHWAB_AUTH_MIN_EXPIRES_SECONDS="${SCHWAB_AUTH_MIN_EXPIRES_SECONDS:-$PREMARKET_TOKEN_MIN_EXPIRES_SECONDS}"
+export SCHWAB_AUTH_READY_MIN_EXPIRES_SECONDS="${SCHWAB_AUTH_READY_MIN_EXPIRES_SECONDS:-$PREMARKET_TOKEN_READY_MIN_EXPIRES_SECONDS}"
 export SCHWAB_AUTH_LEASE_MIN_SECONDS="${SCHWAB_AUTH_LEASE_MIN_SECONDS:-1200}"
 export SCHWAB_AUTH_LEASE_CRITICAL_SECONDS="${SCHWAB_AUTH_LEASE_CRITICAL_SECONDS:-600}"
 export SCHWAB_INTERACTIVE_FORCE_MAX_TOKEN_AGE_SECONDS="${SCHWAB_INTERACTIVE_FORCE_MAX_TOKEN_AGE_SECONDS:-1}"
@@ -257,6 +279,13 @@ export CRYPTO_MARKET_CONTEXT_SYMBOLS="${CRYPTO_MARKET_CONTEXT_SYMBOLS:-$COINBASE
 export CRYPTO_MARKET_CONTEXT_TIMEOUT_SECONDS="${CRYPTO_MARKET_CONTEXT_TIMEOUT_SECONDS:-12}"
 export CRYPTO_MARKET_CONTEXT_MAX_REL_SPREAD="${CRYPTO_MARKET_CONTEXT_MAX_REL_SPREAD:-0.05}"
 export CRYPTO_MARKET_CONTEXT_USER_AGENT="${CRYPTO_MARKET_CONTEXT_USER_AGENT:-Daniel Kingsley dan_kingsley@aol.com}"
+export CRYPTO_MARKET_CONTEXT_COINBASE_QUOTES_ENABLED="${CRYPTO_MARKET_CONTEXT_COINBASE_QUOTES_ENABLED:-1}"
+export CRYPTO_MARKET_CONTEXT_COINBASE_QUOTE_MAX_ASSETS="${CRYPTO_MARKET_CONTEXT_COINBASE_QUOTE_MAX_ASSETS:-12}"
+export SCHWAB_CRYPTO_DATA_ENABLED="${SCHWAB_CRYPTO_DATA_ENABLED:-0}"
+export SCHWAB_CRYPTO_QUOTE_MAX_ASSETS="${SCHWAB_CRYPTO_QUOTE_MAX_ASSETS:-12}"
+export SCHWAB_CRYPTO_QUOTE_URL_TEMPLATE="${SCHWAB_CRYPTO_QUOTE_URL_TEMPLATE:-}"
+export SCHWAB_CRYPTO_SYMBOL_MAP="${SCHWAB_CRYPTO_SYMBOL_MAP:-}"
+export SCHWAB_CRYPTO_BEARER_TOKEN="${SCHWAB_CRYPTO_BEARER_TOKEN:-}"
 export COINMETRICS_API_KEY="${COINMETRICS_API_KEY:-}"
 export ETHERSCAN_API_KEY="${ETHERSCAN_API_KEY:-}"
 export MARKET_CRYPTO_CORRELATION_AUTO_REFRESH_ENABLED="${MARKET_CRYPTO_CORRELATION_AUTO_REFRESH_ENABLED:-0}"
@@ -282,6 +311,7 @@ export OPS_WATCHDOG_DIVERGENCE_MAX_AGE_SECONDS="${OPS_WATCHDOG_DIVERGENCE_MAX_AG
 export OPS_WATCHDOG_LAUNCHD_INTERVAL_SECONDS="${OPS_WATCHDOG_LAUNCHD_INTERVAL_SECONDS:-180}"
 export SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER="${SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER:-1}"
 export LIVE_ACCOUNTS_SNAPSHOT_ALLOW_GLOBAL_FALLBACK="${LIVE_ACCOUNTS_SNAPSHOT_ALLOW_GLOBAL_FALLBACK:-0}"
+export LIVE_ACCOUNTS_SNAPSHOT_AGGREGATE_CONNECTED="${LIVE_ACCOUNTS_SNAPSHOT_AGGREGATE_CONNECTED:-1}"
 export BROKER_TRUTH_SHARED_SNAPSHOT_MAX_AGE_SECONDS="${BROKER_TRUTH_SHARED_SNAPSHOT_MAX_AGE_SECONDS:-15}"
 export BROKER_TRUTH_SHARED_SNAPSHOT_LOCK_WAIT_SECONDS="${BROKER_TRUTH_SHARED_SNAPSHOT_LOCK_WAIT_SECONDS:-1.25}"
 export BROKER_TRUTH_SHARED_SNAPSHOT_SKIP_WRITE_ON_LOCK_TIMEOUT="${BROKER_TRUTH_SHARED_SNAPSHOT_SKIP_WRITE_ON_LOCK_TIMEOUT:-1}"

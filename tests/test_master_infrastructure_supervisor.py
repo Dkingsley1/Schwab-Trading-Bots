@@ -98,6 +98,7 @@ def _write_ready_fixture(project_root: Path, *, one_numbers_start: str = "202604
     _write_json(project_root / "governance" / "walk_forward" / "coverage_gap_closer_latest.json", {"overall_status": "ready", "ok": True})
     _write_json(project_root / "governance" / "experiments" / "immutable_experiment_ledger_latest.json", {"overall_status": "ready", "ok": True})
     _write_json(project_root / "governance" / "champion" / "promotion_autopilot_packet_latest.json", {"overall_status": "ready", "ok": True})
+    _write_json(project_root / "governance" / "champion_challenger" / "promotion_autopilot_packet_latest.json", {"overall_status": "ready", "ok": True})
     _write_json(health / "point_in_time_event_store_latest.json", {"overall_status": "ready", "ok": True, "event_count": 3})
     _write_json(health / "replay_hash_registry_guard_latest.json", {"overall_status": "ready", "ok": True})
     _write_json(health / "golden_replay_regression_latest.json", {"overall_status": "ready", "ok": True})
@@ -106,6 +107,16 @@ def _write_ready_fixture(project_root: Path, *, one_numbers_start: str = "202604
     _write_json(health / "system_drift_autopilot_latest.json", {"timestamp_utc": ready_stamp, "overall_status": "ready", "ok": True})
     _write_json(health / "storage_backpressure_autopilot_latest.json", {"timestamp_utc": ready_stamp, "overall_status": "ready", "ok": True})
     _write_json(health / "storage_pressure_clearance_latest.json", {"timestamp_utc": ready_stamp, "overall_status": "ready", "ok": True})
+    _write_json(
+        health / "stateful_storage_regression_guard_latest.json",
+        {
+            "timestamp_utc": ready_stamp,
+            "overall_status": "ready",
+            "ok": True,
+            "metrics": {"local_stateful_gb": 0.0, "blocked_check_count": 0, "degraded_check_count": 0},
+            "checks": [],
+        },
+    )
     _write_json(
         health / "schwab_auth_supervisor_latest.json",
         {
@@ -268,6 +279,141 @@ def test_master_supervisor_blocks_when_child_bot_quietly_has_followups(tmp_path:
     assert payload["overall_status"] == "blocked"
     assert child_check["status"] == "blocked"
     assert "failed_attempts=1" in child_check["summary"]
+
+
+def test_master_supervisor_degrades_bounded_drift_timeouts_in_self_audit(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    monkeypatch.setenv("ONE_NUMBERS_ORIGINAL_START_DAY", "20260422")
+    _write_ready_fixture(project_root)
+    _write_json(
+        project_root / "governance" / "health" / "system_drift_autopilot_latest.json",
+        {
+            "timestamp_utc": "2099-04-23T20:00:00+00:00",
+            "overall_status": "blocked",
+            "ok": False,
+            "repair_plan": [{"name": "adaptive_regression_guard"}],
+            "attempts": [{"surface": "adaptive_regression_guard", "rc": 124, "timeout_sec": 90, "timed_out": False}],
+            "operator_followups": [],
+        },
+    )
+
+    payload = supervisor.build_payload(project_root)
+    self_check = next(row for row in payload["checks"] if row["name"] == "self_auditing_infra_bots")
+    drift_row = next(row for row in self_check["evidence"]["bots"] if row["name"] == "system_drift_autopilot")
+
+    assert payload["overall_status"] == "degraded"
+    assert self_check["status"] == "degraded"
+    assert drift_row["status"] == "degraded"
+    assert drift_row["failed_attempt_count"] == 0
+
+
+def test_master_supervisor_degrades_active_storage_pressure_clearance_in_self_audit(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    monkeypatch.setenv("ONE_NUMBERS_ORIGINAL_START_DAY", "20260422")
+    _write_ready_fixture(project_root)
+    _write_json(
+        project_root / "governance" / "health" / "storage_pressure_clearance_latest.json",
+        {
+            "timestamp_utc": "2099-04-23T20:00:00+00:00",
+            "overall_status": "blocked",
+            "ok": False,
+            "repair_plan": [{"name": "observe_existing_storage_autopilot"}],
+            "attempts": [],
+            "metrics": {"active_storage_pressure": True, "autopilot_active": True},
+        },
+    )
+
+    payload = supervisor.build_payload(project_root)
+    self_check = next(row for row in payload["checks"] if row["name"] == "self_auditing_infra_bots")
+    storage_row = next(row for row in self_check["evidence"]["bots"] if row["name"] == "storage_pressure_clearance")
+
+    assert payload["overall_status"] == "degraded"
+    assert self_check["status"] == "degraded"
+    assert storage_row["status"] == "degraded"
+
+
+def test_master_supervisor_degrades_reconciled_legacy_split_brain_route(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    monkeypatch.setenv("ONE_NUMBERS_ORIGINAL_START_DAY", "20260422")
+    _write_ready_fixture(project_root)
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only"},
+            },
+        },
+    )
+    _write_json(
+        health / "storage_route_status_latest.json",
+        {
+            "mode": "local_fallback_split_brain",
+            "active_root": str(project_root / "local_fallback_storage"),
+            "split_brain_conflicts": 6,
+            "route_verification": {"verification_state": "ready"},
+        },
+    )
+    _write_json(health / "storage_resilience_control_latest.json", {"overall_status": "ready", "ok": True, "unresolved_split_brain_conflicts": 0})
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+
+    payload = supervisor.build_payload(project_root)
+    route_check = next(row for row in payload["checks"] if row["name"] == "external_drive_route_health")
+
+    assert payload["overall_status"] == "degraded"
+    assert route_check["status"] == "degraded"
+    assert route_check["evidence"]["reconciled_legacy_split_brain"] is True
+
+
+def test_master_supervisor_degrades_bounded_drift_safe_repairs_in_self_audit(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    monkeypatch.setenv("ONE_NUMBERS_ORIGINAL_START_DAY", "20260422")
+    _write_ready_fixture(project_root)
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only"},
+            },
+        },
+    )
+    _write_json(
+        health / "system_drift_autopilot_latest.json",
+        {
+            "timestamp_utc": "2099-04-23T20:00:00+00:00",
+            "overall_status": "blocked",
+            "ok": False,
+            "final_guard": {"overall_status": "blocked", "blocked_surface_count": 2, "degraded_surface_count": 12},
+            "repair_plan": [{"surface": "architecture_upgrade_scoreboard"}],
+            "attempts": [
+                {"surface": "architecture_upgrade_scoreboard", "rc": 0},
+                {"surface": "master_infrastructure_supervisor", "rc": 2},
+            ],
+            "operator_followups": [],
+        },
+    )
+
+    payload = supervisor.build_payload(project_root)
+    self_check = next(row for row in payload["checks"] if row["name"] == "self_auditing_infra_bots")
+    drift_row = next(row for row in self_check["evidence"]["bots"] if row["name"] == "system_drift_autopilot")
+
+    assert payload["overall_status"] == "degraded"
+    assert self_check["status"] == "degraded"
+    assert drift_row["status"] == "degraded"
+    assert drift_row["failed_attempt_count"] == 0
+
+
+def test_master_supervisor_child_env_marks_repair_call_stack(monkeypatch) -> None:
+    monkeypatch.delenv(supervisor.REPAIR_CALL_STACK_ENV, raising=False)
+
+    env = supervisor._child_env("master_infrastructure_supervisor")
+
+    assert env[supervisor.REPAIR_CALL_STACK_ENV] == "master_infrastructure_supervisor"
 
 
 def test_master_supervisor_blocks_when_coinbase_public_api_is_down(tmp_path: Path, monkeypatch) -> None:

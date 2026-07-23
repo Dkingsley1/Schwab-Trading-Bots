@@ -36,6 +36,14 @@ BROWSER_APP_ALIASES = {
 }
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _browser_auth_disabled() -> bool:
+    return _env_flag("SCHWAB_AUTH_BROWSER_DISABLED", "0") or not _env_flag("SCHWAB_AUTH_ALLOW_BROWSER_OPEN", "1")
+
+
 def _token_status(path: Path) -> Dict[str, Any]:
     return common_token_status(path)
 
@@ -170,9 +178,15 @@ def main() -> int:
     parser.add_argument(
         "--min-expires-seconds",
         type=float,
-        default=float(os.getenv("SCHWAB_AUTH_MIN_EXPIRES_SECONDS", os.getenv("PREMARKET_TOKEN_MIN_EXPIRES_SECONDS", "600"))),
+        default=float(os.getenv("SCHWAB_AUTH_MIN_EXPIRES_SECONDS", os.getenv("PREMARKET_TOKEN_MIN_EXPIRES_SECONDS", "1500"))),
     )
     parser.add_argument("--requested-browser", default=os.getenv("SCHWAB_AUTH_REQUESTED_BROWSER", "chrome"))
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        default=_browser_auth_disabled(),
+        help="Do not open a browser; return a blocked status if interactive OAuth would be required.",
+    )
     parser.add_argument(
         "--prompt-before-browser",
         action="store_true",
@@ -245,6 +259,18 @@ def main() -> int:
         else:
             print("schwab_auth_refresh ok=0 reason=missing_credentials")
         return 2
+
+    if args.no_browser:
+        payload["reason"] = "browser_disabled_token_refresh_required"
+        payload["token_after"] = before
+        payload["refresh_needed_after"] = bool(refresh_needed_before)
+        payload["refresh_reason_after"] = refresh_reason_before
+        _write_json(out_path, payload)
+        if args.json:
+            print(json.dumps(payload, indent=2, ensure_ascii=True))
+        else:
+            print("schwab_auth_refresh ok=0 reason=browser_disabled_token_refresh_required")
+        return 3
 
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))

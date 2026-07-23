@@ -81,6 +81,7 @@ class ChannelMessage:
 class ChannelQueue:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
+        self.last_repair: Dict[str, Any] = {"active": False, "moved": [], "reason": ""}
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         if not self._schema_ready():
             self._ensure_schema()
@@ -117,7 +118,53 @@ class ChannelQueue:
             if "locked" in str(exc).lower():
                 return True
             return False
+        except sqlite3.DatabaseError as exc:
+            self._quarantine_corrupt_db(str(exc))
+            return False
         return {str(row[0] or "") for row in rows} >= {"channel_messages", "channel_consumer_state"}
+
+    def _quarantine_corrupt_db(self, reason: str) -> None:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+        moved: List[Dict[str, Any]] = []
+
+        candidates: list[tuple[Path, str, bool]] = []
+        if self.db_path.is_symlink():
+            candidates.append((self.db_path.resolve(strict=False), str(self.db_path), True))
+        else:
+            candidates.append((self.db_path, str(self.db_path), False))
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(f"{self.db_path}{suffix}")
+            if sidecar.exists() or sidecar.is_symlink():
+                candidates.append((sidecar.resolve(strict=False) if sidecar.is_symlink() else sidecar, str(sidecar), sidecar.is_symlink()))
+
+        for path, original_path, via_symlink in candidates:
+            try:
+                if not path.exists() and not path.is_symlink():
+                    continue
+                target = path.with_name(f"{path.name}.corrupt-{stamp}")
+                path.rename(target)
+                moved.append(
+                    {
+                        "original_path": original_path,
+                        "moved_path": str(target),
+                        "via_symlink": bool(via_symlink),
+                    }
+                )
+            except Exception as exc:
+                moved.append(
+                    {
+                        "original_path": original_path,
+                        "moved_path": "",
+                        "via_symlink": bool(via_symlink),
+                        "error": str(exc),
+                    }
+                )
+
+        self.last_repair = {
+            "active": bool(moved),
+            "reason": str(reason or "sqlite_database_error"),
+            "moved": moved,
+        }
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=30)
@@ -440,6 +487,71 @@ class ChannelQueue:
         finally:
             conn.close()
         return int(row[0] if row and row[0] is not None else 0)
+
+    def stale_prefix(
+        self,
+        *,
+        consumer: str,
+        channel: str,
+        stale_before: datetime,
+        limit: int = 5000,
+    ) -> Dict[str, Any]:
+        cons = str(consumer or "").strip()
+        ch = str(channel or "").strip()
+        if not cons or not ch:
+            return {"count": 0, "last_id": 0, "last_message_id": "", "oldest_created_at": "", "newest_created_at": ""}
+
+        state = self.consumer_state(consumer=cons, channel=ch)
+        last_seen_id = int(state.get("last_id") or 0)
+        max_rows = max(int(limit), 1)
+
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, message_id, created_at
+                FROM channel_messages
+                WHERE channel=? AND id>?
+                ORDER BY id
+                LIMIT ?
+                """,
+                (ch, last_seen_id, max_rows),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        stale_rows: list[tuple[int, str, str]] = []
+        stopped_at_fresh = False
+        for row in rows:
+            created_at = str(row[2] or "")
+            parsed = _parse_ts_utc(created_at)
+            if parsed is None or parsed >= stale_before:
+                stopped_at_fresh = True
+                break
+            stale_rows.append((int(row[0] or 0), str(row[1] or ""), created_at))
+
+        if not stale_rows:
+            return {
+                "count": 0,
+                "last_id": 0,
+                "last_message_id": "",
+                "oldest_created_at": "",
+                "newest_created_at": "",
+                "scanned_rows": len(rows),
+                "stopped_at_fresh": bool(stopped_at_fresh),
+            }
+
+        return {
+            "count": len(stale_rows),
+            "last_id": stale_rows[-1][0],
+            "last_message_id": stale_rows[-1][1],
+            "first_id": stale_rows[0][0],
+            "first_message_id": stale_rows[0][1],
+            "oldest_created_at": min(row[2] for row in stale_rows),
+            "newest_created_at": max(row[2] for row in stale_rows),
+            "scanned_rows": len(rows),
+            "stopped_at_fresh": bool(stopped_at_fresh),
+        }
 
 
 def default_queue_db_path(project_root: str | Path) -> str:

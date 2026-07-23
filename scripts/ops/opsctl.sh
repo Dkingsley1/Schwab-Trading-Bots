@@ -25,6 +25,9 @@ case "$cmd" in
     ;;
 esac
 
+PY="$(resolve_runtime_python)"
+TRAINING_PY="$(resolve_training_python)"
+
 load_runtime_profile() {
   local profile_name="${1:-live}"
   if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
@@ -37,7 +40,7 @@ load_runtime_profile() {
   export ALLOW_ORDER_EXECUTION="${ALLOW_ORDER_EXECUTION:-0}"
   export TOP_BOT_PAPER_TRADING_ENABLED="${TOP_BOT_PAPER_TRADING_ENABLED:-1}"
   export TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED="${TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED:-1}"
-  export PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"
+  export PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1}"
   export PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"
   export PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"
   export LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"
@@ -148,6 +151,27 @@ refresh_system_self_model_quietly() {
   "$PY" "$PROJECT_ROOT/scripts/ops/system_self_model.py" --json >/dev/null 2>&1 || true
 }
 
+training_pcore_env() {
+  export BOT_CPU_ALLOCATION_POLICY="${BOT_CPU_ALLOCATION_POLICY:-performance_core_primary}"
+  export BOT_CPU_QOS_POLICY="${BOT_CPU_QOS_POLICY:-performance_core_primary_no_background_writer}"
+  export BOT_CPU_SCHEDULER_INTENT="${BOT_CPU_SCHEDULER_INTENT:-performance_core_training}"
+  export TRAINING_PCORE_ALLOWED_WHEN_BACKLOG_GREEN="${TRAINING_PCORE_ALLOWED_WHEN_BACKLOG_GREEN:-1}"
+  export TRAINING_PCORE_MAX_WORKERS="${TRAINING_PCORE_MAX_WORKERS:-3}"
+  export TRAINING_PCORE_NICE="${TRAINING_PCORE_NICE:-0}"
+  export RUNTIME_THROTTLE_USE_TASKPOLICY_BACKGROUND="${RUNTIME_THROTTLE_USE_TASKPOLICY_BACKGROUND:-0}"
+  export RUNTIME_THROTTLE_RESEARCH_NICE="${RUNTIME_THROTTLE_RESEARCH_NICE:-0}"
+}
+
+training_pcore_exec() {
+  local nice_value="${TRAINING_PCORE_NICE:-0}"
+  case "$nice_value" in
+    ''|*[!0-9-]*)
+      nice_value=0
+      ;;
+  esac
+  exec /usr/bin/nice -n "$nice_value" "$@"
+}
+
 run_then_refresh_self_model() {
   set +e
   "$@"
@@ -214,6 +238,7 @@ stop_core_stack_supervisors() {
   stop_launchd_service "com.dankingsley.shadow_watchdog"
   stop_launchd_service "com.dankingsley.all_sleeves"
   stop_launchd_service "com.dankingsley.ops.watchdog"
+  stop_launchd_service "com.dankingsley.ops.sql_link_writer"
 }
 
 runtime_status_lines() {
@@ -238,7 +263,7 @@ runtime_status_lines() {
 }
 
 all_sleeves_process_lines() {
-  ps -axo pid,ppid,etime,command | grep -F "scripts/run_all_sleeves.py --with-aggressive-modes" | grep -v grep || true
+  ps -axo pid,ppid,etime,command | grep -F "scripts/run_all_sleeves.py" | grep -v "scripts/shadow_watchdog.py" | grep -v grep || true
 }
 
 all_sleeves_running() {
@@ -307,7 +332,7 @@ start_schwab_live_loops() {
     TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES="$options_paper_profiles" \
     PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}" \
     PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}" \
-    PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}" \
+    PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1}" \
     RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES="${RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES:-1}" \
     SPECIALIZED_SLEEVE_INTERVAL="$specialized_interval" \
     SLEEVE_WORKERS_SPECIALIZED="$specialized_workers" \
@@ -322,7 +347,7 @@ start_schwab_live_loops() {
     PYTORCH_REPLAY_CANARY_ENABLED="${PYTORCH_REPLAY_CANARY_ENABLED:-0}" \
     PYTHONUNBUFFERED=1 nohup "${cmd[@]}" > "$log_file" 2>&1 & disown
   else
-    PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}" \
+    PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1}" \
     RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES="${RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES:-1}" \
     SPECIALIZED_SLEEVE_INTERVAL="$specialized_interval" \
     SLEEVE_WORKERS_SPECIALIZED="$specialized_workers" \
@@ -339,7 +364,7 @@ start_schwab_live_loops() {
   fi
   sleep 2
 
-  if ps -axo command | grep -F "scripts/run_all_sleeves.py --with-aggressive-modes" | grep -v grep >/dev/null 2>&1; then
+  if ps -axo command | grep -F "scripts/run_all_sleeves.py" | grep -v "scripts/shadow_watchdog.py" | grep -v grep >/dev/null 2>&1; then
     echo "$log_file"
     echo "schwab_live_loops_started simulate=0 paper_mode=$paper_mode"
     OPS_WATCHDOG_REFRESH_REPORTS=0 "$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py" --json >/dev/null 2>&1 || true
@@ -352,11 +377,21 @@ start_schwab_live_loops() {
 }
 
 coinbase_spot_process_lines() {
-  ps -axo pid,command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v " --profile crypto_futures" | grep -v grep || true
+  ps -axo pid,stat,command | awk '
+    index($0, "scripts/run_shadow_training_loop.py --broker coinbase") > 0 &&
+    index($0, " --profile crypto_futures") == 0 &&
+    index($0, "awk ") == 0 {
+      print
+    }
+  ' || true
+}
+
+coinbase_spot_live_process_lines() {
+  coinbase_spot_process_lines | awk '$2 !~ /^T/ { print }' || true
 }
 
 coinbase_spot_running() {
-  coinbase_spot_process_lines | grep -q .
+  coinbase_spot_live_process_lines | grep -q .
 }
 
 kill_coinbase_spot_loops() {
@@ -364,14 +399,53 @@ kill_coinbase_spot_loops() {
   pids="$(coinbase_spot_process_lines | awk '{print $1}')"
   if [[ -n "${pids//[[:space:]]/}" ]]; then
     while IFS= read -r pid; do
+      [[ -n "$pid" ]] && kill -CONT "$pid" >/dev/null 2>&1 || true
       [[ -n "$pid" ]] && kill "$pid" >/dev/null 2>&1 || true
+    done <<< "$pids"
+    sleep 1
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1 && kill -KILL "$pid" >/dev/null 2>&1 || true
     done <<< "$pids"
   fi
 }
 
 kill_coinbase_futures_loops() {
   local futures_profile="${COINBASE_FUTURES_PROFILE:-crypto_futures}"
-  pkill -f "scripts/run_shadow_training_loop.py --broker coinbase --profile $futures_profile" || true
+  local pids
+  pids="$(ps -axo pid,command | awk -v pattern="scripts/run_shadow_training_loop.py --broker coinbase --profile $futures_profile" 'index($0, pattern) > 0 && index($0, "awk ") == 0 { print $1 }')"
+  if [[ -n "${pids//[[:space:]]/}" ]]; then
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && kill -CONT "$pid" >/dev/null 2>&1 || true
+      [[ -n "$pid" ]] && kill "$pid" >/dev/null 2>&1 || true
+    done <<< "$pids"
+    sleep 1
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1 && kill -KILL "$pid" >/dev/null 2>&1 || true
+    done <<< "$pids"
+  fi
+}
+
+coinbase_futures_process_lines() {
+  local futures_profile="${COINBASE_FUTURES_PROFILE:-crypto_futures}"
+  ps -axo pid,stat,command | awk -v pattern="scripts/run_shadow_training_loop.py --broker coinbase --profile $futures_profile" '
+    index($0, pattern) > 0 && index($0, "awk ") == 0 {
+      print
+    }
+  ' || true
+}
+
+coinbase_futures_live_process_lines() {
+  coinbase_futures_process_lines | awk '$2 !~ /^T/ { print }' || true
+}
+
+coinbase_futures_running() {
+  coinbase_futures_live_process_lines | grep -q .
+}
+
+paper_crypto_feed_paused_for_pressure() {
+  local override_file="$PROJECT_ROOT/config/.env.runtime_resource_guard_override"
+  [[ -f "$override_file" ]] || return 1
+  grep -Eq "^[[:space:]]*PAPER_CRYPTO_FEED_RUNTIME_PAUSED_FOR_PRESSURE=([\"'])?1([\"'])?([[:space:]]|$)" "$override_file"
 }
 
 market_correlation_process_lines() {
@@ -388,6 +462,206 @@ fx_process_lines() {
 
 fx_running() {
   fx_process_lines | grep -q .
+}
+
+LIVEFEED_LOCAL_HEALTH_FILE="$HEALTH_DIR/livefeed_local_latest.json"
+
+livefeed_local_process_lines() {
+  local local_source="${LIVEFEED_LOCAL_SOURCE:-main}"
+  ps -axo pid,ppid,etime,command | awk -v script="$PROJECT_ROOT/scripts/ops/live_feed_tail.sh" -v source_arg="--source ${local_source}" '
+    index($0, script) > 0 && index($0, source_arg) > 0 && index($0, " --heavy") == 0 && index($0, " --snapshot") == 0 {
+      print
+    }
+  ' || true
+}
+
+livefeed_local_health_ok() {
+  local freshness_seconds="${LIVEFEED_LOCAL_FRESHNESS_SECONDS:-180}"
+  "$PY" - "$LIVEFEED_LOCAL_HEALTH_FILE" "$freshness_seconds" "$PROJECT_ROOT" <<'PY'
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+path = Path(sys.argv[1])
+freshness = float(sys.argv[2])
+project_root = Path(sys.argv[3])
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+
+stamp = str(payload.get("timestamp_utc") or "")
+try:
+    if stamp.endswith("Z"):
+        stamp = stamp[:-1] + "+00:00"
+    age = (datetime.now(timezone.utc) - datetime.fromisoformat(stamp)).total_seconds()
+except Exception:
+    raise SystemExit(1)
+
+ok = (
+    str(payload.get("status") or "").lower() == "running"
+    and bool(payload.get("alive", False))
+    and bool(payload.get("health_writer", False))
+    and str(payload.get("writer_mode") or "") == "local_mirror"
+    and age <= freshness
+    and int(payload.get("skipped_file_count") or payload.get("skipped_unreadable_count") or 0) == 0
+)
+try:
+    pid = int(payload.get("pid") or 0)
+except Exception:
+    pid = 0
+source = str(payload.get("source") or "main")
+if ok and pid > 0:
+    try:
+        os.kill(pid, 0)
+    except Exception:
+        script_path = str(project_root / "scripts" / "ops" / "live_feed_tail.sh")
+        source_arg = f"--source {source}"
+        try:
+            proc = subprocess.run(
+                ["ps", "-axo", "command"],
+                cwd=str(project_root),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+            local_mirror_alive = any(
+                (script_path in line or "scripts/ops/live_feed_tail.sh" in line)
+                and source_arg in line
+                and " --heavy" not in line
+                and " --snapshot" not in line
+                for line in proc.stdout.splitlines()
+            )
+        except Exception:
+            local_mirror_alive = False
+        ok = bool(local_mirror_alive)
+raise SystemExit(0 if ok else 1)
+PY
+}
+
+livefeed_local_health_summary() {
+  local freshness_seconds="${LIVEFEED_LOCAL_FRESHNESS_SECONDS:-180}"
+  "$PY" - "$LIVEFEED_LOCAL_HEALTH_FILE" "$freshness_seconds" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+path = Path(sys.argv[1])
+freshness = float(sys.argv[2])
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception as exc:
+    print(f"health=unreadable path={path} error={exc}")
+    raise SystemExit(0)
+
+stamp = str(payload.get("timestamp_utc") or "")
+age = ""
+try:
+    if stamp.endswith("Z"):
+        stamp = stamp[:-1] + "+00:00"
+    age = int((datetime.now(timezone.utc) - datetime.fromisoformat(stamp)).total_seconds())
+except Exception:
+    age = "unknown"
+
+print(
+    "health=readable "
+    f"status={payload.get('status', '')} "
+    f"alive={str(bool(payload.get('alive', False))).lower()} "
+    f"pid={payload.get('pid', '')} "
+    f"health_writer={str(bool(payload.get('health_writer', False))).lower()} "
+    f"writer_mode={payload.get('writer_mode', '')} "
+    f"source={payload.get('source', '')} "
+    f"age_seconds={age} "
+    f"freshness_seconds={int(freshness)} "
+    f"files={payload.get('file_count', '')} "
+    f"skipped={payload.get('skipped_file_count', payload.get('skipped_unreadable_count', ''))}"
+)
+PY
+}
+
+kill_livefeed_local_mirror() {
+  local pids pass
+  for pass in 1 2 3; do
+    pids="$(livefeed_local_process_lines | awk '{print $1}')"
+    [[ -n "${pids//[[:space:]]/}" ]] || return 0
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && kill "$pid" >/dev/null 2>&1 || true
+    done <<< "$pids"
+    sleep 1
+  done
+  pids="$(livefeed_local_process_lines | awk '{print $1}')"
+  [[ -n "${pids//[[:space:]]/}" ]] || return 0
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] && kill -9 "$pid" >/dev/null 2>&1 || true
+  done <<< "$pids"
+  sleep 1
+}
+
+wait_for_livefeed_local_health() {
+  local attempts="${1:-8}"
+  local delay_seconds="${2:-1}"
+  local i ok_count=0
+  for (( i=1; i<=attempts; i++ )); do
+    if livefeed_local_health_ok; then
+      ok_count=$((ok_count + 1))
+      if [[ "$ok_count" -ge 2 ]]; then
+        return 0
+      fi
+    else
+      ok_count=0
+    fi
+    sleep "$delay_seconds"
+  done
+  return 1
+}
+
+ensure_livefeed_local_mirror() {
+  local force_restart="${1:-0}"
+  local local_source="${LIVEFEED_LOCAL_SOURCE:-main}"
+  local local_lines="${LIVEFEED_LOCAL_LINES:-120}"
+  local local_heavy="${LIVEFEED_LOCAL_HEAVY:-0}"
+  local local_color="${LIVEFEED_LOCAL_COLOR:-never}"
+  local log_dir="$PROJECT_ROOT/governance/local_livefeed_logs"
+  local log_file="$log_dir/livefeed_refresh_$(date -u +%Y%m%d_%H%M%S).log"
+  local pid=""
+  mkdir -p "$log_dir"
+
+  if [[ "$force_restart" == "1" ]]; then
+    kill_livefeed_local_mirror
+  elif livefeed_local_process_lines | grep -q . && livefeed_local_health_ok; then
+    pid="$(livefeed_local_process_lines | awk 'NR==1{print $1}')"
+    echo "livefeed_local_mirror already_running pid=${pid:-unknown} source=$local_source action=kept_running $(livefeed_local_health_summary)"
+    return 0
+  elif livefeed_local_process_lines | grep -q .; then
+    echo "livefeed_local_mirror stale_or_unhealthy action=restart $(livefeed_local_health_summary)"
+    kill_livefeed_local_mirror
+  fi
+
+  if [[ -x "$PROJECT_ROOT/scripts/ops/run_livefeed_local_launchd.sh" ]]; then
+    LIVEFEED_HEALTH_WRITER=1 \
+    LIVEFEED_LOCAL_SOURCE="$local_source" \
+      LIVEFEED_LOCAL_LINES="$local_lines" \
+      LIVEFEED_LOCAL_HEAVY="$local_heavy" \
+      LIVEFEED_LOCAL_COLOR="$local_color" \
+      nohup "$PROJECT_ROOT/scripts/ops/run_livefeed_local_launchd.sh" > "$log_file" 2>&1 & disown
+  else
+    LIVEFEED_HEALTH_WRITER=1 nohup "$PROJECT_ROOT/scripts/ops/live_feed_tail.sh" --source "$local_source" --lines "$local_lines" --no-color > "$log_file" 2>&1 & disown
+  fi
+
+  if wait_for_livefeed_local_health 10 1; then
+    pid="$(livefeed_local_process_lines | awk 'NR==1{print $1}')"
+    echo "livefeed_local_mirror_started pid=${pid:-unknown} source=$local_source lines=$local_lines log=$log_file $(livefeed_local_health_summary)"
+    return 0
+  fi
+
+  echo "livefeed_local_mirror_failed_to_verify source=$local_source lines=$local_lines log=$log_file $(livefeed_local_health_summary)" >&2
+  tail -n 40 "$log_file" >&2 || true
+  return 1
 }
 
 latest_path_for_pattern() {
@@ -475,14 +749,16 @@ case "$cmd" in
     ;;
   retrain)
     # MLX Metal JIT can intermittently crash in some launch contexts; keep a stable default.
+    training_pcore_env
     RETRAIN_TRIGGER_SOURCE="opsctl_retrain" \
     RETRAIN_TRIGGER_LABEL="opsctl:retrain" \
     RETRAIN_TRIGGER_CONTEXT="manual_opsctl" \
     MLX_METAL_JIT="${MLX_METAL_JIT:-0}" \
-    exec "$TRAINING_PY" "$PROJECT_ROOT/scripts/weekly_retrain.py" --continue-on-error "$@"
+    training_pcore_exec "$TRAINING_PY" "$PROJECT_ROOT/scripts/weekly_retrain.py" --continue-on-error "$@"
     ;;
   retrain-orchestrate)
-    exec "$TRAINING_PY" "$PROJECT_ROOT/scripts/retrain_orchestrator.py" "$@"
+    training_pcore_env
+    training_pcore_exec "$TRAINING_PY" "$PROJECT_ROOT/scripts/retrain_orchestrator.py" "$@"
     ;;
   scorecard)
     exec "$PY" "$PROJECT_ROOT/scripts/unified_lane_scorecard.py" "$@"
@@ -509,6 +785,12 @@ case "$cmd" in
     ;;
   schwab-education-sync)
     exec "$PY" "$PROJECT_ROOT/scripts/collect_schwab_education_context.py" "$@"
+    ;;
+  schwab-symbol-news-sync|schwab-news-sync|symbol-news-catalyst)
+    exec "$PY" "$PROJECT_ROOT/scripts/collect_schwab_symbol_news.py" "$@"
+    ;;
+  ticker-news-sync|news-mesh-sync|symbol-news-mesh|ticker-news-mesh)
+    exec "$PY" "$PROJECT_ROOT/scripts/collect_ticker_news_context.py" "$@"
     ;;
   market-micro-sync)
     mm_args=("$@")
@@ -551,6 +833,9 @@ case "$cmd" in
   extended-quant-sync)
     exec "$PY" "$PROJECT_ROOT/scripts/collect_extended_quant_context.py" "$@"
     ;;
+  public-policy-sync|sovereign-liquidity-sync|free-public-context-sync)
+    exec "$PY" "$PROJECT_ROOT/scripts/collect_public_policy_context.py" "$@"
+    ;;
   quant-model-control|quant-engine-control|quant-models)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/quant_model_control.py" "$@"
     ;;
@@ -592,6 +877,9 @@ case "$cmd" in
     ;;
   crypto-market-sync)
     exec "$PY" "$PROJECT_ROOT/scripts/collect_crypto_market_context.py" "$@"
+    ;;
+  free-equity-reference-sync|equity-reference-sync|stock-reference-sync)
+    exec "$PY" "$PROJECT_ROOT/scripts/collect_free_equity_reference_context.py" "$@"
     ;;
   market-correlation-sync)
     corr_args=("$@")
@@ -646,6 +934,9 @@ case "$cmd" in
   source-verification-refresh|source-verification-autorefresh)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/source_verification_autorefresh.py" "$@"
     ;;
+  data-intelligence-layer|data-intelligence|source-data-intelligence|data-volume-intelligence)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/data_intelligence_layer.py" "$@"
+    ;;
   provider-mesh|provider-failover-mesh|provider-cooldown-mesh)
     exec "$PY" "$PROJECT_ROOT/scripts/provider_mesh_control.py" "$@"
     ;;
@@ -657,6 +948,12 @@ case "$cmd" in
     ;;
   sleeve-mechanics|sleeve-how-it-works|sleeve-map)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/sleeve_mechanics_report.py" "$@"
+    ;;
+  halt-trigger-status|kill-switch-status|killswitch-status|halts-status|halt-control-plane)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/halt_trigger_control_plane.py" "$@"
+    ;;
+  coordination-status|coordination-state|coordination-control-plane|system-coordination)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/coordination_state_control.py" "$@"
     ;;
   global-halt|global-halt-status|halt-status)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/global_risk_killswitch.py" --status-only --exit-zero "$@"
@@ -690,6 +987,18 @@ case "$cmd" in
     ;;
   library-utilization-router|library-router|non-mlx-library-router|dependency-utilization)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/library_utilization_router.py" "$@"
+    ;;
+  library-efficiency-deepening|library-efficiency-layers|efficiency-layers|library-1-10|dual-mode-library-efficiency)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/library_efficiency_deepening.py" "$@"
+    ;;
+  safety-bounded-advancement-frontier|advancement-frontier|push-until-safety-stop|safe-frontier-push)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/safety_bounded_advancement_frontier.py" "$@"
+    ;;
+  whole-system-safety-frontier|system-frontier-1-12|push-system-1-12|safe-system-frontier)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/whole_system_safety_frontier_push.py" "$@"
+    ;;
+  system-efficiency-frontier|efficiency-frontier|push-efficiency-until-stop|safe-efficiency-frontier)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/system_efficiency_frontier_push.py" "$@"
     ;;
   onnx-audit|onnx-runtime-audit)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/onnx_runtime_audit.py" "$@"
@@ -748,6 +1057,9 @@ case "$cmd" in
   ingestion-storage|ingestion-storage-control)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/ingestion_storage_control.py" "$@"
     ;;
+  data-plane-recovery|data-plane-recovery-controller|write-path-recovery)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/data_plane_recovery_controller.py" "$@"
+    ;;
   ingestion-storage-governor|storage-pressure-governor|governor)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/ingestion_storage_governor.py" "$@"
     ;;
@@ -756,6 +1068,9 @@ case "$cmd" in
     ;;
   raw-backlog-refiner|raw-backlog-refinement|raw-backlog)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/raw_backlog_refiner.py" "$@"
+    ;;
+  raw-training-compaction|raw-training-queue|raw-training-clear|training-raw-clear)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/raw_training_compaction_intelligence.py" "$@"
     ;;
   backpressure-drainer-fleet|backpressure-drainers|drainer-fleet)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/backpressure_drainer_fleet.py" "$@"
@@ -771,6 +1086,12 @@ case "$cmd" in
     ;;
   backlog-pcore-accelerator|pcore-backlog-accelerator|backlog-accelerator)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/backlog_pcore_accelerator.py" "$@"
+    ;;
+  backlog-pump-infrabots|pump-infrabots|sleeve-pump-infrabots|pump-control-bots)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/backlog_pump_infrabots.py" "$@"
+    ;;
+  backlog-drain-uniform-process|uniform-drain-process|drain-uniform|uniform-backpressure-drain)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/backlog_drain_uniform_process.py" "$@"
     ;;
   external-backlog-retry-bot|backlog-retry-bot|external-backlog-bot)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/external_backlog_retry_bot.py" "$@"
@@ -796,6 +1117,9 @@ case "$cmd" in
   data-collection-storage-guard|collector-storage-guard)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/data_collection_storage_guard.py" "$@"
     ;;
+  botlogs-space-recovery|botlogs-recovery|storage-space-recovery)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/data_collection_storage_guard.py" --cleanup-duplicates --space-recovery "$@"
+    ;;
   data-collection-observation-rollup|collector-observation-rollup)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/data_collection_observation_rollup.py" "$@"
     ;;
@@ -807,6 +1131,39 @@ case "$cmd" in
     ;;
   system-intelligence|whole-system-intelligence|system-intelligence-coordinator|system-signal-bus|system-brain|process-contracts|self-intelligence|system-self-intelligence|self-intelligence-layer|super-intelligence|system-super-intelligence|super-intelligence-layer|super-brain|codex-handoff|codex-attention|documentation-reporting-intelligence|docs-reporting-intelligence|readme-commands-reporting-intelligence)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/system_intelligence_coordinator.py" "$@"
+    ;;
+  codex-operator-bridge|codex-bridge|tell-codex|codex-trade-brief|codex-system-brief)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/codex_operator_bridge.py" "$@"
+    ;;
+  architecture-upgrade-scoreboard|architecture-scoreboard|upgrade-scoreboard)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/architecture_upgrade_scoreboard.py" "$@"
+    ;;
+  system-architecture-hardening|architecture-hardening|whole-system-architecture|architecture-deep-dive)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/system_architecture_hardening.py" "$@"
+    ;;
+  system-architecture-contract-graph|architecture-contract-graph|contract-graph|system-contract-graph)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/system_architecture_contract_graph.py" "$@"
+    ;;
+  system-expansion-execution|expansion-execution|twelve-expansions|architecture-expansion-layer)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/system_expansion_execution_layer.py" "$@"
+    ;;
+  system-architecture-autopilot|architecture-autopilot|architecture-repair-plan|system-contract-autopilot)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/system_architecture_autopilot.py" "$@"
+    ;;
+  system-intense-drills|intense-drills|drill-autopilot|system-drill-autopilot)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/system_intense_drill_autopilot.py" "$@"
+    ;;
+  system-adversarial-drills|adversarial-drills|red-team-drills|system-red-team-drills)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/system_adversarial_drill_autopilot.py" "$@"
+    ;;
+  system-plumbing-control|plumbing-control|plumbing-hardening|whole-system-plumbing)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/system_plumbing_control.py" "$@"
+    ;;
+  distributed-cell-architecture|cell-federation|system-cell-federation|distributed-cells|cell-architecture)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/distributed_cell_architecture.py" "$@"
+    ;;
+  cell-federation-intelligence|cell-intelligence|distributed-cell-intelligence|system-cell-intelligence)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/cell_federation_intelligence.py" "$@"
     ;;
   deeper-intelligence-layers|deep-intelligence-layers|deeper-system-intelligence|deeper-self-awareness|self-aware-system-layers|causal-world-model-layer|belief-ledger|digital-twin-replay|adversarial-simulator|self-scientific-method|resource-economist|promotion-court|living-ontology|operator-dialogue|constitutional-risk-layer)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/deeper_intelligence_layers.py" "$@"
@@ -841,8 +1198,35 @@ case "$cmd" in
   storage-resilience|storage-resilience-control)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_resilience_control.py" "$@"
     ;;
+  notification-escalation-ladder|notification-ladder|alert-ladder)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/notification_escalation_ladder.py" "$@"
+    ;;
+  reboot-resilience|reboot-resilience-guard|blackstart-launchd)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/reboot_resilience_guard.py" "$@"
+    ;;
+  unattended-soak-readiness|soak-readiness|thirty-day-soak|30-day-soak)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/unattended_soak_readiness.py" "$@"
+    ;;
+  soak-self-heal|soak-self-healing|self-healing-soak|self-heal-soak)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/soak_self_healing_control.py" "$@"
+    ;;
   storage-tier-policy|storage-tier)
     exec "$PY" "$PROJECT_ROOT/scripts/storage_tier_policy.py" "$@"
+    ;;
+  deep-cold-storage-layer|deep-cold-layer|cold-archive-layer)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/deep_cold_storage_layer.py" "$@"
+    ;;
+  retention-intelligence-v2|retention-v2|retention-intelligence|retention-report-card)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/retention_intelligence_v2.py" "$@"
+    ;;
+  hot-lane-retention-control|hot-lane-retention|hot-storage-lane|decision-hot-lane-control)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/hot_lane_retention_control.py" "$@"
+    ;;
+  storage-retention-unison|retention-unison|storage-metabolism|storage-retention-loop)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_retention_unison.py" "$@"
+    ;;
+  manifest-backed-offload|manifest-offload|storage-offload-worker)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/manifest_backed_offload_worker.py" "$@"
     ;;
   governance-telemetry-compactor|governance-channel-compactor|telemetry-compactor)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/governance_telemetry_compactor.py" "$@"
@@ -856,8 +1240,17 @@ case "$cmd" in
   runtime-training-snapshot|training-snapshot-runtime)
     exec "$PY" "$PROJECT_ROOT/scripts/build_runtime_training_snapshot.py" "$@"
     ;;
+  hdf5-training-cache|h5-training-cache|training-hdf5-cache|training-h5-cache)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/hdf5_training_cache.py" "$@"
+    ;;
   training-runtime-control|runtime-training-control)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/training_runtime_control.py" "$@"
+    ;;
+  training-drain-autopilot|drain-to-training|auto-training-drain|training-gate-autopilot)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/training_drain_autopilot.py" "$@"
+    ;;
+  overnight-training-window|training-overnight-window|overnight-train)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/overnight_training_window.py" "$@"
     ;;
   distillation-plan|teacher-student-plan|distill-new-bots)
     exec "$PY" "$PROJECT_ROOT/scripts/distill_new_bots.py" "$@"
@@ -898,6 +1291,9 @@ case "$cmd" in
   infrastructure-autofix|infra-autofix|infra-remediation)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/infrastructure_autofix_bot.py" "$@"
     ;;
+  stale-surface-autohealer|stale-autoheal|stale-healer|autoheal-stale)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/stale_surface_autohealer.py" "$@"
+    ;;
   system-cleanliness-autopilot|cleanliness-autopilot)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/system_cleanliness_autopilot.py" "$@"
     ;;
@@ -907,11 +1303,17 @@ case "$cmd" in
   infrabot-gap-roster|infrabot-roster|infra-gap-roster|gap-infrabots)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/infrabot_gap_roster.py" "$@"
     ;;
+  infrabot-adaptive-governor|adaptive-infrabots|infrabot-governor|system-needs-router)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/infrabot_adaptive_governor.py" "$@"
+    ;;
   master-infra-supervisor|master-infrastructure-supervisor|infra-supervisor)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/master_infrastructure_supervisor.py" "$@"
     ;;
   coinbase-api-health|coinbase-health)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/coinbase_api_health.py" "$@"
+    ;;
+  system-drift-registry|drift-registry)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/system_drift_registry.py" "$@"
     ;;
   system-drift-guard|drift-guard|drift-mesh)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/system_drift_guard.py" "$@"
@@ -955,8 +1357,17 @@ case "$cmd" in
   live-canary-control|canary-control|supervised-canary)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_canary_control.py" "$@"
     ;;
+  live-money-readiness|live-money-contract|faithful-live-money)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/live_money_readiness_contract.py" "$@"
+    ;;
   paper-400-ramp|paper-ramp-400|paper-cap-400|paper-400-readiness)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/paper_400_ramp_control.py" "$@"
+    ;;
+  runtime-paper-regression-guard|runtime-paper-guard|paper-runtime-guard)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/runtime_paper_regression_guard.py" "$@"
+    ;;
+  paper-execution-truth|paper-truth|paper-execution-truth-layer)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/paper_execution_truth_layer.py" "$@"
     ;;
   paper-live-data-standard|paper-standard|bot-paper-standard|standard-paper-live-data)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/paper_live_data_standard.py" "$@"
@@ -1012,17 +1423,32 @@ case "$cmd" in
   system-needs|system-needs-intelligence|what-do-you-need)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/system_needs_intelligence.py" "$@"
     ;;
+  low-grade-finalizer|low-grade-audit-finalizer|grade-finalizer)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/low_grade_finalizer.py" "$@"
+    ;;
   decision-provenance|decision-provenance-cards)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/decision_provenance_cards.py" "$@"
     ;;
   decision-intelligence|decision-intelligence-layer|market-move-explainer|market-explainer)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/decision_intelligence_layer.py" "$@"
     ;;
+  evidence-packet|proof-packet|program-head-packet|paper-evidence-packet)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/evidence_packet.py" "$@"
+    ;;
   paper-profitability-control|profitability-control|paper-profitability)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/paper_profitability_control.py" "$@"
     ;;
   sleeve-profitability-dashboard|sleeve-profitability|paper-sleeves-profitability|sleeve-pnl)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/sleeve_profitability_dashboard.py" "$@"
+    ;;
+  market-posture-control|posture-control|defensive-posture)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/market_posture_control.py" "$@"
+    ;;
+  market-cycle-engine|market-cycle-extraction|cycle-engine|cycle-extraction)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/market_cycle_extraction_engine.py" "$@"
+    ;;
+  operating-platform-upgrade|platform-upgrade-12|operating-platform-12|huge-platform-upgrade)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/operating_platform_upgrade.py" "$@"
     ;;
   system-done-for-today|done-for-today|done-today|stop-chasing)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/system_done_for_today.py" "$@"
@@ -1033,8 +1459,29 @@ case "$cmd" in
   income-operating-platform|income-platform-control|income-reliability|income-control)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/income_operating_platform.py" "$@"
     ;;
+  capital-growth-intelligence|capital-growth-plan|money-growth-plan|capital-plan|growth-plan)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/capital_growth_intelligence.py" "$@"
+    ;;
+  capital-growth-awareness|money-growth-awareness|capital-awareness-bridge|money-tree-awareness)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/capital_growth_awareness_bridge.py" "$@"
+    ;;
+  capital-rotation-control|capital-rotation|money-rotation|sleeve-capital-rotation)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/capital_rotation_control.py" "$@"
+    ;;
+  schwab-indicator-intelligence|indicator-intelligence|schwab-indicators|schwab-studies|schwab-strategies)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/schwab_indicator_intelligence.py" "$@"
+    ;;
   account-policy-context|account-rules|account-context)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/account_policy_context.py" "$@"
+    ;;
+  account-position-study|position-study|portfolio-position-study|study-positions)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/account_position_study.py" "$@"
+    ;;
+  schwab-account-snapshot-refresh|account-snapshot-refresh|refresh-account-positions|refresh-position-study)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/schwab_account_snapshot_refresh.py" "$@"
+    ;;
+  covered-call-roll-watch|covered-call-watch|roll-covered-calls)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/covered_call_roll_watch.py" "$@"
     ;;
   master-grandmaster-train|grandmaster-train|master-profitability-train)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/master_grandmaster_profitability_trainer.py" "$@"
@@ -1117,6 +1564,9 @@ case "$cmd" in
     fi
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/memory_efficiency_control.py" "$subcmd" "$@"
     ;;
+  support-maintenance-gate|support-gate|maintenance-support-gate)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/support_maintenance_gate.py" "$@"
+    ;;
   swap-pressure-governor|swap-pressure|swap-governor)
     subcmd="${1:-status}"
     shift || true
@@ -1172,6 +1622,9 @@ case "$cmd" in
   platform-stabilization|quality-stabilizer|growth-stabilizer|stabilization-quality|stability-quality|pressure-quality-stabilizer)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/platform_stabilization_quality.py" "$@"
     ;;
+  feature-maturity|feature-maturity-control|maturity-control|maturity-leveling)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/feature_maturity_control.py" "$@"
+    ;;
   platform-settlement-stabilization|settlement-stabilization|market-hours-stabilization|queue-settlement-stabilizer|post-expansion-stabilizer)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/platform_settlement_stabilization.py" "$@"
     ;;
@@ -1217,6 +1670,12 @@ case "$cmd" in
   quant-strategy-gap|strategy-gap-expansion|tradable-alpha-gap|convertible-bond-arb|capital-structure-arb|merger-event-arb|etf-basket-arb|index-rebalance-arb|vol-risk-premium|cross-asset-carry)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/quant_strategy_gap_expansion.py" "$@"
     ;;
+  deep-quant-layer-upgrade|deep-quant-layers|quant-depth-layers|quant-1-10|quant-ten-layers)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/deep_quant_layer_upgrade.py" "$@"
+    ;;
+  quant-strategy-lane-upgrades|quant-lane-upgrades|strategy-lane-upgrades|seven-lane-upgrades)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/quant_strategy_lane_upgrades.py" "$@"
+    ;;
   quant-storage-backlog-accommodation|quant-strategy-storage-backlog-accommodation|storage-backlog-accommodation)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/quant_strategy_storage_backlog_accommodation.py" "$@"
     ;;
@@ -1240,6 +1699,9 @@ case "$cmd" in
     ;;
   grade-regression-guard|regression-guard)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/grade_regression_guard.py" "$@"
+    ;;
+  adaptive-regression-guard|adaptive-regression|regression-guard-adaptive)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/adaptive_regression_guard.py" "$@"
     ;;
   grade-regression-autopilot|grade-regression-bot|regression-upgrade)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/grade_regression_autopilot.py" "$@"
@@ -1299,6 +1761,12 @@ case "$cmd" in
   health-fast|fast-health)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/health_fast.py" "$@"
     ;;
+  a-plus-operating-packet|a-plus-packet|a-plus-scorecard|a-plus-system)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/a_plus_operating_packet.py" "$@"
+    ;;
+  livefeed-refresh-guard|feed-refresh-guard|livefeed-guard)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/livefeed_refresh_guard.py" "$@"
+    ;;
   runtime-gate-dashboard|gate-dashboard|runtime-gates)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/runtime_gate_dashboard.py" "$@"
     ;;
@@ -1326,7 +1794,7 @@ case "$cmd" in
   phone-feed)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_feed_phone_server.py" "$@"
     ;;
-  py314-canary|py314-ready|python314-canary|python314-ready)
+  py314-canary|py314-ready|python314-canary|python314-ready|py314-migration-audit|python314-migration-audit)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/python314_canary.py" --json "$@"
     ;;
   doctor)
@@ -1433,13 +1901,18 @@ case "$cmd" in
       shift
     done
 
+    if paper_crypto_feed_paused_for_pressure; then
+      echo "coinbase_loop paused_for_runtime_pressure"
+      exit 0
+    fi
+
     if [[ "$FORCE_RESTART" == "1" ]]; then
       kill_coinbase_spot_loops
       sleep 1
     fi
 
     if coinbase_spot_running; then
-      PID="$(coinbase_spot_process_lines | awk 'NR==1{print $1}')"
+      PID="$(coinbase_spot_live_process_lines | awk 'NR==1{print $1}')"
       LATEST_LOG="$(latest_path_for_pattern "$PROJECT_ROOT/logs/coinbase_live_*.log")"
       echo "coinbase_loop already running pid=$PID"
       [[ -n "$LATEST_LOG" ]] && echo "$LATEST_LOG"
@@ -1464,9 +1937,9 @@ case "$cmd" in
     if [[ "$PAPER_MODE" == "1" ]]; then
       paper_trade_lock_env
       echo "coinbase_paper=enabled top_n=$PAPER_TOP_N min_acc=$PAPER_MIN_ACC profiles=$PAPER_PROFILES"
-      TOP_BOT_PAPER_TRADING_ENABLED=1       TOP_BOT_PAPER_TRADING_TOP_N="$PAPER_TOP_N"       TOP_BOT_PAPER_TRADING_MIN_ACC="$PAPER_MIN_ACC"       TOP_BOT_PAPER_TRADING_PROFILES="$PAPER_PROFILES"       PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"       PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"       PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
+      TOP_BOT_PAPER_TRADING_ENABLED=1       TOP_BOT_PAPER_TRADING_TOP_N="$PAPER_TOP_N"       TOP_BOT_PAPER_TRADING_MIN_ACC="$PAPER_MIN_ACC"       TOP_BOT_PAPER_TRADING_PROFILES="$PAPER_PROFILES"       PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"       PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"       PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
     else
-      PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
+      PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
     fi
 
     sleep 2
@@ -1504,13 +1977,18 @@ case "$cmd" in
       shift
     done
 
+    if paper_crypto_feed_paused_for_pressure; then
+      echo "coinbase_futures_loop paused_for_runtime_pressure profile=$FUTURES_PROFILE"
+      exit 0
+    fi
+
     if [[ "$FORCE_RESTART" == "1" ]]; then
       pkill -f "scripts/run_shadow_training_loop.py --broker coinbase --profile $FUTURES_PROFILE" || true
       sleep 1
     fi
 
-    if ps -axo command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase --profile $FUTURES_PROFILE" | grep -v grep >/dev/null 2>&1; then
-      PID="$(ps -axo pid,command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase --profile $FUTURES_PROFILE" | grep -v grep | awk 'NR==1{print $1}')"
+    if coinbase_futures_running; then
+      PID="$(coinbase_futures_live_process_lines | awk 'NR==1{print $1}')"
       LATEST_LOG="$(latest_path_for_pattern "$PROJECT_ROOT/logs/coinbase_futures_live_*.log")"
       echo "coinbase_futures_loop already running pid=$PID profile=$FUTURES_PROFILE"
       [[ -n "$LATEST_LOG" ]] && echo "$LATEST_LOG"
@@ -1537,20 +2015,20 @@ case "$cmd" in
     if [[ "$PAPER_MODE" == "1" ]]; then
       paper_trade_lock_env
       echo "coinbase_futures_paper=enabled profile=$FUTURES_PROFILE top_n=$PAPER_TOP_N min_acc=$PAPER_MIN_ACC profiles=$PAPER_PROFILES"
-      SHADOW_PROFILE="$FUTURES_PROFILE"       SHADOW_DOMAIN=crypto       SHADOW_THRESHOLD_SHIFT="${COINBASE_FUTURES_THRESHOLD_SHIFT:-0.02}"       SIZING_MAX_NOTIONAL_PCT="${COINBASE_FUTURES_MAX_NOTIONAL_PCT:-0.03}"       PORTFOLIO_BASE_BUDGET="${COINBASE_FUTURES_BASE_BUDGET:-0.50}"       CROSS_SYMBOL_MAX_LONG="${COINBASE_FUTURES_MAX_LONG:-4}"       CROSS_SYMBOL_MAX_SHORT="${COINBASE_FUTURES_MAX_SHORT:-4}"       RISK_MAX_DAILY_LOSS_PROXY="${COINBASE_FUTURES_MAX_DAILY_LOSS_PROXY:-0.03}"       LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"       LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"       LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"       LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"       TOP_BOT_PAPER_TRADING_ENABLED=1       TOP_BOT_PAPER_TRADING_TOP_N="$PAPER_TOP_N"       TOP_BOT_PAPER_TRADING_MIN_ACC="$PAPER_MIN_ACC"       TOP_BOT_PAPER_TRADING_PROFILES="$PAPER_PROFILES"       PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"       PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"       PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_FUTURES_ADAPTIVE_INTERVAL_ENABLED:-${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
+      SHADOW_PROFILE="$FUTURES_PROFILE"       SHADOW_DOMAIN=crypto       SHADOW_THRESHOLD_SHIFT="${COINBASE_FUTURES_THRESHOLD_SHIFT:-0.02}"       SIZING_MAX_NOTIONAL_PCT="${COINBASE_FUTURES_MAX_NOTIONAL_PCT:-0.03}"       PORTFOLIO_BASE_BUDGET="${COINBASE_FUTURES_BASE_BUDGET:-0.50}"       CROSS_SYMBOL_MAX_LONG="${COINBASE_FUTURES_MAX_LONG:-4}"       CROSS_SYMBOL_MAX_SHORT="${COINBASE_FUTURES_MAX_SHORT:-4}"       RISK_MAX_DAILY_LOSS_PROXY="${COINBASE_FUTURES_MAX_DAILY_LOSS_PROXY:-0.03}"       LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"       LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"       LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"       LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"       TOP_BOT_PAPER_TRADING_ENABLED=1       TOP_BOT_PAPER_TRADING_TOP_N="$PAPER_TOP_N"       TOP_BOT_PAPER_TRADING_MIN_ACC="$PAPER_MIN_ACC"       TOP_BOT_PAPER_TRADING_PROFILES="$PAPER_PROFILES"       PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"       PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"       PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_FUTURES_ADAPTIVE_INTERVAL_ENABLED:-${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
     else
-      SHADOW_PROFILE="$FUTURES_PROFILE"       SHADOW_DOMAIN=crypto       SHADOW_THRESHOLD_SHIFT="${COINBASE_FUTURES_THRESHOLD_SHIFT:-0.02}"       SIZING_MAX_NOTIONAL_PCT="${COINBASE_FUTURES_MAX_NOTIONAL_PCT:-0.03}"       PORTFOLIO_BASE_BUDGET="${COINBASE_FUTURES_BASE_BUDGET:-0.50}"       CROSS_SYMBOL_MAX_LONG="${COINBASE_FUTURES_MAX_LONG:-4}"       CROSS_SYMBOL_MAX_SHORT="${COINBASE_FUTURES_MAX_SHORT:-4}"       RISK_MAX_DAILY_LOSS_PROXY="${COINBASE_FUTURES_MAX_DAILY_LOSS_PROXY:-0.03}"       LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"       LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"       LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"       LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"       PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_FUTURES_ADAPTIVE_INTERVAL_ENABLED:-${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
+      SHADOW_PROFILE="$FUTURES_PROFILE"       SHADOW_DOMAIN=crypto       SHADOW_THRESHOLD_SHIFT="${COINBASE_FUTURES_THRESHOLD_SHIFT:-0.02}"       SIZING_MAX_NOTIONAL_PCT="${COINBASE_FUTURES_MAX_NOTIONAL_PCT:-0.03}"       PORTFOLIO_BASE_BUDGET="${COINBASE_FUTURES_BASE_BUDGET:-0.50}"       CROSS_SYMBOL_MAX_LONG="${COINBASE_FUTURES_MAX_LONG:-4}"       CROSS_SYMBOL_MAX_SHORT="${COINBASE_FUTURES_MAX_SHORT:-4}"       RISK_MAX_DAILY_LOSS_PROXY="${COINBASE_FUTURES_MAX_DAILY_LOSS_PROXY:-0.03}"       LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"       LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"       LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"       LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"       PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_FUTURES_ADAPTIVE_INTERVAL_ENABLED:-${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
     fi
 
     sleep 2
-    if ps -axo command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase --profile $FUTURES_PROFILE" | grep -v grep >/dev/null 2>&1; then
+    if coinbase_futures_running; then
       echo "$LOG"
       echo "coinbase_futures_loop_started profile=$FUTURES_PROFILE simulate=$COINBASE_SIMULATE paper_mode=$PAPER_MODE"
       OPS_WATCHDOG_REFRESH_REPORTS=0 "$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py" --require-coinbase-futures --json >/dev/null 2>&1 || true
     else
       OPS_WATCHDOG_REFRESH_REPORTS=0 "$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py" --require-coinbase-futures --json >/dev/null 2>&1 || true
       sleep 2
-      if ps -axo command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase --profile $FUTURES_PROFILE" | grep -v grep >/dev/null 2>&1; then
+      if coinbase_futures_running; then
         echo "$LOG"
         echo "coinbase_futures_loop_started profile=$FUTURES_PROFILE simulate=$COINBASE_SIMULATE paper_mode=$PAPER_MODE via=watchdog"
       else
@@ -1662,9 +2140,15 @@ case "$cmd" in
   feed-refresh|livefeed-refresh|live-feed-refresh)
     SOURCE="all"
     ENFORCE_ALL_SOURCE=0
+    LIVEFEED_MIRROR_ONLY=0
     LIVEFEED_FORCE_RESTART=0
     if [[ "$cmd" == "livefeed-refresh" || "$cmd" == "live-feed-refresh" ]]; then
       ENFORCE_ALL_SOURCE=1
+      if [[ "${LIVEFEED_REFRESH_FULL_STACK_DEFAULT:-0}" == "1" ]]; then
+        LIVEFEED_MIRROR_ONLY=0
+      else
+        LIVEFEED_MIRROR_ONLY=1
+      fi
     fi
     SCHWAB_PAPER=1
     COINBASE_PAPER=1
@@ -1673,15 +2157,17 @@ case "$cmd" in
       case "$1" in
         -h|--help)
           if [[ "$ENFORCE_ALL_SOURCE" == "1" ]]; then
-            echo "Usage: opsctl.sh $cmd [--dry-run] [--force-restart] [--paper|--schwab-paper] [--coinbase-paper]"
+            echo "Usage: opsctl.sh $cmd [--dry-run] [--force-restart] [--mirror-only|--stack-refresh] [--paper|--schwab-paper] [--coinbase-paper]"
           else
-            echo "Usage: opsctl.sh $cmd [--dry-run] [--force-restart] [--source schwab|coinbase|fx|all] [--paper|--schwab-paper] [--coinbase-paper]"
+            echo "Usage: opsctl.sh $cmd [--dry-run] [--force-restart] [--mirror-only|--stack-refresh] [--source schwab|coinbase|fx|all] [--paper|--schwab-paper] [--coinbase-paper]"
           fi
-          echo "Ensure live feed loops are running; --force-restart performs a hard bounce."
+          echo "Refresh livefeed continuity. livefeed-refresh defaults to --mirror-only; use --stack-refresh for sleeve loop starts."
           exit 0
           ;;
         --dry-run) DRY_RUN=1 ;;
         --force-restart) LIVEFEED_FORCE_RESTART=1 ;;
+        --mirror-only|--local-only) LIVEFEED_MIRROR_ONLY=1 ;;
+        --stack-refresh|--refresh-loops) LIVEFEED_MIRROR_ONLY=0 ;;
         --source)
           if [[ "$ENFORCE_ALL_SOURCE" == "1" ]]; then
             echo "$cmd refreshes all live feeds and does not accept --source" >&2
@@ -1709,6 +2195,9 @@ case "$cmd" in
       echo "schwab_paper=$SCHWAB_PAPER"
       echo "coinbase_paper=$COINBASE_PAPER"
       echo "force_restart=$LIVEFEED_FORCE_RESTART"
+      echo "mirror_only=$LIVEFEED_MIRROR_ONLY"
+      echo "local_mirror=refresh"
+      echo "local_mirror_source=${LIVEFEED_LOCAL_SOURCE:-main}"
       exit 0
     fi
 
@@ -1734,6 +2223,18 @@ case "$cmd" in
     fi
     printf '%s\n' "$$" > "$FEED_REFRESH_LOCK_DIR/pid"
     trap 'rm -f "$FEED_REFRESH_LOCK_DIR/pid" >/dev/null 2>&1 || true; rmdir "$FEED_REFRESH_LOCK_DIR" >/dev/null 2>&1 || true' EXIT INT TERM
+
+    if [[ "$LIVEFEED_MIRROR_ONLY" == "1" ]]; then
+      LIVEFEED_LOCAL_MIRROR_STATUS="skipped"
+      if ensure_livefeed_local_mirror "$LIVEFEED_FORCE_RESTART"; then
+        LIVEFEED_LOCAL_MIRROR_STATUS="ready"
+      else
+        echo "livefeed_refresh_failed source=$SOURCE reason=local_mirror_not_ready mirror_only=1" >&2
+        exit 1
+      fi
+      echo "livefeed_refresh_completed source=$SOURCE schwab_paper=$SCHWAB_PAPER coinbase_paper=$COINBASE_PAPER force_restart=$LIVEFEED_FORCE_RESTART mirror_only=1 local_mirror=$LIVEFEED_LOCAL_MIRROR_STATUS"
+      exit 0
+    fi
 
     if [[ "$SOURCE" == "schwab" || "$SOURCE" == "all" ]]; then
       "$PROJECT_ROOT/scripts/ops/opsctl.sh" dividend-drip-sync --json >/dev/null 2>&1 || true
@@ -1802,7 +2303,18 @@ case "$cmd" in
     else
       echo "market_correlation_sync_skipped async=0 sync=0"
     fi
-    echo "livefeed_refresh_completed source=$SOURCE schwab_paper=$SCHWAB_PAPER coinbase_paper=$COINBASE_PAPER force_restart=$LIVEFEED_FORCE_RESTART"
+
+    LIVEFEED_LOCAL_MIRROR_STATUS="skipped"
+    if [[ "$SOURCE" == "all" ]]; then
+      if ensure_livefeed_local_mirror "$LIVEFEED_FORCE_RESTART"; then
+        LIVEFEED_LOCAL_MIRROR_STATUS="ready"
+      else
+        echo "livefeed_refresh_failed source=$SOURCE reason=local_mirror_not_ready" >&2
+        exit 1
+      fi
+    fi
+
+    echo "livefeed_refresh_completed source=$SOURCE schwab_paper=$SCHWAB_PAPER coinbase_paper=$COINBASE_PAPER force_restart=$LIVEFEED_FORCE_RESTART mirror_only=$LIVEFEED_MIRROR_ONLY local_mirror=$LIVEFEED_LOCAL_MIRROR_STATUS"
     exit 0
     ;;
   storage-switch-local|storage-safe-eject)
@@ -1888,11 +2400,17 @@ case "$cmd" in
   storage-transition-coordinator|storage-transition-bots)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_transition_coordinator.py" "$@"
     ;;
+  storage-sqlite-hot-route|sqlite-hot-route|storage-hot-sqlite)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_sqlite_hot_route.py" "$@"
+    ;;
   storage-disaster-recovery|storage-recovery-bot)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_disaster_recovery.py" "$@"
     ;;
   feed)
     exec "$PROJECT_ROOT/scripts/ops/live_feed_tail.sh" "$@"
+    ;;
+  heavy-feed|guarded-heavy-feed|heavy-tail|guarded-heavy-tail)
+    exec "$PROJECT_ROOT/scripts/ops/live_feed_heavy_guarded.sh" "$@"
     ;;
   schwab-tail)
     exec "$PROJECT_ROOT/scripts/ops/live_feed_tail.sh" --source schwab "$@"
@@ -2089,6 +2607,7 @@ case "$cmd" in
     ;;
   retrain-force-full)
     load_runtime_profile live
+    training_pcore_env
     RETRAIN_TRIGGER_SOURCE="opsctl_retrain_force_full" \
     RETRAIN_TRIGGER_LABEL="opsctl:retrain-force-full" \
     RETRAIN_TRIGGER_CONTEXT="manual_force_full" \
@@ -2110,6 +2629,7 @@ case "$cmd" in
       exit 2
     fi
     load_runtime_profile live
+    training_pcore_env
     RETRAIN_TRIGGER_SOURCE="opsctl_retrain_force_targeted" \
     RETRAIN_TRIGGER_LABEL="opsctl:retrain-force-targeted" \
     RETRAIN_TRIGGER_CONTEXT="manual_force_targeted" \
@@ -2125,8 +2645,9 @@ case "$cmd" in
     RETRAIN_DISTILLATION_STUDENT_EXTRA_PASS=0 \
     RETRAIN_NEW_BOT_EXTRA_PASS=0 \
     RETRAIN_RETIRE_PERSISTENT_LOSERS=0 \
+    RETRAIN_QUIET_CHILD_OUTPUT="${RETRAIN_QUIET_CHILD_OUTPUT:-1}" \
     MLX_METAL_JIT="${MLX_METAL_JIT:-0}" \
-    exec "$TRAINING_PY" "$PROJECT_ROOT/scripts/weekly_retrain.py" --continue-on-error "$@"
+    training_pcore_exec "$TRAINING_PY" "$PROJECT_ROOT/scripts/weekly_retrain.py" --continue-on-error "$@"
     ;;
   timeline-install-autoupdate)
     exec "$PROJECT_ROOT/scripts/install_project_timeline_autoupdate_launchd.sh" "$@"
@@ -2170,6 +2691,12 @@ case "$cmd" in
   notify-start)
     exec "$PROJECT_ROOT/scripts/install_mac_notification_watch_launchd.sh" "$@"
     ;;
+  startup-start-prompt|startup-prompt|login-start-prompt)
+    exec "$PROJECT_ROOT/scripts/install_startup_start_prompt_launchd.sh" "$@"
+    ;;
+  startup-start-prompt-test|startup-prompt-test|login-start-prompt-test)
+    exec "$PROJECT_ROOT/scripts/ops/run_startup_start_prompt_launchd.sh" "$@"
+    ;;
   notify-stop)
     LABEL="com.dankingsley.mac_notification_watch"
     UID_NUM="$(id -u)"
@@ -2182,6 +2709,12 @@ case "$cmd" in
     ;;
   notify-test)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/mac_notification_watch.py" --test "$@"
+    ;;
+  spacex-ipo-watch|spcx-ipo-watch|ipo-downside-watch)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/spacex_ipo_downside_watch.py" "$@"
+    ;;
+  spacex-ipo-watch-install|spcx-ipo-watch-install|ipo-downside-watch-install)
+    exec "$PROJECT_ROOT/scripts/install_spacex_ipo_downside_watch_launchd.sh" "$@"
     ;;
   help|*)
     cat <<'EOF'
@@ -2201,8 +2734,12 @@ opsctl commands:
   sql-sync
   tradingeconomics-sync [--countries CSV] [--market-symbols CSV] [--lookahead-days N] [--news-limit N] [--json]
   macro-context-sync [--json]
-  sec-edgar-sync [--symbols CSV] [--timeout N] [--pause-seconds N] [--json]
+  schwab-education-sync [--json]
+  schwab-symbol-news-sync|schwab-news-sync|symbol-news-catalyst [--symbols CSV] [--max-symbols N] [--limit-per-symbol N] [--max-runtime-seconds N] [--json]
+  ticker-news-sync|news-mesh-sync|symbol-news-mesh [--symbols CSV] [--max-symbols N] [--limit-per-symbol N] [--max-runtime-seconds N] [--include-optional-global-feeds] [--json]
+  sec-edgar-sync [--symbols CSV] [--timeout N] [--pause-seconds N] [--max-runtime-seconds N] [--json]
   extended-quant-sync [--symbols CSV] [--timeout N] [--json]
+  public-policy-sync|sovereign-liquidity-sync [--countries CSV] [--timeout N] [--json]
   quant-model-control [--no-render-pdf] [--json]
   pricing-grad [--spot N --strike N --expiry-days N --volatility N] [--json]
   gpu-mc-sim [--paths N] [--json]
@@ -2210,6 +2747,7 @@ opsctl commands:
   options-flow-sync [--symbols CSV] [--timeout-seconds N] [--json]
   tastytrade-sync [legacy alias for options-flow-sync]
   crypto-market-sync [--symbols CSV] [--timeout N] [--json]
+  free-equity-reference-sync|equity-reference-sync|stock-reference-sync [--symbols CSV] [--max-symbols N] [--timeout N] [--max-runtime-seconds N] [--json]
   market-correlation-sync [--lookback-days N] [--bucket-seconds N] [--min-points N] [--timeout-seconds N] [--json]
   fx-market-sync [--timeout N] [--json]
   dividend-drip-sync [--lookback-days N] [--recent-window-days N] [--json]
@@ -2218,6 +2756,7 @@ opsctl commands:
   macro-crosscheck [--json]
   source-verification [--json]
   source-verification-refresh|source-verification-autorefresh [--apply] [--json]
+  data-intelligence-layer|data-intelligence [--apply] [--profile auto|expanded|conservative|deferred] [--lookback-hours N] [--json]
   collector-contracts [--json]
   sleeve-strategy-coverage [--json]
   sleeve-mechanics|sleeve-how-it-works|sleeve-map [--json]
@@ -2226,6 +2765,10 @@ opsctl commands:
   mlx-audio-audit [--json]
   mlx-intelligence-router|mlx-compute-brain|mlx-utilization [--apply] [--json]
   library-utilization-router|library-router|non-mlx-library-router [--apply] [--json]
+  library-efficiency-deepening|library-1-10 [--apply] [--json]
+  safety-bounded-advancement-frontier|safe-frontier-push [--apply] [--json]
+  whole-system-safety-frontier|system-frontier-1-12 [--apply] [--json]
+  system-efficiency-frontier|safe-efficiency-frontier [--apply] [--json]
   onnx-audit [--json]
   pytorch-audit [--json]
   pytorch-replay-canary [--json]
@@ -2236,7 +2779,7 @@ opsctl commands:
   training-data-intake|data-intake-expansion|bot-data-intake [--apply] [--focus-limit N] [--include-bot-ids CSV] [--json]
   training-quality [--json]
   training-lineage [--json]
-  training-probation-isolation [--apply] [--limit N] [--json]
+  training-probation-isolation [--apply] [--limit N] [--include-bot-ids CSV] [--json]
   feature-store [--json]
   multiple-testing-guard [--json]
   decay-monitor [--json]
@@ -2244,17 +2787,31 @@ opsctl commands:
   secret-scan [--staged]
   schema-migration [--json]
   ingestion-storage-control [--json]
+  data-plane-recovery|write-path-recovery [--json]
   ingestion-storage-governor [status|apply] [--json]
   external-backlog-drain [--apply] [--follow-through] [--poll-seconds N] [--wait-timeout-seconds N] [--force-live-window] [--json]
   raw-backlog-refiner [--apply] [--skip-drain] [--skip-intake] [--skip-cleanup] [--allow-stale-reaper] [--json]
+  raw-training-compaction|raw-training-queue|raw-training-clear [--apply] [--max-files N] [--max-gb N] [--jumbo-gb N] [--min-age-hours N] [--json]
   backpressure-drainer-fleet [--apply] [--force-live-window] [--ttl-seconds N] [--json]
   drainer-intelligence-layer [--apply] [--target-pending-lines N] [--json]
   backpressure-super-drainer [--apply] [--max-waves N] [--target-pending-lines N] [--include-maintenance] [--json]
   backlog-pcore-accelerator [--apply] [--json]
+  backlog-pump-infrabots|pump-infrabots [--apply] [--json]
+  backlog-drain-uniform-process|uniform-drain-process [--apply] [--json]
   external-backlog-retry-bot [--apply] [--poll-seconds N] [--wait-timeout-seconds N] [--command-timeout-seconds N] [--json]
-  writer-cycle-coordinator [--apply] [--skip-drain] [--skip-maintenance] [--maintenance-force] [--maintenance-vacuum] [--poll-seconds N] [--wait-timeout-seconds N] [--command-timeout-seconds N] [--json]
+  writer-cycle-coordinator [--apply] [--handoff-only|--fast-handoff] [--skip-drain] [--skip-maintenance] [--maintenance-force] [--maintenance-vacuum] [--poll-seconds N] [--wait-timeout-seconds N] [--command-timeout-seconds N] [--json]
   writer-process-intelligence [--apply] [--json]
   system-intelligence|super-intelligence|docs-reporting-intelligence [--apply] [--json] [--pycharm-index-file PATH]
+  codex-operator-bridge|codex-bridge|tell-codex|codex-trade-brief [--json]
+  architecture-upgrade-scoreboard|architecture-scoreboard|upgrade-scoreboard [--json]
+  system-architecture-hardening|architecture-hardening [--apply] [--json]
+  system-architecture-contract-graph|architecture-contract-graph [--apply] [--json]
+  system-architecture-autopilot|architecture-autopilot [--apply] [--execute-safe-repairs] [--max-steps N] [--json]
+  system-intense-drills|intense-drills [--apply] [--execute-safe-improvements] [--max-improvements N] [--json]
+  system-adversarial-drills|adversarial-drills [--apply] [--run-probes] [--probe-timeout-seconds N] [--json]
+  system-plumbing-control|plumbing-control [--json]
+  distributed-cell-architecture|cell-federation [--apply] [--json]
+  cell-federation-intelligence|cell-intelligence [--apply] [--json]
   deeper-intelligence-layers|deeper-self-awareness [--apply] [--json]
   bot-intelligence-mesh|teacher-student-mesh [--edge-limit N] [--json]
   overfitting-awareness|overfit-awareness [--json]
@@ -2267,13 +2824,20 @@ opsctl commands:
   content-store [--path REL_OR_ABS] [--json]
   split-brain-reconcile [--force-failback-if-hashes-match] [--json]
   storage-resilience [--json]
-  storage-tier-policy [--top-n N] [--hot-budget-gb N] [--cold-candidate-min-mb N] [--json]
-  governance-telemetry-compactor [--apply] [--target-free-gb N] [--min-file-mb N] [--json]
+  storage-tier-policy [--top-n N] [--hot-budget-gb N] [--cold-candidate-min-mb N] [--offload-manifest-max-gb N] [--json]
+  retention-intelligence-v2 [--apply] [--sample-limit N] [--json]
+  hot-lane-retention-control [--apply] [--target-free-gb N] [--hot-total-thin-gb N] [--json]
+  storage-retention-unison [--apply] [--raw-max-files N] [--raw-max-gb N] [--cleanup-max-delete-gb N] [--telemetry-max-gb N] [--lifecycle-max-gb N] [--decision-max-gb N] [--target-free-gb N] [--json]
+  manifest-backed-offload [--apply] [--target-root PATH] [--max-files N] [--max-gb N] [--json]
+  governance-telemetry-compactor [--apply] [--channels CSV|all] [--target-free-gb N] [--min-file-mb N] [--json]
   governance-lifecycle-compactor [--apply] [--target-free-gb N] [--keep-latest N] [--json]
   decision-log-compactor [--apply] [--target-free-gb N] [--min-file-mb N] [--json]
-  runtime-training-snapshot [--lookback-days N] [--reuse-if-fresh-minutes N] [--json]
+  runtime-training-snapshot [--lookback-days N] [--reuse-if-fresh-minutes N] [--incremental-max-runtime-seconds N] [--incremental-max-candidate-rows N] [--light-refresh-existing] [--json]
+  hdf5-training-cache|h5-training-cache [--apply] [--max-rows N] [--benchmark] [--assert-fresh] [--retention-keep-generated N] [--json]
   training-runtime-control [--fresh-minutes N] [--limit N] [--json]
-  training-requalification [--include-bot-ids CSV] [--apply-repair] [--write-queue] [--json]
+  training-drain-autopilot [--apply] [--limit N] [--max-cycles N] [--json]
+  overnight-training-window [--apply] [--end-local HH:MM] [--small-window-start-local HH:MM] [--small-window-end-local HH:MM] [--large-limit N] [--small-limit N] [--window-target N] [--poll-seconds N] [--max-cycles N] [--json]
+  training-requalification [--include-bot-ids CSV] [--include-sample-starved-deleted] [--apply-repair] [--write-queue] [--json]
   coverage-seed [--write-queue] [--json]
   coverage-gap-closer [--apply-stage] [--launch] [--json]
   regime-control [--json]
@@ -2287,6 +2851,8 @@ opsctl commands:
   system-cleanliness-autopilot [--apply] [--timeout-sec N] [--json]
   system-cleanliness-infrabot [--apply] [--timeout-sec N] [--json]
   infrabot-gap-roster|infrabot-roster|gap-infrabots [--apply] [--timeout-sec N] [--json]
+  infrabot-adaptive-governor|adaptive-infrabots|infrabot-governor [--apply] [--refresh-needs] [--max-actions N] [--execute-safe-repairs] [--max-execute-actions N] [--command-timeout-seconds N] [--no-self-healing] [--json]
+  system-drift-registry|drift-registry [--json]
   system-drift-guard|drift-guard|drift-mesh [--json]
   system-drift-autopilot|drift-autopilot|drift-mesh-autopilot [--apply] [--max-steps N] [--json]
   dashboard-refresh|runtime-artifact-refresh|runtime-contract-refresh [--json]
@@ -2299,16 +2865,20 @@ opsctl commands:
   core-bot-materialization-guard|core-bot-file-guard [--json]
   core-bot-materialization-infrabot|core-bot-file-infrabot [--apply] [--overwrite-generated] [--json]
   core-bot-tier-organizer|organize-core-bot-tiers [--json]
-  storage-backpressure-autopilot [--apply] [--poll-seconds N] [--wait-timeout-seconds N] [--command-timeout-seconds N] [--json]
+  storage-backpressure-autopilot [--apply] [--quick-bounded] [--poll-seconds N] [--wait-timeout-seconds N] [--command-timeout-seconds N] [--raw-training-max-files N] [--raw-training-max-gb N] [--raw-training-jumbo-gb N] [--raw-training-pressure-ceiling N] [--json]
   storage-pressure-clearance [--apply] [--force-clear-stale-gate] [--checkpoint-mode passive|restart|truncate] [--json]
   storage-reconnect-regression-guard [--skip-launchd] [--skip-swift-parse] [--json]
   storage-reconnect-infrabot [--apply] [--timeout-sec N] [--json]
   stateful-storage-regression-guard [--apply] [--json]
-  data-collection-storage-guard [--apply] [--cleanup-duplicates] [--json]
+  data-collection-storage-guard [--apply] [--cleanup-duplicates] [--space-recovery] [--json]
+  botlogs-space-recovery [--apply] [--space-recovery-max-delete-gb N] [--space-recovery-target-free-gb N] [--json]
   data-collection-observation-rollup [--apply] [--days N] [--bootstrap-tail-lines N] [--json]
   infrastructure-autofix [--apply] [--timeout-sec N] [--json]
+  stale-surface-autohealer|stale-autoheal [--apply] [--timeout-sec N] [--json]
   master-infra-supervisor|master-infrastructure-supervisor|infra-supervisor [--apply] [--timeout-sec N] [--json]
   coinbase-api-health|coinbase-health [--symbol SYMBOL] [--snapshot] [--json]
+  halt-trigger-status|kill-switch-status|halts-status [--assert-clear] [--json]
+  coordination-status|coordination-state [--assert-ready] [--json]
   global-halt-status|halt-status [--json]
   global-halt-refresh|global-halt-clear-blockers [--json]
   global-halt-auto-clear|halt-auto-clear [--json]
@@ -2323,17 +2893,25 @@ opsctl commands:
   promotion-autopilot [--json]
   promotion-quality-gate|promotion-gate [--json]
   autonomy-control [--json]
-  paper-400-ramp|paper-ramp-400|paper-cap-400 [--apply] [--today YYYY-MM-DD] [--json]
+  live-money-readiness|live-money-contract|faithful-live-money [--target-date YYYY-MM-DD] [--json]
+  paper-400-ramp|paper-ramp-400|paper-cap-400 [--apply] [--promote-roster] [--today YYYY-MM-DD] [--json]
+  paper-execution-truth|paper-truth [--json]
+  runtime-paper-regression-guard|runtime-paper-guard [--json]
   paper-live-data-standard|paper-standard [--apply] [--json]
   sleeve-ticker-universe|expand-tickers [--apply] [--json]
   runtime-throttle|throttle-control|throttle-bot [--apply] [--max-renice-processes N] [--json]
   process-watchdog|watchdog-refresh [--json]
   watchdog-intelligence|watchdog-brain [--apply] [--json]
+  notification-escalation-ladder|notification-ladder [--json]
+  reboot-resilience|reboot-resilience-guard [--json]
+  unattended-soak-readiness|soak-readiness|30-day-soak [--target-days N] [--json]
+  soak-self-heal|soak-self-healing [--apply] [--target-days N] [--daily-max-age-minutes N] [--json]
   process-fanout-guard|process-fanout|fanout-guard [--apply] [--json]
   guard-intelligence|guard-brain [--apply] [--json]
   pressure-relief|pressure-governor [--apply] [--json]
   backlog-organizer|organize-backlog [--apply] [--json]
   health-fast|fast-health [--json]
+  a-plus-operating-packet|a-plus-packet|a-plus-scorecard [--apply] [--timeout-sec N] [--no-md] [--json]
   runtime-gate-dashboard|gate-dashboard [--json]
   mode-switchboard|mode-switchboard-mission-control [--json]
   host-capability [--json]
@@ -2345,16 +2923,27 @@ opsctl commands:
   memory-pressure-intelligence|memory-headroom-brain [--apply] [--json]
   platform-operating-system|platform-os|command-center [--apply] [--json]
   system-needs|what-do-you-need [--log-fix TEXT] [--fix-result TEXT] [--json]
+  low-grade-finalizer|grade-finalizer [--apply] [--json]
   decision-provenance|decision-provenance-cards [--limit N] [--json]
   decision-intelligence|market-move-explainer [--symbol BTC] [--json]
+  evidence-packet|proof-packet [--json] [--no-md] [--no-history]
   paper-profitability-control|profitability-control [--apply] [--json]
   sleeve-profitability-dashboard|sleeve-pnl [--max-rows N] [--json]
+  market-posture-control|posture-control [--apply] [--sample-limit N] [--json]
+  market-cycle-engine|cycle-engine [--sample-limit N] [--min-rows N] [--no-history] [--json]
+  operating-platform-upgrade|platform-upgrade-12 [--apply] [--json]
   system-done-for-today|done-for-today [--json]
   income-readiness|income-source-readiness [--apply] [--bot-logs-min-free-gb N] [--json]
   income-operating-platform|income-platform-control [--apply] [--json]
+  capital-growth-intelligence|capital-growth-plan [--capital N] [--monthly-contribution N] [--risk-profile conservative|balanced|aggressive] [--apply] [--json]
+  capital-growth-awareness|money-tree-awareness [--json]
+  capital-rotation-control|capital-rotation [--apply] [--json]
+  schwab-indicator-intelligence|schwab-indicators [--apply] [--offline] [--json]
+  system-expansion-execution|twelve-expansions [--apply] [--json]
   account-policy-context|account-rules [--json]
   master-grandmaster-train|grandmaster-train [--apply] [--json]
   grade-regression-guard|regression-guard [--json]
+  adaptive-regression-guard|adaptive-regression [--apply] [--json]
   grade-regression-autopilot|grade-regression-bot|regression-upgrade [--apply] [--timeout-sec N] [--storage-max-cycles N] [--json]
   section-grade-guard|section-floor-guard|grade-floor-guard [--json]
   section-grade-autopilot|section-floor-autopilot|grade-floor-autopilot [--apply] [--json]
@@ -2382,6 +2971,7 @@ opsctl commands:
   operator-cockpit [--json]
   daily-verify-remediation [--apply] [--json]
   memory-efficiency [status|apply] [--json]
+  support-maintenance-gate|support-gate [--component NAME] [--json]
   swap-pressure-governor|swap-pressure [status|apply] [--json]
   creative-cotenant-guard|creative-cotenant|cotenant-guard [status|apply] [--json]
   platform-control-plane [--max-rows N] [--json]
@@ -2391,6 +2981,7 @@ opsctl commands:
   platform-brain-v5|reflex-brain [--apply] [--json]
   platform-brain-v6|foresight-brain [--apply] [--json]
   platform-stabilization|quality-stabilizer [--apply] [--json]
+  feature-maturity|maturity-control [--apply] [--json]
   platform-settlement-stabilization|settlement-stabilization [--apply] [--json]
   expansion-capacity [--wave-size N] [--json]
   advanced-intelligence-mesh|intelligence-mesh [--apply] [--json]
@@ -2414,6 +3005,12 @@ opsctl commands:
   quant-operational-intelligence|quant-ops-intelligence [--apply] [--json]
   autonomic-governance-mesh|governance-mesh [--apply] [--json]
   quant-strategy-gap|strategy-gap-expansion [--apply] [--json]
+  deep-quant-layer-upgrade|quant-depth-layers [--json]
+  library-efficiency-deepening|library-1-10 [--apply] [--json]
+  safety-bounded-advancement-frontier|safe-frontier-push [--apply] [--json]
+  whole-system-safety-frontier|system-frontier-1-12 [--apply] [--json]
+  system-efficiency-frontier|safe-efficiency-frontier [--apply] [--json]
+  quant-strategy-lane-upgrades|quant-lane-upgrades [--json]
   expansion-list-report|expansion-inventory [--no-render-pdf] [--json]
   new-bot-admission|new-bot-admission-guard [--json]
   bot-founder-dna|founder-dna [--apply-registry] [--json]
@@ -2436,9 +3033,14 @@ opsctl commands:
   storage-transition-coordinator [--transition-mode local|external] [--apply] [--json]
   storage-disaster-recovery|storage-recovery-bot [--apply] [--json]
   storage-safe-eject [--no-refresh] [--no-eject]
+  soak-self-heal|soak-self-healing [--apply] [--target-days N] [--daily-max-age-minutes N] [--json]
+  deep-cold-storage-layer [--apply] [--min-size-mb N] [--json]
+  retention-intelligence-v2 [--apply] [--sample-limit N] [--json]
+  hot-lane-retention-control [--apply] [--target-free-gb N] [--hot-total-thin-gb N] [--json]
+  storage-retention-unison [--apply] [--raw-max-files N] [--raw-max-gb N] [--cleanup-max-delete-gb N] [--telemetry-max-gb N] [--lifecycle-max-gb N] [--decision-max-gb N] [--target-free-gb N] [--json]
   sql-maint|sqlite-maint [--vacuum] [--json]
   health
-  py314-canary|py314-ready [--refresh-deps] [--skip-install] [--json]
+  py314-canary|py314-ready|py314-migration-audit [--refresh-deps] [--skip-install] [--json]
   doctor
   coinbase-start [paper default] [--paper] [--force-restart] [--live-data|--simulate] [--top-n N] [--min-acc X] [--profiles default]
   schwab-futures-start [paper default] [--paper] [--force-restart] [--live-data|--simulate] [--top-n N] [--min-acc X] [--profiles schwab_futures]
@@ -2449,9 +3051,11 @@ opsctl commands:
   fx-start [paper only] [--paper] [--force-restart] [--live-data|--simulate] [--symbols CSV] [--context-symbols CSV] [--interval-seconds N]
   fx-stop
   paper-trade-lock-infrabot [--apply] [--json]
-  feed-refresh [paper default] [--dry-run] [--force-restart] [--source schwab|coinbase|fx|all] [--paper|--schwab-paper] [--coinbase-paper]
-  livefeed-refresh|live-feed-refresh [paper default] [--dry-run] [--force-restart] [--paper|--schwab-paper] [--coinbase-paper]
+  feed-refresh [paper default] [--dry-run] [--force-restart] [--mirror-only|--stack-refresh] [--source schwab|coinbase|fx|all] [--paper|--schwab-paper] [--coinbase-paper]
+  livefeed-refresh|live-feed-refresh [paper default] [--dry-run] [--force-restart] [--mirror-only|--stack-refresh] [--paper|--schwab-paper] [--coinbase-paper]
+  livefeed-refresh-guard [--apply] [--force-restart] [--freshness-minutes N] [--json]
   feed [--source schwab|coinbase|fx|futures|schwab_futures|coinbase_futures|main|infra|all] [--symbol SYMBOL] [--lines 40] [--raw] [--color|--no-color] [--include-decisions|--heavy]
+  heavy-feed|guarded-heavy-feed [--source main|all|infra|schwab|coinbase|fx|futures|schwab_futures|coinbase_futures] [--lines 80] [--check-interval-seconds N] [--wait-seconds N] [--ttl-seconds N]
   phone-feed [--host 127.0.0.1|0.0.0.0] [--port 8787] [--source all] [--lines 80] [--include-decisions] [--token TOKEN]
   schwab-tail [--symbol SYMBOL] [--lines 40]
   coinbase-tail [--symbol SYMBOL] [--lines 40]
@@ -2499,10 +3103,17 @@ opsctl commands:
   token-refresh [--always-auth] [--json]
   token-refresh-interactive [--force] [--callback-timeout-seconds N] [--requested-browser BROWSER] [--prompt-before-browser] [--skip-account-probe] [--json]
   token-install-autorefresh
+  account-position-study [--json] [--day YYYYMMDD] [--profiles CSV]
+  covered-call-roll-watch [--json] [--today YYYY-MM-DD]
+  schwab-account-snapshot-refresh [--json] [--skip-derived]
   notify-watch [--poll-seconds N] [--enable-imessage] [--imessage-recipient DEST] [--imessage-min-severity info|warn|critical] [--imessage-event-allowlist CSV]
   notify-start [--poll-seconds N] [--enable-imessage] [--imessage-recipient DEST] [--imessage-min-severity info|warn|critical] [--imessage-event-allowlist CSV]
+  startup-start-prompt [--install|--uninstall] [--delay-seconds N] [--timeout-seconds N] [--force-restart|--no-force-restart] [--no-browser|--allow-browser] [--kickstart-now|--no-kickstart]
+  startup-start-prompt-test [--dry-run] [--delay-seconds N] [--timeout-seconds N] [--force-restart|--no-force-restart] [--no-browser|--allow-browser]
   notify-stop
   notify-test [--enable-imessage] [--imessage-recipient DEST] [--imessage-min-severity info|warn|critical] [--imessage-event-allowlist CSV]
+  spacex-ipo-watch [--json] [--loop] [--symbol SPCX] [--drawdown-bands 0.05,0.10,0.15,0.20]
+  spacex-ipo-watch-install [--poll-seconds N] [--symbol SPCX] [--until-utc ISO]
 EOF
     ;;
 esac

@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +32,39 @@ CORE_BOT_MATERIALIZATION_INFRABOT_SCRIPT = Path(__file__).resolve().with_name("c
 CORE_BOT_TIER_ORGANIZER_SCRIPT = Path(__file__).resolve().with_name("organize_core_bot_tiers.py")
 ONE_NUMBERS_REGRESSION_GUARD_SCRIPT = Path(__file__).resolve().with_name("one_numbers_regression_guard.py")
 STATEFUL_STORAGE_REGRESSION_GUARD_SCRIPT = Path(__file__).resolve().with_name("stateful_storage_regression_guard.py")
+RUNTIME_PAPER_REGRESSION_GUARD_SCRIPT = Path(__file__).resolve().with_name("runtime_paper_regression_guard.py")
 MASTER_INFRA_SUPERVISOR_SCRIPT = Path(__file__).resolve().with_name("master_infrastructure_supervisor.py")
+STALE_SURFACE_AUTOHEALER_SCRIPT = Path(__file__).resolve().with_name("stale_surface_autohealer.py")
+REQUIRED_COLLECTOR_REFRESH_NAMES = {
+    "official_macro_context",
+    "market_micro_context",
+    "crypto_market_context",
+    "fx_market_context",
+}
+SYSTEM_DRIFT_AUTOFIX_STEP_TIMEOUT_SECONDS = 90
+REPAIR_CALL_STACK_ENV = "INFRA_REPAIR_CALL_STACK"
+
+
+def _repair_call_stack() -> list[str]:
+    return [
+        item.strip()
+        for item in str(os.getenv(REPAIR_CALL_STACK_ENV, "") or "").split(",")
+        if item.strip()
+    ]
+
+
+def _stack_contains(component: str) -> bool:
+    return str(component or "").strip() in set(_repair_call_stack())
+
+
+def _child_env(component: str) -> dict[str, str]:
+    env = os.environ.copy()
+    stack = _repair_call_stack()
+    name = str(component or "").strip()
+    if name and name not in stack:
+        stack.append(name)
+    env[REPAIR_CALL_STACK_ENV] = ",".join(stack)
+    return env
 
 
 def _safe_int(raw: Any, default: int = 0) -> int:
@@ -99,6 +134,43 @@ def _source_verification_row(payload: dict[str, Any], source_id: str) -> dict[st
     return {}
 
 
+def _required_collector_failures(payload: dict[str, Any]) -> list[str]:
+    failures = [
+        str(raw or "").strip()
+        for raw in (payload.get("required_failures") if isinstance(payload.get("required_failures"), list) else [])
+        if str(raw or "").strip()
+    ]
+    rows = payload.get("rows") if isinstance(payload.get("rows"), list) else []
+    for row in rows:
+        if not isinstance(row, dict) or not bool(row.get("required", False)):
+            continue
+        name = str(row.get("name") or "").strip()
+        if name and not bool(row.get("contract_ok", False)):
+            failures.append(name)
+    return ordered_unique(failures)
+
+
+def _required_collector_refresh_command(project_root: Path, collector_name: str) -> list[str]:
+    name = str(collector_name or "").strip()
+    if name == "official_macro_context":
+        return [str(PYTHON_BIN), str(project_root / "scripts" / "collect_official_macro_context.py"), "--json"]
+    if name == "market_micro_context":
+        return [
+            str(PYTHON_BIN),
+            str(project_root / "scripts" / "collect_market_micro_context.py"),
+            "--lookback-days",
+            "21",
+            "--finra-lookback-days",
+            "15",
+            "--json",
+        ]
+    if name == "crypto_market_context":
+        return [str(PYTHON_BIN), str(project_root / "scripts" / "collect_crypto_market_context.py"), "--json"]
+    if name == "fx_market_context":
+        return [str(PYTHON_BIN), str(project_root / "scripts" / "collect_fx_market_context.py"), "--json"]
+    return []
+
+
 def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
     try:
         proc = subprocess.run(
@@ -108,6 +180,7 @@ def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
             text=True,
             check=False,
             timeout=max(int(timeout_sec), 1),
+            env=_child_env("infrastructure_autofix_bot"),
         )
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
@@ -131,10 +204,100 @@ def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
         "cmd": list(cmd),
         "rc": rc,
         "timed_out": timed_out,
+        "timeout_sec": max(int(timeout_sec), 1),
         "stdout_tail": "\n".join(stdout.splitlines()[-10:]),
         "stderr_tail": "\n".join(stderr.splitlines()[-10:]),
         "payload": payload,
     }
+
+
+def _remaining_timeout_seconds(deadline_monotonic: float, *, per_command_cap: int) -> int:
+    remaining = float(deadline_monotonic) - time.monotonic()
+    if remaining <= 0:
+        return 0
+    return max(1, min(int(per_command_cap), int(math.ceil(remaining))))
+
+
+def _budget_exhausted_attempt(cmd: list[str]) -> dict[str, Any]:
+    return {
+        "cmd": list(cmd),
+        "rc": 124,
+        "timed_out": True,
+        "skipped": True,
+        "reason": "run_timeout_budget_exhausted",
+        "timeout_sec": 0,
+        "stdout_tail": "",
+        "stderr_tail": "",
+        "payload": {},
+    }
+
+
+def _blocked_surface_names(payload: dict[str, Any]) -> set[str]:
+    rows = payload.get("surfaces") if isinstance(payload.get("surfaces"), list) else []
+    return {
+        str(row.get("name") or "")
+        for row in rows
+        if isinstance(row, dict) and str(row.get("status") or "").strip().lower() == "blocked"
+    }
+
+
+def _blocked_check_names(payload: dict[str, Any]) -> set[str]:
+    rows = payload.get("checks") if isinstance(payload.get("checks"), list) else []
+    return {
+        str(row.get("name") or "")
+        for row in rows
+        if isinstance(row, dict) and str(row.get("status") or "").strip().lower() == "blocked"
+    }
+
+
+def _system_drift_is_self_referential(payload: dict[str, Any]) -> bool:
+    blocked = _blocked_surface_names(payload)
+    return bool(blocked) and blocked <= {"infrastructure_autofix", "master_infrastructure_supervisor"}
+
+
+def _master_infra_is_self_referential(payload: dict[str, Any]) -> bool:
+    blocked = _blocked_check_names(payload)
+    return bool(blocked) and blocked <= {
+        "governance_artifact_freshness",
+        "child_repair_bot_outcomes",
+        "self_auditing_infra_bots",
+    }
+
+
+QUALITY_DEBT_PRIORITIES = {
+    "runtime_input_coverage",
+    "active_probation_isolation",
+    "teacher_quality",
+    "targeted_retrain",
+    "walk_forward_coverage",
+}
+QUALITY_DEBT_ACTION_KEYS = {
+    "refresh_diagnostics_bot_ids",
+    "unsupported_stale_bot_ids",
+    "repair_runtime_input_bot_ids",
+    "runtime_input_depth_debt_bot_ids",
+    "quality_probation_bot_ids",
+    "targeted_retrain_bot_ids",
+    "selected_targeted_retrain_bot_ids",
+    "coverage_repair_bot_ids",
+    "precompute_target_bot_ids",
+}
+
+
+def _training_quality_is_quality_debt_only(payload: dict[str, Any]) -> bool:
+    status = str(payload.get("overall_status") or "").strip().lower()
+    if status not in {"blocked", "degraded"}:
+        return True
+    recoverable_blocked = payload.get("recoverable_blocked_keys")
+    if isinstance(recoverable_blocked, list) and any(str(item).strip() for item in recoverable_blocked):
+        return False
+    priorities = {str(item).strip() for item in payload.get("top_priorities", []) if str(item).strip()} if isinstance(payload.get("top_priorities"), list) else set()
+    targeted_actions = payload.get("targeted_actions") if isinstance(payload.get("targeted_actions"), dict) else {}
+    has_quality_queue = any(
+        isinstance(targeted_actions.get(key), list) and bool(targeted_actions.get(key))
+        for key in QUALITY_DEBT_ACTION_KEYS
+    )
+    return bool(has_quality_queue or (priorities and priorities <= QUALITY_DEBT_PRIORITIES))
 
 
 def build_payload(
@@ -163,19 +326,24 @@ def build_payload(
     system_drift = _load_freshest_json(project_root, "governance/health/system_drift_guard_latest.json")
     one_numbers_guard = _load_freshest_json(project_root, "governance/health/one_numbers_regression_guard_latest.json")
     stateful_storage_guard = _load_freshest_json(project_root, "governance/health/stateful_storage_regression_guard_latest.json")
+    runtime_paper_guard = _load_freshest_json(project_root, "governance/health/runtime_paper_regression_guard_latest.json")
     storage_reconnect = _load_freshest_json(project_root, "governance/health/storage_reconnect_infrabot_latest.json")
     storage_reconnect_guard = _load_freshest_json(project_root, "governance/health/storage_reconnect_regression_guard_latest.json")
     core_bot_materialization = _load_freshest_json(project_root, "governance/health/core_bot_materialization_infrabot_latest.json")
     core_bot_materialization_guard = _load_freshest_json(project_root, "governance/health/core_bot_materialization_guard_latest.json")
     core_bot_tier_organizer = _load_freshest_json(project_root, "governance/health/core_bot_tier_organizer_latest.json")
     master_infra = _load_freshest_json(project_root, "governance/health/master_infrastructure_supervisor_latest.json")
+    process_watchdog = _load_freshest_json(project_root, "governance/health/process_watchdog_latest.json")
+    stale_surface_autohealer = _load_freshest_json(project_root, "governance/health/stale_surface_autohealer_latest.json")
 
     failed_checks = daily_verify.get("failed_checks") if isinstance(daily_verify.get("failed_checks"), list) else []
     repair_plan: list[dict[str, Any]] = []
+    advisory_repair_plan: list[dict[str, Any]] = []
     operator_followups: list[str] = []
 
-    def add_plan(name: str, reason: str, cmd: list[str]) -> None:
-        repair_plan.append({"name": name, "reason": reason, "cmd": cmd})
+    def add_plan(name: str, reason: str, cmd: list[str], *, advisory: bool = False) -> None:
+        target = advisory_repair_plan if advisory else repair_plan
+        target.append({"name": name, "reason": reason, "cmd": cmd})
 
     if failed_checks:
         add_plan(
@@ -202,6 +370,15 @@ def build_payload(
             "stateful_storage_regression_guard",
             f"stateful_storage_status={stateful_storage_status or 'missing'}",
             [str(PYTHON_BIN), str(STATEFUL_STORAGE_REGRESSION_GUARD_SCRIPT), "--apply", "--json"],
+        )
+
+    runtime_paper_status = str(runtime_paper_guard.get("overall_status") or "")
+    runtime_paper_failed = _safe_int(runtime_paper_guard.get("failed_guard_count"), 0)
+    if not runtime_paper_guard or runtime_paper_status in {"blocked", "degraded", "needs_work"} or runtime_paper_failed > 0:
+        add_plan(
+            "runtime_paper_regression_guard",
+            f"runtime_paper_guard_status={runtime_paper_status or 'missing'} failed_guards={runtime_paper_failed}",
+            [str(PYTHON_BIN), str(RUNTIME_PAPER_REGRESSION_GUARD_SCRIPT), "--json"],
         )
 
     storage_reconnect_status = str(storage_reconnect.get("overall_status") or "")
@@ -247,6 +424,17 @@ def build_payload(
         )
 
     schwab_contract = _collector_contract_row(collector_contracts, "schwab_education_context")
+    for collector_name in _required_collector_failures(collector_contracts):
+        if collector_name not in REQUIRED_COLLECTOR_REFRESH_NAMES:
+            continue
+        refresh_cmd = _required_collector_refresh_command(project_root, collector_name)
+        if not refresh_cmd:
+            continue
+        add_plan(
+            f"{collector_name}_refresh",
+            "required_collector_contract_not_ok",
+            list(refresh_cmd),
+        )
     if (
         (schwab_contract and not bool(schwab_contract.get("contract_ok", False)))
         or (schwab_education_context and not bool(schwab_education_context.get("ok", False)))
@@ -336,6 +524,17 @@ def build_payload(
             ],
         )
     drift_status = str(system_drift.get("overall_status") or "")
+    core_infra_clear = (
+        not failed_checks
+        and storage_status not in {"blocked", "degraded", "needs_work"}
+        and stateful_storage_status not in {"blocked", "degraded", "needs_work"}
+        and runtime_paper_failed == 0
+        and _safe_int((((command_validity_payload.get("metrics") or {}).get("blocked_entry_count"))), 0) == 0
+        and bool(((snapshot_cache.get("cache_health") or {}).get("snapshot_ready", False)))
+    )
+    drift_is_advisory = drift_status == "degraded" or (
+        drift_status == "blocked" and core_infra_clear and _system_drift_is_self_referential(system_drift)
+    )
     if drift_status in {"blocked", "degraded"}:
         add_plan(
             "system_drift_autopilot",
@@ -344,16 +543,28 @@ def build_payload(
                 str(PYTHON_BIN),
                 str(project_root / "scripts" / "ops" / "system_drift_autopilot.py"),
                 "--apply",
+                "--max-step-timeout-seconds",
+                str(SYSTEM_DRIFT_AUTOFIX_STEP_TIMEOUT_SECONDS),
                 "--json",
             ],
+            advisory=drift_is_advisory,
         )
 
     master_status = str(master_infra.get("overall_status") or "")
+    nested_under_master_supervisor = _stack_contains("master_infrastructure_supervisor")
+    master_is_advisory = nested_under_master_supervisor or (bool(master_infra) and (
+        master_status == "degraded"
+        or (master_status == "blocked" and core_infra_clear and _master_infra_is_self_referential(master_infra))
+    ))
     if not master_infra or master_status in {"blocked", "degraded"}:
         add_plan(
             "master_infrastructure_supervisor_refresh",
-            f"master_infra_status={master_status or 'missing'}",
+            (
+                f"master_infra_status={master_status or 'missing'}"
+                + (" nested_under_master_supervisor=1" if nested_under_master_supervisor else "")
+            ),
             [str(PYTHON_BIN), str(MASTER_INFRA_SUPERVISOR_SCRIPT), "--json"],
+            advisory=master_is_advisory,
         )
         for check in master_infra.get("checks") or []:
             if not isinstance(check, dict) or check.get("name") != "launchd_job_health":
@@ -389,6 +600,40 @@ def build_payload(
             [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "artifact_freshness_slo.py"), "--json"],
         )
 
+    freshness_summary = freshness.get("sla_summary") if isinstance(freshness.get("sla_summary"), dict) else {}
+    process_watchdog_status = str(process_watchdog.get("overall_status") or "")
+    watchdog_intelligence = (
+        process_watchdog.get("watchdog_intelligence")
+        if isinstance(process_watchdog.get("watchdog_intelligence"), dict)
+        else {}
+    )
+    stale_surface_metrics = (
+        stale_surface_autohealer.get("metrics")
+        if isinstance(stale_surface_autohealer.get("metrics"), dict)
+        else {}
+    )
+    stale_signal_count = (
+        _safe_int(freshness_summary.get("stale_required"), 0)
+        + _safe_int(freshness_summary.get("stale_optional"), 0)
+        + _safe_int(watchdog_intelligence.get("active_issue_count"), 0)
+        + _safe_int(stale_surface_metrics.get("planned_repair_count"), 0)
+    )
+    stale_surface_status = str(stale_surface_autohealer.get("overall_status") or "")
+    if (
+        stale_signal_count > 0
+        or process_watchdog_status in {"blocked", "degraded", "critical"}
+        or stale_surface_status in {"blocked", "degraded"}
+    ):
+        add_plan(
+            "stale_surface_autohealer",
+            (
+                f"stale_signal_count={stale_signal_count} "
+                f"process_watchdog_status={process_watchdog_status or 'missing'} "
+                f"stale_surface_status={stale_surface_status or 'missing'}"
+            ),
+            [str(PYTHON_BIN), str(STALE_SURFACE_AUTOHEALER_SCRIPT), "--apply", "--timeout-sec", "60", "--json"],
+        )
+
     if str(snapshot_cache.get("overall_status") or "") in {"blocked", "degraded"}:
         add_plan(
             "runtime_snapshot_refresh",
@@ -418,10 +663,15 @@ def build_payload(
         or str(supportability.get("overall_status") or "") in {"blocked", "degraded"}
         or str(bot_quality.get("overall_status") or "") in {"blocked", "degraded"}
     ):
+        quality_advisory = bool(
+            str(supportability.get("overall_status") or "") not in {"blocked", "degraded"}
+            and _training_quality_is_quality_debt_only(training_quality)
+        )
         add_plan(
             "bot_quality_autopilot",
             "bot_quality_or_supportability_degraded",
             [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "bot_quality_autopilot.py"), "--apply", "--json"],
+            advisory=quality_advisory,
         )
 
     channels = remote_alert.get("channels") if isinstance(remote_alert.get("channels"), dict) else {}
@@ -430,17 +680,32 @@ def build_payload(
     if str(remote_alert.get("overall_status") or "") == "blocked" and _safe_int(((remote_alert.get("critical_backlog") or {}).get("unsent_count")), 0) > 0:
         operator_followups.append("review unsent critical alerts after configuring remote alert channels so the pager backlog drains cleanly")
 
+    timeout_budget_seconds = max(int(timeout_sec), 1)
+    run_deadline_monotonic = time.monotonic() + timeout_budget_seconds
+    timeout_budget_exhausted = False
     attempts: list[dict[str, Any]] = []
+
+    def run_with_budget(cmd: list[str], *, per_command_cap: int) -> None:
+        nonlocal timeout_budget_exhausted
+        remaining_timeout = _remaining_timeout_seconds(run_deadline_monotonic, per_command_cap=per_command_cap)
+        if remaining_timeout <= 0:
+            timeout_budget_exhausted = True
+            attempts.append(_budget_exhausted_attempt(cmd))
+            return
+        attempts.append(_run_json(cmd, cwd=project_root, timeout_sec=remaining_timeout))
+        if _remaining_timeout_seconds(run_deadline_monotonic, per_command_cap=1) <= 0:
+            timeout_budget_exhausted = True
+
     if apply:
         for row in repair_plan:
-            attempts.append(_run_json(list(row.get("cmd") or []), cwd=project_root, timeout_sec=timeout_sec))
+            run_with_budget(list(row.get("cmd") or []), per_command_cap=timeout_budget_seconds)
         for cmd in (
             [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "runtime_gate_dashboard.py"), "--json"],
             [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "operator_cockpit.py"), "--json"],
             [str(PYTHON_BIN), str(project_root / "scripts" / "collector_contracts.py"), "--json"],
             [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "source_verification_report.py"), "--json"],
         ):
-            attempts.append(_run_json(cmd, cwd=project_root, timeout_sec=min(int(timeout_sec), 300)))
+            run_with_budget(cmd, per_command_cap=min(timeout_budget_seconds, 300))
 
     hard_failed_attempts = [
         row
@@ -459,7 +724,9 @@ def build_payload(
             "install the infrastructure autofix bot on a timer so safe repairs happen before small degradations stack into outages",
             "let the bot run in apply mode for safe fixes, but keep destructive retention or credential changes operator-gated",
             "configure remote alert delivery so degraded states page you instead of silently accumulating" if operator_followups else "",
-            "use the bot-quality autopilot alongside the infrastructure autofix bot so system health and bot quality improve together" if repair_plan else "",
+            "use the bot-quality autopilot alongside the infrastructure autofix bot so system health and bot quality improve together"
+            if repair_plan or advisory_repair_plan
+            else "",
         ]
     )
 
@@ -470,15 +737,20 @@ def build_payload(
         "overall_status": overall_status,
         "apply": bool(apply),
         "repair_plan": repair_plan,
+        "advisory_repair_plan": advisory_repair_plan,
         "attempts": [
             {
                 "cmd": list(row.get("cmd") or []),
                 "rc": int(row.get("rc", 1)),
                 "timed_out": bool(row.get("timed_out", False)),
+                "timeout_sec": _safe_int(row.get("timeout_sec"), 0),
+                "skipped": bool(row.get("skipped", False)),
+                "reason": str(row.get("reason") or ""),
             }
             for row in attempts
         ],
         "applyable_repair_count": len(repair_plan),
+        "advisory_repair_count": len(advisory_repair_plan),
         "operator_followups": operator_followups,
         "metrics": {
             "daily_verify_failed_checks": len(failed_checks),
@@ -491,9 +763,16 @@ def build_payload(
             "stateful_storage_local_gb": _safe_float(((stateful_storage_guard.get("metrics") or {}).get("local_stateful_gb")), 0.0),
             "storage_reconnect_repair_plan_count": _safe_int(((storage_reconnect.get("metrics") or {}).get("repair_plan_count")), 0),
             "storage_reconnect_missing_contract_count": _safe_int(((storage_reconnect_guard.get("metrics") or {}).get("missing_contract_count")), 0),
+            "runtime_paper_failed_guard_count": runtime_paper_failed,
+            "stale_surface_repair_count": _safe_int(stale_surface_metrics.get("planned_repair_count"), 0),
+            "artifact_freshness_stale_required": _safe_int(freshness_summary.get("stale_required"), 0),
+            "artifact_freshness_stale_optional": _safe_int(freshness_summary.get("stale_optional"), 0),
+            "process_watchdog_active_issue_count": _safe_int(watchdog_intelligence.get("active_issue_count"), 0),
             "commands_duplicate_entries": _safe_int((((commands_hygiene_payload.get("metrics") or {}).get("duplicate_entry_count"))), 0),
             "commands_runbook_changed": bool(commands_hygiene_payload.get("runbook_changed", False)),
             "commands_blocked_entries": _safe_int((((command_validity_payload.get("metrics") or {}).get("blocked_entry_count"))), 0),
+            "timeout_budget_seconds": timeout_budget_seconds,
+            "timeout_budget_exhausted": bool(timeout_budget_exhausted),
         },
         "infra_bots": [
             "infrastructure_autofix_bot",
@@ -510,6 +789,8 @@ def build_payload(
             "core_bot_tier_organizer",
             "storage_backpressure_autopilot",
             "stateful_storage_regression_guard",
+            "runtime_paper_regression_guard",
+            "stale_surface_autohealer",
             "one_numbers_regression_guard",
             "master_infrastructure_supervisor",
             "premarket_token_guard",
@@ -531,6 +812,7 @@ def build_payload(
             "livefeed_mirror_continuity_infrabot",
             "auth_lease_preflight_infrabot",
             "market_explanation_evidence_infrabot",
+            "runtime_paper_contract_infrabot",
         ],
         "recommended_actions": recommended_actions,
     }

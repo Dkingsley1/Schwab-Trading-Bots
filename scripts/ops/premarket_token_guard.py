@@ -37,6 +37,14 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _env_flag(name: str, default: str = '0') -> bool:
+    return str(os.getenv(name, default)).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _browser_auth_disabled() -> bool:
+    return _env_flag('PREMARKET_TOKEN_BROWSER_AUTH_DISABLED', '0') or _env_flag('SCHWAB_AUTH_BROWSER_DISABLED', '0') or not _env_flag('SCHWAB_AUTH_ALLOW_BROWSER_OPEN', '1')
+
+
 
 def _write_json(path: Path, fallback: Path, payload: Dict[str, Any]) -> str:
     encoded = json.dumps(payload, ensure_ascii=True, indent=2)
@@ -158,6 +166,17 @@ def _token_warning_level(age_seconds: float | None, *, max_age_seconds: float) -
 
 
 def _auth_attempt(token_path: Path, callback_timeout_seconds: float, validate_account_probe: bool) -> Dict[str, Any]:
+    if _browser_auth_disabled():
+        return {
+            'attempted': False,
+            'ok': False,
+            'reason': 'browser_auth_disabled',
+            'details': {
+                'method': 'client_auth',
+                'browser_disabled': True,
+            },
+        }
+
     api_key = os.getenv('SCHWAB_API_KEY', '').strip()
     app_secret = os.getenv('SCHWAB_SECRET', '').strip()
     callback_url = (
@@ -356,7 +375,13 @@ def main() -> int:
     parser.add_argument(
         '--min-expires-seconds',
         type=float,
-        default=float(os.getenv('PREMARKET_TOKEN_MIN_EXPIRES_SECONDS', '600')),
+        default=float(os.getenv('PREMARKET_TOKEN_MIN_EXPIRES_SECONDS', '1500')),
+    )
+    parser.add_argument(
+        '--ready-min-expires-seconds',
+        type=float,
+        default=float(os.getenv('PREMARKET_TOKEN_READY_MIN_EXPIRES_SECONDS', '900')),
+        help='Hard readiness floor; the higher min-expires floor only triggers early refresh.',
     )
     parser.add_argument('--auth-timeout-seconds', type=float, default=float(os.getenv('PREMARKET_TOKEN_AUTH_TIMEOUT_SECONDS', '30')))
     parser.add_argument('--always-auth', dest='always_auth', action='store_true', help='Always run non-interactive auth, even when token looks fresh.')
@@ -399,6 +424,7 @@ def main() -> int:
     token_path = Path(args.token_path)
     before = _token_status(token_path)
     min_expires_seconds = max(float(args.min_expires_seconds), 0.0)
+    ready_min_expires_seconds = max(float(args.ready_min_expires_seconds), 0.0)
     needs_refresh, refresh_reason = _token_needs_refresh(
         before,
         max_age_seconds=max(args.max_token_age_seconds, 60.0),
@@ -424,15 +450,27 @@ def main() -> int:
                     min_extension_seconds=float(args.refresh_token_min_extension_seconds),
                 )
             if not auth.get('attempted') or not auth.get('ok'):
-                fallback_auth = _auth_attempt(
-                    token_path=token_path,
-                    callback_timeout_seconds=float(args.auth_timeout_seconds),
-                    validate_account_probe=bool(args.validate_account_probe),
-                )
-                auth = {
-                    **fallback_auth,
-                    'refresh_grant': auth,
-                }
+                if _browser_auth_disabled():
+                    auth = {
+                        'attempted': False,
+                        'ok': False,
+                        'reason': 'browser_auth_disabled',
+                        'details': {
+                            'method': 'client_auth',
+                            'browser_disabled': True,
+                        },
+                        'refresh_grant': auth,
+                    }
+                else:
+                    fallback_auth = _auth_attempt(
+                        token_path=token_path,
+                        callback_timeout_seconds=float(args.auth_timeout_seconds),
+                        validate_account_probe=bool(args.validate_account_probe),
+                    )
+                    auth = {
+                        **fallback_auth,
+                        'refresh_grant': auth,
+                    }
         else:
             auth = {
                 'attempted': False,
@@ -446,16 +484,21 @@ def main() -> int:
         max_age_seconds=max(args.max_token_age_seconds, 60.0),
         min_expires_seconds=min_expires_seconds,
     )
+    not_ready_after, ready_reason_after = _token_needs_refresh(
+        after,
+        max_age_seconds=max(args.max_token_age_seconds, 60.0),
+        min_expires_seconds=ready_min_expires_seconds,
+    )
 
-    if auth.get('attempted') and auth.get('ok') and still_stale:
+    if auth.get('attempted') and auth.get('ok') and not_ready_after:
         auth = {
             **auth,
             'ok': False,
-            'reason': f"auth_succeeded_but_token_not_ready:{stale_reason_after}",
+            'reason': f"auth_succeeded_but_token_not_ready:{ready_reason_after}",
         }
 
-    ok = bool(after.get('exists')) and int(after.get('size_bytes') or 0) >= 64 and bool(network['ok']) and (not still_stale)
-    if auth.get('attempted') and not auth.get('ok'):
+    ok = bool(after.get('exists')) and int(after.get('size_bytes') or 0) >= 64 and bool(network['ok']) and (not not_ready_after)
+    if auth.get('attempted') and not auth.get('ok') and not_ready_after:
         ok = False
 
     alerts: list[Dict[str, Any]] = []
@@ -476,9 +519,13 @@ def main() -> int:
             {
                 'type': 'auth_failed',
                 'alert': _alert(
-                    'critical',
-                    'premarket_token_refresh_failed',
-                    f"Premarket token refresh failed: {auth.get('reason', 'unknown')}",
+                    'critical' if not_ready_after else 'warn',
+                    'premarket_token_refresh_failed' if not_ready_after else 'premarket_token_refresh_deferred',
+                    (
+                        f"Premarket token refresh failed: {auth.get('reason', 'unknown')}"
+                        if not_ready_after
+                        else f"Premarket token refresh did not extend the token yet, but the lease is still above the readiness floor: {auth.get('reason', 'unknown')}"
+                    ),
                     suppress_seconds=max(args.alert_suppress_seconds, 60),
                 ),
             }
@@ -503,7 +550,7 @@ def main() -> int:
                 'alert': _alert(
                     'critical',
                     'premarket_token_guard_failed',
-                    f"Token not ready for premarket. before={refresh_reason} after={stale_reason_after} auth={auth.get('reason', 'n/a')}",
+                    f"Token not ready for premarket. before={refresh_reason} after={ready_reason_after} auth={auth.get('reason', 'n/a')}",
                     suppress_seconds=max(args.alert_suppress_seconds, 60),
                 ),
             }
@@ -526,9 +573,11 @@ def main() -> int:
         'preflight_checks': {
             'token_exists': bool(after.get('exists')),
             'token_size_ok': int(after.get('size_bytes') or 0) >= 64,
+            'token_ready_for_open': not bool(not_ready_after),
             'network_ok': bool(network['ok']),
             'auth_ok': bool(auth.get('ok', False)) if auth.get('attempted') else True,
             'refresh_needed_after': bool(still_stale),
+            'readiness_refresh_needed_after': bool(not_ready_after),
         },
         'warnings': [
             item
@@ -536,6 +585,7 @@ def main() -> int:
                 ('network_unavailable' if not network['ok'] else ''),
                 (refresh_reason if needs_refresh else ''),
                 (stale_reason_after if still_stale else ''),
+                (ready_reason_after if not_ready_after else ''),
                 (str(auth.get('reason') or '') if auth.get('attempted') and not auth.get('ok') else ''),
             ]
             if item
@@ -551,6 +601,9 @@ def main() -> int:
         'refresh_reason_before': refresh_reason,
         'refresh_needed_after': bool(still_stale),
         'refresh_reason_after': stale_reason_after,
+        'ready_min_expires_seconds': ready_min_expires_seconds,
+        'token_ready_after': not bool(not_ready_after),
+        'ready_reason_after': ready_reason_after,
         'network': network,
         'auth': auth,
         'validate_account_probe': bool(args.validate_account_probe),

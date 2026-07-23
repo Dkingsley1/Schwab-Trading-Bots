@@ -89,6 +89,18 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 180,
         },
         {
+            "name": "system_architecture_contract_graph",
+            "payload_path": health_root / "system_architecture_contract_graph_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_contract_graph.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_architecture_autopilot",
+            "payload_path": health_root / "system_architecture_autopilot_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_autopilot.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
             "name": "portfolio_capacity_curve_report",
             "payload_path": project_root / "governance" / "allocator" / "portfolio_capacity_curve_latest.json",
             "cmd": [str(PY), str(project_root / "scripts" / "portfolio_capacity_curve_report.py"), "--json"],
@@ -144,6 +156,48 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 180,
         },
         {
+            "name": "source_verification",
+            "payload_path": health_root / "source_verification_latest.json",
+            "cmd": [str(PY), str(ops_root / "source_verification_report.py"), "--json"],
+            "timeout_sec": 120,
+        },
+        {
+            "name": "paper_profitability_control",
+            "payload_path": health_root / "paper_profitability_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "paper_profitability_control.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "paper_replay_drill",
+            "payload_path": health_root / "paper_replay_drill_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "paper_replay_drill.py"), "--hours", "24", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "paper_execution_truth",
+            "payload_path": health_root / "paper_execution_truth_layer_latest.json",
+            "cmd": [str(PY), str(ops_root / "paper_execution_truth_layer.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "retrain_schema_compatibility",
+            "payload_path": health_root / "retrain_schema_compatibility_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "retrain_schema_compatibility_guard.py"), "--json"],
+            "timeout_sec": 120,
+        },
+        {
+            "name": "promotion_packet_builder",
+            "payload_path": project_root / "governance" / "champion_challenger" / "promotion_packet_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "promotion_packet_builder.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "promotion_quality_gate",
+            "payload_path": health_root / "promotion_quality_gate_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "promotion_quality_gate.py"), "--json"],
+            "timeout_sec": 120,
+        },
+        {
             "name": "training_report",
             "payload_path": health_root / "training_report_latest.json",
             "cmd": [str(PY), str(ops_root / "training_report.py"), "--no-render-pdf", "--json"],
@@ -186,6 +240,18 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 180,
         },
         {
+            "name": "notification_escalation_ladder",
+            "payload_path": health_root / "notification_escalation_ladder_latest.json",
+            "cmd": [str(PY), str(ops_root / "notification_escalation_ladder.py"), "--json"],
+            "timeout_sec": 60,
+        },
+        {
+            "name": "unattended_soak_readiness",
+            "payload_path": health_root / "unattended_soak_readiness_latest.json",
+            "cmd": [str(PY), str(ops_root / "unattended_soak_readiness.py"), "--json"],
+            "timeout_sec": 60,
+        },
+        {
             "name": "live_runtime_separation_control",
             "payload_path": health_root / "live_runtime_separation_control_latest.json",
             "cmd": [str(PY), str(ops_root / "live_runtime_separation_control.py"), "--json"],
@@ -224,6 +290,22 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "name": "remote_alert_control",
             "payload_path": health_root / "remote_alert_control_latest.json",
             "cmd": [str(PY), str(ops_root / "remote_alert_control.py"), "--json"],
+        },
+        {
+            "name": "schwab_account_snapshot_refresh",
+            "payload_path": health_root / "schwab_account_snapshot_refresh_latest.json",
+            "cmd": [str(PY), str(ops_root / "schwab_account_snapshot_refresh.py"), "--json", "--skip-derived"],
+            "timeout_sec": 120,
+        },
+        {
+            "name": "covered_call_roll_watch",
+            "payload_path": health_root / "covered_call_roll_watch_latest.json",
+            "cmd": [str(PY), str(ops_root / "covered_call_roll_watch.py"), "--json"],
+        },
+        {
+            "name": "account_position_study",
+            "payload_path": health_root / "account_position_study_latest.json",
+            "cmd": [str(PY), str(ops_root / "account_position_study.py"), "--json"],
         },
         {
             "name": "storage_quota_guard",
@@ -278,10 +360,34 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 180,
         },
         {
+            "name": "live_money_readiness_contract",
+            "payload_path": health_root / "live_money_readiness_contract_latest.json",
+            "cmd": [str(PY), str(ops_root / "live_money_readiness_contract.py"), "--json"],
+            "timeout_sec": 120,
+        },
+        {
             "name": "runtime_throttle_control",
             "payload_path": health_root / "runtime_throttle_control_latest.json",
             "cmd": [str(PY), str(ops_root / "runtime_throttle_control.py"), "--json"],
             "timeout_sec": 180,
+        },
+        {
+            "name": "regime_control_plane",
+            "payload_path": health_root / "regime_control_plane_latest.json",
+            "cmd": [str(PY), str(ops_root / "regime_control_plane.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "market_cycle_extraction_engine",
+            "payload_path": health_root / "market_cycle_state_latest.json",
+            "cmd": [str(PY), str(ops_root / "market_cycle_extraction_engine.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "coordination_state_control",
+            "payload_path": health_root / "coordination_state_latest.json",
+            "cmd": [str(PY), str(ops_root / "coordination_state_control.py"), "--json"],
+            "timeout_sec": 60,
         },
         {
             "name": "chrome_headless_guard",
@@ -352,6 +458,12 @@ def _step_status(result: dict[str, Any]) -> str:
         return "busy"
     if bool(payload.get("skipped", False)):
         return "skipped"
+    if _live_money_ready_locked(payload):
+        return "ready_locked"
+    if _idle_promotion_packet_seed_ready(payload):
+        return "ready_seeded"
+    if _retrain_schema_seed_ready(payload):
+        return "ready_seeded"
     status = str(payload.get("overall_status") or "").strip().lower()
     if status:
         return status
@@ -360,11 +472,85 @@ def _step_status(result: dict[str, Any]) -> str:
     return "ok" if int(result.get("rc", 1)) == 0 else "error"
 
 
+def _live_money_ready_locked(payload: dict[str, Any]) -> bool:
+    blocking = {
+        str(item or "").strip()
+        for item in payload.get("blocking_reasons", [])
+        if str(item or "").strip()
+    }
+    allowed_locks = {"target_window_not_complete", "live_execution_operator_release_required"}
+    summary = payload.get("grade_summary") if isinstance(payload.get("grade_summary"), dict) else {}
+    return bool(
+        payload.get("live_money_locked", False)
+        and blocking
+        and blocking.issubset(allowed_locks)
+        and not summary.get("below_floor_sections")
+        and not summary.get("not_ready_sections")
+    )
+
+
+def _idle_promotion_packet_seed_ready(payload: dict[str, Any]) -> bool:
+    scope = payload.get("promotion_scope") if isinstance(payload.get("promotion_scope"), dict) else {}
+    gates = payload.get("gate_results") if isinstance(payload.get("gate_results"), dict) else {}
+    replayability = (
+        payload.get("replayability_contract")
+        if isinstance(payload.get("replayability_contract"), dict)
+        else {}
+    )
+    return bool(
+        not bool(payload.get("ok", False))
+        and not bool(scope.get("target_count", 0) or scope.get("trained_bot_ids") or scope.get("failure_count", 0))
+        and bool(payload.get("committee_packet_seed_ready", False))
+        and bool(replayability.get("hash_bundle_complete", False))
+        and bool(replayability.get("exact_replay_ready", False))
+        and gates
+        and all(bool(value) for value in gates.values())
+    )
+
+
+def _retrain_schema_seed_ready(payload: dict[str, Any]) -> bool:
+    return bool(
+        bool(payload.get("ok", False))
+        and bool(payload.get("compatibility_seed_ready", False))
+        and not payload.get("failed_checks")
+        and not payload.get("drifted_fields")
+    )
+
+
 def _payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
     summary: dict[str, Any] = {}
-    for key in ("overall_status", "ok", "timestamp_utc", "mode", "lease_state", "resilience_score"):
+    for key in (
+        "overall_status",
+        "ok",
+        "timestamp_utc",
+        "mode",
+        "lease_state",
+        "resilience_score",
+        "account_snapshot_mode",
+        "account_count",
+        "discovered_account_count",
+        "failed_account_count",
+        "position_rows",
+        "broker_truth_mismatch_count",
+        "blocking_reasons",
+        "grade_summary",
+        "profitability_display_grade",
+        "raw_profitability_grade",
+        "rows",
+        "failed_checks",
+        "committee_packet_seed_ready",
+        "packet_complete",
+        "signing_material_ready",
+        "compatibility_score",
+        "compatibility_seed_ready",
+    ):
         if key in payload:
             summary[key] = payload.get(key)
+    source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
+    if source:
+        for key in ("execution_result_rows", "execution_result_stale_skip_rows", "execution_intent_rows", "source_mode"):
+            if key in source:
+                summary[key] = source.get(key)
     return summary
 
 

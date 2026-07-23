@@ -24,6 +24,8 @@ token.json
 
 # Runtime outputs (large / generated)
 .runtime_locks/
+runtime/
+tmp/
 logs/
 models/
 decisions/

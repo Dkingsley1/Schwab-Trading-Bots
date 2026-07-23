@@ -89,6 +89,43 @@ def test_normalize_browser_app_name_maps_common_aliases() -> None:
     assert sar._normalize_browser_app_name("") is None
 
 
+def test_browser_disabled_blocks_interactive_refresh_before_opening_browser(tmp_path: Path) -> None:
+    token_path = tmp_path / "token.json"
+    out_path = tmp_path / "auth.json"
+    env = os.environ.copy()
+    env.update(
+        {
+            "SCHWAB_API_KEY": "test_key",
+            "SCHWAB_SECRET": "test_secret",
+            "SCHWAB_REDIRECT": "https://127.0.0.1:8182",
+            "SCHWAB_AUTH_BROWSER_DISABLED": "1",
+            "SCHWAB_AUTH_ALLOW_BROWSER_OPEN": "0",
+        }
+    )
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(PROJECT_ROOT / "scripts" / "ops" / "schwab_auth_refresh.py"),
+            "--token-path",
+            str(token_path),
+            "--out-file",
+            str(out_path),
+            "--json",
+        ],
+        cwd=str(PROJECT_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert proc.returncode == 3
+    payload = json.loads(proc.stdout)
+    assert payload["reason"] == "browser_disabled_token_refresh_required"
+    assert payload["refresh_needed_after"] is True
+
+
 def test_open_url_via_applescript_activates_requested_browser(monkeypatch) -> None:
     seen = []
 

@@ -1,0 +1,21 @@
+{
+  "event_id": "20260722_apple_battery_service_segment_2_acceptance",
+  "timestamp_utc": "2026-07-23T00:53:55Z",
+  "timestamp_local": "2026-07-22T20:53:55-04:00",
+  "source_event": "governance/maintenance_events/20260722_apple_battery_service_segment_2_acceptance.json",
+  "parent_event_id": "20260714_apple_battery_service_soak_pause",
+  "segment": 2,
+  "status": "active",
+  "unattended_soak_readiness": "ready",
+  "overall_grade": "A+",
+  "safe_to_leave_unattended": true,
+  "paper_stage": "armed",
+  "paper_truth_grade": "A+",
+  "external_route_verified": true,
+  "offline_start_local": "2026-07-14T14:40:00-04:00",
+  "offline_start_utc": "2026-07-14T18:40:00Z",
+  "offline_end_local": "2026-07-22T20:53:55-04:00",
+  "offline_end_utc": "2026-07-23T00:53:55Z",
+  "offline_duration_human": "8 days, 6 hours, 13 minutes, 55 seconds",
+  "live_orders_enabled": false
+}

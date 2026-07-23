@@ -1,6 +1,9 @@
 import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pytest
 
 from core.base_trader import BaseTrader
 from core.channel_queue import ChannelMessage, ChannelQueue, default_queue_db_path
@@ -12,10 +15,17 @@ from core.execution_lane_pipeline import (
     configure_trader_for_lane,
     evaluate_paper_standard_gateway,
     evaluate_live_promotion,
+    emit_paper_reconciliation_heartbeat,
     process_execution_intent,
     publish_execution_intent,
     update_lane_health,
 )
+
+
+@pytest.fixture(autouse=True)
+def _use_local_execution_lane_root(monkeypatch):
+    monkeypatch.setenv("BOT_LOGS_PREFER_EXTERNAL", "0")
+    monkeypatch.delenv("EXECUTION_LANE_ROOT", raising=False)
 
 
 def test_default_queue_db_path_prefers_local_fallback(tmp_path: Path, monkeypatch) -> None:
@@ -100,6 +110,84 @@ def test_channel_queue_connect_tolerates_locked_wal_pragma(tmp_path: Path, monke
     assert "PRAGMA busy_timeout=30000" in holder["conn"].commands
     assert holder["conn"].commands.count("PRAGMA journal_mode=WAL") == 1
     assert "PRAGMA synchronous=NORMAL" not in holder["conn"].commands
+
+
+def test_channel_queue_stale_prefix_stops_before_fresh_intent(tmp_path: Path) -> None:
+    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    future_ts = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    queue.enqueue(
+        channel=EXECUTION_INTENT_CHANNEL,
+        payload={"message_id": "stale-1", "timestamp_utc": "2026-03-31T20:00:00+00:00"},
+        message_id="stale-1",
+    )
+    queue.enqueue(
+        channel=EXECUTION_INTENT_CHANNEL,
+        payload={"message_id": "fresh-1", "timestamp_utc": future_ts},
+        message_id="fresh-1",
+    )
+    queue.enqueue(
+        channel=EXECUTION_INTENT_CHANNEL,
+        payload={"message_id": "stale-2", "timestamp_utc": "2026-03-31T20:01:00+00:00"},
+        message_id="stale-2",
+    )
+
+    prefix = queue.stale_prefix(
+        consumer="execution_lane_paper",
+        channel=EXECUTION_INTENT_CHANNEL,
+        stale_before=datetime.now(timezone.utc),
+        limit=10,
+    )
+
+    assert prefix["count"] == 1
+    assert prefix["last_message_id"] == "stale-1"
+    assert prefix["stopped_at_fresh"] is True
+
+
+def test_channel_queue_quarantines_corrupt_db_and_recreates_schema(tmp_path: Path) -> None:
+    queue_path = tmp_path / "data" / "bot_channel_queue.sqlite3"
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    queue_path.write_bytes(b"not a sqlite database")
+    Path(f"{queue_path}-wal").write_text("stale wal", encoding="utf-8")
+
+    queue = ChannelQueue(queue_path)
+    message_id = queue.enqueue(
+        channel=EXECUTION_INTENT_CHANNEL,
+        payload={"message_id": "intent-corrupt-repair", "symbol": "BTC-USD"},
+        message_id="intent-corrupt-repair",
+    )
+    messages = queue.read_from_cursor(consumer="pytest_corrupt_repair", channel=EXECUTION_INTENT_CHANNEL, limit=10)
+
+    assert message_id == "intent-corrupt-repair"
+    assert len(messages) == 1
+    assert messages[0].payload["symbol"] == "BTC-USD"
+    assert queue.last_repair["active"] is True
+    assert any(row["original_path"] == str(queue_path) for row in queue.last_repair["moved"])
+    assert list(queue_path.parent.glob("bot_channel_queue.sqlite3.corrupt-*"))
+    assert list(queue_path.parent.glob("bot_channel_queue.sqlite3-wal.corrupt-*")) or not Path(f"{queue_path}-wal").exists()
+
+
+def test_channel_queue_repairs_symlinked_external_target_without_replacing_link(tmp_path: Path) -> None:
+    repo_data = tmp_path / "repo" / "data"
+    external_data = tmp_path / "external" / "data"
+    repo_data.mkdir(parents=True, exist_ok=True)
+    external_data.mkdir(parents=True, exist_ok=True)
+    target = external_data / "bot_channel_queue.sqlite3"
+    target.write_bytes(b"not a sqlite database")
+    link = repo_data / "bot_channel_queue.sqlite3"
+    link.symlink_to(target)
+
+    queue = ChannelQueue(link)
+    queue.enqueue(
+        channel=EXECUTION_INTENT_CHANNEL,
+        payload={"message_id": "intent-symlink-repair", "symbol": "ETH-USD"},
+        message_id="intent-symlink-repair",
+    )
+
+    assert link.is_symlink()
+    assert link.resolve(strict=False) == target.resolve(strict=False)
+    assert list(external_data.glob("bot_channel_queue.sqlite3.corrupt-*"))
+    assert any(row["via_symlink"] is True for row in queue.last_repair["moved"])
+    assert queue.pending_count(consumer="pytest_symlink_repair", channel=EXECUTION_INTENT_CHANNEL) == 1
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -284,6 +372,83 @@ def test_process_execution_intent_paper_emits_result_and_promoted_message(tmp_pa
     assert promoted_rows[0].payload["target_mode"] == "live"
 
 
+def test_process_execution_intent_blocks_promotion_on_stale_realism_fill(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("PAPER_REALISM_MIN_PROMOTION_SCORE", "65")
+    _seed_gates(tmp_path, promote_ok=True, quality_ok=True)
+    _write_json(
+        tmp_path / "governance" / "allocator" / "portfolio_allocator_service_latest.json",
+        {"ok": True, "approved_intents": [{"symbol": "NVDA", "side": "SELL_TO_OPEN", "approved_qty": 10.0}]},
+    )
+    _write_json(
+        tmp_path / "governance" / "risk" / "risk_service_boundary_latest.json",
+        {"ok": True, "pre_trade_decisions": [{"symbol": "NVDA", "requested_action": "SELL_TO_OPEN", "approved_action": "SELL_TO_OPEN", "risk_limit_ok": True}]},
+    )
+    _write_json(tmp_path / "master_bot_registry.json", {"sub_bots": []})
+
+    trader = BaseTrader("dummy_key", "dummy_secret", "https://127.0.0.1:8182", mode="paper")
+    trader.project_root = str(tmp_path)
+    trader.set_mode("paper")
+    configure_trader_for_lane(trader, "paper")
+
+    message = ChannelMessage(
+        id=1,
+        channel=EXECUTION_INTENT_CHANNEL,
+        message_id="intent-stale-option",
+        parent_message_id="",
+        run_id="run-1",
+        iter_id="iter-1",
+        source_path="",
+        payload={
+            "message_id": "intent-stale-option",
+            "intent_kind": "master",
+            "symbol": "NVDA",
+            "action": "SELL_TO_OPEN",
+            "quantity": 10.0,
+            "model_score": 0.78,
+            "threshold": 0.55,
+            "features": {
+                "last_price": 4.0,
+                "spread_bps": 60.0,
+                "volatility_1m": 0.02,
+                "latency_ms": 500.0,
+                "bid_size": 5.0,
+                "ask_size": 5.0,
+                "quote_age_ms": 6000.0,
+                "open_interest": 0.0,
+            },
+            "gates": {"market_data_ok": True, "risk_limit_ok": True},
+            "reasons": ["score_above_threshold"],
+            "strategy": "covered_call_roll_watch",
+            "metadata": {
+                "asset_class": "options",
+                "sleeve": "covered_call",
+                "allow_live_promotion": True,
+                "runtime_lane": "default",
+                "order_type": "limit",
+            },
+        },
+        created_at="2026-03-31T20:00:00+00:00",
+    )
+
+    out = process_execution_intent(
+        project_root=str(tmp_path),
+        trader=trader,
+        mode="paper",
+        message=message,
+    )
+
+    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    promoted_rows = queue.read_from_cursor(consumer="pytest_live_stale", channel=EXECUTION_PROMOTED_CHANNEL, limit=10)
+
+    paper_order = out["result"]["result"]["paper_order"]
+    assert out["result"]["result_status"] == "PAPER_EXECUTED"
+    assert paper_order["paper_realism_status"] == "stale_quote_rejected"
+    assert paper_order["filled_quantity"] == 0.0
+    assert "paper_realism_not_filled:stale_quote_rejected" in out["promotion"]["promotion"]["reasons"]
+    assert "paper_realism_quality_below_threshold" in out["promotion"]["promotion"]["reasons"]
+    assert len(promoted_rows) == 0
+
+
 def test_paper_standard_gateway_blocks_collection_only_intent(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("PAPER_LIVE_DATA_STANDARD_ENABLED", "1")
     _seed_gates(tmp_path, promote_ok=True, quality_ok=True)
@@ -398,6 +563,7 @@ def test_update_lane_health_marks_stale_consumer_with_backlog(tmp_path: Path, mo
         conn.commit()
 
     monkeypatch.setenv("EXECUTION_LANE_STALE_AFTER_SECONDS", "60")
+    monkeypatch.setenv("EXECUTION_LANE_HEALTH_QUEUE_STATS_ENABLED", "1")
     update_lane_health(
         project_root=str(tmp_path),
         mode="paper",
@@ -437,6 +603,7 @@ def test_update_lane_health_does_not_mark_stale_when_consumer_is_caught_up(tmp_p
         conn.commit()
 
     monkeypatch.setenv("EXECUTION_LANE_STALE_AFTER_SECONDS", "60")
+    monkeypatch.setenv("EXECUTION_LANE_HEALTH_QUEUE_STATS_ENABLED", "1")
     update_lane_health(
         project_root=str(tmp_path),
         mode="paper",
@@ -467,6 +634,7 @@ def test_update_lane_health_allows_active_backlog_grace_before_marking_stale(tmp
         conn.commit()
 
     monkeypatch.setenv("EXECUTION_LANE_STALE_AFTER_SECONDS", "60")
+    monkeypatch.setenv("EXECUTION_LANE_HEALTH_QUEUE_STATS_ENABLED", "1")
     update_lane_health(
         project_root=str(tmp_path),
         mode="paper",
@@ -478,3 +646,176 @@ def test_update_lane_health_allows_active_backlog_grace_before_marking_stale(tmp
     assert payload["pending_rows"] == 1
     assert payload["stale"] is False
     assert payload["stale_grace_seconds"] >= 60
+
+
+def test_update_lane_health_writes_heartbeat_when_queue_stats_fail(tmp_path: Path, monkeypatch) -> None:
+    class _BrokenQueue:
+        def __init__(self, *_args, **_kwargs):
+            raise RuntimeError("queue unavailable")
+
+    monkeypatch.setattr("core.execution_lane_pipeline.ChannelQueue", _BrokenQueue)
+    monkeypatch.setenv("EXECUTION_LANE_HEALTH_QUEUE_STATS_ENABLED", "1")
+
+    update_lane_health(
+        project_root=str(tmp_path),
+        mode="paper",
+        processed_count=7,
+        queue_channel=EXECUTION_INTENT_CHANNEL,
+        auth_ok=False,
+        auth_error="paper_execution_paused_for_runtime_pressure",
+    )
+
+    payload = json.loads((tmp_path / "governance" / "health" / "execution_lane_paper_latest.json").read_text(encoding="utf-8"))
+    assert payload["queue_stats_available"] is False
+    assert payload["queue_stats_status"] == "error"
+    assert payload["queue_stats_error_type"] == "RuntimeError"
+    assert payload["pending_rows_unknown"] is True
+    assert payload["stale"] is False
+    assert payload["auth_error"] == "paper_execution_paused_for_runtime_pressure"
+
+
+def test_update_lane_health_skips_queue_stats_by_default(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("EXECUTION_LANE_HEALTH_QUEUE_STATS_ENABLED", raising=False)
+
+    update_lane_health(
+        project_root=str(tmp_path),
+        mode="paper",
+        processed_count=3,
+        queue_channel=EXECUTION_INTENT_CHANNEL,
+    )
+
+    payload = json.loads((tmp_path / "governance" / "health" / "execution_lane_paper_latest.json").read_text(encoding="utf-8"))
+    assert payload["queue_stats_available"] is False
+    assert payload["queue_stats_status"] == "skipped"
+    assert payload["queue_stats_skip_reason"] == "disabled_for_nonblocking_execution_lane_heartbeat"
+    assert payload["pending_rows_unknown"] is True
+    assert payload["stale"] is False
+
+
+def test_update_lane_health_reports_stale_skip_only_result_activity(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BOT_LOGS_PREFER_EXTERNAL", "0")
+    monkeypatch.setenv("EXECUTION_LANE_HEALTH_RESULT_FRESH_SECONDS", "900")
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    result_path = tmp_path / "governance" / "execution_lanes" / f"execution_results_{day}.jsonl"
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "mode": "paper",
+                "result_status": "STALE_INTENT_SKIPPED",
+                "result": {"reason": "stale_execution_intent"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    update_lane_health(
+        project_root=str(tmp_path),
+        mode="paper",
+        processed_count=1,
+        queue_channel=EXECUTION_INTENT_CHANNEL,
+    )
+
+    payload = json.loads((tmp_path / "governance" / "health" / "execution_lane_paper_latest.json").read_text(encoding="utf-8"))
+    assert payload["result_activity_status"] == "stale_skip_only"
+    assert payload["stale_skip_only_result_activity"] is True
+    assert payload["fresh_paper_executed"] is False
+    assert payload["execution_result_evidence"]["stale_skip_rows"] == 1
+
+
+def test_update_lane_health_keeps_old_stale_skip_audit_non_active(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BOT_LOGS_PREFER_EXTERNAL", "0")
+    monkeypatch.setenv("EXECUTION_LANE_HEALTH_RESULT_FRESH_SECONDS", "900")
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    result_path = tmp_path / "governance" / "execution_lanes" / f"execution_results_{day}.jsonl"
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": (datetime.now(timezone.utc) - timedelta(seconds=1200)).isoformat(),
+                "mode": "paper",
+                "result_status": "STALE_INTENT_SKIPPED",
+                "result": {"reason": "stale_execution_intent"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    update_lane_health(
+        project_root=str(tmp_path),
+        mode="paper",
+        processed_count=1,
+        queue_channel=EXECUTION_INTENT_CHANNEL,
+    )
+
+    payload = json.loads((tmp_path / "governance" / "health" / "execution_lane_paper_latest.json").read_text(encoding="utf-8"))
+    assert payload["result_activity_status"] == "old_stale_skip_audit_only"
+    assert payload["stale_skip_only_result_activity"] is False
+    assert payload["execution_result_evidence"]["historical_stale_skip_only"] is True
+    assert payload["execution_result_evidence"]["stale_skip_only"] is False
+
+
+def test_emit_paper_reconciliation_heartbeat_writes_guard_event(tmp_path: Path) -> None:
+    class _Guard:
+        def reconcile_order_lifecycle(self, *, broker_open_orders):
+            return {
+                "ok": True,
+                "missing_on_broker": [],
+                "missing_local": [],
+                "position_checks": [],
+                "open_orders_local_total": 0,
+                "open_orders_broker_total": len(broker_open_orders),
+            }
+
+    class _Trader:
+        mode = "paper"
+        mode_label = "paper"
+        live_account_hash = ""
+        live_guard = _Guard()
+
+    last_emit = emit_paper_reconciliation_heartbeat(
+        project_root=str(tmp_path),
+        trader=_Trader(),
+        min_interval_seconds=180.0,
+    )
+
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    path = tmp_path / "governance" / "events" / f"paper_execution_guard_{day}.jsonl"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert last_emit > 0.0
+    assert len(rows) == 1
+    assert rows[0]["event"] == "paper_order_lifecycle_reconcile"
+    assert rows[0]["status"] == "ok"
+    assert rows[0]["details"]["heartbeat"] is True
+    assert rows[0]["details"]["order_lifecycle_reconcile"]["ok"] is True
+
+
+def test_emit_paper_reconciliation_heartbeat_throttles(tmp_path: Path) -> None:
+    class _Guard:
+        def reconcile_order_lifecycle(self, *, broker_open_orders):
+            return {"ok": True}
+
+    class _Trader:
+        mode_label = "paper"
+        live_account_hash = ""
+        live_guard = _Guard()
+
+    last_emit = emit_paper_reconciliation_heartbeat(
+        project_root=str(tmp_path),
+        trader=_Trader(),
+        min_interval_seconds=180.0,
+    )
+    second_emit = emit_paper_reconciliation_heartbeat(
+        project_root=str(tmp_path),
+        trader=_Trader(),
+        last_emit_monotonic=last_emit,
+        min_interval_seconds=180.0,
+    )
+
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    path = tmp_path / "governance" / "events" / f"paper_execution_guard_{day}.jsonl"
+    assert second_emit == last_emit
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 1

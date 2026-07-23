@@ -322,6 +322,31 @@ def test_bot_quality_autopilot_surfaces_infrastructure_helper_lane(tmp_path: Pat
     assert payload["infrastructure_helper_queue"][0]["recommended_teacher_bot_ids"] == ["brain_refinery_v86_risk_budget_allocator_v2"]
 
 
+def test_bot_quality_autopilot_refreshes_registry_audit_before_quality_control(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(health / "training_quality_control_latest.json", {"overall_status": "blocked", "targeted_actions": {}})
+    _write_json(health / "supportability_control_latest.json", {"overall_status": "ready", "teacher_student": {"students_without_teachers": 0}})
+    _write_json(project_root / "governance" / "distillation" / "teacher_quality_latest.json", {"summary": {"qualified_teacher_count": 1, "elite_teacher_count": 1}})
+    _write_json(project_root / "governance" / "health" / "training_runtime_control_latest.json", {"snapshot_ready": True})
+    _write_json(project_root / "governance" / "walk_forward" / "coverage_seed_latest.json", {"coverage_shortfall_bots": 0, "seed_queue": []})
+
+    calls: list[list[str]] = []
+
+    def _fake_run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict:
+        calls.append(list(cmd))
+        return {"cmd": list(cmd), "rc": 0, "timed_out": False, "payload": {"overall_status": "ready"}}
+
+    monkeypatch.setattr(quality_auto_src, "_run_json", _fake_run_json)
+
+    quality_auto_src.build_payload(project_root, apply=True, timeout_sec=30)
+
+    joined = [" ".join(cmd) for cmd in calls]
+    registry_index = next(idx for idx, text in enumerate(joined) if "training_registry_audit.py" in text)
+    quality_index = next(idx for idx, text in enumerate(joined) if "training_quality_control.py" in text)
+    assert registry_index < quality_index
+
+
 def test_infrastructure_autofix_bot_builds_safe_apply_plan(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -384,6 +409,92 @@ def test_infrastructure_autofix_bot_builds_safe_apply_plan(tmp_path: Path) -> No
     assert payload["metrics"]["storage_total_drain_minutes"] == 22.5
 
 
+def test_infrastructure_autofix_keeps_quality_debt_repair_advisory_when_supportability_ready(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "training_quality_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "recoverable_blocked_keys": [],
+            "top_priorities": ["runtime_input_coverage", "active_probation_isolation"],
+            "targeted_actions": {
+                "repair_runtime_input_bot_ids": ["brain_refinery_v12_news_shocks"],
+                "targeted_retrain_bot_ids": ["brain_refinery_v12_news_shocks"],
+            },
+        },
+    )
+    _write_json(health / "supportability_control_latest.json", {"overall_status": "ready"})
+    _write_json(health / "bot_quality_autopilot_latest.json", {"overall_status": "blocked"})
+
+    payload = infra_src.build_payload(project_root, apply=False)
+
+    repair_names = [row["name"] for row in payload["repair_plan"]]
+    advisory_names = [row["name"] for row in payload["advisory_repair_plan"]]
+    assert "bot_quality_autopilot" not in repair_names
+    assert "bot_quality_autopilot" in advisory_names
+
+
+def test_infrastructure_autofix_refreshes_required_collector_failures(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "collector_contracts_latest.json",
+        {
+            "required_failures": ["official_macro_context"],
+            "rows": [
+                {"name": "market_micro_context", "required": True, "contract_ok": False},
+                {"name": "schwab_education_context", "required": False, "contract_ok": False},
+            ],
+        },
+    )
+    _write_json(health / "remote_alert_control_latest.json", {"channels": {"any_configured": True}, "critical_backlog": {"unsent_count": 0}})
+
+    payload = infra_src.build_payload(project_root, apply=False)
+    names = [row["name"] for row in payload["repair_plan"]]
+
+    assert "official_macro_context_refresh" in names
+    assert "market_micro_context_refresh" in names
+    assert "schwab_education_refresh" in names
+
+
+def test_infrastructure_autofix_bounds_system_drift_autopilot_timeout(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "system_drift_guard_latest.json",
+        {
+            "overall_status": "blocked",
+            "metrics": {"blocked_surface_count": 1, "degraded_surface_count": 0},
+            "surfaces": [{"name": "report_pdf_bundle", "status": "blocked"}],
+        },
+    )
+    _write_json(health / "remote_alert_control_latest.json", {"channels": {"any_configured": True}, "critical_backlog": {"unsent_count": 0}})
+
+    payload = infra_src.build_payload(project_root, apply=False)
+    drift_step = next(row for row in payload["repair_plan"] if row["name"] == "system_drift_autopilot")
+    cmd = drift_step["cmd"]
+
+    timeout_index = cmd.index("--max-step-timeout-seconds")
+    assert cmd[timeout_index + 1] == str(infra_src.SYSTEM_DRIFT_AUTOFIX_STEP_TIMEOUT_SECONDS)
+
+
+def test_infrastructure_autofix_does_not_relaunch_master_when_nested_under_master(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(health / "master_infrastructure_supervisor_latest.json", {"overall_status": "blocked"})
+    _write_json(health / "remote_alert_control_latest.json", {"channels": {"any_configured": True}, "critical_backlog": {"unsent_count": 0}})
+    monkeypatch.setenv(infra_src.REPAIR_CALL_STACK_ENV, "master_infrastructure_supervisor")
+
+    payload = infra_src.build_payload(project_root, apply=False)
+
+    repair_names = [row["name"] for row in payload["repair_plan"]]
+    advisory_rows = [row for row in payload["advisory_repair_plan"] if row["name"] == "master_infrastructure_supervisor_refresh"]
+    assert "master_infrastructure_supervisor_refresh" not in repair_names
+    assert advisory_rows
+    assert "nested_under_master_supervisor=1" in advisory_rows[0]["reason"]
+
+
 def test_infrastructure_autofix_bot_treats_degraded_child_repairs_as_degraded(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -406,3 +517,39 @@ def test_infrastructure_autofix_bot_treats_degraded_child_repairs_as_degraded(mo
 
     assert payload["repair_plan"]
     assert payload["overall_status"] == "degraded"
+
+
+def test_infrastructure_autofix_apply_respects_run_timeout_budget(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(health / "daily_auto_verify_latest.json", {"failed_checks": ["promotion_quality_gate"]})
+    _write_json(health / "remote_alert_control_latest.json", {"channels": {"any_configured": True}, "critical_backlog": {"unsent_count": 0}})
+
+    monotonic_now = {"value": 1000.0}
+    calls: list[tuple[list[str], int]] = []
+
+    monkeypatch.setattr(infra_src.time, "monotonic", lambda: monotonic_now["value"])
+
+    def _fake_run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict:
+        calls.append((list(cmd), int(timeout_sec)))
+        monotonic_now["value"] += float(timeout_sec) + 0.01
+        return {
+            "cmd": list(cmd),
+            "rc": 0,
+            "timed_out": False,
+            "timeout_sec": int(timeout_sec),
+            "payload": {"overall_status": "ready"},
+            "stdout_tail": "",
+            "stderr_tail": "",
+        }
+
+    monkeypatch.setattr(infra_src, "_run_json", _fake_run_json)
+
+    payload = infra_src.build_payload(project_root, apply=True, timeout_sec=5)
+
+    assert payload["repair_plan"]
+    assert calls
+    assert calls[0][1] == 5
+    assert payload["metrics"]["timeout_budget_exhausted"] is True
+    assert any(row["skipped"] and row["reason"] == "run_timeout_budget_exhausted" for row in payload["attempts"])
+    assert payload["overall_status"] == "blocked"

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import sys
 from pathlib import Path
@@ -12,9 +13,9 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, parse_iso_utc, write_payload
+    from scripts.ops.long_runtime_common import PROJECT_ROOT, LOCAL_TZ, iso_now, load_json, ordered_unique, parse_iso_utc, utc_now, write_payload
 else:
-    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, parse_iso_utc, write_payload
+    from .long_runtime_common import PROJECT_ROOT, LOCAL_TZ, iso_now, load_json, ordered_unique, parse_iso_utc, utc_now, write_payload
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "memory_pressure_intelligence_latest.json"
@@ -23,6 +24,19 @@ CREATIVE_REALTIME_APPS = ("logic", "final cut", "fcpx", "garageband", "ableton",
 INTERACTIVE_DEVELOPER_APPS = ("pycharm", "xcode", "chrome", "safari", "terminal", "iterm", "codex")
 MEDIA_PLAYBACK_APPS = ("music", "itunes", "spotify", "vlc", "quicktime")
 OBSERVER_PROCESS_MARKERS = ("asitop", "btop", "powermetrics", "activity monitor")
+WEEKEND_TRAINING_ENV = "TRAINING_WEEKEND_BATCH_WINDOW"
+
+
+def _weekend_training_window_active() -> bool:
+    override = str(os.environ.get(WEEKEND_TRAINING_ENV) or "").strip().lower()
+    if override in {"1", "true", "yes", "on", "force"}:
+        return True
+    if override in {"0", "false", "no", "off", "disable"}:
+        return False
+    try:
+        return utc_now().astimezone(LOCAL_TZ).weekday() >= 5
+    except Exception:
+        return False
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -101,11 +115,18 @@ def _memory_snapshot(host: dict[str, Any], runtime: dict[str, Any], memory_effic
             *([] if ignore_host_foreground else foreground_apps),
         ]
     )
-    compressed_gb = _max_numeric(
+    compressed_store_gb = _max_numeric(
         host_snapshot.get("compressed_store_gb"),
         efficiency_snapshot.get("compressed_store_gb"),
         burst_inputs.get("compressed_store_gb"),
     )
+    compressor_gb = _max_numeric(
+        memory.get("compressor_gb"),
+        host_snapshot.get("compressor_gb"),
+        efficiency_snapshot.get("compressor_gb"),
+        burst_inputs.get("compressor_gb"),
+    )
+    compressed_pressure_gb = compressor_gb if compressor_gb > 0 else compressed_store_gb
     swap_gb = _max_numeric(
         memory.get("swap_used_gb"),
         host_snapshot.get("swap_used_gb"),
@@ -153,7 +174,9 @@ def _memory_snapshot(host: dict[str, Any], runtime: dict[str, Any], memory_effic
             3,
         ),
         "swap_used_gb": round(swap_gb, 3),
-        "compressed_store_gb": round(compressed_gb, 3),
+        "compressed_store_gb": round(compressed_store_gb, 3),
+        "compressed_pressure_gb": round(compressed_pressure_gb, 3),
+        "compressor_gb": round(compressor_gb, 3),
         "pages_throttled": pages_throttled,
         "runtime_burst_mode": str(burst.get("mode") or "").strip().lower(),
         "memory_efficiency_status": _status(memory_efficiency),
@@ -172,6 +195,70 @@ def _memory_snapshot(host: dict[str, Any], runtime: dict[str, Any], memory_effic
     }
 
 
+def _reconcile_stale_allocation(snapshot: dict[str, Any], swap_pressure_payload: dict[str, Any]) -> dict[str, Any]:
+    swap_pressure = _as_dict(swap_pressure_payload.get("swap_pressure"))
+    raw_snapshot = dict(snapshot)
+    raw_swap_gb = _safe_float(snapshot.get("swap_used_gb"), 0.0)
+    current_swap_gb = _safe_float(swap_pressure.get("swap_used_gb"), raw_swap_gb)
+    compressed_store_gb = _safe_float(snapshot.get("compressed_store_gb"), 0.0)
+    compressor_gb = _safe_float(snapshot.get("compressor_gb"), 0.0)
+    free_pct = _safe_float(snapshot.get("memory_free_pct"), 0.0)
+    pages_throttled = _safe_float(snapshot.get("pages_throttled"), 0.0)
+    pressure_kind = str(snapshot.get("pressure_kind") or "none").strip().lower()
+    swap_state = str(swap_pressure.get("memory_pressure_state") or "").strip().lower()
+    swap_kind = str(swap_pressure.get("memory_pressure_kind") or "").strip().lower()
+    swap_tier = str(swap_pressure.get("tier") or "").strip().lower()
+    governor_green = bool(
+        swap_pressure
+        and swap_tier == "normal"
+        and swap_state in {"green", "normal", "none", "clear"}
+        and swap_kind in {"", "none", "normal", "green", "clear"}
+    )
+    vm_clear = bool(pressure_kind in {"", "none", "normal", "green", "clear"} and pages_throttled <= 0.0)
+    stale_swap_relief = bool(governor_green and vm_clear and raw_swap_gb >= 2.0 and current_swap_gb + 0.5 < raw_swap_gb)
+    stale_compression_relief = bool(
+        governor_green
+        and vm_clear
+        and stale_swap_relief
+        and (free_pct <= 0.0 or free_pct >= 85.0)
+        and current_swap_gb < 3.0
+        and compressed_store_gb >= 18.0
+        and compressor_gb < 1.5
+    )
+    if stale_swap_relief:
+        snapshot["swap_used_gb"] = round(current_swap_gb, 3)
+    if stale_compression_relief:
+        snapshot["compressed_store_gb"] = round(max(compressor_gb, 8.0), 3)
+    if stale_swap_relief or stale_compression_relief:
+        snapshot["pressure_level"] = "normal"
+        snapshot["pressure_kind"] = "none"
+        snapshot["compressed_pressure_gb"] = round(compressor_gb if compressor_gb > 0 else _safe_float(snapshot.get("compressed_store_gb"), 0.0), 3)
+        snapshot["allocation_relief_active"] = True
+    snapshot["raw_allocation_snapshot"] = {
+        "pressure_level": str(raw_snapshot.get("pressure_level") or ""),
+        "pressure_kind": str(raw_snapshot.get("pressure_kind") or ""),
+        "swap_used_gb": round(raw_swap_gb, 3),
+        "compressed_store_gb": round(compressed_store_gb, 3),
+        "compressed_pressure_gb": round(_safe_float(raw_snapshot.get("compressed_pressure_gb"), 0.0), 3),
+        "compressor_gb": round(compressor_gb, 3),
+    }
+    snapshot["memory_truth_reconciliation"] = {
+        "active": bool(stale_swap_relief or stale_compression_relief),
+        "stale_swap_relief": stale_swap_relief,
+        "stale_compression_relief": stale_compression_relief,
+        "raw_swap_used_gb": round(raw_swap_gb, 3),
+        "effective_swap_used_gb": round(_safe_float(snapshot.get("swap_used_gb"), raw_swap_gb), 3),
+        "raw_compressed_store_gb": round(compressed_store_gb, 3),
+        "effective_compressed_store_gb": round(_safe_float(snapshot.get("compressed_store_gb"), compressed_store_gb), 3),
+        "compressor_gb": round(compressor_gb, 3),
+        "free_pct": round(free_pct, 3),
+        "swap_pressure_tier": swap_tier,
+        "reason": "fresh_swap_pressure_reconciled_stale_allocation" if stale_swap_relief or stale_compression_relief else "not_applicable",
+        "policy": "classification and reopen gates use effective memory when fresh green VM evidence contradicts stale high-water allocation",
+    }
+    return snapshot
+
+
 def _match_app_class(app: str) -> str:
     lowered = app.lower()
     if any(marker in lowered for marker in CREATIVE_REALTIME_APPS):
@@ -186,40 +273,56 @@ def _match_app_class(app: str) -> str:
 def _multitasking_headroom(snapshot: dict[str, Any]) -> dict[str, Any]:
     open_apps = [str(item) for item in _as_list(snapshot.get("open_apps")) if str(item).strip()]
     classes = ordered_unique([_match_app_class(app) for app in open_apps])
+    weekend_window = _weekend_training_window_active()
+    weekend_media_window = bool(weekend_window and classes == ["media_playback"])
     if "creative_realtime" in classes:
         level = "realtime_creative"
         cap = 3
         p_core_reserve = 5
         collector_ratio = 0.12
         training_allowed = False
+        training_cap = 0
+        hard_training_block = True
         reason = "Logic/Final Cut-style foreground work needs the largest memory and scheduler reserve"
     elif "interactive_developer" in classes:
         level = "interactive_developer"
-        cap = 4
-        p_core_reserve = 4
-        collector_ratio = 0.20
-        training_allowed = False
-        reason = "developer apps are open, so keep the system responsive and avoid training"
-    elif "media_playback" in classes:
-        level = "media_playback"
         cap = 5
         p_core_reserve = 3
         collector_ratio = 0.28
-        training_allowed = False
-        reason = "media playback gets a light headroom reserve to avoid first-play stutter"
+        training_allowed = True
+        training_cap = 2
+        hard_training_block = False
+        reason = "developer apps keep a reserve, but guarded small-canary training may run when memory permits"
+    elif "media_playback" in classes:
+        level = "media_playback"
+        cap = 6 if weekend_media_window else 5
+        p_core_reserve = 1 if weekend_media_window else 3
+        collector_ratio = 0.45 if weekend_media_window else 0.35
+        training_allowed = True
+        training_cap = 30 if weekend_media_window else 4
+        hard_training_block = False
+        reason = (
+            "weekend media-only foreground activity permits memory-guarded batch training waves"
+            if weekend_media_window
+            else "media playback keeps a light reserve, but small targeted training may run when memory permits"
+        )
     elif open_apps:
         level = "foreground_standard"
         cap = 5
         p_core_reserve = 3
         collector_ratio = 0.28
-        training_allowed = False
-        reason = "foreground app activity gets a general headroom reserve"
+        training_allowed = True
+        training_cap = 2
+        hard_training_block = False
+        reason = "foreground app activity gets a general reserve, but guarded small-canary training may run"
     else:
         level = "background_available"
         cap = 7
         p_core_reserve = 1
         collector_ratio = 0.55
         training_allowed = True
+        training_cap = 30
+        hard_training_block = False
         reason = "no foreground apps are asking for extra headroom, so deep-green P7 backlog bursts may be armed"
     return {
         "active": bool(open_apps),
@@ -230,6 +333,10 @@ def _multitasking_headroom(snapshot: dict[str, Any]) -> dict[str, Any]:
         "recommended_user_p_core_reserve": p_core_reserve,
         "collector_ratio_cap": collector_ratio,
         "training_allowed_by_multitasking": training_allowed,
+        "training_hard_block_by_multitasking": hard_training_block,
+        "training_max_parallel_trainings": training_cap,
+        "weekend_training_window": weekend_window,
+        "weekend_media_training_window": weekend_media_window,
         "recommended_background_posture": "foreground_headroom" if open_apps else "normal_background",
         "reason": reason,
         "policy": "foreground_apps_get_memory_and_scheduler_reserve_before_backlog_or_training_widening",
@@ -276,7 +383,15 @@ def _memory_trend(previous: dict[str, Any], current_snapshot: dict[str, Any], cu
     if previous_ts is not None and current_dt is not None:
         elapsed_seconds = max((current_dt - previous_ts).total_seconds(), 0.0)
 
-    compressed_delta = round(_safe_float(prior_snapshot.get("compressed_store_gb"), 0.0) - _safe_float(current_snapshot.get("compressed_store_gb"), 0.0), 3)
+    previous_compressed_pressure = _safe_float(
+        prior_snapshot.get("compressed_pressure_gb"),
+        _safe_float(prior_snapshot.get("compressed_store_gb"), 0.0),
+    )
+    current_compressed_pressure = _safe_float(
+        current_snapshot.get("compressed_pressure_gb"),
+        _safe_float(current_snapshot.get("compressed_store_gb"), 0.0),
+    )
+    compressed_delta = round(previous_compressed_pressure - current_compressed_pressure, 3)
     swap_delta = round(_safe_float(prior_snapshot.get("swap_used_gb"), 0.0) - _safe_float(current_snapshot.get("swap_used_gb"), 0.0), 3)
     throttled_delta = round(_safe_float(prior_snapshot.get("pages_throttled"), 0.0) - _safe_float(current_snapshot.get("pages_throttled"), 0.0), 3)
     has_previous = bool(prior_snapshot)
@@ -311,24 +426,35 @@ def _classify(snapshot: dict[str, Any], trend: dict[str, Any], multitasking: dic
     level = str(snapshot.get("pressure_level") or "normal").lower()
     kind = str(snapshot.get("pressure_kind") or "none").lower()
     swap_gb = _safe_float(snapshot.get("swap_used_gb"), 0.0)
-    compressed_gb = _safe_float(snapshot.get("compressed_store_gb"), 0.0)
+    compressed_gb = _safe_float(snapshot.get("compressed_pressure_gb"), _safe_float(snapshot.get("compressed_store_gb"), 0.0))
     pages_throttled = _safe_float(snapshot.get("pages_throttled"), 0.0)
     burst_mode = str(snapshot.get("runtime_burst_mode") or "").lower()
     user_active = bool(snapshot.get("user_active", False))
     multitask_cap = _safe_int(multitasking.get("recommended_p_core_cap"), 6)
     multitask_level = str(multitasking.get("level") or "background_available")
     heating = bool(trend.get("heating", False))
-    if level in {"red", "high", "critical"} or kind in {"red", "critical", "throttled"} or pages_throttled > 0:
+    allocation_only_high = bool(
+        level in {"high", "critical"}
+        and kind in {"", "none", "normal"}
+        and pages_throttled <= 0
+        and _safe_float(snapshot.get("memory_free_pct"), 0.0) >= 70.0
+        and swap_gb < 3.0
+    )
+    if (
+        (level in {"red", "high", "critical"} and not allocation_only_high)
+        or kind in {"red", "critical", "throttled"}
+        or pages_throttled > 0
+    ):
         status = "hard_relief"
         cap = 2
         decision = "protect_memory_now"
         reason = "memory pressure is high or VM pages are throttled"
-    elif burst_mode.startswith("memory_relief_2") or swap_gb >= 8.0:
+    elif (burst_mode.startswith("memory_relief_2") and not allocation_only_high) or swap_gb >= 8.0:
         status = "swap_relief"
         cap = 2
         decision = "protect_memory_now"
         reason = "swap is high or runtime requested strong memory relief"
-    elif burst_mode.startswith("memory_relief_3") or compressed_gb >= 14.0 or swap_gb >= 4.0:
+    elif (burst_mode.startswith("memory_relief_3") and not allocation_only_high) or compressed_gb >= 14.0 or swap_gb >= 4.0:
         status = "compression_relief"
         cap = 3
         decision = "cool_compression_before_widening"
@@ -384,19 +510,50 @@ def _reopen_gate(classification: dict[str, Any], trend: dict[str, Any], snapshot
     cooling_samples = _safe_int(trend.get("previous_cooling_samples"), 0) + 1 if bool(trend.get("cooling", False)) else 0
     safe_to_widen = bool(clear_samples >= 2)
     safe_for_training = bool(clear_samples >= 3 and str(classification.get("status")) == "clear")
-    memory_normal = bool(
-        str(snapshot.get("pressure_level") or "normal").lower() == "normal"
-        and str(snapshot.get("pressure_kind") or "none").lower() in {"", "none", "normal"}
+    pressure_level = str(snapshot.get("pressure_level") or "normal").lower()
+    pressure_kind = str(snapshot.get("pressure_kind") or "none").lower()
+    allocation_only_pressure = bool(
+        pressure_level in {"high", "critical"}
+        and pressure_kind in {"", "none", "normal"}
         and _safe_float(snapshot.get("pages_throttled"), 0.0) <= 0.0
+        and _safe_float(snapshot.get("memory_free_pct"), 0.0) >= 70.0
+        and _safe_float(snapshot.get("swap_used_gb"), 0.0) < 3.0
     )
+    memory_normal = bool(
+        pressure_level == "normal" or allocation_only_pressure
+    ) and pressure_kind in {"", "none", "normal"} and _safe_float(snapshot.get("pages_throttled"), 0.0) <= 0.0
     free_pct = _safe_float(snapshot.get("memory_free_pct"), 0.0)
     swap_gb = _safe_float(snapshot.get("swap_used_gb"), 0.0)
-    compressed_gb = _safe_float(snapshot.get("compressed_store_gb"), 0.0)
+    compressed_gb = _safe_float(snapshot.get("compressed_pressure_gb"), _safe_float(snapshot.get("compressed_store_gb"), 0.0))
     multitasking_allows = bool(multitasking.get("training_allowed_by_multitasking", True))
     trend_heating = bool(trend.get("heating", False))
     observer_clear = not bool(observer.get("active", False))
     prior_clear_samples = _safe_int(trend.get("previous_clear_samples"), 0)
     sequential_guard_soak = max(clear_samples, prior_clear_samples if status == "heating_guard" else 0)
+    weekend_large_batch_window = bool(
+        status == "soft_guard"
+        and bool(multitasking.get("weekend_media_training_window", False))
+        and multitasking_allows
+        and observer_clear
+        and not trend_heating
+        and memory_normal
+        and (free_pct <= 0.0 or free_pct >= 90.0)
+        and compressed_gb < 12.0
+        and swap_gb < 3.0
+        and _safe_int(classification.get("recommended_p_core_worker_cap"), 0) >= 3
+    )
+    compression_relief_micro_canary_safe = bool(
+        status == "compression_relief"
+        and not trend_heating
+        and str(snapshot.get("pressure_level") or "normal").lower() not in {"red", "high", "critical"}
+        and str(snapshot.get("pressure_kind") or "none").lower() in {"", "none", "normal"}
+        and _safe_float(snapshot.get("pages_throttled"), 0.0) <= 0.0
+        and swap_gb < 3.0
+        and compressed_gb < 20.0
+        and (free_pct <= 0.0 or free_pct >= 70.0)
+        and multitasking_allows
+        and observer_clear
+    )
     single_sample_deep_green = bool(
         current_clear
         and memory_normal
@@ -408,20 +565,51 @@ def _reopen_gate(classification: dict[str, Any], trend: dict[str, Any], snapshot
         and swap_gb < 1.5
         and _safe_int(classification.get("recommended_p_core_worker_cap"), 0) >= 6
     )
-    small_canary_safe = bool(
-        status in {"clear", "foreground_headroom", "soft_guard"}
+    foreground_soft_guard_micro_safe = bool(
+        status == "soft_guard"
+        and multitasking_allows
+        and _safe_int(multitasking.get("training_max_parallel_trainings"), 0) >= 1
+        and observer_clear
         and not trend_heating
         and memory_normal
-        and swap_gb < 2.0
-        and compressed_gb < 12.0
+        and _safe_float(snapshot.get("pages_throttled"), 0.0) <= 0.0
+        and swap_gb < 2.25
+        and compressed_gb < 14.5
+        and (free_pct <= 0.0 or free_pct >= 80.0)
+    )
+    foreground_soft_guard_small_safe = bool(
+        status == "soft_guard"
         and multitasking_allows
+        and _safe_int(multitasking.get("training_max_parallel_trainings"), 0) >= 2
+        and observer_clear
+        and not trend_heating
+        and memory_normal
+        and _safe_float(snapshot.get("pages_throttled"), 0.0) <= 0.0
+        and swap_gb < 2.35
+        and compressed_gb < 15.25
+        and (free_pct <= 0.0 or free_pct >= 80.0)
+    )
+    small_canary_safe = bool(
+        (
+            status in {"clear", "foreground_headroom", "soft_guard"}
+            and not trend_heating
+            and memory_normal
+            and swap_gb < 2.0
+            and compressed_gb < 12.0
+            and multitasking_allows
+        )
+        or compression_relief_micro_canary_safe
+        or foreground_soft_guard_micro_safe
     )
     small_batch_safe = bool(
-        small_canary_safe
-        and observer_clear
-        and compressed_gb < 11.5
-        and swap_gb < 1.5
-        and status in {"clear", "foreground_headroom", "soft_guard"}
+        (
+            small_canary_safe
+            and observer_clear
+            and compressed_gb < 11.5
+            and swap_gb < 1.5
+            and status in {"clear", "foreground_headroom", "soft_guard"}
+        )
+        or foreground_soft_guard_small_safe
     )
     batch10_strict_safe = bool(
         safe_for_training
@@ -434,15 +622,18 @@ def _reopen_gate(classification: dict[str, Any], trend: dict[str, Any], snapshot
         and swap_gb < 1.0
     )
     batch10_wave_safe = bool(
-        status in {"clear", "heating_guard"}
-        and observer_clear
-        and memory_normal
-        and multitasking_allows
-        and (sequential_guard_soak >= 3 or single_sample_deep_green)
-        and (free_pct <= 0.0 or free_pct >= 70.0)
-        and compressed_gb < 9.75
-        and swap_gb < 1.75
-        and _safe_int(classification.get("recommended_p_core_worker_cap"), 0) >= 4
+        (
+            status in {"clear", "heating_guard"}
+            and observer_clear
+            and memory_normal
+            and multitasking_allows
+            and (sequential_guard_soak >= 3 or single_sample_deep_green)
+            and (free_pct <= 0.0 or free_pct >= 70.0)
+            and compressed_gb < 9.75
+            and swap_gb < 1.75
+            and _safe_int(classification.get("recommended_p_core_worker_cap"), 0) >= 4
+        )
+        or weekend_large_batch_window
     )
     batch10_safe = bool(batch10_strict_safe or batch10_wave_safe)
     batch20_strict_safe = bool(
@@ -452,7 +643,7 @@ def _reopen_gate(classification: dict[str, Any], trend: dict[str, Any], snapshot
         and swap_gb < 0.5
         and _safe_int(classification.get("recommended_p_core_worker_cap"), 0) >= 6
     )
-    batch20_wave_safe = bool(
+    clear_or_heating_batch20_wave_safe = bool(
         not batch20_strict_safe
         and status in {"clear", "heating_guard"}
         and observer_clear
@@ -464,7 +655,35 @@ def _reopen_gate(classification: dict[str, Any], trend: dict[str, Any], snapshot
         and swap_gb < 1.75
         and _safe_int(classification.get("recommended_p_core_worker_cap"), 0) >= 4
     )
+    compression_relief_batch20_wave_safe = bool(
+        not batch20_strict_safe
+        and status == "compression_relief"
+        and compression_relief_micro_canary_safe
+        and observer_clear
+        and multitasking_allows
+        and not trend_heating
+        and str(snapshot.get("pressure_level") or "normal").lower() not in {"red", "high", "critical"}
+        and str(snapshot.get("pressure_kind") or "none").lower() in {"", "none", "normal"}
+        and _safe_float(snapshot.get("pages_throttled"), 0.0) <= 0.0
+        and (free_pct <= 0.0 or free_pct >= 80.0)
+        and compressed_gb < 20.0
+        and swap_gb < 2.25
+        and _safe_int(classification.get("recommended_p_core_worker_cap"), 0) >= 3
+    )
+    weekend_soft_guard_batch20_wave_safe = bool(weekend_large_batch_window)
+    batch20_wave_safe = bool(clear_or_heating_batch20_wave_safe or compression_relief_batch20_wave_safe or weekend_soft_guard_batch20_wave_safe)
     batch20_safe = bool(batch20_strict_safe or batch20_wave_safe)
+    batch20_wave_size = (
+        20
+        if batch20_strict_safe
+        else min(max(_safe_int(classification.get("recommended_p_core_worker_cap"), 3), 1), 4)
+        if compression_relief_batch20_wave_safe
+        else 4
+        if batch20_wave_safe and not batch10_strict_safe
+        else 10
+        if batch20_wave_safe
+        else 0
+    )
     batch20_execution_mode = (
         "strict_deep_green"
         if batch20_strict_safe
@@ -472,8 +691,51 @@ def _reopen_gate(classification: dict[str, Any], trend: dict[str, Any], snapshot
         if batch20_wave_safe
         else ""
     )
+    batch30_strict_safe = bool(
+        batch20_strict_safe
+        and clear_samples >= 6
+        and compressed_gb < 6.75
+        and swap_gb < 0.5
+        and _safe_int(classification.get("recommended_p_core_worker_cap"), 0) >= 6
+    )
+    batch30_wave_safe = bool(
+        (
+            not batch30_strict_safe
+            and batch20_safe
+            and observer_clear
+            and multitasking_allows
+            and not trend_heating
+            and str(snapshot.get("pressure_level") or "normal").lower() not in {"red", "high", "critical"}
+            and str(snapshot.get("pressure_kind") or "none").lower() in {"", "none", "normal"}
+            and _safe_float(snapshot.get("pages_throttled"), 0.0) <= 0.0
+            and (free_pct <= 0.0 or free_pct >= 80.0)
+            and compressed_gb < 20.0
+            and swap_gb < 2.25
+            and _safe_int(classification.get("recommended_p_core_worker_cap"), 0) >= 3
+        )
+        or bool(weekend_large_batch_window and batch20_safe)
+    )
+    batch30_safe = bool(batch30_strict_safe or batch30_wave_safe)
+    batch30_wave_size = (
+        30
+        if batch30_strict_safe
+        else min(max(_safe_int(classification.get("recommended_p_core_worker_cap"), 3), 1), 4)
+        if status in {"compression_relief", "soft_guard"} and batch30_wave_safe
+        else 5
+        if batch30_wave_safe
+        else 0
+    )
+    batch30_execution_mode = (
+        "strict_deep_green"
+        if batch30_strict_safe
+        else "sequential_memory_guarded_waves"
+        if batch30_wave_safe
+        else ""
+    )
     training_batch_cap = (
-        20
+        30
+        if batch30_safe
+        else 20
         if batch20_safe
         else 10
         if batch10_safe
@@ -485,8 +747,19 @@ def _reopen_gate(classification: dict[str, Any], trend: dict[str, Any], snapshot
         if small_canary_safe
         else 0
     )
+    multitasking_training_cap = max(_safe_int(multitasking.get("training_max_parallel_trainings"), 30), 0)
+    training_batch_cap = min(training_batch_cap, multitasking_training_cap)
+    if multitasking_training_cap < 30:
+        batch30_safe = bool(batch30_safe and multitasking_training_cap >= 30)
+        batch20_safe = bool(batch20_safe and multitasking_training_cap >= 20)
+        batch10_safe = bool(batch10_safe and multitasking_training_cap >= 10)
+        safe_for_training = bool(safe_for_training and multitasking_training_cap >= 4)
+        small_batch_safe = bool(small_batch_safe and multitasking_training_cap >= 2)
+        small_canary_safe = bool(small_canary_safe and multitasking_training_cap >= 1)
     training_profile = (
-        "coverage_batch20_canary"
+        "coverage_batch30_canary"
+        if batch30_safe
+        else "coverage_batch20_canary"
         if batch20_safe
         else "coverage_batch10_canary"
         if batch10_safe
@@ -520,16 +793,32 @@ def _reopen_gate(classification: dict[str, Any], trend: dict[str, Any], snapshot
         "batch20_max_parallel_trainings": 20 if batch20_safe else 0,
         "batch20_strict_training_safe": batch20_strict_safe,
         "batch20_wave_training_safe": batch20_wave_safe,
+        "compression_relief_batch20_wave_training_safe": compression_relief_batch20_wave_safe,
+        "weekend_large_batch_window": weekend_large_batch_window,
+        "weekend_soft_guard_batch20_wave_training_safe": weekend_soft_guard_batch20_wave_safe,
         "batch20_execution_mode": batch20_execution_mode,
-        "batch20_wave_size": 20 if batch20_strict_safe else 4 if batch20_wave_safe and not batch10_strict_safe else 10 if batch20_wave_safe else 0,
+        "batch20_wave_size": batch20_wave_size,
         "batch20_requires_between_target_memory_recheck": bool(batch20_wave_safe),
+        "batch30_training_safe": batch30_safe,
+        "batch30_max_parallel_trainings": 30 if batch30_safe else 0,
+        "batch30_strict_training_safe": batch30_strict_safe,
+        "batch30_wave_training_safe": batch30_wave_safe,
+        "batch30_execution_mode": batch30_execution_mode,
+        "batch30_wave_size": batch30_wave_size,
+        "batch30_requires_between_target_memory_recheck": bool(batch30_wave_safe),
+        "weekend_soft_guard_batch30_wave_training_safe": bool(weekend_large_batch_window and batch30_safe),
         "single_sample_deep_green_batch_widening": single_sample_deep_green,
+        "foreground_soft_guard_micro_canary_safe": foreground_soft_guard_micro_safe,
+        "foreground_soft_guard_small_canary_safe": foreground_soft_guard_small_safe,
+        "compression_relief_micro_canary_safe": compression_relief_micro_canary_safe,
+        "batch30_profile": "coverage_batch30_canary" if batch30_safe else "",
         "batch20_profile": "coverage_batch20_canary" if batch20_safe else "",
         "training_batch_cap": training_batch_cap,
         "training_profile": training_profile,
+        "multitasking_training_cap": multitasking_training_cap,
         "observer_clear_for_larger_batches": observer_clear,
         "cooling_before_widening": not safe_to_widen,
-        "policy": "wide_training_requires_clear_soak; micro_canary_may_run_under_warm_memory_when_swap_throttle_and_foreground_gates_are_clear",
+        "policy": "wide_training_requires_clear_soak; weekend media-only soft-guard windows may use sequential memory-guarded waves when swap, throttle, trend, and observer gates are clear",
     }
 
 
@@ -570,7 +859,24 @@ def _what_do_you_need(snapshot: dict[str, Any], classification: dict[str, Any], 
                 "stop_when": "two consecutive clear memory samples have been observed.",
             }
         )
-    if bool(snapshot.get("user_active", False)) and str(classification.get("status")) == "foreground_headroom":
+    app_classes = ordered_unique([_match_app_class(app) for app in _as_list(snapshot.get("open_apps"))])
+    foreground_headroom_managed = bool(
+        bool(snapshot.get("user_active", False))
+        and str(classification.get("status")) == "foreground_headroom"
+        and bool(gate.get("safe_to_widen_p_core_workers"))
+        and str(snapshot.get("pressure_level") or "normal").strip().lower() == "normal"
+        and str(snapshot.get("pressure_kind") or "none").strip().lower() in {"", "none", "normal"}
+        and _safe_float(snapshot.get("pages_throttled"), 0.0) <= 0.0
+        and _safe_float(snapshot.get("swap_used_gb"), 0.0) < 2.0
+        and _safe_float(snapshot.get("compressed_pressure_gb"), 0.0) < 8.0
+        and app_classes
+        and set(app_classes).issubset({"media_playback"})
+    )
+    if (
+        bool(snapshot.get("user_active", False))
+        and str(classification.get("status")) == "foreground_headroom"
+        and not foreground_headroom_managed
+    ):
         needs.append(
             {
                 "blocker": "foreground_app_headroom_reserved",
@@ -597,6 +903,24 @@ def _what_do_you_need(snapshot: dict[str, Any], classification: dict[str, Any], 
     return needs
 
 
+def _managed_controls(snapshot: dict[str, Any], classification: dict[str, Any], gate: dict[str, Any]) -> list[dict[str, Any]]:
+    controls: list[dict[str, Any]] = []
+    app_classes = ordered_unique([_match_app_class(app) for app in _as_list(snapshot.get("open_apps"))])
+    if bool(snapshot.get("user_active", False)) and str(classification.get("status")) == "foreground_headroom":
+        controls.append(
+            {
+                "id": "foreground_app_headroom_reserved",
+                "status": "managed",
+                "open_apps": _as_list(snapshot.get("open_apps"))[:12],
+                "app_classes": app_classes,
+                "safe_to_widen_p_core_workers": bool(gate.get("safe_to_widen_p_core_workers")),
+                "training_batch_cap": _safe_int(gate.get("training_batch_cap"), 0),
+                "policy": "reserve foreground app headroom by capping background workers instead of asking the operator to close benign apps",
+            }
+        )
+    return controls
+
+
 def _env_lines(payload: dict[str, Any]) -> list[str]:
     snapshot = _as_dict(payload.get("snapshot"))
     classification = _as_dict(payload.get("classification"))
@@ -617,10 +941,15 @@ def _env_lines(payload: dict[str, Any]) -> list[str]:
         "MEMORY_PRESSURE_BATCH20_EXECUTION_MODE": str(gate.get("batch20_execution_mode") or ""),
         "MEMORY_PRESSURE_BATCH20_WAVE_SIZE": str(gate.get("batch20_wave_size") or 0),
         "MEMORY_PRESSURE_BATCH20_RECHECK_BETWEEN_TARGETS": "1" if gate.get("batch20_requires_between_target_memory_recheck") else "0",
+        "MEMORY_PRESSURE_BATCH30_SAFE": "1" if gate.get("batch30_training_safe") else "0",
+        "MEMORY_PRESSURE_BATCH30_EXECUTION_MODE": str(gate.get("batch30_execution_mode") or ""),
+        "MEMORY_PRESSURE_BATCH30_WAVE_SIZE": str(gate.get("batch30_wave_size") or 0),
+        "MEMORY_PRESSURE_BATCH30_RECHECK_BETWEEN_TARGETS": "1" if gate.get("batch30_requires_between_target_memory_recheck") else "0",
         "MEMORY_PRESSURE_TRAINING_BATCH_CAP": str(gate.get("training_batch_cap") or 0),
         "MEMORY_PRESSURE_TRAINING_PROFILE": str(gate.get("training_profile") or ""),
         "MEMORY_PRESSURE_FREE_PCT": str(snapshot.get("memory_free_pct") or 0.0),
         "MEMORY_PRESSURE_COMPRESSED_STORE_GB": str(snapshot.get("compressed_store_gb") or 0.0),
+        "MEMORY_PRESSURE_COMPRESSED_PRESSURE_GB": str(snapshot.get("compressed_pressure_gb") or snapshot.get("compressed_store_gb") or 0.0),
         "MEMORY_PRESSURE_SWAP_USED_GB": str(snapshot.get("swap_used_gb") or 0.0),
         "MEMORY_PRESSURE_CLEAR_SAMPLES": str(gate.get("consecutive_memory_clear_samples") or 0),
         "MULTITASKING_HEADROOM_LEVEL": str(multitasking.get("level") or "background_available"),
@@ -660,27 +989,31 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     runtime = load_json(health / "runtime_throttle_control_latest.json")
     memory_efficiency = load_json(health / "memory_efficiency_control_latest.json") or load_json(health / "memory_efficiency_latest.json")
     computer = load_json(health / "computer_task_intelligence_latest.json")
+    swap_pressure = load_json(health / "swap_pressure_governor_latest.json")
     timestamp = iso_now()
-    snapshot = _memory_snapshot(host, runtime, memory_efficiency, computer)
+    snapshot = _reconcile_stale_allocation(_memory_snapshot(host, runtime, memory_efficiency, computer), swap_pressure)
     multitasking = _multitasking_headroom(snapshot)
     observer = _observer_overhead(snapshot)
     trend = _memory_trend(previous, snapshot, timestamp)
     classification = _classify(snapshot, trend, multitasking)
     gate = _reopen_gate(classification, trend, snapshot, multitasking, observer)
-    if not bool(multitasking.get("training_allowed_by_multitasking", True)):
+    if bool(multitasking.get("training_hard_block_by_multitasking", False)) or not bool(multitasking.get("training_allowed_by_multitasking", True)):
         gate["safe_for_training"] = False
         gate["small_canary_training_safe"] = False
         gate["small_batch_training_safe"] = False
         gate["batch10_training_safe"] = False
         gate["batch20_training_safe"] = False
+        gate["batch30_training_safe"] = False
         gate["small_canary_max_parallel_trainings"] = 0
         gate["small_batch_max_parallel_trainings"] = 0
         gate["batch10_max_parallel_trainings"] = 0
         gate["batch20_max_parallel_trainings"] = 0
+        gate["batch30_max_parallel_trainings"] = 0
         gate["training_batch_cap"] = 0
         gate["training_profile"] = ""
         gate["training_blocked_by_multitasking"] = True
     needs = _what_do_you_need(snapshot, classification, gate, observer)
+    managed_controls = _managed_controls(snapshot, classification, gate)
     overall = "ready" if not needs and classification["status"] == "clear" else "advisory"
     return {
         "timestamp_utc": timestamp,
@@ -702,6 +1035,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "small_batch_training_allowed_by_memory": bool(gate.get("small_batch_training_safe")),
             "batch10_training_allowed_by_memory": bool(gate.get("batch10_training_safe")),
             "batch20_training_allowed_by_memory": bool(gate.get("batch20_training_safe")),
+            "batch30_training_allowed_by_memory": bool(gate.get("batch30_training_safe")),
             "training_batch_cap": _safe_int(gate.get("training_batch_cap"), 0),
             "training_profile": str(gate.get("training_profile") or ""),
             "mlx_compile_allowed_by_memory": bool(gate.get("safe_for_training")),
@@ -712,6 +1046,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "items": needs,
             "next_command": needs[0]["command"] if needs else [],
         },
+        "managed_controls": managed_controls,
         "integration_contract": {
             "feeds_autonomic_resource_governor": True,
             "feeds_system_needs_intelligence": True,
