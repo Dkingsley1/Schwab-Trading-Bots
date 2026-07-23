@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
 import sys
@@ -22,6 +23,9 @@ DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "paper_live_data_standard_latest.json"
 DEFAULT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.paper_live_data_standard_override"
 DEFAULT_BACKUP_DIR = PROJECT_ROOT / "governance" / "lifecycle"
+SOURCE_REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
+DEFAULT_CANDIDATE_REGISTRY_PATH = PROJECT_ROOT / "governance" / "health" / "paper_live_data_standard_registry_candidate_latest.json"
+DEFAULT_SOURCE_WRITE_GUARD_PATH = PROJECT_ROOT / "governance" / "health" / "paper_live_data_standard_source_write_guard_latest.json"
 STANDARD_VERSION = "paper_live_data_standard_v1"
 
 PAPER_LOCK_POLICY = "market_data_and_paper_only_until_explicit_graduation"
@@ -630,19 +634,19 @@ def apply_payload(
     out_path: Path = DEFAULT_OUT_PATH,
     override_path: Path = DEFAULT_OVERRIDE_PATH,
     backup_dir: Path = DEFAULT_BACKUP_DIR,
+    candidate_registry_path: Path = DEFAULT_CANDIDATE_REGISTRY_PATH,
+    source_write_guard_path: Path = DEFAULT_SOURCE_WRITE_GUARD_PATH,
+    allow_source_registry_write: bool = False,
 ) -> dict[str, Any]:
     registry_out = _resolve_path(registry_path, project_root)
     health_out = _resolve_path(out_path, project_root)
     override_out = _resolve_path(override_path, project_root)
     backup_root = _resolve_path(backup_dir, project_root)
+    candidate_out = _resolve_path(candidate_registry_path, project_root)
+    guard_out = _resolve_path(source_write_guard_path, project_root)
     projected = payload.get("projected_registry") if isinstance(payload.get("projected_registry"), dict) else {}
     if not projected:
         raise RuntimeError("projected registry missing")
-
-    backup_root.mkdir(parents=True, exist_ok=True)
-    backup_path = backup_root / f"master_bot_registry.{STANDARD_VERSION}.backup.json"
-    if registry_out.exists() and not backup_path.exists():
-        backup_path.write_text(registry_out.read_text(encoding="utf-8"), encoding="utf-8")
 
     summary = projected.get("summary") if isinstance(projected.get("summary"), dict) else {}
     counts = payload.get("counts_after") if isinstance(payload.get("counts_after"), dict) else {}
@@ -662,19 +666,58 @@ def apply_payload(
         "paper_live_data_standard_applied_utc": str(payload.get("timestamp_utc") or iso_now()),
     }
 
-    registry_out.write_text(json.dumps(projected, ensure_ascii=True, indent=2), encoding="utf-8")
+    source_write_blocked = _canonical_registry_write_blocked(registry_out, allow_source_registry_write)
+    backup_path = backup_root / f"master_bot_registry.{STANDARD_VERSION}.backup.json"
+    if source_write_blocked:
+        candidate_out.parent.mkdir(parents=True, exist_ok=True)
+        guard_out.parent.mkdir(parents=True, exist_ok=True)
+        candidate_out.write_text(json.dumps(projected, ensure_ascii=True, indent=2), encoding="utf-8")
+        guard_out.write_text(
+            json.dumps(
+                {
+                    "timestamp_utc": iso_now(),
+                    "ok": True,
+                    "overall_status": "ready",
+                    "source_write_blocked": True,
+                    "source_path": str(registry_out),
+                    "candidate_path": str(candidate_out),
+                    "reason": "canonical_registry_requires_explicit_source_write",
+                    "allow_env": "PAPER_LIVE_DATA_ALLOW_SOURCE_REGISTRY_WRITE=1",
+                    "allow_cli": "scripts/ops/paper_live_data_standard.py --apply --allow-source-registry-write",
+                },
+                ensure_ascii=True,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    else:
+        backup_root.mkdir(parents=True, exist_ok=True)
+        if registry_out.exists() and not backup_path.exists():
+            backup_path.write_text(registry_out.read_text(encoding="utf-8"), encoding="utf-8")
+        registry_out.write_text(json.dumps(projected, ensure_ascii=True, indent=2), encoding="utf-8")
     write_override(override_out, payload)
     payload = {key: value for key, value in payload.items() if key != "projected_registry"}
     payload["apply_result"] = {
         "applied": True,
+        "registry_source_write_blocked": source_write_blocked,
         "registry_path": str(registry_out),
-        "backup_path": str(backup_path),
+        "candidate_registry_path": str(candidate_out) if source_write_blocked else "",
+        "backup_path": "" if source_write_blocked else str(backup_path),
         "health_path": str(health_out),
         "override_path": str(override_out),
     }
     write_payload(health_out, payload)
     payload["out_path"] = str(health_out)
     return payload
+
+
+def _canonical_registry_write_blocked(registry_out: Path, allow_source_registry_write: bool) -> bool:
+    if allow_source_registry_write:
+        return False
+    try:
+        return registry_out.resolve() == SOURCE_REGISTRY_PATH.resolve()
+    except Exception:
+        return False
 
 
 def preview_payload(
@@ -725,6 +768,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT_PATH, help="Health artifact path.")
     parser.add_argument("--override", type=Path, default=DEFAULT_OVERRIDE_PATH, help="Runtime env override path.")
     parser.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR, help="Registry backup directory.")
+    parser.add_argument(
+        "--allow-source-registry-write",
+        action="store_true",
+        default=os.getenv("PAPER_LIVE_DATA_ALLOW_SOURCE_REGISTRY_WRITE", "0").strip() == "1",
+        help="Allow this intentional operator command to update the tracked master_bot_registry.json source file.",
+    )
     args = parser.parse_args(argv)
 
     payload = build_payload(PROJECT_ROOT, registry_path=args.registry)
@@ -736,6 +785,7 @@ def main(argv: list[str] | None = None) -> int:
             out_path=args.out,
             override_path=args.override,
             backup_dir=args.backup_dir,
+            allow_source_registry_write=args.allow_source_registry_write,
         )
     else:
         payload = preview_payload(

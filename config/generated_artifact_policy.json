@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "auto_commit_generated_changes": false,
+  "large_report_storage": "ci_or_release_artifact",
+  "tracked_source_only": true,
+  "tracked_summaries": ["README.md", "docs/showcase/projects", "docs/runbooks"],
+  "ignored_large_outputs": ["output/pdf/*.pdf", "output/pdf/*.html", "output/pdf/*.png", "output/pdf/*.json", "output/pdf/*.zip"],
+  "workflow_contract": {
+    "refresh_showcase_on_push": "generate_and_upload_artifact_only",
+    "refresh_showcase_on_schedule": "generate_and_upload_artifact_only",
+    "same_branch_pushes_from_generated_docs": false,
+    "operator_source_update_command_required": true
+  }
+}

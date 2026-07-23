@@ -1,3 +1,4 @@
+from core import master_bot as master_bot_module
 from core.master_bot import BotStatus, MasterBot
 import json
 
@@ -618,3 +619,44 @@ def test_master_registry_payload_preserves_collection_only_training_metadata(tmp
     assert row["training_excluded"] is True
     assert row["exclude_from_training"] is True
     assert row["promotion_status"] == "candidate"
+
+
+def test_canonical_master_registry_write_defaults_to_candidate_artifact(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("MASTER_ALLOW_SOURCE_REGISTRY_WRITE", raising=False)
+    monkeypatch.setattr(master_bot_module, "SOURCE_REPO_ROOT", str(tmp_path))
+    registry_path = tmp_path / "master_bot_registry.json"
+    registry_path.write_text(
+        json.dumps({"updated_at_utc": "before", "summary": {"total_bots": 0}, "sub_bots": []}, indent=2),
+        encoding="utf-8",
+    )
+
+    payload = {"updated_at_utc": "after", "summary": {"total_bots": 1}, "sub_bots": [{"bot_id": "bot_a"}]}
+    master = MasterBot(project_root=str(tmp_path), min_active_bots=0)
+    master._save_registry(payload)
+
+    source_payload = json.loads(registry_path.read_text(encoding="utf-8"))
+    candidate_payload = json.loads(
+        (tmp_path / "governance" / "health" / "master_bot_registry_candidate_latest.json").read_text(encoding="utf-8")
+    )
+    guard_payload = json.loads(
+        (tmp_path / "governance" / "health" / "master_bot_registry_source_write_guard_latest.json").read_text(encoding="utf-8")
+    )
+
+    assert source_payload["updated_at_utc"] == "before"
+    assert candidate_payload == payload
+    assert guard_payload["source_write_blocked"] is True
+    assert guard_payload["allow_cli"] == "scripts/run_master_bot.py --allow-source-registry-write"
+
+
+def test_canonical_master_registry_write_allows_explicit_source_update(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MASTER_ALLOW_SOURCE_REGISTRY_WRITE", "1")
+    monkeypatch.setattr(master_bot_module, "SOURCE_REPO_ROOT", str(tmp_path))
+    registry_path = tmp_path / "master_bot_registry.json"
+    registry_path.write_text(json.dumps({"sub_bots": []}, indent=2), encoding="utf-8")
+
+    payload = {"updated_at_utc": "after", "summary": {"total_bots": 1}, "sub_bots": [{"bot_id": "bot_a"}]}
+    master = MasterBot(project_root=str(tmp_path), min_active_bots=0)
+    master._save_registry(payload)
+
+    assert json.loads(registry_path.read_text(encoding="utf-8")) == payload
+    assert not (tmp_path / "governance" / "health" / "master_bot_registry_candidate_latest.json").exists()

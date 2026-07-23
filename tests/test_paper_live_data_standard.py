@@ -158,6 +158,46 @@ def test_paper_live_data_standard_apply_updates_registry_summary_and_backup(tmp_
     assert health["counts_after"]["paper_live_data_enabled_bots"] == 1
 
 
+def test_paper_live_data_standard_canonical_apply_writes_candidate_by_default(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("PAPER_LIVE_DATA_ALLOW_SOURCE_REGISTRY_WRITE", raising=False)
+    registry_path = tmp_path / "master_bot_registry.json"
+    out_path = tmp_path / "governance" / "health" / "paper_live_data_standard_latest.json"
+    override_path = tmp_path / "config" / ".env.paper_live_data_standard_override"
+    candidate_path = tmp_path / "governance" / "health" / "paper_live_data_standard_registry_candidate_latest.json"
+    guard_path = tmp_path / "governance" / "health" / "paper_live_data_standard_source_write_guard_latest.json"
+    monkeypatch.setattr(src, "SOURCE_REGISTRY_PATH", registry_path)
+    _write_registry(
+        registry_path,
+        [
+            {"bot_id": "legacy_active", "active": True, "lifecycle_state": "active"},
+            {"bot_id": "new_collector", "active": True, "lifecycle_state": "data_collection_only"},
+        ],
+    )
+    original = registry_path.read_text(encoding="utf-8")
+
+    payload = src.build_payload(tmp_path, registry_path=registry_path)
+    applied = src.apply_payload(
+        tmp_path,
+        payload,
+        registry_path=registry_path,
+        out_path=out_path,
+        override_path=override_path,
+        backup_dir=tmp_path / "governance" / "lifecycle",
+        candidate_registry_path=candidate_path,
+        source_write_guard_path=guard_path,
+    )
+    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    guard = json.loads(guard_path.read_text(encoding="utf-8"))
+
+    assert registry_path.read_text(encoding="utf-8") == original
+    assert candidate["summary"]["paper_live_data_standard_version"] == src.STANDARD_VERSION
+    assert guard["source_write_blocked"] is True
+    assert applied["apply_result"]["registry_source_write_blocked"] is True
+    assert applied["apply_result"]["candidate_registry_path"] == str(candidate_path)
+    assert override_path.exists()
+    assert out_path.exists()
+
+
 def test_paper_live_data_standard_keeps_coinbase_paper_probation_when_profiles_are_weak(tmp_path: Path) -> None:
     registry_path = tmp_path / "master_bot_registry.json"
     override_path = tmp_path / "config" / ".env.paper_live_data_standard_override"

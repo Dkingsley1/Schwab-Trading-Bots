@@ -15,7 +15,7 @@ on:
     - cron: "27 */6 * * *"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   refresh-showcase:
@@ -34,12 +34,23 @@ jobs:
       - name: Refresh generated showcase docs
         run: python3 scripts/ops/update_showcase_highlights.py
 
-      - name: Commit generated changes
+      - name: Summarize generated changes
         run: |
           if [[ -n "$(git status --porcelain -- README.md docs/showcase/generated)" ]]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add README.md docs/showcase/generated
-            git commit -m "chore: refresh showcase highlights"
-            git push
+            git diff -- README.md docs/showcase/generated > showcase-generated.diff
+            echo "Generated showcase changes were produced as an artifact." >> "$GITHUB_STEP_SUMMARY"
+            echo "Review and commit them with an explicit operator source-update command when intended." >> "$GITHUB_STEP_SUMMARY"
+          else
+            touch showcase-generated.diff
+            echo "No generated showcase changes." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Upload generated showcase artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: showcase-generated-${{ github.run_id }}
+          if-no-files-found: ignore
+          path: |
+            README.md
+            docs/showcase/generated
+            showcase-generated.diff

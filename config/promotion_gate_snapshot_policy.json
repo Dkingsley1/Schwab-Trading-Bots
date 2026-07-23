@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "unknown_blocks_promotion": true,
+  "snapshot_versioning": {
+    "required": true,
+    "versioned_root": "governance/walk_forward/snapshots",
+    "latest_alias_must_reference_versioned_snapshot": true,
+    "snapshot_hash_required": true
+  },
+  "freshness_contract": {
+    "promotion_gate_max_age_hours": 24,
+    "lane_promotion_gate_max_age_hours": 24,
+    "promotion_readiness_max_age_hours": 24,
+    "paper_performance_max_age_hours": 12,
+    "health_gates_max_age_hours": 2
+  },
+  "required_snapshots": [
+    "promotion_gate",
+    "lane_promotion_gate",
+    "promotion_readiness",
+    "paper_performance",
+    "health_gates",
+    "leak_overfit_guard",
+    "new_bot_graduation"
+  ],
+  "latest_alias_policy": {
+    "latest_alias_must_point_to_versioned_snapshot": true,
+    "stale_latest_blocks_promotion": true,
+    "missing_snapshot_blocks_promotion": true
+  }
+}

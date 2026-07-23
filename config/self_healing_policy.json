@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "dry_run_first": true,
+    "observe_before_change": true,
+    "max_actions_per_cycle": 3,
+    "max_restarts_per_hour": 2,
+    "rollback_required": true,
+    "audit_required": true
+  },
+  "allowlist": {
+    "actions": [
+      "restart_stale_runtime_process",
+      "refresh_runtime_artifact",
+      "rotate_runtime_log",
+      "rebuild_health_summary",
+      "defer_slow_tier_collection_under_storage_pressure"
+    ],
+    "output_roots": ["governance", "runtime", "exports", "logs", "tmp"]
+  },
+  "forbidden_source_paths": [
+    "master_bot_registry.json",
+    "README.md",
+    "docs/showcase/generated",
+    ".github/workflows",
+    "config",
+    "core",
+    "scripts",
+    "tests"
+  ],
+  "audit_log": "governance/health/self_healing_action_audit_latest.json",
+  "rollback_manifest": "governance/health/self_healing_rollback_manifest_latest.json",
+  "no_op_env": "SELF_HEALING_NOOP=1",
+  "source_write_override_policy": "not_allowed_for_self_healing"
+}

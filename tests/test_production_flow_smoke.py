@@ -1,0 +1,68 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from scripts.ops import production_flow_smoke
+from scripts.ops import source_mutation_guard
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_production_flow_smoke_passes_current_contract() -> None:
+    payload = production_flow_smoke.build_payload(PROJECT_ROOT)
+
+    assert payload["ok"] is True
+    names = {item["name"] for item in payload["checks"]}
+    assert "registry_source_write_guard" in names
+    assert "showcase_generated_artifact_flow" in names
+    assert "stale_latest_ticker_universe_contract" in names
+    assert "ci_production_smoke_coverage" in names
+
+
+def test_source_mutation_guard_reports_clean_tmp_repo(tmp_path) -> None:
+    protected = ("master_bot_registry.json", "README.md")
+    for rel_path in protected:
+        (tmp_path / rel_path).write_text("clean\n", encoding="utf-8")
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "add", *protected], cwd=tmp_path, check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "init"],
+        cwd=tmp_path,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    payload = source_mutation_guard.build_payload(tmp_path, protected_paths=protected)
+
+    assert payload["ok"] is True
+    assert payload["dirty_count"] == 0
+
+
+def test_source_mutation_guard_reports_dirty_tmp_repo(tmp_path) -> None:
+    protected = ("master_bot_registry.json",)
+    (tmp_path / "master_bot_registry.json").write_text(json.dumps({"before": True}), encoding="utf-8")
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "add", *protected], cwd=tmp_path, check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "init"],
+        cwd=tmp_path,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    (tmp_path / "master_bot_registry.json").write_text(json.dumps({"after": True}), encoding="utf-8")
+
+    payload = source_mutation_guard.build_payload(tmp_path, protected_paths=protected)
+
+    assert payload["ok"] is False
+    assert payload["dirty_count"] == 1
+    assert "master_bot_registry.json" in payload["dirty_entries"][0]

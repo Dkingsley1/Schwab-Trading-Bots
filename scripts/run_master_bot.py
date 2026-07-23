@@ -264,10 +264,17 @@ def main() -> None:
     parser.add_argument("--promotion-quality-file", default=str(Path(PROJECT_ROOT) / "governance" / "health" / "promotion_quality_gate_latest.json"))
     parser.add_argument("--health-gates-file", default=str(Path(PROJECT_ROOT) / "governance" / "health" / "health_gates_latest.json"))
     parser.add_argument("--paper-performance-file", default=str(Path(PROJECT_ROOT) / "governance" / "health" / "paper_performance_latest.json"))
+    parser.add_argument(
+        "--allow-source-registry-write",
+        action="store_true",
+        default=os.getenv("MASTER_ALLOW_SOURCE_REGISTRY_WRITE", "0") == "1",
+        help="Allow this intentional operator command to update the tracked master_bot_registry.json source file.",
+    )
 
     parser.add_argument("--print-full", action="store_true")
     args = parser.parse_args()
     os.environ["MASTER_PROMOTE_HELD_CHAMPION_WHEN_GATE_GREEN"] = "1" if args.promote_held_champion else "0"
+    os.environ["MASTER_ALLOW_SOURCE_REGISTRY_WRITE"] = "1" if args.allow_source_registry_write else "0"
 
     if args.require_health_gate_clear:
         ok, reason, detail = _health_gate_ok(Path(args.health_gates_file))
@@ -345,7 +352,11 @@ def main() -> None:
     payload = master.train_from_outcomes()
 
     print("Master bot registry updated")
-    print(f"Registry: {os.path.join(PROJECT_ROOT, 'master_bot_registry.json')}")
+    if args.allow_source_registry_write:
+        print(f"Registry: {os.path.join(PROJECT_ROOT, 'master_bot_registry.json')}")
+    else:
+        print("Registry source write blocked by default")
+        print(f"Candidate: {os.path.join(PROJECT_ROOT, 'governance', 'health', 'master_bot_registry_candidate_latest.json')}")
     print(json.dumps(payload.get("summary", {}), indent=2))
 
     if args.print_full:

@@ -39,6 +39,11 @@ decision_explanations
 governance
 exports
 data
+output/pdf/*.pdf
+output/pdf/*.html
+output/pdf/*.png
+output/pdf/*.json
+output/pdf/*.zip
 
 # Optional local data dumps
 *.jsonl

@@ -12,6 +12,7 @@ from core.accountability import write_registry_mutation_journal
 
 
 TIMESTAMP_SUFFIX_RE = re.compile(r"_\d{8}_\d{6}$")
+SOURCE_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
 @dataclass
@@ -70,6 +71,15 @@ class MasterBot:
         self.project_root = project_root
         self.logs_dir = os.path.join(project_root, "logs")
         self.registry_path = os.path.join(project_root, "master_bot_registry.json")
+        self.allow_source_registry_write = os.getenv("MASTER_ALLOW_SOURCE_REGISTRY_WRITE", "0").strip() == "1"
+        self.registry_candidate_path = os.getenv(
+            "MASTER_REGISTRY_CANDIDATE_FILE",
+            os.path.join(self.project_root, "governance", "health", "master_bot_registry_candidate_latest.json"),
+        )
+        self.registry_source_write_guard_path = os.getenv(
+            "MASTER_REGISTRY_SOURCE_WRITE_GUARD_FILE",
+            os.path.join(self.project_root, "governance", "health", "master_bot_registry_source_write_guard_latest.json"),
+        )
         self.preferred_low = preferred_low
         self.preferred_high = preferred_high
         self.deactivate_below = deactivate_below
@@ -1248,6 +1258,25 @@ class MasterBot:
             except Exception:
                 before = {}
 
+        if self._canonical_registry_write_blocked():
+            self._write_registry_candidate(payload)
+            try:
+                write_registry_mutation_journal(
+                    project_root=self.project_root,
+                    actor="master_bot",
+                    reason="registry_refresh_candidate_only",
+                    before=before,
+                    after=payload if isinstance(payload, dict) else {},
+                    extra={
+                        "registry_path": self.registry_path,
+                        "candidate_path": self.registry_candidate_path,
+                        "source_write_blocked": True,
+                    },
+                )
+            except Exception:
+                pass
+            return
+
         with open(self.registry_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
 
@@ -1264,6 +1293,32 @@ class MasterBot:
             )
         except Exception:
             pass
+
+    def _canonical_registry_write_blocked(self) -> bool:
+        source_registry = os.path.abspath(os.path.join(SOURCE_REPO_ROOT, "master_bot_registry.json"))
+        return os.path.abspath(self.registry_path) == source_registry and not self.allow_source_registry_write
+
+    def _write_registry_candidate(self, payload: Dict[str, object]) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        candidate_path = os.path.abspath(self.registry_candidate_path)
+        guard_path = os.path.abspath(self.registry_source_write_guard_path)
+        os.makedirs(os.path.dirname(candidate_path), exist_ok=True)
+        os.makedirs(os.path.dirname(guard_path), exist_ok=True)
+        with open(candidate_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        guard_payload = {
+            "timestamp_utc": now,
+            "ok": True,
+            "overall_status": "ready",
+            "source_write_blocked": True,
+            "source_path": os.path.abspath(self.registry_path),
+            "candidate_path": candidate_path,
+            "reason": "canonical_registry_requires_explicit_source_write",
+            "allow_env": "MASTER_ALLOW_SOURCE_REGISTRY_WRITE=1",
+            "allow_cli": "scripts/run_master_bot.py --allow-source-registry-write",
+        }
+        with open(guard_path, "w", encoding="utf-8") as f:
+            json.dump(guard_payload, f, indent=2)
 
     def _refresh_deletion_guard(self) -> None:
         if not self.require_confirmed_training_success:

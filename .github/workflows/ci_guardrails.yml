@@ -34,7 +34,10 @@ jobs:
             scripts/new_bot_graduation_gate.py \
             scripts/leak_overfit_guard.py \
             scripts/model_lifecycle_hygiene.py \
-            scripts/weekly_gate_blocker_report.py
+            scripts/weekly_gate_blocker_report.py \
+            scripts/ops/paper_live_data_standard.py \
+            scripts/ops/production_flow_smoke.py \
+            scripts/ops/source_mutation_guard.py
 
       - name: CLI smoke (help)
         run: |
@@ -47,6 +50,9 @@ jobs:
           python scripts/leak_overfit_guard.py --help >/dev/null
           python scripts/model_lifecycle_hygiene.py --help >/dev/null
           python scripts/weekly_gate_blocker_report.py --help >/dev/null
+          python scripts/ops/paper_live_data_standard.py --help >/dev/null
+          python scripts/ops/production_flow_smoke.py --help >/dev/null
+          python scripts/ops/source_mutation_guard.py --help >/dev/null
 
       - name: Gate smoke fixtures
         run: |
@@ -112,6 +118,14 @@ jobs:
             --max-overfit-offenders 10 \
             --max-leak-offenders 10 \
             --out-file /tmp/leak_overfit_fixture.json
+
+      - name: Production flow smoke
+        run: |
+          python scripts/ops/production_flow_smoke.py --json
+
+      - name: Source mutation guard
+        run: |
+          python scripts/ops/source_mutation_guard.py --check-clean --json
 
       - name: Secret scan
         run: |
