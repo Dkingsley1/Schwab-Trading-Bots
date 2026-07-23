@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
+import os
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -18,12 +20,14 @@ from scripts.collect_schwab_symbol_news import load_ticker_universe, load_ticker
 
 
 REQUIRED_PROFILES = {"local_mac_soak", "ci", "paper_prod", "live_canary"}
+TICKER_UNIVERSE_ENV_PREFIXES = ("TICKER_UNIVERSE_",)
 POLICY_FILES = {
     "deployment_profiles": "config/deployment_profiles.json",
     "self_healing": "config/self_healing_policy.json",
     "credential_runtime": "config/credential_runtime_policy.json",
     "promotion_gate_snapshots": "config/promotion_gate_snapshot_policy.json",
     "generated_artifacts": "config/generated_artifact_policy.json",
+    "live_canary_readiness": "config/live_canary_readiness_contract.json",
 }
 
 
@@ -48,6 +52,21 @@ def check(name: str, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         return {"name": name, "ok": ok, "status": "pass" if ok else "fail", **detail}
     except Exception as exc:
         return {"name": name, "ok": False, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
+
+
+@contextmanager
+def isolated_ticker_universe_env() -> Any:
+    """Keep static contract checks independent from live runtime env overrides."""
+    keys = [key for key in os.environ if key.startswith(TICKER_UNIVERSE_ENV_PREFIXES)]
+    original = {key: os.environ[key] for key in keys}
+    for key in keys:
+        os.environ.pop(key, None)
+    try:
+        yield
+    finally:
+        for key in [key for key in os.environ if key.startswith(TICKER_UNIVERSE_ENV_PREFIXES)]:
+            os.environ.pop(key, None)
+        os.environ.update(original)
 
 
 def check_registry_write_guard(project_root: Path) -> dict[str, Any]:
@@ -90,7 +109,8 @@ def check_showcase_workflow(project_root: Path) -> dict[str, Any]:
 
 
 def check_ticker_universe_contract() -> dict[str, Any]:
-    symbols, groups, source = load_ticker_universe()
+    with isolated_ticker_universe_env():
+        symbols, groups, source = load_ticker_universe()
     sentinel_missing = [symbol for symbol in ("HUT", "ACWI", "GFF") if symbol not in symbols]
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -118,7 +138,10 @@ def check_ticker_universe_contract() -> dict[str, Any]:
             ),
             encoding="utf-8",
         )
-        pressure_symbols, _pressure_groups, _pressure_source, policy = load_ticker_universe_with_policy(project_root=project_root)
+        with isolated_ticker_universe_env():
+            pressure_symbols, _pressure_groups, _pressure_source, policy = load_ticker_universe_with_policy(
+                project_root=project_root
+            )
 
     return {
         "ok": not sentinel_missing
@@ -144,6 +167,7 @@ def check_policy_configs(project_root: Path) -> dict[str, Any]:
     credential = loaded["credential_runtime"]
     promotion = loaded["promotion_gate_snapshots"]
     generated = loaded["generated_artifacts"]
+    canary = loaded["live_canary_readiness"]
     forbidden_paths = loaded["self_healing"].get("forbidden_source_paths") or []
 
     conditions = {
@@ -161,6 +185,20 @@ def check_policy_configs(project_root: Path) -> dict[str, Any]:
         "snapshot_versioning_required": bool((promotion.get("snapshot_versioning") or {}).get("required")),
         "generated_autocommit_disabled": generated.get("auto_commit_generated_changes") is False,
         "large_reports_externalized": generated.get("large_report_storage") == "ci_or_release_artifact",
+        "live_canary_contract_has_all_hard_gates": set(canary.get("readiness_bar") or []) == set()
+        or all(
+            phrase in str(canary.get("infrastructure_message") or "")
+            for phrase in (
+                "no raw D-grade posture",
+                "no unexplained sleeve paper-trading dropouts",
+                "no auth/token surprises",
+                "no source mutation from runtime",
+                "clean CI",
+                "clean storage pressure",
+                "clean promotion/paper gate freshness",
+                "sustained window",
+            )
+        ),
     }
     return {
         "ok": all(conditions.values()),

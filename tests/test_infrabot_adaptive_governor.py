@@ -102,6 +102,33 @@ def test_infrabot_adaptive_governor_routes_pressure_and_blocks_broad_fanout(tmp_
     assert routes["pressure_relief_control"]["command"] == ["./scripts/ops/opsctl.sh", "pressure-relief", "--apply", "--json"]
 
 
+def test_infrabot_adaptive_governor_surfaces_live_canary_readiness_bar(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = _base_ready_health(project_root)
+    _write_json(
+        health / "live_canary_readiness_contract_latest.json",
+        {
+            "overall_status": "blocked",
+            "live_canary_money_ready": False,
+            "ready_gate_count": 4,
+            "gate_count": 7,
+            "blockers": ["raw_profitability_posture_blocked", "sustained_window_not_met"],
+            "infrastructure_message": "Before live canary money: no raw D-grade posture, no unexplained sleeve paper-trading dropouts, no auth/token surprises, no source mutation from runtime, clean CI, clean storage pressure, and clean promotion/paper gate freshness for a sustained window.",
+        },
+    )
+
+    payload = infrabot_adaptive_governor.build_payload(project_root, max_actions=4)
+
+    needs = {need["id"]: need for need in payload["system_needs_contract"]["needs"]}
+    assert "live_canary_readiness_bar" in needs
+    assert needs["live_canary_readiness_bar"]["severity"] == "critical"
+    assert "live_canary_readiness_contract" in needs["live_canary_readiness_bar"]["target_capabilities"]
+
+    routes = {row["capability_id"]: row for row in payload["adaptive_policy_router"]["routes"]}
+    assert routes["live_canary_readiness_contract"]["action"] == "advisory_only"
+    assert routes["live_canary_readiness_contract"]["command"] == ["./scripts/ops/opsctl.sh", "live-canary-readiness", "--apply", "--json"]
+
+
 def test_infrabot_adaptive_governor_apply_writes_contracts_and_feedback(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = _base_ready_health(project_root)

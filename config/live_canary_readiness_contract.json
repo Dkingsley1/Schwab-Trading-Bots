@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "policy_id": "production_hardening_live_canary_bar_v1",
+  "sustained_window_hours": 168,
+  "raw_profitability_live_canary_grade_floor": "A",
+  "raw_profitability_hard_block_floor": "C",
+  "auth_min_expires_in_seconds": 1800,
+  "storage_max_pressure_index": 0.2,
+  "storage_max_total_pending_lines": 15000,
+  "gate_freshness_hours": {
+    "health_gates": 2,
+    "promotion_quality_gate": 24,
+    "promotion_readiness": 24,
+    "paper_performance": 12,
+    "runtime_paper_regression_guard": 12
+  },
+  "infrastructure_message": "Before live canary money: no raw D-grade posture, no unexplained sleeve paper-trading dropouts, no auth/token surprises, no source mutation from runtime, clean CI, clean storage pressure, and clean promotion/paper gate freshness for a sustained window."
+}

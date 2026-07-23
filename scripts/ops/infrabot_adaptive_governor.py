@@ -244,6 +244,33 @@ def _capability_registry() -> list[dict[str, Any]]:
             success_artifact="governance/health/paper_400_ramp_latest.json",
         ),
         _capability(
+            capability_id="live_canary_readiness_contract",
+            title="Live Canary Readiness Contract",
+            owns=["live_canary_readiness_bar", "production_hardening_soak", "live_money_blockers"],
+            command=_opsctl("live-canary-readiness", "--apply", "--json"),
+            advisory_only=True,
+            safe_under_pressure=True,
+            success_artifact="governance/health/live_canary_readiness_contract_latest.json",
+        ),
+        _capability(
+            capability_id="source_mutation_guard",
+            title="Source Mutation Guard",
+            owns=["runtime_source_mutation_guard", "protected_source_dirty", "canonical_source_write_contract"],
+            command=_opsctl("source-mutation-guard", "--check-clean", "--json"),
+            advisory_only=True,
+            safe_under_pressure=True,
+            success_artifact="governance/health/live_canary_readiness_contract_latest.json",
+        ),
+        _capability(
+            capability_id="production_flow_smoke",
+            title="Production Flow Smoke",
+            owns=["ci_production_guardrails", "production_flow_contract", "showcase_artifact_flow"],
+            command=_opsctl("production-flow-smoke", "--json"),
+            advisory_only=True,
+            safe_under_pressure=True,
+            success_artifact="governance/health/live_canary_readiness_contract_latest.json",
+        ),
+        _capability(
             capability_id="writer_cycle_coordinator",
             title="Writer Cycle Coordinator",
             owns=["writer_handoff", "single_writer_lock", "drainer_progress"],
@@ -546,6 +573,15 @@ def _capability_registry() -> list[dict[str, Any]]:
             success_artifact="governance/health/runtime_paper_regression_guard_latest.json",
         ),
         _capability(
+            capability_id="promotion_quality_gate",
+            title="Promotion Quality Gate",
+            owns=["promotion_gate_freshness", "promotion_quality_contract", "unknown_blocks_promotion"],
+            command=_opsctl("promotion-quality-gate", "--json"),
+            advisory_only=True,
+            safe_under_pressure=True,
+            success_artifact="governance/health/promotion_quality_gate_latest.json",
+        ),
+        _capability(
             capability_id="paper_performance_refresh",
             title="Paper Performance Refresh",
             owns=["paper_performance", "paper_feedback_freshness", "sleeve_profitability_inputs"],
@@ -661,6 +697,7 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
     paper_truth = _health(project_root, "paper_execution_truth_layer_latest.json")
     paper_runtime = _health(project_root, "runtime_paper_regression_guard_latest.json")
     paper_backlog = _health(project_root, "paper_execution_backlog_relief_latest.json")
+    live_canary_readiness = _health(project_root, "live_canary_readiness_contract_latest.json")
     source_verification = _health(project_root, "source_verification_latest.json")
     provider_mesh = _health(project_root, "provider_mesh_latest.json")
     market_explainer = _health(project_root, "market_move_explainer_latest.json")
@@ -739,6 +776,45 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
                 ],
                 stop_when="auth lease is healthy above the proactive floor, broker readiness is true, global clear blockers are empty, and paper ramp is armed.",
                 expected_impact="Refreshes Schwab auth and re-arms guarded paper before token drift pauses paper trading during the soak.",
+            )
+        )
+
+    live_canary_status = _status(live_canary_readiness.get("overall_status"))
+    live_canary_ready = bool(live_canary_readiness.get("live_canary_money_ready", False))
+    live_canary_blockers = [
+        str(item)
+        for item in _as_list(live_canary_readiness.get("blockers"))
+        if str(item or "").strip()
+    ]
+    if live_canary_readiness and (live_canary_status in BAD_STATUSES or not live_canary_ready or live_canary_blockers):
+        needs.append(
+            _need(
+                need_id="live_canary_readiness_bar",
+                title="Live canary money remains blocked by production-hardening bar",
+                category="live_canary",
+                severity="critical" if live_canary_status == "blocked" else "high",
+                evidence=[
+                    f"live_canary_readiness_status={live_canary_status or 'unknown'}",
+                    f"live_canary_money_ready={live_canary_ready}",
+                    f"ready_gate_count={live_canary_readiness.get('ready_gate_count', 0)}",
+                    f"gate_count={live_canary_readiness.get('gate_count', 0)}",
+                    f"blockers={','.join(live_canary_blockers[:8]) or 'none'}",
+                    str(live_canary_readiness.get("infrastructure_message") or ""),
+                ],
+                target_capabilities=[
+                    "live_canary_readiness_contract",
+                    "paper_profitability_control",
+                    "paper_execution_truth_layer",
+                    "runtime_paper_regression_guard",
+                    "paper_ramp_guard",
+                    "broker_auth_supervisor",
+                    "storage_backpressure_autopilot",
+                    "source_mutation_guard",
+                    "production_flow_smoke",
+                    "promotion_quality_gate",
+                ],
+                stop_when="live_canary_readiness_contract reports live_canary_money_ready=true after the sustained production-hardening window.",
+                expected_impact="Keeps infrastructure bots focused on hardening paper/auth/storage/source/CI/gate freshness before any live-money canary.",
             )
         )
 
@@ -1311,6 +1387,7 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
             "paper_profitability_control": bool(paper_profitability),
             "paper_execution_truth_layer": bool(paper_truth),
             "runtime_paper_regression_guard": bool(paper_runtime),
+            "live_canary_readiness_contract": bool(live_canary_readiness),
             "source_verification": bool(source_verification),
             "provider_mesh": bool(provider_mesh),
             "market_move_explainer": bool(market_explainer),
@@ -1506,6 +1583,7 @@ def _route_policy(
                 "infrabot_gap_roster",
                 "master_infrastructure_supervisor",
                 "infrastructure_autofix",
+                "live_canary_readiness_contract",
                 "operator_cockpit",
             ],
         },

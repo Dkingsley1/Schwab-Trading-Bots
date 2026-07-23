@@ -21,6 +21,16 @@ def test_production_flow_smoke_passes_current_contract() -> None:
     assert "ci_production_smoke_coverage" in names
 
 
+def test_ticker_contract_ignores_runtime_universe_env(monkeypatch) -> None:
+    monkeypatch.setenv("TICKER_UNIVERSE_SLOW_TIER_DEFER_ON_STORAGE_PRESSURE", "1")
+    monkeypatch.setenv("TICKER_UNIVERSE_STANDARD_SYMBOLS", ",".join(f"TST{i}" for i in range(501)))
+
+    payload = production_flow_smoke.check_ticker_universe_contract()
+
+    assert payload["ok"] is True
+    assert payload["pressure_symbol_count"] == 500
+
+
 def test_source_mutation_guard_reports_clean_tmp_repo(tmp_path) -> None:
     protected = ("master_bot_registry.json", "README.md")
     for rel_path in protected:

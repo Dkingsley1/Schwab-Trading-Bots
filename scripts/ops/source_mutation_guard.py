@@ -17,6 +17,7 @@ DEFAULT_PROTECTED_PATHS = (
     "README.md",
     "core/master_bot.py",
     "scripts/run_master_bot.py",
+    "scripts/ops/live_canary_readiness_contract.py",
     "scripts/ops/paper_live_data_standard.py",
     "scripts/ops/production_flow_smoke.py",
     "scripts/ops/source_mutation_guard.py",
@@ -25,6 +26,7 @@ DEFAULT_PROTECTED_PATHS = (
     "config/credential_runtime_policy.json",
     "config/promotion_gate_snapshot_policy.json",
     "config/generated_artifact_policy.json",
+    "config/live_canary_readiness_contract.json",
     "docs/operations/PRODUCTION_FLOW_GUARDRAILS.md",
     "master_bot_registry.json",
 )

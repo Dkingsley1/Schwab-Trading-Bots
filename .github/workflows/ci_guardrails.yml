@@ -35,6 +35,7 @@ jobs:
             scripts/leak_overfit_guard.py \
             scripts/model_lifecycle_hygiene.py \
             scripts/weekly_gate_blocker_report.py \
+            scripts/ops/live_canary_readiness_contract.py \
             scripts/ops/paper_live_data_standard.py \
             scripts/ops/production_flow_smoke.py \
             scripts/ops/source_mutation_guard.py
@@ -50,6 +51,7 @@ jobs:
           python scripts/leak_overfit_guard.py --help >/dev/null
           python scripts/model_lifecycle_hygiene.py --help >/dev/null
           python scripts/weekly_gate_blocker_report.py --help >/dev/null
+          python scripts/ops/live_canary_readiness_contract.py --help >/dev/null
           python scripts/ops/paper_live_data_standard.py --help >/dev/null
           python scripts/ops/production_flow_smoke.py --help >/dev/null
           python scripts/ops/source_mutation_guard.py --help >/dev/null

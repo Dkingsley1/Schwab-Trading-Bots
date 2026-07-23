@@ -1357,6 +1357,9 @@ case "$cmd" in
   live-canary-control|canary-control|supervised-canary)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_canary_control.py" "$@"
     ;;
+  live-canary-readiness|canary-readiness-contract|production-hardening-bar)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/live_canary_readiness_contract.py" "$@"
+    ;;
   live-money-readiness|live-money-contract|faithful-live-money)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_money_readiness_contract.py" "$@"
     ;;
@@ -1371,6 +1374,12 @@ case "$cmd" in
     ;;
   paper-live-data-standard|paper-standard|bot-paper-standard|standard-paper-live-data)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/paper_live_data_standard.py" "$@"
+    ;;
+  production-flow-smoke|production-flow-contract)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/production_flow_smoke.py" "$@"
+    ;;
+  source-mutation-guard|source-guard|runtime-source-mutation)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/source_mutation_guard.py" "$@"
     ;;
   sleeve-ticker-universe|ticker-universe|expand-tickers|sleeve-tickers)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/sleeve_ticker_universe_expansion.py" "$@"
@@ -2893,11 +2902,14 @@ opsctl commands:
   promotion-autopilot [--json]
   promotion-quality-gate|promotion-gate [--json]
   autonomy-control [--json]
+  live-canary-readiness|canary-readiness-contract|production-hardening-bar [--apply] [--json]
   live-money-readiness|live-money-contract|faithful-live-money [--target-date YYYY-MM-DD] [--json]
   paper-400-ramp|paper-ramp-400|paper-cap-400 [--apply] [--promote-roster] [--today YYYY-MM-DD] [--json]
   paper-execution-truth|paper-truth [--json]
   runtime-paper-regression-guard|runtime-paper-guard [--json]
   paper-live-data-standard|paper-standard [--apply] [--json]
+  production-flow-smoke|production-flow-contract [--json]
+  source-mutation-guard|source-guard [--check-clean] [--json]
   sleeve-ticker-universe|expand-tickers [--apply] [--json]
   runtime-throttle|throttle-control|throttle-bot [--apply] [--max-renice-processes N] [--json]
   process-watchdog|watchdog-refresh [--json]
