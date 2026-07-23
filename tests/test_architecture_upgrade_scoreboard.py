@@ -149,3 +149,81 @@ def test_architecture_upgrade_scoreboard_treats_high_autonomy_blocker_as_recover
 
     assert rows["self_healing_ops_plane"]["status"] == "degraded"
     assert payload["overall_status"] == "degraded"
+
+
+def test_architecture_upgrade_scoreboard_treats_bounded_incident_review_as_recovering(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    walk = project_root / "governance" / "walk_forward"
+    champion = project_root / "governance" / "champion_challenger"
+
+    _write_json(health / "live_runtime_separation_control_latest.json", {"overall_status": "ready", "live_plane": {"ready": True}, "clearance_plan": {"clearance_state": "ready"}})
+    _write_json(walk / "coverage_gap_closer_latest.json", {"overall_status": "ready", "autopilot_contract": {"overall_status": "ready", "can_apply_stage": True, "snapshot_ready": True, "cold_lane_ready": True}})
+    _write_json(champion / "promotion_autopilot_packet_latest.json", {"overall_status": "ready", "signed_bundle_contract": {"signature_verified": True, "rollback_ready": True}})
+    _write_json(health / "portable_brain_contract_latest.json", {"host_contract": {}, "adaptation_contract": {}, "cross_platform_proof_node": {"status": "ready"}})
+    _write_json(health / "apple_silicon_profile_latest.json", {"overall_status": "ready"})
+    _write_json(health / "mode_switchboard_mission_control_latest.json", {"overall_status": "ready", "mode_counts": {"active": 2, "ready": 3}})
+    _write_json(health / "autonomy_control_plane_latest.json", {"overall_status": "ready", "autonomy_score": 89.0})
+    _write_json(health / "data_plane_recovery_controller_latest.json", {"overall_status": "ready"})
+    _write_json(health / "lane_thaw_controller_latest.json", {"candidate_count": 0})
+    _write_json(health / "decision_provenance_cards_latest.json", {"overall_status": "ready", "card_count": 2, "mode_count": 2})
+    _write_json(health / "notification_escalation_ladder_latest.json", {"overall_status": "ready", "remote_pager_ready": True, "critical_backlog": {"unacked_count": 0}})
+    _write_json(health / "chaos_drill_coordinator_latest.json", {"overall_status": "ready", "overdue_drills": [], "drill_program": {"program_score": 98.0}})
+    _write_json(health / "macro_event_intelligence_latest.json", {"overall_status": "ready"})
+    _write_json(health / "incident_review_packet_latest.json", {"overall_status": "blocked", "review_required": True, "packet_sha256": "abc123"})
+    _write_json(
+        health / "incident_closeout_autopilot_latest.json",
+        {
+            "overall_status": "degraded",
+            "open_incident_count": 2,
+            "bounded_closeout_path_ready": True,
+            "blocking_surfaces": [{"surface": "incident_review", "severity": "warning"}],
+        },
+    )
+
+    payload = src.build_payload(project_root)
+    rows = {row["slug"]: row for row in payload["rows"]}
+
+    assert rows["immutable_incident_review"]["status"] == "degraded"
+    assert "bounded_closeout=1" in rows["immutable_incident_review"]["proof"]
+    assert payload["overall_status"] == "degraded"
+
+
+def test_architecture_upgrade_scoreboard_treats_guarded_paper_recovery_debt_as_degraded(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    walk = project_root / "governance" / "walk_forward"
+    champion = project_root / "governance" / "champion_challenger"
+
+    _write_json(health / "live_runtime_separation_control_latest.json", {"overall_status": "degraded", "live_plane": {"ready": True}, "clearance_plan": {"clearance_state": "awaiting_coverage_cycles"}})
+    _write_json(walk / "coverage_gap_closer_latest.json", {"overall_status": "ready", "autopilot_contract": {"overall_status": "ready", "can_apply_stage": True, "snapshot_ready": True, "cold_lane_ready": True}})
+    _write_json(champion / "promotion_autopilot_packet_latest.json", {"overall_status": "ready", "signed_bundle_contract": {"signature_verified": True, "rollback_ready": True}})
+    _write_json(health / "portable_brain_contract_latest.json", {"host_contract": {}, "adaptation_contract": {}, "cross_platform_proof_node": {"status": "ready"}})
+    _write_json(health / "apple_silicon_profile_latest.json", {"overall_status": "ready"})
+    _write_json(health / "mode_switchboard_mission_control_latest.json", {"overall_status": "ready", "mode_counts": {"active": 2, "ready": 3}})
+    _write_json(health / "autonomy_control_plane_latest.json", {"overall_status": "blocked", "autonomy_score": 62.0, "autonomous_repair_path_count": 3, "lane_recovery_playbooks": {"triggered_playbook_count": 1}})
+    _write_json(health / "data_plane_recovery_controller_latest.json", {"overall_status": "ready"})
+    _write_json(health / "lane_thaw_controller_latest.json", {"candidate_count": 0})
+    _write_json(health / "decision_provenance_cards_latest.json", {"overall_status": "ready", "card_count": 2, "mode_count": 2})
+    _write_json(health / "notification_escalation_ladder_latest.json", {"overall_status": "ready", "remote_pager_ready": True, "critical_backlog": {"unacked_count": 0}})
+    _write_json(health / "chaos_drill_coordinator_latest.json", {"overall_status": "degraded", "overdue_drills": [{"drill": "snapshot_restore"}], "drill_program": {"program_score": 78.0}})
+    _write_json(health / "macro_event_intelligence_latest.json", {"overall_status": "ready"})
+    _write_json(health / "incident_review_packet_latest.json", {"overall_status": "blocked", "review_required": True, "packet_sha256": "abc123"})
+    _write_json(health / "incident_closeout_autopilot_latest.json", {"overall_status": "degraded", "open_incident_count": 2, "blocking_surfaces": [{"surface": "incident_review", "severity": "warning"}]})
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only"},
+            },
+        },
+    )
+
+    payload = src.build_payload(project_root)
+    rows = {row["slug"]: row for row in payload["rows"]}
+
+    assert payload["overall_status"] == "degraded"
+    assert rows["self_healing_ops_plane"]["status"] == "degraded"
+    assert rows["immutable_incident_review"]["status"] == "degraded"

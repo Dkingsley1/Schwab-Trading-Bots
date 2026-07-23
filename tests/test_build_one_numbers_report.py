@@ -124,6 +124,23 @@ def test_resolve_sqlite_state_prefers_shard_progress_over_legacy(tmp_path, monke
     assert sqlite_state[rel]["last_line"] == 25
 
 
+def test_default_db_path_uses_local_fallback_for_broken_routed_symlink(tmp_path: Path, monkeypatch) -> None:
+    routed_db = tmp_path / "data" / "jsonl_link.sqlite3"
+    missing_external_db = tmp_path / "missing_bot_logs" / "data" / "jsonl_link.sqlite3"
+    fallback_db = tmp_path / "local_fallback_storage" / "data" / "jsonl_link.sqlite3"
+    routed_db.parent.mkdir(parents=True, exist_ok=True)
+    routed_db.symlink_to(missing_external_db)
+    fallback_db.parent.mkdir(parents=True, exist_ok=True)
+    fallback_db.write_bytes(b"sqlite")
+    monkeypatch.setattr(one_numbers, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(one_numbers, "DEFAULT_DB", routed_db)
+    monkeypatch.setattr(one_numbers, "LOCAL_FALLBACK_ROOT", tmp_path / "local_fallback_storage")
+    monkeypatch.delenv("SQL_LINK_SERVICE_PRIMARY_DB", raising=False)
+
+    assert one_numbers._default_db_path() == fallback_db
+    assert one_numbers._routed_or_local_fallback_path(routed_db) == fallback_db
+
+
 def test_register_sql_snapshot_returns_warning_on_locked_db() -> None:
     class LockedConn:
         def execute(self, *_args, **_kwargs):
@@ -477,6 +494,44 @@ def test_resolve_lightweight_report_day_prefers_latest_decision_day() -> None:
     day = one_numbers._resolve_lightweight_report_day("20260331", history)
 
     assert day == "20260330"
+
+
+def test_resolve_raw_jsonl_report_day_prefers_exact_governance_source_day(tmp_path: Path) -> None:
+    decision_root = tmp_path / "decision_explanations" / "shadow_default"
+    governance_root = tmp_path / "governance" / "shadow_default"
+    decision_root.mkdir(parents=True, exist_ok=True)
+    governance_root.mkdir(parents=True, exist_ok=True)
+    (decision_root / "decision_explanations_20260330.jsonl").write_text("{}\n", encoding="utf-8")
+    (governance_root / "master_control_20260331.jsonl").write_text("{}\n", encoding="utf-8")
+
+    day = one_numbers._resolve_raw_jsonl_report_day(tmp_path, "20260331")
+
+    assert day == "20260331"
+
+
+def test_requested_source_day_history_entry_covers_governance_only_requested_day(tmp_path: Path) -> None:
+    governance_root = tmp_path / "governance" / "shadow_default"
+    governance_root.mkdir(parents=True, exist_ok=True)
+    (governance_root / "master_control_20260331.jsonl").write_text('{"status":"ready"}\n', encoding="utf-8")
+    entries: dict[str, dict[str, object]] = {
+        "20260330": {
+            "day_utc": "20260330",
+            "metrics": {"combined_decision_total_rows": 12},
+        }
+    }
+
+    one_numbers._add_requested_source_day_history_entry(
+        tmp_path,
+        entries,
+        requested_day="20260331",
+        resolved_day="20260330",
+        now_utc=datetime(2026, 3, 31, 20, 0, tzinfo=timezone.utc),
+    )
+
+    assert entries["20260331"]["report_mode"] == "source_day_coverage_stub"
+    metrics = entries["20260331"]["metrics"]
+    assert metrics["combined_decision_total_rows"] == 0
+    assert metrics["combined_governance_total_rows"] == 1
 
 
 def test_latest_report_day_from_db_prefers_latest_decision_day(tmp_path: Path) -> None:

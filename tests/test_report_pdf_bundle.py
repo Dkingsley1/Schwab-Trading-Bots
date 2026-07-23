@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 
@@ -188,6 +189,18 @@ def test_write_simple_pdf_creates_valid_pdf(tmp_path):
     assert payload.startswith(b"%PDF-1.4")
     assert b"xref" in payload
     assert b"Fallback" in payload
+
+
+def test_report_pdf_bundle_run_timeout_returns_clean_failure():
+    rc, out, err = report_pdf_bundle._run(
+        [sys.executable, "-c", "import time; time.sleep(10)"],
+        timeout_sec=1,
+        process_group=True,
+    )
+
+    assert rc == 124
+    assert out == ""
+    assert err == "timeout"
 
 
 def test_render_index_html_embeds_reports_and_pdfs_commands(tmp_path, monkeypatch):

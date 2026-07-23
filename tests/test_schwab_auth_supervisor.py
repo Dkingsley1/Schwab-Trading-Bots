@@ -1,5 +1,6 @@
 import json
 import sys
+import time
 from pathlib import Path
 
 
@@ -49,6 +50,82 @@ def test_schwab_auth_supervisor_ready_for_fresh_token(tmp_path: Path, monkeypatc
     assert payload["overall_status"] == "ready"
     assert payload["token"]["ready"] is True
     assert payload["regression_contract"]["do_not_open_browser_when_token_ready"] is True
+
+
+def test_schwab_auth_supervisor_recommends_refresh_without_blocking_above_ready_floor(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    token_path = project_root / "token.json"
+    project_root.mkdir(parents=True)
+    _token(token_path, expires_at=int(time.time()) + 1200)
+    _write_json(health / "premarket_token_guard_latest.json", {"ok": True})
+    _write_json(health / "broker_readiness_latest.json", {"ready_for_open": True, "auth_ok": True, "network_ok": True})
+    _write_json(health / "auth_lease_manager_latest.json", {"overall_status": "ready", "lease_state": "healthy"})
+
+    monkeypatch.setattr(supervisor, "_list_auth_processes", lambda: [])
+    monkeypatch.setattr(supervisor, "_callback_port_open", lambda *args, **kwargs: False)
+    monkeypatch.setattr(supervisor, "_recent_auth_signals", lambda root: {"auth_error_markers": [], "callback_error_markers": [], "auth_error_count": 0, "callback_error_count": 0, "circuit_breaker_with_auth_error": False})
+
+    payload = supervisor.build_payload(
+        project_root,
+        token_path=token_path,
+        min_expires_seconds=1500,
+        min_ready_expires_seconds=900,
+    )
+
+    assert payload["overall_status"] == "degraded"
+    assert payload["token"]["ready"] is True
+    assert payload["token"]["refresh_needed"] is True
+    assert payload["token"]["readiness_refresh_needed"] is False
+    assert any(row.startswith("token_refresh_recommended:") for row in payload["findings"])
+
+
+def test_schwab_auth_supervisor_keeps_probe_denied_paper_soak_operable_degraded(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    token_path = project_root / "token.json"
+    project_root.mkdir(parents=True)
+    _token(token_path, expires_at=int(time.time()) + 1365)
+    _write_json(health / "premarket_token_guard_latest.json", {"ok": True})
+    _write_json(
+        health / "broker_readiness_latest.json",
+        {
+            "ready_for_open": True,
+            "auth_ok": False,
+            "network_ok": True,
+            "token_expires_in_seconds": 1365,
+            "preflight_checks": {"token_exists": True, "token_ready_for_open": True},
+        },
+    )
+    _write_json(
+        health / "auth_lease_manager_latest.json",
+        {
+            "overall_status": "blocked",
+            "lease_state": "critical",
+            "lease_budget": {"expires_in_seconds": 1365, "critical_lease_seconds": 600},
+            "broker_state": {
+                "broker_operable": True,
+                "network_ok": True,
+                "configured_for_refresh": True,
+            },
+        },
+    )
+
+    monkeypatch.setattr(supervisor, "_list_auth_processes", lambda: [])
+    monkeypatch.setattr(supervisor, "_callback_port_open", lambda *args, **kwargs: False)
+    monkeypatch.setattr(supervisor, "_recent_auth_signals", lambda root: {"auth_error_markers": ["Access Denied"], "callback_error_markers": [], "auth_error_count": 1, "callback_error_count": 0, "circuit_breaker_with_auth_error": False})
+
+    payload = supervisor.build_payload(
+        project_root,
+        token_path=token_path,
+        min_expires_seconds=1500,
+        min_ready_expires_seconds=900,
+    )
+
+    assert payload["overall_status"] == "degraded"
+    assert payload["paper_soak_auth_operable"] is True
+    assert "auth_lease_critical_paper_soak_grace" in payload["findings"]
+    assert "auth_lease_critical" not in payload["findings"]
 
 
 def test_schwab_auth_supervisor_degrades_and_cleans_stale_helpers(tmp_path: Path, monkeypatch) -> None:

@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = PROJECT_ROOT / "data" / "jsonl_link.sqlite3"
+LOCAL_FALLBACK_ROOT = PROJECT_ROOT / "local_fallback_storage"
 DEFAULT_REPORT_TIMEZONE = "America/New_York"
 DEFAULT_ROLLUP_HISTORY_PATH = PROJECT_ROOT / "governance" / "health" / "one_numbers_rollup_history.json"
 DEFAULT_ROLLUP_HISTORY_MAX_DAYS = 400
@@ -41,6 +42,31 @@ ROLLUP_HISTORY_METRIC_KEYS = (
 
 def _emit_progress(message: str) -> None:
     print(message, flush=True)
+
+
+def _local_fallback_equivalent(path: Path) -> Path:
+    candidate = Path(path).expanduser()
+    try:
+        rel = candidate.relative_to(PROJECT_ROOT)
+    except ValueError:
+        return candidate
+    if rel.parts and rel.parts[0] == LOCAL_FALLBACK_ROOT.name:
+        return candidate
+    return LOCAL_FALLBACK_ROOT / rel
+
+
+def _is_broken_symlink(path: Path) -> bool:
+    try:
+        return path.is_symlink() and not path.exists()
+    except OSError:
+        return False
+
+
+def _routed_or_local_fallback_path(path: Path) -> Path:
+    candidate = Path(path).expanduser()
+    if _is_broken_symlink(candidate):
+        return _local_fallback_equivalent(candidate)
+    return candidate
 
 
 def _acquire_singleton_lock(lock_path: Path):
@@ -868,20 +894,18 @@ def _one_numbers_coverage_metadata(project_root: Path, history: dict[str, dict[s
 def _resolve_raw_jsonl_report_day(project_root: Path, requested_day: str) -> str:
     requested = str(requested_day or "").strip() or _default_report_day()
     decision_days = sorted(_raw_jsonl_days(project_root, "decision"))
+    governance_days = sorted(_raw_jsonl_days(project_root, "governance"))
     if requested in decision_days:
         return requested
-    prior_decision_days = [day for day in decision_days if day <= requested]
-    if prior_decision_days:
-        return prior_decision_days[-1]
-    if decision_days:
-        return decision_days[-1]
-    governance_days = sorted(_raw_jsonl_days(project_root, "governance"))
     if requested in governance_days:
         return requested
+    prior_decision_days = [day for day in decision_days if day <= requested]
     prior_governance_days = [day for day in governance_days if day <= requested]
-    if prior_governance_days:
-        return prior_governance_days[-1]
-    return governance_days[-1] if governance_days else requested
+    prior_days = sorted(set(prior_decision_days) | set(prior_governance_days))
+    if prior_days:
+        return prior_days[-1]
+    all_days = sorted(set(decision_days) | set(governance_days))
+    return all_days[-1] if all_days else requested
 
 
 def _iter_raw_jsonl_rows(path: Path):
@@ -900,6 +924,67 @@ def _iter_raw_jsonl_rows(path: Path):
                     yield row
     except Exception:
         return
+
+
+def _count_raw_jsonl_rows(paths: list[Path]) -> int:
+    total = 0
+    for path in paths:
+        total += sum(1 for _row in _iter_raw_jsonl_rows(path))
+    return total
+
+
+def _requested_source_day_history_entry(
+    project_root: Path,
+    *,
+    requested_day: str,
+    resolved_day: str,
+    now_utc: datetime,
+) -> dict[str, object] | None:
+    requested = _normalize_coverage_day(requested_day)
+    resolved = _normalize_coverage_day(resolved_day)
+    if not requested or requested == resolved:
+        return None
+    decision_paths = _raw_jsonl_paths(project_root, requested, "decision")
+    governance_paths = _raw_jsonl_paths(project_root, requested, "governance")
+    watchdog_paths = _raw_jsonl_paths(project_root, requested, "watchdog")
+    if not (decision_paths or governance_paths or watchdog_paths):
+        return None
+    decision_rows = _count_raw_jsonl_rows(decision_paths)
+    governance_rows = _count_raw_jsonl_rows(governance_paths)
+    watchdog_rows = _count_raw_jsonl_rows(watchdog_paths)
+    return {
+        "day_utc": requested,
+        "generated_utc": now_utc.isoformat(),
+        "report_mode": "source_day_coverage_stub",
+        "metrics": {
+            "combined_decision_total_rows": decision_rows,
+            "combined_governance_total_rows": governance_rows,
+            "combined_blocked_total": 0,
+            "data_blocked_total": 0,
+            "risk_blocked_total": 0,
+            "paper_executed_total": 0,
+            "watchdog_restarts": watchdog_rows,
+            "data_quality_score": 100.0 if decision_rows > 0 else (60.0 if governance_rows > 0 or watchdog_rows > 0 else 0.0),
+        },
+    }
+
+
+def _add_requested_source_day_history_entry(
+    project_root: Path,
+    entries: dict[str, dict[str, object]],
+    *,
+    requested_day: str,
+    resolved_day: str,
+    now_utc: datetime,
+) -> None:
+    entry = _requested_source_day_history_entry(
+        project_root,
+        requested_day=requested_day,
+        resolved_day=resolved_day,
+        now_utc=now_utc,
+    )
+    if entry is not None:
+        entries[str(entry["day_utc"])] = entry
 
 
 def _raw_bucket_for_decision(row: dict, source_rel: str) -> str:
@@ -1018,6 +1103,13 @@ def _raw_report_payload_from_jsonl(
         "report_mode": "full",
         "metrics": current_rollup_metrics,
     }
+    _add_requested_source_day_history_entry(
+        project_root,
+        entries,
+        requested_day=requested_day,
+        resolved_day=day,
+        now_utc=now_utc,
+    )
     month_rollup = _aggregate_rollup([entry for entry_day, entry in entries.items() if str(entry_day).startswith(day[:6])])
     all_time_rollup = _aggregate_rollup(list(entries.values()))
     persisted_history = _persist_rollup_history_entries(project_root, entries)
@@ -1182,19 +1274,19 @@ def _backpressure_scorecard_metrics(project_root: Path) -> dict[str, str]:
 def _default_db_path() -> Path:
     configured = str(os.getenv("SQL_LINK_SERVICE_PRIMARY_DB", "") or "").strip()
     if configured:
-        return Path(configured)
+        return _routed_or_local_fallback_path(Path(configured))
 
     progress = _read_json(PROJECT_ROOT / "governance" / "health" / "sql_link_service_progress_latest.json")
     progress_db = str(progress.get("primary_db") or "").strip()
     if progress_db:
-        return Path(progress_db)
+        return _routed_or_local_fallback_path(Path(progress_db))
 
     latest = _read_json(PROJECT_ROOT / "governance" / "health" / "sql_link_service_latest.json")
     latest_db = str(latest.get("db_path") or latest.get("primary_db") or "").strip()
     if latest_db:
-        return Path(latest_db)
+        return _routed_or_local_fallback_path(Path(latest_db))
 
-    return DEFAULT_DB
+    return _routed_or_local_fallback_path(DEFAULT_DB)
 
 
 def _json_timestamp(payload: dict, path: Path) -> datetime | None:
@@ -2423,6 +2515,13 @@ def _trade_decision_summary_payload_from_sqlite(
         "report_mode": "full_trade_decision_fallback",
         "metrics": current_rollup_metrics,
     }
+    _add_requested_source_day_history_entry(
+        project_root,
+        entries,
+        requested_day=requested_day,
+        resolved_day=day,
+        now_utc=now_utc,
+    )
     persisted_history = _persist_rollup_history_entries(project_root, entries)
     month_rollup = _aggregate_rollup([entry for entry_day, entry in persisted_history.items() if str(entry_day).startswith(day[:6])])
     all_time_rollup = _aggregate_rollup(list(persisted_history.values()))
@@ -2566,7 +2665,7 @@ def main() -> int:
     requested_day = str(args.day or "").strip() or _default_report_day()
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    db_path = Path(args.db)
+    db_path = _routed_or_local_fallback_path(Path(args.db))
 
     _emit_progress(
         f"one_numbers start requested_day={requested_day} "
@@ -3447,6 +3546,13 @@ def main() -> int:
         "report_mode": "full",
         "metrics": current_rollup_metrics,
     }
+    _add_requested_source_day_history_entry(
+        PROJECT_ROOT,
+        latest_snapshots,
+        requested_day=requested_day,
+        resolved_day=day,
+        now_utc=now_utc,
+    )
     month_prefix = day[:6]
     month_rollup = _aggregate_rollup([entry for entry_day, entry in latest_snapshots.items() if str(entry_day).startswith(month_prefix)])
     all_time_rollup = _aggregate_rollup(list(latest_snapshots.values()))
