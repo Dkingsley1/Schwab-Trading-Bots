@@ -1,0 +1,1 @@
+../../../scripts/ops/system_architecture_autopilot.py

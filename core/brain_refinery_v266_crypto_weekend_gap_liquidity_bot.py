@@ -55,6 +55,7 @@ SPEC = CryptoRuntimeSpec(
     signal_builder=_weekend_gap_signal,
     bias_builder=_weekend_gap_bias,
     min_signal=0.18,
+    defer_on_quality_failure=True,
 )
 
 

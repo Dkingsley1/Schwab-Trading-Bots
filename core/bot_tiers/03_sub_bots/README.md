@@ -4,74 +4,259 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 
 | Bot | Role | State | Source |
 | --- | --- | --- | --- |
-| brain_refinery_v1 | signal_sub_bot | inactive | core/brain_refinery_v1_price_forecaster_baseline.py |
+| brain_refinery_v1 | signal_sub_bot | active / collecting | core/brain_refinery_v1_price_forecaster_baseline.py |
+| brain_refinery_v1007_apex_frontier_model_watchlist_curator_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1007_apex_frontier_model_watchlist_curator_bot.py |
+| brain_refinery_v1008_apex_experiment_design_frontier_scout_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1008_apex_experiment_design_frontier_scout_bot.py |
 | brain_refinery_v100_stock_crypto_overlap_context | signal_sub_bot | active / collecting | core/brain_refinery_v100_stock_crypto_overlap_context.py |
+| brain_refinery_v1019_recursive_awareness_fix_effectiveness_replay_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1019_recursive_awareness_fix_effectiveness_replay_scorer_bot.py |
 | brain_refinery_v102_open_drive_liquidity_pressure | signal_sub_bot | active / collecting | core/brain_refinery_v102_open_drive_liquidity_pressure.py |
+| brain_refinery_v1039_frontier_counterfactual_causal_lab_forecast_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1039_frontier_counterfactual_causal_lab_forecast_scorer_bot.py |
 | brain_refinery_v103_crypto_throttle_relief_momentum | signal_sub_bot | active / collecting | core/brain_refinery_v103_crypto_throttle_relief_momentum.py |
+| brain_refinery_v1043_frontier_hierarchical_memory_retrieval_forecast_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1043_frontier_hierarchical_memory_retrieval_forecast_scorer_bot.py |
+| brain_refinery_v1047_frontier_multi_agent_debate_critique_forecast_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1047_frontier_multi_agent_debate_critique_forecast_scorer_bot.py |
 | brain_refinery_v104_futures_event_followthrough | signal_sub_bot | active / collecting | core/brain_refinery_v104_futures_event_followthrough.py |
+| brain_refinery_v1051_frontier_uncertainty_risk_calibration_forecast_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1051_frontier_uncertainty_risk_calibration_forecast_scorer_bot.py |
+| brain_refinery_v1055_frontier_active_learning_data_value_forecast_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1055_frontier_active_learning_data_value_forecast_scorer_bot.py |
+| brain_refinery_v1059_frontier_alpha_thesis_factory_forecast_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1059_frontier_alpha_thesis_factory_forecast_scorer_bot.py |
+| brain_refinery_v1063_frontier_execution_microstructure_sandbox_forecast_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1063_frontier_execution_microstructure_sandbox_forecast_scorer_bot.py |
+| brain_refinery_v1067_frontier_macro_event_world_model_forecast_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1067_frontier_macro_event_world_model_forecast_scorer_bot.py |
+| brain_refinery_v1071_frontier_resource_allocation_market_forecast_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1071_frontier_resource_allocation_market_forecast_scorer_bot.py |
+| brain_refinery_v1075_frontier_formal_safety_verification_forecast_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1075_frontier_formal_safety_verification_forecast_scorer_bot.py |
+| brain_refinery_v1079_frontier_bot_genome_lineage_evolution_forecast_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1079_frontier_bot_genome_lineage_evolution_forecast_scorer_bot.py |
+| brain_refinery_v1083_frontier_operator_copilot_intent_bridge_forecast_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1083_frontier_operator_copilot_intent_bridge_forecast_scorer_bot.py |
+| brain_refinery_v1087_institutional_alpha_evidence_court_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1087_institutional_alpha_evidence_court_signal_scorer_bot.py |
 | brain_refinery_v108_signal_regime_fallback_champion | signal_sub_bot | active / collecting | core/brain_refinery_v108_signal_regime_fallback_champion.py |
+| brain_refinery_v1092_institutional_execution_quality_lab_v2_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1092_institutional_execution_quality_lab_v2_signal_scorer_bot.py |
+| brain_refinery_v1097_institutional_portfolio_intelligence_layer_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1097_institutional_portfolio_intelligence_layer_signal_scorer_bot.py |
 | brain_refinery_v109_defensive_options_risk_off_teacher | options_sub_bot | active / collecting | core/brain_refinery_v109_defensive_options_risk_off_teacher.py |
-| brain_refinery_v10_seasonal | signal_sub_bot | active | core/brain_refinery_v10_seasonal.py |
+| brain_refinery_v10_seasonal | signal_sub_bot | active / collecting | core/brain_refinery_v10_seasonal.py |
+| brain_refinery_v1102_institutional_regime_transition_engine_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1102_institutional_regime_transition_engine_signal_scorer_bot.py |
+| brain_refinery_v1107_institutional_options_risk_intelligence_v2_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1107_institutional_options_risk_intelligence_v2_signal_scorer_bot.py |
+| brain_refinery_v1112_institutional_futures_cross_asset_basis_lab_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1112_institutional_futures_cross_asset_basis_lab_signal_scorer_bot.py |
+| brain_refinery_v1117_institutional_data_quality_observatory_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1117_institutional_data_quality_observatory_signal_scorer_bot.py |
+| brain_refinery_v1122_institutional_replay_crisis_simulation_factory_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1122_institutional_replay_crisis_simulation_factory_signal_scorer_bot.py |
+| brain_refinery_v1127_institutional_model_governance_board_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1127_institutional_model_governance_board_signal_scorer_bot.py |
 | brain_refinery_v112_cross_asset_regime_confirmation | signal_sub_bot | active / collecting | core/brain_refinery_v112_cross_asset_regime_confirmation.py |
+| brain_refinery_v1132_institutional_operator_copilot_v2_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1132_institutional_operator_copilot_v2_signal_scorer_bot.py |
+| brain_refinery_v1137_institutional_backpressure_storage_brain_v2_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1137_institutional_backpressure_storage_brain_v2_signal_scorer_bot.py |
 | brain_refinery_v113_sector_breadth_rotation_fallback | signal_sub_bot | active / collecting | core/brain_refinery_v113_sector_breadth_rotation_fallback.py |
+| brain_refinery_v1147_institutional_liquidity_stress_market_impact_lab_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1147_institutional_liquidity_stress_market_impact_lab_signal_scorer_bot.py |
 | brain_refinery_v114_overnight_gap_defense_overlay | options_sub_bot | active / collecting | core/brain_refinery_v114_overnight_gap_defense_overlay.py |
+| brain_refinery_v1157_institutional_cross_asset_risk_transfer_lab_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1157_institutional_cross_asset_risk_transfer_lab_signal_scorer_bot.py |
 | brain_refinery_v115_macro_event_repricing_relay | signal_sub_bot | active / collecting | core/brain_refinery_v115_macro_event_repricing_relay.py |
+| brain_refinery_v1162_institutional_tax_corporate_actions_intelligence_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1162_institutional_tax_corporate_actions_intelligence_signal_scorer_bot.py |
+| brain_refinery_v1167_institutional_funding_collateral_margin_intelligence_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1167_institutional_funding_collateral_margin_intelligence_signal_scorer_bot.py |
+| brain_refinery_v1172_institutional_broker_venue_reliability_lab_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1172_institutional_broker_venue_reliability_lab_signal_scorer_bot.py |
+| brain_refinery_v1177_institutional_feature_store_ontology_governance_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1177_institutional_feature_store_ontology_governance_signal_scorer_bot.py |
 | brain_refinery_v117_iv_skew_dislocation_overlay | options_sub_bot | active / collecting | core/brain_refinery_v117_iv_skew_dislocation_overlay.py |
+| brain_refinery_v1182_institutional_research_paper_assimilation_foundry_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1182_institutional_research_paper_assimilation_foundry_signal_scorer_bot.py |
+| brain_refinery_v1187_institutional_adversarial_market_abuse_defense_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1187_institutional_adversarial_market_abuse_defense_signal_scorer_bot.py |
 | brain_refinery_v118_earnings_convexity_event_overlay | options_sub_bot | active / collecting | core/brain_refinery_v118_earnings_convexity_event_overlay.py |
+| brain_refinery_v1192_institutional_scenario_generation_synthetic_markets_v2_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1192_institutional_scenario_generation_synthetic_markets_v2_signal_scorer_bot.py |
 | brain_refinery_v119_put_call_stress_reversal_overlay | options_sub_bot | active / collecting | core/brain_refinery_v119_put_call_stress_reversal_overlay.py |
 | brain_refinery_v11_stoch_vol | signal_sub_bot | inactive | core/brain_refinery_v11_stoch_vol.py |
+| brain_refinery_v1202_institutional_institutional_reporting_evidence_pack_signal_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1202_institutional_institutional_reporting_evidence_pack_signal_scorer_bot.py |
+| brain_refinery_v1207_strategy_gap_convertible_bond_arbitrage_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1207_strategy_gap_convertible_bond_arbitrage_signal_modeler_bot.py |
 | brain_refinery_v120_energy_shock_inflation_pass_through | signal_sub_bot | active / collecting | core/brain_refinery_v120_energy_shock_inflation_pass_through.py |
+| brain_refinery_v1212_strategy_gap_capital_structure_arbitrage_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1212_strategy_gap_capital_structure_arbitrage_signal_modeler_bot.py |
+| brain_refinery_v1217_strategy_gap_merger_event_arbitrage_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1217_strategy_gap_merger_event_arbitrage_signal_modeler_bot.py |
+| brain_refinery_v1222_strategy_gap_etf_basket_nav_arbitrage_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1222_strategy_gap_etf_basket_nav_arbitrage_signal_modeler_bot.py |
+| brain_refinery_v1227_strategy_gap_index_rebalance_arbitrage_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1227_strategy_gap_index_rebalance_arbitrage_signal_modeler_bot.py |
 | brain_refinery_v122_vol_crush_event_iv_reset_overlay | options_sub_bot | active / collecting | core/brain_refinery_v122_vol_crush_event_iv_reset_overlay.py |
+| brain_refinery_v1232_strategy_gap_volatility_risk_premium_harvesting_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1232_strategy_gap_volatility_risk_premium_harvesting_signal_modeler_bot.py |
+| brain_refinery_v1237_strategy_gap_cross_asset_carry_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1237_strategy_gap_cross_asset_carry_signal_modeler_bot.py |
 | brain_refinery_v123_rates_shock_equity_duration_overlay | signal_sub_bot | active / collecting | core/brain_refinery_v123_rates_shock_equity_duration_overlay.py |
+| brain_refinery_v1242_strategy_gap_residual_equity_stat_arb_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1242_strategy_gap_residual_equity_stat_arb_signal_modeler_bot.py |
+| brain_refinery_v1247_strategy_gap_cointegration_ou_pairs_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1247_strategy_gap_cointegration_ou_pairs_signal_modeler_bot.py |
+| brain_refinery_v1252_strategy_gap_auction_imbalance_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1252_strategy_gap_auction_imbalance_signal_modeler_bot.py |
+| brain_refinery_v1257_strategy_gap_short_borrow_squeeze_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1257_strategy_gap_short_borrow_squeeze_signal_modeler_bot.py |
 | brain_refinery_v125_oil_sensitive_sector_rotation_overlay | signal_sub_bot | active / collecting | core/brain_refinery_v125_oil_sensitive_sector_rotation_overlay.py |
+| brain_refinery_v1262_strategy_gap_dealer_opex_pinning_v2_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1262_strategy_gap_dealer_opex_pinning_v2_signal_modeler_bot.py |
+| brain_refinery_v1267_strategy_gap_commodity_seasonal_curve_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1267_strategy_gap_commodity_seasonal_curve_signal_modeler_bot.py |
 | brain_refinery_v126_post_fomc_regime_repricing_bot | signal_sub_bot | active / collecting | core/brain_refinery_v126_post_fomc_regime_repricing_bot.py |
+| brain_refinery_v1272_strategy_gap_energy_weather_demand_shock_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1272_strategy_gap_energy_weather_demand_shock_signal_modeler_bot.py |
+| brain_refinery_v1277_strategy_gap_insider_buyback_signal_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1277_strategy_gap_insider_buyback_signal_signal_modeler_bot.py |
 | brain_refinery_v127_dollar_funding_fx_stress_relay | signal_sub_bot | active / collecting | core/brain_refinery_v127_dollar_funding_fx_stress_relay.py |
-| brain_refinery_v12_news_shocks | signal_sub_bot | active | core/brain_refinery_v12_news_shocks.py |
+| brain_refinery_v1282_strategy_gap_earnings_drift_quality_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1282_strategy_gap_earnings_drift_quality_signal_modeler_bot.py |
+| brain_refinery_v1287_strategy_gap_crypto_funding_basis_rv_v2_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1287_strategy_gap_crypto_funding_basis_rv_v2_signal_modeler_bot.py |
+| brain_refinery_v1292_strategy_gap_rates_curve_relative_value_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1292_strategy_gap_rates_curve_relative_value_signal_modeler_bot.py |
+| brain_refinery_v1297_strategy_gap_credit_equity_vol_relative_value_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1297_strategy_gap_credit_equity_vol_relative_value_signal_modeler_bot.py |
+| brain_refinery_v12_news_shocks | signal_sub_bot | active / collecting | core/brain_refinery_v12_news_shocks.py |
+| brain_refinery_v1302_strategy_gap_corporate_bond_etf_discount_arb_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1302_strategy_gap_corporate_bond_etf_discount_arb_signal_modeler_bot.py |
+| brain_refinery_v1307_strategy_gap_adr_cross_listing_parity_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1307_strategy_gap_adr_cross_listing_parity_signal_modeler_bot.py |
+| brain_refinery_v1312_strategy_gap_tax_loss_rebalance_flow_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1312_strategy_gap_tax_loss_rebalance_flow_signal_modeler_bot.py |
+| brain_refinery_v1317_strategy_gap_passive_liquidity_provision_sim_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1317_strategy_gap_passive_liquidity_provision_sim_signal_modeler_bot.py |
 | brain_refinery_v131_ai_capex_revision_risk_overlay | signal_sub_bot | active / collecting | core/brain_refinery_v131_ai_capex_revision_risk_overlay.py |
+| brain_refinery_v1322_strategy_gap_sector_pair_rotation_spread_arb_signal_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1322_strategy_gap_sector_pair_rotation_spread_arb_signal_modeler_bot.py |
+| brain_refinery_v1328_platform_organ_data_quality_v2_optimization_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1328_platform_organ_data_quality_v2_optimization_modeler_bot.py |
 | brain_refinery_v132_commodity_supply_chain_margin_pressure | signal_sub_bot | active / collecting | core/brain_refinery_v132_commodity_supply_chain_margin_pressure.py |
+| brain_refinery_v1333_platform_organ_feature_store_dataset_registry_optimization_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1333_platform_organ_feature_store_dataset_registry_optimization_modeler_bot.py |
+| brain_refinery_v1338_platform_organ_replay_scenario_lab_v2_optimization_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1338_platform_organ_replay_scenario_lab_v2_optimization_modeler_bot.py |
 | brain_refinery_v133_defensive_quality_factor_rotation | signal_sub_bot | active / collecting | core/brain_refinery_v133_defensive_quality_factor_rotation.py |
+| brain_refinery_v1343_platform_organ_execution_realism_layer_optimization_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1343_platform_organ_execution_realism_layer_optimization_modeler_bot.py |
+| brain_refinery_v1348_platform_organ_portfolio_brain_optimization_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1348_platform_organ_portfolio_brain_optimization_modeler_bot.py |
 | brain_refinery_v134_gamma_pin_breakout_failure_overlay | options_sub_bot | active / collecting | core/brain_refinery_v134_gamma_pin_breakout_failure_overlay.py |
+| brain_refinery_v1353_platform_organ_alpha_decay_tracker_optimization_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1353_platform_organ_alpha_decay_tracker_optimization_modeler_bot.py |
+| brain_refinery_v1358_platform_organ_regime_router_optimization_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1358_platform_organ_regime_router_optimization_modeler_bot.py |
+| brain_refinery_v1363_platform_organ_research_assimilation_optimization_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1363_platform_organ_research_assimilation_optimization_modeler_bot.py |
+| brain_refinery_v1368_platform_organ_bot_promotion_court_optimization_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1368_platform_organ_bot_promotion_court_optimization_modeler_bot.py |
 | brain_refinery_v136_news_sentiment_crowding_reversal | signal_sub_bot | active / collecting | core/brain_refinery_v136_news_sentiment_crowding_reversal.py |
+| brain_refinery_v1373_platform_organ_operator_cockpit_v2_optimization_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1373_platform_organ_operator_cockpit_v2_optimization_modeler_bot.py |
+| brain_refinery_v1378_platform_organ_resource_metabolism_controller_optimization_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1378_platform_organ_resource_metabolism_controller_optimization_modeler_bot.py |
 | brain_refinery_v137_fed_hold_inflation_energy_matrix | signal_sub_bot | active / collecting | core/brain_refinery_v137_fed_hold_inflation_energy_matrix.py |
+| brain_refinery_v1383_platform_organ_memory_lymphatic_system_optimization_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1383_platform_organ_memory_lymphatic_system_optimization_modeler_bot.py |
+| brain_refinery_v1388_platform_organ_backpressure_circulatory_system_optimization_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1388_platform_organ_backpressure_circulatory_system_optimization_modeler_bot.py |
 | brain_refinery_v138_strait_hormuz_oil_tail_hedge | options_sub_bot | active / collecting | core/brain_refinery_v138_strait_hormuz_oil_tail_hedge.py |
+| brain_refinery_v1393_platform_organ_audit_immune_system_optimization_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1393_platform_organ_audit_immune_system_optimization_modeler_bot.py |
+| brain_refinery_v1397_trading_muscle_intraday_momentum_muscle_candidate_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1397_trading_muscle_intraday_momentum_muscle_candidate_modeler_bot.py |
+| brain_refinery_v1398_trading_muscle_intraday_momentum_muscle_risk_sizer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1398_trading_muscle_intraday_momentum_muscle_risk_sizer_bot.py |
 | brain_refinery_v139_big_tech_ai_earnings_dispersion | signal_sub_bot | active / collecting | core/brain_refinery_v139_big_tech_ai_earnings_dispersion.py |
-| brain_refinery_v13_choppy | signal_sub_bot | inactive | core/brain_refinery_v13_choppy.py |
+| brain_refinery_v13_choppy | signal_sub_bot | active / collecting | core/brain_refinery_v13_choppy.py |
+| brain_refinery_v1402_trading_muscle_intraday_mean_reversion_muscle_candidate_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1402_trading_muscle_intraday_mean_reversion_muscle_candidate_modeler_bot.py |
+| brain_refinery_v1403_trading_muscle_intraday_mean_reversion_muscle_risk_sizer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1403_trading_muscle_intraday_mean_reversion_muscle_risk_sizer_bot.py |
+| brain_refinery_v1407_trading_muscle_swing_trend_muscle_candidate_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1407_trading_muscle_swing_trend_muscle_candidate_modeler_bot.py |
+| brain_refinery_v1408_trading_muscle_swing_trend_muscle_risk_sizer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1408_trading_muscle_swing_trend_muscle_risk_sizer_bot.py |
 | brain_refinery_v140_hyperscaler_capex_power_grid_linkage | signal_sub_bot | active / collecting | core/brain_refinery_v140_hyperscaler_capex_power_grid_linkage.py |
+| brain_refinery_v1412_trading_muscle_options_convexity_muscle_candidate_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1412_trading_muscle_options_convexity_muscle_candidate_modeler_bot.py |
+| brain_refinery_v1413_trading_muscle_options_convexity_muscle_risk_sizer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1413_trading_muscle_options_convexity_muscle_risk_sizer_bot.py |
+| brain_refinery_v1417_trading_muscle_options_income_muscle_candidate_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1417_trading_muscle_options_income_muscle_candidate_modeler_bot.py |
+| brain_refinery_v1418_trading_muscle_options_income_muscle_risk_sizer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1418_trading_muscle_options_income_muscle_risk_sizer_bot.py |
 | brain_refinery_v141_defensive_value_energy_barbell | signal_sub_bot | active / collecting | core/brain_refinery_v141_defensive_value_energy_barbell.py |
+| brain_refinery_v1422_trading_muscle_futures_macro_muscle_candidate_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1422_trading_muscle_futures_macro_muscle_candidate_modeler_bot.py |
+| brain_refinery_v1423_trading_muscle_futures_macro_muscle_risk_sizer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1423_trading_muscle_futures_macro_muscle_risk_sizer_bot.py |
+| brain_refinery_v1427_trading_muscle_crypto_basis_muscle_candidate_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1427_trading_muscle_crypto_basis_muscle_candidate_modeler_bot.py |
+| brain_refinery_v1428_trading_muscle_crypto_basis_muscle_risk_sizer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1428_trading_muscle_crypto_basis_muscle_risk_sizer_bot.py |
 | brain_refinery_v142_consumer_gas_price_margin_squeeze | signal_sub_bot | active / collecting | core/brain_refinery_v142_consumer_gas_price_margin_squeeze.py |
+| brain_refinery_v1432_trading_muscle_volatility_arbitrage_muscle_candidate_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1432_trading_muscle_volatility_arbitrage_muscle_candidate_modeler_bot.py |
+| brain_refinery_v1433_trading_muscle_volatility_arbitrage_muscle_risk_sizer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1433_trading_muscle_volatility_arbitrage_muscle_risk_sizer_bot.py |
+| brain_refinery_v1437_trading_muscle_event_driven_muscle_candidate_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1437_trading_muscle_event_driven_muscle_candidate_modeler_bot.py |
+| brain_refinery_v1438_trading_muscle_event_driven_muscle_risk_sizer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1438_trading_muscle_event_driven_muscle_risk_sizer_bot.py |
 | brain_refinery_v143_airlines_transport_oil_beta_shortfall | signal_sub_bot | active / collecting | core/brain_refinery_v143_airlines_transport_oil_beta_shortfall.py |
+| brain_refinery_v1442_trading_muscle_relative_value_pairs_muscle_candidate_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1442_trading_muscle_relative_value_pairs_muscle_candidate_modeler_bot.py |
+| brain_refinery_v1443_trading_muscle_relative_value_pairs_muscle_risk_sizer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1443_trading_muscle_relative_value_pairs_muscle_risk_sizer_bot.py |
+| brain_refinery_v1447_trading_muscle_portfolio_hedging_muscle_candidate_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1447_trading_muscle_portfolio_hedging_muscle_candidate_modeler_bot.py |
+| brain_refinery_v1448_trading_muscle_portfolio_hedging_muscle_risk_sizer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1448_trading_muscle_portfolio_hedging_muscle_risk_sizer_bot.py |
 | brain_refinery_v144_gold_real_yield_safety_bid | signal_sub_bot | active / collecting | core/brain_refinery_v144_gold_real_yield_safety_bid.py |
+| brain_refinery_v1452_trading_muscle_execution_timing_muscle_candidate_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1452_trading_muscle_execution_timing_muscle_candidate_modeler_bot.py |
+| brain_refinery_v1453_trading_muscle_execution_timing_muscle_risk_sizer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1453_trading_muscle_execution_timing_muscle_risk_sizer_bot.py |
+| brain_refinery_v1457_trading_muscle_position_sizing_muscle_candidate_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1457_trading_muscle_position_sizing_muscle_candidate_modeler_bot.py |
+| brain_refinery_v1458_trading_muscle_position_sizing_muscle_risk_sizer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1458_trading_muscle_position_sizing_muscle_risk_sizer_bot.py |
 | brain_refinery_v145_bond_equity_correlation_breaker | signal_sub_bot | active / collecting | core/brain_refinery_v145_bond_equity_correlation_breaker.py |
+| brain_refinery_v1462_trading_muscle_exit_rebalance_muscle_candidate_modeler_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1462_trading_muscle_exit_rebalance_muscle_candidate_modeler_bot.py |
+| brain_refinery_v1463_trading_muscle_exit_rebalance_muscle_risk_sizer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1463_trading_muscle_exit_rebalance_muscle_risk_sizer_bot.py |
+| brain_refinery_v1466_exotic_forward_start_skew_reset_bot | options_sub_bot | active / collecting | core/brain_refinery_v1466_exotic_forward_start_skew_reset_bot.py |
+| brain_refinery_v1467_exotic_chooser_option_event_optionality_bot | options_sub_bot | active / collecting | core/brain_refinery_v1467_exotic_chooser_option_event_optionality_bot.py |
+| brain_refinery_v1468_exotic_asian_path_average_option_bot | options_sub_bot | active / collecting | core/brain_refinery_v1468_exotic_asian_path_average_option_bot.py |
+| brain_refinery_v1469_exotic_digital_binary_event_risk_bot | options_sub_bot | active / collecting | core/brain_refinery_v1469_exotic_digital_binary_event_risk_bot.py |
+| brain_refinery_v1470_exotic_corridor_variance_realized_range_bot | options_sub_bot | active / collecting | core/brain_refinery_v1470_exotic_corridor_variance_realized_range_bot.py |
+| brain_refinery_v1471_exotic_quanto_fx_equity_vol_beta_bot | options_sub_bot | active / collecting | core/brain_refinery_v1471_exotic_quanto_fx_equity_vol_beta_bot.py |
+| brain_refinery_v1472_exotic_worst_of_airbag_autocall_bot | options_sub_bot | active / collecting | core/brain_refinery_v1472_exotic_worst_of_airbag_autocall_bot.py |
+| brain_refinery_v1474_exotic_participation_ratchet_protection_bot | options_sub_bot | active / collecting | core/brain_refinery_v1474_exotic_participation_ratchet_protection_bot.py |
+| brain_refinery_v1475_exotic_base_correlation_convexity_bot | options_sub_bot | active / collecting | core/brain_refinery_v1475_exotic_base_correlation_convexity_bot.py |
+| brain_refinery_v1476_exotic_nth_to_default_contagion_ladder_bot | options_sub_bot | active / collecting | core/brain_refinery_v1476_exotic_nth_to_default_contagion_ladder_bot.py |
+| brain_refinery_v1477_exotic_gap_option_jump_risk_bot | options_sub_bot | active / collecting | core/brain_refinery_v1477_exotic_gap_option_jump_risk_bot.py |
+| brain_refinery_v1479_quant_operational_alpha_factor_court_hypothesis_modeler_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v147_post_earnings_vol_crush_continuation_filter | options_sub_bot | active / collecting | core/brain_refinery_v147_post_earnings_vol_crush_continuation_filter.py |
+| brain_refinery_v1483_quant_operational_cross_asset_lead_lag_map_hypothesis_modeler_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1487_quant_operational_regime_conditional_edge_lab_hypothesis_modeler_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v148_nasdaq_ai_crowding_air_pocket | signal_sub_bot | active / collecting | core/brain_refinery_v148_nasdaq_ai_crowding_air_pocket.py |
+| brain_refinery_v1491_quant_operational_slippage_capacity_alpha_adjuster_hypothesis_modeler_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1495_quant_operational_portfolio_risk_budget_optimizer_hypothesis_modeler_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1499_quant_operational_tail_hedge_convexity_lab_hypothesis_modeler_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v149_russell_small_cap_rate_oil_squeeze | signal_sub_bot | active / collecting | core/brain_refinery_v149_russell_small_cap_rate_oil_squeeze.py |
 | brain_refinery_v14_microstructure | signal_sub_bot | inactive | core/brain_refinery_v14_microstructure.py |
+| brain_refinery_v1503_quant_operational_model_uncertainty_calibration_hypothesis_modeler_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1507_quant_operational_feature_decay_drift_watch_hypothesis_modeler_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v150_usd_safe_haven_commodity_feedback | signal_sub_bot | active / collecting | core/brain_refinery_v150_usd_safe_haven_commodity_feedback.py |
+| brain_refinery_v1511_quant_operational_synthetic_scenario_alpha_lab_hypothesis_modeler_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v151_vix_term_structure_event_resolution | options_sub_bot | active / collecting | core/brain_refinery_v151_vix_term_structure_event_resolution.py |
+| brain_refinery_v1523_quant_operational_backlog_outcome_verifier_hypothesis_modeler_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v152_energy_defense_geopolitical_rotation | signal_sub_bot | active / collecting | core/brain_refinery_v152_energy_defense_geopolitical_rotation.py |
+| brain_refinery_v1531_quant_operational_capacity_forecast_scheduler_hypothesis_modeler_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1535_quant_operational_data_lineage_contract_enforcer_hypothesis_modeler_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1539_quant_operational_service_dependency_map_hypothesis_modeler_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1543_quant_operational_storage_memory_cotenant_balancer_hypothesis_modeler_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1547_quant_operational_paper_live_separation_auditor_hypothesis_modeler_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v154_after_hours_gap_risk_mega_cap_chain | options_sub_bot | active / collecting | core/brain_refinery_v154_after_hours_gap_risk_mega_cap_chain.py |
+| brain_refinery_v1555_quant_operational_operator_decision_packet_builder_hypothesis_modeler_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1559_autonomic_governance_system_governor_council_value_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v155_liquidity_relief_rally_validator | signal_sub_bot | active / collecting | core/brain_refinery_v155_liquidity_relief_rally_validator.py |
+| brain_refinery_v1563_autonomic_governance_sleeve_budget_market_value_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1567_autonomic_governance_evidence_packet_court_value_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1571_autonomic_governance_promotion_gate_witness_value_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1579_autonomic_governance_collector_value_decay_scorer_value_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1583_autonomic_governance_backlog_effect_ledger_value_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1587_autonomic_governance_drainer_playbook_optimizer_value_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v158_semiconductor_supply_chain_momentum_reset | signal_sub_bot | active / collecting | core/brain_refinery_v158_semiconductor_supply_chain_momentum_reset.py |
+| brain_refinery_v1591_autonomic_governance_dependency_blast_radius_mapper_value_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1595_autonomic_governance_freshness_conflict_arbitrator_value_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1599_autonomic_governance_operator_decision_digestor_value_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v159_cloud_margin_efficiency_repricing | signal_sub_bot | active / collecting | core/brain_refinery_v159_cloud_margin_efficiency_repricing.py |
-| brain_refinery_v15_liquidity_droughts | signal_sub_bot | active | core/brain_refinery_v15_liquidity_droughts.py |
+| brain_refinery_v15_liquidity_droughts | signal_sub_bot | active / collecting | core/brain_refinery_v15_liquidity_droughts.py |
+| brain_refinery_v1603_autonomic_governance_codex_handoff_negotiator_value_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1607_autonomic_governance_safe_action_simulator_value_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v160_sanctions_shipping_freight_inflation_relay | signal_sub_bot | active / collecting | core/brain_refinery_v160_sanctions_shipping_freight_inflation_relay.py |
+| brain_refinery_v1611_autonomic_governance_expansion_stability_stress_oracle_value_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1615_training_labeling_label_contract_normalizer_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v161_defense_cyber_resilience_rotation | signal_sub_bot | active / collecting | core/brain_refinery_v161_defense_cyber_resilience_rotation.py |
+| brain_refinery_v1623_training_labeling_lane_balance_scheduler_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1627_training_labeling_coverage_repair_orchestrator_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v162_crypto_liquidity_beta_risk_off_bridge | signal_sub_bot | active / collecting | core/brain_refinery_v162_crypto_liquidity_beta_risk_off_bridge.py |
+| brain_refinery_v1631_training_labeling_schema_lineage_gatekeeper_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1635_training_labeling_retrain_outcome_memory_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1639_aggressive_breakout_confirmation_scout | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1644_intraday_open_drive_false_break_filter | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1645_swing_multi_day_breakout_quality_filter | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1651_intraday_liquidity_sweep_reversal_scalper | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1652_options_gamma_pin_breakout_trader | options_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1653_crypto_futures_funding_momentum_switch | futures_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1654_intraday_momentum_continuation_trader | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1655_intraday_mean_reversion_chop_filter_trader | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1656_swing_breakout_quality_trader | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1657_options_vol_crush_reversal_trader | options_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1658_crypto_spot_momentum_chop_switch | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1659_futures_macro_followthrough_trader | futures_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v165_guidance_revision_dispersion_scanner | signal_sub_bot | active / collecting | core/brain_refinery_v165_guidance_revision_dispersion_scanner.py |
+| brain_refinery_v1660_fx_rates_cross_asset_confirmation_trader | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1662_training_labeling_label_contract_normalizer_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1670_training_labeling_lane_balance_scheduler_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1674_training_labeling_coverage_repair_orchestrator_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1678_training_labeling_schema_lineage_gatekeeper_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v167_intraday_opening_range_momentum_burst | signal_sub_bot | active / collecting | core/brain_refinery_v167_intraday_opening_range_momentum_burst.py |
+| brain_refinery_v1682_training_labeling_retrain_outcome_memory_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1686_training_labeling_label_contract_normalizer_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v168_intraday_failed_breakout_reversal_scout | signal_sub_bot | active / collecting | core/brain_refinery_v168_intraday_failed_breakout_reversal_scout.py |
+| brain_refinery_v1694_training_labeling_lane_balance_scheduler_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1698_training_labeling_coverage_repair_orchestrator_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v169_intraday_news_spike_absorption_bot | signal_sub_bot | active / collecting | core/brain_refinery_v169_intraday_news_spike_absorption_bot.py |
 | brain_refinery_v16_corr_break | signal_sub_bot | inactive | core/brain_refinery_v16_corr_break.py |
+| brain_refinery_v1702_training_labeling_schema_lineage_gatekeeper_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1706_training_labeling_retrain_outcome_memory_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v170_intraday_vwap_snapback_scalper | signal_sub_bot | active / collecting | core/brain_refinery_v170_intraday_vwap_snapback_scalper.py |
+| brain_refinery_v1710_training_labeling_label_contract_normalizer_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1718_training_labeling_lane_balance_scheduler_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v171_intraday_relative_volume_surge_chaser | signal_sub_bot | active / collecting | core/brain_refinery_v171_intraday_relative_volume_surge_chaser.py |
+| brain_refinery_v1722_training_labeling_coverage_repair_orchestrator_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1726_training_labeling_schema_lineage_gatekeeper_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v172_intraday_futures_lead_lag_arbitrage | signal_sub_bot | active / collecting | core/brain_refinery_v172_intraday_futures_lead_lag_arbitrage.py |
+| brain_refinery_v1730_training_labeling_retrain_outcome_memory_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1734_training_labeling_label_contract_normalizer_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v173_intraday_sector_leadership_rotation_scalper | signal_sub_bot | active / collecting | core/brain_refinery_v173_intraday_sector_leadership_rotation_scalper.py |
+| brain_refinery_v1742_training_labeling_lane_balance_scheduler_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1746_training_labeling_coverage_repair_orchestrator_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v174_intraday_liquidity_sweep_detector | signal_sub_bot | active / collecting | core/brain_refinery_v174_intraday_liquidity_sweep_detector.py |
+| brain_refinery_v1750_training_labeling_schema_lineage_gatekeeper_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1754_training_labeling_retrain_outcome_memory_quality_scorer_bot | signal_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1758_training_labeling_label_contract_normalizer_quality_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1758_training_labeling_label_contract_normalizer_quality_scorer_bot.py |
 | brain_refinery_v175_intraday_power_hour_continuation_bot | signal_sub_bot | active / collecting | core/brain_refinery_v175_intraday_power_hour_continuation_bot.py |
+| brain_refinery_v1766_training_labeling_lane_balance_scheduler_quality_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1766_training_labeling_lane_balance_scheduler_quality_scorer_bot.py |
+| brain_refinery_v1770_training_labeling_coverage_repair_orchestrator_quality_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1770_training_labeling_coverage_repair_orchestrator_quality_scorer_bot.py |
+| brain_refinery_v1774_training_labeling_schema_lineage_gatekeeper_quality_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1774_training_labeling_schema_lineage_gatekeeper_quality_scorer_bot.py |
+| brain_refinery_v1778_training_labeling_retrain_outcome_memory_quality_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v1778_training_labeling_retrain_outcome_memory_quality_scorer_bot.py |
 | brain_refinery_v177_options_zero_dte_momentum_scalper | options_sub_bot | active / collecting | core/brain_refinery_v177_options_zero_dte_momentum_scalper.py |
 | brain_refinery_v178_options_gamma_squeeze_detector | options_sub_bot | active / collecting | core/brain_refinery_v178_options_gamma_squeeze_detector.py |
 | brain_refinery_v179_options_put_wall_breakdown_hedger | options_sub_bot | active / collecting | core/brain_refinery_v179_options_put_wall_breakdown_hedger.py |
-| brain_refinery_v17_mixed_regime | signal_sub_bot | active | core/brain_refinery_v17_mixed_regime.py |
+| brain_refinery_v17_mixed_regime | signal_sub_bot | active / collecting | core/brain_refinery_v17_mixed_regime.py |
 | brain_refinery_v180_options_earnings_straddle_decay_harvester | options_sub_bot | active / collecting | core/brain_refinery_v180_options_earnings_straddle_decay_harvester.py |
 | brain_refinery_v181_options_calendar_spread_iv_reset | options_sub_bot | active / collecting | core/brain_refinery_v181_options_calendar_spread_iv_reset.py |
 | brain_refinery_v182_options_skew_mean_reversion_overlay | options_sub_bot | active / collecting | core/brain_refinery_v182_options_skew_mean_reversion_overlay.py |
@@ -89,7 +274,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v199_intraday_pullback_continuation_attacker | signal_sub_bot | active / collecting | core/brain_refinery_v199_intraday_pullback_continuation_attacker.py |
 | brain_refinery_v19_range_breakout | signal_sub_bot | inactive | core/brain_refinery_v19_range_breakout.py |
 | brain_refinery_v1_price_forecaster_baseline | signal_sub_bot | active / collecting | core/brain_refinery_v1_price_forecaster_baseline.py |
-| brain_refinery_v2 | signal_sub_bot | inactive | core/brain_refinery_v2_price_forecaster_deep.py |
+| brain_refinery_v2 | signal_sub_bot | active / collecting | core/brain_refinery_v2_price_forecaster_deep.py |
 | brain_refinery_v200_intraday_gap_and_go_confirmation_bot | signal_sub_bot | active / collecting | core/brain_refinery_v200_intraday_gap_and_go_confirmation_bot.py |
 | brain_refinery_v201_intraday_order_imbalance_followthrough_bot | signal_sub_bot | active / collecting | core/brain_refinery_v201_intraday_order_imbalance_followthrough_bot.py |
 | brain_refinery_v202_intraday_trend_day_classifier | signal_sub_bot | active / collecting | core/brain_refinery_v202_intraday_trend_day_classifier.py |
@@ -108,7 +293,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v216_dividend_drip_compounding_efficiency_bot | signal_sub_bot | active / collecting | core/brain_refinery_v216_dividend_drip_compounding_efficiency_bot.py |
 | brain_refinery_v218_conservative_low_volatility_quality_rotation | signal_sub_bot | active / collecting | core/brain_refinery_v218_conservative_low_volatility_quality_rotation.py |
 | brain_refinery_v219_conservative_tbill_cash_parking_bot | signal_sub_bot | active / collecting | core/brain_refinery_v219_conservative_tbill_cash_parking_bot.py |
-| brain_refinery_v21_flash_crash | signal_sub_bot | active | core/brain_refinery_v21_flash_crash.py |
+| brain_refinery_v21_flash_crash | signal_sub_bot | active / collecting | core/brain_refinery_v21_flash_crash.py |
 | brain_refinery_v220_conservative_drawdown_recovery_pacer | signal_sub_bot | active / collecting | core/brain_refinery_v220_conservative_drawdown_recovery_pacer.py |
 | brain_refinery_v222_conservative_defensive_sector_rotation_bot | signal_sub_bot | active / collecting | core/brain_refinery_v222_conservative_defensive_sector_rotation_bot.py |
 | brain_refinery_v223_conservative_volatility_budget_throttle | signal_sub_bot | active / collecting | core/brain_refinery_v223_conservative_volatility_budget_throttle.py |
@@ -126,7 +311,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v237_swing_multi_day_breakout_confirmation_bot | signal_sub_bot | active / collecting | core/brain_refinery_v237_swing_multi_day_breakout_confirmation_bot.py |
 | brain_refinery_v238_swing_pullback_to_20dma_bot | signal_sub_bot | active / collecting | core/brain_refinery_v238_swing_pullback_to_20dma_bot.py |
 | brain_refinery_v239_swing_earnings_drift_followthrough_bot | signal_sub_bot | active / collecting | core/brain_refinery_v239_swing_earnings_drift_followthrough_bot.py |
-| brain_refinery_v23_atr_adx_regime | signal_sub_bot | inactive | core/brain_refinery_v23_atr_adx_regime.py |
+| brain_refinery_v23_atr_adx_regime | signal_sub_bot | active / collecting | core/brain_refinery_v23_atr_adx_regime.py |
 | brain_refinery_v240_swing_relative_strength_sector_rotation_bot | signal_sub_bot | active / collecting | core/brain_refinery_v240_swing_relative_strength_sector_rotation_bot.py |
 | brain_refinery_v241_swing_failed_breakdown_reclaim_bot | signal_sub_bot | active / collecting | core/brain_refinery_v241_swing_failed_breakdown_reclaim_bot.py |
 | brain_refinery_v242_swing_volatility_contraction_setup_bot | signal_sub_bot | active / collecting | core/brain_refinery_v242_swing_volatility_contraction_setup_bot.py |
@@ -146,13 +331,13 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v262_crypto_solana_high_beta_rotation_bot | signal_sub_bot | active / collecting | core/brain_refinery_v262_crypto_solana_high_beta_rotation_bot.py |
 | brain_refinery_v264_crypto_cross_exchange_divergence_arbitrage_bot | signal_sub_bot | active / collecting | core/brain_refinery_v264_crypto_cross_exchange_divergence_arbitrage_bot.py |
 | brain_refinery_v266_crypto_weekend_gap_liquidity_bot | signal_sub_bot | active / collecting | core/brain_refinery_v266_crypto_weekend_gap_liquidity_bot.py |
-| brain_refinery_v26_relative_strength_cross_section | options_sub_bot | active | core/brain_refinery_v26_relative_strength_cross_section.py |
+| brain_refinery_v26_relative_strength_cross_section | options_sub_bot | active / collecting | core/brain_refinery_v26_relative_strength_cross_section.py |
 | brain_refinery_v274_futures_overnight_inventory_imbalance_bot | futures_sub_bot | active / collecting | core/brain_refinery_v274_futures_overnight_inventory_imbalance_bot.py |
 | brain_refinery_v275_futures_cash_open_dislocation_mapper | futures_sub_bot | active / collecting | core/brain_refinery_v275_futures_cash_open_dislocation_mapper.py |
 | brain_refinery_v276_futures_curve_steepener_flattener_signal | futures_sub_bot | active / collecting | core/brain_refinery_v276_futures_curve_steepener_flattener_signal.py |
 | brain_refinery_v277_futures_energy_inventory_surprise_reaction_bot | futures_sub_bot | active / collecting | core/brain_refinery_v277_futures_energy_inventory_surprise_reaction_bot.py |
 | brain_refinery_v278_futures_metals_safe_haven_rotation_bot | futures_sub_bot | active / collecting | core/brain_refinery_v278_futures_metals_safe_haven_rotation_bot.py |
-| brain_refinery_v27_term_structure_vol | options_sub_bot | active | core/brain_refinery_v27_term_structure_vol.py |
+| brain_refinery_v27_term_structure_vol | options_sub_bot | active / collecting | core/brain_refinery_v27_term_structure_vol.py |
 | brain_refinery_v280_options_index_gamma_wall_map_bot | options_sub_bot | active / collecting | core/brain_refinery_v280_options_index_gamma_wall_map_bot.py |
 | brain_refinery_v281_options_single_name_skew_breakout_bot | options_sub_bot | active / collecting | core/brain_refinery_v281_options_single_name_skew_breakout_bot.py |
 | brain_refinery_v282_options_post_fed_iv_surface_reset_bot | options_sub_bot | active / collecting | core/brain_refinery_v282_options_post_fed_iv_surface_reset_bot.py |
@@ -171,7 +356,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v298_intraday_closing_auction_risk_reducer | signal_sub_bot | active / collecting | core/brain_refinery_v298_intraday_closing_auction_risk_reducer.py |
 | brain_refinery_v299_swing_quality_breakout_volume_confirm_bot | signal_sub_bot | active / collecting | core/brain_refinery_v299_swing_quality_breakout_volume_confirm_bot.py |
 | brain_refinery_v2_price_forecaster_deep | signal_sub_bot | active / collecting | core/brain_refinery_v2_price_forecaster_deep.py |
-| brain_refinery_v3 | signal_sub_bot | active | core/brain_refinery_v3_technical_direction_classifier.py |
+| brain_refinery_v3 | signal_sub_bot | active / collecting | core/brain_refinery_v3_technical_direction_classifier.py |
 | brain_refinery_v300_swing_failed_breakout_damage_control_bot | signal_sub_bot | active / collecting | core/brain_refinery_v300_swing_failed_breakout_damage_control_bot.py |
 | brain_refinery_v301_dividend_special_situation_income_bot | signal_sub_bot | active / collecting | core/brain_refinery_v301_dividend_special_situation_income_bot.py |
 | brain_refinery_v303_conservative_barbell_duration_income_bot | signal_sub_bot | active / collecting | core/brain_refinery_v303_conservative_barbell_duration_income_bot.py |
@@ -185,7 +370,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v312_earnings_revision_dispersion_factor_bot | signal_sub_bot | active / collecting | core/brain_refinery_v312_earnings_revision_dispersion_factor_bot.py |
 | brain_refinery_v318_conservative_protective_put_hedge_bot | options_sub_bot | active / collecting | core/brain_refinery_v318_conservative_protective_put_hedge_bot.py |
 | brain_refinery_v319_conservative_put_spread_hedge_bot | options_sub_bot | active / collecting | core/brain_refinery_v319_conservative_put_spread_hedge_bot.py |
-| brain_refinery_v31_defensive_rotation | options_sub_bot | active | core/brain_refinery_v31_defensive_rotation.py |
+| brain_refinery_v31_defensive_rotation | options_sub_bot | active / collecting | core/brain_refinery_v31_defensive_rotation.py |
 | brain_refinery_v320_conservative_collar_protection_bot | options_sub_bot | active / collecting | core/brain_refinery_v320_conservative_collar_protection_bot.py |
 | brain_refinery_v322_conservative_cash_secured_put_entry_bot | options_sub_bot | active / collecting | core/brain_refinery_v322_conservative_cash_secured_put_entry_bot.py |
 | brain_refinery_v323_conservative_defined_risk_credit_spread_bot | options_sub_bot | active / collecting | core/brain_refinery_v323_conservative_defined_risk_credit_spread_bot.py |
@@ -221,7 +406,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v357_rainbow_options_relative_vol_surface_bot | options_sub_bot | active / collecting | core/brain_refinery_v357_rainbow_options_relative_vol_surface_bot.py |
 | brain_refinery_v358_cdo_squared_mezzanine_tranche_correlation_bot | options_sub_bot | active / collecting | core/brain_refinery_v358_cdo_squared_mezzanine_tranche_correlation_bot.py |
 | brain_refinery_v359_cdo_squared_credit_spread_waterfall_bot | options_sub_bot | active / collecting | core/brain_refinery_v359_cdo_squared_credit_spread_waterfall_bot.py |
-| brain_refinery_v35_dmi_state_machine | signal_sub_bot | inactive | core/brain_refinery_v35_dmi_state_machine.py |
+| brain_refinery_v35_dmi_state_machine | signal_sub_bot | active / collecting | core/brain_refinery_v35_dmi_state_machine.py |
 | brain_refinery_v360_cdo_squared_issuer_sector_contagion_bot | options_sub_bot | active / collecting | core/brain_refinery_v360_cdo_squared_issuer_sector_contagion_bot.py |
 | brain_refinery_v361_cdo_squared_macro_funding_trigger_bot | options_sub_bot | active / collecting | core/brain_refinery_v361_cdo_squared_macro_funding_trigger_bot.py |
 | brain_refinery_v363_cdo_cubed_third_order_tranche_contagion_bot | options_sub_bot | active / collecting | core/brain_refinery_v363_cdo_cubed_third_order_tranche_contagion_bot.py |
@@ -230,7 +415,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v366_cdo_cubed_liquidity_freeze_ladder_bot | options_sub_bot | active / collecting | core/brain_refinery_v366_cdo_cubed_liquidity_freeze_ladder_bot.py |
 | brain_refinery_v368_variance_volatility_swaps_realized_implied_variance_gap_bot | options_sub_bot | active / collecting | core/brain_refinery_v368_variance_volatility_swaps_realized_implied_variance_gap_bot.py |
 | brain_refinery_v369_variance_volatility_swaps_volatility_carry_decay_bot | options_sub_bot | active / collecting | core/brain_refinery_v369_variance_volatility_swaps_volatility_carry_decay_bot.py |
-| brain_refinery_v36_volume_profile_proxy | signal_sub_bot | active | core/brain_refinery_v36_volume_profile_proxy.py |
+| brain_refinery_v36_volume_profile_proxy | signal_sub_bot | active / collecting | core/brain_refinery_v36_volume_profile_proxy.py |
 | brain_refinery_v370_variance_volatility_swaps_risk_premium_regime_bot | options_sub_bot | active / collecting | core/brain_refinery_v370_variance_volatility_swaps_risk_premium_regime_bot.py |
 | brain_refinery_v371_variance_volatility_swaps_vol_of_vol_convexity_bot | options_sub_bot | active / collecting | core/brain_refinery_v371_variance_volatility_swaps_vol_of_vol_convexity_bot.py |
 | brain_refinery_v373_barrier_lookback_options_knock_in_touch_risk_bot | options_sub_bot | active / collecting | core/brain_refinery_v373_barrier_lookback_options_knock_in_touch_risk_bot.py |
@@ -239,7 +424,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v377_barrier_lookback_options_path_dependency_hedge_cost_bot | options_sub_bot | active / collecting | core/brain_refinery_v377_barrier_lookback_options_path_dependency_hedge_cost_bot.py |
 | brain_refinery_v378_second_third_order_greeks_vanna_skew_rotation_bot | options_sub_bot | active / collecting | core/brain_refinery_v378_second_third_order_greeks_vanna_skew_rotation_bot.py |
 | brain_refinery_v379_second_third_order_greeks_charm_decay_window_bot | options_sub_bot | active / collecting | core/brain_refinery_v379_second_third_order_greeks_charm_decay_window_bot.py |
-| brain_refinery_v37_order_flow_proxy | signal_sub_bot | inactive | core/brain_refinery_v37_order_flow_proxy.py |
+| brain_refinery_v37_order_flow_proxy | signal_sub_bot | active / collecting | core/brain_refinery_v37_order_flow_proxy.py |
 | brain_refinery_v380_second_third_order_greeks_vomma_volga_vol_of_vol_bot | options_sub_bot | active / collecting | core/brain_refinery_v380_second_third_order_greeks_vomma_volga_vol_of_vol_bot.py |
 | brain_refinery_v381_second_third_order_greeks_speed_color_gamma_decay_bot | options_sub_bot | active / collecting | core/brain_refinery_v381_second_third_order_greeks_speed_color_gamma_decay_bot.py |
 | brain_refinery_v382_second_third_order_greeks_zomma_ultima_tail_convexity_bot | options_sub_bot | active / collecting | core/brain_refinery_v382_second_third_order_greeks_zomma_ultima_tail_convexity_bot.py |
@@ -249,7 +434,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v386_high_frequency_market_making_auction_imbalance_reprice_bot | signal_sub_bot | active / collecting | core/brain_refinery_v386_high_frequency_market_making_auction_imbalance_reprice_bot.py |
 | brain_refinery_v388_tail_risk_parity_cross_sleeve_tail_budget_bot | options_sub_bot | active / collecting | core/brain_refinery_v388_tail_risk_parity_cross_sleeve_tail_budget_bot.py |
 | brain_refinery_v389_tail_risk_parity_vol_credit_duration_balance_bot | options_sub_bot | active / collecting | core/brain_refinery_v389_tail_risk_parity_vol_credit_duration_balance_bot.py |
-| brain_refinery_v38_multi_timeframe_confirmation | signal_sub_bot | inactive | core/brain_refinery_v38_multi_timeframe_confirmation.py |
+| brain_refinery_v38_multi_timeframe_confirmation | signal_sub_bot | active / collecting | core/brain_refinery_v38_multi_timeframe_confirmation.py |
 | brain_refinery_v390_tail_risk_parity_correlation_break_risk_parity_bot | options_sub_bot | active / collecting | core/brain_refinery_v390_tail_risk_parity_correlation_break_risk_parity_bot.py |
 | brain_refinery_v391_tail_risk_parity_cash_convexity_overlay_bot | options_sub_bot | active / collecting | core/brain_refinery_v391_tail_risk_parity_cash_convexity_overlay_bot.py |
 | brain_refinery_v393_black_swan_hedging_crash_convexity_cost_bot | options_sub_bot | active / collecting | core/brain_refinery_v393_black_swan_hedging_crash_convexity_cost_bot.py |
@@ -257,7 +442,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v396_black_swan_hedging_credit_equity_crash_correlation_bot | options_sub_bot | active / collecting | core/brain_refinery_v396_black_swan_hedging_credit_equity_crash_correlation_bot.py |
 | brain_refinery_v398_sovereign_debt_macro_treasury_curve_auction_stress_bot | macro_sub_bot | active / collecting | core/brain_refinery_v398_sovereign_debt_macro_treasury_curve_auction_stress_bot.py |
 | brain_refinery_v399_sovereign_debt_macro_usd_funding_sovereign_stress_bot | macro_sub_bot | active / collecting | core/brain_refinery_v399_sovereign_debt_macro_usd_funding_sovereign_stress_bot.py |
-| brain_refinery_v39_event_risk_proximity | signal_sub_bot | inactive | core/brain_refinery_v39_event_risk_proximity.py |
+| brain_refinery_v39_event_risk_proximity | signal_sub_bot | active / collecting | core/brain_refinery_v39_event_risk_proximity.py |
 | brain_refinery_v3_technical_direction_classifier | signal_sub_bot | active / collecting | core/brain_refinery_v3_technical_direction_classifier.py |
 | brain_refinery_v400_sovereign_debt_macro_global_rate_differential_bot | macro_sub_bot | active / collecting | core/brain_refinery_v400_sovereign_debt_macro_global_rate_differential_bot.py |
 | brain_refinery_v401_sovereign_debt_macro_em_sov_credit_pressure_bot | macro_sub_bot | active / collecting | core/brain_refinery_v401_sovereign_debt_macro_em_sov_credit_pressure_bot.py |
@@ -275,7 +460,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v415_vanna_volga_hedging_volga_tail_vega_bot | options_sub_bot | active / collecting | core/brain_refinery_v415_vanna_volga_hedging_volga_tail_vega_bot.py |
 | brain_refinery_v418_order_flow_market_microstructure_sweep_block_imbalance_bot | options_sub_bot | active / collecting | core/brain_refinery_v418_order_flow_market_microstructure_sweep_block_imbalance_bot.py |
 | brain_refinery_v419_order_flow_market_microstructure_absorption_reversal_bot | options_sub_bot | active / collecting | core/brain_refinery_v419_order_flow_market_microstructure_absorption_reversal_bot.py |
-| brain_refinery_v41_long_interval_trend | signal_sub_bot | inactive | core/brain_refinery_v41_long_interval_trend.py |
+| brain_refinery_v41_long_interval_trend | signal_sub_bot | active / collecting | core/brain_refinery_v41_long_interval_trend.py |
 | brain_refinery_v421_order_flow_market_microstructure_options_dealer_flow_bot | options_sub_bot | active / collecting | core/brain_refinery_v421_order_flow_market_microstructure_options_dealer_flow_bot.py |
 | brain_refinery_v423_dispersion_trading_index_single_name_vol_spread_bot | options_sub_bot | active / collecting | core/brain_refinery_v423_dispersion_trading_index_single_name_vol_spread_bot.py |
 | brain_refinery_v424_dispersion_trading_correlation_shock_bot | options_sub_bot | active / collecting | core/brain_refinery_v424_dispersion_trading_correlation_shock_bot.py |
@@ -283,7 +468,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v426_dispersion_trading_cross_asset_dispersion_bot | options_sub_bot | active / collecting | core/brain_refinery_v426_dispersion_trading_cross_asset_dispersion_bot.py |
 | brain_refinery_v428_cross_asset_basis_training_etf_futures_basis_bot | signal_sub_bot | active / collecting | core/brain_refinery_v428_cross_asset_basis_training_etf_futures_basis_bot.py |
 | brain_refinery_v429_cross_asset_basis_training_rates_fx_basis_bot | macro_sub_bot | active / collecting | core/brain_refinery_v429_cross_asset_basis_training_rates_fx_basis_bot.py |
-| brain_refinery_v42_tick_to_swing_alignment | signal_sub_bot | active | core/brain_refinery_v42_tick_to_swing_alignment.py |
+| brain_refinery_v42_tick_to_swing_alignment | signal_sub_bot | active / collecting | core/brain_refinery_v42_tick_to_swing_alignment.py |
 | brain_refinery_v430_cross_asset_basis_training_crypto_etf_basis_bot | crypto_sub_bot | active / collecting | core/brain_refinery_v430_cross_asset_basis_training_crypto_etf_basis_bot.py |
 | brain_refinery_v431_cross_asset_basis_training_commodity_fx_basis_bot | macro_sub_bot | active / collecting | core/brain_refinery_v431_cross_asset_basis_training_commodity_fx_basis_bot.py |
 | brain_refinery_v433_volatility_arbitrage_iv_rv_spread_bot | options_sub_bot | active / collecting | core/brain_refinery_v433_volatility_arbitrage_iv_rv_spread_bot.py |
@@ -291,7 +476,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v435_volatility_arbitrage_dispersion_vol_spread_bot | options_sub_bot | active / collecting | core/brain_refinery_v435_volatility_arbitrage_dispersion_vol_spread_bot.py |
 | brain_refinery_v436_volatility_arbitrage_event_vol_reset_bot | options_sub_bot | active / collecting | core/brain_refinery_v436_volatility_arbitrage_event_vol_reset_bot.py |
 | brain_refinery_v439_quant_pricing_monte_carlo_surface_bot | signal_sub_bot | active / collecting | core/brain_refinery_v439_quant_pricing_monte_carlo_surface_bot.py |
-| brain_refinery_v43_intraday_ultrafast_proxy | signal_sub_bot | active | core/brain_refinery_v43_intraday_ultrafast_proxy.py |
+| brain_refinery_v43_intraday_ultrafast_proxy | signal_sub_bot | active / collecting | core/brain_refinery_v43_intraday_ultrafast_proxy.py |
 | brain_refinery_v440_quant_pricing_finite_difference_grid_bot | signal_sub_bot | active / collecting | core/brain_refinery_v440_quant_pricing_finite_difference_grid_bot.py |
 | brain_refinery_v441_quant_pricing_fft_surface_bot | signal_sub_bot | active / collecting | core/brain_refinery_v441_quant_pricing_fft_surface_bot.py |
 | brain_refinery_v442_quant_pricing_trinomial_tree_bot | signal_sub_bot | active / collecting | core/brain_refinery_v442_quant_pricing_trinomial_tree_bot.py |
@@ -302,20 +487,20 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v447_state_space_ou_mean_reversion_bot | signal_sub_bot | active / collecting | core/brain_refinery_v447_state_space_ou_mean_reversion_bot.py |
 | brain_refinery_v448_tail_dependency_cvar_budget_bot | signal_sub_bot | active / collecting | core/brain_refinery_v448_tail_dependency_cvar_budget_bot.py |
 | brain_refinery_v449_tail_dependency_copula_stress_bot | signal_sub_bot | active / collecting | core/brain_refinery_v449_tail_dependency_copula_stress_bot.py |
-| brain_refinery_v44_intraday_scalp_1m_5m | signal_sub_bot | active | core/brain_refinery_v44_intraday_scalp_1m_5m.py |
+| brain_refinery_v44_intraday_scalp_1m_5m | signal_sub_bot | active / collecting | core/brain_refinery_v44_intraday_scalp_1m_5m.py |
 | brain_refinery_v454_nlp_sentiment_research_agent_bot | signal_sub_bot | active / collecting | core/brain_refinery_v454_nlp_sentiment_research_agent_bot.py |
 | brain_refinery_v456_quant_pricing_quasi_monte_carlo_bot | signal_sub_bot | active / collecting | core/brain_refinery_v456_quant_pricing_quasi_monte_carlo_bot.py |
 | brain_refinery_v457_quant_pricing_latin_hypercube_sampling_bot | signal_sub_bot | active / collecting | core/brain_refinery_v457_quant_pricing_latin_hypercube_sampling_bot.py |
 | brain_refinery_v458_quant_pricing_antithetic_variates_bot | signal_sub_bot | active / collecting | core/brain_refinery_v458_quant_pricing_antithetic_variates_bot.py |
 | brain_refinery_v459_adaptive_actor_critic_policy_bot | signal_sub_bot | active / collecting | core/brain_refinery_v459_adaptive_actor_critic_policy_bot.py |
-| brain_refinery_v45_intraday_open_close_regimes | signal_sub_bot | active | core/brain_refinery_v45_intraday_open_close_regimes.py |
+| brain_refinery_v45_intraday_open_close_regimes | signal_sub_bot | active / collecting | core/brain_refinery_v45_intraday_open_close_regimes.py |
 | brain_refinery_v460_adaptive_graph_neural_network_structure_bot | signal_sub_bot | active / collecting | core/brain_refinery_v460_adaptive_graph_neural_network_structure_bot.py |
 | brain_refinery_v461_adaptive_execution_microstructure_awareness_bot | signal_sub_bot | active / collecting | core/brain_refinery_v461_adaptive_execution_microstructure_awareness_bot.py |
 | brain_refinery_v462_adaptive_regime_switching_filter_bot | signal_sub_bot | active / collecting | core/brain_refinery_v462_adaptive_regime_switching_filter_bot.py |
 | brain_refinery_v466_alternative_data_real_world_signal_bot | signal_sub_bot | active / collecting | core/brain_refinery_v466_alternative_data_real_world_signal_bot.py |
 | brain_refinery_v468_gpu_monte_carlo_bruteforce_bot | signal_sub_bot | active / collecting | core/brain_refinery_v468_gpu_monte_carlo_bruteforce_bot.py |
 | brain_refinery_v469_gpu_parallel_kalman_regime_bot | signal_sub_bot | active / collecting | core/brain_refinery_v469_gpu_parallel_kalman_regime_bot.py |
-| brain_refinery_v46_swing_2d_5d | signal_sub_bot | active | core/brain_refinery_v46_swing_2d_5d.py |
+| brain_refinery_v46_swing_2d_5d | signal_sub_bot | active / collecting | core/brain_refinery_v46_swing_2d_5d.py |
 | brain_refinery_v470_mlx_jump_diffusion_kernel_bot | signal_sub_bot | active / collecting | core/brain_refinery_v470_mlx_jump_diffusion_kernel_bot.py |
 | brain_refinery_v472_qemc_variance_reduction_bot | signal_sub_bot | active / collecting | core/brain_refinery_v472_qemc_variance_reduction_bot.py |
 | brain_refinery_v473_functional_ito_path_volatility_bot | signal_sub_bot | active / collecting | core/brain_refinery_v473_functional_ito_path_volatility_bot.py |
@@ -325,7 +510,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v477_neural_sde_stochastic_dynamics_bot | signal_sub_bot | active / collecting | core/brain_refinery_v477_neural_sde_stochastic_dynamics_bot.py |
 | brain_refinery_v478_kan_hedging_surface_bot | signal_sub_bot | active / collecting | core/brain_refinery_v478_kan_hedging_surface_bot.py |
 | brain_refinery_v479_vpin_order_flow_toxicity_bot | signal_sub_bot | active / collecting | core/brain_refinery_v479_vpin_order_flow_toxicity_bot.py |
-| brain_refinery_v47_swing_1w_3w | signal_sub_bot | active | core/brain_refinery_v47_swing_1w_3w.py |
+| brain_refinery_v47_swing_1w_3w | signal_sub_bot | active / collecting | core/brain_refinery_v47_swing_1w_3w.py |
 | brain_refinery_v481_signature_transform_path_dna_bot | signal_sub_bot | active / collecting | core/brain_refinery_v481_signature_transform_path_dna_bot.py |
 | brain_refinery_v482_multivariate_hawkes_self_exciting_bot | signal_sub_bot | active / collecting | core/brain_refinery_v482_multivariate_hawkes_self_exciting_bot.py |
 | brain_refinery_v483_signature_market_generator_bot | signal_sub_bot | active / collecting | core/brain_refinery_v483_signature_market_generator_bot.py |
@@ -334,7 +519,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v486_hurst_fbm_persistence_bot | signal_sub_bot | active / collecting | core/brain_refinery_v486_hurst_fbm_persistence_bot.py |
 | brain_refinery_v487_stochastic_differential_games_bot | signal_sub_bot | active / collecting | core/brain_refinery_v487_stochastic_differential_games_bot.py |
 | brain_refinery_v489_lit_limit_order_book_transformer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v489_lit_limit_order_book_transformer_bot.py |
-| brain_refinery_v48_position_1m_3m | signal_sub_bot | active | core/brain_refinery_v48_position_1m_3m.py |
+| brain_refinery_v48_position_1m_3m | signal_sub_bot | active / collecting | core/brain_refinery_v48_position_1m_3m.py |
 | brain_refinery_v490_graph_laplacian_tda_diffusion_bot | signal_sub_bot | active / collecting | core/brain_refinery_v490_graph_laplacian_tda_diffusion_bot.py |
 | brain_refinery_v492_nonhomogeneous_hmm_regime_bot | signal_sub_bot | active / collecting | core/brain_refinery_v492_nonhomogeneous_hmm_regime_bot.py |
 | brain_refinery_v494_physics_informed_neural_sde_bot | signal_sub_bot | active / collecting | core/brain_refinery_v494_physics_informed_neural_sde_bot.py |
@@ -342,7 +527,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v498_double_machine_learning_causal_bot | signal_sub_bot | active / collecting | core/brain_refinery_v498_double_machine_learning_causal_bot.py |
 | brain_refinery_v499_neuro_symbolic_agent_integration_bot | signal_sub_bot | active / collecting | core/brain_refinery_v499_neuro_symbolic_agent_integration_bot.py |
 | brain_refinery_v49_investment_trend_quality | signal_sub_bot | inactive | core/brain_refinery_v49_investment_trend_quality.py |
-| brain_refinery_v4_simple | signal_sub_bot | inactive | core/brain_refinery_v4_simple.py |
+| brain_refinery_v4_simple | signal_sub_bot | active / collecting | core/brain_refinery_v4_simple.py |
 | brain_refinery_v500_unified_cross_modal_omni_sensor_bot | signal_sub_bot | active / collecting | core/brain_refinery_v500_unified_cross_modal_omni_sensor_bot.py |
 | brain_refinery_v501_rlbf_backtracking_feedback_bot | signal_sub_bot | active / collecting | core/brain_refinery_v501_rlbf_backtracking_feedback_bot.py |
 | brain_refinery_v502_differentiable_market_simulator_bot | signal_sub_bot | active / collecting | core/brain_refinery_v502_differentiable_market_simulator_bot.py |
@@ -351,7 +536,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v507_high_dimensional_markovian_execution_bot | signal_sub_bot | active / collecting | core/brain_refinery_v507_high_dimensional_markovian_execution_bot.py |
 | brain_refinery_v508_end_to_end_differentiable_backtesting_bot | signal_sub_bot | active / collecting | core/brain_refinery_v508_end_to_end_differentiable_backtesting_bot.py |
 | brain_refinery_v509_agentic_wallet_intent_execution_bot | signal_sub_bot | active / collecting | core/brain_refinery_v509_agentic_wallet_intent_execution_bot.py |
-| brain_refinery_v50_investment_drawdown_risk | signal_sub_bot | active | core/brain_refinery_v50_investment_drawdown_risk.py |
+| brain_refinery_v50_investment_drawdown_risk | signal_sub_bot | active / collecting | core/brain_refinery_v50_investment_drawdown_risk.py |
 | brain_refinery_v511_portfolio_durability_resilient_alternatives_bot | signal_sub_bot | active / collecting | core/brain_refinery_v511_portfolio_durability_resilient_alternatives_bot.py |
 | brain_refinery_v512_information_geometry_manifold_bot | signal_sub_bot | active / collecting | core/brain_refinery_v512_information_geometry_manifold_bot.py |
 | brain_refinery_v513_graph_attention_cross_asset_spillover_bot | signal_sub_bot | active / collecting | core/brain_refinery_v513_graph_attention_cross_asset_spillover_bot.py |
@@ -359,14 +544,14 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v515_quantum_classical_hybrid_optimization_bot | signal_sub_bot | active / collecting | core/brain_refinery_v515_quantum_classical_hybrid_optimization_bot.py |
 | brain_refinery_v518_microstructure_shift_lob_dex_collector_bot | signal_sub_bot | active / collecting | core/brain_refinery_v518_microstructure_shift_lob_dex_collector_bot.py |
 | brain_refinery_v519_agentic_data_assistant_quantconnect_mia_bot | signal_sub_bot | active / collecting | core/brain_refinery_v519_agentic_data_assistant_quantconnect_mia_bot.py |
-| brain_refinery_v51_vol_regime_transition | signal_sub_bot | inactive | core/brain_refinery_v51_vol_regime_transition.py |
+| brain_refinery_v51_vol_regime_transition | signal_sub_bot | active / collecting | core/brain_refinery_v51_vol_regime_transition.py |
 | brain_refinery_v520_sentiment_echo_bloomberg_lunarcrush_collector_bot | signal_sub_bot | active / collecting | core/brain_refinery_v520_sentiment_echo_bloomberg_lunarcrush_collector_bot.py |
 | brain_refinery_v521_institutional_flow_whale_glassnode_monitor_bot | signal_sub_bot | active / collecting | core/brain_refinery_v521_institutional_flow_whale_glassnode_monitor_bot.py |
 | brain_refinery_v524_lobdif_order_book_diffusion_bot | signal_sub_bot | active / collecting | core/brain_refinery_v524_lobdif_order_book_diffusion_bot.py |
 | brain_refinery_v525_rough_volatility_fractional_hurst_indices_bot | signal_sub_bot | active / collecting | core/brain_refinery_v525_rough_volatility_fractional_hurst_indices_bot.py |
 | brain_refinery_v526_differentiable_market_impact_bot | signal_sub_bot | active / collecting | core/brain_refinery_v526_differentiable_market_impact_bot.py |
 | brain_refinery_v527_persistent_homology_flash_crash_detector_bot | signal_sub_bot | active / collecting | core/brain_refinery_v527_persistent_homology_flash_crash_detector_bot.py |
-| brain_refinery_v52_sector_rotation_rs | signal_sub_bot | inactive | core/brain_refinery_v52_sector_rotation_rs.py |
+| brain_refinery_v52_sector_rotation_rs | signal_sub_bot | active / collecting | core/brain_refinery_v52_sector_rotation_rs.py |
 | brain_refinery_v530_photonic_quantum_optimization_bot | signal_sub_bot | active / collecting | core/brain_refinery_v530_photonic_quantum_optimization_bot.py |
 | brain_refinery_v532_synthetic_crisis_market_gan_bot | signal_sub_bot | active / collecting | core/brain_refinery_v532_synthetic_crisis_market_gan_bot.py |
 | brain_refinery_v533_correlation_convergence_simulator_bot | signal_sub_bot | active / collecting | core/brain_refinery_v533_correlation_convergence_simulator_bot.py |
@@ -384,7 +569,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v547_securitized_products_abs_consumer_credit_bot | signal_sub_bot | active / collecting | core/brain_refinery_v547_securitized_products_abs_consumer_credit_bot.py |
 | brain_refinery_v548_securitized_products_clo_loan_pool_stress_bot | signal_sub_bot | active / collecting | core/brain_refinery_v548_securitized_products_clo_loan_pool_stress_bot.py |
 | brain_refinery_v549_securitized_products_servicer_extension_risk_bot | signal_sub_bot | active / collecting | core/brain_refinery_v549_securitized_products_servicer_extension_risk_bot.py |
-| brain_refinery_v54_event_shock_decay | signal_sub_bot | inactive | core/brain_refinery_v54_event_shock_decay.py |
+| brain_refinery_v54_event_shock_decay | signal_sub_bot | active / collecting | core/brain_refinery_v54_event_shock_decay.py |
 | brain_refinery_v551_repo_sofr_funding_pressure_bot | signal_sub_bot | active / collecting | core/brain_refinery_v551_repo_sofr_funding_pressure_bot.py |
 | brain_refinery_v552_repo_securities_lending_borrow_fee_squeeze_bot | signal_sub_bot | active / collecting | core/brain_refinery_v552_repo_securities_lending_borrow_fee_squeeze_bot.py |
 | brain_refinery_v553_repo_short_interest_locate_pressure_bot | signal_sub_bot | active / collecting | core/brain_refinery_v553_repo_short_interest_locate_pressure_bot.py |
@@ -538,14 +723,32 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v88_macro_pmi_ism_regime | signal_sub_bot | inactive | core/brain_refinery_v88_macro_pmi_ism_regime.py |
 | brain_refinery_v890_adaptive_kernel_rl_curriculum_environment_builder_bot | signal_sub_bot | active / collecting | core/brain_refinery_v890_adaptive_kernel_rl_curriculum_environment_builder_bot.py |
 | brain_refinery_v89_macro_inflation_pce_cpi | signal_sub_bot | inactive | core/brain_refinery_v89_macro_inflation_pce_cpi.py |
+| brain_refinery_v907_alpha_slippage_fill_probability_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v907_alpha_slippage_fill_probability_scorer_bot.py |
 | brain_refinery_v90_macro_fomc_tone_liquidity | signal_sub_bot | inactive | core/brain_refinery_v90_macro_fomc_tone_liquidity.py |
+| brain_refinery_v912_alpha_correlation_cluster_governor_bot | signal_sub_bot | active / collecting | core/brain_refinery_v912_alpha_correlation_cluster_governor_bot.py |
+| brain_refinery_v917_alpha_feature_model_candidate_builder_bot | signal_sub_bot | active / collecting | core/brain_refinery_v917_alpha_feature_model_candidate_builder_bot.py |
 | brain_refinery_v91_macro_labor_shock | signal_sub_bot | inactive | core/brain_refinery_v91_macro_labor_shock.py |
-| brain_refinery_v92_macro_rates_curve_regime | signal_sub_bot | inactive | core/brain_refinery_v92_macro_rates_curve_regime.py |
-| brain_refinery_v93_dividend_quality_compounder | signal_sub_bot | active | core/brain_refinery_v93_dividend_quality_compounder.py |
-| brain_refinery_v94_dividend_yield_trap_avoidance | signal_sub_bot | active | core/brain_refinery_v94_dividend_yield_trap_avoidance.py |
-| brain_refinery_v95_rates_regime_bond_bot | signal_sub_bot | active | core/brain_refinery_v95_rates_regime_bond_bot.py |
-| brain_refinery_v96_credit_spread_rotation_bot | signal_sub_bot | active | core/brain_refinery_v96_credit_spread_rotation_bot.py |
+| brain_refinery_v92_macro_rates_curve_regime | signal_sub_bot | active / collecting | core/brain_refinery_v92_macro_rates_curve_regime.py |
+| brain_refinery_v935_intelligence_expert_route_selector_bot | signal_sub_bot | active / collecting | core/brain_refinery_v935_intelligence_expert_route_selector_bot.py |
+| brain_refinery_v937_intelligence_counterfactual_scenario_generator_bot | signal_sub_bot | active / collecting | core/brain_refinery_v937_intelligence_counterfactual_scenario_generator_bot.py |
+| brain_refinery_v938_intelligence_world_model_residual_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v938_intelligence_world_model_residual_scorer_bot.py |
+| brain_refinery_v93_dividend_quality_compounder | signal_sub_bot | active / collecting | core/brain_refinery_v93_dividend_quality_compounder.py |
+| brain_refinery_v941_intelligence_walk_forward_evidence_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v941_intelligence_walk_forward_evidence_scorer_bot.py |
+| brain_refinery_v944_intelligence_retrieval_relevance_scorer_v2_bot | signal_sub_bot | active / collecting | core/brain_refinery_v944_intelligence_retrieval_relevance_scorer_v2_bot.py |
+| brain_refinery_v946_intelligence_proposal_agent_board_bot | signal_sub_bot | active / collecting | core/brain_refinery_v946_intelligence_proposal_agent_board_bot.py |
+| brain_refinery_v949_intelligence_active_learning_query_planner_v2_bot | signal_sub_bot | active / collecting | core/brain_refinery_v949_intelligence_active_learning_query_planner_v2_bot.py |
+| brain_refinery_v94_dividend_yield_trap_avoidance | signal_sub_bot | active / collecting | core/brain_refinery_v94_dividend_yield_trap_avoidance.py |
+| brain_refinery_v950_intelligence_experiment_value_of_information_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v950_intelligence_experiment_value_of_information_scorer_bot.py |
+| brain_refinery_v953_intelligence_calibration_uncertainty_mapper_bot | signal_sub_bot | active / collecting | core/brain_refinery_v953_intelligence_calibration_uncertainty_mapper_bot.py |
+| brain_refinery_v95_rates_regime_bond_bot | signal_sub_bot | active / collecting | core/brain_refinery_v95_rates_regime_bond_bot.py |
+| brain_refinery_v96_credit_spread_rotation_bot | signal_sub_bot | active / collecting | core/brain_refinery_v96_credit_spread_rotation_bot.py |
+| brain_refinery_v972_apex_specialist_consensus_weighting_bot | signal_sub_bot | active / collecting | core/brain_refinery_v972_apex_specialist_consensus_weighting_bot.py |
+| brain_refinery_v975_apex_causal_lesson_retrieval_scorer_bot | signal_sub_bot | active / collecting | core/brain_refinery_v975_apex_causal_lesson_retrieval_scorer_bot.py |
+| brain_refinery_v979_apex_regime_state_space_mapper_bot | signal_sub_bot | active / collecting | core/brain_refinery_v979_apex_regime_state_space_mapper_bot.py |
 | brain_refinery_v97_futures_event_order_book | futures_sub_bot | active / collecting | core/brain_refinery_v97_futures_event_order_book.py |
+| brain_refinery_v980_apex_shock_path_counterfactual_generator_bot | signal_sub_bot | active / collecting | core/brain_refinery_v980_apex_shock_path_counterfactual_generator_bot.py |
+| brain_refinery_v982_apex_market_microstructure_scenario_bridge_bot | signal_sub_bot | active / collecting | core/brain_refinery_v982_apex_market_microstructure_scenario_bridge_bot.py |
+| brain_refinery_v987_apex_payoff_risk_upgrade_ranker_bot | signal_sub_bot | active / collecting | core/brain_refinery_v987_apex_payoff_risk_upgrade_ranker_bot.py |
 | brain_refinery_v98_crypto_execution_throttle_reentry | signal_sub_bot | active / collecting | core/brain_refinery_v98_crypto_execution_throttle_reentry.py |
-| brain_refinery_v99_defensive_dividend_concentration | options_sub_bot | active | core/brain_refinery_v99_defensive_dividend_concentration.py |
+| brain_refinery_v99_defensive_dividend_concentration | options_sub_bot | active / collecting | core/brain_refinery_v99_defensive_dividend_concentration.py |
 | brain_refinery_v9_trend | signal_sub_bot | inactive | core/brain_refinery_v9_trend.py |

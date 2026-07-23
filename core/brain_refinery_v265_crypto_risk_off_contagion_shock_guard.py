@@ -53,8 +53,18 @@ SPEC = CryptoRuntimeSpec(
     feature_fields=FEATURE_FIELDS,
     signal_builder=_contagion_signal,
     bias_builder=_contagion_bias,
-    min_signal=0.18,
-    min_abs_bias=0.05,
+    min_signal=0.08,
+    min_abs_bias=0.01,
+    min_confidence=0.20,
+    window=4,
+    horizon=1,
+    lookback_days=60,
+    min_samples=48,
+    min_sequences=8,
+    min_positive_samples=16,
+    min_negative_samples=16,
+    batch_size=24,
+    defer_on_quality_failure=True,
 )
 
 

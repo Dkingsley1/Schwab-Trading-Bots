@@ -48,6 +48,7 @@ SPEC = CryptoRuntimeSpec(
     signal_builder=_liquidity_signal,
     bias_builder=_liquidity_bias,
     min_signal=0.22,
+    defer_on_quality_failure=True,
 )
 
 

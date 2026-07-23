@@ -54,6 +54,11 @@ def _parse_dt(raw: Any) -> datetime | None:
     text = str(raw or "").strip()
     if not text:
         return None
+    for fmt in ("%Y%m%d_%H%M%S", "%Y%m%d"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
     try:
         if text.endswith("Z"):
             text = text[:-1] + "+00:00"
@@ -70,6 +75,43 @@ def _age_hours(raw: Any, now: datetime) -> float | None:
     if parsed is None:
         return None
     return round(max((now - parsed).total_seconds(), 0.0) / 3600.0, 3)
+
+
+def _file_age_hours(path: Path, now: datetime) -> float | None:
+    try:
+        modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except Exception:
+        return None
+    return round(max((now - modified).total_seconds(), 0.0) / 3600.0, 3)
+
+
+def _freshest_age_hours(*ages: float | None) -> float | None:
+    valid = [float(age) for age in ages if age is not None]
+    if not valid:
+        return None
+    return round(min(valid), 3)
+
+
+def _diagnostic_age_hours(
+    diagnostic: dict[str, Any],
+    label_row: dict[str, Any],
+    diagnostic_path: Path,
+    now: datetime,
+) -> tuple[float | None, float | None, float | None, float | None]:
+    payload_age = _age_hours(
+        diagnostic.get("generated_at_utc")
+        or diagnostic.get("generated_utc")
+        or diagnostic.get("timestamp_utc")
+        or diagnostic.get("timestamp"),
+        now,
+    )
+    label_age = (
+        _safe_float(label_row.get("diagnostic_age_hours"), 0.0)
+        if label_row.get("diagnostic_age_hours") is not None
+        else None
+    )
+    file_age = _file_age_hours(diagnostic_path, now) if diagnostic_path.exists() else None
+    return _freshest_age_hours(payload_age, label_age, file_age), payload_age, label_age, file_age
 
 
 def _unique(items: list[str]) -> list[str]:
@@ -411,6 +453,17 @@ def _precision_repair_needs(
 
 
 def _bot_command(bot_id: str, need_key: str) -> list[str]:
+    if need_key == "reactivate_sample_starved_collection":
+        return [
+            "./scripts/ops/opsctl.sh",
+            "training-requalification",
+            "--include-bot-ids",
+            bot_id,
+            "--include-sample-starved-deleted",
+            "--apply-repair",
+            "--write-queue",
+            "--json",
+        ]
     if need_key == "repair_runtime_inputs":
         return [
             "./scripts/ops/opsctl.sh",
@@ -434,6 +487,15 @@ def _bot_command(bot_id: str, need_key: str) -> list[str]:
         return ["./scripts/ops/opsctl.sh", "calibration-control", "--apply", "--json"]
     if need_key == "upgrade_label_contract":
         return ["./scripts/ops/opsctl.sh", "training-labeling-intelligence", "--apply", "--json"]
+    if need_key == "materialize_label_depth":
+        return [
+            "./scripts/ops/opsctl.sh",
+            "training-data-intake",
+            "--apply",
+            "--include-bot-ids",
+            bot_id,
+            "--json",
+        ]
     if need_key == "relax_sample_filter":
         return ["./scripts/ops/opsctl.sh", "training-label-audit", "--json"]
     if need_key in {"refresh_training_diagnostics", "create_collect_only_diagnostics"}:
@@ -463,20 +525,35 @@ def _effectiveness_prescription(
     next_command: list[str],
 ) -> dict[str, Any]:
     sample_count = _safe_int(evidence.get("sample_count"), 0)
+    eligible_sequences = _safe_int(evidence.get("eligible_sequences"), 0)
     observations = _safe_int(evidence.get("observation_count"), 0)
     min_observations = _safe_int(evidence.get("minimum_observations"), 0)
     runs_remaining = _safe_int(evidence.get("walk_forward_runs_remaining"), 0)
     positive_rate = _safe_float(evidence.get("positive_rate"), 0.0)
+    eligible_sequences_known = bool(evidence.get("eligible_sequences_known", False))
+    active = bool(evidence.get("active", False))
+    deleted = bool(evidence.get("deleted", False))
+    training_excluded = bool(evidence.get("training_excluded", False))
     stage = str(primary_need or "monitor")
     risk = "low"
     expected = "Improves bot readiness by resolving the current highest-priority bottleneck."
     stop_when = "the bot primary_need changes to monitor or promotion review"
     can_train_now = False
-    if stage == "collect_more_data":
+    if stage == "reactivate_sample_starved_collection":
+        expected = "Moves a deleted/inactive zero-sample bot into safe collection-only requalification without enabling trading or promotion."
+        stop_when = "the bot is active collection-only and sample_count plus eligible_sequences are both above zero"
+        risk = "low"
+        gap = max(200 - sample_count, 0)
+    elif stage == "collect_more_data":
         gap = max(min_observations - observations, 200 - sample_count, 0)
         expected = "Raises usable training sample depth so canary runs are not sample-starved."
         stop_when = f"sample_count is at least 200 and observation_count reaches {min_observations}" if min_observations else "sample_count is at least 200"
         risk = "none"
+    elif stage == "materialize_label_depth":
+        gap = max(200 - sample_count, 0)
+        expected = "Converts existing raw observations into point-in-time labeled windows before spending another training cycle."
+        stop_when = "label_outcome_join exists and real sample_count plus eligible_sequences clear the canary floor"
+        risk = "low"
     elif stage in {"rebalance_labels", "relax_sample_filter", "upgrade_label_contract"}:
         expected = "Improves label quality and side balance before spending training cycles."
         stop_when = "positive_rate is between 0.25 and 0.75 and eligible sequences produce usable samples"
@@ -488,11 +565,24 @@ def _effectiveness_prescription(
         risk = "low"
         gap = 0
     elif stage in {"top_off_walk_forward_runs", "targeted_quality_retrain"}:
-        expected = "Adds confirmation runs without promoting or widening live exposure."
-        stop_when = f"walk_forward_runs_remaining reaches 0 and quality gate is not failing"
-        risk = "medium" if stage == "targeted_quality_retrain" else "low"
-        can_train_now = runs_remaining > 0 or stage == "targeted_quality_retrain"
-        gap = runs_remaining
+        if sample_count <= 0 or (eligible_sequences_known and eligible_sequences <= 0):
+            expected = "Blocks wasteful canary launches until the bot has usable samples and eligible runtime sequences."
+            stop_when = "sample_count > 0 and eligible_sequences > 0 before retraining"
+            risk = "none"
+            can_train_now = False
+            gap = max(200 - sample_count, 0)
+        elif (not active) or deleted or training_excluded:
+            expected = "Prevents retraining inactive or excluded bots unless the operator intentionally reactivates them."
+            stop_when = "bot is active, not deleted, and not training_excluded"
+            risk = "none"
+            can_train_now = False
+            gap = 0
+        else:
+            expected = "Adds confirmation runs without promoting or widening live exposure."
+            stop_when = f"walk_forward_runs_remaining reaches 0 and quality gate is not failing"
+            risk = "medium" if stage == "targeted_quality_retrain" else "low"
+            can_train_now = runs_remaining > 0 or stage == "targeted_quality_retrain"
+            gap = runs_remaining
     elif stage in {"apply_abstention_calibration", "use_side_specific_thresholds"} | PRECISION_REPAIR_NEEDS:
         expected = "Reduces overacting, one-sided precision collapse, or noisy guard firing using the bot's role-specific precision contract."
         stop_when = "the precision_contract gaps clear and acted coverage is inside guardrails"
@@ -557,9 +647,12 @@ def _classify_bot(
     training_excluded = bool(bot.get("training_excluded") or bot.get("exclude_from_training"))
     collection_active = bool(bot.get("data_collection_active"))
     diagnostic_present = diagnostic_path.exists() or bool(label_row.get("diagnostic_present"))
-    diagnostic_age = _age_hours(diagnostic.get("timestamp_utc") or label_row.get("diagnostic_age_hours"), now)
-    if diagnostic_age is None and label_row.get("diagnostic_age_hours") is not None:
-        diagnostic_age = _safe_float(label_row.get("diagnostic_age_hours"), 0.0)
+    diagnostic_age, diagnostic_payload_age, diagnostic_label_age, diagnostic_file_age = _diagnostic_age_hours(
+        diagnostic,
+        label_row,
+        diagnostic_path,
+        now,
+    )
 
     metrics = _as_dict(diagnostic.get("metrics"))
     sample_count = max(
@@ -575,9 +668,15 @@ def _classify_bot(
         _safe_int(bot.get("collected_observation_count"), 0),
         _safe_int(bot.get("observations"), 0),
     )
+    runtime_meta = _as_dict(diagnostic.get("runtime_meta"))
+    eligible_sequences_known = bool(
+        "eligible_sequences" in diagnostic
+        or "eligible_sequences" in runtime_meta
+        or "eligible_sequences" in label_row
+    )
     eligible_sequences = max(
         _safe_int(diagnostic.get("eligible_sequences"), 0),
-        _safe_int(_as_dict(diagnostic.get("runtime_meta")).get("eligible_sequences"), 0),
+        _safe_int(runtime_meta.get("eligible_sequences"), 0),
         _safe_int(label_row.get("eligible_sequences"), 0),
     )
     positive_rate = max(
@@ -623,6 +722,12 @@ def _classify_bot(
     if deleted or not active:
         needs.append(_need_record("leave_inactive_or_retired", "Inactive/deleted; do not spend training cycles unless explicitly reactivated.", 5))
     label_recommendation = str(label_row.get("recommendation") or "")
+    label_depth_contract = _as_dict(runtime_meta.get("label_depth_contract")) or _as_dict(label_row.get("label_depth_contract"))
+    label_depth_status = str(
+        label_row.get("label_depth_status")
+        or label_depth_contract.get("status")
+        or ""
+    ).strip().lower()
     if active and not diagnostic_present and (training_excluded or label_recommendation == "create_collect_only_diagnostics"):
         needs.append(_need_record("create_collect_only_diagnostics", "Collection-only bot needs a diagnostic snapshot before training eligibility can be judged.", 100))
     elif active and not diagnostic_present:
@@ -640,9 +745,70 @@ def _classify_bot(
         needs.append(_need_record("reduce_overfitting", summary, priority, command_key="overfitting_awareness"))
     if label_recommendation == "upgrade_label_contract":
         needs.append(_need_record("upgrade_label_contract", "Observed diagnostics are missing the expected label contract.", 98))
+    sample_starved = sample_count <= 0 or (eligible_sequences_known and eligible_sequences <= 0)
+    if active and not deleted and sample_starved and label_depth_status == "label_depth_ready_for_real_diagnostic_refresh":
+        needs.append(
+            _need_record(
+                "refresh_training_diagnostics",
+                "Label-depth bridge is ready; refresh real diagnostics so estimated capacity becomes real usable samples.",
+                99,
+            )
+        )
+    if (
+        active
+        and not deleted
+        and sample_starved
+        and observation_count > 0
+        and (
+            label_recommendation == "materialize_label_depth"
+            or label_depth_status in {"materialize_label_depth", "collect_and_materialize_label_depth"}
+        )
+    ):
+        depth_priority = 99 if (min_observations <= 0 or observation_count >= min_observations) else 95
+        needs.append(
+            _need_record(
+                "materialize_label_depth",
+                (
+                    f"Raw observations exist ({observation_count}) but usable samples are still {sample_count}; "
+                    "materialize point-in-time labels, rejected/abstained candidates, and sample eligibility reasons."
+                ),
+                depth_priority,
+            )
+        )
     if training_excluded and min_observations > 0 and observation_count < min_observations:
         gap = min_observations - observation_count
         needs.append(_need_record("collect_more_data", f"Collect {gap} more observations to reach the {min_observations} training floor.", 94))
+    elif sample_starved:
+        if active and not deleted and not training_excluded:
+            needs.append(
+                _need_record(
+                    "collect_more_data",
+                    f"No usable training samples yet (samples={sample_count}, eligible_sequences={eligible_sequences}); collect/repair labels before canary training.",
+                    97,
+                )
+            )
+        else:
+            if deleted or not active:
+                sample_starved_key = "reactivate_sample_starved_collection"
+                sample_starved_summary = (
+                    f"Inactive/deleted and sample-starved (samples={sample_count}, eligible_sequences={eligible_sequences}); "
+                    "reactivate targeted collection before retraining."
+                )
+                sample_starved_priority = 91
+            else:
+                sample_starved_key = "collect_more_data"
+                sample_starved_summary = (
+                    f"Collection-only/excluded and sample-starved (samples={sample_count}, eligible_sequences={eligible_sequences}); "
+                    "collect/repair labels before retraining."
+                )
+                sample_starved_priority = 90
+            needs.append(
+                _need_record(
+                    sample_starved_key,
+                    sample_starved_summary,
+                    sample_starved_priority,
+                )
+            )
     elif active and sample_count > 0 and sample_count < 200:
         needs.append(_need_record("collect_more_data", f"Only {sample_count} usable samples; collect more before canary training.", 92))
     sample_filter_blocked = bool(
@@ -706,6 +872,10 @@ def _classify_bot(
         ]
     )
     evidence = {
+        "active": active,
+        "deleted": deleted,
+        "training_excluded": training_excluded,
+        "eligible_sequences_known": eligible_sequences_known,
         "sample_count": sample_count,
         "observation_count": observation_count,
         "minimum_observations": min_observations,
@@ -725,7 +895,14 @@ def _classify_bot(
         "walk_forward_runs_remaining": runs_remaining,
         "diagnostic_present": diagnostic_present,
         "diagnostic_age_hours": diagnostic_age,
+        "diagnostic_payload_age_hours": diagnostic_payload_age,
+        "diagnostic_label_age_hours": diagnostic_label_age,
+        "diagnostic_file_age_hours": diagnostic_file_age,
         "label_recommendation": str(label_row.get("recommendation") or ""),
+        "label_depth_status": label_depth_status or None,
+        "estimated_usable_sample_capacity": _safe_int(label_depth_contract.get("estimated_usable_sample_capacity"), 0),
+        "usable_sample_gap": _safe_int(label_depth_contract.get("usable_sample_gap"), 0),
+        "label_depth_next_action": str(label_depth_contract.get("next_action") or ""),
         "audit_buckets": _as_list(label_row.get("_audit_buckets")),
         "quality_queue_reasons": _as_list(quality_row.get("reasons")),
         "quality_queue_next_step": str(quality_row.get("next_step") or ""),
@@ -785,7 +962,14 @@ def _training_readiness_counts(records: list[dict[str, Any]]) -> dict[str, int]:
         stage = str(prescription.get("stage") or row.get("primary_need") or "")
         if bool(prescription.get("can_train_now", False)):
             out["can_train_now"] += 1
-        elif stage in {"collect_more_data", "rebalance_labels", "relax_sample_filter", "collect_side_specific_outcomes"}:
+        elif stage in {
+            "reactivate_sample_starved_collection",
+            "collect_more_data",
+            "materialize_label_depth",
+            "rebalance_labels",
+            "relax_sample_filter",
+            "collect_side_specific_outcomes",
+        }:
             out["collect_more_data_first"] += 1
         elif stage in {"monitor", "monitor_passing_candidate", "leave_inactive_or_retired"}:
             out["monitor_or_inactive"] += 1
@@ -798,7 +982,14 @@ def _next_batches(records: list[dict[str, Any]]) -> dict[str, list[str]]:
     buckets = {
         "diagnostics": {"create_collect_only_diagnostics", "refresh_training_diagnostics"},
         "repair_first": {"repair_runtime_inputs", "upgrade_label_contract"},
-        "collect_more_data": {"collect_more_data", "rebalance_labels", "relax_sample_filter", "collect_side_specific_outcomes"},
+        "collect_more_data": {
+            "reactivate_sample_starved_collection",
+            "collect_more_data",
+            "materialize_label_depth",
+            "rebalance_labels",
+            "relax_sample_filter",
+            "collect_side_specific_outcomes",
+        },
         "training_topoff": {"top_off_walk_forward_runs", "targeted_quality_retrain"},
         "calibration": {"apply_abstention_calibration", "use_side_specific_thresholds"} | PRECISION_REPAIR_NEEDS,
         "overfitting": {"reduce_overfitting"},
@@ -817,7 +1008,14 @@ def _training_candidate_selector(records: list[dict[str, Any]]) -> dict[str, Any
     near_ready: list[dict[str, Any]] = []
     blocked_reasons = {
         "repair_first": {"repair_runtime_inputs", "upgrade_label_contract", "refresh_training_diagnostics", "create_collect_only_diagnostics"},
-        "data_first": {"collect_more_data", "rebalance_labels", "relax_sample_filter", "collect_side_specific_outcomes"},
+        "data_first": {
+            "reactivate_sample_starved_collection",
+            "collect_more_data",
+            "materialize_label_depth",
+            "rebalance_labels",
+            "relax_sample_filter",
+            "collect_side_specific_outcomes",
+        },
         "calibration_first": {"apply_abstention_calibration", "use_side_specific_thresholds"} | PRECISION_REPAIR_NEEDS,
         "overfit_first": {"reduce_overfitting"},
     }
@@ -830,6 +1028,9 @@ def _training_candidate_selector(records: list[dict[str, Any]]) -> dict[str, Any
         overfit_status = str(evidence.get("overfit_status") or "")
         sample_count = _safe_int(evidence.get("sample_count"), 0)
         observation_count = _safe_int(evidence.get("observation_count"), 0)
+        min_observations = _safe_int(evidence.get("minimum_observations"), 0)
+        eligible_sequences = _safe_int(evidence.get("eligible_sequences"), 0)
+        eligible_sequences_known = bool(evidence.get("eligible_sequences_known", False))
         positive_rate = _safe_float(evidence.get("positive_rate"), 0.5)
         runs_remaining = _safe_int(evidence.get("walk_forward_runs_remaining"), 0)
         quality_score = _safe_float(evidence.get("quality_score"), 0.0)
@@ -853,7 +1054,9 @@ def _training_candidate_selector(records: list[dict[str, Any]]) -> dict[str, Any
         if overfit_status in OVERFIT_BLOCKING_STATUSES:
             blocked_counts["overfit_first"] += 1
             continue
-        if sample_count < 200 or observation_count < 200:
+        observation_floor_ready = min_observations <= 0 or observation_count >= min_observations
+        sequence_ready = (not eligible_sequences_known) or eligible_sequences > 0
+        if sample_count < 200 or not observation_floor_ready or not sequence_ready:
             blocked_counts["data_first"] += 1
             continue
         if not (0.20 <= positive_rate <= 0.80):
@@ -869,6 +1072,8 @@ def _training_candidate_selector(records: list[dict[str, Any]]) -> dict[str, Any
                 "walk_forward_runs_remaining": runs_remaining,
                 "sample_count": sample_count,
                 "observation_count": observation_count,
+                "minimum_observations": min_observations,
+                "eligible_sequences": eligible_sequences,
                 "positive_rate": round(positive_rate, 6),
                 "recommended_command": [
                     "./scripts/ops/opsctl.sh",
@@ -923,6 +1128,7 @@ def _training_candidate_selector(records: list[dict[str, Any]]) -> dict[str, Any
 def _zero_observation_repair_contract(records: list[dict[str, Any]]) -> dict[str, Any]:
     zero_rows: list[dict[str, Any]] = []
     near_zero_rows: list[dict[str, Any]] = []
+    expected_observer_rows: list[dict[str, Any]] = []
     for row in records:
         evidence = _as_dict(row.get("evidence"))
         active = bool(row.get("active", False))
@@ -931,6 +1137,7 @@ def _zero_observation_repair_contract(records: list[dict[str, Any]]) -> dict[str
             continue
         observation_count = _safe_int(evidence.get("observation_count"), 0)
         sample_count = _safe_int(evidence.get("sample_count"), 0)
+        bot_id = str(row.get("bot_id") or "")
         item = {
             "bot_id": row.get("bot_id"),
             "sample_count": sample_count,
@@ -938,6 +1145,13 @@ def _zero_observation_repair_contract(records: list[dict[str, Any]]) -> dict[str
             "primary_need": row.get("primary_need"),
             "next_command": row.get("next_command"),
         }
+        if (
+            "_training_labeling_" in bot_id
+            and bool(row.get("training_excluded", False))
+            and str(row.get("lifecycle_state") or "") == "data_collection_only"
+        ):
+            expected_observer_rows.append(item)
+            continue
         if observation_count <= 0 and sample_count <= 0:
             zero_rows.append(item)
         elif observation_count < 25 or sample_count <= 0:
@@ -949,8 +1163,10 @@ def _zero_observation_repair_contract(records: list[dict[str, Any]]) -> dict[str
         "mode": "zero_observation_collector_repair_v2",
         "zero_observation_count": len(zero_rows),
         "near_zero_observation_count": len(near_zero_rows),
+        "excluded_expected_observer_count": len(expected_observer_rows),
         "zero_observation_bots": zero_rows[:40],
         "near_zero_observation_bots": near_zero_rows[:40],
+        "excluded_expected_observer_bots": expected_observer_rows[:40],
         "repair_commands": [
             [
                 "./scripts/ops/opsctl.sh",
@@ -973,7 +1189,7 @@ def _zero_observation_repair_contract(records: list[dict[str, Any]]) -> dict[str
         "expected_impact": "restores missing collector observations before spending canary training cycles",
         "stop_condition": "zero_observation_count == 0 and near_zero_observation_count trends down after the next observation rollup",
         "protected_volumes": ["/Volumes/VIDEO"],
-        "policy": "repair collection and diagnostics first; do not train zero-observation bots",
+        "policy": "repair collection and diagnostics first; do not train zero-observation bots; expected training-labeling observers are tracked but excluded from repair activation",
     }
 
 

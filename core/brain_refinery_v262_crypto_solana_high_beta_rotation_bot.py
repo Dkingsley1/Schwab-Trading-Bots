@@ -53,6 +53,7 @@ SPEC = CryptoRuntimeSpec(
     feature_fields=FEATURE_FIELDS,
     signal_builder=_sol_rotation_signal,
     bias_builder=_sol_rotation_bias,
+    defer_on_quality_failure=True,
 )
 
 

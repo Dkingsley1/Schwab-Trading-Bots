@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,22 @@ else:
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "infrabot_gap_roster_latest.json"
+SAFE_APPLY_OPSCTL_SUBCOMMANDS = {
+    "bot-quality-autopilot",
+    "dashboard-refresh",
+    "decision-intelligence",
+    "infrabot-gap-roster",
+    "master-infra-supervisor",
+    "paper-calibration",
+    "paper-profitability-control",
+    "pressure-relief",
+    "runtime-paper-regression-guard",
+    "schwab-auth-supervisor",
+    "source-verification-refresh",
+    "training-data-intake",
+    "training-runtime-control",
+    "writer-cycle-coordinator",
+}
 
 
 def _safe_float(raw: Any, default: float = 0.0) -> float:
@@ -92,10 +110,51 @@ def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
         "cmd": list(cmd),
         "rc": rc,
         "timed_out": timed_out,
+        "timeout_sec": max(int(timeout_sec), 1),
         "stdout_tail": "\n".join(stdout.splitlines()[-8:]),
         "stderr_tail": "\n".join(stderr.splitlines()[-8:]),
         "payload": payload,
     }
+
+
+def _remaining_timeout_seconds(deadline_monotonic: float, *, per_command_cap: int) -> int:
+    remaining = float(deadline_monotonic) - time.monotonic()
+    if remaining <= 0:
+        return 0
+    return max(1, min(int(per_command_cap), int(math.ceil(remaining))))
+
+
+def _budget_exhausted_attempt(bot: dict[str, Any], cmd: list[str]) -> dict[str, Any]:
+    return {
+        "name": bot.get("name"),
+        "layer": bot.get("layer"),
+        "cmd": list(cmd),
+        "rc": 124,
+        "timed_out": True,
+        "timeout_sec": 0,
+        "skipped": True,
+        "reason": "run_timeout_budget_exhausted",
+        "stdout_tail": "",
+        "stderr_tail": "",
+        "payload": {},
+    }
+
+
+def _opsctl_subcommand(cmd: list[str]) -> str:
+    for index, part in enumerate(cmd):
+        if Path(str(part)).name == "opsctl.sh" and index + 1 < len(cmd):
+            return str(cmd[index + 1]).strip()
+    return ""
+
+
+def _safe_apply_allowed(bot: dict[str, Any]) -> bool:
+    cmd = [str(part) for part in _as_list(bot.get("command"))]
+    subcommand = _opsctl_subcommand(cmd)
+    if not subcommand or subcommand not in SAFE_APPLY_OPSCTL_SUBCOMMANDS:
+        return False
+    if subcommand in {"infrabot-gap-roster", "master-infra-supervisor"} and "--apply" in cmd:
+        return False
+    return True
 
 
 def _bot(
@@ -142,9 +201,21 @@ def _bot(
 
 
 def _writer_lock_handoff(project_root: Path, writer: dict[str, Any]) -> dict[str, Any]:
-    state = _as_dict(writer.get("writer_state_before"))
+    state = (
+        _as_dict(writer.get("writer_state_after_wait"))
+        or _as_dict(writer.get("writer_state_after_remediation"))
+        or _as_dict(writer.get("writer_state_before"))
+    )
     summary = _as_dict(writer.get("summary"))
-    needed = bool(state.get("complete_lock_handoff_needed") or summary.get("completed_writer_lock_handoff_needed"))
+    needed = bool(
+        state.get("complete_lock_handoff_needed")
+        or state.get("active_source") == "completed_lock_handoff_needed"
+        or (
+            not state
+            and summary.get("completed_writer_lock_handoff_needed")
+            and not summary.get("completed_writer_lock_handoff_released")
+        )
+    )
     return _bot(
         bot_id="writer_lock_handoff_infrabot",
         title="Writer Lock Handoff Infrabot",
@@ -158,7 +229,7 @@ def _writer_lock_handoff(project_root: Path, writer: dict[str, Any]) -> dict[str
             f"complete_lock_handoff_needed={needed}",
             f"child_writer_active={bool(state.get('child_writer_active', False))}",
         ],
-        command=_opsctl(project_root, "writer-cycle-coordinator", "--apply", "--skip-drain", "--skip-maintenance", "--json"),
+        command=_opsctl(project_root, "writer-cycle-coordinator", "--apply", "--handoff-only", "--json"),
         stop_when="writer lock is released or writer_state_before.complete_lock_handoff_needed is false.",
     )
 
@@ -403,6 +474,7 @@ def _training_batch_readiness(project_root: Path, training_runtime: dict[str, An
     host_batch_cap = _safe_int(host.get("batch_cap"), 0)
     memory_batch10_safe = bool(host.get("batch10_training_safe", False))
     memory_batch20_safe = bool(host.get("batch20_training_safe", False))
+    memory_batch30_safe = bool(host.get("batch30_training_safe", False))
     status = str(training_runtime.get("overall_status") or "").lower()
     needs_action = (
         status in {"constrained", "blocked", "degraded"}
@@ -415,7 +487,7 @@ def _training_batch_readiness(project_root: Path, training_runtime: dict[str, An
         bot_id="training_batch_readiness_infrabot",
         title="Training Batch Readiness Infrabot",
         layer="training_readiness",
-        responsibility="Keep batch-10 and batch-20 training readiness honest by checking snapshot freshness, memory soak, writer idleness, and governor caps.",
+        responsibility="Keep batch-10, batch-20, and batch-30 training readiness honest by checking snapshot freshness, memory soak, writer idleness, and governor caps.",
         needs_action=needs_action,
         severity="medium",
         evidence=[
@@ -424,9 +496,10 @@ def _training_batch_readiness(project_root: Path, training_runtime: dict[str, An
             f"host_batch_cap={host_batch_cap}",
             f"batch10_training_safe={memory_batch10_safe}",
             f"batch20_training_safe={memory_batch20_safe}",
+            f"batch30_training_safe={memory_batch30_safe}",
             f"launch_blockers={','.join(str(x) for x in launch_blockers)}",
         ],
-        command=_opsctl(project_root, "training-runtime-control", "--limit", "20", "--json"),
+        command=_opsctl(project_root, "training-runtime-control", "--limit", "30", "--json"),
         stop_when="training runtime is ready, batch10 is safe, and launch blockers are empty.",
     )
 
@@ -557,7 +630,43 @@ def _market_explanation_evidence(project_root: Path, explainer: dict[str, Any]) 
     )
 
 
-def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, timeout_sec: int = 300) -> dict[str, Any]:
+def _runtime_paper_contract(project_root: Path, guard: dict[str, Any]) -> dict[str, Any]:
+    status = str(guard.get("overall_status") or "").lower()
+    failed_guards = [str(item) for item in _as_list(guard.get("failed_guards"))]
+    needs_action = not guard or status in {"blocked", "degraded", "needs_work"} or bool(failed_guards)
+    return _bot(
+        bot_id="runtime_paper_contract_infrabot",
+        title="Runtime Paper Contract Infrabot",
+        layer="runtime_paper_control",
+        responsibility="Keep runtime pressure, paper ramp capacity, and blocked-paper execution pause contracts separated and regression-guarded.",
+        needs_action=needs_action,
+        severity="high" if status == "blocked" else "medium",
+        evidence=[
+            f"runtime_paper_guard_status={status or 'missing'}",
+            f"failed_guard_count={len(failed_guards)}",
+            f"runtime_status={guard.get('runtime_status', '')}",
+            f"paper_stage={guard.get('paper_stage', '')}",
+            f"paper_armed={bool(guard.get('paper_armed', False))}",
+            f"failed_guards={','.join(failed_guards)}",
+        ],
+        command=_opsctl(project_root, "runtime-paper-regression-guard", "--json"),
+        stop_when="runtime-paper regression guard is ready and paper ramp remains unarmed while blockers exist.",
+        integration_targets=[
+            "runtime_throttle_control",
+            "paper_400_ramp_control",
+            "system_cleanliness_infrabot",
+            "operator_cockpit",
+        ],
+    )
+
+
+def build_payload(
+    project_root: Path = PROJECT_ROOT,
+    *,
+    apply: bool = False,
+    safe_apply: bool = False,
+    timeout_sec: int = 300,
+) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     writer = _health(project_root, "writer_cycle_coordinator_latest.json")
     cockpit = _health(project_root, "operator_cockpit_latest.json")
@@ -588,6 +697,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, tim
     auth_lease = _health(project_root, "auth_lease_manager_latest.json")
     auth_supervisor = _health(project_root, "schwab_auth_supervisor_latest.json")
     market_explainer = _health(project_root, "market_move_explainer_latest.json")
+    runtime_paper_guard = _health(project_root, "runtime_paper_regression_guard_latest.json")
 
     bots = [
         _writer_lock_handoff(project_root, writer),
@@ -606,19 +716,41 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, tim
         _livefeed_mirror_continuity(project_root, livefeed, livefeed_heavy),
         _auth_lease_preflight(project_root, auth_lease, auth_supervisor),
         _market_explanation_evidence(project_root, market_explainer),
+        _runtime_paper_contract(project_root, runtime_paper_guard),
     ]
 
     active = [bot for bot in bots if bool(bot.get("needs_action"))]
     critical = [bot for bot in active if str(bot.get("severity")) == "critical"]
     high = [bot for bot in active if str(bot.get("severity")) == "high"]
 
+    timeout_budget_seconds = max(int(timeout_sec), 1)
+    run_deadline_monotonic = time.monotonic() + timeout_budget_seconds
+    timeout_budget_exhausted = False
     attempts: list[dict[str, Any]] = []
+    skipped_attempts: list[dict[str, Any]] = []
     if apply:
         for bot in active:
             cmd = list(bot.get("command") or [])
             if not cmd:
                 continue
-            attempts.append({**_run_json(cmd, cwd=project_root, timeout_sec=timeout_sec), "name": bot.get("name"), "layer": bot.get("layer")})
+            if safe_apply and not _safe_apply_allowed(bot):
+                skipped_attempts.append(
+                    {
+                        "name": bot.get("name"),
+                        "layer": bot.get("layer"),
+                        "cmd": cmd,
+                        "reason": "not_in_gap_roster_safe_apply_allowlist",
+                    }
+                )
+                continue
+            remaining_timeout = _remaining_timeout_seconds(run_deadline_monotonic, per_command_cap=timeout_budget_seconds)
+            if remaining_timeout <= 0:
+                timeout_budget_exhausted = True
+                attempts.append(_budget_exhausted_attempt(bot, cmd))
+                continue
+            attempts.append({**_run_json(cmd, cwd=project_root, timeout_sec=remaining_timeout), "name": bot.get("name"), "layer": bot.get("layer")})
+            if _remaining_timeout_seconds(run_deadline_monotonic, per_command_cap=1) <= 0:
+                timeout_budget_exhausted = True
 
     failed_attempts = [row for row in attempts if bool(row.get("timed_out", False)) or int(row.get("rc", 1)) not in {0, 2}]
     overall_status = "ready"
@@ -645,6 +777,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, tim
             "keep livefeed mirrors pressure-aware so observability stays flowing without fighting the computer" if any(bot["id"] == "livefeed_mirror_continuity_infrabot" for bot in active) else "",
             "watch Schwab auth lease before market windows instead of waiting for sleeve failures" if any(bot["id"] == "auth_lease_preflight_infrabot" for bot in active) else "",
             "collect symbol-specific evidence before trusting thin market-move explanations" if any(bot["id"] == "market_explanation_evidence_infrabot" for bot in active) else "",
+            "run the runtime-paper regression guard before widening paper or changing runtime ready/advisory semantics" if any(bot["id"] == "runtime_paper_contract_infrabot" for bot in active) else "",
         ]
     )
 
@@ -654,6 +787,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, tim
         "ok": overall_status == "ready",
         "overall_status": overall_status,
         "apply": bool(apply),
+        "safe_apply": bool(safe_apply),
         "bot_count": len(bots),
         "active_count": len(active),
         "critical_count": len(critical),
@@ -668,9 +802,23 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, tim
                 "cmd": list(row.get("cmd") or []),
                 "rc": int(row.get("rc", 1)),
                 "timed_out": bool(row.get("timed_out", False)),
+                "timeout_sec": _safe_int(row.get("timeout_sec"), 0),
+                "skipped": bool(row.get("skipped", False)),
+                "reason": str(row.get("reason") or ""),
             }
             for row in attempts
         ],
+        "safe_apply_skipped_attempts": skipped_attempts,
+        "safe_apply_policy": {
+            "enabled": bool(safe_apply),
+            "exact_opsctl_subcommands": sorted(SAFE_APPLY_OPSCTL_SUBCOMMANDS),
+            "blocked_broad_apply_commands": [
+                "post-restart-settle --apply",
+                "system-cleanliness-autopilot --apply",
+                "master-infra-supervisor --apply",
+            ],
+            "live_execution_authority": False,
+        },
         "integration_contract": {
             "owner_bot": "infrabot_gap_roster",
             "supervised_by": [
@@ -683,6 +831,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, tim
             "destructive_actions_operator_gated": True,
             "live_execution_authority": False,
             "protected_volume_denylist": ["/Volumes/VIDEO"],
+            "timeout_budget_seconds": timeout_budget_seconds,
+            "timeout_budget_exhausted": bool(timeout_budget_exhausted),
             "policy": "assign exact infrabots to current operational gaps without enabling live execution or broad retrains",
         },
         "source_artifacts": {
@@ -697,6 +847,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, tim
             "livefeed": str(health_root / "livefeed_local_latest.json"),
             "auth_lease": str(health_root / "auth_lease_manager_latest.json"),
             "market_explainer": str(health_root / "market_move_explainer_latest.json"),
+            "runtime_paper_regression_guard": str(health_root / "runtime_paper_regression_guard_latest.json"),
         },
         "recommended_actions": recommended_actions,
     }
@@ -707,11 +858,17 @@ def main() -> int:
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--safe-apply", action="store_true", help="Only execute exact low-risk gap bot commands; skip broad apply fanout.")
     parser.add_argument("--timeout-sec", type=int, default=300)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     project_root = Path(args.project_root).resolve()
-    payload = build_payload(project_root, apply=bool(args.apply), timeout_sec=int(args.timeout_sec))
+    payload = build_payload(
+        project_root,
+        apply=bool(args.apply),
+        safe_apply=bool(args.safe_apply),
+        timeout_sec=int(args.timeout_sec),
+    )
     write_payload(Path(args.out_file), payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))

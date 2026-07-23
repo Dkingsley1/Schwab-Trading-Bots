@@ -30,6 +30,10 @@ DEFAULT_TARGET_FREE_GB = 125.0
 DEFAULT_MIN_AGE_HOURS = 12.0
 DEFAULT_PREFIX_VERIFY_BYTES = 65536
 DEFAULT_FALLBACK_QUARANTINE_ROOT = PROJECT_ROOT / "local_fallback_storage" / "quarantine" / "bot_logs_cleanup"
+DEFAULT_INTERNAL_QUARANTINE_MIN_FREE_GB = float(os.getenv("BOT_LOGS_CLEANUP_INTERNAL_QUARANTINE_MIN_FREE_GB", "25"))
+DEFAULT_CORRUPT_SQLITE_QUARANTINE_MIN_AGE_HOURS = float(
+    os.getenv("BOT_LOGS_CLEANUP_CORRUPT_SQLITE_MIN_AGE_HOURS", "24")
+)
 
 
 def _safe_float(raw: Any, default: float = 0.0) -> float:
@@ -75,6 +79,18 @@ def _disk_snapshot(path: Path) -> dict[str, Any]:
         "used_gb": _gb(usage.used),
         "capacity_pct": round(capacity_pct, 3),
     }
+
+
+def _nearest_existing_parent(path: Path) -> Path:
+    current = path.expanduser()
+    for candidate in (current, *current.parents):
+        if candidate.exists():
+            return candidate
+    return current
+
+
+def _quarantine_disk_snapshot(path: Path) -> dict[str, Any]:
+    return _disk_snapshot(_nearest_existing_parent(path))
 
 
 def _file_size(path: Path) -> int:
@@ -316,6 +332,7 @@ def _scan_external_local_fallback_copies(
     *,
     project_root: Path,
     fallback_quarantine_root: Path,
+    min_quarantine_free_gb: float = DEFAULT_INTERNAL_QUARANTINE_MIN_FREE_GB,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -329,10 +346,14 @@ def _scan_external_local_fallback_copies(
         quarantine_inside_external = str(quarantine_resolved).startswith(str(root_resolved))
     except Exception:
         quarantine_inside_external = False
+    quarantine_disk = _quarantine_disk_snapshot(fallback_quarantine_root)
+    quarantine_free_bytes = _safe_int(quarantine_disk.get("free_bytes"), 0)
+    min_quarantine_free_bytes = int(max(float(min_quarantine_free_gb), 0.0) * (1024**3))
 
     for path in sorted(root.rglob("*")):
         if not path.is_file() or ".local_fallback" not in path.name:
             continue
+        size_bytes = _file_size(path)
         rel_path = _relative(path, root)
         canonical_name = _local_fallback_canonical_name(path.name)
         canonical_rel = str(Path(rel_path).with_name(canonical_name))
@@ -353,6 +374,14 @@ def _scan_external_local_fallback_copies(
             blocked_reasons.append("quarantine_root_inside_external")
             verification_state = "unsafe_quarantine_root"
             verification_reason = "quarantine root must be outside BOT_LOGS to reclaim space"
+        if quarantine_free_bytes and quarantine_free_bytes < size_bytes + min_quarantine_free_bytes:
+            eligible = False
+            blocked_reasons.append("quarantine_root_low_free_space")
+            verification_state = "unsafe_quarantine_capacity"
+            verification_reason = (
+                "local quarantine free space is below the reserve needed to preserve this copy without "
+                "pressuring the internal SSD"
+            )
         rows.append(
             {
                 "tier": 2,
@@ -366,8 +395,10 @@ def _scan_external_local_fallback_copies(
                 "local_preservation_path": str(local_preservation_path),
                 "local_preservation_exists": bool(local_preservation_path.exists()),
                 "external_canonical_exists": bool(external_canonical_path.exists()),
-                "size_bytes": _file_size(path),
-                "reclaimable_bytes": _file_size(path),
+                "size_bytes": int(size_bytes),
+                "reclaimable_bytes": int(size_bytes),
+                "quarantine_disk": quarantine_disk,
+                "min_quarantine_free_gb": round(float(min_quarantine_free_gb), 3),
                 "age_hours": round(age_hours, 3),
                 "current_day": bool(current_day),
                 "eligible": bool(eligible),
@@ -378,6 +409,100 @@ def _scan_external_local_fallback_copies(
                 },
                 "blocked_reasons": ordered_unique(blocked_reasons),
                 "risk_score": 1,
+            }
+        )
+    return rows
+
+
+def _scan_stateful_corrupt_quarantine(
+    root: Path,
+    *,
+    fallback_quarantine_root: Path,
+    min_age_hours: float = DEFAULT_CORRUPT_SQLITE_QUARANTINE_MIN_AGE_HOURS,
+    min_quarantine_free_gb: float = DEFAULT_INTERNAL_QUARANTINE_MIN_FREE_GB,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    data_root = root / "data"
+    if not data_root.exists():
+        return rows
+
+    current = now or datetime.now(timezone.utc)
+    try:
+        quarantine_resolved = fallback_quarantine_root.resolve(strict=False)
+        root_resolved = root.resolve(strict=False)
+        quarantine_inside_external = str(quarantine_resolved).startswith(str(root_resolved))
+    except Exception:
+        quarantine_inside_external = False
+    quarantine_disk = _quarantine_disk_snapshot(fallback_quarantine_root)
+    quarantine_free_bytes = _safe_int(quarantine_disk.get("free_bytes"), 0)
+    min_quarantine_free_bytes = int(max(float(min_quarantine_free_gb), 0.0) * (1024**3))
+
+    for path in sorted(data_root.glob("*.corrupt-*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        lower_name = path.name.lower()
+        if ".sqlite" not in lower_name and ".db" not in lower_name:
+            continue
+        size_bytes = _file_size(path)
+        rel_path = _relative(path, root)
+        canonical_name = path.name.split(".corrupt-", 1)[0]
+        active_sibling = path.with_name(canonical_name)
+        age_hours = _file_age_hours(path, now=current)
+        destination_path = fallback_quarantine_root / "stateful_corrupt" / rel_path
+        blocked_reasons: list[str] = []
+        eligible = True
+        verification_state = "corrupt_stateful_copy_quarantine_preserves_evidence"
+        verification_reason = "old corrupt SQLite quarantine copy can move off BOT_LOGS while the active sibling remains in place"
+
+        if age_hours < max(float(min_age_hours), 0.0):
+            eligible = False
+            blocked_reasons.append("corrupt_sqlite_min_age_not_met")
+            verification_state = "age_policy"
+            verification_reason = "corrupt SQLite copy is still inside the quarantine hold window"
+        if not active_sibling.exists() or active_sibling.is_symlink():
+            eligible = False
+            blocked_reasons.append("active_stateful_sibling_not_verified")
+            verification_state = "active_sibling_missing"
+            verification_reason = "keep corrupt copy until the active SQLite sibling is visible on BOT_LOGS"
+        if quarantine_inside_external:
+            eligible = False
+            blocked_reasons.append("quarantine_root_inside_external")
+            verification_state = "unsafe_quarantine_root"
+            verification_reason = "quarantine root must be outside BOT_LOGS to reclaim space"
+        if quarantine_free_bytes and quarantine_free_bytes < size_bytes + min_quarantine_free_bytes:
+            eligible = False
+            blocked_reasons.append("quarantine_root_low_free_space")
+            verification_state = "unsafe_quarantine_capacity"
+            verification_reason = "local quarantine free space is below the reserve needed to preserve the corrupt copy"
+
+        rows.append(
+            {
+                "tier": 2,
+                "tier_name": "stateful_corrupt_sqlite_quarantine",
+                "family": "stateful_corrupt_sqlite",
+                "economic_value": "medium",
+                "relative_path": rel_path,
+                "path": str(path),
+                "action": "quarantine",
+                "destination_path": str(destination_path),
+                "active_sibling_path": str(active_sibling),
+                "active_sibling_exists": bool(active_sibling.exists() and not active_sibling.is_symlink()),
+                "size_bytes": int(size_bytes),
+                "reclaimable_bytes": int(size_bytes),
+                "quarantine_disk": quarantine_disk,
+                "min_quarantine_free_gb": round(float(min_quarantine_free_gb), 3),
+                "age_hours": round(age_hours, 3),
+                "min_age_hours": round(float(min_age_hours), 3),
+                "current_day": False,
+                "eligible": bool(eligible),
+                "verification": {
+                    "ok": bool(eligible),
+                    "state": verification_state,
+                    "reason": verification_reason,
+                },
+                "blocked_reasons": ordered_unique(blocked_reasons),
+                "risk_score": _risk_score(tier=2, family="stateful_corrupt_sqlite", current_day=False, age_hours=age_hours),
             }
         )
     return rows
@@ -408,17 +533,31 @@ def _select_candidates(
     )
     selected: list[dict[str, Any]] = []
     selected_bytes = 0
+    quarantine_selected_by_disk: dict[str, int] = {}
     max_bytes = max(int(max_delete_bytes), 0)
     for row in eligible:
         reclaimable = _safe_int(row.get("reclaimable_bytes"), 0)
         if reclaimable <= 0:
             continue
+        if str(row.get("action") or "") == "quarantine":
+            quarantine_disk = row.get("quarantine_disk") if isinstance(row.get("quarantine_disk"), dict) else {}
+            disk_key = str(quarantine_disk.get("path") or row.get("destination_path") or "local_quarantine")
+            quarantine_free_bytes = _safe_int(quarantine_disk.get("free_bytes"), 0)
+            min_quarantine_free_bytes = int(max(_safe_float(row.get("min_quarantine_free_gb"), 0.0), 0.0) * (1024**3))
+            quarantine_budget = max(quarantine_free_bytes - min_quarantine_free_bytes, 0)
+            already_selected = int(quarantine_selected_by_disk.get(disk_key, 0))
+            if quarantine_budget and already_selected + reclaimable > quarantine_budget:
+                continue
         if max_bytes and selected_bytes + reclaimable > max_bytes and selected:
             continue
         selected_row = dict(row)
         selected_row["selected"] = True
         selected.append(selected_row)
         selected_bytes += reclaimable
+        if str(row.get("action") or "") == "quarantine":
+            quarantine_disk = row.get("quarantine_disk") if isinstance(row.get("quarantine_disk"), dict) else {}
+            disk_key = str(quarantine_disk.get("path") or row.get("destination_path") or "local_quarantine")
+            quarantine_selected_by_disk[disk_key] = int(quarantine_selected_by_disk.get(disk_key, 0)) + reclaimable
         if int(free_bytes) + selected_bytes >= int(target_free_bytes):
             break
         if max_bytes and selected_bytes >= max_bytes:
@@ -585,8 +724,24 @@ def build_payload(
         project_root=project_root,
         fallback_quarantine_root=fallback_quarantine_root,
     )
+    corrupt_rows = _scan_stateful_corrupt_quarantine(
+        external_root,
+        fallback_quarantine_root=fallback_quarantine_root,
+    )
     stale_rows = _scan_stale_stage(external_root)
-    all_candidates = duplicate_rows + fallback_rows + stale_rows
+    deep_cold_layer = load_json(project_root / "governance" / "health" / "deep_cold_storage_layer_latest.json")
+    deep_cold_summary = (
+        deep_cold_layer.get("summary")
+        if isinstance(deep_cold_layer.get("summary"), dict)
+        else {}
+    )
+    retention_v2 = load_json(project_root / "governance" / "health" / "retention_intelligence_v2_latest.json")
+    retention_report = (
+        retention_v2.get("retention_report_card")
+        if isinstance(retention_v2.get("retention_report_card"), dict)
+        else {}
+    )
+    all_candidates = duplicate_rows + fallback_rows + corrupt_rows + stale_rows
     selected = _select_candidates(
         all_candidates,
         free_bytes=free_bytes,
@@ -641,9 +796,10 @@ def build_payload(
         "max_tier": int(max_tier),
         "guardrails": {
             "tier_1": "delete raw .jsonl only when a matching .jsonl.gz sibling exists and the prefix matches",
-            "tier_2": "offload external .local_fallback* conflict copies to local quarantine, then delete stale-stage files only after value-based age windows pass",
+            "tier_2": "offload external .local_fallback* conflict copies and old corrupt SQLite quarantine copies to local quarantine only when internal quarantine headroom is safe; then delete stale-stage files only after value-based age windows pass",
             "tier_3": "recommend SQL compaction or offload; do not delete stateful SQLite files here",
             "fallback_quarantine_root": str(fallback_quarantine_root),
+            "internal_quarantine_min_free_gb": round(float(DEFAULT_INTERNAL_QUARANTINE_MIN_FREE_GB), 3),
             "protect_current_day": bool(protect_current_day),
             "min_age_hours": float(min_age_hours),
             "prefix_verify_bytes": int(prefix_verify_bytes),
@@ -657,6 +813,30 @@ def build_payload(
         "projected_free_gb": _gb(projected_free_bytes),
         "remaining_to_target_gb": _gb(still_needed_bytes),
         "candidate_summary": candidates_summary,
+        "deep_cold_layer": {
+            "ready": bool(deep_cold_layer.get("ok", False)),
+            "managed_gb": _safe_float(deep_cold_summary.get("managed_gb"), 0.0),
+            "retention_locked_gb": _safe_float(deep_cold_summary.get("retention_locked_gb"), 0.0),
+            "manifest_path": str(deep_cold_layer.get("manifest_path") or ""),
+            "policy": "manifest-index retention-locked evidence; cleanup still owns actual deletion windows",
+        },
+            "retention_intelligence_v2": {
+            "ready": bool(retention_v2.get("ok", False)),
+            "overall_status": str(retention_v2.get("overall_status") or ""),
+            "overall_grade": str(retention_report.get("overall_grade") or ""),
+            "overall_score": _safe_float(retention_report.get("overall_score"), 0.0),
+            "registry_path": str(((retention_v2.get("retention_class_registry") or {}).get("registry_path")) or ""),
+            "policy": "value-based retention report card guides cleanup before broad deletes",
+        },
+        "corrupt_sqlite_quarantine": {
+            "candidate_count": len(corrupt_rows),
+            "eligible_count": sum(1 for row in corrupt_rows if bool(row.get("eligible", False))),
+            "candidate_gb": _gb(sum(_safe_int(row.get("reclaimable_bytes"), 0) for row in corrupt_rows)),
+            "eligible_gb": _gb(
+                sum(_safe_int(row.get("reclaimable_bytes"), 0) for row in corrupt_rows if bool(row.get("eligible", False)))
+            ),
+            "policy": "move old corrupt SQLite quarantine copies off BOT_LOGS; active SQLite siblings remain untouched",
+        },
         "selected_candidates": selected_top,
         "top_candidates": _top_rows(all_candidates, limit=30),
         "apply_result": apply_result,
@@ -676,14 +856,21 @@ def build_payload(
                 "history rows record applied/deleted bytes so future cleanup can measure which tier actually helped",
                 "current-day raw JSONL protection prevents the cleanup layer from racing active writers",
                 "external failback conflict copies are offloaded to local quarantine instead of being destroyed",
+                "old corrupt SQLite quarantine copies are moved off BOT_LOGS only after active sibling and local quarantine headroom checks pass",
                 "tier selection stops as soon as the target free-space floor is projected or achieved",
             ],
             "next_actions": ordered_unique(
                 [
                     "refresh storage-tier-policy and storage-quota-guard after cleanup",
+                    "refresh retention-intelligence-v2 so cleanup keeps value-based retention context current"
+                    if not bool(retention_v2.get("ok", False)) else "",
+                    "refresh deep-cold-storage-layer when stale-stage archives are retained but not deletion-eligible"
+                    if len(stale_rows) > 0 else "",
                     "run max-tier 2 only if tier 1 does not recover enough space",
                     "keep autosync disabled or space-gated until BOT_LOGS has enough free space"
                     if len(fallback_rows) > 0 else "",
+                    "quarantine old corrupt SQLite copies off BOT_LOGS to recover runway without deleting active databases"
+                    if len(corrupt_rows) > 0 and still_needed_bytes > 0 else "",
                     "checkpoint and compact jsonl_link.sqlite3 separately; it is stateful and intentionally outside this delete lane"
                     if still_needed_bytes > 0 else "",
                 ]

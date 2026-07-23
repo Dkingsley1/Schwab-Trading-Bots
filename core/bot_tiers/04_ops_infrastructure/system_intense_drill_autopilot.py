@@ -1,0 +1,1 @@
+../../../scripts/ops/system_intense_drill_autopilot.py

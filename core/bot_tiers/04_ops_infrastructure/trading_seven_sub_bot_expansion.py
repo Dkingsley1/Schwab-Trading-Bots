@@ -1,0 +1,1 @@
+../../../scripts/ops/trading_seven_sub_bot_expansion.py

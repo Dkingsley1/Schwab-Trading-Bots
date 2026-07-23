@@ -643,3 +643,31 @@ def test_deferred_sample_starved_reason_writes_diagnostics(tmp_path: Path) -> No
     assert "defer_runtime_training_until_more_data" in message
     assert payload["status"] == "deferred_sample_starved"
     assert payload["recommended_retry"]["lookback_days"] == 60
+
+
+def test_deferred_quality_guard_reason_preserves_quality_status(tmp_path: Path) -> None:
+    message = common._deferred_quality_guard_reason(
+        run_tag="brain_refinery_v260_crypto_stablecoin_liquidity_impulse_bot",
+        project_root=tmp_path,
+        diagnostics_payload={
+            "run_tag": "brain_refinery_v260_crypto_stablecoin_liquidity_impulse_bot",
+            "status": "failed_quality_guard",
+            "failure_categories": ["quality_guard_failure", "acted_coverage_tuning"],
+            "metrics": {"acted_accuracy": 0.5},
+        },
+        quality_failures=["acted_accuracy=0.5000 < min_acted_accuracy=0.6000"],
+    )
+
+    latest = (
+        tmp_path
+        / "governance"
+        / "training_diagnostics"
+        / "brain_refinery_v260_crypto_stablecoin_liquidity_impulse_bot_latest.json"
+    )
+    payload = json.loads(latest.read_text(encoding="utf-8"))
+
+    assert "defer_training_quality_guard" in message
+    assert "defer_runtime_training_until_more_data" not in message
+    assert payload["status"] == "deferred_quality_guard"
+    assert payload["quality_deferred"] is True
+    assert payload["failure_categories"] == ["quality_guard_failure", "acted_coverage_tuning"]

@@ -47,6 +47,7 @@ SPEC = CryptoRuntimeSpec(
     signal_builder=_squeeze_signal,
     bias_builder=_squeeze_bias,
     min_signal=0.24,
+    defer_on_quality_failure=True,
 )
 
 

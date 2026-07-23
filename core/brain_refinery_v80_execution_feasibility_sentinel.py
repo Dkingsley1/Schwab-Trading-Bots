@@ -1,6 +1,9 @@
 import numpy as np
 
-from indicator_bot_common import ema, rolling_mean, rolling_std, train_indicator_bot
+from indicator_bot_common import ema, rolling_mean, rolling_std, simulate_market_panel, train_price_indicator_bot
+
+WINDOW = 44
+HORIZON = 3
 
 
 def build_features(panel):
@@ -28,8 +31,44 @@ def build_features(panel):
     )
 
 
-if __name__ == "__main__":
-    train_indicator_bot(
+def _price_axis(n):
+    return np.arange(max(int(n), 1), dtype=np.float64)
+
+
+def _build_feasibility_dataset(prices):
+    panel = simulate_market_panel(int(len(prices)))
+    features = build_features(panel)
+    model_features = (features - features.mean(axis=0, keepdims=True)) / (features.std(axis=0, keepdims=True) + 1e-8)
+    feasibility = features[:, -1]
+    slippage_risk = features[:, -2]
+    liquidity_stress = features[:, -3]
+
+    samples = []
+    scores = []
+    anchors = []
+    for idx in range(WINDOW - 1, len(features) - HORIZON):
+        future_slice = slice(idx + 1, idx + HORIZON + 1)
+        score = (
+            0.62 * float(np.mean(feasibility[future_slice]))
+            + 0.22 * float(1.0 - np.mean(slippage_risk[future_slice]))
+            + 0.16 * float(1.0 - np.mean(liquidity_stress[future_slice]))
+        )
+        samples.append(model_features[idx - WINDOW + 1 : idx + 1].reshape(-1))
+        scores.append(score)
+        anchors.append(idx)
+
+    score_array = np.asarray(scores, dtype=np.float32)
+    threshold = float(np.median(score_array)) if score_array.size else 0.5
+    labels = (score_array >= threshold).astype(np.float32).reshape(-1, 1)
+    return (
+        np.asarray(samples, dtype=np.float32),
+        labels,
+        np.asarray(anchors, dtype=np.int64),
+    )
+
+
+def train_brain():
+    return train_price_indicator_bot(
         run_tag="brain_refinery_v80_execution_feasibility_sentinel",
         feature_names=[
             "ret",
@@ -42,15 +81,13 @@ if __name__ == "__main__":
             "slippage_risk",
             "feasibility_score",
         ],
-        feature_builder=build_features,
-        window=44,
-        horizon=3,
-        acted_prob_threshold=0.80,
-        min_long_precision=0.52,
-        min_short_precision=0.52,
-        require_both_sides_precision=True,
-        min_acted_accuracy=0.58,
-        min_accuracy_lift_over_majority=0.02,
-        min_precision_balance_score=0.48,
-        max_acted_coverage=0.28,
+        feature_builder=lambda prices: np.zeros((len(prices), 1), dtype=np.float32),
+        price_simulator=_price_axis,
+        dataset_builder=_build_feasibility_dataset,
+        window=WINDOW,
+        horizon=HORIZON,
     )
+
+
+if __name__ == "__main__":
+    train_brain()

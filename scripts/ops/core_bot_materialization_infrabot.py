@@ -22,7 +22,7 @@ def _utc_now() -> str:
 
 def _run_catalog(project_root: Path) -> dict[str, Any]:
     cmd = [
-        str(project_root / ".venv312" / "bin" / "python"),
+        str(project_root / ".venv314" / "bin" / "python"),
         str(project_root / "scripts" / "ops" / "build_core_bot_catalog.py"),
         "--json",
     ]
@@ -38,7 +38,7 @@ def _run_catalog(project_root: Path) -> dict[str, Any]:
 
 def _run_tier_organizer(project_root: Path) -> dict[str, Any]:
     cmd = [
-        str(project_root / ".venv312" / "bin" / "python"),
+        str(project_root / ".venv314" / "bin" / "python"),
         str(project_root / "scripts" / "ops" / "organize_core_bot_tiers.py"),
         "--json",
     ]

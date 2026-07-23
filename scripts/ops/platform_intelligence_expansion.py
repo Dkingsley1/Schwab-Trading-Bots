@@ -148,6 +148,14 @@ def _as_dict(raw: Any) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _watch_or_needs_work(*, watch: bool, hard: bool = False) -> str:
+    if hard:
+        return "needs_work"
+    if watch:
+        return "watch"
+    return "ready"
+
+
 def _read_health(project_root: Path, name: str) -> dict[str, Any]:
     payload = load_json(project_root / "governance" / "health" / name)
     return payload if isinstance(payload, dict) else {}
@@ -345,14 +353,25 @@ def _quality_system(quality_rows: list[dict[str, Any]], *, max_rows: int) -> dic
         key=lambda row: (_safe_float(row.get("quality_score"), 0.0), str(row.get("bot_id") or "")),
     )
     strong = sorted(quality_rows, key=lambda row: (-_safe_float(row.get("quality_score"), 0.0), str(row.get("bot_id") or "")))
-    overall_status = "ready"
-    if label_counts.get("cold_start", 0) + label_counts.get("probation", 0) > max(len(quality_rows) * 0.35, 20):
-        overall_status = "needs_work"
+    debt_count = label_counts.get("cold_start", 0) + label_counts.get("probation", 0)
+    debt_ratio = debt_count / max(len(quality_rows), 1)
+    unsafe_live_candidates = [
+        row
+        for row in quality_rows
+        if _bool(row.get("direct_execution_allowed")) and _safe_float(row.get("quality_score"), 0.0) < 80.0
+    ]
+    overall_status = _watch_or_needs_work(
+        watch=avg < 55.0 or debt_count > max(len(quality_rows) * 0.35, 20),
+        hard=bool(unsafe_live_candidates),
+    )
     return {
         "overall_status": overall_status,
         "bot_count": len(quality_rows),
         "average_quality_score": round(avg, 3),
         "label_counts": dict(sorted(label_counts.items())),
+        "quality_debt_count": debt_count,
+        "quality_debt_ratio": round(debt_ratio, 6),
+        "unsafe_live_candidate_count": len(unsafe_live_candidates),
         "top_probation": probation[:max_rows],
         "top_strong": strong[:max_rows],
         "score_contract": {
@@ -578,9 +597,19 @@ def _execution_realism(project_root: Path) -> dict[str, Any]:
     worst_slippage = max([_safe_float(row.get("slippage_bps"), 0.0) for row in worst if isinstance(row, dict)] or [0.0])
     curve_summary = _as_dict(capacity_curves.get("summary"))
     constrained_curves = _safe_int(curve_summary.get("constrained_curve_count"), 0)
-    status = "ready"
-    if mae_bps >= 35.0 or worst_slippage >= 40.0 or constrained_curves > 0:
-        status = "needs_work"
+    watch_reasons = []
+    if mae_bps >= 35.0:
+        watch_reasons.append("calibration_mae_watch")
+    if worst_slippage >= 40.0:
+        watch_reasons.append("worst_case_slippage_watch")
+    if constrained_curves > 0:
+        watch_reasons.append("capacity_curves_constrained")
+    severe_reasons = []
+    if mae_bps >= 60.0:
+        severe_reasons.append("calibration_mae_severe")
+    if worst_slippage >= 75.0:
+        severe_reasons.append("worst_case_slippage_severe")
+    status = _watch_or_needs_work(watch=bool(watch_reasons), hard=bool(severe_reasons))
     if not calibration and not execution_lab:
         status = "missing"
     return {
@@ -589,6 +618,8 @@ def _execution_realism(project_root: Path) -> dict[str, Any]:
         "poor_or_fair_fill_count": poor_fills,
         "worst_lab_slippage_bps": round(worst_slippage, 3),
         "constrained_capacity_curve_count": constrained_curves,
+        "watch_reasons": watch_reasons,
+        "severe_reasons": severe_reasons,
         "paper_trade_realism_contract": [
             "slippage",
             "spread",
@@ -660,7 +691,15 @@ def _provider_rotation_failover(project_root: Path, *, max_rows: int) -> dict[st
         )
 
     source_verification = load_json(health_root / "source_verification_latest.json")
+    provider_mesh = load_json(health_root / "provider_mesh_latest.json")
+    mesh_summary = _as_dict(provider_mesh.get("summary"))
+    required_failures = _safe_int(mesh_summary.get("required_failure_count"), len(_as_list(provider_mesh.get("required_failures"))))
+    soft_failures = _safe_int(mesh_summary.get("soft_failure_count"), len(_as_list(provider_mesh.get("soft_failures"))))
+    source_overall = _as_dict(source_verification.get("overall"))
+    unverified_sources = len(_as_list(source_overall.get("unverified_sources")))
+    stale_sources = len(_as_list(source_overall.get("stale_sources")))
     degraded = [row for row in provider_rows if str(row.get("overall_status")) in {"degraded", "cooldown"}]
+    hard_degraded = [row for row in degraded if str(row.get("overall_status")) == "degraded" and required_failures > 0]
     provider_counts = Counter(str(row.get("provider") or "unknown") for row in provider_rows)
     routes = {
         "schwab": ["latest_good_cache", "ETF_proxy_context", "provider_http_cooldown"],
@@ -671,10 +710,12 @@ def _provider_rotation_failover(project_root: Path, *, max_rows: int) -> dict[st
     }
     if not provider_rows:
         status = "thin"
-    elif any(str(row.get("overall_status")) == "degraded" for row in degraded):
+    elif required_failures > 0 or hard_degraded:
         status = "needs_work"
     elif degraded:
-        status = "degraded"
+        status = "watch"
+    elif soft_failures > 0 or unverified_sources > 0 or stale_sources > 0:
+        status = "watch"
     else:
         status = "ready"
     return {
@@ -682,9 +723,14 @@ def _provider_rotation_failover(project_root: Path, *, max_rows: int) -> dict[st
         "provider_count": len(provider_rows),
         "provider_counts": dict(sorted(provider_counts.items())),
         "degraded_provider_count": len(degraded),
+        "required_failure_count": required_failures,
+        "soft_failure_count": soft_failures,
+        "unverified_source_count": unverified_sources,
+        "stale_source_count": stale_sources,
         "provider_routes": routes,
         "providers": sorted(provider_rows, key=lambda row: (str(row.get("overall_status") or ""), str(row.get("source_key") or "")))[:max_rows],
         "source_verification_status": str(source_verification.get("overall_status") or "missing"),
+        "provider_mesh_status": str(provider_mesh.get("overall_status") or "missing"),
         "failover_contract": [
             "403_429_provider_denials_go_to_cooldown_not_global_halt",
             "cache_or_proxy_context_is_allowed_for_collection",
@@ -926,11 +972,15 @@ def _correlation_governor(quality_rows: list[dict[str, Any]], *, max_rows: int) 
         if count >= max(10, total * 0.1)
     ]
     status = "ready"
-    if concentration >= 0.30 or overloaded_dependencies:
+    direct_live_rows = [row for row in quality_rows if _bool(row.get("direct_execution_allowed"))]
+    if direct_live_rows and (concentration >= 0.30 or overloaded_dependencies):
         status = "needs_work"
+    elif concentration >= 0.30 or overloaded_dependencies:
+        status = "watch"
     return {
         "overall_status": status,
         "sleeve_concentration": round(concentration, 6),
+        "direct_live_candidate_count": len(direct_live_rows),
         "largest_sleeves": [{"sleeve": key, "bot_count": count} for key, count in sleeve_counts.most_common(max_rows)],
         "overloaded_correlation_dependencies": overloaded_dependencies[:max_rows],
         "top_peer_sleeves": [{"peer_sleeve": key, "bot_count": count} for key, count in peer_counts.most_common(max_rows)],
@@ -969,14 +1019,23 @@ def _duplicate_alpha_overlap_detector(quality_rows: list[dict[str, Any]], *, max
         )
     overlap_rows.sort(key=lambda item: (-_safe_int(item.get("cluster_size"), 0), str(item.get("sleeve") or "")))
     status = "ready"
-    if any(str(row.get("overlap_risk")) == "high" for row in overlap_rows):
+    high_overlap_rows = [row for row in overlap_rows if str(row.get("overlap_risk")) == "high"]
+    direct_overlap = [
+        row
+        for row in overlap_rows
+        if any(_bool(bot.get("direct_execution_allowed")) for bot in clusters.get((str(row.get("sleeve")), str(row.get("target_key")), str(row.get("dependency_key"))), []))
+    ]
+    if direct_overlap:
         status = "needs_work"
+    elif high_overlap_rows:
+        status = "watch"
     elif overlap_rows:
         status = "watch"
     return {
         "overall_status": status,
         "overlap_cluster_count": len(overlap_rows),
-        "high_overlap_cluster_count": sum(1 for row in overlap_rows if str(row.get("overlap_risk")) == "high"),
+        "high_overlap_cluster_count": len(high_overlap_rows),
+        "direct_execution_overlap_cluster_count": len(direct_overlap),
         "overlap_clusters": overlap_rows[:max_rows],
         "novelty_contract": [
             "compare_sleeve_target_functions_and_correlation_dependencies",
@@ -1005,15 +1064,24 @@ def _model_decay(project_root: Path, quality_rows: list[dict[str, Any]], *, max_
         if _safe_int(row.get("no_improvement_streak"), 0) >= 3 or str(row.get("sleeve") or "") in weak_sleeves
     ]
     decaying.sort(key=lambda row: (-_safe_int(row.get("no_improvement_streak"), 0), _safe_float(row.get("quality_score"), 0.0)))
-    status = "ready"
-    if decaying or str(decay.get("overall_status") or "") == "needs_work":
-        status = "needs_work"
+    direct_decaying = [
+        row
+        for row in quality_rows
+        if _bool(row.get("direct_execution_allowed"))
+        and (_safe_int(row.get("no_improvement_streak"), 0) >= 3 or str(row.get("sleeve") or "") in weak_sleeves)
+    ]
+    status = _watch_or_needs_work(
+        watch=bool(decaying) or str(decay.get("overall_status") or "") == "needs_work",
+        hard=bool(direct_decaying),
+    )
     if not decay:
         status = "thin"
     return {
         "overall_status": status,
         "decay_monitor_status": str(decay.get("overall_status") or "missing"),
         "decaying_bot_count": len(decaying),
+        "direct_execution_decaying_count": len(direct_decaying),
+        "decaying_bot_ratio": round(len(decaying) / max(len(quality_rows), 1), 6),
         "weak_sleeves": sorted(weak_sleeves),
         "decaying_bots": decaying[:max_rows],
         "source_file": str(project_root / "governance" / "research" / "decay_monitor_latest.json"),
@@ -1074,10 +1142,13 @@ def _self_healing_incident_playbooks(project_root: Path, pressure: dict[str, Any
         },
     ]
     triggered = [row for row in playbooks if _bool(row.get("triggered"))]
+    manual_triggered = [row for row in triggered if not _bool(row.get("auto_allowed"))]
+    status = _watch_or_needs_work(watch=bool(triggered), hard=bool(manual_triggered))
     return {
-        "overall_status": "needs_work" if triggered else "ready",
+        "overall_status": status,
         "playbook_count": len(playbooks),
         "triggered_count": len(triggered),
+        "manual_triggered_count": len(manual_triggered),
         "triggered_playbooks": triggered[:max_rows],
         "available_playbooks": playbooks,
         "incident_contract": [
@@ -1145,8 +1216,10 @@ def _system_dashboard(
         overall_status = "blocked"
     elif worst_rank >= status_rank("degraded"):
         overall_status = "degraded"
-    elif any(str(row.get("overall_status")) in {"needs_work", "thin"} for row in rows):
+    elif any(str(row.get("overall_status")) == "needs_work" for row in rows):
         overall_status = "needs_work"
+    elif any(str(row.get("overall_status")) in {"watch", "thin"} for row in rows):
+        overall_status = "watch"
     else:
         overall_status = "ready"
     return {
@@ -1303,7 +1376,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_rows: int = 25) -> d
     payload = {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
-        "ok": dashboard["overall_status"] in {"ready", "needs_work", "degraded", "blocked"},
+        "ok": dashboard["overall_status"] in {"ready", "watch", "needs_work", "degraded", "blocked"},
         "overall_status": dashboard["overall_status"],
         "mode": "advisory_read_only_no_new_runtime_loops",
         "expansion_count": len(PRIMARY_SECTION_KEYS),

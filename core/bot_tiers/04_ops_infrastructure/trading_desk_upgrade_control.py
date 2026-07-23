@@ -1,0 +1,1 @@
+../../../scripts/ops/trading_desk_upgrade_control.py

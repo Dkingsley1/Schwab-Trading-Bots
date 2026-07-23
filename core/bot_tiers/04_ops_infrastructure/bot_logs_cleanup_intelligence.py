@@ -1,0 +1,1 @@
+../../../scripts/ops/bot_logs_cleanup_intelligence.py

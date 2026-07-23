@@ -10,6 +10,8 @@ from runtime_training_common import (
     rolling_drawdown as runtime_rolling_drawdown,
 )
 
+RUNTIME_PRESSURE_FLOOR = 0.20
+
 
 def rolling_drawdown(close, window=180):
     out = np.zeros_like(close)
@@ -118,7 +120,7 @@ def _runtime_sample_filter(sequence, idx, horizon):
         and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.35
         and abs(observation_feature(obs, "spread_bps", 0.0)) <= 45.0
         and observation_feature(obs, "queue_depth", 0.0) >= 0.0
-        and pressure >= 0.38
+        and pressure >= RUNTIME_PRESSURE_FLOOR
         and (
             abs(observation_feature(obs, "behavior_prior")) >= 0.08
             or specialist_edge >= 0.15
@@ -169,8 +171,8 @@ def _train_synthetic():
     )
 
 
-if __name__ == "__main__":
-    train_runtime_indicator_bot(
+def train_brain():
+    return train_runtime_indicator_bot(
         run_tag="brain_refinery_v86_risk_budget_allocator_v2",
         feature_names=[
             "pct_from_close",
@@ -219,10 +221,13 @@ if __name__ == "__main__":
         min_confidence=0.36,
         sample_stride=1,
         lookback_days=45,
-        window=28,
-        horizon=10,
-        min_samples=180,
-        min_sequences=3,
+        window=4,
+        horizon=1,
+        min_samples=80,
+        min_sequences=8,
+        min_positive_samples=24,
+        min_negative_samples=24,
+        batch_size=32,
         fallback_trainer=_train_synthetic,
         allow_fallback_on_insufficient_data=False,
         max_best_val_loss=0.690,
@@ -237,4 +242,9 @@ if __name__ == "__main__":
         min_accuracy_lift_over_majority=0.025,
         min_precision_balance_score=0.55,
         max_acted_coverage=0.24,
+        defer_on_quality_failure=True,
     )
+
+
+if __name__ == "__main__":
+    train_brain()

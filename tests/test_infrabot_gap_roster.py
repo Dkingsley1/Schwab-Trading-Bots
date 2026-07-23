@@ -88,11 +88,13 @@ def test_infrabot_gap_roster_assigns_gap_bots(tmp_path: Path) -> None:
 
     payload = infrabot_gap_roster.build_payload(project_root)
 
-    assert payload["bot_count"] == 16
-    assert payload["active_count"] == 16
+    assert payload["bot_count"] == 17
+    assert payload["active_count"] == 17
     assert payload["overall_status"] == "blocked"
     names = payload["assigned_infrabots"]
     assert "writer_lock_handoff_infrabot" in names
+    writer_handoff = next(bot for bot in payload["infrabots"] if bot["id"] == "writer_lock_handoff_infrabot")
+    assert writer_handoff["command"][-3:] == ["--apply", "--handoff-only", "--json"]
     assert "health_truth_reconciler_infrabot" in names
     assert "provider_cross_verification_infrabot" in names
     assert "paper_feedback_repair_infrabot" in names
@@ -108,8 +110,41 @@ def test_infrabot_gap_roster_assigns_gap_bots(tmp_path: Path) -> None:
     assert "livefeed_mirror_continuity_infrabot" in names
     assert "auth_lease_preflight_infrabot" in names
     assert "market_explanation_evidence_infrabot" in names
+    assert "runtime_paper_contract_infrabot" in names
     assert payload["integration_contract"]["live_execution_authority"] is False
     assert "/Volumes/VIDEO" in payload["integration_contract"]["protected_volume_denylist"]
+
+
+def test_infrabot_gap_roster_does_not_reopen_released_writer_handoff(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "writer_cycle_coordinator_latest.json",
+        {
+            "overall_status": "handoff_released",
+            "writer_state_before": {
+                "current_step": "complete",
+                "active_source": "completed_lock_handoff_needed",
+                "complete_lock_handoff_needed": True,
+                "child_writer_active": False,
+            },
+            "writer_state_after_wait": {
+                "current_step": "complete",
+                "active_source": "idle",
+                "complete_lock_handoff_needed": False,
+                "child_writer_active": False,
+            },
+            "summary": {
+                "completed_writer_lock_handoff_needed": True,
+                "completed_writer_lock_handoff_released": True,
+            },
+        },
+    )
+
+    payload = infrabot_gap_roster.build_payload(project_root)
+    writer_handoff = next(bot for bot in payload["infrabots"] if bot["id"] == "writer_lock_handoff_infrabot")
+
+    assert writer_handoff["needs_action"] is False
 
 
 def test_system_cleanliness_infrabot_delegates_gap_roster(tmp_path: Path) -> None:
@@ -173,6 +208,7 @@ def test_system_cleanliness_infrabot_delegates_gap_roster(tmp_path: Path) -> Non
             "unknowns": [],
         },
     )
+    _write_json(health / "runtime_paper_regression_guard_latest.json", {"overall_status": "ready", "ok": True, "failed_guards": []})
 
     payload = system_cleanliness_infrabot.build_payload(project_root)
 
@@ -181,3 +217,47 @@ def test_system_cleanliness_infrabot_delegates_gap_roster(tmp_path: Path) -> Non
     assert "infrabot_gap_roster" in payload["assigned_scope"]
     assert "protected_volume_boundary_infrabot" in payload["supervision_contract"]["delegated_infrabots"]
     assert "training_batch_readiness_infrabot" in payload["supervision_contract"]["delegated_infrabots"]
+    assert "runtime_paper_contract_infrabot" in payload["supervision_contract"]["delegated_infrabots"]
+
+
+def test_infrabot_gap_roster_apply_respects_run_timeout_budget(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(health / "provider_mesh_latest.json", {"overall_status": "degraded", "soft_failures": ["sec_edgar_context"]})
+    _write_json(health / "source_verification_latest.json", {"overall_status": "ready", "overall": {"unverified_sources": ["market_quote_profiles"]}})
+    _write_json(
+        health / "host_capability_contract_latest.json",
+        {
+            "body_map": {"storage_layout": {"protected_volumes": ["/Volumes/VIDEO"]}},
+            "adapters": {"protected_storage": {"denylist": ["/Volumes/VIDEO"]}},
+        },
+    )
+    _write_json(health / "codex_project_guard_latest.json", {"workspace_boundary": {"blocked_volume": "/Volumes/VIDEO"}})
+
+    monotonic_now = {"value": 1000.0}
+    calls: list[tuple[list[str], int]] = []
+
+    monkeypatch.setattr(infrabot_gap_roster.time, "monotonic", lambda: monotonic_now["value"])
+
+    def _fake_run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict:
+        calls.append((list(cmd), int(timeout_sec)))
+        monotonic_now["value"] += float(timeout_sec) + 0.01
+        return {
+            "cmd": list(cmd),
+            "rc": 0,
+            "timed_out": False,
+            "timeout_sec": int(timeout_sec),
+            "payload": {"overall_status": "ready"},
+            "stdout_tail": "",
+            "stderr_tail": "",
+        }
+
+    monkeypatch.setattr(infrabot_gap_roster, "_run_json", _fake_run_json)
+
+    payload = infrabot_gap_roster.build_payload(project_root, apply=True, timeout_sec=5)
+
+    assert calls
+    assert calls[0][1] == 5
+    assert payload["integration_contract"]["timeout_budget_exhausted"] is True
+    assert any(row["skipped"] and row["reason"] == "run_timeout_budget_exhausted" for row in payload["attempts"])
+    assert payload["overall_status"] == "blocked"

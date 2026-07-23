@@ -57,6 +57,7 @@ SPEC = CryptoRuntimeSpec(
     feature_fields=FEATURE_FIELDS,
     signal_builder=_tradfi_bridge_signal,
     bias_builder=_tradfi_bridge_bias,
+    defer_on_quality_failure=True,
 )
 
 

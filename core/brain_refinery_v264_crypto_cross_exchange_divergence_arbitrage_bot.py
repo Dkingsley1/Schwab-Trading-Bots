@@ -54,6 +54,7 @@ SPEC = CryptoRuntimeSpec(
     signal_builder=_divergence_signal,
     bias_builder=_divergence_bias,
     min_signal=0.18,
+    defer_on_quality_failure=True,
 )
 
 
