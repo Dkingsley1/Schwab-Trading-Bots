@@ -80,6 +80,7 @@ TICKER_1000_EXPANSION_SECTIONS: dict[str, list[str]] = {
 TICKER_UNIVERSE_TARGET_COUNT = 1000
 TICKER_UNIVERSE_HOT_COUNT = 150
 TICKER_UNIVERSE_STANDARD_COUNT = 500
+TICKER_UNIVERSE_SENTINEL_SYMBOLS = ["HUT", "ACWI", "GFF"]
 
 RUNTIME_INTAKE_ENV = {
     "TICKER_NEWS_MAX_SYMBOLS": "1000",
@@ -262,7 +263,16 @@ def _equity_like(symbols: list[str]) -> list[str]:
 def _target_tiers(env: dict[str, str]) -> dict[str, list[str]]:
     base_symbols = _unique_symbols(env)
     expansion_symbols = [symbol for symbol in _flatten_sections(TICKER_1000_EXPANSION_SECTIONS) if symbol not in set(base_symbols)]
-    all_symbols = ordered_unique([*base_symbols, *expansion_symbols])[:TICKER_UNIVERSE_TARGET_COUNT]
+    candidate_symbols = ordered_unique([*base_symbols, *expansion_symbols])
+    all_symbols = candidate_symbols[:TICKER_UNIVERSE_TARGET_COUNT]
+    for sentinel in TICKER_UNIVERSE_SENTINEL_SYMBOLS:
+        if sentinel in all_symbols or sentinel not in candidate_symbols:
+            continue
+        if len(all_symbols) >= TICKER_UNIVERSE_TARGET_COUNT:
+            all_symbols[-1] = sentinel
+        else:
+            all_symbols.append(sentinel)
+        all_symbols = ordered_unique(all_symbols)
     hot_symbols = ordered_unique(
         [
             *UNIVERSES["SHADOW_SYMBOLS_CORE"],

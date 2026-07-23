@@ -102,6 +102,7 @@ class MasterBot:
         self.freeze_bot_count_enabled = os.getenv("MASTER_FREEZE_BOT_COUNT", "1").strip() == "1"
         self.strict_live_pass_only = os.getenv("MASTER_STRICT_LIVE_PASS_ONLY", "1").strip() == "1"
         self.supportable_floor_recovery_enabled = os.getenv("MASTER_SUPPORTABLE_FLOOR_RECOVERY", "1").strip() == "1"
+        self.promote_held_champion_when_gate_green = os.getenv("MASTER_PROMOTE_HELD_CHAMPION_WHEN_GATE_GREEN", "0").strip() == "1"
         self.require_confirmed_training_success = os.getenv("REQUIRE_CONFIRMED_TRAINING_SUCCESS", "1").strip() == "1"
         self.confirmed_training_success_max_age_hours = float(os.getenv("CONFIRMED_TRAINING_SUCCESS_MAX_AGE_HOURS", "72"))
         self.training_success_file = os.getenv(
@@ -295,6 +296,26 @@ class MasterBot:
             return False, f"status={status}"
 
         return True, "ok"
+
+    @staticmethod
+    def _active_held_champion_prev_row(prev_row: Dict[str, object]) -> bool:
+        if not bool(prev_row.get("active", False)):
+            return False
+        if bool(prev_row.get("deleted_from_rotation", False)):
+            return False
+        reason = str(prev_row.get("promotion_reason") or "").strip()
+        status = str(prev_row.get("promotion_status") or "").strip().lower()
+        return reason.startswith("quality_gate_hold_prev_plus_") or status == "candidate"
+
+    def _held_champion_gate_green(self, wf: Dict[str, object], graduated: bool | None = None) -> bool:
+        if not self.promote_held_champion_when_gate_green:
+            return False
+        if graduated is None:
+            graduated, _reason = self._is_graduated(wf)
+        if not graduated:
+            return False
+        status = str(wf.get("status") or "").strip().lower()
+        return status in {"", "pass"}
 
     def _load_decision_correlation_map(self) -> Dict[tuple[str, str], float]:
         corr: Dict[tuple[str, str], float] = {}
@@ -772,6 +793,11 @@ class MasterBot:
             wf_forward = self._as_float(wf.get("forward_mean"))
             wf_tq = self._as_float(wf.get("trading_quality_score"))
             graduated, grad_reason = self._is_graduated(wf)
+            held_previous_model = (not promoted) and self._active_held_champion_prev_row(prev_row)
+            if held_previous_model and self._held_champion_gate_green(wf, graduated):
+                promoted = True
+                promotion_reason = "promoted_held_champion_quality_gate_hold"
+                streak = 0
             if wf_status == "fail" or (wf_forward is not None and wf_forward < self.walk_forward_min_forward_mean):
                 effective_quality *= self.walk_forward_fail_penalty
 
@@ -785,8 +811,12 @@ class MasterBot:
             delete_reason = ""
 
             if self.graduation_gate_enabled and (not graduated):
-                active = False
-                reason = f"graduation_hold:{grad_reason}"
+                if held_previous_model:
+                    active = True
+                    reason = str(prev_row.get("reason") or "active_outside_band")
+                else:
+                    active = False
+                    reason = f"graduation_hold:{grad_reason}"
             elif self.strict_live_pass_only and wf_status != "pass":
                 active = False
                 reason = f"walk_forward_{wf_status}_live_hold"
@@ -880,7 +910,7 @@ class MasterBot:
             accuracy_for_preference = test_accuracy if test_accuracy is not None else candidate_test_accuracy
             preference_score = self._preference_score(accuracy_for_preference) if accuracy_for_preference is not None else 0.0
 
-        return BotStatus(
+        status = BotStatus(
             bot_id=bot_id,
             bot_role=str(normalized.get("bot_role") or self._infer_bot_role(bot_id)),
             active=bool(normalized.get("active", False)),
@@ -901,6 +931,17 @@ class MasterBot:
             log_file=str(normalized.get("log_file") or ""),
             candidate_log_file=str(normalized.get("candidate_log_file") or ""),
         )
+        if self._active_held_champion_prev_row(normalized):
+            wf = self.walk_forward_map.get(bot_id, {})
+            if self._held_champion_gate_green(wf):
+                status.promoted = True
+                status.promotion_reason = "promoted_held_champion_quality_gate_hold"
+                status.active = True
+                status.deleted_from_rotation = False
+                status.delete_reason = ""
+                status.reason = str(normalized.get("reason") or "active_outside_band")
+                status.no_improvement_streak = 0
+        return status
 
     def _registry_snapshot_is_newer_than(self, path: str) -> bool:
         if (not path) or (not os.path.exists(path)) or (not os.path.exists(self.registry_path)):
@@ -999,7 +1040,7 @@ class MasterBot:
         remaining = len(active_now)
 
         candidates = sorted(
-            [s for s in active_now if s.no_improvement_streak >= cap],
+            [s for s in active_now if s.no_improvement_streak >= cap and not s.promoted],
             key=lambda s: (s.quality_score, -(s.test_accuracy or 0.0), -s.no_improvement_streak),
         )
 
@@ -1088,10 +1129,41 @@ class MasterBot:
 
         return statuses
 
+    def _preserve_registry_metadata(self, row: Dict[str, object], status: BotStatus) -> Dict[str, object]:
+        prev_row = self.prev_status_by_bot.get(status.bot_id, {})
+        if not isinstance(prev_row, dict):
+            prev_row = {}
+
+        for key in (
+            "coverage_candidate_active",
+            "training_excluded",
+            "exclude_from_training",
+            "execution_policy_label",
+            "sleeve_family",
+            "coverage_stage",
+        ):
+            if key in prev_row:
+                row[key] = prev_row[key]
+
+        if status.promoted:
+            row["promotion_status"] = "promoted"
+            row["coverage_candidate_active"] = False
+        else:
+            row["promotion_status"] = str(prev_row.get("promotion_status") or row.get("promotion_status") or "candidate")
+
+        prev_lifecycle = str(prev_row.get("lifecycle_state") or "").strip().lower()
+        if prev_lifecycle == "data_collection_only" and bool(row.get("active", False)) and not bool(row.get("deleted_from_rotation", False)):
+            row["lifecycle_state"] = "data_collection_only"
+            row["training_excluded"] = bool(prev_row.get("training_excluded", True))
+            row["exclude_from_training"] = bool(prev_row.get("exclude_from_training", True))
+
+        return row
+
     def _build_registry_payload(self, statuses: List[BotStatus]) -> Dict[str, object]:
         rows: List[Dict[str, object]] = []
         for status in sorted(statuses, key=lambda x: x.bot_id):
-            rows.append(self._normalize_registry_row(asdict(status)))
+            row = self._normalize_registry_row(asdict(status))
+            rows.append(self._preserve_registry_metadata(row, status))
 
         active_rows = [row for row in rows if bool(row.get("active", False))]
         data_collection_rows = [row for row in rows if str(row.get("lifecycle_state") or "").strip().lower() == "data_collection_only"]

@@ -319,6 +319,7 @@ def load_ticker_universe_with_policy(
     project_root: Path = PROJECT_ROOT,
     *,
     override_symbols: str | None = None,
+    apply_storage_policy: bool = True,
 ) -> tuple[list[str], dict[str, list[str]], str, dict[str, Any]]:
     explicit = _parse_csv(override_symbols)
     if explicit:
@@ -356,6 +357,26 @@ def load_ticker_universe_with_policy(
             symbols.append(symbol)
             groups.setdefault(symbol, []).append(key_text)
 
+    if symbols and source == "sleeve_ticker_universe_latest":
+        static_payload = build_universe_payload(project_root)
+        static_env = static_payload.get("env_overrides") if isinstance(static_payload.get("env_overrides"), dict) else {}
+        added_static_symbol = False
+        for key, raw in static_env.items():
+            key_text = str(key or "").strip()
+            if not _is_symbol_env_group_key(key_text):
+                continue
+            if not isinstance(raw, str):
+                continue
+            for symbol in _parse_csv(raw):
+                if not _is_universe_symbol(symbol):
+                    continue
+                if symbol not in groups:
+                    added_static_symbol = True
+                symbols.append(symbol)
+                groups.setdefault(symbol, []).append(key_text)
+        if added_static_symbol:
+            source = "sleeve_ticker_universe_latest+static_expansion"
+
     if not symbols:
         source = "sleeve_ticker_universe_static_fallback"
         for key, values in UNIVERSES.items():
@@ -368,6 +389,18 @@ def load_ticker_universe_with_policy(
 
     unique = _ordered_unique(symbols)
     groups = {symbol: groups.get(symbol, []) for symbol in unique}
+    if not apply_storage_policy:
+        policy = {
+            "storage_profile": "",
+            "slow_tier_defer_on_storage_pressure": False,
+            "storage_pressure_active": False,
+            "manual_override": False,
+            "pre_policy_symbol_count": len(unique),
+            "active_symbol_count": len(unique),
+            "deferred_symbol_count": 0,
+            "mode": "all_symbols",
+        }
+        return unique, groups, source, policy
     unique, policy = _apply_slow_tier_storage_policy(project_root, unique, env_overrides, manual_override=False)
     groups = {symbol: groups.get(symbol, []) for symbol in unique}
     if policy.get("deferred_symbol_count", 0):
@@ -376,7 +409,11 @@ def load_ticker_universe_with_policy(
 
 
 def load_ticker_universe(project_root: Path = PROJECT_ROOT, *, override_symbols: str | None = None) -> tuple[list[str], dict[str, list[str]], str]:
-    symbols, groups, source, _policy = load_ticker_universe_with_policy(project_root, override_symbols=override_symbols)
+    symbols, groups, source, _policy = load_ticker_universe_with_policy(
+        project_root,
+        override_symbols=override_symbols,
+        apply_storage_policy=False,
+    )
     return symbols, groups, source
 
 
