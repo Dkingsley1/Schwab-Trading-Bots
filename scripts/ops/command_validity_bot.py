@@ -156,6 +156,7 @@ OPSCTL_ROUTE_PROBES = {
     "main-tail": {"args": ["--help"], "expected_rcs": {0}},
     "paper-performance": {"args": ["--help"], "expected_rcs": {0}},
     "phone-feed": {"args": ["--help"], "expected_rcs": {0}},
+    "production-hardening-watch": {"args": ["--help"], "expected_rcs": {0}},
     "production-quality": {"args": ["--help"], "expected_rcs": {0}},
     "production-quality-slo": {"args": ["--help"], "expected_rcs": {0}},
     "report-quality-guard": {"args": ["--help"], "expected_rcs": {0}},

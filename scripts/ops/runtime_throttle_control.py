@@ -23,6 +23,9 @@ else:
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "runtime_throttle_control_latest.json"
 DEFAULT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.runtime_resource_guard_override"
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
+SOURCE_REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
+DEFAULT_CANDIDATE_REGISTRY_PATH = PROJECT_ROOT / "governance" / "health" / "runtime_throttle_registry_candidate_latest.json"
+DEFAULT_SOURCE_WRITE_GUARD_PATH = PROJECT_ROOT / "governance" / "health" / "runtime_throttle_source_write_guard_latest.json"
 DEFAULT_BACKPRESSURE_DRAINER_PATH = PROJECT_ROOT / "governance" / "health" / "backpressure_drainer_fleet_latest.json"
 DEFAULT_RESEARCH_PAUSE_STATE_PATH = PROJECT_ROOT / "governance" / "health" / "runtime_research_pause_state.json"
 DEFAULT_SUPPORT_PAUSE_STATE_PATH = PROJECT_ROOT / "governance" / "health" / "runtime_support_pause_state.json"
@@ -3251,7 +3254,24 @@ def _apply_storage_writer_cooling(
     }
 
 
-def _apply_registry_collector_guard(project_root: Path, payload: dict[str, Any], *, registry_path: Path = DEFAULT_REGISTRY_PATH) -> dict[str, Any]:
+def _canonical_registry_write_blocked(registry_out: Path, allow_source_registry_write: bool) -> bool:
+    if allow_source_registry_write:
+        return False
+    try:
+        return registry_out.resolve() == SOURCE_REGISTRY_PATH.resolve()
+    except Exception:
+        return False
+
+
+def _apply_registry_collector_guard(
+    project_root: Path,
+    payload: dict[str, Any],
+    *,
+    registry_path: Path = DEFAULT_REGISTRY_PATH,
+    candidate_registry_path: Path = DEFAULT_CANDIDATE_REGISTRY_PATH,
+    source_write_guard_path: Path = DEFAULT_SOURCE_WRITE_GUARD_PATH,
+    allow_source_registry_write: bool = False,
+) -> dict[str, Any]:
     path = registry_path if registry_path.is_absolute() else project_root / registry_path
     registry = load_json(path)
     if not registry:
@@ -3316,15 +3336,42 @@ def _apply_registry_collector_guard(project_root: Path, payload: dict[str, Any],
             changed_count += 1
             if full_force_paper:
                 paper_changed_count += 1
+    source_write_blocked = bool(changed_count) and _canonical_registry_write_blocked(path, allow_source_registry_write)
+    candidate_out = candidate_registry_path if candidate_registry_path.is_absolute() else project_root / candidate_registry_path
+    guard_out = source_write_guard_path if source_write_guard_path.is_absolute() else project_root / source_write_guard_path
     if changed_count:
         registry["updated_at_utc"] = iso_now()
-        path.write_text(json.dumps(registry, ensure_ascii=True, indent=2), encoding="utf-8")
+        if source_write_blocked:
+            candidate_out.parent.mkdir(parents=True, exist_ok=True)
+            guard_out.parent.mkdir(parents=True, exist_ok=True)
+            candidate_out.write_text(json.dumps(registry, ensure_ascii=True, indent=2), encoding="utf-8")
+            write_payload(
+                guard_out,
+                {
+                    "timestamp_utc": iso_now(),
+                    "ok": True,
+                    "overall_status": "ready",
+                    "source_write_blocked": True,
+                    "source_path": str(path),
+                    "candidate_path": str(candidate_out),
+                    "reason": "canonical_registry_requires_explicit_source_write",
+                    "allow_env": "RUNTIME_THROTTLE_ALLOW_SOURCE_REGISTRY_WRITE=1",
+                    "allow_cli": "scripts/ops/runtime_throttle_control.py --apply --allow-source-registry-write",
+                },
+            )
+        else:
+            path.write_text(json.dumps(registry, ensure_ascii=True, indent=2), encoding="utf-8")
     return {
         "applied": bool(changed_count),
         "changed_count": changed_count,
         "paper_runtime_changed_count": paper_changed_count,
         "collector_count": sum(1 for row in rows if bool(row.get("active", False)) and str(row.get("lifecycle_state") or "").strip().lower() == "data_collection_only"),
         "full_force_paper_stabilization": full_force_paper,
+        "registry_source_write_blocked": source_write_blocked,
+        "registry_source_written": bool(changed_count) and not source_write_blocked,
+        "candidate_registry_path": str(candidate_out) if source_write_blocked else "",
+        "source_write_guard_path": str(guard_out) if source_write_blocked else "",
+        "source_registry_write_requires_explicit_operator_intent": True,
         "policy": policy,
         "registry_path": str(path),
     }
@@ -3336,6 +3383,9 @@ def apply_runtime_guard(
     *,
     override_path: Path = DEFAULT_OVERRIDE_PATH,
     registry_path: Path = DEFAULT_REGISTRY_PATH,
+    candidate_registry_path: Path = DEFAULT_CANDIDATE_REGISTRY_PATH,
+    source_write_guard_path: Path = DEFAULT_SOURCE_WRITE_GUARD_PATH,
+    allow_source_registry_write: bool = False,
     max_renice_processes: int = 4,
 ) -> dict[str, Any]:
     profile = str(payload.get("throttle_profile") or "observe")
@@ -3495,7 +3545,14 @@ def apply_runtime_guard(
         "support_maintenance_pause": _apply_support_maintenance_pause(project_root, support_candidates, payload),
         "research_training_pause": _apply_research_training_pause(project_root, research_candidates, payload),
         "paper_execution_pause": _apply_paper_execution_pause(paper_candidates),
-        "collector_guard": _apply_registry_collector_guard(project_root, payload, registry_path=registry_path),
+        "collector_guard": _apply_registry_collector_guard(
+            project_root,
+            payload,
+            registry_path=registry_path,
+            candidate_registry_path=candidate_registry_path,
+            source_write_guard_path=source_write_guard_path,
+            allow_source_registry_write=allow_source_registry_write,
+        ),
     }
 
 
@@ -4910,6 +4967,14 @@ def main() -> int:
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--override-file", default=str(DEFAULT_OVERRIDE_PATH))
     parser.add_argument("--registry", default=str(DEFAULT_REGISTRY_PATH))
+    parser.add_argument("--candidate-registry", default=str(DEFAULT_CANDIDATE_REGISTRY_PATH))
+    parser.add_argument("--source-write-guard", default=str(DEFAULT_SOURCE_WRITE_GUARD_PATH))
+    parser.add_argument(
+        "--allow-source-registry-write",
+        action="store_true",
+        default=os.getenv("RUNTIME_THROTTLE_ALLOW_SOURCE_REGISTRY_WRITE", "0").strip() == "1",
+        help="Allow this intentional operator command to update the tracked master_bot_registry.json source file.",
+    )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--max-renice-processes", type=int, default=4)
     parser.add_argument("--json", action="store_true")
@@ -4928,6 +4993,9 @@ def main() -> int:
             payload,
             override_path=Path(args.override_file).expanduser(),
             registry_path=Path(args.registry).expanduser(),
+            candidate_registry_path=Path(args.candidate_registry).expanduser(),
+            source_write_guard_path=Path(args.source_write_guard).expanduser(),
+            allow_source_registry_write=args.allow_source_registry_write,
             max_renice_processes=args.max_renice_processes,
         )
         payload["controller_contract"]["mode"] = "applied"

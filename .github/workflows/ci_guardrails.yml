@@ -35,11 +35,16 @@ jobs:
             scripts/leak_overfit_guard.py \
             scripts/model_lifecycle_hygiene.py \
             scripts/weekly_gate_blocker_report.py \
+            scripts/ops/command_validity_bot.py \
+            scripts/ops/commands_hygiene_bot.py \
             scripts/ops/live_canary_readiness_contract.py \
+            scripts/ops/paper_400_ramp_control.py \
             scripts/ops/paper_live_data_standard.py \
+            scripts/ops/production_hardening_watch.py \
             scripts/ops/production_flow_smoke.py \
             scripts/ops/production_quality_control.py \
             scripts/ops/production_quality_slo_guard.py \
+            scripts/ops/runtime_throttle_control.py \
             scripts/ops/source_mutation_guard.py
 
       - name: CLI smoke (help)
@@ -53,11 +58,16 @@ jobs:
           python scripts/leak_overfit_guard.py --help >/dev/null
           python scripts/model_lifecycle_hygiene.py --help >/dev/null
           python scripts/weekly_gate_blocker_report.py --help >/dev/null
+          python scripts/ops/command_validity_bot.py --help >/dev/null
+          python scripts/ops/commands_hygiene_bot.py --help >/dev/null
           python scripts/ops/live_canary_readiness_contract.py --help >/dev/null
+          python scripts/ops/paper_400_ramp_control.py --help >/dev/null
           python scripts/ops/paper_live_data_standard.py --help >/dev/null
+          python scripts/ops/production_hardening_watch.py --help >/dev/null
           python scripts/ops/production_flow_smoke.py --help >/dev/null
           python scripts/ops/production_quality_control.py --help >/dev/null
           python scripts/ops/production_quality_slo_guard.py --help >/dev/null
+          python scripts/ops/runtime_throttle_control.py --help >/dev/null
           python scripts/ops/source_mutation_guard.py --help >/dev/null
 
       - name: Gate smoke fixtures

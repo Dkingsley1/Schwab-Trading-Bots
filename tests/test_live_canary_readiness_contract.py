@@ -26,7 +26,7 @@ def _seed_ready_artifacts(project_root: Path) -> None:
     _write_json(health / "ingestion_storage_control_latest.json", {"timestamp_utc": now, "overall_status": "ready", "pressure_index": 0.01, "backpressure": {"total_pending_lines": 0}})
     _write_json(health / "health_gates_latest.json", {"timestamp_utc": now, "overall_status": "ready", "ok": True})
     _write_json(health / "promotion_quality_gate_latest.json", {"timestamp_utc": now, "overall_status": "ready", "ok": True})
-    _write_json(health / "promotion_readiness_latest.json", {"timestamp_utc": now, "overall_status": "ready", "ok": True})
+    _write_json(project_root / "governance" / "walk_forward" / "promotion_readiness_latest.json", {"timestamp_utc": now, "overall_status": "ready", "ok": True})
     _write_json(health / "paper_performance_latest.json", {"timestamp_utc": now, "overall_status": "ready", "ok": True})
 
 
@@ -45,6 +45,29 @@ def test_live_canary_readiness_contract_blocks_raw_d_grade(tmp_path: Path, monke
     assert raw_gate["ready"] is False
     assert "raw_profitability_hard_block_below_C" in raw_gate["blockers"]
     assert "no raw D-grade posture" in payload["infrastructure_message"]
+
+
+def test_live_canary_readiness_contract_uses_configured_auth_floor(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    _seed_ready_artifacts(project_root)
+    health = project_root / "governance" / "health"
+    config = project_root / "config" / "live_canary_readiness_contract.json"
+    _write_json(config, {"auth_min_expires_in_seconds": 1200, "sustained_window_hours": 168})
+    for artifact in ("broker_readiness_latest.json", "schwab_auth_supervisor_latest.json", "auth_lease_manager_latest.json"):
+        payload = json.loads((health / artifact).read_text(encoding="utf-8"))
+        payload["token_expires_in_seconds"] = 1500
+        payload["expires_in_seconds"] = 1500
+        payload["token"] = {"expires_in_seconds": 1500}
+        payload["lease_state"] = "healthy"
+        _write_json(health / artifact, payload)
+    monkeypatch.setattr(src.source_mutation_guard, "build_payload", lambda _root: {"ok": True, "overall_status": "ready", "dirty_count": 0, "dirty_entries": []})
+    monkeypatch.setattr(src.production_flow_smoke, "build_payload", lambda _root: {"ok": True, "overall_status": "ready", "failed_checks": []})
+
+    payload = src.build_payload(project_root, config_path=config)
+
+    auth_gate = next(gate for gate in payload["gates"] if gate["gate_id"] == "auth_token_continuity")
+    assert auth_gate["ready"] is True
+    assert auth_gate["blockers"] == []
 
 
 def test_live_canary_readiness_contract_can_clear_after_sustained_window(tmp_path: Path, monkeypatch) -> None:

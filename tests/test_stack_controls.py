@@ -16,8 +16,10 @@ INFRA_INSTALL_PATH = PROJECT_ROOT / "scripts" / "install_infra_stack_launchd.sh"
 OPS_AUTOMATION_INSTALL_PATH = PROJECT_ROOT / "scripts" / "ops" / "install_ops_automation_launchd.sh"
 STARTUP_PROMPT_INSTALL_PATH = PROJECT_ROOT / "scripts" / "install_startup_start_prompt_launchd.sh"
 STARTUP_PROMPT_RUN_PATH = PROJECT_ROOT / "scripts" / "ops" / "run_startup_start_prompt_launchd.sh"
+PRODUCTION_HARDENING_WATCH_INSTALL_PATH = PROJECT_ROOT / "scripts" / "install_production_hardening_watch_launchd.sh"
 STORAGE_BACKPRESSURE_AUTOPILOT_RUN_PATH = PROJECT_ROOT / "scripts" / "ops" / "run_storage_backpressure_autopilot_launchd.sh"
 RUNTIME_SMOOTH_MODE_RUN_PATH = PROJECT_ROOT / "scripts" / "ops" / "run_runtime_smooth_mode_launchd.sh"
+PRODUCTION_HARDENING_WATCH_RUN_PATH = PROJECT_ROOT / "scripts" / "ops" / "run_production_hardening_watch_launchd.sh"
 RETRAIN_DAILY_PATH = PROJECT_ROOT / "scripts" / "retrain_daily_small_batch.sh"
 RETRAIN_WEEKLY_PATH = PROJECT_ROOT / "scripts" / "retrain_weekly_full_sweep.sh"
 
@@ -52,10 +54,40 @@ def test_ops_automation_installer_includes_context_jobs() -> None:
     assert "run_section_grade_autopilot_launchd.sh" in text
     assert "run_creative_cotenant_guard_launchd.sh" in text
     assert "run_runtime_smooth_mode_launchd.sh" in text
+    assert "run_production_hardening_watch_launchd.sh" in text
     assert "com.dankingsley.ops.runtime_smooth_mode" in text
+    assert "com.dankingsley.ops.production_hardening_watch" in text
     assert "RUNTIME_SMOOTH_MODE_INTERVAL_SECONDS" in text
+    assert "PRODUCTION_HARDENING_WATCH_INTERVAL_SECONDS" in text
     assert "ops_runtime_smooth_mode.out.log" in text
+    assert "ops_production_hardening_watch.out.log" in text
     assert "com.dankingsley.ops.master_infrastructure_supervisor" in text
+
+
+def test_production_hardening_watch_launchd_keeps_live_locked_and_bounded() -> None:
+    text = _read(PRODUCTION_HARDENING_WATCH_RUN_PATH)
+
+    assert "production_hardening_watch_launchd.lock" in text
+    assert "MARKET_DATA_ONLY=1" in text
+    assert "ALLOW_ORDER_EXECUTION=0" in text
+    assert "TOP_BOT_ENABLE_LIVE_EXECUTION=0" in text
+    assert "PRODUCTION_HARDENING_WATCH_EXECUTE_SAFE_REPAIRS" in text
+    assert "PRODUCTION_HARDENING_WATCH_EXECUTE_ON_WATCH" in text
+    assert "production-hardening-watch" in text
+    assert "--max-execute-actions" in text
+    assert "/usr/bin/nice" in text
+
+
+def test_production_hardening_watch_installer_is_standalone() -> None:
+    text = _read(PRODUCTION_HARDENING_WATCH_INSTALL_PATH)
+
+    assert "com.dankingsley.ops.production_hardening_watch" in text
+    assert "run_production_hardening_watch_launchd.sh" in text
+    assert "PRODUCTION_HARDENING_WATCH_INTERVAL_SECONDS" in text
+    assert "PRODUCTION_HARDENING_WATCH_EXECUTE_SAFE_REPAIRS" in text
+    assert "MARKET_DATA_ONLY" in text
+    assert "ALLOW_ORDER_EXECUTION" in text
+    assert "ops_production_hardening_watch.out.log" in text
 
 
 def test_runtime_smooth_mode_launchd_applies_memory_and_runtime_controls() -> None:

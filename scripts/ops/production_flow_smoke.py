@@ -73,6 +73,8 @@ def check_registry_write_guard(project_root: Path) -> dict[str, Any]:
     master_text = read_text(project_root / "core" / "master_bot.py")
     cli_text = read_text(project_root / "scripts" / "run_master_bot.py")
     paper_standard_text = read_text(project_root / "scripts" / "ops" / "paper_live_data_standard.py")
+    paper_ramp_text = read_text(project_root / "scripts" / "ops" / "paper_400_ramp_control.py")
+    runtime_throttle_text = read_text(project_root / "scripts" / "ops" / "runtime_throttle_control.py")
     required_tokens = [
         "MASTER_ALLOW_SOURCE_REGISTRY_WRITE",
         "master_bot_registry_candidate_latest.json",
@@ -86,11 +88,27 @@ def check_registry_write_guard(project_root: Path) -> dict[str, Any]:
         "paper_live_data_standard_source_write_guard_latest.json",
     ]
     paper_missing = [token for token in paper_tokens if token not in paper_standard_text]
+    paper_ramp_tokens = [
+        "PAPER_400_RAMP_ALLOW_SOURCE_REGISTRY_WRITE",
+        "paper_400_ramp_registry_candidate_latest.json",
+        "paper_400_ramp_source_write_guard_latest.json",
+        "--allow-source-registry-write",
+    ]
+    paper_ramp_missing = [token for token in paper_ramp_tokens if token not in paper_ramp_text]
+    runtime_throttle_tokens = [
+        "RUNTIME_THROTTLE_ALLOW_SOURCE_REGISTRY_WRITE",
+        "runtime_throttle_registry_candidate_latest.json",
+        "runtime_throttle_source_write_guard_latest.json",
+        "--allow-source-registry-write",
+    ]
+    runtime_throttle_missing = [token for token in runtime_throttle_tokens if token not in runtime_throttle_text]
     return {
-        "ok": not missing and cli_ok and not paper_missing,
+        "ok": not missing and cli_ok and not paper_missing and not paper_ramp_missing and not runtime_throttle_missing,
         "missing_tokens": missing,
         "cli_flag_present": cli_ok,
         "paper_standard_missing_tokens": paper_missing,
+        "paper_ramp_missing_tokens": paper_ramp_missing,
+        "runtime_throttle_missing_tokens": runtime_throttle_missing,
         "source_write_default": "candidate_only",
     }
 
@@ -212,11 +230,21 @@ def check_ci_guardrails(project_root: Path) -> dict[str, Any]:
     text = read_text(project_root / ".github" / "workflows" / "ci_guardrails.yml")
     return {
         "ok": "production_flow_smoke.py --json" in text
+        and "command_validity_bot.py --help" in text
+        and "commands_hygiene_bot.py --help" in text
         and "source_mutation_guard.py --check-clean --json" in text
+        and "production_hardening_watch.py --help" in text
+        and "paper_400_ramp_control.py --help" in text
+        and "runtime_throttle_control.py --help" in text
         and "production_quality_control.py --help" in text
         and "production_quality_slo_guard.py --help" in text,
         "production_smoke_in_ci": "production_flow_smoke.py --json" in text,
+        "command_validity_bot_in_ci": "command_validity_bot.py --help" in text,
+        "commands_hygiene_bot_in_ci": "commands_hygiene_bot.py --help" in text,
         "source_mutation_guard_in_ci": "source_mutation_guard.py --check-clean --json" in text,
+        "production_hardening_watch_in_ci": "production_hardening_watch.py --help" in text,
+        "paper_400_ramp_control_in_ci": "paper_400_ramp_control.py --help" in text,
+        "runtime_throttle_control_in_ci": "runtime_throttle_control.py --help" in text,
         "production_quality_control_in_ci": "production_quality_control.py --help" in text,
         "production_quality_slo_guard_in_ci": "production_quality_slo_guard.py --help" in text,
     }

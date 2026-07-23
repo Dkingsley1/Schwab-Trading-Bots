@@ -20,6 +20,11 @@ def test_production_flow_smoke_passes_current_contract() -> None:
     assert "stale_latest_ticker_universe_contract" in names
     assert "ci_production_smoke_coverage" in names
     ci_check = next(item for item in payload["checks"] if item["name"] == "ci_production_smoke_coverage")
+    assert ci_check["command_validity_bot_in_ci"] is True
+    assert ci_check["commands_hygiene_bot_in_ci"] is True
+    assert ci_check["production_hardening_watch_in_ci"] is True
+    assert ci_check["paper_400_ramp_control_in_ci"] is True
+    assert ci_check["runtime_throttle_control_in_ci"] is True
     assert ci_check["production_quality_control_in_ci"] is True
     assert ci_check["production_quality_slo_guard_in_ci"] is True
 

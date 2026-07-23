@@ -1027,6 +1027,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/ops/opsctl.sh runtime-throttle --apply --json"],
                 notes=[
                     "This refreshes process priority, niceness, fanout limits, P-core feedback, and co-tenant headroom after the host pressure picture changes.",
+                    "Canonical `master_bot_registry.json` writes are blocked by default; runtime registry adjustments publish `runtime_throttle_registry_candidate_latest.json` unless explicitly source-write authorized.",
                     "Associated bots/control layers: `runtime-throttle`, `process-fanout-guard`, `memory-pressure-intelligence`, `autonomic-resource-governor`.",
                 ],
             ),
@@ -1179,10 +1180,11 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
-                "Arm or promote the guarded 400 bot paper ramp",
+                "Arm or candidate-promote the guarded 400 bot paper ramp",
                 ["./scripts/ops/opsctl.sh paper-400-ramp --apply --promote-roster --json"],
                 notes=[
-                    "Writes the guarded paper caps and promotes eligible registry rows only when global halt, memory, runtime, and ingestion gates are clean.",
+                    "Writes guarded paper caps and publishes a candidate registry promotion when global halt, memory, runtime, and ingestion gates are clean.",
+                    "Canonical `master_bot_registry.json` writes require `--allow-source-registry-write` or `PAPER_400_RAMP_ALLOW_SOURCE_REGISTRY_WRITE=1`.",
                 ],
             ),
             _command_entry(
@@ -1396,6 +1398,38 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 notes=[
                     "This publishes the shared needs contract, capability registry, adaptive policy router, safety guard, and feedback ledger used to keep infrabots aligned with current degradation.",
                     "The apply form writes coordination contracts only; it does not launch repair fanout, retraining, live execution, or competing SQLite writers.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Publish production-quality repair lanes",
+                ["./scripts/ops/opsctl.sh production-quality --apply --refresh-contract --json"],
+                notes=[
+                    "This turns live-canary blockers into ordered safe repair lanes for raw profitability, paper continuity, auth continuity, storage pressure, and promotion/paper freshness.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Track production-quality SLO recurrence",
+                ["./scripts/ops/opsctl.sh production-quality-slo --apply --refresh-quality --json"],
+                notes=[
+                    "This keeps state across checks so repeated production-quality lane failures become watch, warning, or breach evidence instead of isolated snapshots.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Run production hardening watch",
+                ["./scripts/ops/opsctl.sh production-hardening-watch --apply --json"],
+                notes=[
+                    "This refreshes live-canary readiness, production-quality lanes, SLO state, and infrabot routing in one safe control loop. Safe repair execution remains opt-in and governor-allowlisted.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Refresh health gates",
+                ["./scripts/ops/opsctl.sh health-gates --json"],
+                notes=[
+                    "This refreshes the health-gates artifact directly when stale health-gate state is blocking production-quality or live-canary readiness.",
                 ],
             ),
             _command_entry(
@@ -1897,7 +1931,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/ops/opsctl.sh paper-400-ramp --apply --json"],
                 notes=[
                     "Plans the 400-bot paper target now and only writes the high paper caps after Monday 2026-05-11 when global halt, memory, runtime, and ingestion gates are clean.",
-                    "The controller keeps live execution blocked, paper-trade lock enabled, and explains any blocker in `governance/health/paper_400_ramp_latest.json`.",
+                    "The controller keeps live execution blocked, paper-trade lock enabled, and source registry writes blocked unless the operator uses the explicit source-write override.",
                 ],
             ),
             _command_entry(

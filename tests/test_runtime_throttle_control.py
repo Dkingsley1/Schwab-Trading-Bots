@@ -4215,6 +4215,67 @@ def test_full_force_paper_capacity_adds_buffered_runtime_overrides(tmp_path: Pat
     assert registry["sub_bots"][0]["paper_execution_queue_policy"] == "buffered_jsonl_batching"
 
 
+def test_runtime_throttle_collector_guard_uses_candidate_for_canonical_source_by_default(tmp_path: Path, monkeypatch) -> None:
+    registry_path = tmp_path / "master_bot_registry.json"
+    candidate_path = tmp_path / "governance" / "health" / "runtime_throttle_registry_candidate_latest.json"
+    guard_path = tmp_path / "governance" / "health" / "runtime_throttle_source_write_guard_latest.json"
+    _write_json(
+        registry_path,
+        {
+            "sub_bots": [
+                {
+                    "bot_id": "brain_refinery_v1_runtime_candidate_guard",
+                    "active": True,
+                    "lifecycle_state": "data_collection_only",
+                    "paper_runtime_stability_mode": "full_force_guarded",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(src, "SOURCE_REGISTRY_PATH", registry_path)
+    source_before = registry_path.read_text(encoding="utf-8")
+    payload = {
+        "throttle_profile": "sustain",
+        "memory_pressure_level": "normal",
+        "compute_pressure_level": "high",
+        "paper_capacity_contract": {
+            "full_force_stabilization_required": True,
+            "mode": "full_force_buffered",
+            "runtime_policy": {"control_refresh_seconds": 240},
+        },
+    }
+
+    result = src._apply_registry_collector_guard(
+        tmp_path,
+        payload,
+        registry_path=registry_path,
+        candidate_registry_path=candidate_path,
+        source_write_guard_path=guard_path,
+    )
+    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+
+    assert result["changed_count"] == 1
+    assert result["registry_source_write_blocked"] is True
+    assert result["registry_source_written"] is False
+    assert registry_path.read_text(encoding="utf-8") == source_before
+    assert candidate["sub_bots"][0]["paper_runtime_stability_mode"] == "full_force_buffered"
+    assert guard_path.exists()
+
+    allowed = src._apply_registry_collector_guard(
+        tmp_path,
+        payload,
+        registry_path=registry_path,
+        candidate_registry_path=candidate_path,
+        source_write_guard_path=guard_path,
+        allow_source_registry_write=True,
+    )
+    source = json.loads(registry_path.read_text(encoding="utf-8"))
+
+    assert allowed["registry_source_write_blocked"] is False
+    assert allowed["registry_source_written"] is True
+    assert source["sub_bots"][0]["paper_runtime_stability_mode"] == "full_force_buffered"
+
+
 def test_runtime_throttle_does_not_protect_live_on_cool_raw_live_sql_overlay_pressure(tmp_path: Path) -> None:
     health_root = tmp_path / "governance" / "health"
     _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})

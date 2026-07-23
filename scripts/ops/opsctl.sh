@@ -1366,6 +1366,9 @@ case "$cmd" in
   production-quality-slo|production-slo-guard|production-quality-slo-guard)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/production_quality_slo_guard.py" "$@"
     ;;
+  production-hardening-watch|hardening-watch|production-watch)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/production_hardening_watch.py" "$@"
+    ;;
   live-money-readiness|live-money-contract|faithful-live-money)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_money_readiness_contract.py" "$@"
     ;;
@@ -2914,15 +2917,16 @@ opsctl commands:
   live-canary-readiness|canary-readiness-contract|production-hardening-bar [--apply] [--json]
   production-quality|production-quality-control|production-hardening-quality [--apply] [--refresh-contract] [--execute-safe-repairs] [--max-actions N] [--max-execute-actions N] [--json]
   production-quality-slo|production-slo-guard [--apply] [--refresh-quality] [--json]
+  production-hardening-watch|hardening-watch [--apply] [--execute-safe-repairs] [--execute-on-watch] [--max-actions N] [--max-execute-actions N] [--json]
   live-money-readiness|live-money-contract|faithful-live-money [--target-date YYYY-MM-DD] [--json]
-  paper-400-ramp|paper-ramp-400|paper-cap-400 [--apply] [--promote-roster] [--today YYYY-MM-DD] [--json]
+  paper-400-ramp|paper-ramp-400|paper-cap-400 [--apply] [--promote-roster] [--allow-source-registry-write] [--today YYYY-MM-DD] [--json]
   paper-execution-truth|paper-truth [--json]
   runtime-paper-regression-guard|runtime-paper-guard [--json]
   paper-live-data-standard|paper-standard [--apply] [--json]
   production-flow-smoke|production-flow-contract [--json]
   source-mutation-guard|source-guard [--check-clean] [--json]
   sleeve-ticker-universe|expand-tickers [--apply] [--json]
-  runtime-throttle|throttle-control|throttle-bot [--apply] [--max-renice-processes N] [--json]
+  runtime-throttle|throttle-control|throttle-bot [--apply] [--allow-source-registry-write] [--max-renice-processes N] [--json]
   process-watchdog|watchdog-refresh [--json]
   watchdog-intelligence|watchdog-brain [--apply] [--json]
   notification-escalation-ladder|notification-ladder [--json]

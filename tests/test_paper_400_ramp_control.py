@@ -765,10 +765,10 @@ def test_paper_400_ramp_treats_isolated_read_only_restart_storm_as_advisory(tmp_
     assert payload["stage"] == "armed"
 
 
-def test_paper_400_ramp_promotes_guarded_roster_to_target_without_live_execution(tmp_path: Path) -> None:
-    _seed_ready_project(tmp_path, bot_count=700)
+def _seed_paper_roster_candidates(project_root: Path) -> None:
+    _seed_ready_project(project_root, bot_count=700)
     _write_json(
-        tmp_path / "master_bot_registry.json",
+        project_root / "master_bot_registry.json",
         {
             "sub_bots": [
                 {
@@ -788,7 +788,54 @@ def test_paper_400_ramp_promotes_guarded_roster_to_target_without_live_execution
         },
     )
 
-    promotion = src.promote_paper_roster(tmp_path, tmp_path / "master_bot_registry.json", target=400)
+
+def test_paper_400_ramp_promotes_guarded_roster_to_candidate_by_default(tmp_path: Path, monkeypatch) -> None:
+    _seed_paper_roster_candidates(tmp_path)
+    monkeypatch.setattr(src, "SOURCE_REGISTRY_PATH", tmp_path / "master_bot_registry.json")
+    source_before = (tmp_path / "master_bot_registry.json").read_text(encoding="utf-8")
+
+    promotion = src.promote_paper_roster(
+        tmp_path,
+        tmp_path / "master_bot_registry.json",
+        target=400,
+        candidate_registry_path=tmp_path / "governance" / "health" / "paper_400_ramp_registry_candidate_latest.json",
+        source_write_guard_path=tmp_path / "governance" / "health" / "paper_400_ramp_source_write_guard_latest.json",
+    )
+    registry = json.loads((tmp_path / "master_bot_registry.json").read_text(encoding="utf-8"))
+    candidate_path = Path(promotion["candidate_registry_path"])
+    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    promoted = [
+        row
+        for row in candidate["sub_bots"]
+        if row.get("paper_standard_cohort") == src.PAPER_400_PROMOTION_COHORT
+    ]
+
+    assert promotion["overall_status"] == "applied"
+    assert promotion["registry_source_write_blocked"] is True
+    assert promotion["registry_source_written"] is False
+    assert promotion["paper_count_after"] == 400
+    assert promotion["live_execution_locked"] is True
+    assert (tmp_path / "master_bot_registry.json").read_text(encoding="utf-8") == source_before
+    assert not [
+        row
+        for row in registry["sub_bots"]
+        if row.get("paper_standard_cohort") == src.PAPER_400_PROMOTION_COHORT
+    ]
+    assert len(promoted) == 365
+    assert all(row["paper_trade_enabled"] is True for row in promoted)
+    assert all(row["live_trading_enabled"] is False for row in promoted)
+    assert Path(promotion["source_write_guard_path"]).exists()
+
+
+def test_paper_400_ramp_promotes_guarded_roster_to_source_only_when_allowed(tmp_path: Path) -> None:
+    _seed_paper_roster_candidates(tmp_path)
+
+    promotion = src.promote_paper_roster(
+        tmp_path,
+        tmp_path / "master_bot_registry.json",
+        target=400,
+        allow_source_registry_write=True,
+    )
     payload = src.build_payload(
         tmp_path,
         today=date(2026, 5, 11),
@@ -802,6 +849,8 @@ def test_paper_400_ramp_promotes_guarded_roster_to_target_without_live_execution
     ]
 
     assert promotion["overall_status"] == "applied"
+    assert promotion["registry_source_write_blocked"] is False
+    assert promotion["registry_source_written"] is True
     assert promotion["paper_count_after"] == 400
     assert promotion["live_execution_locked"] is True
     assert len(promoted) == 365

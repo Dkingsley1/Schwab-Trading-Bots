@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import sys
 from datetime import date, datetime, timezone
@@ -21,7 +22,10 @@ else:
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "paper_400_ramp_latest.json"
 DEFAULT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.paper_400_ramp_override"
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
+SOURCE_REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
+DEFAULT_CANDIDATE_REGISTRY_PATH = PROJECT_ROOT / "governance" / "health" / "paper_400_ramp_registry_candidate_latest.json"
 DEFAULT_PROMOTION_AUDIT_PATH = PROJECT_ROOT / "governance" / "health" / "paper_400_roster_promotion_latest.json"
+DEFAULT_SOURCE_WRITE_GUARD_PATH = PROJECT_ROOT / "governance" / "health" / "paper_400_ramp_source_write_guard_latest.json"
 DEFAULT_BACKUP_DIR = PROJECT_ROOT / "governance" / "lifecycle"
 EARLIEST_ACTIVATION_DATE = date(2026, 5, 11)
 TARGET_PAPER_BOTS = 400
@@ -265,6 +269,15 @@ def _mark_paper_400_promoted(row: dict[str, Any], *, now: str) -> None:
     row["promotion_block_reason"] = ""
 
 
+def _canonical_registry_write_blocked(registry_out: Path, allow_source_registry_write: bool) -> bool:
+    if allow_source_registry_write:
+        return False
+    try:
+        return registry_out.resolve() == SOURCE_REGISTRY_PATH.resolve()
+    except Exception:
+        return False
+
+
 def promote_paper_roster(
     project_root: Path,
     registry_path: Path,
@@ -272,6 +285,9 @@ def promote_paper_roster(
     target: int = TARGET_PAPER_BOTS,
     audit_path: Path = DEFAULT_PROMOTION_AUDIT_PATH,
     backup_dir: Path = DEFAULT_BACKUP_DIR,
+    candidate_registry_path: Path = DEFAULT_CANDIDATE_REGISTRY_PATH,
+    source_write_guard_path: Path = DEFAULT_SOURCE_WRITE_GUARD_PATH,
+    allow_source_registry_write: bool = False,
 ) -> dict[str, Any]:
     path = _resolve_path(registry_path, project_root)
     payload = load_json(path)
@@ -295,17 +311,15 @@ def promote_paper_roster(
         "selected_bot_ids": [str(row.get("bot_id") or "") for row in selected],
         "policy": "promote active non-control-plane bots to guarded paper-live-data only; live execution stays disabled",
         "registry_path": str(path),
+        "candidate_registry_path": str(_resolve_path(candidate_registry_path, project_root)),
+        "source_write_guard_path": str(_resolve_path(source_write_guard_path, project_root)),
+        "source_registry_write_requires_explicit_operator_intent": True,
     }
     if needed > 0 and len(selected) < needed:
         write_payload(_resolve_path(audit_path, project_root), audit)
         return audit
 
     if needed > 0:
-        backup_root = _resolve_path(backup_dir, project_root)
-        backup_root.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        backup_path = backup_root / f"master_bot_registry.paper_400_ramp_{stamp}.json"
-        backup_path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
         for row in selected:
             _mark_paper_400_promoted(row, now=now)
         summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
@@ -314,8 +328,41 @@ def promote_paper_roster(
             1 for row in active_rows if isinstance(row, dict) and str(row.get("paper_standard_cohort") or "") == PAPER_400_PROMOTION_COHORT
         )
         payload["summary"] = summary
-        path.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
-        audit["backup_path"] = str(backup_path)
+        source_write_blocked = _canonical_registry_write_blocked(path, allow_source_registry_write)
+        audit["registry_source_write_blocked"] = source_write_blocked
+        audit["registry_source_written"] = not source_write_blocked
+        if source_write_blocked:
+            candidate_out = _resolve_path(candidate_registry_path, project_root)
+            guard_out = _resolve_path(source_write_guard_path, project_root)
+            candidate_out.parent.mkdir(parents=True, exist_ok=True)
+            guard_out.parent.mkdir(parents=True, exist_ok=True)
+            candidate_out.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+            guard = {
+                "timestamp_utc": iso_now(),
+                "ok": True,
+                "overall_status": "ready",
+                "source_write_blocked": True,
+                "source_path": str(path),
+                "candidate_path": str(candidate_out),
+                "reason": "canonical_registry_requires_explicit_source_write",
+                "allow_env": "PAPER_400_RAMP_ALLOW_SOURCE_REGISTRY_WRITE=1",
+                "allow_cli": "scripts/ops/paper_400_ramp_control.py --apply --promote-roster --allow-source-registry-write",
+            }
+            write_payload(guard_out, guard)
+            audit["candidate_registry_path"] = str(candidate_out)
+            audit["source_write_guard_path"] = str(guard_out)
+            audit["backup_path"] = ""
+        else:
+            backup_root = _resolve_path(backup_dir, project_root)
+            backup_root.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup_path = backup_root / f"master_bot_registry.paper_400_ramp_{stamp}.json"
+            backup_path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+            path.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+            audit["backup_path"] = str(backup_path)
+    else:
+        audit["registry_source_write_blocked"] = False
+        audit["registry_source_written"] = False
 
     active_rows_after = [row for row in rows if isinstance(row, dict) and bool(row.get("active", False))]
     audit["paper_count_after"] = sum(1 for row in active_rows_after if _paper_enabled(row))
@@ -1027,6 +1074,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT_PATH, help="Health artifact path.")
     parser.add_argument("--override", type=Path, default=DEFAULT_OVERRIDE_PATH, help="Runtime env override path.")
     parser.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY_PATH, help="Bot registry path.")
+    parser.add_argument("--candidate-registry", type=Path, default=DEFAULT_CANDIDATE_REGISTRY_PATH, help="Candidate registry path when canonical source writes are blocked.")
+    parser.add_argument("--source-write-guard", type=Path, default=DEFAULT_SOURCE_WRITE_GUARD_PATH, help="Source-write guard health artifact path.")
+    parser.add_argument(
+        "--allow-source-registry-write",
+        action="store_true",
+        default=os.getenv("PAPER_400_RAMP_ALLOW_SOURCE_REGISTRY_WRITE", "0").strip() == "1",
+        help="Allow this intentional operator command to update the tracked master_bot_registry.json source file.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -1040,7 +1095,13 @@ def main(argv: list[str] | None = None) -> int:
         if not bool(args.apply):
             promotion_result = {"ok": False, "overall_status": "preview_only_requires_apply", "apply_required": True}
         else:
-            promotion_result = promote_paper_roster(PROJECT_ROOT, args.registry)
+            promotion_result = promote_paper_roster(
+                PROJECT_ROOT,
+                args.registry,
+                candidate_registry_path=args.candidate_registry,
+                source_write_guard_path=args.source_write_guard,
+                allow_source_registry_write=args.allow_source_registry_write,
+            )
 
     payload = build_payload(PROJECT_ROOT, today=today_value, registry_path=args.registry)
     if promotion_result:

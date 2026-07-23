@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `cce030eb5c61428cdee0bd7c194312f69e158bbe2cad4707895519c0dcddcd41`.
+Command contract hash: `f76b96d54d61c1b87d09b4f3d1e593e3c745d1f125a481fe420ad6fdb3e09236`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -23,7 +23,7 @@ Fast search tokens: `start` `stop` `paper` `profitability` `soak` `halt` `auth` 
 
 Useful compound searches: `paper profitability`, `global halt`, `token refresh`, `livefeed heavy`, `storage prune`, `soak readiness`.
 
-Search coverage: `150` generated command entries from the current command contract.
+Search coverage: `154` generated command entries from the current command contract.
 
 <datalist id="command-search-index-options">
   <option value="Keep the Mac awake (Most Used)"></option>
@@ -93,7 +93,7 @@ Search coverage: `150` generated command entries from the current command contra
   <option value="Stop the notification watcher (Notifications And Alerts)"></option>
   <option value="Apply paper profitability controls (Paper Trading)"></option>
   <option value="Apply the paper live-data standard (Paper Trading)"></option>
-  <option value="Arm or promote the guarded 400 bot paper ramp (Paper Trading)"></option>
+  <option value="Arm or candidate-promote the guarded 400 bot paper ramp (Paper Trading)"></option>
   <option value="Check paper runtime regression guard (Paper Trading)"></option>
   <option value="Review guarded 400 bot paper ramp (Paper Trading)"></option>
   <option value="Active bot stack PDF (Reports And PDFs)"></option>
@@ -154,7 +154,9 @@ Search coverage: `150` generated command entries from the current command contra
   <option value="Master infrastructure supervisor (Status And Health)"></option>
   <option value="Plan or apply the MLX library upgrade bundle (Status And Health)"></option>
   <option value="Point-in-time event store (Status And Health)"></option>
+  <option value="Publish production-quality repair lanes (Status And Health)"></option>
   <option value="PyCharm active bot blue highlights (Status And Health)"></option>
+  <option value="Refresh health gates (Status And Health)"></option>
   <option value="Refresh runtime dashboard contracts (Status And Health)"></option>
   <option value="Repair safe cross-system drift surfaces (Status And Health)"></option>
   <option value="Replay hash registry guard (Status And Health)"></option>
@@ -162,8 +164,10 @@ Search coverage: `150` generated command entries from the current command contra
   <option value="Review Codex project guardrails (Status And Health)"></option>
   <option value="Review system plumbing control (Status And Health)"></option>
   <option value="Review the cross-system drift mesh (Status And Health)"></option>
+  <option value="Run production hardening watch (Status And Health)"></option>
   <option value="Runtime gate dashboard (Status And Health)"></option>
   <option value="Runtime status (Status And Health)"></option>
+  <option value="Track production-quality SLO recurrence (Status And Health)"></option>
   <option value="Repair local stateful storage regressions (Storage)"></option>
   <option value="Review or prune eligible local standby SQLite copies after BOT_LOGS soak (Storage)"></option>
   <option value="Run the storage disaster recovery bot (Storage)"></option>
@@ -179,7 +183,7 @@ Search coverage: `150` generated command entries from the current command contra
 </datalist>
 
 <details>
-<summary>Generated command search index (150 commands; rebuilt by commands-hygiene)</summary>
+<summary>Generated command search index (154 commands; rebuilt by commands-hygiene)</summary>
 
 Each row is generated from `governance/health/commands_contract_latest.json`, so added, removed, renamed, or cleaned-up commands change this index automatically.
 
@@ -250,7 +254,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:327e49ed7c69f2ab71407234c9c0bdd3fe281c97edc00fda5d9f5f98de802ff6 section:`Notifications And Alerts` section_key:`notifications-and-alerts` title:Stop the notification watcher title_key:`stop-the-notification-watcher` opsctl:`notify-stop` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:39c33d5022d704eaf771a19ce14a4374f79c0618fd77cad29d8e0f4f69d4bf44 section:`Paper Trading` section_key:`paper-trading` title:Apply paper profitability controls title_key:`apply-paper-profitability-controls` opsctl:`paper-profitability-control` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:98fa28bd8b7a5e6f54321aa6254d8f4aa8b6b9954d061cb947e41937de44c57c section:`Paper Trading` section_key:`paper-trading` title:Apply the paper live-data standard title_key:`apply-the-paper-live-data-standard` opsctl:`paper-live-data-standard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
-- search-entry:41da2a83d82eac97303ba61d5a02883db095e091848b7507cc2daaf0a205c8e2 section:`Paper Trading` section_key:`paper-trading` title:Arm or promote the guarded 400 bot paper ramp title_key:`arm-or-promote-the-guarded-400-bot-paper-ramp` opsctl:`paper-400-ramp` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:befe059d6d49b4e6c3fa6b7c57be46b4c30ff06f7eaf92412dab0c3ac743aeca section:`Paper Trading` section_key:`paper-trading` title:Arm or candidate-promote the guarded 400 bot paper ramp title_key:`arm-or-candidate-promote-the-guarded-400-bot-paper-ramp` opsctl:`paper-400-ramp` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:855de17b5155c31be434930260497ef55cb0c98e91e63ce5db85fb5cd9447a93 section:`Paper Trading` section_key:`paper-trading` title:Check paper runtime regression guard title_key:`check-paper-runtime-regression-guard` opsctl:`runtime-paper-regression-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:227f99d286741989a6dfd2d8961bb05917451c76c731cfae15bb8de007f58291 section:`Paper Trading` section_key:`paper-trading` title:Review guarded 400 bot paper ramp title_key:`review-guarded-400-bot-paper-ramp` opsctl:`paper-400-ramp` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:2b10c3089dd25a74e4e533fd26fec2ddb81e4ce00103187eee31f8cfb4a9ddc2 section:`Reports And PDFs` section_key:`reports-and-pdfs` title:Active bot stack PDF title_key:`active-bot-stack-pdf` opsctl:`none` scripts:`scripts/ops/open_report_artifact.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -311,7 +315,9 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:153348628b2a3d25ae47aeef540a0d30820f1d4e97e21762b45f1a7a50b64f8f section:`Status And Health` section_key:`status-and-health` title:Master infrastructure supervisor title_key:`master-infrastructure-supervisor` opsctl:`master-infra-supervisor` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:9c1f711ea01aaa2f18b476a46dc7dfc7c9a9575883f53ce6430451861d94f242 section:`Status And Health` section_key:`status-and-health` title:Plan or apply the MLX library upgrade bundle title_key:`plan-or-apply-the-mlx-library-upgrade-bundle` opsctl:`mlx-library-upgrade` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:72bf9c0db31d518475afa3d396d19a290051fee283f3f0842da4e40db38663aa section:`Status And Health` section_key:`status-and-health` title:Point-in-time event store title_key:`point-in-time-event-store` opsctl:`point-in-time-event-store` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:9a0b69390a23a39542748fae0108a2bcd9f9a7c935f6effb86ab12d1d7eb91c9 section:`Status And Health` section_key:`status-and-health` title:Publish production-quality repair lanes title_key:`publish-production-quality-repair-lanes` opsctl:`production-quality` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:079d2a1a6cbe25881172205c3997bebea2da6f40f2d81640db1389579346a566 section:`Status And Health` section_key:`status-and-health` title:PyCharm active bot blue highlights title_key:`pycharm-active-bot-blue-highlights` opsctl:`pycharm-active-bot-highlights` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:b78415c6f92b0a099a704e922e977a6c9915872706aad0c3e753e0281d8f75ba section:`Status And Health` section_key:`status-and-health` title:Refresh health gates title_key:`refresh-health-gates` opsctl:`health-gates` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:5c42cde9787324dfb1206f08bba236c4f22ec3331b467e7b3f8cc25f5445a72d section:`Status And Health` section_key:`status-and-health` title:Refresh runtime dashboard contracts title_key:`refresh-runtime-dashboard-contracts` opsctl:`dashboard-refresh` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:9af5977e0643081899f53d7a99dc149d1e2953fa8400df3d62272e2ad979cb76 section:`Status And Health` section_key:`status-and-health` title:Repair safe cross-system drift surfaces title_key:`repair-safe-cross-system-drift-surfaces` opsctl:`system-drift-autopilot` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:b68225df4373e5ada1af692b9823d7aef7c489c9c6549e42e80dd9eca2c15c4f section:`Status And Health` section_key:`status-and-health` title:Replay hash registry guard title_key:`replay-hash-registry-guard` opsctl:`replay-hash-registry` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -319,8 +325,10 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:0941a33ecf2e9d9f31579a2d05664240e0d893fcecf01959db65122fbe2c1e4e section:`Status And Health` section_key:`status-and-health` title:Review Codex project guardrails title_key:`review-codex-project-guardrails` opsctl:`codex-project-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:d0744ed396c14397231a43061bd3c0f98192ec9c7038b35f4658ee641ba21bde section:`Status And Health` section_key:`status-and-health` title:Review system plumbing control title_key:`review-system-plumbing-control` opsctl:`system-plumbing-control` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:f048a90ce2aa3a66196801c0d0c06873fb5102bd888d7e89498b2ec0524f0891 section:`Status And Health` section_key:`status-and-health` title:Review the cross-system drift mesh title_key:`review-the-cross-system-drift-mesh` opsctl:`system-drift-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:d67c3b8bfd796b7ba5fa9ed44fcb628b61eb71f3dfa841091a1309c3e6e0bf1b section:`Status And Health` section_key:`status-and-health` title:Run production hardening watch title_key:`run-production-hardening-watch` opsctl:`production-hardening-watch` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:c9994d1b6c30bba687625646026da154e91899e5294beab70202f89283afe2da section:`Status And Health` section_key:`status-and-health` title:Runtime gate dashboard title_key:`runtime-gate-dashboard` opsctl:`dashboard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:4b60f2351646885db58bcc2366437e4dd736dd6cf55ce08a2fdac505a3c85bbe section:`Status And Health` section_key:`status-and-health` title:Runtime status title_key:`runtime-status` opsctl:`status` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:52642cb66c25bfe102046b575959fdfd7da8862ee6b3d1d79bb05d5fb84d03f5 section:`Status And Health` section_key:`status-and-health` title:Track production-quality SLO recurrence title_key:`track-production-quality-slo-recurrence` opsctl:`production-quality-slo` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:7162b1728aa0badca09eeab49bafe5d36d327687a0c9f6a6c059cd95e147c9c3 section:`Storage` section_key:`storage` title:Repair local stateful storage regressions title_key:`repair-local-stateful-storage-regressions` opsctl:`stateful-storage-regression-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:e8dce5198877685a4116a8d493aabd0e79f722defb26ff3e3ba27bf329fee8b0 section:`Storage` section_key:`storage` title:Review or prune eligible local standby SQLite copies after BOT_LOGS soak title_key:`review-or-prune-eligible-local-standby-sqlite-copies-after-bot-logs-soak` opsctl:`storage-prune-standby` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:8abb179beed85141e8937968e8cf4c59f087200b63c0574248d16b70591e8e8d section:`Storage` section_key:`storage` title:Run the storage disaster recovery bot title_key:`run-the-storage-disaster-recovery-bot` opsctl:`storage-disaster-recovery` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -428,6 +436,7 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 This refreshes process priority, niceness, fanout limits, P-core feedback, and co-tenant headroom after the host pressure picture changes.
+Canonical `master_bot_registry.json` writes are blocked by default; runtime registry adjustments publish `runtime_throttle_registry_candidate_latest.json` unless explicitly source-write authorized.
 Associated bots/control layers: `runtime-throttle`, `process-fanout-guard`, `memory-pressure-intelligence`, `autonomic-resource-governor`.
 
 ### Ask what backlog and runtime need next
@@ -904,13 +913,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 Reapplies the paper-only live-data standard so eligible sleeves can observe real market data while live execution remains blocked.
 
-### Arm or promote the guarded 400 bot paper ramp
+### Arm or candidate-promote the guarded 400 bot paper ramp
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh paper-400-ramp --apply --promote-roster --json
 ```
 
-Writes the guarded paper caps and promotes eligible registry rows only when global halt, memory, runtime, and ingestion gates are clean.
+Writes guarded paper caps and publishes a candidate registry promotion when global halt, memory, runtime, and ingestion gates are clean.
+Canonical `master_bot_registry.json` writes require `--allow-source-registry-write` or `PAPER_400_RAMP_ALLOW_SOURCE_REGISTRY_WRITE=1`.
 
 ### Check paper runtime regression guard
 ```bash
@@ -1428,6 +1438,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 This rebuilds the normalized event store used to prove source state at replay and report time.
 
+### Publish production-quality repair lanes
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh production-quality --apply --refresh-contract --json
+```
+
+This turns live-canary blockers into ordered safe repair lanes for raw profitability, paper continuity, auth continuity, storage pressure, and promotion/paper freshness.
+
 ### PyCharm active bot blue highlights
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -1435,6 +1453,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 This writes the JetBrains `Active Bots` scope and blue file-color mapping so active `core/brain_refinery_*.py` files get a durable Project-pane scope background. PyCharm's bright blue filename text remains reserved for VCS-modified files.
+
+### Refresh health gates
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh health-gates --json
+```
+
+This refreshes the health-gates artifact directly when stale health-gate state is blocking production-quality or live-canary readiness.
 
 ### Refresh runtime dashboard contracts
 ```bash
@@ -1492,6 +1518,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 This rolls command drift, summary/report drift, governance drift, workstation drift, and stack-runtime drift into one registry-backed health view.
 
+### Run production hardening watch
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh production-hardening-watch --apply --json
+```
+
+This refreshes live-canary readiness, production-quality lanes, SLO state, and infrabot routing in one safe control loop. Safe repair execution remains opt-in and governor-allowlisted.
+
 ### Runtime gate dashboard
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -1505,6 +1539,14 @@ By default this now runs a runtime-artifact refresh pass first. Use `./scripts/o
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh status
 ```
+
+### Track production-quality SLO recurrence
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh production-quality-slo --apply --refresh-quality --json
+```
+
+This keeps state across checks so repeated production-quality lane failures become watch, warning, or breach evidence instead of isolated snapshots.
 
 ## Storage
 

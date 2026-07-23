@@ -81,7 +81,13 @@ def _fresh_gate(
     max_age_hours: float,
     now: datetime,
 ) -> dict[str, Any]:
-    path = project_root / "governance" / "health" / artifact_name
+    artifact_path = Path(artifact_name)
+    if artifact_path.is_absolute():
+        path = artifact_path
+    elif len(artifact_path.parts) > 1:
+        path = project_root / artifact_path
+    else:
+        path = project_root / "governance" / "health" / artifact_path
     payload = load_json(path)
     age_minutes = payload_age_minutes(payload, path, now=now) if payload else None
     status = _status(payload.get("overall_status") or payload.get("status"))
@@ -354,7 +360,7 @@ def build_payload(
     freshness_specs = {
         "health_gates": ("health_gates_latest.json", _safe_float(freshness_hours.get("health_gates"), 2.0)),
         "promotion_quality_gate": ("promotion_quality_gate_latest.json", _safe_float(freshness_hours.get("promotion_quality_gate"), 24.0)),
-        "promotion_readiness": ("promotion_readiness_latest.json", _safe_float(freshness_hours.get("promotion_readiness"), 24.0)),
+        "promotion_readiness": ("governance/walk_forward/promotion_readiness_latest.json", _safe_float(freshness_hours.get("promotion_readiness"), 24.0)),
         "paper_performance": ("paper_performance_latest.json", _safe_float(freshness_hours.get("paper_performance"), 12.0)),
         "runtime_paper_regression_guard": (
             "runtime_paper_regression_guard_latest.json",

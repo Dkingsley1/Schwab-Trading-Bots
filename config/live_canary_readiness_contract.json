@@ -4,7 +4,7 @@
   "sustained_window_hours": 168,
   "raw_profitability_live_canary_grade_floor": "A",
   "raw_profitability_hard_block_floor": "C",
-  "auth_min_expires_in_seconds": 1800,
+  "auth_min_expires_in_seconds": 1200,
   "storage_max_pressure_index": 0.2,
   "storage_max_total_pending_lines": 15000,
   "gate_freshness_hours": {

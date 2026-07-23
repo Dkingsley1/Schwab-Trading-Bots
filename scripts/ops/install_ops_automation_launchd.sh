@@ -48,6 +48,7 @@ CREATIVE_COTENANT_GUARD_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_creative_coten
 SWAP_PRESSURE_GOVERNOR_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_swap_pressure_governor_launchd.sh"
 RUNTIME_SMOOTH_MODE_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_runtime_smooth_mode_launchd.sh"
 SOAK_SELF_HEAL_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_soak_self_healing_launchd.sh"
+PRODUCTION_HARDENING_WATCH_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_production_hardening_watch_launchd.sh"
 AGENTS_DIR="$HOME/Library/LaunchAgents"
 LOG_DIR="${BOT_OPS_LAUNCHD_LOG_DIR:-/tmp/schwab_trading_bot/launchd_ops}"
 UID_NUM="$(id -u)"
@@ -86,6 +87,7 @@ chmod +x "$CREATIVE_COTENANT_GUARD_RUN_SCRIPT"
 chmod +x "$SWAP_PRESSURE_GOVERNOR_RUN_SCRIPT"
 chmod +x "$RUNTIME_SMOOTH_MODE_RUN_SCRIPT"
 chmod +x "$SOAK_SELF_HEAL_RUN_SCRIPT"
+chmod +x "$PRODUCTION_HARDENING_WATCH_RUN_SCRIPT"
 
 WATCHDOG_PLIST="$AGENTS_DIR/com.dankingsley.ops.watchdog.plist"
 REPORT_PLIST="$AGENTS_DIR/com.dankingsley.ops.daily_report.plist"
@@ -159,6 +161,8 @@ RUNTIME_SMOOTH_MODE_PLIST="$AGENTS_DIR/com.dankingsley.ops.runtime_smooth_mode.p
 RUNTIME_SMOOTH_MODE_INTERVAL="${RUNTIME_SMOOTH_MODE_INTERVAL_SECONDS:-60}"
 SOAK_SELF_HEAL_PLIST="$AGENTS_DIR/com.dankingsley.ops.soak_self_healing.plist"
 SOAK_SELF_HEAL_INTERVAL="${SOAK_SELF_HEAL_INTERVAL_SECONDS:-900}"
+PRODUCTION_HARDENING_WATCH_PLIST="$AGENTS_DIR/com.dankingsley.ops.production_hardening_watch.plist"
+PRODUCTION_HARDENING_WATCH_INTERVAL="${PRODUCTION_HARDENING_WATCH_INTERVAL_SECONDS:-300}"
 
 cat > "$WATCHDOG_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -710,6 +714,29 @@ cat > "$SOAK_SELF_HEAL_PLIST" <<PLIST
 </dict></plist>
 PLIST
 
+cat > "$PRODUCTION_HARDENING_WATCH_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.production_hardening_watch</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$PRODUCTION_HARDENING_WATCH_RUN_SCRIPT</string></array>
+  <key>EnvironmentVariables</key><dict>
+    <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
+    <key>MARKET_DATA_ONLY</key><string>1</string>
+    <key>ALLOW_ORDER_EXECUTION</key><string>0</string>
+    <key>BOT_LIVE_MONEY_LOCKED_DURING_SOAK</key><string>1</string>
+    <key>BOT_UNATTENDED_SOAK_ACTIVE</key><string>1</string>
+    <key>PRODUCTION_HARDENING_WATCH_EXECUTE_SAFE_REPAIRS</key><string>${PRODUCTION_HARDENING_WATCH_EXECUTE_SAFE_REPAIRS:-0}</string>
+    <key>PRODUCTION_HARDENING_WATCH_EXECUTE_ON_WATCH</key><string>${PRODUCTION_HARDENING_WATCH_EXECUTE_ON_WATCH:-0}</string>
+  </dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$PRODUCTION_HARDENING_WATCH_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_production_hardening_watch.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_production_hardening_watch.err.log</string>
+</dict></plist>
+PLIST
+
 cat > "$CREATIVE_COTENANT_GUARD_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -783,6 +810,7 @@ install_job "com.dankingsley.ops.system_summary_autopilot" "$SYSTEM_SUMMARY_AUTO
 install_job "com.dankingsley.ops.swap_pressure_governor" "$SWAP_PRESSURE_GOVERNOR_PLIST"
 install_job "com.dankingsley.ops.runtime_smooth_mode" "$RUNTIME_SMOOTH_MODE_PLIST"
 install_job "com.dankingsley.ops.soak_self_healing" "$SOAK_SELF_HEAL_PLIST"
+install_job "com.dankingsley.ops.production_hardening_watch" "$PRODUCTION_HARDENING_WATCH_PLIST"
 install_job "com.dankingsley.ops.creative_cotenant_guard" "$CREATIVE_COTENANT_GUARD_PLIST"
 
 echo "Ops automations installed."
