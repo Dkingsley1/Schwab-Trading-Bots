@@ -124,6 +124,7 @@ def test_infrabot_adaptive_governor_surfaces_live_canary_readiness_bar(tmp_path:
     assert needs["live_canary_readiness_bar"]["severity"] == "critical"
     assert "live_canary_readiness_contract" in needs["live_canary_readiness_bar"]["target_capabilities"]
     assert "production_quality_control" in needs["live_canary_readiness_bar"]["target_capabilities"]
+    assert "production_quality_slo_guard" in needs["live_canary_readiness_bar"]["target_capabilities"]
     assert "paper_performance_refresh" in needs["live_canary_readiness_bar"]["target_capabilities"]
     assert "daily_verify_auto_remediation" in needs["live_canary_readiness_bar"]["target_capabilities"]
 
@@ -132,6 +133,32 @@ def test_infrabot_adaptive_governor_surfaces_live_canary_readiness_bar(tmp_path:
     assert routes["live_canary_readiness_contract"]["command"] == ["./scripts/ops/opsctl.sh", "live-canary-readiness", "--apply", "--json"]
     assert routes["production_quality_control"]["action"] == "run_now"
     assert routes["production_quality_control"]["command"] == ["./scripts/ops/opsctl.sh", "production-quality", "--apply", "--refresh-contract", "--json"]
+    assert routes["production_quality_slo_guard"]["action"] == "run_now"
+    assert routes["production_quality_slo_guard"]["command"] == ["./scripts/ops/opsctl.sh", "production-quality-slo", "--apply", "--refresh-quality", "--json"]
+
+
+def test_infrabot_adaptive_governor_surfaces_production_quality_slo_breach(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = _base_ready_health(project_root)
+    _write_json(
+        health / "production_quality_slo_guard_latest.json",
+        {
+            "overall_status": "blocked",
+            "breach_count": 1,
+            "warning_count": 0,
+            "breached_lanes": [{"lane_id": "storage_pressure_clean"}],
+            "warning_lanes": [],
+        },
+    )
+
+    payload = infrabot_adaptive_governor.build_payload(project_root, max_actions=4)
+
+    needs = {need["id"]: need for need in payload["system_needs_contract"]["needs"]}
+    routes = {row["capability_id"]: row for row in payload["adaptive_policy_router"]["routes"]}
+    assert "production_quality_slo_breach" in needs
+    assert needs["production_quality_slo_breach"]["severity"] == "critical"
+    assert "production_quality_slo_guard" in needs["production_quality_slo_breach"]["target_capabilities"]
+    assert routes["production_quality_slo_guard"]["action"] == "run_now"
 
 
 def test_infrabot_adaptive_governor_apply_writes_contracts_and_feedback(tmp_path: Path) -> None:

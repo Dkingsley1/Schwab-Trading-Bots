@@ -21,6 +21,7 @@ def test_production_flow_smoke_passes_current_contract() -> None:
     assert "ci_production_smoke_coverage" in names
     ci_check = next(item for item in payload["checks"] if item["name"] == "ci_production_smoke_coverage")
     assert ci_check["production_quality_control_in_ci"] is True
+    assert ci_check["production_quality_slo_guard_in_ci"] is True
 
 
 def test_ticker_contract_ignores_runtime_universe_env(monkeypatch) -> None:

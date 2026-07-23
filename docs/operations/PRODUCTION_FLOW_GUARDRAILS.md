@@ -15,6 +15,7 @@ This contract keeps the soak and future production-grade paper/live-canary flows
 9. CI runs a production smoke pass plus a protected-source mutation guard.
 10. Infrastructure bots must keep live-canary money blocked until `live_canary_readiness_contract_latest.json` proves no raw D-grade posture, no paper-trading dropouts, no auth/token surprises, no runtime source mutation, clean CI, clean storage pressure, and fresh promotion/paper gates for the sustained window.
 11. `production_quality_control_latest.json` turns live-canary blockers into deterministic, safe, ordered repair lanes. It has no live-execution authority and delegates execution only through the infrabot governor exact allowlist.
+12. `production_quality_slo_guard_latest.json` keeps state across checks so repeated production-quality lane failures become warnings or breaches instead of isolated snapshots. Breached lanes require bounded escalation, not unlimited repair loops.
 
 ## Commands
 
@@ -34,6 +35,12 @@ Publish the production-quality repair contract:
 
 ```bash
 ./scripts/ops/opsctl.sh production-quality --apply --refresh-contract --json
+```
+
+Track recurring production-quality lane degradation:
+
+```bash
+./scripts/ops/opsctl.sh production-quality-slo --apply --refresh-quality --json
 ```
 
 Check that protected source files were not changed by runtime or CI steps:

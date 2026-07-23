@@ -21,6 +21,7 @@ DEFAULT_PROTECTED_PATHS = (
     "scripts/ops/paper_live_data_standard.py",
     "scripts/ops/production_flow_smoke.py",
     "scripts/ops/production_quality_control.py",
+    "scripts/ops/production_quality_slo_guard.py",
     "scripts/ops/source_mutation_guard.py",
     "config/deployment_profiles.json",
     "config/self_healing_policy.json",

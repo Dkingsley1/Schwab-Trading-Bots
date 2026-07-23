@@ -262,6 +262,15 @@ def _capability_registry() -> list[dict[str, Any]]:
             success_artifact="governance/health/production_quality_control_latest.json",
         ),
         _capability(
+            capability_id="production_quality_slo_guard",
+            title="Production Quality SLO Guard",
+            owns=["production_quality_slo", "recurring_degradation_memory", "bounded_repair_escalation"],
+            command=_opsctl("production-quality-slo", "--apply", "--refresh-quality", "--json"),
+            apply_safe=True,
+            safe_under_pressure=True,
+            success_artifact="governance/health/production_quality_slo_guard_latest.json",
+        ),
+        _capability(
             capability_id="source_mutation_guard",
             title="Source Mutation Guard",
             owns=["runtime_source_mutation_guard", "protected_source_dirty", "canonical_source_write_contract"],
@@ -708,6 +717,7 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
     paper_backlog = _health(project_root, "paper_execution_backlog_relief_latest.json")
     live_canary_readiness = _health(project_root, "live_canary_readiness_contract_latest.json")
     production_quality = _health(project_root, "production_quality_control_latest.json")
+    production_quality_slo = _health(project_root, "production_quality_slo_guard_latest.json")
     source_verification = _health(project_root, "source_verification_latest.json")
     provider_mesh = _health(project_root, "provider_mesh_latest.json")
     market_explainer = _health(project_root, "market_move_explainer_latest.json")
@@ -814,6 +824,7 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
                 target_capabilities=[
                     "live_canary_readiness_contract",
                     "production_quality_control",
+                    "production_quality_slo_guard",
                     "paper_profitability_control",
                     "paper_performance_refresh",
                     "paper_execution_truth_layer",
@@ -828,6 +839,49 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
                 ],
                 stop_when="live_canary_readiness_contract reports live_canary_money_ready=true after the sustained production-hardening window.",
                 expected_impact="Keeps infrastructure bots focused on hardening paper/auth/storage/source/CI/gate freshness before any live-money canary.",
+            )
+        )
+
+    production_slo_status = _status(production_quality_slo.get("overall_status"))
+    production_slo_breach_count = _safe_int(production_quality_slo.get("breach_count"), 0)
+    production_slo_warning_count = _safe_int(production_quality_slo.get("warning_count"), 0)
+    if production_quality_slo and (
+        production_slo_status in BAD_STATUSES or production_slo_breach_count > 0 or production_slo_warning_count > 0
+    ):
+        breached_lanes = [
+            str(_as_dict(row).get("lane_id") or "")
+            for row in _as_list(production_quality_slo.get("breached_lanes"))
+            if str(_as_dict(row).get("lane_id") or "").strip()
+        ]
+        warning_lanes = [
+            str(_as_dict(row).get("lane_id") or "")
+            for row in _as_list(production_quality_slo.get("warning_lanes"))
+            if str(_as_dict(row).get("lane_id") or "").strip()
+        ]
+        needs.append(
+            _need(
+                need_id="production_quality_slo_breach",
+                title="Production quality lane SLO needs bounded repair escalation",
+                category="live_canary",
+                severity="critical" if production_slo_breach_count > 0 else "high",
+                evidence=[
+                    f"production_quality_slo_status={production_slo_status or 'unknown'}",
+                    f"breach_count={production_slo_breach_count}",
+                    f"warning_count={production_slo_warning_count}",
+                    f"breached_lanes={','.join(breached_lanes[:8]) or 'none'}",
+                    f"warning_lanes={','.join(warning_lanes[:8]) or 'none'}",
+                ],
+                target_capabilities=[
+                    "production_quality_slo_guard",
+                    "production_quality_control",
+                    "paper_profitability_control",
+                    "broker_auth_supervisor",
+                    "paper_ramp_guard",
+                    "storage_backpressure_autopilot",
+                    "daily_verify_auto_remediation",
+                ],
+                stop_when="production_quality_slo_guard reports no warning or breached lanes after production-quality lanes clear or remain under SLO thresholds.",
+                expected_impact="Prevents repeated production-quality degradation from becoming an unbounded repair loop before live canary money.",
             )
         )
 
@@ -1402,6 +1456,7 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
             "runtime_paper_regression_guard": bool(paper_runtime),
             "live_canary_readiness_contract": bool(live_canary_readiness),
             "production_quality_control": bool(production_quality),
+            "production_quality_slo_guard": bool(production_quality_slo),
             "source_verification": bool(source_verification),
             "provider_mesh": bool(provider_mesh),
             "market_move_explainer": bool(market_explainer),
@@ -1599,6 +1654,7 @@ def _route_policy(
                 "infrastructure_autofix",
                 "live_canary_readiness_contract",
                 "production_quality_control",
+                "production_quality_slo_guard",
                 "operator_cockpit",
             ],
         },

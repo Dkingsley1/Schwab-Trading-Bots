@@ -213,10 +213,12 @@ def check_ci_guardrails(project_root: Path) -> dict[str, Any]:
     return {
         "ok": "production_flow_smoke.py --json" in text
         and "source_mutation_guard.py --check-clean --json" in text
-        and "production_quality_control.py --help" in text,
+        and "production_quality_control.py --help" in text
+        and "production_quality_slo_guard.py --help" in text,
         "production_smoke_in_ci": "production_flow_smoke.py --json" in text,
         "source_mutation_guard_in_ci": "source_mutation_guard.py --check-clean --json" in text,
         "production_quality_control_in_ci": "production_quality_control.py --help" in text,
+        "production_quality_slo_guard_in_ci": "production_quality_slo_guard.py --help" in text,
     }
 
 

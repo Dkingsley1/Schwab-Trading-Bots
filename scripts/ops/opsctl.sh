@@ -1363,6 +1363,9 @@ case "$cmd" in
   production-quality|production-quality-control|production-hardening-quality)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/production_quality_control.py" "$@"
     ;;
+  production-quality-slo|production-slo-guard|production-quality-slo-guard)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/production_quality_slo_guard.py" "$@"
+    ;;
   live-money-readiness|live-money-contract|faithful-live-money)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_money_readiness_contract.py" "$@"
     ;;
@@ -2910,6 +2913,7 @@ opsctl commands:
   autonomy-control [--json]
   live-canary-readiness|canary-readiness-contract|production-hardening-bar [--apply] [--json]
   production-quality|production-quality-control|production-hardening-quality [--apply] [--refresh-contract] [--execute-safe-repairs] [--max-actions N] [--max-execute-actions N] [--json]
+  production-quality-slo|production-slo-guard [--apply] [--refresh-quality] [--json]
   live-money-readiness|live-money-contract|faithful-live-money [--target-date YYYY-MM-DD] [--json]
   paper-400-ramp|paper-ramp-400|paper-cap-400 [--apply] [--promote-roster] [--today YYYY-MM-DD] [--json]
   paper-execution-truth|paper-truth [--json]
