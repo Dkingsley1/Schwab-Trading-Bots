@@ -107,10 +107,14 @@ def test_collect_crypto_market_context_keeps_partial_source_issues_as_warnings(m
     monkeypatch.setattr(crypto_ctx, "_collect_deribit", _deribit)
     monkeypatch.setattr(crypto_ctx, "_collect_kraken", _kraken)
     monkeypatch.setattr(crypto_ctx, "_collect_hyperliquid", _hyper)
+    monkeypatch.setattr(crypto_ctx, "_collect_coinbase_quotes", lambda *args, **kwargs: ({}, {"BTC": 70003.0}, {"ok": True, "error": None}))
     monkeypatch.setattr(crypto_ctx, "_collect_coinmetrics", _coinmetrics)
     monkeypatch.setattr(crypto_ctx, "_collect_defillama", _defillama)
     monkeypatch.setattr(crypto_ctx, "_collect_etherscan", _etherscan)
     monkeypatch.setattr(crypto_ctx, "_collect_coingecko", _coingecko)
+    monkeypatch.setattr(crypto_ctx, "_collect_binance_spot", lambda *args, **kwargs: ({"BTC": {"crypto_binance_volume_norm": 0.5}}, {"BTC": 70004.0}, {"ok": True, "error": None, "optional": True}))
+    monkeypatch.setattr(crypto_ctx, "_collect_okx_spot", lambda *args, **kwargs: ({"BTC": {"crypto_okx_volume_norm": 0.5}}, {"BTC": 70006.0}, {"ok": True, "error": None, "optional": True}))
+    monkeypatch.setattr(crypto_ctx, "_collect_schwab_crypto_bridge", lambda *args, **kwargs: ({}, {}, {"ok": False, "state": "disabled", "optional": True, "error": None}))
     monkeypatch.setattr(crypto_ctx, "_collect_crypto_news", lambda **kwargs: ([], {}))
 
     _, status = crypto_ctx.collect_crypto_market_context(
@@ -124,14 +128,35 @@ def test_collect_crypto_market_context_keeps_partial_source_issues_as_warnings(m
     assert status["warnings"] == ["coinmetrics:SOL:HTTP Error 403: Forbidden"]
 
 
+def test_collect_crypto_market_context_skips_sources_after_deadline(monkeypatch: Any) -> None:
+    ticks = iter([100.0, 101.0, 101.0, 101.0, 101.0, 101.0, 101.0, 101.0, 101.0, 101.0, 101.0, 101.0])
+    monkeypatch.setattr(crypto_ctx.time, "monotonic", lambda: next(ticks, 101.0))
+
+    payload, status = crypto_ctx.collect_crypto_market_context(
+        symbols=["BTC-USD"],
+        user_agent="test/1.0",
+        max_runtime_seconds=0.5,
+    )
+
+    assert status["deadline_exceeded"] is True
+    assert status["sources"]["deribit"]["error"] == "collector_deadline_exceeded"
+    assert status["sources"]["crypto_news"]["deadline_exceeded"] is True
+    assert payload["derived"]["symbol_features"]["BTC-USD"]["crypto_cross_provider_price_agreement_norm"] == 0.0
+
+
 def test_collect_crypto_market_context_includes_news_features(monkeypatch: Any) -> None:
+    now_utc = crypto_ctx.datetime.now(crypto_ctx.timezone.utc).isoformat()
     monkeypatch.setattr(crypto_ctx, "_collect_deribit", lambda *args, **kwargs: ({}, {}, {"ok": False, "error": None}))
     monkeypatch.setattr(crypto_ctx, "_collect_kraken", lambda *args, **kwargs: ({}, {}, {"ok": False, "error": None}))
     monkeypatch.setattr(crypto_ctx, "_collect_hyperliquid", lambda *args, **kwargs: ({}, {}, {"ok": False, "error": None}))
+    monkeypatch.setattr(crypto_ctx, "_collect_coinbase_quotes", lambda *args, **kwargs: ({}, {}, {"ok": False, "state": "disabled", "optional": True, "error": None}))
     monkeypatch.setattr(crypto_ctx, "_collect_coinmetrics", lambda *args, **kwargs: ({}, {}, {"ok": False, "error": None}))
     monkeypatch.setattr(crypto_ctx, "_collect_defillama", lambda *args, **kwargs: ({}, {"ok": False, "error": None}))
     monkeypatch.setattr(crypto_ctx, "_collect_etherscan", lambda *args, **kwargs: ({}, {"ok": False, "error": None}))
     monkeypatch.setattr(crypto_ctx, "_collect_coingecko", lambda *args, **kwargs: ({}, {}, {"ok": False, "error": None}))
+    monkeypatch.setattr(crypto_ctx, "_collect_binance_spot", lambda *args, **kwargs: ({}, {}, {"ok": False, "optional": True, "error": None}))
+    monkeypatch.setattr(crypto_ctx, "_collect_okx_spot", lambda *args, **kwargs: ({}, {}, {"ok": False, "optional": True, "error": None}))
+    monkeypatch.setattr(crypto_ctx, "_collect_schwab_crypto_bridge", lambda *args, **kwargs: ({}, {}, {"ok": False, "state": "disabled", "optional": True, "error": None}))
     monkeypatch.setattr(
         crypto_ctx,
         "_collect_crypto_news",
@@ -142,7 +167,7 @@ def test_collect_crypto_market_context_includes_news_features(monkeypatch: Any) 
                     "summary": "Investigating delayed LTC transfers.",
                     "publisher": "Coinbase Status",
                     "source": "Coinbase Status",
-                    "published": "2026-03-22T13:30:00+00:00",
+                    "published": now_utc,
                     "symbols": ["LTC", "LTC-USD"],
                     "relatedSymbols": ["LTC", "LTC-USD"],
                     "sentiment_hint": -0.9,
@@ -154,7 +179,7 @@ def test_collect_crypto_market_context_includes_news_features(monkeypatch: Any) 
                     "summary": "BTC and ETH gain as inflows accelerate.",
                     "publisher": "CoinDesk",
                     "source": "CoinDesk",
-                    "published": "2026-03-22T13:50:00+00:00",
+                    "published": now_utc,
                     "symbols": ["BTC", "BTC-USD", "ETH", "ETH-USD"],
                     "relatedSymbols": ["BTC", "BTC-USD", "ETH", "ETH-USD"],
                     "sentiment_hint": 0.7,
@@ -181,3 +206,95 @@ def test_collect_crypto_market_context_includes_news_features(monkeypatch: Any) 
     assert payload["derived"]["news_features"]["news_source_quality_norm"] > 0.0
     assert payload["derived"]["news_symbol_features"]["LTC-USD"]["news_recent_impact"] > 0.0
     assert payload["derived"]["news_symbol_features"]["BTC-USD"]["news_positive_share"] > 0.0
+
+
+def test_schwab_crypto_bridge_is_disabled_until_configured(monkeypatch: Any) -> None:
+    monkeypatch.delenv("SCHWAB_CRYPTO_DATA_ENABLED", raising=False)
+
+    rows, prices, status = crypto_ctx._collect_schwab_crypto_bridge(
+        ["BTC", "ETH"],
+        user_agent="test/1.0",
+        timeout=1.0,
+    )
+
+    assert rows == {}
+    assert prices == {}
+    assert status["optional"] is True
+    assert status["linked_provider"] == "coinbase"
+    assert status["state"] == "disabled_until_official_schwab_crypto_data_is_available"
+
+
+def test_schwab_crypto_bridge_parses_future_official_quote_payload(monkeypatch: Any) -> None:
+    monkeypatch.setenv("SCHWAB_CRYPTO_DATA_ENABLED", "1")
+    monkeypatch.setenv("SCHWAB_CRYPTO_QUOTE_URL_TEMPLATE", "https://api.schwabapi.com/future/crypto/quotes?symbols={symbols}")
+    monkeypatch.setenv("SCHWAB_CRYPTO_SYMBOL_MAP", "BTC-USD:XBT/USD,ETH-USD:ETH/USD")
+
+    def _fake_http_json(**kwargs: Any) -> tuple[dict[str, Any], None]:
+        assert "XBT/USD" in kwargs["url"]
+        return (
+            {
+                "quotes": {
+                    "XBT/USD": {"symbol": "XBT/USD", "lastPrice": 70008.0},
+                    "ETH/USD": {"symbol": "ETH/USD", "markPrice": 3601.0},
+                }
+            },
+            None,
+        )
+
+    monkeypatch.setattr(crypto_ctx, "_safe_http_json", _fake_http_json)
+
+    rows, prices, status = crypto_ctx._collect_schwab_crypto_bridge(
+        ["BTC", "ETH"],
+        user_agent="test/1.0",
+        timeout=1.0,
+    )
+
+    assert status["ok"] is True
+    assert status["resolved_assets"] == 2
+    assert prices == {"BTC": 70008.0, "ETH": 3601.0}
+    assert rows["BTC"]["crypto_schwab_crypto_quote_available_norm"] == 1.0
+
+
+def test_collect_crypto_market_context_links_schwab_crypto_to_coinbase(monkeypatch: Any) -> None:
+    monkeypatch.setattr(crypto_ctx, "_collect_deribit", lambda *args, **kwargs: ({}, {}, {"ok": False, "error": None}))
+    monkeypatch.setattr(crypto_ctx, "_collect_kraken", lambda *args, **kwargs: ({}, {}, {"ok": False, "error": None}))
+    monkeypatch.setattr(crypto_ctx, "_collect_hyperliquid", lambda *args, **kwargs: ({}, {}, {"ok": False, "error": None}))
+    monkeypatch.setattr(
+        crypto_ctx,
+        "_collect_coinbase_quotes",
+        lambda *args, **kwargs: (
+            {"BTC": {"crypto_coinbase_quote_available_norm": 1.0}},
+            {"BTC": 70000.0},
+            {"ok": True, "resolved_assets": 1, "error": None},
+        ),
+    )
+    monkeypatch.setattr(crypto_ctx, "_collect_coinmetrics", lambda *args, **kwargs: ({}, {}, {"ok": False, "error": None}))
+    monkeypatch.setattr(crypto_ctx, "_collect_defillama", lambda *args, **kwargs: ({}, {"ok": False, "error": None}))
+    monkeypatch.setattr(crypto_ctx, "_collect_etherscan", lambda *args, **kwargs: ({}, {"ok": False, "error": None}))
+    monkeypatch.setattr(crypto_ctx, "_collect_coingecko", lambda *args, **kwargs: ({}, {}, {"ok": False, "error": None}))
+    monkeypatch.setattr(crypto_ctx, "_collect_binance_spot", lambda *args, **kwargs: ({}, {}, {"ok": False, "optional": True, "error": None}))
+    monkeypatch.setattr(crypto_ctx, "_collect_okx_spot", lambda *args, **kwargs: ({}, {}, {"ok": False, "optional": True, "error": None}))
+    monkeypatch.setattr(
+        crypto_ctx,
+        "_collect_schwab_crypto_bridge",
+        lambda *args, **kwargs: (
+            {"BTC": {"crypto_schwab_crypto_quote_available_norm": 1.0}},
+            {"BTC": 70014.0},
+            {"ok": True, "resolved_assets": 1, "optional": True, "error": None, "linked_provider": "coinbase"},
+        ),
+    )
+    monkeypatch.setattr(crypto_ctx, "_collect_crypto_news", lambda **kwargs: ([], {}))
+
+    payload, status = crypto_ctx.collect_crypto_market_context(
+        symbols=["BTC-USD"],
+        user_agent="test/1.0",
+        max_relative_spread=0.05,
+    )
+
+    btc_features = payload["derived"]["symbol_features"]["BTC-USD"]
+    assert status["sources"]["coinbase"]["ok"] is True
+    assert status["sources"]["schwab_crypto"]["linked_provider"] == "coinbase"
+    assert payload["sources"]["provider_prices"]["BTC"]["coinbase"] == 70000.0
+    assert payload["sources"]["provider_prices"]["BTC"]["schwab_crypto"] == 70014.0
+    assert payload["sources"]["linked_provider_pairs"]["schwab_crypto"] == "coinbase"
+    assert btc_features["crypto_schwab_coinbase_price_agreement_norm"] > 0.99

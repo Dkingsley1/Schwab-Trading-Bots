@@ -9,6 +9,17 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ops import sentiment_report as report
 
 
+def test_sentiment_report_renderer_timeout_returns_clean_failure() -> None:
+    rc, _out, err = report._run(
+        [sys.executable, "-c", "import time; time.sleep(10)"],
+        timeout_sec=0.1,
+        process_group=True,
+    )
+
+    assert rc == 124
+    assert "timeout_after" in err
+
+
 def test_sentiment_report_builds_daily_weekly_monthly_yearly_bundle(tmp_path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     events_dir = project_root / "governance" / "events"

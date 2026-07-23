@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
+from typing import Any
 
+from scripts import collect_sec_edgar_context as sec_edgar
 from scripts.collect_sec_edgar_context import _aggregate_features, _derive_symbol_summary, _filing_text_signals, _ticker_map
 
 
@@ -144,3 +146,56 @@ def test_filing_text_signals_detects_dilution_and_financing_stress() -> None:
     assert out["special_dividend"] == 1.0
     assert out["insider_buy"] == 1.0
     assert out["split_hazard"] == 1.0
+
+
+def test_collect_sec_edgar_context_treats_archive_text_as_optional(monkeypatch: Any) -> None:
+    recent_ts = datetime.now(timezone.utc).replace(microsecond=0)
+
+    def fake_http_json_result(url: str, **kwargs: Any) -> dict[str, Any]:
+        if "company_tickers" in url:
+            return {
+                "ok": True,
+                "json": {"0": {"ticker": "AAPL", "cik_str": 320193}},
+                "fetched_utc": "2026-03-20T14:00:00+00:00",
+                "source_confidence_norm": 0.99,
+                "schema_confidence_norm": 0.97,
+                "freshness_norm": 1.0,
+            }
+        return {
+            "ok": True,
+            "json": {
+                "filings": {
+                    "recent": {
+                        "form": ["8-K"],
+                        "filingDate": [recent_ts.date().isoformat()],
+                        "acceptanceDateTime": [recent_ts.isoformat()],
+                        "primaryDocDescription": ["Company raises guidance"],
+                        "primaryDocument": ["aapl-20260320.htm"],
+                        "accessionNumber": ["0000320193-26-000001"],
+                    }
+                }
+            },
+            "fetched_utc": "2026-03-20T14:00:00+00:00",
+            "source_confidence_norm": 0.99,
+            "schema_confidence_norm": 0.95,
+            "freshness_norm": 1.0,
+        }
+
+    monkeypatch.setattr(sec_edgar, "_http_json_result", fake_http_json_result)
+    monkeypatch.setattr(sec_edgar, "_http_text_result", lambda url, **kwargs: {"ok": False, "error": "archive_timeout"})
+
+    payload, status = sec_edgar.collect_sec_edgar_context(
+        symbols=["AAPL"],
+        user_agent="test/1.0",
+        timeout=1.0,
+        pause_seconds=0.0,
+        max_runtime_seconds=5.0,
+        max_archive_fetches=1,
+    )
+
+    assert status["ok"] is True
+    assert status["ticker_map_ok"] is True
+    assert status["tracked_symbols"] == 1
+    assert status["error_count"] == 0
+    assert status["warning_count"] == 1
+    assert payload["symbol_rows"][0]["symbol"] == "AAPL"

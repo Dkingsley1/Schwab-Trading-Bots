@@ -100,12 +100,59 @@ def test_collect_options_flow_context_marks_missing_credentials() -> None:
         user_agent="schwab-trading-bot/1.0",
         timeout_seconds=8.0,
         polygon_contract_limit=50,
+        free_sources_enabled=False,
     )
 
     assert status["ok"] is False
     assert status["operator_action_required"] is True
     assert status["auth_issue"] == "options_flow_credentials_missing"
     assert payload["sources"]["session"]["recommended_action"] == "set_polygon_api_key"
+
+
+def test_collect_options_flow_context_uses_free_option_chain_without_paid_credentials(monkeypatch) -> None:
+    today = datetime.now(timezone.utc).date()
+
+    def _fake_yahoo(symbol: str, *, user_agent: str, timeout: float, contract_limit: int):  # type: ignore[no-untyped-def]
+        return (
+            {
+                "ticker": {
+                    "lastTrade": {"p": 510.0},
+                    "prevDay": {"c": 500.0},
+                    "day": {"v": 3_000_000, "h": 512.0, "l": 498.0},
+                    "todaysChangePerc": 2.0,
+                }
+            },
+            {"iv_rank": 52.0, "implied_volatility": 41.0},
+            [
+                {"contract_type": "call", "expiration_date": today.isoformat(), "strike_price": 510.0, "volume": 1200},
+                {"contract_type": "put", "expiration_date": today.isoformat(), "strike_price": 505.0, "volume": 900},
+            ],
+            {"ok": True, "contract_count": 2, "source_confidence_norm": 0.72, "schema_confidence_norm": 0.82},
+        )
+
+    monkeypatch.setattr(options_flow, "_polygon_get", lambda *args, **kwargs: (None, "polygon_api_key_missing"))
+    monkeypatch.setattr(options_flow, "_unusual_whales_get", lambda *args, **kwargs: (None, "unusual_whales_api_key_missing"))
+    monkeypatch.setattr(options_flow, "_collect_yahoo_options_chain", _fake_yahoo)
+    monkeypatch.setattr(options_flow, "_collect_cboe_options_chain", lambda *args, **kwargs: ({}, None, [], {"ok": False, "error": "not_available"}))
+
+    payload, status = options_flow.collect_options_flow_context(
+        polygon_api_key="",
+        unusual_whales_api_key="",
+        unusual_whales_export_path="",
+        symbols=["SPY"],
+        user_agent="schwab-trading-bot/1.0",
+        timeout_seconds=8.0,
+        polygon_contract_limit=50,
+    )
+
+    assert status["ok"] is True
+    assert status["overall_status"] == "ready"
+    assert status["context_profile"] == "free_options_chain_only"
+    assert status["symbols_with_free_options"] == 1
+    assert status["coverage"]["free_options_chain_ok"] is True
+    assert payload["sources"]["yahoo_options_chain"]["ok"] is True
+    assert payload["sources"]["session"]["recommended_action"] == ""
+    assert payload["derived"]["symbol_features"]["SPY"]["tasty_iv_rank_norm"] > 0.0
 
 
 def test_collect_options_flow_context_accepts_unusual_whales_export_without_api(monkeypatch, tmp_path: Path) -> None:
@@ -153,6 +200,7 @@ def test_collect_options_flow_context_accepts_unusual_whales_export_without_api(
         timeout_seconds=8.0,
         polygon_contract_limit=50,
         unusual_whales_export_min_stable_seconds=0,
+        free_sources_enabled=False,
     )
 
     assert status["ok"] is True
@@ -184,6 +232,7 @@ def test_collect_options_flow_context_surfaces_bad_export_parse_failures(tmp_pat
         timeout_seconds=8.0,
         polygon_contract_limit=50,
         unusual_whales_export_min_stable_seconds=0,
+        free_sources_enabled=False,
     )
 
     assert status["ok"] is False
@@ -228,6 +277,7 @@ def test_collect_options_flow_context_treats_polygon_as_primary_when_optional_ov
         user_agent="schwab-trading-bot/1.0",
         timeout_seconds=8.0,
         polygon_contract_limit=50,
+        free_sources_enabled=False,
     )
 
     assert status["ok"] is True

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -82,6 +83,35 @@ PAGE_SPECS = [
         "kind": "network",
     },
 ]
+
+
+def _runtime_support_nice_target() -> int:
+    raw = (
+        os.getenv("YTDLP_SUPPORT_NICE")
+        or os.getenv("MACRO_YTDLP_SUPPORT_NICE")
+        or os.getenv("OPS_SUPPORT_JOB_NICE")
+        or "0"
+    )
+    try:
+        return min(max(int(float(str(raw).strip() or "0")), 0), 20)
+    except Exception:
+        return 0
+
+
+def _runtime_support_preexec() -> Any:
+    target = _runtime_support_nice_target()
+    if target <= 0:
+        return None
+
+    def _apply_nice() -> None:
+        try:
+            os.nice(target)
+        except Exception:
+            pass
+
+    return _apply_nice
+
+
 CHANNEL_SPECS = [
     {
         "id": "charles_schwab_youtube",
@@ -732,7 +762,11 @@ def _yt_playlist(
         min(int(math.ceil(float(timeout))), YT_PLAYLIST_TIMEOUT_MAX_SECONDS),
     )
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout_seconds)
+        kwargs: dict[str, Any] = {}
+        preexec = _runtime_support_preexec()
+        if preexec is not None:
+            kwargs["preexec_fn"] = preexec
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout_seconds, **kwargs)
     except Exception as exc:
         return None, str(exc)
     if proc.returncode != 0:

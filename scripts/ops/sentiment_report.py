@@ -6,6 +6,7 @@ import html
 import json
 import os
 import re
+import signal
 import shutil
 import subprocess
 import tempfile
@@ -47,7 +48,52 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _run(cmd: list[str]) -> tuple[int, str, str]:
+def _pdf_timeout_seconds() -> float:
+    try:
+        return max(float(os.getenv("SENTIMENT_REPORT_PDF_TIMEOUT_SECONDS", "30")), 1.0)
+    except Exception:
+        return 30.0
+
+
+def _run(cmd: list[str], *, timeout_sec: float | None = None, process_group: bool = False) -> tuple[int, str, str]:
+    if timeout_sec is not None or process_group:
+        proc: subprocess.Popen[str] | None = None
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(PROJECT_ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=bool(process_group),
+            )
+            stdout, stderr = proc.communicate(timeout=timeout_sec)
+            return int(proc.returncode), (stdout or "").strip(), (stderr or "").strip()
+        except subprocess.TimeoutExpired:
+            if proc is None:
+                return 124, "", f"timeout_after_{timeout_sec:.1f}s"
+            try:
+                if process_group:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                else:
+                    proc.terminate()
+            except Exception:
+                pass
+            try:
+                stdout, stderr = proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    if process_group:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    else:
+                        proc.kill()
+                except Exception:
+                    pass
+                stdout, stderr = proc.communicate()
+            detail = (stderr or stdout or "").strip()
+            return 124, (stdout or "").strip(), detail or f"timeout_after_{timeout_sec:.1f}s"
+        except Exception as exc:
+            return 1, "", str(exc)
     try:
         proc = subprocess.run(
             cmd,
@@ -107,7 +153,7 @@ def _render_pdf_from_html(html_path: Path, pdf_path: Path, *, allow_gui_renderer
     html_uri = html_path.resolve().as_uri()
     if renderer_kind == "wkhtmltopdf":
         cmd = [renderer, html_uri, str(pdf_path)]
-        rc, out, err = _run(cmd)
+        rc, out, err = _run(cmd, timeout_sec=_pdf_timeout_seconds())
     else:
         profile_dir = Path(tempfile.mkdtemp(prefix="sentiment-report-pdf-"))
         try:
@@ -125,7 +171,7 @@ def _render_pdf_from_html(html_path: Path, pdf_path: Path, *, allow_gui_renderer
                 f"--print-to-pdf={pdf_path}",
                 html_uri,
             ]
-            rc, out, err = _run(cmd)
+            rc, out, err = _run(cmd, timeout_sec=_pdf_timeout_seconds(), process_group=True)
         finally:
             shutil.rmtree(profile_dir, ignore_errors=True)
     if pdf_path.exists() and pdf_path.stat().st_size > 0:

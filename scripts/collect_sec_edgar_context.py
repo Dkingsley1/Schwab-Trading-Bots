@@ -36,6 +36,9 @@ SOURCE_CONTRACTS = {
     "sec_edgar_submissions": {"source_confidence_norm": 0.99, "schema_confidence_norm": 0.95},
     "sec_edgar_archive": {"source_confidence_norm": 0.97, "schema_confidence_norm": 0.84},
 }
+DEFAULT_MAX_RUNTIME_SECONDS = 75.0
+MIN_FETCH_TIMEOUT_SECONDS = 1.0
+DEFAULT_MAX_ARCHIVE_FETCHES = 1
 
 HIGH_IMPACT_FORMS = {
     "8-K",
@@ -125,7 +128,19 @@ def _source_contract(source_name: str) -> dict[str, float]:
     }
 
 
-def _http_json_result(url: str, *, user_agent: str, timeout: float = 20.0) -> dict[str, Any]:
+def _bounded_timeout(timeout: float, deadline: float | None) -> float:
+    base = max(float(timeout), MIN_FETCH_TIMEOUT_SECONDS)
+    if deadline is None:
+        return base
+    remaining = max(float(deadline) - time.monotonic(), 0.0)
+    return max(min(base, remaining), MIN_FETCH_TIMEOUT_SECONDS)
+
+
+def _has_fetch_budget(deadline: float | None) -> bool:
+    return deadline is None or (float(deadline) - time.monotonic()) >= MIN_FETCH_TIMEOUT_SECONDS
+
+
+def _http_json_result(url: str, *, user_agent: str, timeout: float = 20.0, retries: int = 0) -> dict[str, Any]:
     source_name = _source_contract_name(url)
     contract = _source_contract(source_name)
     return fetch_json(
@@ -138,6 +153,7 @@ def _http_json_result(url: str, *, user_agent: str, timeout: float = 20.0) -> di
         project_root=PROJECT_ROOT,
         source_confidence_norm=contract["source_confidence_norm"],
         schema_confidence_norm=contract["schema_confidence_norm"],
+        retries=max(int(retries), 0),
     )
 
 
@@ -151,7 +167,7 @@ def _safe_http_json(url: str, *, user_agent: str, timeout: float = 20.0) -> tupl
         return None, str(exc)
 
 
-def _http_text_result(url: str, *, user_agent: str, timeout: float = 20.0) -> dict[str, Any]:
+def _http_text_result(url: str, *, user_agent: str, timeout: float = 20.0, retries: int = 0) -> dict[str, Any]:
     source_name = _source_contract_name(url)
     contract = _source_contract(source_name)
     return fetch_text(
@@ -164,6 +180,7 @@ def _http_text_result(url: str, *, user_agent: str, timeout: float = 20.0) -> di
         project_root=PROJECT_ROOT,
         source_confidence_norm=contract["source_confidence_norm"],
         schema_confidence_norm=contract["schema_confidence_norm"],
+        retries=max(int(retries), 0),
     )
 
 
@@ -330,11 +347,14 @@ def _attach_recent_filing_text_signals(
     rows: list[dict[str, Any]],
     user_agent: str,
     timeout: float,
-    max_fetch: int = 4,
+    max_fetch: int = DEFAULT_MAX_ARCHIVE_FETCHES,
+    deadline: float | None = None,
 ) -> list[str]:
     errors: list[str] = []
     fetched = 0
     for row in rows:
+        if not _has_fetch_budget(deadline):
+            break
         if fetched >= max(int(max_fetch), 1):
             break
         primary_document = str(row.get("primary_document") or "").strip()
@@ -345,7 +365,12 @@ def _attach_recent_filing_text_signals(
         if dt is None or dt < (datetime.now(timezone.utc) - timedelta(days=7)):
             continue
         url = _filing_archive_url(cik, accession_number, primary_document)
-        fetch_result = _http_text_result(url, user_agent=user_agent, timeout=timeout)
+        fetch_result = _http_text_result(
+            url,
+            user_agent=user_agent,
+            timeout=_bounded_timeout(timeout, deadline),
+            retries=0,
+        )
         if not bool(fetch_result.get("ok", False)):
             err = str(fetch_result.get("error") or "http_text_failed")
             errors.append(f"{accession_number}:{err}")
@@ -655,31 +680,60 @@ def _aggregate_features(symbol_rows: list[dict[str, Any]], request_count: int) -
     }
 
 
-def collect_sec_edgar_context(*, symbols: list[str], user_agent: str, timeout: float = 20.0, pause_seconds: float = 0.18) -> tuple[dict[str, Any], dict[str, Any]]:
+def collect_sec_edgar_context(
+    *,
+    symbols: list[str],
+    user_agent: str,
+    timeout: float = 20.0,
+    pause_seconds: float = 0.18,
+    max_runtime_seconds: float = DEFAULT_MAX_RUNTIME_SECONDS,
+    max_archive_fetches: int = DEFAULT_MAX_ARCHIVE_FETCHES,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     now = datetime.now(timezone.utc)
-    ticker_result = _http_json_result(EDGAR_TICKERS_URL, user_agent=user_agent, timeout=timeout)
+    started_monotonic = time.monotonic()
+    runtime_budget = max(float(max_runtime_seconds), 0.0)
+    deadline = started_monotonic + runtime_budget if runtime_budget > 0.0 else None
+    ticker_result = _http_json_result(
+        EDGAR_TICKERS_URL,
+        user_agent=user_agent,
+        timeout=_bounded_timeout(timeout, deadline),
+        retries=0,
+    )
     ticker_payload = ticker_result.get("json") if bool(ticker_result.get("ok", False)) else None
     ticker_error = None if bool(ticker_result.get("ok", False)) else str(ticker_result.get("error") or "http_json_failed")
     ticker_by_symbol = _ticker_map(ticker_payload)
     symbol_rows: list[dict[str, Any]] = []
-    errors: list[str] = []
+    fatal_errors: list[str] = []
+    warnings: list[str] = []
     requested = 0
     resolved = 0
+    deferred_symbols = 0
+    deadline_exceeded = False
     filing_text_fetches = 0
     submissions_ok = 0
     archive_fetch_ok = 0
 
     for symbol in symbols:
+        if not _has_fetch_budget(deadline):
+            deadline_exceeded = True
+            deferred_symbols = len(symbols) - requested
+            break
         requested += 1
         cik = ticker_by_symbol.get(symbol)
         if not cik:
             continue
         resolved += 1
-        submissions_result = _http_json_result(EDGAR_SUBMISSIONS_URL.format(cik=cik), user_agent=user_agent, timeout=timeout)
+        submissions_result = _http_json_result(
+            EDGAR_SUBMISSIONS_URL.format(cik=cik),
+            user_agent=user_agent,
+            timeout=_bounded_timeout(timeout, deadline),
+            retries=0,
+        )
         if not bool(submissions_result.get("ok", False)):
             err = str(submissions_result.get("error") or "http_json_failed")
-            errors.append(f"{symbol}:{err}")
-            time.sleep(max(float(pause_seconds), 0.0))
+            warnings.append(f"{symbol}:{err}")
+            if _has_fetch_budget(deadline):
+                time.sleep(min(max(float(pause_seconds), 0.0), max(float(deadline or 0.0) - time.monotonic(), 0.0) if deadline is not None else max(float(pause_seconds), 0.0)))
             continue
         submissions = submissions_result.get("json")
         submissions_ok += 1
@@ -689,10 +743,12 @@ def collect_sec_edgar_context(*, symbols: list[str], user_agent: str, timeout: f
             rows=rows,
             user_agent=user_agent,
             timeout=timeout,
+            max_fetch=max_archive_fetches,
+            deadline=deadline,
         )
         filing_text_fetches += sum(1 for row in rows if isinstance(row.get("text_signals"), dict))
         archive_fetch_ok += sum(1 for row in rows if isinstance(row.get("filing_fetch"), dict))
-        errors.extend(f"{symbol}:{item}" for item in text_errors[:4])
+        warnings.extend(f"{symbol}:{item}" for item in text_errors[:4])
         summary = _derive_symbol_summary(symbol, cik, rows, now)
         symbol_rows.append(
             attach_collection_confidence(
@@ -703,7 +759,8 @@ def collect_sec_edgar_context(*, symbols: list[str], user_agent: str, timeout: f
                 fetched_utc=str(submissions_result.get("fetched_utc") or ""),
             )
         )
-        time.sleep(max(float(pause_seconds), 0.0))
+        if _has_fetch_budget(deadline):
+            time.sleep(min(max(float(pause_seconds), 0.0), max(float(deadline or 0.0) - time.monotonic(), 0.0) if deadline is not None else max(float(pause_seconds), 0.0)))
 
     derived = _aggregate_features(symbol_rows, request_count=requested)
     source_contracts = {
@@ -738,15 +795,22 @@ def collect_sec_edgar_context(*, symbols: list[str], user_agent: str, timeout: f
     }
     status = {
         "timestamp_utc": now.isoformat(),
-        "ok": bool(ticker_by_symbol) and (resolved > 0),
+        "ok": bool(ticker_by_symbol) and (len(symbol_rows) > 0),
         "requested_symbols": requested,
+        "configured_symbols": len(symbols),
         "resolved_symbols": resolved,
         "tracked_symbols": len(symbol_rows),
+        "deferred_symbols": max(deferred_symbols, 0),
+        "deadline_exceeded": bool(deadline_exceeded),
+        "max_runtime_seconds": round(runtime_budget, 3),
+        "elapsed_seconds": round(time.monotonic() - started_monotonic, 3),
         "filing_text_fetches": filing_text_fetches,
         "ticker_map_ok": bool(ticker_by_symbol),
         "ticker_map_error": ticker_error,
-        "error_count": len(errors),
-        "errors": errors[:20],
+        "error_count": len(fatal_errors),
+        "warning_count": len(warnings),
+        "errors": fatal_errors[:20],
+        "warnings": warnings[:20],
         "source_contracts": source_contracts,
     }
     payload = {
@@ -774,6 +838,16 @@ def main() -> int:
     parser.add_argument("--symbols", default=",".join(_default_symbols()))
     parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--pause-seconds", type=float, default=0.18)
+    parser.add_argument(
+        "--max-runtime-seconds",
+        type=float,
+        default=float(os.getenv("SEC_EDGAR_MAX_RUNTIME_SECONDS", str(DEFAULT_MAX_RUNTIME_SECONDS)) or DEFAULT_MAX_RUNTIME_SECONDS),
+    )
+    parser.add_argument(
+        "--max-archive-fetches",
+        type=int,
+        default=int(os.getenv("SEC_EDGAR_MAX_ARCHIVE_FETCHES", str(DEFAULT_MAX_ARCHIVE_FETCHES)) or DEFAULT_MAX_ARCHIVE_FETCHES),
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -784,6 +858,8 @@ def main() -> int:
         user_agent=user_agent,
         timeout=args.timeout,
         pause_seconds=args.pause_seconds,
+        max_runtime_seconds=args.max_runtime_seconds,
+        max_archive_fetches=args.max_archive_fetches,
     )
 
     external_context_root = PROJECT_ROOT / "exports" / "external_context"

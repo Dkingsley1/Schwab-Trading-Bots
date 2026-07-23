@@ -17,7 +17,7 @@ from runtime_requested_bot_common import (
 )
 from runtime_training_common import feature_ema, feature_std, observation_feature, price_change
 
-CRYPTO_MODES = ["shadow_crypto", "shadow_crypto_futures_crypto"]
+CRYPTO_MODES = ("shadow_crypto", "shadow_crypto_futures_crypto")
 
 
 @dataclass(frozen=True)
@@ -38,6 +38,8 @@ class CryptoRuntimeSpec:
     min_sequences: int = 3
     min_positive_samples: int = 70
     min_negative_samples: int = 70
+    batch_size: int = 128
+    defer_on_quality_failure: bool = False
 
 
 def crypto_quality(obs: dict) -> float:
@@ -156,6 +158,7 @@ def train_crypto_runtime_bot(spec: CryptoRuntimeSpec):
         min_sequences=spec.min_sequences,
         min_positive_samples=spec.min_positive_samples,
         min_negative_samples=spec.min_negative_samples,
+        batch_size=spec.batch_size,
         max_best_val_loss=0.694,
         max_final_val_loss=0.706,
         min_long_precision=0.52,
@@ -167,4 +170,5 @@ def train_crypto_runtime_bot(spec: CryptoRuntimeSpec):
         min_accuracy_lift_over_majority=0.03,
         min_precision_balance_score=0.35,
         allow_fallback_on_insufficient_data=False,
+        defer_on_quality_failure=spec.defer_on_quality_failure,
     )

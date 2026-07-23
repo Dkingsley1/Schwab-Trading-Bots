@@ -8,6 +8,7 @@ import math
 import os
 import re
 import sys
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -21,6 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.collector_transport import attach_collection_confidence, fetch_json, fetch_text
+from core.coinbase_market_data import CoinbaseMarketDataClient, MarketDataAPIError
 from core.market_context_features import default_structured_news_features, summarize_structured_news_items
 
 
@@ -33,6 +35,8 @@ DEFILLAMA_STABLECOINS_URL = "https://stablecoins.llama.fi/stablecoins?includePri
 DEFILLAMA_DEXS_URL = "https://api.llama.fi/overview/dexs?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true"
 ETHERSCAN_GAS_URL = "https://api.etherscan.io/v2/api"
 COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
+BINANCE_24HR_URL = "https://api.binance.com/api/v3/ticker/24hr"
+OKX_SPOT_TICKERS_URL = "https://www.okx.com/api/v5/market/tickers?instType=SPOT"
 
 COINBASE_STATUS_RSS_URL = "https://status.coinbase.com/history.rss"
 COINBASE_MARKET_NOTICES_URL = "https://www.coinbase.com/derivatives/market-notices"
@@ -70,11 +74,19 @@ FEATURE_KEYS = [
     "crypto_hyperliquid_funding_norm",
     "crypto_hyperliquid_open_interest_norm",
     "crypto_hyperliquid_basis_norm",
+    "crypto_coinbase_quote_available_norm",
+    "crypto_coinbase_volume_norm",
+    "crypto_binance_volume_norm",
+    "crypto_binance_momentum_norm",
+    "crypto_okx_volume_norm",
+    "crypto_okx_momentum_norm",
     "crypto_coinmetrics_tx_count_norm",
     "crypto_coinmetrics_active_addr_norm",
     "crypto_coingecko_volume_norm",
     "crypto_coingecko_momentum_norm",
     "crypto_cross_provider_price_agreement_norm",
+    "crypto_schwab_crypto_quote_available_norm",
+    "crypto_schwab_coinbase_price_agreement_norm",
     "crypto_defillama_stablecoin_growth_norm",
     "crypto_defillama_dex_volume_growth_norm",
     "crypto_etherscan_gas_norm",
@@ -112,6 +124,41 @@ _KRAKEN_PAIRS = {
     "LINK": "LINKUSD",
     "LTC": "LTCUSD",
     "BCH": "BCHUSD",
+}
+_BINANCE_USDT_SYMBOLS = {
+    "BTC": "BTCUSDT",
+    "ETH": "ETHUSDT",
+    "SOL": "SOLUSDT",
+    "AVAX": "AVAXUSDT",
+    "DOGE": "DOGEUSDT",
+    "LINK": "LINKUSDT",
+    "LTC": "LTCUSDT",
+    "BCH": "BCHUSDT",
+    "XRP": "XRPUSDT",
+    "ADA": "ADAUSDT",
+    "UNI": "UNIUSDT",
+    "AAVE": "AAVEUSDT",
+    "ATOM": "ATOMUSDT",
+    "NEAR": "NEARUSDT",
+}
+_OKX_USDT_SYMBOLS = {
+    asset: f"{asset}-USDT"
+    for asset in (
+        "BTC",
+        "ETH",
+        "SOL",
+        "AVAX",
+        "DOGE",
+        "LINK",
+        "LTC",
+        "BCH",
+        "XRP",
+        "ADA",
+        "UNI",
+        "AAVE",
+        "ATOM",
+        "NEAR",
+    )
 }
 
 _ASSET_ALIASES = {
@@ -281,6 +328,13 @@ def _asset_from_symbol(raw: str) -> str:
     return token
 
 
+def _coinbase_symbol_for_asset(asset: str) -> str:
+    token = str(asset or "").strip().upper()
+    if not token:
+        return ""
+    return CoinbaseMarketDataClient.normalize_symbol(f"{token}-USD")
+
+
 def _parse_symbols(raw: str) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -308,7 +362,8 @@ def _default_symbols() -> list[str]:
     symbols = _parse_symbols(raw)
     if not symbols:
         symbols = _parse_symbols("BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LTC-USD,LINK-USD,DOGE-USD")
-    return symbols[:20]
+    max_symbols = max(int(os.getenv("CRYPTO_MARKET_CONTEXT_MAX_SYMBOLS", "20") or 20), 1)
+    return symbols[:max_symbols]
 
 
 def _http_json(
@@ -327,10 +382,11 @@ def _http_json(
         method=method,
         headers=headers,
         body=body,
+        retries=0,
         collector_key="crypto_market_context",
         source_name="crypto_market_context",
         entity_key=url,
-        project_root=PROJECT_ROOT,
+        project_root=None,
         source_confidence_norm=0.92,
         schema_confidence_norm=0.9,
     )
@@ -351,10 +407,11 @@ def _http_text(
         user_agent=user_agent,
         timeout=timeout,
         headers=headers,
+        retries=0,
         collector_key="crypto_market_context",
         source_name="crypto_market_context",
         entity_key=url,
-        project_root=PROJECT_ROOT,
+        project_root=None,
         source_confidence_norm=0.88,
         schema_confidence_norm=0.86,
     )
@@ -489,6 +546,214 @@ def _derive_coingecko_asset_features(row: Mapping[str, Any]) -> tuple[dict[str, 
         },
         price,
     )
+
+
+def _derive_coinbase_ticker_features(row: Mapping[str, Any]) -> tuple[dict[str, float], float]:
+    price = _to_float(row.get("price"), 0.0)
+    volume = max(_to_float(row.get("volume"), 0.0), 0.0)
+    return (
+        {
+            "crypto_coinbase_quote_available_norm": 1.0 if price > 0.0 else 0.0,
+            "crypto_coinbase_volume_norm": _safe_log_norm(volume, denom=18.0),
+        },
+        price,
+    )
+
+
+def _derive_public_spot_ticker_features(
+    *,
+    price: float,
+    volume_quote: float,
+    change_pct: float,
+    volume_feature_key: str,
+    momentum_feature_key: str,
+) -> tuple[dict[str, float], float]:
+    return (
+        {
+            volume_feature_key: _safe_log_norm(max(float(volume_quote), 0.0), denom=27.0),
+            momentum_feature_key: _signed_centered_norm(float(change_pct) / 100.0, 0.15),
+        },
+        max(float(price), 0.0),
+    )
+
+
+def _collect_binance_spot(
+    assets: list[str],
+    *,
+    user_agent: str,
+    timeout: float,
+) -> tuple[dict[str, dict[str, float]], dict[str, float], dict[str, Any]]:
+    symbol_to_asset = {symbol: asset for asset, symbol in _BINANCE_USDT_SYMBOLS.items() if asset in assets}
+    if not symbol_to_asset:
+        return {}, {}, {"ok": False, "error": "no_supported_assets", "optional": True}
+    params = urlencode({"symbols": json.dumps(list(symbol_to_asset.keys()), separators=(",", ":"))})
+    payload, err = _safe_http_json(url=f"{BINANCE_24HR_URL}?{params}", user_agent=user_agent, timeout=timeout)
+    rows = payload if isinstance(payload, list) else []
+    symbol_features: dict[str, dict[str, float]] = {}
+    provider_prices: dict[str, float] = {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        asset = symbol_to_asset.get(str(row.get("symbol") or "").strip().upper())
+        if not asset:
+            continue
+        features, price = _derive_public_spot_ticker_features(
+            price=_to_float(row.get("lastPrice"), 0.0),
+            volume_quote=_to_float(row.get("quoteVolume"), 0.0),
+            change_pct=_to_float(row.get("priceChangePercent"), 0.0),
+            volume_feature_key="crypto_binance_volume_norm",
+            momentum_feature_key="crypto_binance_momentum_norm",
+        )
+        if any(value > 0.0 for value in features.values()):
+            symbol_features[asset] = features
+        if price > 0.0:
+            provider_prices[asset] = price
+    return symbol_features, provider_prices, {
+        "ok": bool(provider_prices),
+        "requested_assets": len(symbol_to_asset),
+        "resolved_assets": len(provider_prices),
+        "url": BINANCE_24HR_URL,
+        "error": err,
+        "optional": True,
+    }
+
+
+def _collect_okx_spot(
+    assets: list[str],
+    *,
+    user_agent: str,
+    timeout: float,
+) -> tuple[dict[str, dict[str, float]], dict[str, float], dict[str, Any]]:
+    inst_to_asset = {inst: asset for asset, inst in _OKX_USDT_SYMBOLS.items() if asset in assets}
+    if not inst_to_asset:
+        return {}, {}, {"ok": False, "error": "no_supported_assets", "optional": True}
+    payload, err = _safe_http_json(url=OKX_SPOT_TICKERS_URL, user_agent=user_agent, timeout=timeout)
+    data = payload.get("data") if isinstance(payload, Mapping) and isinstance(payload.get("data"), list) else []
+    symbol_features: dict[str, dict[str, float]] = {}
+    provider_prices: dict[str, float] = {}
+    for row in data:
+        if not isinstance(row, Mapping):
+            continue
+        asset = inst_to_asset.get(str(row.get("instId") or "").strip().upper())
+        if not asset:
+            continue
+        open_24h = _to_float(row.get("open24h"), 0.0)
+        last = _to_float(row.get("last"), 0.0)
+        change_pct = ((last - open_24h) / max(abs(open_24h), 1e-9)) * 100.0 if last > 0.0 and open_24h > 0.0 else 0.0
+        features, price = _derive_public_spot_ticker_features(
+            price=last,
+            volume_quote=_to_float(row.get("volCcy24h") or row.get("vol24h"), 0.0),
+            change_pct=change_pct,
+            volume_feature_key="crypto_okx_volume_norm",
+            momentum_feature_key="crypto_okx_momentum_norm",
+        )
+        if any(value > 0.0 for value in features.values()):
+            symbol_features[asset] = features
+        if price > 0.0:
+            provider_prices[asset] = price
+    return symbol_features, provider_prices, {
+        "ok": bool(provider_prices),
+        "requested_assets": len(inst_to_asset),
+        "resolved_assets": len(provider_prices),
+        "url": OKX_SPOT_TICKERS_URL,
+        "error": err,
+        "optional": True,
+    }
+
+
+def _parse_schwab_crypto_symbol_map(raw: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for part in str(raw or "").replace("\n", ",").split(","):
+        item = part.strip()
+        if not item:
+            continue
+        if ":" in item:
+            left, right = item.split(":", 1)
+        elif "=" in item:
+            left, right = item.split("=", 1)
+        else:
+            continue
+        coinbase_symbol = _normalize_symbol(left)
+        schwab_symbol = str(right or "").strip().upper()
+        if coinbase_symbol and schwab_symbol:
+            out[coinbase_symbol] = schwab_symbol
+    return out
+
+
+def _schwab_symbol_for_asset(asset: str, symbol_map: Mapping[str, str]) -> str:
+    coinbase_symbol = _coinbase_symbol_for_asset(asset)
+    mapped = str(symbol_map.get(coinbase_symbol) or "").strip().upper()
+    return mapped or coinbase_symbol
+
+
+def _candidate_quote_rows(payload: Any, *, source_symbol: str, coinbase_symbol: str) -> list[Mapping[str, Any]]:
+    if not isinstance(payload, Mapping):
+        if isinstance(payload, list):
+            return [row for row in payload if isinstance(row, Mapping)]
+        return []
+
+    rows: list[Mapping[str, Any]] = []
+    for key in (source_symbol, coinbase_symbol, source_symbol.replace("-", ""), coinbase_symbol.replace("-", "")):
+        value = payload.get(key)
+        if isinstance(value, Mapping):
+            rows.append(value)
+
+    for key in ("quotes", "data", "results", "items", "securities"):
+        value = payload.get(key)
+        if isinstance(value, Mapping):
+            for nested_key in (source_symbol, coinbase_symbol, source_symbol.replace("-", ""), coinbase_symbol.replace("-", "")):
+                nested = value.get(nested_key)
+                if isinstance(nested, Mapping):
+                    rows.append(nested)
+            rows.extend(row for row in value.values() if isinstance(row, Mapping))
+        elif isinstance(value, list):
+            rows.extend(row for row in value if isinstance(row, Mapping))
+
+    if not rows:
+        rows.append(payload)
+    return rows
+
+
+def _row_symbol_matches(row: Mapping[str, Any], *, source_symbol: str, coinbase_symbol: str) -> bool:
+    candidates = {
+        source_symbol.upper(),
+        coinbase_symbol.upper(),
+        source_symbol.replace("-", "").upper(),
+        coinbase_symbol.replace("-", "").upper(),
+    }
+    saw_symbol_field = False
+    for key in ("symbol", "product_id", "productId", "asset", "underlying", "securitySymbol"):
+        raw = row.get(key)
+        if raw is None:
+            continue
+        saw_symbol_field = True
+        token = str(raw).strip().upper()
+        normalized = _normalize_symbol(token)
+        if token in candidates or normalized in candidates or token.replace("/", "-") in candidates or token.replace("-", "") in candidates:
+            return True
+    return not saw_symbol_field
+
+
+def _extract_quote_price(row: Mapping[str, Any]) -> float:
+    for key in (
+        "markPrice",
+        "mark",
+        "lastPrice",
+        "last",
+        "price",
+        "regularMarketLastPrice",
+        "closePrice",
+        "close",
+    ):
+        value = _to_float(row.get(key), 0.0)
+        if value > 0.0:
+            return value
+
+    bid = _to_float(row.get("bidPrice", row.get("bid")), 0.0)
+    ask = _to_float(row.get("askPrice", row.get("ask")), 0.0)
+    if bid > 0.0 and ask > 0.0:
+        return (bid + ask) / 2.0
+    return max(bid, ask, 0.0)
 
 
 def _price_agreement_norm(prices: list[float], *, max_relative_spread: float) -> float:
@@ -1242,15 +1507,178 @@ def _collect_coingecko(assets: list[str], *, user_agent: str, timeout: float) ->
     return symbol_features, provider_prices, {"ok": bool(symbol_features), "resolved_assets": len(symbol_features), "error": err}
 
 
+def _collect_coinbase_quotes(assets: list[str], *, user_agent: str, timeout: float) -> tuple[dict[str, dict[str, float]], dict[str, float], dict[str, Any]]:
+    del user_agent
+    enabled = str(os.getenv("CRYPTO_MARKET_CONTEXT_COINBASE_QUOTES_ENABLED", "1")).strip().lower() in {"1", "true", "yes", "on"}
+    if not enabled:
+        return {}, {}, {"ok": False, "state": "disabled", "optional": True, "error": None}
+
+    max_assets = max(int(os.getenv("CRYPTO_MARKET_CONTEXT_COINBASE_QUOTE_MAX_ASSETS", "12")), 1)
+    requested_assets = [asset for asset in assets if asset][:max_assets]
+    client = CoinbaseMarketDataClient(timeout_seconds=max(float(timeout), 1.0))
+    symbol_features: dict[str, dict[str, float]] = {}
+    provider_prices: dict[str, float] = {}
+    errors: list[str] = []
+    try:
+        for asset in requested_assets:
+            symbol = _coinbase_symbol_for_asset(asset)
+            if not symbol:
+                continue
+            try:
+                row = client.get_ticker(symbol)
+            except MarketDataAPIError as exc:
+                errors.append(f"{symbol}:{exc.reason or exc.status_code or 'market_data_error'}")
+                continue
+            except Exception as exc:
+                errors.append(f"{symbol}:{type(exc).__name__}:{exc}")
+                continue
+            features, price = _derive_coinbase_ticker_features(row)
+            if any(value > 0.0 for value in features.values()):
+                symbol_features[asset] = features
+            if price > 0.0:
+                provider_prices[asset] = price
+    finally:
+        client.close()
+
+    resolved_assets = len(provider_prices)
+    return symbol_features, provider_prices, {
+        "ok": bool(provider_prices),
+        "requested_assets": len(requested_assets),
+        "resolved_assets": resolved_assets,
+        "base_url": getattr(client, "base_url", "https://api.exchange.coinbase.com"),
+        "linked_provider": "schwab_crypto_bridge",
+        "error": errors[0] if errors and resolved_assets == 0 else None,
+        "errors": errors[:10],
+        "partial_error_count": len(errors) if resolved_assets > 0 else 0,
+    }
+
+
+def _collect_schwab_crypto_bridge(
+    assets: list[str],
+    *,
+    user_agent: str,
+    timeout: float,
+) -> tuple[dict[str, dict[str, float]], dict[str, float], dict[str, Any]]:
+    enabled = str(os.getenv("SCHWAB_CRYPTO_DATA_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    if not enabled:
+        return {}, {}, {
+            "ok": False,
+            "state": "disabled_until_official_schwab_crypto_data_is_available",
+            "optional": True,
+            "error": None,
+            "linked_provider": "coinbase",
+        }
+
+    url_template = str(os.getenv("SCHWAB_CRYPTO_QUOTE_URL_TEMPLATE", "")).strip()
+    if not url_template:
+        return {}, {}, {
+            "ok": False,
+            "state": "enabled_but_not_configured",
+            "optional": True,
+            "error": "missing_SCHWAB_CRYPTO_QUOTE_URL_TEMPLATE",
+            "linked_provider": "coinbase",
+        }
+
+    symbol_map = _parse_schwab_crypto_symbol_map(os.getenv("SCHWAB_CRYPTO_SYMBOL_MAP", ""))
+    max_assets = max(int(os.getenv("SCHWAB_CRYPTO_QUOTE_MAX_ASSETS", "12")), 1)
+    requested_assets = [asset for asset in assets if asset][:max_assets]
+    source_symbols = [_schwab_symbol_for_asset(asset, symbol_map) for asset in requested_assets]
+    headers: dict[str, str] | None = None
+    token = str(os.getenv("SCHWAB_CRYPTO_BEARER_TOKEN", "")).strip()
+    if token:
+        headers = {"authorization": f"Bearer {token}"}
+
+    def _url_for(source_symbol: str, coinbase_symbol: str) -> str:
+        if "{symbols}" in url_template:
+            return url_template.format(symbols=",".join(source_symbols))
+        if "{symbol}" in url_template:
+            return url_template.format(symbol=source_symbol, coinbase_symbol=coinbase_symbol)
+        return url_template
+
+    symbol_features: dict[str, dict[str, float]] = {}
+    provider_prices: dict[str, float] = {}
+    errors: list[str] = []
+    fetched_urls: set[str] = set()
+    shared_payload: Any | None = None
+    shared_error: str | None = None
+    if "{symbols}" in url_template and requested_assets:
+        shared_url = _url_for(source_symbols[0], _coinbase_symbol_for_asset(requested_assets[0]))
+        fetched_urls.add(shared_url)
+        shared_payload, shared_error = _safe_http_json(url=shared_url, user_agent=user_agent, timeout=timeout, headers=headers)
+
+    for asset, source_symbol in zip(requested_assets, source_symbols):
+        coinbase_symbol = _coinbase_symbol_for_asset(asset)
+        payload: Any | None = shared_payload
+        err: str | None = shared_error
+        if payload is None and "{symbols}" not in url_template:
+            url = _url_for(source_symbol, coinbase_symbol)
+            fetched_urls.add(url)
+            payload, err = _safe_http_json(url=url, user_agent=user_agent, timeout=timeout, headers=headers)
+        if err:
+            errors.append(f"{source_symbol}:{err}")
+            continue
+        price = 0.0
+        for row in _candidate_quote_rows(payload, source_symbol=source_symbol, coinbase_symbol=coinbase_symbol):
+            if not _row_symbol_matches(row, source_symbol=source_symbol, coinbase_symbol=coinbase_symbol):
+                continue
+            price = _extract_quote_price(row)
+            if price > 0.0:
+                break
+        if price <= 0.0:
+            continue
+        symbol_features[asset] = {"crypto_schwab_crypto_quote_available_norm": 1.0}
+        provider_prices[asset] = price
+
+    resolved_assets = len(provider_prices)
+    return symbol_features, provider_prices, {
+        "ok": bool(provider_prices),
+        "state": "enabled",
+        "optional": True,
+        "requested_assets": len(requested_assets),
+        "resolved_assets": resolved_assets,
+        "configured_url_template": True,
+        "fetched_url_count": len(fetched_urls),
+        "symbol_map_count": len(symbol_map),
+        "linked_provider": "coinbase",
+        "error": errors[0] if errors and resolved_assets == 0 else None,
+        "errors": errors[:10],
+        "partial_error_count": len(errors) if resolved_assets > 0 else 0,
+    }
+
+
 def collect_crypto_market_context(
     *,
     symbols: list[str],
     user_agent: str,
     timeout: float = 12.0,
+    max_runtime_seconds: float = 75.0,
     max_relative_spread: float = 0.05,
     coinmetrics_api_key: str = "",
     etherscan_api_key: str = "",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    started_monotonic = time.monotonic()
+    deadline = started_monotonic + max(float(max_runtime_seconds), 1.0) if float(max_runtime_seconds) > 0.0 else None
+    deadline_exceeded = False
+
+    def expired() -> bool:
+        return bool(deadline is not None and time.monotonic() >= deadline)
+
+    def bounded_timeout(default: float) -> float:
+        if deadline is None:
+            return max(float(default), 0.5)
+        remaining = max(deadline - time.monotonic(), 0.0)
+        return max(min(float(default), remaining), 0.5)
+
+    def deadline_status(source_name: str) -> dict[str, Any]:
+        nonlocal deadline_exceeded
+        deadline_exceeded = True
+        return {
+            "ok": False,
+            "error": "collector_deadline_exceeded",
+            "deadline_exceeded": True,
+            "source": source_name,
+        }
+
     now = datetime.now(timezone.utc)
     now_ts = now.timestamp()
     tracked_symbols = [_normalize_symbol(symbol) for symbol in symbols if _normalize_symbol(symbol)]
@@ -1268,35 +1696,83 @@ def collect_crypto_market_context(
     asset_feature_accum: dict[str, dict[str, float]] = {}
     asset_provider_prices: dict[str, dict[str, float]] = {}
 
-    deribit_rows, deribit_prices, deribit_status = _collect_deribit(asset_order, user_agent=user_agent, timeout=timeout)
-    kraken_rows, kraken_prices, kraken_status = _collect_kraken(asset_order, user_agent=user_agent, timeout=timeout)
-    hyper_rows, hyper_prices, hyper_status = _collect_hyperliquid(asset_order, user_agent=user_agent, timeout=timeout)
-    coinmetrics_rows, coinmetrics_prices, coinmetrics_status = _collect_coinmetrics(
-        asset_order,
-        user_agent=user_agent,
-        timeout=timeout,
-        api_key=coinmetrics_api_key,
-    )
-    defillama_global, defillama_status = _collect_defillama(user_agent=user_agent, timeout=timeout)
-    etherscan_global, etherscan_status = _collect_etherscan(user_agent=user_agent, timeout=timeout, api_key=etherscan_api_key)
-    coingecko_rows, coingecko_prices, coingecko_status = _collect_coingecko(asset_order, user_agent=user_agent, timeout=timeout)
+    if expired():
+        deribit_rows, deribit_prices, deribit_status = {}, {}, deadline_status("deribit")
+    else:
+        deribit_rows, deribit_prices, deribit_status = _collect_deribit(asset_order, user_agent=user_agent, timeout=bounded_timeout(timeout))
+    if expired():
+        kraken_rows, kraken_prices, kraken_status = {}, {}, deadline_status("kraken")
+    else:
+        kraken_rows, kraken_prices, kraken_status = _collect_kraken(asset_order, user_agent=user_agent, timeout=bounded_timeout(timeout))
+    if expired():
+        hyper_rows, hyper_prices, hyper_status = {}, {}, deadline_status("hyperliquid")
+    else:
+        hyper_rows, hyper_prices, hyper_status = _collect_hyperliquid(asset_order, user_agent=user_agent, timeout=bounded_timeout(timeout))
+    if expired():
+        coinmetrics_rows, coinmetrics_prices, coinmetrics_status = {}, {}, deadline_status("coinmetrics")
+    else:
+        coinmetrics_rows, coinmetrics_prices, coinmetrics_status = _collect_coinmetrics(
+            asset_order,
+            user_agent=user_agent,
+            timeout=bounded_timeout(timeout),
+            api_key=coinmetrics_api_key,
+        )
+    if expired():
+        defillama_global, defillama_status = {}, deadline_status("defillama")
+    else:
+        defillama_global, defillama_status = _collect_defillama(user_agent=user_agent, timeout=bounded_timeout(timeout))
+    if expired():
+        etherscan_global, etherscan_status = {}, deadline_status("etherscan")
+    else:
+        etherscan_global, etherscan_status = _collect_etherscan(user_agent=user_agent, timeout=bounded_timeout(timeout), api_key=etherscan_api_key)
+    if expired():
+        coingecko_rows, coingecko_prices, coingecko_status = {}, {}, deadline_status("coingecko")
+    else:
+        coingecko_rows, coingecko_prices, coingecko_status = _collect_coingecko(asset_order, user_agent=user_agent, timeout=bounded_timeout(timeout))
+    if expired():
+        coinbase_rows, coinbase_prices, coinbase_status = {}, {}, deadline_status("coinbase")
+    else:
+        coinbase_rows, coinbase_prices, coinbase_status = _collect_coinbase_quotes(asset_order, user_agent=user_agent, timeout=bounded_timeout(timeout))
+    if expired():
+        binance_rows, binance_prices, binance_status = {}, {}, deadline_status("binance")
+    else:
+        binance_rows, binance_prices, binance_status = _collect_binance_spot(asset_order, user_agent=user_agent, timeout=bounded_timeout(timeout))
+    if expired():
+        okx_rows, okx_prices, okx_status = {}, {}, deadline_status("okx")
+    else:
+        okx_rows, okx_prices, okx_status = _collect_okx_spot(asset_order, user_agent=user_agent, timeout=bounded_timeout(timeout))
+    if expired():
+        schwab_crypto_rows, schwab_crypto_prices, schwab_crypto_status = {}, {}, deadline_status("schwab_crypto")
+    else:
+        schwab_crypto_rows, schwab_crypto_prices, schwab_crypto_status = _collect_schwab_crypto_bridge(
+            asset_order,
+            user_agent=user_agent,
+            timeout=bounded_timeout(timeout),
+        )
 
-    news_rows, news_statuses = _collect_crypto_news(
-        asset_to_symbols=asset_to_symbols,
-        user_agent=user_agent,
-        timeout=min(max(timeout, 4.0), 10.0),
-        max_items_per_source=12,
-    )
+    if expired():
+        news_rows, news_statuses = [], {"crypto_news": deadline_status("crypto_news")}
+    else:
+        news_rows, news_statuses = _collect_crypto_news(
+            asset_to_symbols=asset_to_symbols,
+            user_agent=user_agent,
+            timeout=min(max(bounded_timeout(timeout), 4.0), 10.0),
+            max_items_per_source=12,
+        )
 
-    for rows in (deribit_rows, kraken_rows, hyper_rows, coinmetrics_rows, coingecko_rows):
+    for rows in (deribit_rows, kraken_rows, hyper_rows, coinbase_rows, binance_rows, okx_rows, coinmetrics_rows, coingecko_rows, schwab_crypto_rows):
         for asset, feature_map in rows.items():
             asset_feature_accum.setdefault(asset, {}).update(feature_map)
     for source_name, price_map in (
         ("deribit", deribit_prices),
         ("kraken", kraken_prices),
         ("hyperliquid", hyper_prices),
+        ("coinbase", coinbase_prices),
+        ("binance", binance_prices),
+        ("okx", okx_prices),
         ("coinmetrics", coinmetrics_prices),
         ("coingecko", coingecko_prices),
+        ("schwab_crypto", schwab_crypto_prices),
     ):
         for asset, price in price_map.items():
             if price > 0.0:
@@ -1306,14 +1782,26 @@ def collect_crypto_market_context(
     momentum_scores: list[float] = []
     iv_scores: list[float] = []
     funding_scores: list[float] = []
+    schwab_coinbase_agreement_scores: list[float] = []
     compared_assets = 0
     for asset in asset_order:
         feature_map = asset_feature_accum.setdefault(asset, {})
         agreement = _price_agreement_norm(list(asset_provider_prices.get(asset, {}).values()), max_relative_spread=max_relative_spread)
+        schwab_coinbase_agreement = _price_agreement_norm(
+            [
+                price
+                for source_name, price in asset_provider_prices.get(asset, {}).items()
+                if source_name in {"schwab_crypto", "coinbase"}
+            ],
+            max_relative_spread=max_relative_spread,
+        )
         if agreement > 0.0:
             agreement_scores.append(agreement)
             compared_assets += 1
         feature_map["crypto_cross_provider_price_agreement_norm"] = agreement
+        feature_map["crypto_schwab_coinbase_price_agreement_norm"] = schwab_coinbase_agreement
+        if schwab_coinbase_agreement > 0.0:
+            schwab_coinbase_agreement_scores.append(schwab_coinbase_agreement)
         if feature_map.get("crypto_coingecko_momentum_norm", 0.0) > 0.0:
             momentum_scores.append(float(feature_map["crypto_coingecko_momentum_norm"]))
         if feature_map.get("crypto_deribit_mark_iv_norm", 0.0) > 0.0:
@@ -1332,6 +1820,10 @@ def collect_crypto_market_context(
         global_features["crypto_deribit_mark_iv_norm"] = sum(iv_scores) / len(iv_scores)
     if funding_scores:
         global_features["crypto_hyperliquid_funding_norm"] = sum(funding_scores) / len(funding_scores)
+    if schwab_coinbase_agreement_scores:
+        global_features["crypto_schwab_coinbase_price_agreement_norm"] = (
+            sum(schwab_coinbase_agreement_scores) / len(schwab_coinbase_agreement_scores)
+        )
     global_features.update(defillama_global)
     global_features.update(etherscan_global)
 
@@ -1339,10 +1831,14 @@ def collect_crypto_market_context(
         "deribit": deribit_status,
         "kraken": kraken_status,
         "hyperliquid": hyper_status,
+        "coinbase": coinbase_status,
+        "binance": binance_status,
+        "okx": okx_status,
         "coinmetrics": coinmetrics_status,
         "defillama": defillama_status,
         "etherscan": etherscan_status,
         "coingecko": coingecko_status,
+        "schwab_crypto": schwab_crypto_status,
     }
     market_ok_source_count = sum(1 for source in market_statuses.values() if bool(source.get("ok", False)))
     news_ok_source_count = sum(1 for source in news_statuses.values() if bool(source.get("ok", False)))
@@ -1353,7 +1849,7 @@ def collect_crypto_market_context(
         err = source_status.get("error")
         if isinstance(err, str) and err.strip():
             qualified = f"{source_name}:{err}"
-            if bool(source_status.get("ok", False)):
+            if bool(source_status.get("ok", False)) or bool(source_status.get("optional", False)):
                 all_warnings.append(qualified)
             else:
                 all_errors.append(qualified)
@@ -1389,6 +1885,9 @@ def collect_crypto_market_context(
         "warning_count": len(all_warnings),
         "errors": all_errors[:14],
         "warnings": all_warnings[:14],
+        "deadline_exceeded": deadline_exceeded,
+        "max_runtime_seconds": round(float(max_runtime_seconds), 3),
+        "elapsed_seconds": round(time.monotonic() - started_monotonic, 3),
         "sources": {
             **market_statuses,
             **news_statuses,
@@ -1402,6 +1901,9 @@ def collect_crypto_market_context(
         "status": status,
         "sources": {
             "provider_prices": asset_provider_prices,
+            "linked_provider_pairs": {
+                "schwab_crypto": "coinbase",
+            },
         },
         "derived": {
             "calendar_features": {},
@@ -1423,6 +1925,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Collect free/public crypto market context for the crypto bots.")
     parser.add_argument("--symbols", default=",".join(_default_symbols()))
     parser.add_argument("--timeout", type=float, default=float(os.getenv("CRYPTO_MARKET_CONTEXT_TIMEOUT_SECONDS", "12")))
+    parser.add_argument("--max-runtime-seconds", type=float, default=float(os.getenv("CRYPTO_MARKET_CONTEXT_MAX_RUNTIME_SECONDS", "75")))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -1430,6 +1933,7 @@ def main() -> int:
         symbols=_parse_symbols(args.symbols),
         user_agent=str(os.getenv("CRYPTO_MARKET_CONTEXT_USER_AGENT") or USER_AGENT_DEFAULT).strip() or USER_AGENT_DEFAULT,
         timeout=float(args.timeout),
+        max_runtime_seconds=float(args.max_runtime_seconds),
         max_relative_spread=max(float(os.getenv("CRYPTO_MARKET_CONTEXT_MAX_REL_SPREAD", "0.05")), 0.01),
         coinmetrics_api_key=str(os.getenv("COINMETRICS_API_KEY", "")).strip(),
         etherscan_api_key=str(os.getenv("ETHERSCAN_API_KEY", "")).strip(),

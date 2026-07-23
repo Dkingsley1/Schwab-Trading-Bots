@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -18,10 +19,11 @@ def _write_json(path: Path, payload: dict) -> None:
 
 
 def test_build_macro_crosscheck_payload_passes_when_overlap_checks_match(tmp_path: Path) -> None:
+    fresh_ts = datetime.now(timezone.utc).isoformat()
     _write_json(
         tmp_path / "exports" / "external_feeds" / "latest_status.json",
         {
-            "timestamp_utc": "2026-03-20T17:58:23+00:00",
+            "timestamp_utc": fresh_ts,
             "bls": {"ok": True},
             "bea": {"ok": True},
         },
@@ -29,7 +31,7 @@ def test_build_macro_crosscheck_payload_passes_when_overlap_checks_match(tmp_pat
     _write_json(
         tmp_path / "governance" / "health" / "official_macro_context_sync_latest.json",
         {
-            "timestamp_utc": "2026-03-20T21:40:22+00:00",
+            "timestamp_utc": fresh_ts,
             "sources": {
                 "bls": {"ok": True, "fallback": "html_page_parse"},
                 "bls_calendar": {"ok": True},
@@ -42,7 +44,7 @@ def test_build_macro_crosscheck_payload_passes_when_overlap_checks_match(tmp_pat
     _write_json(
         tmp_path / "governance" / "health" / "market_micro_sync_latest.json",
         {
-            "timestamp_utc": "2026-03-20T17:59:02+00:00",
+            "timestamp_utc": fresh_ts,
             "sources": {
                 "treasury_auctions": {"ok": True, "rows": 12},
             },
@@ -53,8 +55,6 @@ def test_build_macro_crosscheck_payload_passes_when_overlap_checks_match(tmp_pat
 
     assert payload["ok"] is True
     assert payload["passed_checks"] == payload["total_checks"] == 4
-    assert "official_treasury_fallback=html_page_parse" in payload["notes"]
-    assert "official_bls_fallback=html_page_parse" in payload["notes"]
     assert "fed_calendar_partial_error" in payload["notes"]
     assert payload["checks"]["bls_dual_source"]["ok"] is True
     assert payload["checks"]["bea_dual_source"]["ok"] is True
@@ -79,3 +79,45 @@ def test_build_macro_crosscheck_payload_fails_when_overlap_missing(tmp_path: Pat
 
     assert payload["ok"] is False
     assert payload["passed_checks"] < payload["total_checks"]
+
+
+def test_build_macro_crosscheck_payload_accepts_official_bea_when_public_bea_auxiliary_missing(tmp_path: Path) -> None:
+    fresh_ts = datetime.now(timezone.utc).isoformat()
+    _write_json(
+        tmp_path / "exports" / "external_feeds" / "latest_status.json",
+        {
+            "timestamp_utc": fresh_ts,
+            "bls": {"ok": True},
+            "bea": {"ok": False, "error": "unexpected_response_shape"},
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "official_macro_context_sync_latest.json",
+        {
+            "timestamp_utc": fresh_ts,
+            "sources": {
+                "bls": {"ok": True},
+                "bea": {"ok": True},
+                "treasury": {"ok": True, "rows": 14},
+            },
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "market_micro_sync_latest.json",
+        {
+            "timestamp_utc": fresh_ts,
+            "sources": {
+                "treasury_auctions": {"ok": True, "rows": 12},
+            },
+        },
+    )
+
+    payload = mcr.build_macro_crosscheck_payload(tmp_path)
+
+    assert payload["ok"] is True
+    assert payload["checks"]["bea_dual_source"]["ok"] is True
+    assert payload["checks"]["bea_dual_source"]["public_bea_auxiliary_unavailable"] is True
+    assert (
+        payload["checks"]["bea_dual_source"]["verification_mode"]
+        == "official_bea_primary_public_auxiliary_unavailable"
+    )

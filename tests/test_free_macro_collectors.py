@@ -1,7 +1,13 @@
 import json
 from datetime import datetime, timezone
 
-from scripts.collect_bls_census_data import _derive_fred_macro_context
+from scripts.collect_bls_census_data import (
+    _bea_rss_payload,
+    _cached_static_census_payload,
+    _derive_fred_macro_context,
+    _fred_csv_to_payload,
+    _usable_api_key,
+)
 from scripts.collect_official_macro_context import (
     _cached_federal_reserve_calendar_rows,
     _calendar_rows_from_news,
@@ -44,6 +50,65 @@ def test_derive_fred_macro_context_uses_pm_gold_alias():
     }
     out = _derive_fred_macro_context(payload)
     assert out["cross_asset"]["gold_fix"] == 3017.4
+
+
+def test_fred_public_csv_fallback_builds_observations():
+    payload = _fred_csv_to_payload(
+        "observation_date,GDP\n2026-01-01,28000.5\n2026-04-01,28100.2\n",
+        series_id="GDP",
+        limit=1,
+    )
+
+    assert payload["file_type"] == "csv_public_graph_fallback"
+    assert payload["observations"][0]["date"] == "2026-04-01"
+    assert payload["observations"][0]["value"] == "28100.2"
+
+
+def test_bea_rss_fallback_extracts_items():
+    payload = _bea_rss_payload(
+        """
+        <rss><channel>
+          <item><title>GDP release</title><link>https://apps.bea.gov/news</link><pubDate>Thu, 25 Jun 2026 12:00:00 GMT</pubDate></item>
+        </channel></rss>
+        """
+    )
+
+    assert payload["items"][0]["title"] == "GDP release"
+
+
+def test_placeholder_api_key_is_ignored():
+    assert _usable_api_key("YOUR_REAL_KEY") == ""
+    assert _usable_api_key("replace-me") == ""
+    assert _usable_api_key("live-real-token") == "live-real-token"
+
+
+def test_cached_static_census_payload_accepts_matching_acs_snapshot(tmp_path):
+    census_root = tmp_path / "census"
+    census_root.mkdir()
+    (census_root / "latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": "2026-06-15T16:39:40+00:00",
+                "request": {
+                    "dataset": "2023/acs/acs5",
+                    "get": "NAME,B01001_001E",
+                    "for": "us:1",
+                },
+                "response": [["NAME", "B01001_001E", "us"], ["United States", "334000000", "1"]],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = _cached_static_census_payload(
+        census_root,
+        census_dataset="2023/acs/acs5",
+        census_get="NAME,B01001_001E",
+        census_for="us:1",
+    )
+
+    assert payload is not None
+    assert payload["response"][1][1] == "334000000"
 
 
 def test_parse_bls_ics_extracts_event_rows():

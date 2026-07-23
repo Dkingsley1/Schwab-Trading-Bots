@@ -13,6 +13,7 @@ from scripts.collect_fx_market_context import (
     _latest_pair_history,
     _normalize_pair_symbol,
     _pair_levels,
+    _parse_frankfurter_latest,
     _proxy_agreement,
     _twelve_data_time_series,
 )
@@ -32,6 +33,26 @@ def test_pair_level_derivation():
     assert math.isclose(pairs["USDJPY"], 150.0, rel_tol=1e-9)
     assert math.isclose(pairs["GBPUSD"], 1.10 / 0.85, rel_tol=1e-9)
     assert math.isclose(pairs["USDCHF"], 0.96 / 1.10, rel_tol=1e-9)
+
+
+def test_frankfurter_latest_derives_supported_pairs():
+    pairs = _parse_frankfurter_latest(
+        {
+            "base": "EUR",
+            "rates": {
+                "USD": 1.10,
+                "JPY": 165.0,
+                "GBP": 0.85,
+                "CHF": 0.96,
+                "CAD": 1.48,
+                "AUD": 1.68,
+            },
+        }
+    )
+
+    assert math.isclose(pairs["EURUSD"], 1.10, rel_tol=1e-9)
+    assert math.isclose(pairs["USDJPY"], 150.0, rel_tol=1e-9)
+    assert math.isclose(pairs["AUDUSD"], 1.10 / 1.68, rel_tol=1e-9)
 
 
 def test_pair_history_and_proxy_agreement():

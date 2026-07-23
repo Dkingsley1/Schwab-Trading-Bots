@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import time
 from datetime import datetime, timezone
@@ -44,10 +45,12 @@ def _record_watermark(
 ) -> None:
     if project_root is None:
         return
+    if str(os.getenv("COLLECTOR_TRANSPORT_SKIP_WATERMARKS", "0") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
     try:
         from scripts import ops_data_plane
 
-        with ops_data_plane.connect(Path(project_root)) as conn:
+        with ops_data_plane.connect(Path(project_root), quick_check=False, timeout_seconds=2.0) as conn:
             ops_data_plane.record_watermark(
                 conn,
                 collector_key=str(collector_key),

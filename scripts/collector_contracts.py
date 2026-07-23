@@ -99,6 +99,16 @@ COLLECTOR_SPECS = [
         "safe_to_degrade": False,
     },
     {
+        "name": "free_equity_reference_context",
+        "health_path": HEALTH_ROOT / "free_equity_reference_context_latest.json",
+        "payload_path": EXTERNAL_CONTEXT_ROOT / "free_equity_reference_context_latest.json",
+        "freshness_minutes": 720,
+        "required": False,
+        "safe_to_degrade": True,
+        "min_source_coverage_ratio": 0.50,
+        "max_failed_sources": 1,
+    },
+    {
         "name": "market_crypto_correlation",
         "health_path": HEALTH_ROOT / "market_crypto_correlation_sync_latest.json",
         "payload_path": EXTERNAL_CONTEXT_ROOT / "market_crypto_correlation_latest.json",
@@ -317,15 +327,43 @@ def _payload_shape_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _empty_error_budget() -> dict[str, Any]:
+    return {
+        "collector_key": "",
+        "run_count": 0,
+        "error_count": 0,
+        "error_rate": 0.0,
+        "error_budget_remaining": 1.0,
+        "source": "data_plane_lookup_skipped",
+    }
+
+
+def _data_plane_context(project_root: Path, *, collector_key: str, include_data_plane: bool) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not include_data_plane:
+        budget = _empty_error_budget()
+        budget["collector_key"] = str(collector_key)
+        return {}, budget
+    try:
+        latest_run = ops_data_plane.latest_collector_run(project_root, collector_key=collector_key)
+        error_budget = ops_data_plane.collector_error_budget(project_root, collector_key=collector_key)
+    except Exception:
+        latest_run = {}
+        error_budget = _empty_error_budget()
+        error_budget["collector_key"] = str(collector_key)
+        error_budget["source"] = "data_plane_lookup_failed"
+    return latest_run, error_budget
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Summarize collector freshness contracts for daily ops.")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument(
         "--out-file",
-        default=str(PROJECT_ROOT / "governance" / "health" / "collector_contracts_latest.json"),
+        default="",
         help="Optional override for where the health payload is written.",
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--include-data-plane", action="store_true", help="Enrich rows with SQLite data-plane latest-run/error-budget context.")
     args = parser.parse_args()
 
     project_root = Path(args.project_root).resolve()
@@ -353,8 +391,11 @@ def main() -> int:
         required = bool(spec["required"])
         safe_to_degrade = bool(spec["safe_to_degrade"])
         contract_ok = bool(fresh and (ok or safe_to_degrade))
-        latest_run = ops_data_plane.latest_collector_run(project_root, collector_key=name)
-        error_budget = ops_data_plane.collector_error_budget(project_root, collector_key=name)
+        latest_run, error_budget = _data_plane_context(
+            project_root,
+            collector_key=name,
+            include_data_plane=bool(args.include_data_plane),
+        )
         payload_present = bool(payload_path.exists())
         payload_size_bytes = int(payload_path.stat().st_size) if payload_present else 0
         payload_sha256 = _sha256_file(payload_path) if payload_present else ""
@@ -437,7 +478,7 @@ def main() -> int:
         "soft_failures": soft_failures,
         "rows": rows,
     }
-    out = Path(args.out_file).expanduser()
+    out = Path(args.out_file).expanduser() if str(args.out_file or "").strip() else project_root / "governance" / "health" / "collector_contracts_latest.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 

@@ -23,6 +23,8 @@ from core.collector_transport import attach_collection_confidence, fetch_json
 USER_AGENT_DEFAULT = "schwab-trading-bot/1.0"
 POLYGON_BASE_URL = "https://api.polygon.io"
 UNUSUAL_WHALES_BASE_URL = "https://api.unusualwhales.com"
+YAHOO_OPTIONS_BASE_URL = "https://query2.finance.yahoo.com/v7/finance/options"
+CBOE_DELAYED_OPTIONS_BASE_URL = "https://cdn.cboe.com/api/global/delayed_quotes/options"
 LEGACY_ALIAS = "tastytrade_context"
 UNUSUAL_WHALES_EXPORT_SCHEMA_VERSION = "uw_options_flow_export.v2"
 DEFAULT_UNUSUAL_WHALES_EXPORT_MAX_AGE_SECONDS = 21600
@@ -97,6 +99,16 @@ SOURCE_CONTRACTS: dict[str, dict[str, Any]] = {
         "required": False,
         "source_confidence_norm": 0.84,
         "schema_confidence_norm": 0.9,
+    },
+    "yahoo_options_chain": {
+        "required": False,
+        "source_confidence_norm": 0.72,
+        "schema_confidence_norm": 0.82,
+    },
+    "cboe_delayed_options": {
+        "required": False,
+        "source_confidence_norm": 0.78,
+        "schema_confidence_norm": 0.84,
     },
 }
 
@@ -372,6 +384,211 @@ def _unusual_whales_get(
     payload = result.get("json")
     err = str(result.get("error") or "") or None
     return payload, err
+
+
+def _yahoo_options_url(symbol: str) -> str:
+    return f"{YAHOO_OPTIONS_BASE_URL.rstrip('/')}/{_normalize_symbol(symbol)}"
+
+
+def _option_expiry_date(raw: Any) -> str:
+    try:
+        value = float(raw)
+    except Exception:
+        value = 0.0
+    if value > 0.0:
+        try:
+            return datetime.fromtimestamp(value, tz=timezone.utc).date().isoformat()
+        except Exception:
+            pass
+    _, expiry, _ = _occ_contract_details(raw)
+    return expiry.isoformat() if expiry is not None else ""
+
+
+def _free_snapshot_from_quote(quote: Mapping[str, Any]) -> dict[str, Any]:
+    last_price = _safe_float(
+        quote.get("regularMarketPrice")
+        or quote.get("postMarketPrice")
+        or quote.get("preMarketPrice")
+        or quote.get("bid")
+        or quote.get("ask"),
+        0.0,
+    )
+    prev_close = _safe_float(quote.get("regularMarketPreviousClose") or quote.get("previousClose"), 0.0)
+    high = _safe_float(quote.get("regularMarketDayHigh") or quote.get("dayHigh"), last_price)
+    low = _safe_float(quote.get("regularMarketDayLow") or quote.get("dayLow"), last_price)
+    volume = _safe_float(quote.get("regularMarketVolume") or quote.get("volume"), 0.0)
+    change_pct = _safe_float(quote.get("regularMarketChangePercent") or quote.get("changePercent"), 0.0)
+    if change_pct == 0.0 and last_price > 0.0 and prev_close > 0.0:
+        change_pct = ((last_price - prev_close) / max(abs(prev_close), 1e-9)) * 100.0
+    return {
+        "ticker": {
+            "lastTrade": {"p": last_price},
+            "prevDay": {"c": prev_close},
+            "day": {"v": volume, "h": high, "l": low},
+            "todaysChangePerc": change_pct,
+        }
+    }
+
+
+def _yahoo_option_row(raw: Mapping[str, Any], *, contract_type: str) -> dict[str, Any]:
+    contract_symbol = str(raw.get("contractSymbol") or raw.get("symbol") or "")
+    _, occ_expiry, occ_strike = _occ_contract_details(contract_symbol)
+    expiry = _option_expiry_date(raw.get("expiration") or raw.get("expirationDate") or contract_symbol)
+    strike = _safe_float(raw.get("strike"), occ_strike or 0.0)
+    return {
+        "contract_type": contract_type,
+        "option_type": contract_type,
+        "option_symbol": contract_symbol,
+        "expiration_date": expiry or (occ_expiry.isoformat() if occ_expiry is not None else ""),
+        "strike_price": strike,
+        "volume": _safe_float(raw.get("volume"), 0.0),
+        "open_interest": _safe_float(raw.get("openInterest"), 0.0),
+        "implied_volatility": _safe_float(raw.get("impliedVolatility"), 0.0) * 100.0,
+        "bid": _safe_float(raw.get("bid"), 0.0),
+        "ask": _safe_float(raw.get("ask"), 0.0),
+        "last_price": _safe_float(raw.get("lastPrice"), 0.0),
+        "source": "Yahoo Finance option chain",
+    }
+
+
+def _collect_yahoo_options_chain(
+    symbol: str,
+    *,
+    user_agent: str,
+    timeout: float,
+    contract_limit: int,
+) -> tuple[dict[str, Any], dict[str, Any] | None, list[dict[str, Any]], dict[str, Any] | None]:
+    contract = _source_contract("yahoo_options_chain")
+    result = fetch_json(
+        url=_yahoo_options_url(symbol),
+        user_agent=user_agent,
+        timeout=timeout,
+        collector_key="options_flow_context",
+        source_name="yahoo_options_chain",
+        entity_key=_normalize_symbol(symbol),
+        project_root=PROJECT_ROOT,
+        source_confidence_norm=float(contract["source_confidence_norm"]),
+        schema_confidence_norm=float(contract["schema_confidence_norm"]),
+    )
+    payload = result.get("json")
+    err = str(result.get("error") or "") or None
+    if not bool(result.get("ok", False)) or not isinstance(payload, Mapping):
+        return {}, None, [], {
+            "ok": False,
+            "symbol": _normalize_symbol(symbol),
+            "url": _yahoo_options_url(symbol),
+            "error": err or "fetch_failed",
+            **contract,
+            "freshness_norm": 0.0,
+        }
+    chain_root = payload.get("optionChain") if isinstance(payload.get("optionChain"), Mapping) else {}
+    results = chain_root.get("result") if isinstance(chain_root.get("result"), list) else []
+    result0 = results[0] if results and isinstance(results[0], Mapping) else {}
+    quote = result0.get("quote") if isinstance(result0.get("quote"), Mapping) else {}
+    options = result0.get("options") if isinstance(result0.get("options"), list) else []
+    first_expiry = options[0] if options and isinstance(options[0], Mapping) else {}
+    rows: list[dict[str, Any]] = []
+    for raw in (first_expiry.get("calls") if isinstance(first_expiry.get("calls"), list) else []):
+        if isinstance(raw, Mapping):
+            rows.append(_yahoo_option_row(raw, contract_type="call"))
+    for raw in (first_expiry.get("puts") if isinstance(first_expiry.get("puts"), list) else []):
+        if isinstance(raw, Mapping):
+            rows.append(_yahoo_option_row(raw, contract_type="put"))
+    rows = [row for row in rows if row.get("expiration_date") and _safe_float(row.get("strike_price"), 0.0) > 0.0]
+    rows = rows[: max(int(contract_limit), 1)]
+    iv_values = [_safe_float(row.get("implied_volatility"), 0.0) for row in rows if _safe_float(row.get("implied_volatility"), 0.0) > 0.0]
+    iv_payload = None
+    if iv_values:
+        avg_iv = sum(iv_values) / max(len(iv_values), 1)
+        iv_payload = {"iv_rank": min(avg_iv * 1.25, 100.0), "implied_volatility": avg_iv}
+    status = {
+        "ok": bool(rows),
+        "symbol": _normalize_symbol(symbol),
+        "url": _yahoo_options_url(symbol),
+        "contract_count": len(rows),
+        "expiration_count": len(result0.get("expirationDates") or []),
+        "error": None if rows else "no_option_rows",
+        **contract,
+        "freshness_norm": 1.0 if rows else 0.0,
+        "fetched_utc": datetime.now(timezone.utc).isoformat() if rows else "",
+    }
+    return _free_snapshot_from_quote(quote), iv_payload, rows, status
+
+
+def _cboe_option_row(raw: Mapping[str, Any]) -> dict[str, Any]:
+    contract_symbol = str(raw.get("option") or raw.get("symbol") or raw.get("option_symbol") or "")
+    cp, occ_expiry, occ_strike = _occ_contract_details(contract_symbol)
+    raw_type = str(raw.get("option_type") or raw.get("type") or cp).strip().lower()
+    contract_type = "put" if raw_type.startswith("p") else "call" if raw_type.startswith("c") else ""
+    expiry = str(raw.get("expiration_date") or raw.get("expiration") or "").strip()
+    if not expiry and occ_expiry is not None:
+        expiry = occ_expiry.isoformat()
+    strike = _safe_float(raw.get("strike") or raw.get("strike_price"), occ_strike or 0.0)
+    return {
+        "contract_type": contract_type,
+        "option_type": contract_type,
+        "option_symbol": contract_symbol,
+        "expiration_date": expiry,
+        "strike_price": strike,
+        "volume": _safe_float(raw.get("volume"), 0.0),
+        "open_interest": _safe_float(raw.get("open_interest") or raw.get("openInterest"), 0.0),
+        "implied_volatility": _safe_float(raw.get("iv") or raw.get("implied_volatility"), 0.0),
+        "bid": _safe_float(raw.get("bid"), 0.0),
+        "ask": _safe_float(raw.get("ask"), 0.0),
+        "last_price": _safe_float(raw.get("last") or raw.get("last_price"), 0.0),
+        "source": "Cboe delayed option quotes",
+    }
+
+
+def _collect_cboe_options_chain(
+    symbol: str,
+    *,
+    user_agent: str,
+    timeout: float,
+    contract_limit: int,
+) -> tuple[dict[str, Any], dict[str, Any] | None, list[dict[str, Any]], dict[str, Any] | None]:
+    normalized = _normalize_symbol(symbol)
+    url = f"{CBOE_DELAYED_OPTIONS_BASE_URL.rstrip('/')}/{normalized}.json"
+    contract = _source_contract("cboe_delayed_options")
+    result = fetch_json(
+        url=url,
+        user_agent=user_agent,
+        timeout=timeout,
+        collector_key="options_flow_context",
+        source_name="cboe_delayed_options",
+        entity_key=normalized,
+        project_root=PROJECT_ROOT,
+        source_confidence_norm=float(contract["source_confidence_norm"]),
+        schema_confidence_norm=float(contract["schema_confidence_norm"]),
+    )
+    payload = result.get("json")
+    err = str(result.get("error") or "") or None
+    if not bool(result.get("ok", False)) or not isinstance(payload, Mapping):
+        return {}, None, [], {"ok": False, "symbol": normalized, "url": url, "error": err or "fetch_failed", **contract, "freshness_norm": 0.0}
+    data = payload.get("data") if isinstance(payload.get("data"), Mapping) else payload
+    raw_options = data.get("options") if isinstance(data.get("options"), list) else []
+    rows = [_cboe_option_row(row) for row in raw_options if isinstance(row, Mapping)]
+    rows = [row for row in rows if row.get("contract_type") and row.get("expiration_date") and _safe_float(row.get("strike_price"), 0.0) > 0.0]
+    rows = rows[: max(int(contract_limit), 1)]
+    quote = {
+        "regularMarketPrice": data.get("current_price") or data.get("last") or data.get("last_price"),
+        "regularMarketPreviousClose": data.get("prev_day_close") or data.get("previous_close"),
+        "regularMarketDayHigh": data.get("high"),
+        "regularMarketDayLow": data.get("low"),
+        "regularMarketVolume": data.get("volume"),
+    }
+    iv_values = [_safe_float(row.get("implied_volatility"), 0.0) for row in rows if _safe_float(row.get("implied_volatility"), 0.0) > 0.0]
+    iv_payload = {"iv_rank": min((sum(iv_values) / max(len(iv_values), 1)) * 1.25, 100.0), "implied_volatility": sum(iv_values) / max(len(iv_values), 1)} if iv_values else None
+    return _free_snapshot_from_quote(quote), iv_payload, rows, {
+        "ok": bool(rows),
+        "symbol": normalized,
+        "url": url,
+        "contract_count": len(rows),
+        "error": None if rows else "no_option_rows",
+        **contract,
+        "freshness_norm": 1.0 if rows else 0.0,
+        "fetched_utc": datetime.now(timezone.utc).isoformat() if rows else "",
+    }
 
 
 def _normalize_dataset_name(raw: Any) -> str:
@@ -1101,6 +1318,7 @@ def collect_options_flow_context(
     polygon_contract_limit: int,
     unusual_whales_export_max_age_seconds: int = DEFAULT_UNUSUAL_WHALES_EXPORT_MAX_AGE_SECONDS,
     unusual_whales_export_min_stable_seconds: int = DEFAULT_UNUSUAL_WHALES_EXPORT_MIN_STABLE_SECONDS,
+    free_sources_enabled: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     now = datetime.now(timezone.utc)
     today = now.date()
@@ -1108,6 +1326,8 @@ def collect_options_flow_context(
     polygon_contract = _source_contract("polygon_options_backbone")
     unusual_whales_api_contract = _source_contract("unusual_whales_api")
     unusual_whales_export_contract = _source_contract("unusual_whales_export")
+    yahoo_options_contract = _source_contract("yahoo_options_chain")
+    cboe_options_contract = _source_contract("cboe_delayed_options")
     export_payload, export_source = inspect_unusual_whales_export(
         unusual_whales_export_path,
         max_age_seconds=max(int(unusual_whales_export_max_age_seconds), 1),
@@ -1188,6 +1408,32 @@ def collect_options_flow_context(
                 "expected": unusual_whales_export_expected,
                 "contract_participates": unusual_whales_export_expected,
             },
+            "yahoo_options_chain": {
+                "ok": False,
+                "symbol_count": 0,
+                "contract_count": 0,
+                "errors": [],
+                "required": False,
+                "expected": bool(free_sources_enabled),
+                "contract_participates": bool(free_sources_enabled),
+                "source_confidence_norm": float(yahoo_options_contract["source_confidence_norm"]),
+                "schema_confidence_norm": float(yahoo_options_contract["schema_confidence_norm"]),
+                "freshness_norm": 0.0,
+                "fetched_utc": "",
+            },
+            "cboe_delayed_options": {
+                "ok": False,
+                "symbol_count": 0,
+                "contract_count": 0,
+                "errors": [],
+                "required": False,
+                "expected": bool(free_sources_enabled),
+                "contract_participates": bool(free_sources_enabled),
+                "source_confidence_norm": float(cboe_options_contract["source_confidence_norm"]),
+                "schema_confidence_norm": float(cboe_options_contract["schema_confidence_norm"]),
+                "freshness_norm": 0.0,
+                "fetched_utc": "",
+            },
         },
     }
     status: dict[str, Any] = {
@@ -1200,8 +1446,10 @@ def collect_options_flow_context(
         "symbols_with_chain": 0,
         "symbols_with_metrics": 0,
         "symbols_with_polygon": 0,
+        "symbols_with_polygon_chain": 0,
         "symbols_with_unusual_whales": 0,
         "symbols_with_unusual_whales_export": 0,
+        "symbols_with_free_options": 0,
         "alignment_ok": True,
         "alignment_compared": 0,
         "alignment_reference_only": 0,
@@ -1240,10 +1488,12 @@ def collect_options_flow_context(
                 "expected": unusual_whales_export_expected,
                 "contract_participates": unusual_whales_export_expected,
             },
+            "yahoo_options_chain": dict(payload["sources"]["yahoo_options_chain"]),
+            "cboe_delayed_options": dict(payload["sources"]["cboe_delayed_options"]),
         },
     }
 
-    if not polygon_api_key and not unusual_whales_api_expected and not export_payload:
+    if not polygon_api_key and not unusual_whales_api_expected and not export_payload and not free_sources_enabled:
         status["auth_issue"] = (
             "options_flow_export_unusable"
             if bool(export_source_payload.get("configured", False))
@@ -1266,6 +1516,8 @@ def collect_options_flow_context(
     symbol_feature_rows: list[dict[str, float]] = []
     polygon_errors: set[str] = set()
     uw_errors: set[str] = set()
+    yahoo_errors: set[str] = set()
+    cboe_errors: set[str] = set()
 
     for symbol in symbols:
         polygon_snapshot, polygon_snapshot_err = _polygon_get(
@@ -1293,7 +1545,54 @@ def collect_options_flow_context(
 
         polygon_contract_rows = _extract_rows(polygon_contracts_payload)
         if polygon_contract_rows:
+            status["symbols_with_polygon_chain"] += 1
+        free_snapshot: dict[str, Any] = {}
+        free_iv_payload: dict[str, Any] | None = None
+        free_contract_rows: list[dict[str, Any]] = []
+        if free_sources_enabled:
+            yahoo_snapshot, yahoo_iv, yahoo_rows, yahoo_status = _collect_yahoo_options_chain(
+                symbol,
+                user_agent=user_agent,
+                timeout=timeout_seconds,
+                contract_limit=polygon_contract_limit,
+            )
+            if yahoo_status:
+                if yahoo_status.get("ok"):
+                    payload["sources"]["yahoo_options_chain"]["symbol_count"] = int(payload["sources"]["yahoo_options_chain"].get("symbol_count", 0) or 0) + 1
+                    payload["sources"]["yahoo_options_chain"]["contract_count"] = int(payload["sources"]["yahoo_options_chain"].get("contract_count", 0) or 0) + int(yahoo_status.get("contract_count", 0) or 0)
+                    payload["sources"]["yahoo_options_chain"]["freshness_norm"] = 1.0
+                    payload["sources"]["yahoo_options_chain"]["fetched_utc"] = now.isoformat()
+                elif yahoo_status.get("error"):
+                    yahoo_errors.add(str(yahoo_status.get("error")))
+            if yahoo_rows:
+                free_contract_rows.extend(yahoo_rows)
+                free_snapshot = yahoo_snapshot or free_snapshot
+                free_iv_payload = yahoo_iv or free_iv_payload
+
+            cboe_snapshot, cboe_iv, cboe_rows, cboe_status = _collect_cboe_options_chain(
+                symbol,
+                user_agent=user_agent,
+                timeout=timeout_seconds,
+                contract_limit=polygon_contract_limit,
+            )
+            if cboe_status:
+                if cboe_status.get("ok"):
+                    payload["sources"]["cboe_delayed_options"]["symbol_count"] = int(payload["sources"]["cboe_delayed_options"].get("symbol_count", 0) or 0) + 1
+                    payload["sources"]["cboe_delayed_options"]["contract_count"] = int(payload["sources"]["cboe_delayed_options"].get("contract_count", 0) or 0) + int(cboe_status.get("contract_count", 0) or 0)
+                    payload["sources"]["cboe_delayed_options"]["freshness_norm"] = 1.0
+                    payload["sources"]["cboe_delayed_options"]["fetched_utc"] = now.isoformat()
+                elif cboe_status.get("error"):
+                    cboe_errors.add(str(cboe_status.get("error")))
+            if cboe_rows:
+                free_contract_rows.extend(cboe_rows)
+                free_snapshot = free_snapshot or cboe_snapshot
+                free_iv_payload = free_iv_payload or cboe_iv
+
+        option_contract_rows = polygon_contract_rows or free_contract_rows
+        if option_contract_rows:
             status["symbols_with_chain"] += 1
+        if free_contract_rows:
+            status["symbols_with_free_options"] += 1
 
         uw_iv_rank_payload, uw_iv_rank_err = _unusual_whales_get(
             f"/api/stock/{symbol}/iv-rank",
@@ -1339,10 +1638,10 @@ def collect_options_flow_context(
 
         symbol_features, symbol_meta = _compute_symbol_features(
             symbol=symbol,
-            spot_price=_polygon_snapshot_metrics(polygon_snapshot or {}).get("last_price", 0.0),
-            polygon_snapshot=polygon_snapshot if isinstance(polygon_snapshot, Mapping) else {},
-            polygon_contracts=polygon_contract_rows,
-            uw_iv_rank_payload=uw_iv_rank_payload or export_iv_rank,
+            spot_price=_polygon_snapshot_metrics(polygon_snapshot or free_snapshot or {}).get("last_price", 0.0),
+            polygon_snapshot=polygon_snapshot if isinstance(polygon_snapshot, Mapping) else free_snapshot,
+            polygon_contracts=option_contract_rows,
+            uw_iv_rank_payload=uw_iv_rank_payload or export_iv_rank or free_iv_payload,
             uw_max_pain_payload=uw_max_pain_payload or export_max_pain,
             uw_oi_change_payload=uw_oi_change_payload or export_oi_change,
             uw_net_prem_payload=uw_net_prem_payload or export_net_prem,
@@ -1358,6 +1657,9 @@ def collect_options_flow_context(
                 float(unusual_whales_export_contract["source_confidence_norm"])
                 if any(node is not None for node in (export_iv_rank, export_max_pain, export_oi_change, export_net_prem))
                 else 0.0,
+                max(float(yahoo_options_contract["source_confidence_norm"]), float(cboe_options_contract["source_confidence_norm"]))
+                if free_contract_rows
+                else 0.0,
             )
             symbol_schema_confidence = max(
                 float(polygon_contract["schema_confidence_norm"]) if (polygon_snapshot is not None or polygon_contracts_payload is not None) else 0.0,
@@ -1367,6 +1669,9 @@ def collect_options_flow_context(
                 float(unusual_whales_export_contract["schema_confidence_norm"])
                 if any(node is not None for node in (export_iv_rank, export_max_pain, export_oi_change, export_net_prem))
                 else 0.0,
+                max(float(yahoo_options_contract["schema_confidence_norm"]), float(cboe_options_contract["schema_confidence_norm"]))
+                if free_contract_rows
+                else 0.0,
             )
             symbol_freshness = max(
                 1.0 if (polygon_snapshot is not None or polygon_contracts_payload is not None) else 0.0,
@@ -1374,6 +1679,7 @@ def collect_options_flow_context(
                 float(payload["sources"]["unusual_whales_export"].get("freshness_norm", 0.0) or 0.0)
                 if any(node is not None for node in (export_iv_rank, export_max_pain, export_oi_change, export_net_prem))
                 else 0.0,
+                1.0 if free_contract_rows else 0.0,
             )
             symbol_feature_rows.append(symbol_features)
             payload["derived"]["symbol_features"][symbol] = attach_collection_confidence(
@@ -1385,6 +1691,7 @@ def collect_options_flow_context(
             )
             status["symbols_with_metrics"] += 1
             payload.setdefault("symbol_meta", {})[symbol] = symbol_meta
+            payload["symbol_meta"][symbol]["free_option_contract_count"] = len(free_contract_rows)
         if export_iv_rank or export_max_pain or export_oi_change or export_net_prem:
             payload["sources"]["unusual_whales_export"]["symbol_count"] = int(payload["sources"]["unusual_whales_export"].get("symbol_count", 0) or 0) + 1
             status["symbols_with_unusual_whales_export"] += 1
@@ -1399,6 +1706,10 @@ def collect_options_flow_context(
     payload["sources"]["unusual_whales_api"]["errors"] = sorted(uw_errors)
     payload["sources"]["unusual_whales_api"]["freshness_norm"] = 1.0 if payload["sources"]["unusual_whales_api"]["ok"] else 0.0
     payload["sources"]["unusual_whales_api"]["fetched_utc"] = now.isoformat() if payload["sources"]["unusual_whales_api"]["ok"] else ""
+    payload["sources"]["yahoo_options_chain"]["ok"] = int(payload["sources"]["yahoo_options_chain"].get("symbol_count", 0) or 0) > 0
+    payload["sources"]["yahoo_options_chain"]["errors"] = sorted(yahoo_errors)[:10]
+    payload["sources"]["cboe_delayed_options"]["ok"] = int(payload["sources"]["cboe_delayed_options"].get("symbol_count", 0) or 0) > 0
+    payload["sources"]["cboe_delayed_options"]["errors"] = sorted(cboe_errors)[:10]
     if bool(payload["sources"]["unusual_whales_export"].get("configured", False)) and int(payload["sources"]["unusual_whales_export"].get("symbol_count", 0) or 0) <= 0:
         export_errors = list(payload["sources"]["unusual_whales_export"].get("errors") or [])
         if bool(export_payload) and "requested_symbols_missing_from_export" not in export_errors:
@@ -1413,10 +1724,11 @@ def collect_options_flow_context(
         and bool(payload["sources"]["unusual_whales_export"].get("fresh", False))
     )
     polygon_ok = bool(payload["sources"]["polygon"]["ok"])
-    polygon_backbone_ok = int(status.get("symbols_with_chain", 0) or 0) > 0
+    polygon_backbone_ok = int(status.get("symbols_with_polygon_chain", 0) or 0) > 0
     uw_api_ok = bool(payload["sources"]["unusual_whales_api"]["ok"])
     uw_export_ok = bool(payload["sources"]["unusual_whales_export"]["ok"])
     uw_ok = bool(uw_api_ok or uw_export_ok)
+    free_options_ok = bool(payload["sources"]["yahoo_options_chain"]["ok"] or payload["sources"]["cboe_delayed_options"]["ok"])
     context_profile = (
         "multi_provider_full"
         if polygon_backbone_ok and uw_ok
@@ -1424,6 +1736,10 @@ def collect_options_flow_context(
         if polygon_backbone_ok and not unusual_whales_expected
         else "polygon_backbone_only"
         if polygon_backbone_ok
+        else "free_options_chain_plus_overlay"
+        if free_options_ok and uw_ok
+        else "free_options_chain_only"
+        if free_options_ok
         else "unusual_whales_overlay_only"
         if uw_ok
         else "unavailable"
@@ -1435,13 +1751,17 @@ def collect_options_flow_context(
         if context_profile == "polygon_primary_only"
         else 0.75
         if context_profile == "polygon_backbone_only"
+        else 0.68
+        if context_profile == "free_options_chain_plus_overlay"
+        else 0.62
+        if context_profile == "free_options_chain_only"
         else 0.45
         if context_profile == "unusual_whales_overlay_only"
         else 0.0
     )
-    status["ok"] = bool(payload["derived"]["symbol_features"]) and (polygon_ok or uw_ok)
+    status["ok"] = bool(payload["derived"]["symbol_features"]) and (polygon_ok or uw_ok or free_options_ok)
     if not status["ok"]:
-        if not polygon_ok and not uw_ok:
+        if not polygon_ok and not uw_ok and not free_options_ok:
             status["auth_issue"] = "options_flow_sources_unavailable"
             status["operator_action_required"] = True
             status["errors"].append("options_flow_sources_unavailable")
@@ -1454,13 +1774,15 @@ def collect_options_flow_context(
     elif context_profile == "unusual_whales_overlay_only":
         status["degraded_reasons"].append("polygon_backbone_missing")
         status["operator_action_required"] = True
-    status["overall_status"] = "ready" if status["ok"] and polygon_backbone_ok else ("degraded" if status["ok"] else "blocked")
+    status["overall_status"] = "ready" if status["ok"] and (polygon_backbone_ok or free_options_ok) else ("degraded" if status["ok"] else "blocked")
     status["context_profile"] = context_profile
     status["coverage_score"] = round(float(coverage_score), 3)
     status["coverage"] = {
         "context_profile": context_profile,
         "coverage_score": round(float(coverage_score), 3),
         "polygon_backbone_ok": bool(polygon_backbone_ok),
+        "free_options_chain_ok": bool(free_options_ok),
+        "symbols_with_polygon_chain": int(status.get("symbols_with_polygon_chain", 0) or 0),
         "polygon_signal_ok": bool(polygon_ok),
         "unusual_whales_any_ok": bool(uw_ok),
         "unusual_whales_api_ok": bool(uw_api_ok),
@@ -1471,6 +1793,8 @@ def collect_options_flow_context(
         "polygon": dict(payload["sources"]["polygon"]),
         "unusual_whales_api": dict(payload["sources"]["unusual_whales_api"]),
         "unusual_whales_export": dict(payload["sources"]["unusual_whales_export"]),
+        "yahoo_options_chain": dict(payload["sources"]["yahoo_options_chain"]),
+        "cboe_delayed_options": dict(payload["sources"]["cboe_delayed_options"]),
     }
     status["source_contracts"] = dict(SOURCE_CONTRACTS)
     participating_sources = [
@@ -1493,6 +1817,8 @@ def collect_options_flow_context(
         "ok": status["ok"],
         "polygon_ok": polygon_ok,
         "polygon_backbone_ok": bool(polygon_backbone_ok),
+        "free_options_chain_ok": bool(free_options_ok),
+        "symbols_with_polygon_chain": int(status.get("symbols_with_polygon_chain", 0) or 0),
         "unusual_whales_ok": uw_ok,
         "unusual_whales_expected": unusual_whales_expected,
         "context_profile": context_profile,
@@ -1502,6 +1828,8 @@ def collect_options_flow_context(
         "recommended_action": (
             "set_polygon_api_key"
             if status.get("auth_issue") in {"polygon_api_key_missing", "polygon_plan_restricted", "polygon_source_unavailable"}
+            else ""
+            if context_profile.startswith("free_options_chain")
             else "set_polygon_api_key"
             if context_profile == "unusual_whales_overlay_only"
             else "repair_unusual_whales_export_or_set_polygon_api_key"
@@ -1535,6 +1863,7 @@ def main() -> int:
     parser.add_argument("--timeout-seconds", type=float, default=float(os.getenv("OPTIONS_FLOW_TIMEOUT_SECONDS", "20")))
     parser.add_argument("--polygon-contract-limit", type=int, default=int(os.getenv("OPTIONS_FLOW_POLYGON_CONTRACT_LIMIT", "250")))
     parser.add_argument("--user-agent", default=os.getenv("OPTIONS_FLOW_USER_AGENT", USER_AGENT_DEFAULT))
+    parser.add_argument("--disable-free-sources", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -1549,6 +1878,7 @@ def main() -> int:
         polygon_contract_limit=int(args.polygon_contract_limit),
         unusual_whales_export_max_age_seconds=int(args.unusual_whales_export_max_age_seconds),
         unusual_whales_export_min_stable_seconds=int(args.unusual_whales_export_min_stable_seconds),
+        free_sources_enabled=not bool(args.disable_free_sources),
     )
 
     options_flow_payload_path = PROJECT_ROOT / "exports" / "external_context" / "options_flow_context_latest.json"

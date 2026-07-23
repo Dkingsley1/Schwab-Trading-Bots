@@ -4,6 +4,7 @@ from http.client import RemoteDisconnected
 import json
 import math
 import os
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -16,6 +17,24 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FRED_SERIES_ALIASES = {
     "GOLDAMGBD228NLBM": ["GOLDPMGBD228NLBM"],
 }
+PLACEHOLDER_API_KEYS = {
+    "your_real_key",
+    "your_api_key",
+    "your_key",
+    "replace_me",
+    "changeme",
+    "missing",
+    "none",
+    "null",
+}
+
+
+def _usable_api_key(value: Any) -> str:
+    key = str(value or "").strip()
+    normalized = key.lower().replace("-", "_").replace(" ", "_")
+    if not key or normalized in PLACEHOLDER_API_KEYS or normalized.startswith("your_"):
+        return ""
+    return key
 
 
 def _load_env_file(path: Path, *, override: bool = False) -> None:
@@ -69,6 +88,12 @@ def _http_json(url: str, *, method: str = "GET", body: Optional[dict] = None, ti
     return json.loads(payload)
 
 
+def _http_text(url: str, *, timeout: int = 25) -> str:
+    req = Request(url=url, method="GET", headers={"User-Agent": "schwab-trading-bot/1.0"})
+    with urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8", errors="replace")
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
@@ -94,6 +119,86 @@ def _latest_numeric(rows: Any) -> Optional[float]:
         if value is not None:
             return value
     return None
+
+
+def _fred_csv_to_payload(text: str, *, series_id: str, limit: int) -> dict[str, Any]:
+    observations: list[dict[str, str]] = []
+    for raw in reversed(str(text or "").splitlines()):
+        line = raw.strip()
+        if not line or line.lower().startswith("observation_date"):
+            continue
+        if "," not in line:
+            continue
+        date, value = line.split(",", 1)
+        value = value.strip()
+        if _to_float(value) is None:
+            continue
+        observations.append({"date": date.strip(), "value": value})
+        if len(observations) >= max(int(limit), 1):
+            break
+    return {
+        "realtime_start": "",
+        "realtime_end": "",
+        "observation_start": "",
+        "observation_end": "",
+        "units": "",
+        "output_type": 1,
+        "file_type": "csv_public_graph_fallback",
+        "order_by": "observation_date",
+        "sort_order": "desc",
+        "count": len(observations),
+        "offset": 0,
+        "limit": int(limit),
+        "series_id": series_id,
+        "observations": observations,
+    }
+
+
+def _bea_rss_payload(text: str) -> dict[str, Any]:
+    try:
+        root = ET.fromstring(text)
+    except Exception:
+        return {"items": []}
+    items = []
+    for item in root.findall(".//item"):
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        pub_date = (item.findtext("pubDate") or "").strip()
+        if title or link:
+            items.append({"title": title, "link": link, "published": pub_date})
+    return {"items": items}
+
+
+def _is_static_census_dataset(dataset: str) -> bool:
+    head = str(dataset or "").split("/", 1)[0]
+    return head.isdigit()
+
+
+def _cached_static_census_payload(
+    census_root: Path,
+    *,
+    census_dataset: str,
+    census_get: str,
+    census_for: str,
+) -> dict[str, Any] | None:
+    if not _is_static_census_dataset(census_dataset):
+        return None
+    path = census_root / "latest.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    if request.get("dataset") != census_dataset:
+        return None
+    if request.get("get") != census_get or request.get("for") != census_for:
+        return None
+    response = payload.get("response")
+    if not isinstance(response, list) or len(response) < 2:
+        return None
+    return payload
 
 
 def _merge_mapping(base: Any, overlay: Any) -> dict:
@@ -166,17 +271,14 @@ def collect(args: argparse.Namespace) -> int:
     end_year = str(year_now)
 
     bls_series = [s.strip() for s in (os.getenv("BLS_SERIES_IDS", "CUUR0000SA0,LNS14000000")).split(",") if s.strip()]
-    bls_key = os.getenv("BLS_API_KEY", "").strip()
+    bls_key = _usable_api_key(os.getenv("BLS_API_KEY", ""))
 
-    census_key = os.getenv("CENSUS_API_KEY", "").strip()
-    if not census_key:
-        print("CENSUS_API_KEY missing in environment (.env/.env.live/.env.live.secrets.local)")
-        return 2
+    census_key = _usable_api_key(os.getenv("CENSUS_API_KEY", ""))
     census_dataset = os.getenv("CENSUS_DATASET", "2023/acs/acs5")
     census_get = os.getenv("CENSUS_GET_VARS", "NAME,B01001_001E")
     census_for = os.getenv("CENSUS_FOR", "us:1")
 
-    fred_key = os.getenv("FRED_API_KEY", "").strip()
+    fred_key = _usable_api_key(os.getenv("FRED_API_KEY", ""))
     fred_series = [
         s.strip()
         for s in (
@@ -194,7 +296,7 @@ def collect(args: argparse.Namespace) -> int:
     }
     fred_limit = max(int(os.getenv("FRED_LIMIT", "5")), 1)
 
-    bea_key = os.getenv("BEA_API_KEY", "").strip()
+    bea_key = _usable_api_key(os.getenv("BEA_API_KEY", ""))
 
     out_root = PROJECT_ROOT / "exports" / "external_feeds"
     bls_root = out_root / "bls"
@@ -234,44 +336,84 @@ def collect(args: argparse.Namespace) -> int:
         status["bls"]["error"] = str(exc)
 
     # Census
-    census_url = f"https://api.census.gov/data/{census_dataset}?get={census_get}&for={census_for}&key={census_key}"
-    status["census"]["url"] = _sanitize_url(census_url)
-    try:
-        census_resp = _http_json(census_url, method="GET")
-        census_ok = isinstance(census_resp, list) and len(census_resp) >= 2
-        status["census"]["ok"] = bool(census_ok)
-        if not census_ok:
-            status["census"]["error"] = "unexpected_response_shape"
-        if not args.test_only:
+    census_base_params = {"get": census_get, "for": census_for}
+    census_urls = []
+    if census_key:
+        census_urls.append(
+            (
+                "api_key",
+                f"https://api.census.gov/data/{census_dataset}?"
+                + urlencode({**census_base_params, "key": census_key}),
+            )
+        )
+    census_urls.append(("public_no_key", f"https://api.census.gov/data/{census_dataset}?" + urlencode(census_base_params)))
+    status["census"]["url"] = _sanitize_url(census_urls[0][1])
+    census_errors: list[str] = []
+    census_payload: dict[str, Any] | None = None
+    for mode, census_url in census_urls:
+        try:
+            census_resp = _http_json(census_url, method="GET")
+            census_ok = isinstance(census_resp, list) and len(census_resp) >= 2
+            if not census_ok:
+                raise ValueError("unexpected_response_shape")
+            status["census"]["ok"] = True
+            status["census"]["fallback"] = mode if mode != "api_key" else None
             census_payload = {
                 "timestamp_utc": now.isoformat(),
-                "request": {"dataset": census_dataset, "get": census_get, "for": census_for, "url": _sanitize_url(census_url)},
+                "request": {
+                    "dataset": census_dataset,
+                    "get": census_get,
+                    "for": census_for,
+                    "url": _sanitize_url(census_url),
+                    "mode": mode,
+                },
                 "response": census_resp,
             }
-            _write_json(census_root / f"census_{stamp}.json", census_payload)
-            _write_json(census_root / "latest.json", census_payload)
-    except (HTTPError, URLError, TimeoutError, ValueError, RemoteDisconnected, OSError) as exc:
-        status["census"]["error"] = str(exc)
+            break
+        except (HTTPError, URLError, TimeoutError, ValueError, RemoteDisconnected, OSError) as exc:
+            census_errors.append(f"{mode}:{exc}")
+    if not status["census"]["ok"]:
+        live_error = "; ".join(census_errors)
+        cached_payload = _cached_static_census_payload(
+            census_root,
+            census_dataset=census_dataset,
+            census_get=census_get,
+            census_for=census_for,
+        )
+        if cached_payload is not None:
+            status["census"]["ok"] = True
+            status["census"]["fallback"] = "cached_static_snapshot"
+            status["census"]["cache_timestamp_utc"] = cached_payload.get("timestamp_utc")
+            status["census"]["live_error"] = live_error
+        else:
+            status["census"]["error"] = live_error
+    elif not args.test_only and census_payload is not None:
+        _write_json(census_root / f"census_{stamp}.json", census_payload)
+        _write_json(census_root / "latest.json", census_payload)
 
     # FRED
-    if not fred_key:
-        status["fred"]["error"] = "FRED_API_KEY missing in environment (.env/.env.live/.env.live.secrets.local)"
-    else:
-        fred_base_url = "https://api.stlouisfed.org/fred/series/observations"
-        if fred_series:
-            sample_url = fred_base_url + "?" + urlencode(
-                {"series_id": fred_series[0], "api_key": fred_key, "file_type": "json", "sort_order": "desc", "limit": fred_limit}
-            )
-            status["fred"]["url"] = _sanitize_url(sample_url)
+    fred_base_url = "https://api.stlouisfed.org/fred/series/observations"
+    fred_csv_base_url = "https://fred.stlouisfed.org/graph/fredgraph.csv"
+    if fred_series:
+        sample_url = (
+            fred_base_url
+            + "?"
+            + urlencode({"series_id": fred_series[0], "api_key": fred_key or "missing", "file_type": "json", "sort_order": "desc", "limit": fred_limit})
+            if fred_key
+            else fred_csv_base_url + "?" + urlencode({"id": fred_series[0]})
+        )
+        status["fred"]["url"] = _sanitize_url(sample_url)
 
-        fred_collected: dict[str, Any] = {}
-        fred_errors: list[str] = []
-        fred_warnings: list[str] = []
-        fred_aliases_used: dict[str, str] = {}
-        for series_id in fred_series:
-            candidate_ids = [series_id, *FRED_SERIES_ALIASES.get(series_id, [])]
-            candidate_errors: list[str] = []
-            for candidate_id in candidate_ids:
+    fred_collected: dict[str, Any] = {}
+    fred_errors: list[str] = []
+    fred_warnings: list[str] = []
+    fred_aliases_used: dict[str, str] = {}
+    fred_fallbacks_used: dict[str, str] = {}
+    for series_id in fred_series:
+        candidate_ids = [series_id, *FRED_SERIES_ALIASES.get(series_id, [])]
+        candidate_errors: list[str] = []
+        for candidate_id in candidate_ids:
+            if fred_key:
                 fred_url = fred_base_url + "?" + urlencode(
                     {"series_id": candidate_id, "api_key": fred_key, "file_type": "json", "sort_order": "desc", "limit": fred_limit}
                 )
@@ -288,44 +430,64 @@ def collect(args: argparse.Namespace) -> int:
                     break
                 except (HTTPError, URLError, TimeoutError, ValueError, RemoteDisconnected, OSError) as exc:
                     candidate_errors.append(f"{candidate_id}:{exc}")
-            if series_id not in fred_collected:
-                message = f"series_id={series_id} error={' | '.join(candidate_errors)}"
-                if series_id in fred_required:
-                    fred_errors.append(message)
-                else:
-                    fred_warnings.append(message)
+            if series_id in fred_collected:
+                break
+            csv_url = fred_csv_base_url + "?" + urlencode({"id": candidate_id})
+            try:
+                csv_text = _http_text(csv_url)
+                resp = _fred_csv_to_payload(csv_text, series_id=candidate_id, limit=fred_limit)
+                if not resp.get("observations"):
+                    raise ValueError(f"empty_public_csv series_id={candidate_id}")
+                if candidate_id != series_id:
+                    resp = dict(resp)
+                    resp["series_id_requested"] = series_id
+                    resp["series_id_resolved"] = candidate_id
+                    fred_aliases_used[series_id] = candidate_id
+                fred_collected[series_id] = resp
+                fred_fallbacks_used[series_id] = "public_csv"
+                break
+            except (HTTPError, URLError, TimeoutError, ValueError, RemoteDisconnected, OSError) as exc:
+                candidate_errors.append(f"{candidate_id}:public_csv:{exc}")
+        if series_id not in fred_collected:
+            message = f"series_id={series_id} error={' | '.join(candidate_errors)}"
+            if series_id in fred_required:
+                fred_errors.append(message)
+            else:
+                fred_warnings.append(message)
 
-        fred_ok = all(series_id in fred_collected for series_id in fred_required)
-        status["fred"]["ok"] = fred_ok
-        if fred_aliases_used:
-            status["fred"]["aliases_used"] = fred_aliases_used
-        if fred_errors:
-            status["fred"]["error"] = "; ".join(fred_errors)
-        if fred_warnings:
-            status["fred"]["warnings"] = fred_warnings
+    fred_ok = all(series_id in fred_collected for series_id in fred_required)
+    status["fred"]["ok"] = fred_ok
+    if fred_aliases_used:
+        status["fred"]["aliases_used"] = fred_aliases_used
+    if fred_fallbacks_used:
+        status["fred"]["fallbacks_used"] = fred_fallbacks_used
+    if fred_errors:
+        status["fred"]["error"] = "; ".join(fred_errors)
+    if fred_warnings:
+        status["fred"]["warnings"] = fred_warnings
 
-        if not args.test_only:
-            fred_payload = {
-                "timestamp_utc": now.isoformat(),
-                "request": {"series_ids": fred_series, "limit": fred_limit},
-                "responses": fred_collected,
-            }
-            _write_json(fred_root / f"fred_{stamp}.json", fred_payload)
-            _write_json(fred_root / "latest.json", fred_payload)
+    if not args.test_only:
+        fred_payload = {
+            "timestamp_utc": now.isoformat(),
+            "request": {"series_ids": fred_series, "limit": fred_limit},
+            "responses": fred_collected,
+        }
+        _write_json(fred_root / f"fred_{stamp}.json", fred_payload)
+        _write_json(fred_root / "latest.json", fred_payload)
 
-            external_context_root = PROJECT_ROOT / "exports" / "external_context"
-            macro_context = _derive_fred_macro_context(fred_payload)
-            if macro_context:
-                _write_json(external_context_root / "macro_cross_asset_latest.json", macro_context)
-                existing_bond_reference_path = external_context_root / "bond_reference_latest.json"
-                existing_bond_reference: dict[str, Any] = {}
-                if existing_bond_reference_path.exists():
-                    try:
-                        existing_bond_reference = json.loads(existing_bond_reference_path.read_text(encoding="utf-8"))
-                    except Exception:
-                        existing_bond_reference = {}
-                merged_bond_reference = _merge_mapping(existing_bond_reference, macro_context.get("bond_reference_overlay"))
-                _write_json(existing_bond_reference_path, merged_bond_reference)
+        external_context_root = PROJECT_ROOT / "exports" / "external_context"
+        macro_context = _derive_fred_macro_context(fred_payload)
+        if macro_context:
+            _write_json(external_context_root / "macro_cross_asset_latest.json", macro_context)
+            existing_bond_reference_path = external_context_root / "bond_reference_latest.json"
+            existing_bond_reference: dict[str, Any] = {}
+            if existing_bond_reference_path.exists():
+                try:
+                    existing_bond_reference = json.loads(existing_bond_reference_path.read_text(encoding="utf-8"))
+                except Exception:
+                    existing_bond_reference = {}
+            merged_bond_reference = _merge_mapping(existing_bond_reference, macro_context.get("bond_reference_overlay"))
+            _write_json(existing_bond_reference_path, merged_bond_reference)
 
     # BEA (dataset list metadata pull)
     if not bea_key:
@@ -355,6 +517,32 @@ def collect(args: argparse.Namespace) -> int:
                 _write_json(bea_root / "latest.json", bea_payload)
         except (HTTPError, URLError, TimeoutError, ValueError, RemoteDisconnected, OSError) as exc:
             status["bea"]["error"] = str(exc)
+    if not status["bea"]["ok"]:
+        rss_url = "https://apps.bea.gov/rss/rss.xml"
+        try:
+            rss_text = _http_text(rss_url)
+            rss_payload = _bea_rss_payload(rss_text)
+            items = rss_payload.get("items") if isinstance(rss_payload.get("items"), list) else []
+            if not items:
+                raise ValueError("empty_bea_rss")
+            status["bea"]["ok"] = True
+            status["bea"]["fallback"] = "rss"
+            status["bea"]["dataset_count"] = len(items)
+            status["bea"]["url"] = rss_url
+            status["bea"]["error"] = None
+            if not args.test_only:
+                bea_payload = {
+                    "timestamp_utc": now.isoformat(),
+                    "request": {"method": "RSS", "url": rss_url},
+                    "response": rss_payload,
+                }
+                _write_json(bea_root / f"bea_{stamp}.json", bea_payload)
+                _write_json(bea_root / "latest.json", bea_payload)
+        except (HTTPError, URLError, TimeoutError, ValueError, RemoteDisconnected, OSError) as exc:
+            if status["bea"]["error"]:
+                status["bea"]["error"] = f"{status['bea']['error']}; rss_fallback:{exc}"
+            else:
+                status["bea"]["error"] = f"rss_fallback:{exc}"
 
     _write_json(out_root / "latest_status.json", status)
 

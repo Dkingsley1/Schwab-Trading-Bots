@@ -19,6 +19,8 @@ HEALTH_DIR = PROJECT_ROOT / "governance" / "health"
 STATUS_CROSS_VERIFIED = "cross_verified"
 STATUS_SINGLE_VERIFIED = "single_source_verified"
 STATUS_SINGLE_UNVERIFIED = "single_source_unverified"
+OPTIONS_CONTEXT_SOURCE_ID = "options_context_mesh"
+OPTIONS_CONTEXT_LEGACY_SOURCE_ID = "polygon_unusual_whales_options_context"
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -94,6 +96,69 @@ def _minimum_ok_sources(total: int, *, floor: int = 1, tolerate_failures: int = 
     return min(int(total), max(int(floor), ratio_target, tolerated_target))
 
 
+def _safe_float(raw: Any, default: float = 0.0) -> float:
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
+def _source_confidence_components(
+    *,
+    verification_status: str,
+    fresh: bool,
+    ok: bool,
+    notes: list[str],
+    evidence: dict[str, Any],
+) -> dict[str, float]:
+    status_score = (
+        1.0
+        if verification_status == STATUS_CROSS_VERIFIED
+        else 0.84
+        if verification_status == STATUS_SINGLE_VERIFIED
+        else 0.30
+    )
+    freshness_score = 1.0 if fresh else 0.20
+    health_score = 1.0 if ok else 0.20
+    provider_total = max(
+        int(_safe_float(evidence.get("total_sources"), 0.0) or 0),
+        int(_safe_float(evidence.get("source_count"), 0.0) or 0),
+        1 if _safe_float(evidence.get("symbols_requested"), 0.0) > 0 else 0,
+    )
+    provider_ok = max(
+        int(_safe_float(evidence.get("ok_sources"), 0.0) or 0),
+        int(_safe_float(evidence.get("effective_ok_sources"), 0.0) or 0),
+        1 if _safe_float(evidence.get("symbols_with_chain"), 0.0) > 0 else 0,
+    )
+    provider_score = min(provider_ok / max(provider_total, 1), 1.0) if provider_total > 0 else (1.0 if ok else 0.0)
+    schema_score = 0.72
+    if evidence.get("cross_profile_ok") is True or evidence.get("options_backbone_ok") is True:
+        schema_score = 0.88
+    if evidence.get("ticker_map_ok") is True:
+        schema_score = 0.92
+    notes_penalty = min(len([item for item in notes if str(item).strip()]) * 0.035, 0.18)
+    return {
+        "status_score": round(status_score, 6),
+        "freshness_score": round(freshness_score, 6),
+        "health_score": round(health_score, 6),
+        "provider_score": round(provider_score, 6),
+        "schema_score": round(schema_score, 6),
+        "notes_penalty": round(notes_penalty, 6),
+    }
+
+
+def _source_confidence_score(components: dict[str, float]) -> float:
+    score = (
+        0.30 * _safe_float(components.get("status_score"), 0.0)
+        + 0.22 * _safe_float(components.get("freshness_score"), 0.0)
+        + 0.18 * _safe_float(components.get("health_score"), 0.0)
+        + 0.18 * _safe_float(components.get("provider_score"), 0.0)
+        + 0.12 * _safe_float(components.get("schema_score"), 0.0)
+        - _safe_float(components.get("notes_penalty"), 0.0)
+    )
+    return round(max(0.0, min(score, 1.0)), 6)
+
+
 def _market_closed_for_local_micro(now: datetime) -> bool:
     if ZoneInfo is not None:
         local = now.astimezone(ZoneInfo("America/New_York"))
@@ -122,18 +187,42 @@ def _row_has_actionable_notes(row: dict[str, Any]) -> bool:
     notes = [str(item or "").strip() for item in row.get("notes") or [] if str(item or "").strip()]
     if not notes:
         return False
-    if str(row.get("verification_status") or "") == STATUS_SINGLE_UNVERIFIED:
+    verification_status = str(row.get("verification_status") or "")
+    if verification_status == STATUS_SINGLE_UNVERIFIED:
         return True
     evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
     accepted_note_tokens: set[str] = set()
+    if verification_status == STATUS_CROSS_VERIFIED:
+        accepted_note_tokens.update({"cross_verified_partial_sources"})
+        accepted_note_tokens.update({"cross_verified_source_warnings"})
     if bool(evidence.get("market_closed_local_micro_fallback")):
         accepted_note_tokens.update({"local_micro_absent_market_closed"})
+    if bool(evidence.get("external_micro_reference_verified_fallback")):
+        accepted_note_tokens.update({"local_micro_absent_external_reference_verified"})
     if bool(evidence.get("official_rate_only_holiday_fallback")):
         accepted_note_tokens.update({"market_proxy_absent_market_closed"})
+    if bool(evidence.get("official_plus_twelvedata_verified_fallback")):
+        accepted_note_tokens.update({"market_proxy_absent_direct_fx_unavailable"})
+    if bool(evidence.get("official_reference_rates_only_direct_fx_unavailable")):
+        accepted_note_tokens.update({"official_reference_rates_only_direct_fx_unavailable"})
+    if bool(evidence.get("optional_unconfigured")):
+        accepted_note_tokens.update({"optional_options_flow_credentials_not_configured"})
+    if bool(evidence.get("free_options_chain_ok")) and bool(evidence.get("options_backbone_ok")):
+        accepted_note_tokens.update({"polygon_api_key_missing"})
+    if bool(evidence.get("official_macro_context_verified_partial_public_feeds")):
+        accepted_note_tokens.update({"official_macro_context_verified_partial_public_feeds"})
+    if bool(evidence.get("world_bank_partial_verified")):
+        accepted_note_tokens.update({"world_bank_indicators_partial"})
     for note in notes:
         if note in accepted_note_tokens:
             continue
         if note.startswith("partial_sources=") and accepted_note_tokens:
+            continue
+        if note.startswith("source_warnings=") and "cross_verified_source_warnings" in accepted_note_tokens:
+            continue
+        if note.startswith("fred_warnings=") and bool(evidence.get("official_macro_context_verified_partial_public_feeds")):
+            continue
+        if note.startswith("world_bank_indicators_partial=") and bool(evidence.get("world_bank_partial_verified")):
             continue
         return True
     return False
@@ -142,17 +231,32 @@ def _row_has_actionable_notes(row: dict[str, Any]) -> bool:
 def _refresh_command_for_source(project_root: Path, source_id: str) -> list[str]:
     opsctl = str(project_root / "scripts" / "ops" / "opsctl.sh")
     mapping: dict[str, list[str]] = {
-        "market_quote_profiles": [str(project_root / ".venv312" / "bin" / "python"), str(project_root / "scripts" / "data_source_divergence_bot.py"), "--json"],
-        "polygon_unusual_whales_options_context": [opsctl, "options-flow-sync", "--json"],
+        "market_quote_profiles": [str(project_root / ".venv314" / "bin" / "python"), str(project_root / "scripts" / "data_source_divergence_bot.py"), "--json"],
+        OPTIONS_CONTEXT_SOURCE_ID: [opsctl, "options-flow-sync", "--json"],
+        OPTIONS_CONTEXT_LEGACY_SOURCE_ID: [opsctl, "options-flow-sync", "--json"],
         "macro_crossstack": [opsctl, "macro-crosscheck", "--json"],
         "crypto_market_context": [opsctl, "crypto-market-sync", "--json"],
+        "free_equity_reference_context": [
+            opsctl,
+            "free-equity-reference-sync",
+            "--max-symbols",
+            "40",
+            "--timeout",
+            "2.5",
+            "--max-runtime-seconds",
+            "45",
+            "--json",
+        ],
         "fx_market_context": [opsctl, "fx-market-sync", "--json"],
         "public_macro_feeds": [opsctl, "macro-context-sync", "--json"],
         "official_macro_context": [opsctl, "macro-context-sync", "--json"],
-        "schwab_education_context": [opsctl, "macro-context-sync", "--json"],
+        "schwab_education_context": [opsctl, "schwab-education-sync", "--json"],
+        "schwab_symbol_news": [opsctl, "schwab-symbol-news-sync", "--max-runtime-seconds", "180", "--json"],
+        "ticker_news_context": [opsctl, "ticker-news-sync", "--max-runtime-seconds", "240", "--json"],
         "market_micro_context": [opsctl, "market-micro-sync", "--json"],
         "sec_edgar_context": [opsctl, "sec-edgar-sync", "--json"],
         "extended_quant_context": [opsctl, "extended-quant-sync", "--json"],
+        "public_policy_context": [opsctl, "public-policy-sync", "--json"],
         "fed_2026_supervisory_stress_scenario": [opsctl, "source-verification", "--json"],
     }
     return mapping.get(str(source_id), [opsctl, "source-verification", "--json"])
@@ -172,7 +276,16 @@ def _row(
     ok: bool,
     notes: list[str],
     evidence: dict[str, Any],
+    aliases: list[str] | None = None,
 ) -> dict[str, Any]:
+    clean_notes = [str(item) for item in notes if str(item).strip()]
+    confidence_components = _source_confidence_components(
+        verification_status=verification_status,
+        fresh=fresh,
+        ok=ok,
+        notes=clean_notes,
+        evidence=evidence,
+    )
     return {
         "source_id": source_id,
         "title": title,
@@ -184,8 +297,11 @@ def _row(
         "age_hours": _round_age(age_hours),
         "fresh": bool(fresh),
         "ok": bool(ok),
-        "notes": [str(item) for item in notes if str(item).strip()],
+        "notes": clean_notes,
         "evidence": evidence,
+        "aliases": _ordered_unique(list(aliases or [])),
+        "source_confidence_score": _source_confidence_score(confidence_components),
+        "confidence_components": confidence_components,
     }
 
 
@@ -236,15 +352,27 @@ def _options_flow_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     polygon = sources.get("polygon") if isinstance(sources.get("polygon"), dict) else {}
     unusual_whales_api = sources.get("unusual_whales_api") if isinstance(sources.get("unusual_whales_api"), dict) else {}
     unusual_whales_export = sources.get("unusual_whales_export") if isinstance(sources.get("unusual_whales_export"), dict) else {}
+    yahoo_options_chain = sources.get("yahoo_options_chain") if isinstance(sources.get("yahoo_options_chain"), dict) else {}
+    cboe_delayed_options = sources.get("cboe_delayed_options") if isinstance(sources.get("cboe_delayed_options"), dict) else {}
     coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
     polygon_ok = bool(polygon.get("ok", False))
+    free_options_chain_ok = bool(
+        coverage.get("free_options_chain_ok", False)
+        or yahoo_options_chain.get("ok", False)
+        or cboe_delayed_options.get("ok", False)
+    )
     unusual_whales_ok = bool(unusual_whales_api.get("ok", False) or unusual_whales_export.get("ok", False))
     unusual_whales_expected = bool(
         unusual_whales_api.get("expected", False)
         or unusual_whales_export.get("expected", False)
         or unusual_whales_export.get("configured", False)
     )
-    polygon_backbone_ok = bool(coverage.get("polygon_backbone_ok", False) or int(payload.get("symbols_with_chain", 0) or 0) > 0)
+    symbols_with_chain = int(payload.get("symbols_with_chain", 0) or 0)
+    symbols_with_polygon_chain = int(payload.get("symbols_with_polygon_chain", coverage.get("symbols_with_polygon_chain", 0)) or 0)
+    if symbols_with_polygon_chain <= 0 and polygon_ok and not free_options_chain_ok:
+        symbols_with_polygon_chain = symbols_with_chain
+    polygon_backbone_ok = bool(coverage.get("polygon_backbone_ok", False) or (polygon_ok and symbols_with_polygon_chain > 0))
+    options_backbone_ok = bool(polygon_backbone_ok or free_options_chain_ok)
     context_profile = str(payload.get("context_profile") or coverage.get("context_profile") or "").strip()
     if not context_profile:
         context_profile = (
@@ -254,55 +382,81 @@ def _options_flow_row(health_dir: Path, now: datetime) -> dict[str, Any]:
             if polygon_backbone_ok and not unusual_whales_expected
             else "polygon_backbone_only"
             if polygon_backbone_ok
+            else "free_options_chain_plus_overlay"
+            if free_options_chain_ok and unusual_whales_ok
+            else "free_options_chain_only"
+            if free_options_chain_ok
             else "unusual_whales_overlay_only"
             if unusual_whales_ok
             else "unavailable"
         )
     overall_status = str(payload.get("overall_status") or ("ready" if payload.get("ok", False) else "blocked")).strip()
-    if not polygon_ok:
-        for err in list(polygon.get("errors") or [])[:3]:
-            text = str(err or "").strip()
-            if text:
-                notes.append(text)
-    if unusual_whales_expected and (not unusual_whales_ok) and bool(payload.get("operator_action_required", False)):
-        notes.append(str(payload.get("auth_issue") or "options_flow_source_unavailable"))
-    if context_profile and context_profile not in {"multi_provider_full", "polygon_primary_only"}:
-        notes.append(f"context_profile={context_profile}")
-    if overall_status and overall_status != "ready":
-        notes.append(f"overall_status={overall_status}")
+    auth_issue = str(payload.get("auth_issue") or "").strip()
+    optional_unconfigured = bool(
+        auth_issue == "options_flow_credentials_missing"
+        and not polygon_ok
+        and not options_backbone_ok
+        and not unusual_whales_ok
+    )
+    if optional_unconfigured:
+        notes.append("optional_options_flow_credentials_not_configured")
+    else:
+        if not polygon_ok and not free_options_chain_ok:
+            for err in list(polygon.get("errors") or [])[:3]:
+                text = str(err or "").strip()
+                if text:
+                    notes.append(text)
+        if unusual_whales_expected and (not unusual_whales_ok) and bool(payload.get("operator_action_required", False)):
+            notes.append(auth_issue or "options_flow_source_unavailable")
+        if context_profile and context_profile not in {"multi_provider_full", "polygon_primary_only", "free_options_chain_plus_overlay", "free_options_chain_only"}:
+            notes.append(f"context_profile={context_profile}")
+        if overall_status and overall_status != "ready":
+            notes.append(f"overall_status={overall_status}")
     if not fresh:
         notes.append("stale_artifact")
     if bool(payload.get("ok", False)) and fresh and context_profile == "multi_provider_full" and overall_status == "ready":
         status = STATUS_CROSS_VERIFIED
-    elif bool(payload.get("ok", False)) and fresh and polygon_backbone_ok and overall_status == "ready":
+    elif bool(payload.get("ok", False)) and fresh and options_backbone_ok and overall_status == "ready":
+        status = STATUS_SINGLE_VERIFIED
+    elif optional_unconfigured and fresh:
         status = STATUS_SINGLE_VERIFIED
     else:
         status = STATUS_SINGLE_UNVERIFIED
+    effective_ok = bool(payload.get("ok", False)) or (optional_unconfigured and fresh)
     return _row(
-        source_id="polygon_unusual_whales_options_context",
-        title="Polygon + Optional Overlay Options Context",
+        source_id=OPTIONS_CONTEXT_SOURCE_ID,
+        title="Options Context Mesh",
         category="derivatives_data",
         verification_status=status,
-        verification_mode="multi_provider_options_flow",
+        verification_mode="multi_provider_options_flow_with_free_chain_fallback",
         artifact_path=path,
         artifact_timestamp=ts,
         age_hours=_age_hours(ts, now),
         fresh=fresh,
-        ok=bool(payload.get("ok", False)),
+        ok=effective_ok,
         notes=notes,
         evidence={
             "symbols_requested": int(payload.get("symbols_requested", 0) or 0),
-            "symbols_with_chain": int(payload.get("symbols_with_chain", 0) or 0),
+            "symbols_with_chain": symbols_with_chain,
             "symbols_with_metrics": int(payload.get("symbols_with_metrics", 0) or 0),
+            "symbols_with_polygon_chain": symbols_with_polygon_chain,
+            "symbols_with_free_options": int(payload.get("symbols_with_free_options", 0) or 0),
             "polygon_ok": polygon_ok,
             "polygon_backbone_ok": polygon_backbone_ok,
+            "free_options_chain_ok": free_options_chain_ok,
+            "options_backbone_ok": options_backbone_ok,
             "unusual_whales_api_ok": bool(unusual_whales_api.get("ok", False)),
             "unusual_whales_export_ok": bool(unusual_whales_export.get("ok", False)),
+            "yahoo_options_chain_ok": bool(yahoo_options_chain.get("ok", False)),
+            "cboe_delayed_options_ok": bool(cboe_delayed_options.get("ok", False)),
             "unusual_whales_expected": unusual_whales_expected,
             "context_profile": context_profile,
             "overall_status": overall_status,
+            "auth_issue": auth_issue,
+            "optional_unconfigured": optional_unconfigured,
             "coverage_score": payload.get("coverage_score"),
         },
+        aliases=[OPTIONS_CONTEXT_LEGACY_SOURCE_ID],
     )
 
 
@@ -395,17 +549,77 @@ def _crypto_market_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     )
 
 
+def _free_equity_reference_row(health_dir: Path, now: datetime) -> dict[str, Any]:
+    path = health_dir / "free_equity_reference_context_latest.json"
+    payload = _read_json(path)
+    ts = _parse_ts(payload.get("timestamp_utc"))
+    fresh = _is_fresh(ts, now, 12.0)
+    sources = payload.get("sources") if isinstance(payload.get("sources"), dict) else {}
+    ok_count, total_count = _ok_count(sources)
+    symbols_with_reference = int(payload.get("symbols_with_reference", 0) or 0)
+    requested_symbols = int(payload.get("requested_symbol_count", 0) or 0)
+    notes: list[str] = []
+    if total_count > 0 and ok_count < total_count:
+        notes.append(f"partial_sources={ok_count}/{total_count}")
+    if symbols_with_reference <= 0:
+        notes.append("no_equity_reference_symbols")
+    if not fresh:
+        notes.append("stale_artifact")
+    status = (
+        STATUS_SINGLE_VERIFIED
+        if bool(payload.get("ok", False))
+        and fresh
+        and ok_count >= 1
+        and symbols_with_reference > 0
+        else STATUS_SINGLE_UNVERIFIED
+    )
+    return _row(
+        source_id="free_equity_reference_context",
+        title="Free Equity Reference Context",
+        category="equity_market_data",
+        verification_status=status,
+        verification_mode="free_public_quote_reference_mesh",
+        artifact_path=path,
+        artifact_timestamp=ts,
+        age_hours=_age_hours(ts, now),
+        fresh=fresh,
+        ok=bool(payload.get("ok", False)) and fresh,
+        notes=notes,
+        evidence={
+            "requested_symbols": requested_symbols,
+            "symbols_with_reference": symbols_with_reference,
+            "ok_sources": ok_count,
+            "total_sources": total_count,
+            "sources": {key: bool(value.get("ok", False)) for key, value in sources.items() if isinstance(value, dict)},
+        },
+    )
+
+
 def _fx_market_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     path = health_dir / "fx_market_context_sync_latest.json"
     payload = _read_json(path)
     ts = _parse_ts(payload.get("timestamp_utc"))
     fresh = _is_fresh(ts, now, 24.0)
     notes: list[str] = []
+    sources = payload.get("sources") if isinstance(payload.get("sources"), dict) else {}
     ok_sources = int(payload.get("ok_source_count", 0) or 0)
     total_sources = int(payload.get("source_count", 0) or 0)
     official_pairs = int(payload.get("official_pairs", 0) or 0)
     proxy_symbols_observed = int(payload.get("proxy_symbols_observed", 0) or 0)
     proxy_agreement_norm = float(payload.get("proxy_agreement_norm", 0.0) or 0.0)
+    if sources:
+        source_ok_count, source_total_count = _ok_count(sources)
+        if total_sources <= 0 and source_total_count > 0:
+            total_sources = source_total_count
+        if ok_sources <= 0 and source_ok_count > 0:
+            ok_sources = source_ok_count
+    ecb = sources.get("ecb") if isinstance(sources.get("ecb"), dict) else {}
+    fed_h10 = sources.get("fed_h10") if isinstance(sources.get("fed_h10"), dict) else {}
+    if official_pairs <= 0:
+        official_pairs = max(official_pairs, int(fed_h10.get("pair_count", 0) or 0))
+    twelve_data = sources.get("twelve_data") if isinstance(sources.get("twelve_data"), dict) else {}
+    twelve_data_ok = bool(twelve_data.get("ok", False)) and int(twelve_data.get("pairs_ok", 0) or 0) > 0
+    direct_forex_execution_supported = bool(payload.get("direct_forex_execution_supported", False))
     official_rate_only_holiday_fallback = bool(
         bool(payload.get("ok", False))
         and ok_sources >= 3
@@ -414,10 +628,33 @@ def _fx_market_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         and (_market_closed_for_local_micro(now) or _market_holiday_pause_observed(health_dir, now))
         and fresh
     )
+    official_plus_twelvedata_verified_fallback = bool(
+        bool(payload.get("ok", False))
+        and ok_sources >= 4
+        and official_pairs >= 3
+        and twelve_data_ok
+        and not direct_forex_execution_supported
+        and proxy_symbols_observed <= 0
+        and fresh
+    )
+    official_reference_rates_only_direct_fx_unavailable = bool(
+        bool(payload.get("ok", False))
+        and ok_sources >= 2
+        and official_pairs >= 3
+        and bool(ecb.get("ok", False))
+        and bool(fed_h10.get("ok", False))
+        and not direct_forex_execution_supported
+        and proxy_symbols_observed <= 0
+        and fresh
+    )
     if ok_sources < total_sources:
         notes.append(f"partial_sources={ok_sources}/{total_sources}")
     if official_rate_only_holiday_fallback:
         notes.append("market_proxy_absent_market_closed")
+    elif official_plus_twelvedata_verified_fallback:
+        notes.append("market_proxy_absent_direct_fx_unavailable")
+    elif official_reference_rates_only_direct_fx_unavailable:
+        notes.append("official_reference_rates_only_direct_fx_unavailable")
     elif proxy_agreement_norm < 0.34:
         notes.append("proxy_agreement_low")
     if not fresh:
@@ -431,7 +668,11 @@ def _fx_market_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         and fresh
     ):
         status = STATUS_CROSS_VERIFIED
-    elif official_rate_only_holiday_fallback:
+    elif (
+        official_rate_only_holiday_fallback
+        or official_plus_twelvedata_verified_fallback
+        or official_reference_rates_only_direct_fx_unavailable
+    ):
         status = STATUS_SINGLE_VERIFIED
     else:
         status = STATUS_SINGLE_UNVERIFIED
@@ -454,7 +695,10 @@ def _fx_market_row(health_dir: Path, now: datetime) -> dict[str, Any]:
             "proxy_symbols_observed": proxy_symbols_observed,
             "proxy_agreement_norm": proxy_agreement_norm,
             "official_rate_only_holiday_fallback": official_rate_only_holiday_fallback,
-            "direct_forex_execution_supported": bool(payload.get("direct_forex_execution_supported", False)),
+            "official_plus_twelvedata_verified_fallback": official_plus_twelvedata_verified_fallback,
+            "official_reference_rates_only_direct_fx_unavailable": official_reference_rates_only_direct_fx_unavailable,
+            "twelve_data_ok": twelve_data_ok,
+            "direct_forex_execution_supported": direct_forex_execution_supported,
             "direct_forex_execution_reason": str(payload.get("direct_forex_execution_reason") or ""),
         },
     )
@@ -467,14 +711,41 @@ def _external_feeds_row(project_root: Path, now: datetime) -> dict[str, Any]:
     fresh = _is_fresh(ts, now, 24.0)
     ok_count, total_count = _ok_count(payload)
     notes: list[str] = []
+    official_macro_path = project_root / "governance" / "health" / "official_macro_context_sync_latest.json"
+    official_macro = _read_json(official_macro_path)
+    official_macro_ts = _parse_ts(official_macro.get("timestamp_utc"))
+    official_macro_fresh = _is_fresh(official_macro_ts, now, 24.0)
+    official_sources = official_macro.get("sources") if isinstance(official_macro.get("sources"), dict) else {}
+    official_ok_count, official_total_count = _ok_count(official_sources)
+    official_min_ok = _minimum_ok_sources(official_total_count, floor=4, tolerate_failures=1, min_ratio=0.80)
+    official_macro_verified = bool(
+        bool(official_macro.get("ok", False))
+        and official_macro_fresh
+        and official_total_count > 0
+        and official_ok_count >= official_min_ok
+    )
+    public_feeds_fully_ok = bool(ok_count == total_count and total_count > 0)
+    official_macro_context_verified_partial_public_feeds = bool(
+        fresh and ok_count > 0 and total_count > 0 and not public_feeds_fully_ok and official_macro_verified
+    )
     fred = payload.get("fred") if isinstance(payload.get("fred"), dict) else {}
     warnings = fred.get("warnings") if isinstance(fred.get("warnings"), list) else []
     fred_ok = bool(fred.get("ok"))
+    if ok_count < total_count:
+        notes.append(f"partial_sources={ok_count}/{total_count}")
     if warnings and not fred_ok:
         notes.append(f"fred_warnings={len(warnings)}")
+    if official_macro_context_verified_partial_public_feeds:
+        notes.append("official_macro_context_verified_partial_public_feeds")
     if not fresh:
         notes.append("stale_artifact")
-    status = STATUS_SINGLE_VERIFIED if ok_count == total_count and total_count > 0 and fresh else STATUS_SINGLE_UNVERIFIED
+    verified = bool((public_feeds_fully_ok or official_macro_context_verified_partial_public_feeds) and fresh)
+    effective_ok_count = ok_count
+    effective_total_count = total_count
+    if official_macro_context_verified_partial_public_feeds:
+        effective_ok_count = max(ok_count, official_ok_count, official_min_ok)
+        effective_total_count = max(total_count, effective_ok_count)
+    status = STATUS_SINGLE_VERIFIED if verified else STATUS_SINGLE_UNVERIFIED
     return _row(
         source_id="public_macro_feeds",
         title="Public Macro Feeds",
@@ -485,11 +756,19 @@ def _external_feeds_row(project_root: Path, now: datetime) -> dict[str, Any]:
         artifact_timestamp=ts,
         age_hours=_age_hours(ts, now),
         fresh=fresh,
-        ok=ok_count == total_count and total_count > 0,
+        ok=verified,
         notes=notes,
         evidence={
             "ok_sources": ok_count,
             "total_sources": total_count,
+            "raw_public_ok_sources": ok_count,
+            "raw_public_total_sources": total_count,
+            "effective_ok_sources": effective_ok_count,
+            "effective_total_sources": effective_total_count,
+            "official_macro_context_verified_partial_public_feeds": official_macro_context_verified_partial_public_feeds,
+            "official_macro_ok_sources": official_ok_count,
+            "official_macro_total_sources": official_total_count,
+            "official_macro_min_ok_sources_required": official_min_ok,
             "sources": {key: bool(value.get("ok", False)) for key, value in payload.items() if isinstance(value, dict) and "ok" in value},
         },
     )
@@ -584,6 +863,120 @@ def _schwab_education_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     )
 
 
+def _schwab_symbol_news_row(health_dir: Path, now: datetime) -> dict[str, Any]:
+    path = health_dir / "schwab_symbol_news_latest.json"
+    payload = _read_json(path)
+    ts = _parse_ts(payload.get("timestamp_utc"))
+    fresh = _is_fresh(ts, now, 12.0)
+    overall_status = str(payload.get("overall_status") or "").strip()
+    auth_ok = bool(payload.get("auth_ok", False))
+    requested = int(payload.get("requested_symbol_count", 0) or 0)
+    attempted = int(payload.get("attempted_symbol_count", 0) or 0)
+    with_news = int(payload.get("symbols_with_news", 0) or 0)
+    total_items = int(payload.get("total_news_items", 0) or 0)
+    coverage_ratio = float(payload.get("coverage_ratio", 0.0) or 0.0)
+    method_counts = payload.get("method_counts") if isinstance(payload.get("method_counts"), dict) else {}
+    fallback_active = bool(payload.get("fallback_active", False))
+    no_endpoint = str(overall_status) == "degraded_no_broker_news_endpoint" or (
+        attempted > 0 and int(method_counts.get("none", 0) or 0) >= attempted
+    )
+    notes: list[str] = []
+    if not fresh:
+        notes.append("stale_artifact")
+    if not auth_ok:
+        notes.append("schwab_auth_blocked")
+    if no_endpoint and not fallback_active:
+        notes.append("no_callable_broker_news_endpoint")
+    if requested > 0 and attempted < requested:
+        notes.append(f"partial_symbol_attempts={attempted}/{requested}")
+    if total_items <= 0 and auth_ok and not no_endpoint:
+        notes.append("no_symbol_news_items")
+
+    ok = bool(payload.get("ok", False)) and fresh and auth_ok and attempted > 0 and (not no_endpoint or fallback_active)
+    status = STATUS_SINGLE_VERIFIED if ok else STATUS_SINGLE_UNVERIFIED
+    return _row(
+        source_id="schwab_symbol_news",
+        title="Schwab Symbol News",
+        category="broker_native_news",
+        verification_status=status,
+        verification_mode="broker_native_symbol_news_health",
+        artifact_path=path,
+        artifact_timestamp=ts,
+        age_hours=_age_hours(ts, now),
+        fresh=fresh,
+        ok=ok,
+        notes=notes,
+        evidence={
+            "overall_status": overall_status,
+            "auth_ok": auth_ok,
+            "requested_symbols": requested,
+            "attempted_symbols": attempted,
+            "symbols_with_news": with_news,
+            "total_news_items": total_items,
+            "coverage_ratio": coverage_ratio,
+            "method_counts": method_counts,
+            "source_counts": payload.get("source_counts") if isinstance(payload.get("source_counts"), dict) else {},
+            "broker_native_news_endpoint_available": bool(payload.get("broker_native_news_endpoint_available", False)),
+            "fallback_active": fallback_active,
+            "fallback_mode": str(payload.get("fallback_mode") or ""),
+            "fallback_symbol_count": int(payload.get("fallback_symbol_count", 0) or 0),
+        },
+    )
+
+
+def _ticker_news_context_row(health_dir: Path, now: datetime) -> dict[str, Any]:
+    path = health_dir / "ticker_news_context_latest.json"
+    payload = _read_json(path)
+    ts = _parse_ts(payload.get("timestamp_utc"))
+    fresh = _is_fresh(ts, now, 12.0)
+    requested = int(payload.get("requested_symbol_count", 0) or 0)
+    with_news = int(payload.get("symbols_with_news", 0) or 0)
+    total_items = int(payload.get("total_news_items", 0) or 0)
+    ok_sources = int(payload.get("ok_source_count", 0) or 0)
+    total_sources = int(payload.get("source_count", 0) or 0)
+    coverage_ratio = float(payload.get("coverage_ratio", 0.0) or 0.0)
+    notes: list[str] = []
+    if not fresh:
+        notes.append("stale_artifact")
+    if ok_sources <= 0:
+        notes.append("no_news_sources_ready")
+    elif total_sources > 0 and ok_sources < max(1, min(total_sources, 2)):
+        notes.append(f"partial_sources={ok_sources}/{total_sources}")
+    if requested > 0 and with_news <= 0:
+        notes.append("no_symbol_news_coverage")
+    elif requested > 0 and coverage_ratio < 0.02:
+        notes.append(f"low_symbol_news_coverage={coverage_ratio:.3f}")
+    ok = bool(payload.get("ok", False)) and fresh and ok_sources > 0 and total_items > 0
+    status = STATUS_SINGLE_VERIFIED if ok else STATUS_SINGLE_UNVERIFIED
+    return _row(
+        source_id="ticker_news_context",
+        title="Ticker News Context Mesh",
+        category="news_data",
+        verification_status=status,
+        verification_mode="multi_source_ticker_news_health",
+        artifact_path=path,
+        artifact_timestamp=ts,
+        age_hours=_age_hours(ts, now),
+        fresh=fresh,
+        ok=ok,
+        notes=notes,
+        evidence={
+            "requested_symbols": requested,
+            "symbols_with_news": with_news,
+            "coverage_ratio": coverage_ratio,
+            "total_news_items": total_items,
+            "ok_sources": ok_sources,
+            "total_sources": total_sources,
+            "source_counts": payload.get("source_counts") if isinstance(payload.get("source_counts"), dict) else {},
+            "sources": {
+                key: bool(value.get("ok", False))
+                for key, value in (payload.get("sources") or {}).items()
+                if isinstance(value, dict)
+            },
+        },
+    )
+
+
 def _market_micro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     path = health_dir / "market_micro_sync_latest.json"
     payload = _read_json(path)
@@ -621,11 +1014,23 @@ def _market_micro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         and treasury_ok
         and fresh
     )
-    effective_ok_count = ok_count + (1 if market_closed_local_micro_fallback else 0)
+    finra_symbol_count = int(((sources.get("finra_short_volume") or {}).get("symbol_count", 0)) or 0)
+    external_micro_reference_verified_fallback = bool(
+        not local_micro_ok
+        and finra_ok
+        and treasury_ok
+        and finra_symbol_count >= 50
+        and fresh
+    )
+    effective_ok_count = ok_count + (
+        1 if (market_closed_local_micro_fallback or external_micro_reference_verified_fallback) else 0
+    )
     if total_count > 0 and ok_count < total_count:
         notes.append(f"partial_sources={ok_count}/{total_count}")
     if market_closed_local_micro_fallback:
         notes.append("local_micro_absent_market_closed")
+    elif external_micro_reference_verified_fallback:
+        notes.append("local_micro_absent_external_reference_verified")
     if auxiliary_degraded:
         notes.append(f"auxiliary_source_degraded={','.join(auxiliary_degraded)}")
     status = (
@@ -633,7 +1038,11 @@ def _market_micro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         if bool(payload.get("ok", False))
         and total_count > 0
         and effective_ok_count >= min_ok_sources
-        and (local_micro_ok or market_closed_local_micro_fallback)
+        and (
+            local_micro_ok
+            or market_closed_local_micro_fallback
+            or external_micro_reference_verified_fallback
+        )
         and bool(finra_ok or nasdaq_halts_ok)
         and treasury_ok
         and fresh
@@ -658,9 +1067,10 @@ def _market_micro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
             "min_ok_sources_required": min_ok_sources,
             "critical_sources": critical_sources,
             "market_closed_local_micro_fallback": market_closed_local_micro_fallback,
+            "external_micro_reference_verified_fallback": external_micro_reference_verified_fallback,
             "holiday_pause_observed": holiday_pause_observed,
             "local_micro_symbol_count": int(((sources.get("local_micro") or {}).get("symbol_count", 0)) or 0),
-            "finra_symbol_count": int(((sources.get("finra_short_volume") or {}).get("symbol_count", 0)) or 0),
+            "finra_symbol_count": finra_symbol_count,
         },
     )
 
@@ -732,6 +1142,99 @@ def _extended_quant_row(health_dir: Path, now: datetime) -> dict[str, Any]:
             "tracked_symbols": int(payload.get("tracked_symbols", 0) or 0),
             "ok_sources": ok_count,
             "total_sources": total_count,
+            "sources": {key: bool(value.get("ok", False)) for key, value in sources.items() if isinstance(value, dict)},
+        },
+    )
+
+
+def _public_policy_context_row(health_dir: Path, now: datetime) -> dict[str, Any]:
+    path = health_dir / "public_policy_context_sync_latest.json"
+    payload = _read_json(path)
+    ts = _parse_ts(payload.get("timestamp_utc"))
+    fresh = _is_fresh(ts, now, 72.0)
+    sources = payload.get("sources") if isinstance(payload.get("sources"), dict) else {}
+    ok_count, total_count = _ok_count(sources)
+    features = payload.get("features") if isinstance(payload.get("features"), dict) else {}
+    treasury_debt = sources.get("treasury_debt_to_penny") if isinstance(sources.get("treasury_debt_to_penny"), dict) else {}
+    treasury_rates = (
+        sources.get("treasury_avg_interest_rates")
+        if isinstance(sources.get("treasury_avg_interest_rates"), dict)
+        else {}
+    )
+    world_bank = sources.get("world_bank_indicators") if isinstance(sources.get("world_bank_indicators"), dict) else {}
+    treasury_debt_ok = bool(treasury_debt.get("ok", False))
+    treasury_rates_ok = bool(treasury_rates.get("ok", False))
+    world_bank_ok = bool(world_bank.get("ok", False))
+    world_bank_indicator_count = int(world_bank.get("indicator_count", 0) or 0)
+    world_bank_success_count = int(world_bank.get("indicator_success_count", 0) or 0)
+    world_bank_value_count = int(world_bank.get("value_count", 0) or 0)
+    min_world_bank_success = max(1, min(world_bank_indicator_count, 4)) if world_bank_indicator_count > 0 else 0
+    world_bank_partial_verified = bool(
+        not world_bank_ok
+        and world_bank_indicator_count > 0
+        and world_bank_success_count >= min_world_bank_success
+        and world_bank_value_count >= 8
+    )
+    world_bank_effective_ok = bool(world_bank_ok or world_bank_partial_verified)
+    effective_ok_count = ok_count + (1 if world_bank_partial_verified else 0)
+    notes: list[str] = []
+    if ok_count < total_count:
+        notes.append(f"partial_sources={ok_count}/{total_count}")
+    if not treasury_debt_ok:
+        notes.append("treasury_debt_to_penny_unavailable")
+    if not treasury_rates_ok:
+        notes.append("treasury_avg_interest_rates_unavailable")
+    if not world_bank_ok and world_bank_partial_verified:
+        notes.append(f"world_bank_indicators_partial={world_bank_success_count}/{world_bank_indicator_count}")
+    elif not world_bank_ok:
+        notes.append("world_bank_indicators_unavailable")
+    if world_bank_value_count < 8:
+        notes.append("world_bank_value_coverage_low")
+    if not features:
+        notes.append("derived_features_missing")
+    if not fresh:
+        notes.append("stale_artifact")
+    min_ok_sources = _minimum_ok_sources(total_count, floor=2, tolerate_failures=1, min_ratio=0.67)
+    status = (
+        STATUS_SINGLE_VERIFIED
+        if (bool(payload.get("ok", False)) or (treasury_debt_ok and treasury_rates_ok and world_bank_effective_ok and bool(features)))
+        and fresh
+        and total_count >= 2
+        and effective_ok_count >= min_ok_sources
+        and treasury_debt_ok
+        and treasury_rates_ok
+        and world_bank_effective_ok
+        else STATUS_SINGLE_UNVERIFIED
+    )
+    effective_ok = status == STATUS_SINGLE_VERIFIED
+    return _row(
+        source_id="public_policy_context",
+        title="Public Policy / Sovereign Liquidity Context",
+        category="macro_liquidity_data",
+        verification_status=status,
+        verification_mode="official_free_public_api_health",
+        artifact_path=path,
+        artifact_timestamp=ts,
+        age_hours=_age_hours(ts, now),
+        fresh=fresh,
+        ok=effective_ok,
+        notes=notes,
+        evidence={
+            "context_profile": str(payload.get("context_profile") or ""),
+            "ok_sources": ok_count,
+            "effective_ok_sources": effective_ok_count,
+            "total_sources": total_count,
+            "min_ok_sources_required": min_ok_sources,
+            "countries": payload.get("countries") if isinstance(payload.get("countries"), list) else [],
+            "treasury_debt_record_date": str(treasury_debt.get("record_date") or ""),
+            "treasury_avg_interest_record_date": str(treasury_rates.get("record_date") or ""),
+            "world_bank_lastupdated": str(world_bank.get("lastupdated") or ""),
+            "world_bank_indicator_success_count": world_bank_success_count,
+            "world_bank_indicator_count": world_bank_indicator_count,
+            "world_bank_value_count": world_bank_value_count,
+            "world_bank_partial_verified": world_bank_partial_verified,
+            "us_public_debt_to_worldbank_gdp_proxy": features.get("us_public_debt_to_worldbank_gdp_proxy"),
+            "treasury_avg_interest_rate_pct": features.get("treasury_avg_interest_rate_pct"),
             "sources": {key: bool(value.get("ok", False)) for key, value in sources.items() if isinstance(value, dict)},
         },
     )
@@ -864,13 +1367,17 @@ def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict
         _options_flow_row(health_dir, now),
         _macro_crosscheck_row(health_dir, now),
         _crypto_market_row(health_dir, now),
+        _free_equity_reference_row(health_dir, now),
         _fx_market_row(health_dir, now),
         _external_feeds_row(project_root, now),
         _official_macro_row(health_dir, now),
         _schwab_education_row(health_dir, now),
+        _schwab_symbol_news_row(health_dir, now),
+        _ticker_news_context_row(health_dir, now),
         _market_micro_row(health_dir, now),
         _sec_edgar_row(health_dir, now),
         _extended_quant_row(health_dir, now),
+        _public_policy_context_row(health_dir, now),
         _fed_2026_stress_scenario_row(project_root, now),
     ]
 
@@ -879,6 +1386,12 @@ def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict
         STATUS_SINGLE_VERIFIED: sum(1 for row in rows if row["verification_status"] == STATUS_SINGLE_VERIFIED),
         STATUS_SINGLE_UNVERIFIED: sum(1 for row in rows if row["verification_status"] == STATUS_SINGLE_UNVERIFIED),
     }
+    confidence_scores = [float(row.get("source_confidence_score", 0.0) or 0.0) for row in rows]
+    low_confidence_sources = [
+        str(row.get("source_id") or "")
+        for row in rows
+        if float(row.get("source_confidence_score", 0.0) or 0.0) < 0.70
+    ]
     unverified = [row["source_id"] for row in rows if row["verification_status"] == STATUS_SINGLE_UNVERIFIED]
     warnings = [row["source_id"] for row in rows if _row_has_actionable_notes(row)]
     stale = [row["source_id"] for row in rows if not bool(row.get("fresh", False))]
@@ -906,6 +1419,16 @@ def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict
             "unverified_sources": unverified,
             "sources_with_notes": warnings,
             "stale_sources": stale,
+            "mean_source_confidence_score": round(sum(confidence_scores) / max(len(confidence_scores), 1), 6),
+            "min_source_confidence_score": round(min(confidence_scores or [0.0]), 6),
+            "low_confidence_sources": low_confidence_sources,
+        },
+        "source_confidence_summary": {
+            "mean_score": round(sum(confidence_scores) / max(len(confidence_scores), 1), 6),
+            "min_score": round(min(confidence_scores or [0.0]), 6),
+            "low_confidence_source_count": len(low_confidence_sources),
+            "low_confidence_sources": low_confidence_sources,
+            "policy": "training_and_paper_truth_downweight_contexts_when_source_confidence_is_thin",
         },
         "unverified_sources": unverified,
         "stale_artifacts": stale,

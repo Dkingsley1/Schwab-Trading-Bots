@@ -1446,6 +1446,28 @@ def _deferred_sample_starved_reason(
     )
 
 
+def _deferred_quality_guard_reason(
+    *,
+    run_tag: str,
+    project_root: Path,
+    diagnostics_payload: Dict[str, Any],
+    quality_failures: List[str],
+) -> str:
+    payload = dict(diagnostics_payload)
+    payload["status"] = "deferred_quality_guard"
+    payload["quality_deferred"] = True
+    payload["quality_failures"] = list(quality_failures)
+    categories = payload.get("failure_categories")
+    if not isinstance(categories, list) or not categories:
+        payload["failure_categories"] = ["quality_guard_failure", "threshold_calibration"]
+    diagnostics_path = _write_runtime_training_diagnostics(project_root, run_tag, payload)
+    return (
+        f"defer_training_quality_guard run_tag={run_tag} "
+        f"diagnostics_path={diagnostics_path} "
+        + "; ".join(quality_failures)
+    )
+
+
 def _paper_loss_hard_negative_context(project_root: Path, run_tag: str) -> Dict[str, Any]:
     paper_path = project_root / "governance" / "health" / "paper_performance_latest.json"
     payload = _safe_json_load(paper_path)
@@ -1565,9 +1587,11 @@ def train_indicator_bot(
     min_precision_balance_score: float = 0.0,
     min_acted_coverage: Optional[float] = None,
     max_acted_coverage: Optional[float] = None,
+    defer_on_quality_failure: bool = False,
 ) -> TradingBrain:
     _require_mlx_runtime(f"training {run_tag}")
     np.random.seed(42)
+    mx.random.seed(42)
     project_root = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
     panel = simulate_market_panel(n=num_points)
@@ -1669,13 +1693,19 @@ def train_indicator_bot(
     val_loss = float(loss_fn(brain, X_val, y_val_effective))
     val_pred_probs_np = np.asarray(mx.sigmoid(brain(X_val))).reshape(-1) if X_val.shape[0] else np.zeros((0,), dtype=np.float32)
     y_val_np = np.asarray(y_val).reshape(-1)
-    acted_threshold = float(min(max(acted_prob_threshold, 0.5), 0.95))
+    configured_acted_threshold = float(min(max(acted_prob_threshold, 0.5), 0.95))
+    configured_acted_threshold, threshold_override_meta = _resolve_learned_acted_threshold(
+        project_root,
+        run_tag=run_tag,
+        family=_infer_training_family(run_tag),
+        base_threshold=configured_acted_threshold,
+    )
     selection_min_acted_coverage = 0.02 if min_acted_coverage is None else float(min_acted_coverage)
     selection_max_acted_coverage = 0.48 if max_acted_coverage is None else float(max_acted_coverage)
     long_acted_threshold, short_acted_threshold, threshold_meta = _select_calibrated_action_thresholds(
         val_pred_probs_np,
         y_val_np,
-        default_threshold=acted_threshold,
+        default_threshold=configured_acted_threshold,
         min_long_precision=min_long_precision,
         min_short_precision=min_short_precision,
         require_both_sides_precision=require_both_sides_precision,
@@ -1744,7 +1774,9 @@ def train_indicator_bot(
         "features": feature_names,
         "acted_prob_threshold": float(long_acted_threshold),
         "short_acted_prob_threshold": float(short_acted_threshold),
+        "configured_acted_prob_threshold": float(configured_acted_threshold),
         "acted_threshold_calibration": threshold_meta,
+        "learned_threshold_override": threshold_override_meta,
         "quality_guard": {
             "min_long_precision": float(min_long_precision),
             "min_short_precision": float(min_short_precision),
@@ -1767,6 +1799,24 @@ def train_indicator_bot(
     }
     if quality_failures:
         metrics["quality_failures"] = quality_failures
+        diagnostics_payload = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "run_tag": run_tag,
+            "status": "deferred_quality_guard" if defer_on_quality_failure else "failed_quality_guard",
+            "quality_deferred": bool(defer_on_quality_failure),
+            "family": _infer_training_family(run_tag),
+            "quality_failures": quality_failures,
+            "failure_categories": ["quality_guard_failure", "threshold_calibration"],
+            "metrics": metrics,
+            "config": config,
+        }
+        diagnostics_path = _write_runtime_training_diagnostics(project_root, run_tag, diagnostics_payload)
+        metrics["training_diagnostics_path"] = diagnostics_path
+        if defer_on_quality_failure:
+            raise RuntimeError(
+                f"defer_training_quality_guard run_tag={run_tag} diagnostics_path={diagnostics_path} "
+                + "; ".join(quality_failures)
+            )
         raise RuntimeError(
             f"synthetic_training_quality_guard_failed run_tag={run_tag} " + "; ".join(quality_failures)
         )
@@ -1796,9 +1846,20 @@ def train_price_indicator_bot(
     epochs: int = 200,
     batch_size: int = 128,
     patience: int = 15,
+    acted_prob_threshold: float = 0.65,
+    min_long_precision: float = 0.0,
+    min_short_precision: float = 0.0,
+    require_both_sides_precision: bool = False,
+    min_acted_accuracy: float = 0.0,
+    min_accuracy_lift_over_majority: Optional[float] = None,
+    min_precision_balance_score: float = 0.0,
+    min_acted_coverage: Optional[float] = None,
+    max_acted_coverage: Optional[float] = None,
+    defer_on_quality_failure: bool = False,
 ) -> TradingBrain:
     _require_mlx_runtime(f"training {run_tag}")
     np.random.seed(42)
+    mx.random.seed(42)
     project_root = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
     prices = np.asarray(price_simulator(num_points), dtype=np.float64)
@@ -1809,6 +1870,8 @@ def train_price_indicator_bot(
         else:
             X, y = dataset_out[:2]
             anchor_idx = np.arange(int(X.shape[0]), dtype=np.int64) + int(window)
+        X = mx.array(np.asarray(X, dtype=np.float32), dtype=mx.float32)
+        y = mx.array(np.asarray(y, dtype=np.float32).reshape(-1, 1), dtype=mx.float32)
     else:
         features = feature_builder(prices)
         X, y, anchor_idx = make_windowed_dataset(features, prices, window=window, horizon=horizon, return_anchor_index=True)
@@ -1900,13 +1963,27 @@ def train_price_indicator_bot(
     val_loss = float(loss_fn(brain, X_val, y_val_effective))
     val_pred_probs_np = np.asarray(mx.sigmoid(brain(X_val))).reshape(-1) if X_val.shape[0] else np.zeros((0,), dtype=np.float32)
     y_val_np = np.asarray(y_val).reshape(-1)
-    acted_threshold = 0.65
+    configured_acted_threshold = float(min(max(acted_prob_threshold, 0.5), 0.95))
+    configured_acted_threshold, threshold_override_meta = _resolve_learned_acted_threshold(
+        project_root,
+        run_tag=run_tag,
+        family=_infer_training_family(run_tag),
+        base_threshold=configured_acted_threshold,
+    )
+    selection_min_acted_coverage = 0.02 if min_acted_coverage is None else float(min_acted_coverage)
+    selection_max_acted_coverage = 0.48 if max_acted_coverage is None else float(max_acted_coverage)
     long_acted_threshold, short_acted_threshold, threshold_meta = _select_calibrated_action_thresholds(
         val_pred_probs_np,
         y_val_np,
-        default_threshold=acted_threshold,
-        min_acted_coverage=0.02,
-        max_acted_coverage=0.48,
+        default_threshold=configured_acted_threshold,
+        min_long_precision=min_long_precision,
+        min_short_precision=min_short_precision,
+        require_both_sides_precision=require_both_sides_precision,
+        min_acted_accuracy=min_acted_accuracy,
+        min_accuracy_lift_over_majority=min_accuracy_lift_over_majority,
+        min_precision_balance_score=min_precision_balance_score,
+        min_acted_coverage=selection_min_acted_coverage,
+        max_acted_coverage=selection_max_acted_coverage,
     )
     preds = mx.sigmoid(brain(X_test))
     pred_probs_np = np.asarray(preds).reshape(-1)
@@ -1935,7 +2012,21 @@ def train_price_indicator_bot(
         "features": feature_names,
         "acted_prob_threshold": float(long_acted_threshold),
         "short_acted_prob_threshold": float(short_acted_threshold),
+        "configured_acted_prob_threshold": float(configured_acted_threshold),
         "acted_threshold_calibration": threshold_meta,
+        "learned_threshold_override": threshold_override_meta,
+        "quality_guard": {
+            "min_long_precision": float(min_long_precision),
+            "min_short_precision": float(min_short_precision),
+            "require_both_sides_precision": bool(require_both_sides_precision),
+            "min_acted_accuracy": float(min_acted_accuracy),
+            "min_accuracy_lift_over_majority": (
+                None if min_accuracy_lift_over_majority is None else float(min_accuracy_lift_over_majority)
+            ),
+            "min_precision_balance_score": float(min_precision_balance_score),
+            "min_acted_coverage": None if min_acted_coverage is None else float(min_acted_coverage),
+            "max_acted_coverage": None if max_acted_coverage is None else float(max_acted_coverage),
+        },
         "distillation": {
             "enabled": bool(distillation_enabled),
             "teacher_ids": used_teacher_ids,
@@ -1949,6 +2040,61 @@ def train_price_indicator_bot(
         "test_accuracy": float(acc),
         **quality_metrics,
     }
+    quality_failures: List[str] = []
+    acted_accuracy = float(quality_metrics["acted_accuracy"])
+    accuracy_lift_over_majority = float(quality_metrics["accuracy_lift_over_majority"])
+    long_precision = float(quality_metrics["long_precision"])
+    short_precision = float(quality_metrics["short_precision"])
+    precision_balance_score = float(quality_metrics["precision_balance_score"])
+    acted_coverage = float(quality_metrics["acted_coverage"])
+    long_acted_count = int(quality_metrics["long_acted_count"])
+    short_acted_count = int(quality_metrics["short_acted_count"])
+    if long_precision < float(min_long_precision):
+        quality_failures.append(f"long_precision={long_precision:.4f} < min_long_precision={float(min_long_precision):.4f}")
+    if short_precision < float(min_short_precision):
+        quality_failures.append(f"short_precision={short_precision:.4f} < min_short_precision={float(min_short_precision):.4f}")
+    if require_both_sides_precision and (long_acted_count <= 0 or short_acted_count <= 0):
+        quality_failures.append(
+            f"require_both_sides_precision long_acted_count={long_acted_count} short_acted_count={short_acted_count}"
+        )
+    if acted_accuracy < float(min_acted_accuracy):
+        quality_failures.append(f"acted_accuracy={acted_accuracy:.4f} < min_acted_accuracy={float(min_acted_accuracy):.4f}")
+    if min_accuracy_lift_over_majority is not None and accuracy_lift_over_majority < float(min_accuracy_lift_over_majority):
+        quality_failures.append(
+            "accuracy_lift_over_majority="
+            f"{accuracy_lift_over_majority:.4f} < min_accuracy_lift_over_majority={float(min_accuracy_lift_over_majority):.4f}"
+        )
+    if precision_balance_score < float(min_precision_balance_score):
+        quality_failures.append(
+            f"precision_balance_score={precision_balance_score:.4f} < min_precision_balance_score={float(min_precision_balance_score):.4f}"
+        )
+    if min_acted_coverage is not None and acted_coverage < float(min_acted_coverage):
+        quality_failures.append(f"acted_coverage={acted_coverage:.4f} < min_acted_coverage={float(min_acted_coverage):.4f}")
+    if max_acted_coverage is not None and acted_coverage > float(max_acted_coverage):
+        quality_failures.append(f"acted_coverage={acted_coverage:.4f} > max_acted_coverage={float(max_acted_coverage):.4f}")
+    if quality_failures:
+        metrics["quality_failures"] = quality_failures
+        diagnostics_payload = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "run_tag": run_tag,
+            "status": "deferred_quality_guard" if defer_on_quality_failure else "failed_quality_guard",
+            "quality_deferred": bool(defer_on_quality_failure),
+            "family": _infer_training_family(run_tag),
+            "quality_failures": quality_failures,
+            "failure_categories": ["quality_guard_failure", "threshold_calibration"],
+            "metrics": metrics,
+            "config": config,
+        }
+        diagnostics_path = _write_runtime_training_diagnostics(project_root, run_tag, diagnostics_payload)
+        metrics["training_diagnostics_path"] = diagnostics_path
+        if defer_on_quality_failure:
+            raise RuntimeError(
+                f"defer_training_quality_guard run_tag={run_tag} diagnostics_path={diagnostics_path} "
+                + "; ".join(quality_failures)
+            )
+        raise RuntimeError(
+            f"synthetic_training_quality_guard_failed run_tag={run_tag} " + "; ".join(quality_failures)
+        )
     if distillation_enabled:
         metrics["distillation_active"] = True
         metrics["distillation_teacher_count"] = len(used_teacher_ids)
@@ -1997,6 +2143,7 @@ def train_runtime_indicator_bot(
     max_acted_coverage: Optional[float] = None,
     walk_forward_folds: int = 3,
     hard_negative_mining: bool = True,
+    defer_on_quality_failure: bool = False,
 ) -> TradingBrain:
     _require_mlx_runtime(f"runtime training {run_tag}")
     np.random.seed(42)
@@ -2169,6 +2316,87 @@ def train_runtime_indicator_bot(
         if not insufficiency_reason:
             break
 
+    if (
+        insufficiency_reason
+        and _env_bool("RUNTIME_TRAIN_LABEL_REPAIR", True)
+        and int(runtime_meta.get("eligible_sequences", 0) or 0) > 0
+        and "sequences" in locals()
+    ):
+        repair_bypass_filter = _env_bool("RUNTIME_TRAIN_LABEL_REPAIR_BYPASS_FILTER", True)
+        repair_min_confidence = max(
+            0.0,
+            min(
+                float(effective_min_confidence),
+                _env_float("RUNTIME_TRAIN_LABEL_REPAIR_MIN_CONFIDENCE", 0.0),
+            ),
+        )
+        repair_min_abs_return = max(_env_float("RUNTIME_TRAIN_LABEL_REPAIR_MIN_ABS_RETURN", 0.00025), 0.0)
+        print(
+            "[RuntimeTraining] label_repair "
+            f"run_tag={run_tag} bypass_filter={int(repair_bypass_filter)} "
+            f"min_confidence={repair_min_confidence:.4f} "
+            f"min_abs_return={repair_min_abs_return:.6f}",
+            flush=True,
+        )
+        X_repair, y_repair, repair_meta = make_runtime_windowed_dataset(
+            sequences=sequences,
+            feature_builder=runtime_feature_builder,
+            label_builder=runtime_label_builder,
+            sample_filter=sample_filter,
+            confidence_builder=confidence_builder,
+            min_confidence=repair_min_confidence,
+            sample_stride=effective_sample_stride,
+            max_samples=max_samples,
+            bypass_sample_filter=repair_bypass_filter,
+            fallback_direction_label=True,
+            fallback_min_abs_return=repair_min_abs_return,
+            window=window,
+            horizon=horizon,
+        )
+        repair_sample_count = int(X_repair.shape[0]) if X_repair.ndim == 2 else 0
+        repair_positive_rate = float(repair_meta.get("positive_rate", 0.0) or 0.0)
+        repair_insufficiency_reason = _runtime_data_insufficiency_reason(
+            sample_count=repair_sample_count,
+            eligible_sequences=int(repair_meta.get("eligible_sequences", 0) or 0),
+            positive_rate=repair_positive_rate,
+            batch_size=batch_size,
+            min_samples=min_samples,
+            min_sequences=min_sequences,
+        )
+        autofix_attempts.append(
+            {
+                "attempt_index": int(len(autofix_attempts)),
+                "reason": "label_repair",
+                "lookback_days": int(effective_lookback_days),
+                "symbol_allowlist": list(effective_symbol_allowlist or []),
+                "min_confidence": float(repair_min_confidence),
+                "sample_stride": int(effective_sample_stride),
+                "sequence_count": int(repair_meta.get("sequence_count", last_sequence_count) or last_sequence_count),
+                "observation_count": int(last_observation_count),
+                "samples": int(repair_sample_count),
+                "eligible_sequences": int(repair_meta.get("eligible_sequences", 0) or 0),
+                "positive_rate": round(float(repair_positive_rate), 6),
+                "skipped_filtered": int(repair_meta.get("skipped_filtered", 0) or 0),
+                "skipped_low_confidence": int(repair_meta.get("skipped_low_confidence", 0) or 0),
+                "skipped_labels": int(repair_meta.get("skipped_labels", 0) or 0),
+                "label_repaired": int(repair_meta.get("label_repaired", 0) or 0),
+                "bypassed_sample_filter": bool(repair_bypass_filter),
+                "insufficiency_reason": repair_insufficiency_reason,
+            }
+        )
+        print(
+            "[RuntimeTraining] dataset_ready "
+            f"run_tag={run_tag} samples={repair_sample_count} "
+            f"eligible_sequences={repair_meta.get('eligible_sequences', 0)} "
+            f"positive_rate={repair_positive_rate:.4f} "
+            f"insufficiency_reason={repair_insufficiency_reason or 'ok'} "
+            f"label_repaired={int(repair_meta.get('label_repaired', 0) or 0)}",
+            flush=True,
+        )
+        X_np, y_np, runtime_meta = X_repair, y_repair, repair_meta
+        positive_rate = repair_positive_rate
+        insufficiency_reason = repair_insufficiency_reason
+
     sample_count = int(X_np.shape[0]) if X_np.ndim == 2 else 0
     sample_confidence = np.asarray(
         runtime_meta.pop("_sample_confidence", np.ones((sample_count,), dtype=np.float32)),
@@ -2209,6 +2437,9 @@ def train_runtime_indicator_bot(
                         "skipped_filtered": int(runtime_meta.get("skipped_filtered", 0) or 0),
                         "skipped_low_confidence": int(runtime_meta.get("skipped_low_confidence", 0) or 0),
                         "skipped_labels": int(runtime_meta.get("skipped_labels", 0) or 0),
+                        "label_repair_enabled": bool(runtime_meta.get("label_repair_enabled", False)),
+                        "label_repair_bypassed_filter": bool(runtime_meta.get("label_repair_bypassed_filter", False)),
+                        "label_repaired": int(runtime_meta.get("label_repaired", 0) or 0),
                     },
                 )
             )
@@ -2242,6 +2473,9 @@ def train_runtime_indicator_bot(
                         "skipped_filtered": int(runtime_meta.get("skipped_filtered", 0) or 0),
                         "skipped_low_confidence": int(runtime_meta.get("skipped_low_confidence", 0) or 0),
                         "skipped_labels": int(runtime_meta.get("skipped_labels", 0) or 0),
+                        "label_repair_enabled": bool(runtime_meta.get("label_repair_enabled", False)),
+                        "label_repair_bypassed_filter": bool(runtime_meta.get("label_repair_bypassed_filter", False)),
+                        "label_repaired": int(runtime_meta.get("label_repaired", 0) or 0),
                     },
                 )
             )
@@ -2565,6 +2799,15 @@ def train_runtime_indicator_bot(
     metrics["training_diagnostics_path"] = diagnostics_path
     metrics["training_failure_categories"] = diagnostics_payload["failure_categories"]
     if quality_failures:
+        if defer_on_quality_failure:
+            raise RuntimeError(
+                _deferred_quality_guard_reason(
+                    run_tag=run_tag,
+                    project_root=project_root,
+                    diagnostics_payload=diagnostics_payload,
+                    quality_failures=quality_failures,
+                )
+            )
         raise RuntimeError(
             f"runtime_training_quality_guard_failed run_tag={run_tag} "
             + "; ".join(quality_failures)

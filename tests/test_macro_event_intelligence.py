@@ -252,6 +252,55 @@ def test_macro_event_intelligence_rejects_fomc_calendar_for_nvda_earnings(tmp_pa
     assert any("NVIDIA IR preset" in action for action in payload["recommended_actions"])
 
 
+def test_macro_event_intelligence_rejects_fomc_calendar_for_spacex_ipo(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    live_macro_path = tmp_path / "live_macro_latest.json"
+    media_latest_path = tmp_path / "media_latest.json"
+    _write_json(
+        health / "macro_auto_watch_status.json",
+        {
+            "correlate_with_schwab_calendar": True,
+            "calendar_correlation_enabled": True,
+            "calendar_correlation_ok": True,
+            "calendar_correlation_reason": "already_matched_for_stream",
+            "calendar_correlation_source": "federalreserve.gov",
+            "calendar_event_title": "FOMC Press Conference",
+            "calendar_event_time_utc": "2026-06-17T18:30:00+00:00",
+            "calendar_matched_terms": ["FOMC", "Federal Reserve"],
+        },
+    )
+    _write_json(health / "macro_auto_watch_state.json", {})
+    _write_json(health / "live_macro_media_status.json", {})
+    _write_json(media_latest_path, {})
+    _write_json(
+        live_macro_path,
+        {
+            "template": "generic",
+            "source": "IPO event prep",
+            "published": "2026-06-11T11:40:00+00:00",
+            "shock_hint": 1.0,
+            "symbols": ["SPCX", "TSLA", "RKLB", "QQQ"],
+            "items": [
+                {
+                    "headline": "SpaceX IPO watch: SPCX expected to begin trading Friday June 12",
+                    "summary": "monitor high-volatility IPO first print and related space proxies",
+                }
+            ],
+        },
+    )
+
+    payload = src.build_payload(project_root, live_macro_path=live_macro_path, media_latest_path=media_latest_path)
+
+    verification = payload["calendar_verification"]
+    assert verification["ok"] is False
+    assert verification["status"] == "unverified"
+    assert verification["mismatch"] is True
+    assert verification["mismatch_expected_terms"] == ["spacex", "spcx", "ipo"]
+    assert verification["reason"] == "calendar_event_mismatch:already_matched_for_stream"
+    assert any("active bulletin" in action for action in payload["recommended_actions"])
+
+
 def test_macro_event_intelligence_treats_official_release_as_event_evidence(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

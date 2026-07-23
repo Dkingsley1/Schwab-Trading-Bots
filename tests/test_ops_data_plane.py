@@ -174,6 +174,32 @@ def test_connect_quarantines_corrupt_symlink_target_without_replacing_link(tmp_p
     assert int(count) == 0
 
 
+def test_connect_can_skip_quick_check_for_hot_path_writes(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    calls: list[str] = []
+
+    def _fake_quick_check(_conn: sqlite3.Connection) -> None:
+        calls.append("quick_check")
+
+    monkeypatch.setattr(src, "_assert_sqlite_quick_check_ok", _fake_quick_check)
+
+    with src.connect(project_root, quick_check=False) as conn:
+        src.record_watermark(
+            conn,
+            collector_key="demo_collector",
+            source_name="demo_source",
+            watermark_type="cursor",
+            watermark_value="2026-06-29T00:00:00+00:00",
+        )
+
+    assert calls == []
+
+    with src.connect(project_root) as conn:
+        conn.execute("SELECT 1").fetchone()
+
+    assert calls == ["quick_check"]
+
+
 def test_normalize_entity_key_relativizes_project_paths(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     artifact = project_root / "governance" / "health" / "collector.json"

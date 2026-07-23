@@ -163,12 +163,19 @@ def _assert_sqlite_quick_check_ok(conn: sqlite3.Connection) -> None:
         raise sqlite3.DatabaseError(result)
 
 
-def connect(project_root: Path = PROJECT_ROOT, *, db_path: Path | str | None = None, timeout_seconds: float = 30.0) -> sqlite3.Connection:
+def connect(
+    project_root: Path = PROJECT_ROOT,
+    *,
+    db_path: Path | str | None = None,
+    timeout_seconds: float = 30.0,
+    quick_check: bool = True,
+) -> sqlite3.Connection:
     path = resolve_db_path(project_root, db_path=db_path)
     try:
         conn = _shared_connect_sqlite(path, project_root=project_root, timeout_seconds=timeout_seconds)
         ensure_schema(conn)
-        _assert_sqlite_quick_check_ok(conn)
+        if quick_check:
+            _assert_sqlite_quick_check_ok(conn)
         return conn
     except sqlite3.DatabaseError as exc:
         if not _is_corrupt_sqlite_error(exc):
@@ -180,7 +187,8 @@ def connect(project_root: Path = PROJECT_ROOT, *, db_path: Path | str | None = N
         _quarantine_corrupt_db(path)
         conn = _shared_connect_sqlite(path, project_root=project_root, timeout_seconds=timeout_seconds)
         ensure_schema(conn)
-        _assert_sqlite_quick_check_ok(conn)
+        if quick_check:
+            _assert_sqlite_quick_check_ok(conn)
         return conn
 
 

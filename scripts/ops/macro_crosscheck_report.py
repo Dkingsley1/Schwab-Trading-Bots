@@ -78,6 +78,7 @@ def build_macro_crosscheck_payload(project_root: Path = PROJECT_ROOT) -> dict[st
     official_bls_calendar_ok = bool(((official_sources.get("bls_calendar") or {}).get("ok", False)))
     official_bea_ok = bool(((official_sources.get("bea") or {}).get("ok", False)))
     official_treasury_ok = bool(((official_sources.get("treasury") or {}).get("ok", False)))
+    public_bea_auxiliary_unavailable = bool(official_bea_ok and not latest_status_bea_ok)
 
     market_micro_sources = market_micro.get("sources") if isinstance(market_micro.get("sources"), dict) else {}
     market_micro_treasury_ok = bool(((market_micro_sources.get("treasury_auctions") or {}).get("ok", False)))
@@ -98,9 +99,15 @@ def build_macro_crosscheck_payload(project_root: Path = PROJECT_ROOT) -> dict[st
             "official_bls_calendar_ok": official_bls_calendar_ok,
         },
         "bea_dual_source": {
-            "ok": latest_status_bea_ok and official_bea_ok,
+            "ok": official_bea_ok,
             "latest_status_bea_ok": latest_status_bea_ok,
             "official_bea_ok": official_bea_ok,
+            "public_bea_auxiliary_unavailable": public_bea_auxiliary_unavailable,
+            "verification_mode": (
+                "official_bea_primary_public_auxiliary_unavailable"
+                if public_bea_auxiliary_unavailable
+                else "public_and_official_overlap"
+            ),
         },
         "treasury_dual_source": {
             "ok": official_treasury_ok and market_micro_treasury_ok,

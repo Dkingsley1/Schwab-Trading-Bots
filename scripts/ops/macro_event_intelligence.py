@@ -204,22 +204,33 @@ def _calendar_identity_text(verification: dict[str, Any]) -> str:
     return " ".join(part for part in parts if part).lower()
 
 
+def _event_calendar_terms(live_text: str) -> list[str]:
+    terms: list[str] = []
+    event_is_earnings = "earnings" in live_text or "earnings_call" in live_text or "company earnings call" in live_text
+    if event_is_earnings and ("nvda" in live_text or "nvidia" in live_text):
+        terms.extend(["nvidia", "nvda", "earnings"])
+    if any(token in live_text for token in ("spacex", "spcx", "starlink")) or " ipo" in f" {live_text} ":
+        terms.extend(["spacex", "spcx", "ipo"])
+    if any(token in live_text for token in ("fomc", "federal reserve", "powell", " fed ")):
+        terms.extend(["fomc", "federal reserve", "powell"])
+    return ordered_unique(terms)
+
+
 def _guard_calendar_verification_event_match(
     live_macro: dict[str, Any],
     verification: dict[str, Any],
 ) -> dict[str, Any]:
-    if not verification.get("enabled"):
+    if not verification.get("enabled") or not verification.get("ok"):
         return verification
     live_text = _event_identity_text(live_macro)
-    event_is_earnings = "earnings" in live_text or "earnings_call" in live_text or "company earnings call" in live_text
-    event_is_nvda = "nvda" in live_text or "nvidia" in live_text
-    if not (event_is_earnings and event_is_nvda):
+    expected_terms = _event_calendar_terms(live_text)
+    if not expected_terms:
         return verification
 
     calendar_text = _calendar_identity_text(verification)
     calendar_looks_fed = any(token in calendar_text for token in ("fomc", "federal reserve", "fed "))
-    calendar_has_nvda = "nvda" in calendar_text or "nvidia" in calendar_text
-    if not calendar_looks_fed or calendar_has_nvda:
+    calendar_matches_expected = any(term in calendar_text for term in expected_terms)
+    if calendar_matches_expected:
         return verification
 
     guarded = dict(verification)
@@ -230,14 +241,17 @@ def _guard_calendar_verification_event_match(
             "status": "unverified",
             "reason": f"calendar_event_mismatch:{prior_reason}",
             "mismatch": True,
-            "mismatch_expected_terms": ["nvidia", "nvda", "earnings"],
+            "mismatch_expected_terms": expected_terms,
             "mismatch_actual_terms": [
                 token
-                for token in ("federal reserve", "fomc")
+                for token in ("federal reserve", "fomc", "ipo", "spacex", "spcx", "nvidia", "nvda")
                 if token in calendar_text
-            ],
+            ]
+            or ([calendar_text[:120]] if calendar_text else []),
         }
     )
+    if not calendar_looks_fed:
+        guarded["mismatch_actual_terms"] = guarded["mismatch_actual_terms"] or ["calendar_identity_mismatch"]
     return guarded
 
 
@@ -331,6 +345,11 @@ def build_payload(
             else "",
             "retarget the macro auto watcher to the NVIDIA IR preset before using calendar verification for this earnings event"
             if bool(calendar_verification.get("mismatch", False))
+            and any(term in calendar_verification.get("mismatch_expected_terms", []) for term in ("nvidia", "nvda"))
+            else "",
+            "retarget the macro auto watcher or calendar source to the active bulletin before trusting event verification"
+            if bool(calendar_verification.get("mismatch", False))
+            and not any(term in calendar_verification.get("mismatch_expected_terms", []) for term in ("nvidia", "nvda"))
             else "",
         ]
     )

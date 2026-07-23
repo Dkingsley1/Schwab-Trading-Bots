@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import math
@@ -19,7 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.collector_transport import fetch_text
+from core.collector_transport import fetch_json, fetch_text
 from core.market_context_features import load_latest_external_context
 from core.fx_twelve_data_guard import (
     classify_twelve_data_failure,
@@ -31,12 +32,14 @@ from scripts import ops_data_plane
 
 ECB_FX_HIST_90D_URL = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist-90d.xml"
 FED_H10_CURRENT_URL = "https://www.federalreserve.gov/releases/h10/current/default.htm"
+FRANKFURTER_LATEST_URL = "https://api.frankfurter.app/latest?from=EUR&to=USD,JPY,GBP,CHF,CAD,AUD"
 ALPHA_VANTAGE_FX_INTRADAY_URL = "https://www.alphavantage.co/query"
 TWELVE_DATA_TIME_SERIES_URL = "https://api.twelvedata.com/time_series"
 USER_AGENT = "schwab-trading-bot/1.0"
 SOURCE_CONTRACTS = {
     "ecb": {"source_confidence_norm": 0.99, "schema_confidence_norm": 0.95},
     "fed_h10": {"source_confidence_norm": 0.98, "schema_confidence_norm": 0.9},
+    "frankfurter": {"source_confidence_norm": 0.9, "schema_confidence_norm": 0.9},
     "alpha_vantage": {"source_confidence_norm": 0.87, "schema_confidence_norm": 0.86},
     "twelve_data": {"source_confidence_norm": 0.89, "schema_confidence_norm": 0.88},
 }
@@ -106,6 +109,114 @@ def _safe_int_env(name: str, default: int) -> int:
         return int(default)
 
 
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _file_age_seconds(path: Path, now: datetime) -> float:
+    try:
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except Exception:
+        return float("inf")
+    return max(0.0, (now - mtime).total_seconds())
+
+
+def _collector_pressure_contract(now: datetime) -> dict[str, Any]:
+    runtime = _safe_load_json(PROJECT_ROOT / "governance" / "health" / "runtime_throttle_control_latest.json")
+    mac = runtime.get("mac_fluidity_contract") if isinstance(runtime.get("mac_fluidity_contract"), dict) else {}
+    score = _to_float(runtime.get("host_saturation_score"), 0.0)
+    compute = str(runtime.get("compute_pressure_level") or "").strip().lower()
+    memory = str(runtime.get("memory_pressure_level") or "").strip().lower()
+    profile = str(os.getenv("BOT_RUNTIME_RESOURCE_GUARD_PROFILE") or runtime.get("throttle_profile") or "").strip().lower()
+    mac_status = str(mac.get("overall_status") or "").strip().lower()
+    mac_band = str(mac.get("fluidity_band") or "").strip().lower()
+    env_mode = str(os.getenv("FX_MARKET_CONTEXT_PRESSURE_MODE") or "").strip().lower()
+    if env_mode:
+        mode = env_mode
+    elif memory == "high" or compute == "high" or profile == "protect_live" or score >= 75.0 or mac_band == "protect":
+        mode = "protect"
+    elif compute == "elevated" or profile == "sustain" or score >= 60.0 or mac_status == "needs_work" or mac_band == "strained":
+        mode = "guarded"
+    elif profile == "soft_cap" or score >= 45.0 or mac_band == "guarded_smooth":
+        mode = "calm"
+    else:
+        mode = "off"
+    active = bool(mode in {"protect", "guarded", "calm"} or _bool_env("CONTEXT_COLLECTOR_PRESSURE_GOVERNOR_ENABLED", False))
+    defaults = {
+        "protect": {"min_interval": 900, "pairs_per_run": 1, "outputsize": 12, "timeout": 8.0},
+        "guarded": {"min_interval": 600, "pairs_per_run": 1, "outputsize": 24, "timeout": 10.0},
+        "calm": {"min_interval": 300, "pairs_per_run": 2, "outputsize": 36, "timeout": 12.0},
+        "off": {"min_interval": 0, "pairs_per_run": 0, "outputsize": 72, "timeout": 20.0},
+    }
+    selected = defaults.get(mode, defaults["off"])
+    min_interval = _safe_int_env("FX_MARKET_CONTEXT_MIN_INTERVAL_SECONDS", selected["min_interval"])
+    configured_pairs_per_run = _safe_int_env("FX_TWELVE_DATA_MAX_PAIRS_PER_RUN", selected["pairs_per_run"])
+    configured_outputsize = _safe_int_env("FX_TWELVE_DATA_OUTPUTSIZE", selected["outputsize"])
+    configured_timeout = _to_float(os.getenv("FX_MARKET_CONTEXT_TIMEOUT_CAP_SECONDS"), float(selected["timeout"]))
+    pairs_per_run = max(0, min(configured_pairs_per_run, int(selected["pairs_per_run"]))) if active else configured_pairs_per_run
+    outputsize_cap = max(4, min(configured_outputsize, int(selected["outputsize"]))) if active else configured_outputsize
+    timeout_cap = min(configured_timeout, float(selected["timeout"])) if active else configured_timeout
+    return {
+        "active": active,
+        "mode": mode,
+        "timestamp_utc": now.isoformat(),
+        "host_saturation_score": round(score, 3),
+        "compute_pressure_level": compute or "unknown",
+        "memory_pressure_level": memory or "unknown",
+        "runtime_profile": profile or "unknown",
+        "mac_fluidity_status": mac_status or "unknown",
+        "mac_fluidity_band": mac_band or "unknown",
+        "min_interval_seconds": max(int(min_interval), 0) if active else 0,
+        "max_pairs_per_run": int(pairs_per_run),
+        "outputsize_cap": int(outputsize_cap),
+        "timeout_cap_seconds": round(float(timeout_cap), 3),
+        "lock_path": str(PROJECT_ROOT / "governance" / "locks" / "fx_market_context.lock"),
+        "policy": "single_flight_and_min_interval_under_runtime_pressure",
+    }
+
+
+def _apply_collector_pressure_env(contract: Mapping[str, Any]) -> None:
+    if not bool(contract.get("active", False)):
+        return
+
+    def cap_int_env(name: str, cap: int) -> None:
+        current = _safe_int_env(name, cap)
+        os.environ[name] = str(max(0, min(current, cap)))
+
+    cap_int_env("FX_TWELVE_DATA_MAX_PAIRS_PER_RUN", int(contract.get("max_pairs_per_run") or 1))
+    cap_int_env("FX_TWELVE_DATA_OUTPUTSIZE", int(contract.get("outputsize_cap") or 24))
+    os.environ.setdefault("FX_MARKET_CONTEXT_ALPHA_VANTAGE_ENABLED", "0")
+    os.environ["FX_MARKET_CONTEXT_PRESSURE_MODE"] = str(contract.get("mode") or "guarded")
+
+
+def _pressure_skip_health(
+    *,
+    reason: str,
+    contract: Mapping[str, Any],
+    external_path: Path,
+    health_path: Path,
+    now: datetime,
+) -> dict[str, Any]:
+    previous_health = _safe_load_json(health_path)
+    previous_payload = _safe_load_json(external_path)
+    ok = bool(previous_payload or previous_health.get("ok", False))
+    return {
+        "timestamp_utc": now.isoformat(),
+        "ok": ok,
+        "skipped": True,
+        "skip_reason": reason,
+        "pressure_contract": dict(contract),
+        "previous_health_age_seconds": round(_file_age_seconds(health_path, now), 3),
+        "previous_payload_age_seconds": round(_file_age_seconds(external_path, now), 3),
+        "proxy_symbols_observed": previous_health.get("proxy_symbols_observed", 0),
+        "sources": previous_health.get("sources", {}),
+        "policy": "reuse_latest_fx_context_when_pressure_gate_blocks_redundant_collection",
+    }
+
+
 def _split_pair_symbols(raw: Any) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -172,6 +283,8 @@ def _source_contract_name(url: str) -> str:
         return "ecb"
     if "federalreserve.gov" in text:
         return "fed_h10"
+    if "frankfurter.app" in text:
+        return "frankfurter"
     if "alphavantage.co" in text:
         return "alpha_vantage"
     if "twelvedata.com" in text:
@@ -210,15 +323,35 @@ def _http_text(url: str, *, timeout: float = 20.0) -> str:
     return str(result.get("text") or "")
 
 
+def _http_json(url: str, *, timeout: float = 20.0) -> Any:
+    source_name = _source_contract_name(url)
+    contract = _source_contract(source_name)
+    result = fetch_json(
+        url=url,
+        user_agent=USER_AGENT,
+        timeout=timeout,
+        collector_key="fx_market_context",
+        source_name=source_name,
+        entity_key=url,
+        project_root=PROJECT_ROOT,
+        source_confidence_norm=contract["source_confidence_norm"],
+        schema_confidence_norm=contract["schema_confidence_norm"],
+    )
+    if not bool(result.get("ok", False)):
+        raise RuntimeError(str(result.get("error") or "http_json_failed"))
+    return result.get("json")
+
+
 def _canonical_pair_reconciliation(
     *,
     ecb_pairs: Mapping[str, Any],
     fed_pairs: Mapping[str, Any],
     twelve_data_intraday: Mapping[str, Any],
     alpha_vantage_intraday: Mapping[str, Any],
+    frankfurter_pairs: Mapping[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    preferred_order = {"twelve_data": 0, "alpha_vantage": 1, "fed_h10": 2, "ecb": 3}
-    provider_floor_recency = {"twelve_data": 0.75, "alpha_vantage": 0.7, "fed_h10": 0.45, "ecb": 0.2}
+    preferred_order = {"twelve_data": 0, "alpha_vantage": 1, "fed_h10": 2, "frankfurter": 3, "ecb": 4}
+    provider_floor_recency = {"twelve_data": 0.75, "alpha_vantage": 0.7, "fed_h10": 0.45, "frankfurter": 0.35, "ecb": 0.2}
 
     def _provider_recency_score(raw_ts: Any) -> float:
         text = str(raw_ts or "").strip()
@@ -257,6 +390,13 @@ def _canonical_pair_reconciliation(
                 "value": fed_value,
                 "latest_ts": "",
                 "recency_score": 0.45,
+            }
+        frankfurter_value = _to_float((frankfurter_pairs or {}).get(pair), 0.0)
+        if frankfurter_value > 0.0:
+            provider_rows["frankfurter"] = {
+                "value": frankfurter_value,
+                "latest_ts": "",
+                "recency_score": 0.35,
             }
         intraday_row = twelve_data_intraday.get(pair)
         if isinstance(intraday_row, Mapping) and intraday_row.get("ok"):
@@ -622,6 +762,11 @@ def _parse_ecb_hist_90d(xml_text: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _parse_frankfurter_latest(payload: Mapping[str, Any]) -> dict[str, float]:
+    rates = payload.get("rates") if isinstance(payload.get("rates"), Mapping) else {}
+    return _pair_levels({key: _to_float(value, math.nan) for key, value in rates.items()})
+
+
 def _pair_levels(rates: Mapping[str, float]) -> dict[str, float]:
     usd = _to_float(rates.get("USD"), math.nan)
     jpy = _to_float(rates.get("JPY"), math.nan)
@@ -799,6 +944,10 @@ def _fx_carry_proxy(pair_changes: Mapping[str, float]) -> float:
 def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any], dict[str, Any]]:
     now = datetime.now(timezone.utc)
     warnings: list[str] = []
+    pressure_contract = _collector_pressure_contract(now)
+    _apply_collector_pressure_env(pressure_contract)
+    if bool(pressure_contract.get("active", False)):
+        timeout = min(float(timeout), _to_float(pressure_contract.get("timeout_cap_seconds"), float(timeout)))
     twelve_data_enabled = str(os.getenv("FX_MARKET_CONTEXT_TWELVE_DATA_ENABLED", "1")).strip().lower() in {"1", "true", "yes", "on"}
     twelve_data_api_key = str(os.getenv("TWELVE_DATA_API_KEY", "")).strip()
     twelve_data_pairs, twelve_data_budget = _configured_twelve_data_pairs()
@@ -809,6 +958,7 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
     source_status: dict[str, Any] = {
         "ecb": {"ok": False, "url": ECB_FX_HIST_90D_URL, "rows": 0, "error": None, **_source_contract("ecb"), "freshness_norm": 0.0},
         "fed_h10": {"ok": False, "url": FED_H10_CURRENT_URL, "pair_count": 0, "error": None, **_source_contract("fed_h10"), "freshness_norm": 0.0},
+        "frankfurter": {"ok": False, "url": FRANKFURTER_LATEST_URL, "pair_count": 0, "error": None, **_source_contract("frankfurter"), "freshness_norm": 0.0},
         "macro_cross_asset": {"ok": False, "path": str(PROJECT_ROOT / "exports" / "external_context" / "macro_cross_asset_latest.json"), "error": None},
         "market_proxy": {"ok": False, "symbols": 0, "error": None},
     }
@@ -861,6 +1011,19 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
 
     alpha_vantage_intraday: dict[str, Any] = {}
     twelve_data_intraday: dict[str, Any] = {}
+    frankfurter_latest_pairs: dict[str, float] = {}
+    try:
+        frankfurter_latest_pairs = _parse_frankfurter_latest(_http_json(FRANKFURTER_LATEST_URL, timeout=timeout))
+        source_status["frankfurter"]["ok"] = len(frankfurter_latest_pairs) >= 3
+        source_status["frankfurter"]["pair_count"] = len(frankfurter_latest_pairs)
+        source_status["frankfurter"]["freshness_norm"] = 1.0 if source_status["frankfurter"]["ok"] else 0.0
+        if not source_status["frankfurter"]["ok"]:
+            source_status["frankfurter"]["error"] = "insufficient_pairs"
+        for pair, value in frankfurter_latest_pairs.items():
+            latest_pairs.setdefault(pair, value)
+    except (RuntimeError, TimeoutError, OSError, ValueError) as exc:
+        source_status["frankfurter"]["error"] = str(exc)
+
     fed_h10 = {}
     try:
         fed_h10 = _parse_fed_h10_current(_http_text(FED_H10_CURRENT_URL, timeout=timeout))
@@ -991,6 +1154,8 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
         warnings.append("ecb_fx_feed_unavailable")
     if not source_status["fed_h10"]["ok"]:
         warnings.append("fed_h10_fx_feed_unavailable")
+    if not source_status["frankfurter"]["ok"]:
+        warnings.append("frankfurter_fx_reference_unavailable")
     if twelve_data_enabled and source_status["twelve_data"]["configured"] and not source_status["twelve_data"]["ok"]:
         td_error = str(source_status["twelve_data"].get("error") or "")
         warnings.append("twelve_data_credit_budget_reserved" if td_error == "credit_budget_reserved" else "twelve_data_fx_intraday_unavailable")
@@ -1006,6 +1171,7 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
         fed_pairs=fed_h10.get("pair_values") if isinstance(fed_h10.get("pair_values"), Mapping) else {},
         twelve_data_intraday=twelve_data_intraday,
         alpha_vantage_intraday=alpha_vantage_intraday,
+        frankfurter_pairs=frankfurter_latest_pairs,
     )
     provider_divergence_warnings = [
         pair
@@ -1148,6 +1314,7 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
         "provider_divergence_pairs": provider_divergence_warnings,
         "provider_divergence_basis_watch_pairs": provider_divergence_basis_watch,
         "source_contracts": payload["collection_contract"]["source_contracts"],
+        "pressure_contract": pressure_contract,
     }
     return payload, health
 
@@ -1158,10 +1325,65 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    payload, health = collect_fx_market_context(timeout=max(float(args.timeout), 5.0))
-
     external_path = PROJECT_ROOT / "exports" / "external_context" / "fx_market_context_latest.json"
     health_path = PROJECT_ROOT / "governance" / "health" / "fx_market_context_sync_latest.json"
+    now = datetime.now(timezone.utc)
+    pressure_contract = _collector_pressure_contract(now)
+    lock_handle = None
+    if bool(pressure_contract.get("active", False)):
+        min_interval = int(pressure_contract.get("min_interval_seconds") or 0)
+        latest_age = _file_age_seconds(health_path, now)
+        if min_interval > 0 and health_path.exists() and latest_age < min_interval:
+            health = _pressure_skip_health(
+                reason="pressure_min_interval_active",
+                contract=pressure_contract,
+                external_path=external_path,
+                health_path=health_path,
+                now=now,
+            )
+            _write_json(health_path, health)
+            if args.json:
+                print(json.dumps(health, ensure_ascii=True))
+            else:
+                print(
+                    "fx_market_context "
+                    f"skipped={health.get('skip_reason')} "
+                    f"age_seconds={health.get('previous_health_age_seconds')}"
+                )
+                print(f"fx_market_context_latest={external_path}")
+                print(f"fx_market_context_sync_latest={health_path}")
+            return 0 if bool(health.get("ok", False)) else 1
+        lock_path = Path(str(pressure_contract.get("lock_path") or PROJECT_ROOT / "governance" / "locks" / "fx_market_context.lock"))
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_handle = lock_path.open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            health = _pressure_skip_health(
+                reason="pressure_single_flight_lock_active",
+                contract=pressure_contract,
+                external_path=external_path,
+                health_path=health_path,
+                now=now,
+            )
+            _write_json(health_path, health)
+            if args.json:
+                print(json.dumps(health, ensure_ascii=True))
+            else:
+                print(f"fx_market_context skipped={health.get('skip_reason')}")
+                print(f"fx_market_context_latest={external_path}")
+                print(f"fx_market_context_sync_latest={health_path}")
+            return 0 if bool(health.get("ok", False)) else 1
+    try:
+        payload, health = collect_fx_market_context(timeout=max(float(args.timeout), 5.0))
+    finally:
+        if lock_handle is not None:
+            try:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+                lock_handle.close()
+            except Exception:
+                pass
+
     _write_json(external_path, payload)
     _write_json(health_path, health)
     with ops_data_plane.connect(PROJECT_ROOT) as conn:
