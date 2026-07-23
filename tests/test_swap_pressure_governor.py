@@ -242,3 +242,48 @@ def test_swap_pressure_governor_apply_writes_swap_override(monkeypatch, tmp_path
     text = override.read_text(encoding="utf-8")
     assert "SWAP_PRESSURE_TIER=constrained" in text
     assert "RUNTIME_FEATURE_CACHE_MAX_ENTRIES=32" in text
+
+
+def test_swap_pressure_governor_skips_runtime_apply_when_swap_normal(monkeypatch, tmp_path: Path) -> None:
+    resource_snapshot = {
+        "memory_pressure_state": "green",
+        "memory_pressure_kind": "none",
+        "memory_free_pct": 91.0,
+        "swap_used_gb": 1.0,
+        "compressed_store_gb": 4.0,
+        "compressor_gb": 0.6,
+    }
+    _base_project(tmp_path, resource_snapshot)
+    monkeypatch.setattr(src, "_refresh_resource_guard", lambda project_root: resource_snapshot)
+    monkeypatch.setattr(src, "_parse_process_rows", lambda: [])
+    monkeypatch.setattr(
+        src,
+        "_pause_heavy_research",
+        lambda tier, apply, patterns=None: {
+            "active": src._research_pause_active(tier),
+            "apply": apply,
+            "action": "none",
+            "match_count": 0,
+            "terminated_count": 0,
+            "matches": [],
+            "terminated": [],
+        },
+    )
+
+    def _unexpected_runtime_apply(*args, **kwargs):
+        raise AssertionError("runtime apply should be skipped while swap tier is normal")
+
+    monkeypatch.setattr(src.runtime_src, "apply_runtime_guard", _unexpected_runtime_apply)
+
+    payload = src.build_payload(
+        tmp_path,
+        apply=True,
+        state_path=tmp_path / "governance" / "health" / "swap_pressure_governor_state.json",
+        override_path=tmp_path / "config" / ".env.swap_pressure_override",
+        memory_override_path=tmp_path / "config" / ".env.memory_efficiency_override",
+        runtime_override_path=tmp_path / "config" / ".env.runtime_resource_guard_override",
+    )
+
+    assert payload["swap_pressure"]["tier"] == "normal"
+    assert payload["apply_result"]["runtime_apply"]["skipped"] is True
+    assert payload["apply_result"]["runtime_apply"]["reason"] == "swap_tier_normal_runtime_apply_not_needed"

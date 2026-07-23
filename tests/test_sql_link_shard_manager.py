@@ -15,6 +15,29 @@ if str(PROJECT_ROOT) not in sys.path:
 import scripts.ops.sql_link_shard_manager as shard_manager
 
 
+def test_child_python_inherits_manager_runtime(monkeypatch, tmp_path: Path) -> None:
+    fake_parent = tmp_path / ".venv314" / "bin" / "python"
+    fake_parent.parent.mkdir(parents=True, exist_ok=True)
+    fake_parent.write_text("", encoding="utf-8")
+
+    monkeypatch.delenv("SQL_LINK_SERVICE_PYTHON_BIN", raising=False)
+    monkeypatch.setattr(shard_manager.sys, "executable", str(fake_parent))
+    monkeypatch.setattr(
+        shard_manager,
+        "resolve_runtime_python",
+        lambda _root: (_ for _ in ()).throw(AssertionError("parent runtime should win")),
+    )
+
+    assert shard_manager._resolve_child_python() == fake_parent
+
+
+def test_child_python_honors_explicit_service_bin(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(shard_manager, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setenv("SQL_LINK_SERVICE_PYTHON_BIN", ".venv314/bin/python")
+
+    assert shard_manager._resolve_child_python() == (tmp_path / ".venv314" / "bin" / "python").resolve()
+
+
 def test_retention_maintenance_pause_reads_live_swap_override(tmp_path, monkeypatch) -> None:
     override = tmp_path / ".env.swap_pressure_override"
     override.write_text(
@@ -160,6 +183,115 @@ def _create_shard_jsonl_db(path: Path) -> None:
     )
     conn.commit()
     conn.close()
+
+
+def test_primary_schema_includes_route_label_columns(tmp_path) -> None:
+    primary_db = tmp_path / "primary.sqlite3"
+    conn = sqlite3.connect(str(primary_db))
+    try:
+        shard_manager._ensure_primary_schema(conn)
+        cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(jsonl_records)")}
+    finally:
+        conn.close()
+
+    for col in (
+        "source_day_utc",
+        "source_stream",
+        "source_partition_key",
+        "source_broker",
+        "source_provider",
+        "source_venue",
+        "asset_class",
+        "routing_lane",
+        "source_quality_label",
+    ):
+        assert col in cols
+
+
+def test_merge_shard_into_primary_preserves_route_label_columns(tmp_path) -> None:
+    primary_db = tmp_path / "primary.sqlite3"
+    shard_db = tmp_path / "coinbase.sqlite3"
+    conn = sqlite3.connect(str(shard_db))
+    conn.execute(
+        """
+        CREATE TABLE jsonl_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_file TEXT NOT NULL,
+            source_rel TEXT NOT NULL,
+            line_no INTEGER NOT NULL,
+            ingested_at TEXT NOT NULL,
+            payload_sha1 TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            run_id TEXT,
+            iter_id TEXT,
+            decision_id TEXT,
+            parent_decision_id TEXT,
+            log_schema_version INTEGER,
+            source_day_utc TEXT,
+            source_stream TEXT,
+            source_partition_key TEXT,
+            source_broker TEXT,
+            source_provider TEXT,
+            source_venue TEXT,
+            asset_class TEXT,
+            routing_lane TEXT,
+            source_quality_label TEXT,
+            UNIQUE(source_file, line_no)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO jsonl_records (
+            source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json,
+            run_id, iter_id, decision_id, parent_decision_id, log_schema_version,
+            source_day_utc, source_stream, source_partition_key, source_broker,
+            source_provider, source_venue, asset_class, routing_lane, source_quality_label
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "coinbase.jsonl",
+            "governance/channels/api/default_crypto_coinbase/api_20260624.jsonl",
+            1,
+            "2026-06-24T14:30:00+00:00",
+            "sha1-route",
+            "{}",
+            "run-route",
+            "iter-route",
+            "",
+            "",
+            2,
+            "2026-06-24",
+            "governance",
+            "2026-06-24:governance",
+            "coinbase",
+            "coinbase_ticker",
+            "coinbase",
+            "crypto",
+            "coinbase_crypto",
+            "exchange_native",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    result = shard_manager._merge_shard_into_primary(
+        shard_name="coinbase",
+        shard_db=shard_db,
+        primary_db=primary_db,
+        sqlite_timeout_seconds=30,
+    )
+    conn = sqlite3.connect(str(primary_db))
+    try:
+        row = conn.execute(
+            "SELECT source_broker, source_provider, source_venue, asset_class, routing_lane, source_quality_label FROM jsonl_records"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert result["ok"] is True
+    assert result["jsonl_rows_inserted"] == 1
+    assert row == ("coinbase", "coinbase_ticker", "coinbase", "crypto", "coinbase_crypto", "exchange_native")
 
 
 def test_quarantine_shard_artifacts_moves_corrupt_db_and_state(tmp_path, monkeypatch) -> None:
@@ -360,6 +492,34 @@ def test_configured_primary_db_path_preserves_routed_symlink_path(tmp_path, monk
     assert shard_manager._primary_db_role(configured, configured.resolve(strict=False)) == "compatibility_cache"
 
 
+def test_configured_primary_db_path_uses_local_fallback_for_broken_route(tmp_path, monkeypatch) -> None:
+    routed_primary = tmp_path / "data" / "jsonl_link.sqlite3"
+    missing_external_primary = tmp_path / "missing_bot_logs" / "data" / "jsonl_link.sqlite3"
+    fallback_primary = tmp_path / "local_fallback_storage" / "data" / "jsonl_link.sqlite3"
+    routed_primary.parent.mkdir(parents=True, exist_ok=True)
+    routed_primary.symlink_to(missing_external_primary)
+    monkeypatch.setattr(shard_manager, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(shard_manager, "LOCAL_FALLBACK_ROOT", tmp_path / "local_fallback_storage")
+    monkeypatch.setattr(shard_manager, "PRIMARY_DB_PATH", routed_primary)
+
+    configured = shard_manager._configured_primary_db_path(str(routed_primary))
+
+    assert configured == fallback_primary
+    assert shard_manager._primary_db_role(configured, configured.resolve(strict=False)) == "compatibility_cache"
+
+
+def test_routed_or_local_fallback_path_redirects_broken_shard_symlink(tmp_path, monkeypatch) -> None:
+    routed_shards = tmp_path / "data" / "sql_link_shards"
+    missing_external_shards = tmp_path / "missing_bot_logs" / "data" / "sql_link_shards"
+    fallback_shards = tmp_path / "local_fallback_storage" / "data" / "sql_link_shards"
+    routed_shards.parent.mkdir(parents=True, exist_ok=True)
+    routed_shards.symlink_to(missing_external_shards)
+    monkeypatch.setattr(shard_manager, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(shard_manager, "LOCAL_FALLBACK_ROOT", tmp_path / "local_fallback_storage")
+
+    assert shard_manager._routed_or_local_fallback_path(routed_shards) == fallback_shards
+
+
 def test_normalized_shard_config_upgrades_old_default_layouts() -> None:
     assert shard_manager._normalized_shard_config("") == shard_manager.CURRENT_DEFAULT_SHARDS
     assert shard_manager._normalized_shard_config(shard_manager.LEGACY_DEFAULT_SHARDS) == shard_manager.CURRENT_DEFAULT_SHARDS
@@ -452,14 +612,20 @@ def test_build_shards_separates_fast_trading_streams() -> None:
     assert shards["aggressive_trading"]["include_streams"] == "decisions,trade_logs"
     assert "shadow_intraday_aggressive_" in str(shards["aggressive_trading"]["path_contains"])
     assert shards["aggressive_trading"]["max_lines_per_file"] == 20000
+    assert shards["aggressive_trading"]["max_bytes_per_file"] == 128 * 1024 * 1024
+    assert shards["aggressive_trading"]["sqlite_batch_max_bytes"] == 32 * 1024 * 1024
     assert shards["aggressive_trading"]["state_checkpoint_lines"] == 2000
     assert shards["aggressive_trading"]["merge_max_jsonl_rows"] == 16000
     assert shards["crypto_trading"]["include_streams"] == "decisions,trade_logs"
     assert shards["crypto_trading"]["max_lines_per_file"] == 12000
+    assert shards["crypto_trading"]["max_bytes_per_file"] == 128 * 1024 * 1024
+    assert shards["crypto_trading"]["sqlite_batch_max_bytes"] == 32 * 1024 * 1024
     assert shards["crypto_trading"]["state_checkpoint_lines"] == 2000
     assert shards["crypto_trading"]["merge_max_jsonl_rows"] == 8000
     assert shards["trading"]["include_streams"] == "decisions,trade_logs"
     assert shards["trading"]["max_lines_per_file"] == 16000
+    assert shards["trading"]["max_bytes_per_file"] == 128 * 1024 * 1024
+    assert shards["trading"]["sqlite_batch_max_bytes"] == 32 * 1024 * 1024
     assert shards["trading"]["state_checkpoint_lines"] == 2000
     assert shards["trading"]["merge_max_jsonl_rows"] == 12000
     assert "shadow_intraday_aggressive_" in str(shards["trading"]["path_not_contains"])
@@ -590,6 +756,35 @@ def test_effective_cycle_args_applies_live_request_env() -> None:
     assert effective.hot_retention_batch_size == 240000
 
 
+def test_temporary_env_overrides_clears_stale_shard_path_filters(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(shard_manager, "SHARD_DB_ROOT", tmp_path / "sql_link_shards")
+    monkeypatch.setattr(shard_manager, "SHARD_STATE_ROOT", tmp_path / "state")
+    monkeypatch.setattr(shard_manager, "HEALTH_ROOT", tmp_path / "health")
+    monkeypatch.setattr(shard_manager, "EVENT_ROOT", tmp_path / "events")
+    monkeypatch.setenv(
+        "SQL_LINK_SERVICE_SHARD_CRYPTO_EXPLANATIONS_PATH_CONTAINS",
+        "decision_explanations/shadow_bond_equities/decision_explanations_20260612.jsonl",
+    )
+    overrides = {
+        "SQL_LINK_SERVICE_SHARDS": "explanations,crypto_explanations",
+        "SQL_LINK_SERVICE_SHARD_EXPLANATIONS_PATH_CONTAINS": (
+            "decision_explanations/shadow_bond_equities/decision_explanations_20260612.jsonl"
+        ),
+    }
+
+    with shard_manager._temporary_env_overrides(overrides):
+        shards = shard_manager._build_shards(["explanations", "crypto_explanations"])
+        by_name = {str(row["name"]): row for row in shards}
+
+    assert "shadow_bond_equities" in str(by_name["explanations"]["path_contains"])
+    assert "shadow_crypto/" in str(by_name["crypto_explanations"]["path_contains"])
+    assert "shadow_bond_equities" not in str(by_name["crypto_explanations"]["path_contains"])
+    assert (
+        os.environ["SQL_LINK_SERVICE_SHARD_CRYPTO_EXPLANATIONS_PATH_CONTAINS"]
+        == "decision_explanations/shadow_bond_equities/decision_explanations_20260612.jsonl"
+    )
+
+
 def test_cycle_runtime_overrides_reads_live_runtime_guard(tmp_path, monkeypatch) -> None:
     runtime_override = tmp_path / ".env.runtime_resource_guard_override"
     pressure_override = tmp_path / ".env.pressure_relief_override"
@@ -619,6 +814,45 @@ def test_cycle_runtime_overrides_reads_live_runtime_guard(tmp_path, monkeypatch)
     assert overrides["SQL_LINK_SERVICE_INTERVAL_SECONDS"] == "120"
     assert overrides["SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"] == "20"
     assert "BAD_KEY" not in overrides
+
+
+def test_cycle_runtime_overrides_preserves_child_cooling_controls(tmp_path, monkeypatch) -> None:
+    runtime_override = tmp_path / ".env.runtime_resource_guard_override"
+    pressure_override = tmp_path / ".env.pressure_relief_override"
+    runtime_override.write_text(
+        "\n".join(
+            [
+                "INGEST_HOST_LOAD_SOFT_CAP=6.0",
+                "INGEST_HOST_LOAD_SLEEP_SECONDS=0.50",
+                "INGEST_FLUSH_SLEEP_SECONDS=0.10",
+                "INGEST_FILE_SLEEP_SECONDS=0.02",
+                "SQL_LINK_WRITER_NICE=18",
+                "SQL_LINK_WRITER_BACKGROUND_POLICY=1",
+                "SQL_LINK_CHILD_WRITER_CPU_POLICY=background",
+                "BOT_CPU_ALLOCATION_POLICY=efficiency",
+                "BOT_CPU_QOS_POLICY=background",
+                "UNRELATED_SHELL_CONTROL=ignored",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    pressure_override.write_text("", encoding="utf-8")
+    monkeypatch.setattr(shard_manager, "RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH", runtime_override)
+    monkeypatch.setattr(shard_manager, "PRESSURE_RELIEF_OVERRIDE_PATH", pressure_override)
+
+    overrides = shard_manager._cycle_runtime_overrides({})
+
+    assert overrides["INGEST_HOST_LOAD_SOFT_CAP"] == "6.0"
+    assert overrides["INGEST_HOST_LOAD_SLEEP_SECONDS"] == "0.50"
+    assert overrides["INGEST_FLUSH_SLEEP_SECONDS"] == "0.10"
+    assert overrides["INGEST_FILE_SLEEP_SECONDS"] == "0.02"
+    assert overrides["SQL_LINK_WRITER_NICE"] == "18"
+    assert overrides["SQL_LINK_WRITER_BACKGROUND_POLICY"] == "1"
+    assert overrides["SQL_LINK_CHILD_WRITER_CPU_POLICY"] == "background"
+    assert overrides["BOT_CPU_ALLOCATION_POLICY"] == "efficiency"
+    assert overrides["BOT_CPU_QOS_POLICY"] == "background"
+    assert "UNRELATED_SHELL_CONTROL" not in overrides
 
 
 def test_run_shard_links_records_timeout_and_continues(tmp_path, monkeypatch) -> None:
@@ -661,6 +895,100 @@ def test_run_shard_links_records_timeout_and_continues(tmp_path, monkeypatch) ->
     assert results[0]["rc"] == 124
     assert results[0]["timed_out"] is True
     assert results[0]["timeout_seconds"] == 1
+
+
+def test_run_shard_links_applies_shard_specific_timeout(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SQL_LINK_SERVICE_SHARD_GOVERNANCE_TIMEOUT_SECONDS", "7")
+    shard = {
+        "name": "governance",
+        "sqlite_db": tmp_path / "governance.sqlite3",
+        "state_file": tmp_path / "governance_state.json",
+        "health_file": tmp_path / "governance_health.json",
+        "journal_file": tmp_path / "governance_journal.jsonl",
+        "journal_events_file": tmp_path / "governance_journal_events.jsonl",
+        "invalid_log_file": tmp_path / "governance_invalid.jsonl",
+        "include_streams": "governance",
+        "skip_json_files": False,
+        "max_files": 1,
+        "max_lines_per_file": 100,
+        "state_checkpoint_lines": 10,
+    }
+    captured_timeouts: list[int] = []
+
+    monkeypatch.setattr(
+        shard_manager,
+        "_quarantine_shard_artifacts",
+        lambda **kwargs: {"triggered": False},
+    )
+
+    def fake_run(_cmd, *_args, **kwargs):
+        captured_timeouts.append(int(kwargs["timeout"]))
+        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
+
+    results = shard_manager._run_shard_links(
+        shards=[shard],
+        link_mode="sqlite",
+        sqlite_timeout_seconds=30,
+        sqlite_lock_retries=0,
+        sqlite_lock_retry_delay_seconds=0.1,
+        shard_link_timeout_seconds=30,
+    )
+
+    assert captured_timeouts == [7]
+    assert results[0]["timeout_seconds"] == 7
+
+
+def test_run_shard_links_emits_active_shard_progress(tmp_path, monkeypatch) -> None:
+    shards = []
+    for name in ("data", "reports"):
+        shards.append(
+            {
+                "name": name,
+                "sqlite_db": tmp_path / f"{name}.sqlite3",
+                "state_file": tmp_path / f"{name}_state.json",
+                "health_file": tmp_path / f"{name}_health.json",
+                "journal_file": tmp_path / f"{name}_journal.jsonl",
+                "journal_events_file": tmp_path / f"{name}_journal_events.jsonl",
+                "invalid_log_file": tmp_path / f"{name}_invalid.jsonl",
+                "include_streams": name,
+                "skip_json_files": False,
+                "max_files": 1,
+                "max_lines_per_file": 100,
+                "state_checkpoint_lines": 10,
+            }
+        )
+    events: list[list[dict[str, object]]] = []
+
+    monkeypatch.setattr(
+        shard_manager,
+        "_quarantine_shard_artifacts",
+        lambda **kwargs: {"triggered": False},
+    )
+    monkeypatch.setattr(
+        shard_manager.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr=""),
+    )
+
+    def progress_callback(_rows, active_shard_links=None):
+        events.append(list(active_shard_links or []))
+
+    results = shard_manager._run_shard_links(
+        shards=shards,
+        link_mode="sqlite",
+        sqlite_timeout_seconds=30,
+        sqlite_lock_retries=0,
+        sqlite_lock_retry_delay_seconds=0.1,
+        shard_link_timeout_seconds=5,
+        preprocess_workers=1,
+        progress_callback=progress_callback,
+    )
+
+    assert [row["shard"] for row in results] == ["data", "reports"]
+    assert any(event and event[0]["shard"] == "data" and event[0]["queued_shard_count"] == 1 for event in events)
+    assert any(event and event[0]["shard"] == "reports" and event[0]["tail_shard"] is True for event in events)
 
 
 def test_run_shard_links_uses_preprocess_worker_budget(tmp_path, monkeypatch) -> None:
@@ -718,6 +1046,418 @@ def test_run_shard_links_uses_preprocess_worker_budget(tmp_path, monkeypatch) ->
     assert all(row["preprocess_worker_count"] == 3 for row in results)
 
 
+def test_shard_writer_lane_contract_exposes_smart_parallelism(monkeypatch) -> None:
+    monkeypatch.setenv("SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES", "4")
+    monkeypatch.setenv("SQL_LINK_SERVICE_COLD_SHARD_LANE_CAP", "1")
+    monkeypatch.setenv("SQL_LINK_SERVICE_WARM_SHARD_LANE_CAP", "2")
+
+    contract = shard_manager._shard_writer_lane_contract(4)
+
+    assert contract["single_primary_merge_writer"] is True
+    assert contract["sqlite_primary_writer_count"] == 1
+    smart = contract["smart_shard_parallelism"]
+    assert smart["enabled"] is True
+    assert smart["enforced_single_primary_merge_writer"] is True
+    assert smart["tier_lane_caps"]["hot"] == 4
+    assert smart["tier_lane_caps"]["warm"] == 2
+    assert smart["tier_lane_caps"]["cold"] == 1
+
+
+def test_run_shard_links_caps_cold_shard_parallelism(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SQL_LINK_SERVICE_SMART_SHARD_PARALLELISM", "1")
+    monkeypatch.setenv("SQL_LINK_SERVICE_COLD_SHARD_LANE_CAP", "1")
+    shards = []
+    for name in ("data", "reports", "explanations"):
+        shards.append(
+            {
+                "name": name,
+                "sqlite_db": tmp_path / f"{name}.sqlite3",
+                "state_file": tmp_path / f"{name}_state.json",
+                "health_file": tmp_path / f"{name}_health.json",
+                "journal_file": tmp_path / f"{name}_journal.jsonl",
+                "journal_events_file": tmp_path / f"{name}_journal_events.jsonl",
+                "invalid_log_file": tmp_path / f"{name}_invalid.jsonl",
+                "include_streams": name,
+                "skip_json_files": False,
+                "max_files": 1,
+                "max_lines_per_file": 100,
+                "state_checkpoint_lines": 10,
+            }
+        )
+    lock = threading.Lock()
+    active = {"count": 0, "max": 0}
+
+    monkeypatch.setattr(
+        shard_manager,
+        "_quarantine_shard_artifacts",
+        lambda **kwargs: {"triggered": False},
+    )
+
+    def fake_run(*_args, **_kwargs):
+        with lock:
+            active["count"] += 1
+            active["max"] = max(active["max"], active["count"])
+        time.sleep(0.03)
+        with lock:
+            active["count"] -= 1
+        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
+
+    results = shard_manager._run_shard_links(
+        shards=shards,
+        link_mode="sqlite",
+        sqlite_timeout_seconds=30,
+        sqlite_lock_retries=0,
+        sqlite_lock_retry_delay_seconds=0.1,
+        shard_link_timeout_seconds=5,
+        preprocess_workers=3,
+    )
+
+    assert [row["shard"] for row in results] == ["data", "reports", "explanations"]
+    assert active["max"] == 1
+    assert all(row["preprocess_worker_count"] == 3 for row in results)
+
+
+def test_run_shard_links_lets_hot_shard_bypass_capped_cold_queue(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SQL_LINK_SERVICE_SMART_SHARD_PARALLELISM", "1")
+    monkeypatch.setenv("SQL_LINK_SERVICE_COLD_SHARD_LANE_CAP", "1")
+    shards = []
+    for name in ("data", "reports", "trading"):
+        shards.append(
+            {
+                "name": name,
+                "sqlite_db": tmp_path / f"{name}.sqlite3",
+                "state_file": tmp_path / f"{name}_state.json",
+                "health_file": tmp_path / f"{name}_health.json",
+                "journal_file": tmp_path / f"{name}_journal.jsonl",
+                "journal_events_file": tmp_path / f"{name}_journal_events.jsonl",
+                "invalid_log_file": tmp_path / f"{name}_invalid.jsonl",
+                "include_streams": "decisions" if name == "trading" else name,
+                "skip_json_files": name == "trading",
+                "max_files": 1,
+                "max_lines_per_file": 100,
+                "state_checkpoint_lines": 10,
+            }
+        )
+    started: list[str] = []
+    lock = threading.Lock()
+
+    monkeypatch.setattr(
+        shard_manager,
+        "_quarantine_shard_artifacts",
+        lambda **kwargs: {"triggered": False},
+    )
+
+    def fake_run(cmd, *_args, **_kwargs):
+        parts = [str(part) for part in cmd]
+        db_name = Path(parts[parts.index("--sqlite-db") + 1]).stem
+        shard_name = db_name.replace("jsonl_link_", "")
+        with lock:
+            started.append(shard_name)
+        time.sleep(0.03)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
+
+    shard_manager._run_shard_links(
+        shards=shards,
+        link_mode="sqlite",
+        sqlite_timeout_seconds=30,
+        sqlite_lock_retries=0,
+        sqlite_lock_retry_delay_seconds=0.1,
+        shard_link_timeout_seconds=5,
+        preprocess_workers=3,
+    )
+
+    assert started.index("trading") < started.index("reports")
+
+
+def test_run_shard_links_skips_fresh_idle_non_sentinel_shards(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS", "1")
+    monkeypatch.setenv("SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS", "120")
+    health_file = tmp_path / "data_health.json"
+    health_file.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": shard_manager._now_utc(),
+                "overall_status": "ready",
+                "sqlite": {"pending_lines": 0, "inserted": 0},
+                "sqlite_json_files": {"pending_files": 0, "inserted": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    shard = {
+        "name": "data",
+        "sqlite_db": tmp_path / "data.sqlite3",
+        "state_file": tmp_path / "data_state.json",
+        "health_file": health_file,
+        "journal_file": tmp_path / "data_journal.jsonl",
+        "journal_events_file": tmp_path / "data_journal_events.jsonl",
+        "invalid_log_file": tmp_path / "data_invalid.jsonl",
+        "include_streams": "data",
+        "skip_json_files": False,
+        "max_files": 1,
+        "max_lines_per_file": 100,
+        "state_checkpoint_lines": 10,
+    }
+    calls = {"quarantine": 0, "subprocess": 0}
+
+    def fake_quarantine(**_kwargs):
+        calls["quarantine"] += 1
+        return {"triggered": False}
+
+    def fake_run(*_args, **_kwargs):
+        calls["subprocess"] += 1
+        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(shard_manager, "_quarantine_shard_artifacts", fake_quarantine)
+    monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
+
+    results = shard_manager._run_shard_links(
+        shards=[shard],
+        link_mode="sqlite",
+        sqlite_timeout_seconds=30,
+        sqlite_lock_retries=0,
+        sqlite_lock_retry_delay_seconds=0.1,
+        shard_link_timeout_seconds=5,
+        preprocess_workers=2,
+    )
+
+    assert results[0]["rc"] == 0
+    assert results[0]["skipped"] is True
+    assert results[0]["skip_reason"] == "fresh_idle_health"
+    assert results[0]["preprocess_worker_count"] == 1
+    assert calls == {"quarantine": 0, "subprocess": 0}
+
+
+def test_run_shard_links_does_not_skip_fresh_idle_dirty_health(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS", "1")
+    monkeypatch.setenv("SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS", "120")
+    health_file = tmp_path / "governance_health.json"
+    health_file.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": shard_manager._now_utc(),
+                "overall_status": "ready",
+                "sqlite": {"pending_lines": 0, "inserted": 0, "invalid": 1},
+                "sqlite_json_files": {"pending_files": 0, "inserted": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    shard = {
+        "name": "governance",
+        "sqlite_db": tmp_path / "governance.sqlite3",
+        "state_file": tmp_path / "governance_state.json",
+        "health_file": health_file,
+        "journal_file": tmp_path / "governance_journal.jsonl",
+        "journal_events_file": tmp_path / "governance_journal_events.jsonl",
+        "invalid_log_file": tmp_path / "governance_invalid.jsonl",
+        "include_streams": "governance_events",
+        "skip_json_files": False,
+        "max_files": 1,
+        "max_lines_per_file": 100,
+        "state_checkpoint_lines": 10,
+    }
+    calls = {"quarantine": 0, "subprocess": 0}
+
+    def fake_quarantine(**_kwargs):
+        calls["quarantine"] += 1
+        return {"triggered": False}
+
+    def fake_run(*_args, **_kwargs):
+        calls["subprocess"] += 1
+        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(shard_manager, "_quarantine_shard_artifacts", fake_quarantine)
+    monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
+
+    results = shard_manager._run_shard_links(
+        shards=[shard],
+        link_mode="sqlite",
+        sqlite_timeout_seconds=30,
+        sqlite_lock_retries=0,
+        sqlite_lock_retry_delay_seconds=0.1,
+        shard_link_timeout_seconds=5,
+        preprocess_workers=2,
+    )
+
+    assert results[0]["rc"] == 0
+    assert results[0].get("skipped") is not True
+    assert calls == {"quarantine": 1, "subprocess": 1}
+
+
+def test_run_shard_links_does_not_skip_fresh_idle_when_filters_change(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS", "1")
+    monkeypatch.setenv("SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS", "120")
+    health_file = tmp_path / "governance_health.json"
+    health_file.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": shard_manager._now_utc(),
+                "overall_status": "ready",
+                "filters": {
+                    "include_streams": ["governance_events"],
+                    "path_contains": ["governance/events/auth_events_20260630.jsonl"],
+                    "path_not_contains": [],
+                },
+                "sqlite": {"pending_lines": 0, "inserted": 0},
+                "sqlite_json_files": {"pending_files": 0, "inserted": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    shard = {
+        "name": "governance",
+        "sqlite_db": tmp_path / "governance.sqlite3",
+        "state_file": tmp_path / "governance_state.json",
+        "health_file": health_file,
+        "journal_file": tmp_path / "governance_journal.jsonl",
+        "journal_events_file": tmp_path / "governance_journal_events.jsonl",
+        "invalid_log_file": tmp_path / "governance_invalid.jsonl",
+        "include_streams": "governance_events",
+        "path_contains": "governance/events/auth_events_20260630.jsonl,governance/events/write_failures_20260630.jsonl",
+        "skip_json_files": False,
+        "max_files": 2,
+        "max_lines_per_file": 100,
+        "state_checkpoint_lines": 10,
+    }
+    calls = {"quarantine": 0, "subprocess": 0}
+
+    def fake_quarantine(**_kwargs):
+        calls["quarantine"] += 1
+        return {"triggered": False}
+
+    def fake_run(*_args, **_kwargs):
+        calls["subprocess"] += 1
+        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(shard_manager, "_quarantine_shard_artifacts", fake_quarantine)
+    monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
+
+    results = shard_manager._run_shard_links(
+        shards=[shard],
+        link_mode="sqlite",
+        sqlite_timeout_seconds=30,
+        sqlite_lock_retries=0,
+        sqlite_lock_retry_delay_seconds=0.1,
+        shard_link_timeout_seconds=5,
+        preprocess_workers=2,
+    )
+
+    assert results[0]["rc"] == 0
+    assert results[0].get("skipped") is not True
+    assert calls == {"quarantine": 1, "subprocess": 1}
+
+
+def test_run_shard_links_does_not_skip_stale_decision_catch_up(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS", "1")
+    monkeypatch.setenv("SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS", "120")
+    monkeypatch.setenv("SQL_LINK_SERVICE_STALE_DECISION_SOURCE_CATCH_UP", "1")
+    health_file = tmp_path / "crypto_health.json"
+    health_file.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": shard_manager._now_utc(),
+                "overall_status": "ready",
+                "sqlite": {"pending_lines": 0, "inserted": 0},
+                "sqlite_json_files": {"pending_files": 0, "inserted": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    shard = {
+        "name": "crypto_trading",
+        "sqlite_db": tmp_path / "crypto.sqlite3",
+        "state_file": tmp_path / "crypto_state.json",
+        "health_file": health_file,
+        "journal_file": tmp_path / "crypto_journal.jsonl",
+        "journal_events_file": tmp_path / "crypto_journal_events.jsonl",
+        "invalid_log_file": tmp_path / "crypto_invalid.jsonl",
+        "include_streams": "decisions,trade_logs",
+        "path_contains": "governance/channels/decision/crypto_futures_crypto_schwab/decision_20260604.jsonl",
+        "skip_json_files": True,
+        "max_files": 1,
+        "max_lines_per_file": 100,
+        "state_checkpoint_lines": 10,
+    }
+    calls = {"quarantine": 0, "subprocess": 0}
+
+    def fake_quarantine(**_kwargs):
+        calls["quarantine"] += 1
+        return {"triggered": False}
+
+    def fake_run(*_args, **_kwargs):
+        calls["subprocess"] += 1
+        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(shard_manager, "_quarantine_shard_artifacts", fake_quarantine)
+    monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
+
+    results = shard_manager._run_shard_links(
+        shards=[shard],
+        link_mode="sqlite",
+        sqlite_timeout_seconds=30,
+        sqlite_lock_retries=0,
+        sqlite_lock_retry_delay_seconds=0.1,
+        shard_link_timeout_seconds=5,
+        preprocess_workers=2,
+    )
+
+    assert results[0]["rc"] == 0
+    assert "skipped" not in results[0]
+    assert calls == {"quarantine": 1, "subprocess": 1}
+
+
+def test_run_shard_links_forwards_sparse_decision_byte_caps(tmp_path, monkeypatch) -> None:
+    shard = {
+        "name": "crypto_trading",
+        "sqlite_db": tmp_path / "crypto.sqlite3",
+        "state_file": tmp_path / "crypto_state.json",
+        "health_file": tmp_path / "crypto_health.json",
+        "journal_file": tmp_path / "crypto_journal.jsonl",
+        "journal_events_file": tmp_path / "crypto_journal_events.jsonl",
+        "invalid_log_file": tmp_path / "crypto_invalid.jsonl",
+        "include_streams": "decisions,trade_logs",
+        "path_contains": "governance/channels/decision/crypto_futures_crypto_schwab/",
+        "skip_json_files": True,
+        "max_files": 2,
+        "max_lines_per_file": 12000,
+        "max_bytes_per_file": 128 * 1024 * 1024,
+        "sqlite_batch_max_bytes": 32 * 1024 * 1024,
+        "state_checkpoint_lines": 2000,
+    }
+    captured: list[list[str]] = []
+
+    def fake_quarantine(**_kwargs):
+        return {"triggered": False}
+
+    def fake_run(cmd, *_args, **_kwargs):
+        captured.append([str(part) for part in cmd])
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(shard_manager, "_quarantine_shard_artifacts", fake_quarantine)
+    monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
+
+    results = shard_manager._run_shard_links(
+        shards=[shard],
+        link_mode="sqlite",
+        sqlite_timeout_seconds=30,
+        sqlite_lock_retries=0,
+        sqlite_lock_retry_delay_seconds=0.1,
+        shard_link_timeout_seconds=5,
+        preprocess_workers=1,
+    )
+
+    assert results[0]["rc"] == 0
+    assert captured
+    cmd = captured[0]
+    assert cmd[cmd.index("--max-bytes-per-file") + 1] == str(128 * 1024 * 1024)
+    assert cmd[cmd.index("--sqlite-batch-max-bytes") + 1] == str(32 * 1024 * 1024)
+
+
 def test_timed_out_shard_with_confirmed_rows_is_merge_eligible() -> None:
     result = {
         "rc": 124,
@@ -750,6 +1490,35 @@ def test_timed_out_shard_without_health_progress_is_hard_failed() -> None:
     assert shard_manager._shard_link_hard_failed(result) is True
 
 
+def test_missing_shard_db_probe_is_noop_merge_skip(tmp_path: Path) -> None:
+    result = shard_manager._probe_shard_merge_state(
+        shard_name="crypto_trading",
+        shard_db=tmp_path / "missing_shard.sqlite3",
+        primary_db=tmp_path / "primary.sqlite3",
+        sqlite_timeout_seconds=30,
+    )
+
+    assert result["ok"] is True
+    assert result["merge_required"] is False
+    assert result["skipped"] is True
+    assert result["reason"] == "merge_shard_db_missing"
+
+
+def test_missing_shard_db_direct_merge_is_noop_skip(tmp_path: Path) -> None:
+    result = shard_manager._merge_shard_into_primary(
+        shard_name="crypto_trading",
+        shard_db=tmp_path / "missing_shard.sqlite3",
+        primary_db=tmp_path / "primary.sqlite3",
+        sqlite_timeout_seconds=30,
+    )
+
+    assert result["ok"] is True
+    assert result["skipped"] is True
+    assert result["reason"] == "merge_shard_db_missing"
+    assert result["jsonl_rows_inserted"] == 0
+    assert result["json_file_rows_inserted"] == 0
+
+
 def test_merge_followup_summary_recommends_catch_up_for_capped_or_budgeted_merge() -> None:
     summary = shard_manager._merge_followup_summary(
         merge_results=[
@@ -780,6 +1549,19 @@ def test_build_shards_reads_hourly_hot_retention_overrides(monkeypatch) -> None:
 
     assert shards["explanations"]["hot_retention_hot_hours"] == 2
     assert shards["explanations"]["hot_retention_max_rows"] == 900000
+
+
+def test_build_shards_bounds_governance_tail_work_by_default(monkeypatch) -> None:
+    monkeypatch.setattr(shard_manager.ops_data_plane, "load_shard_heat_map", lambda _project_root: {})
+
+    shards = {
+        row["name"]: row
+        for row in shard_manager._build_shards(["governance"])
+    }
+
+    assert shards["governance"]["max_files"] == 10
+    assert shards["governance"]["max_bytes_per_file"] == 128 * 1024 * 1024
+    assert shards["governance"]["sqlite_batch_max_bytes"] == 32 * 1024 * 1024
 
 
 def test_build_shards_uses_heat_map_to_expand_hot_shard_capacity(monkeypatch) -> None:
@@ -861,6 +1643,7 @@ def test_write_service_progress_exposes_shard_link_queue_details(tmp_path, monke
         shard_results=shard_results,
         merge_results=[],
         shard_link_plan={"policy": "adaptive_hot_pending_sentinel_first", "planned_order": ["health_fast", "trading", "data"]},
+        active_shard_links=[{"shard": "data", "elapsed_seconds": 12.345, "timeout_seconds": 60, "tail_shard": True}],
     )
 
     payload = json.loads(progress_path.read_text(encoding="utf-8"))
@@ -870,6 +1653,9 @@ def test_write_service_progress_exposes_shard_link_queue_details(tmp_path, monke
     assert payload["pending_shards"] == ["data"]
     assert payload["timed_out_shard_count"] == 1
     assert payload["timed_out_shards"] == ["trading"]
+    assert payload["active_shard_count"] == 1
+    assert payload["active_shards"] == ["data"]
+    assert payload["max_active_shard_elapsed_seconds"] == 12.345
     assert payload["shard_link_plan"]["policy"] == "adaptive_hot_pending_sentinel_first"
 
 
@@ -885,6 +1671,30 @@ def test_build_shards_fails_open_when_heat_map_unavailable(monkeypatch) -> None:
     }
 
     assert shards["trading"]["heat_promotion_candidate"] is False
+
+
+def test_connect_primary_db_quarantines_malformed_primary_and_recreates(tmp_path, monkeypatch) -> None:
+    primary_db = tmp_path / "data" / "jsonl_link.sqlite3"
+    primary_db.parent.mkdir(parents=True, exist_ok=True)
+    primary_db.write_bytes(b"not a sqlite database")
+    Path(f"{primary_db}-wal").write_bytes(b"bad wal")
+    Path(f"{primary_db}-shm").write_bytes(b"bad shm")
+    monkeypatch.setattr(shard_manager, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(shard_manager, "HEALTH_ROOT", tmp_path / "governance" / "health")
+
+    conn = shard_manager._connect_primary_db(primary_db, sqlite_timeout_seconds=30)
+    try:
+        assert conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+    finally:
+        conn.close()
+
+    recovery = json.loads((tmp_path / "governance" / "health" / "sql_link_primary_recovery_latest.json").read_text(encoding="utf-8"))
+    assert recovery["triggered"] is True
+    assert recovery["primary_db"] == str(primary_db)
+    assert "quarantined_malformed_primary" in recovery["recovery_action"]
+    assert len(recovery["moved_paths"]) == 3
+    assert primary_db.exists()
+    assert list((primary_db.parent / "corrupt_quarantine").glob("primary_*/*.sqlite3"))
 
 
 def test_sql_link_service_payload_marks_mysql_disabled_in_sqlite_mode(tmp_path) -> None:
@@ -1025,6 +1835,21 @@ def test_build_shards_splits_crypto_paths_from_generic_shards(tmp_path, monkeypa
     assert by_name["crypto_governance"]["include_streams"] == by_name["governance"]["include_streams"]
     assert by_name["crypto_trading"]["max_files"] == 10
     assert by_name["crypto_governance"]["max_files"] == 12
+
+
+def test_build_shards_ignores_blank_path_filter_overrides(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(shard_manager, "SHARD_DB_ROOT", tmp_path / "sql_link_shards")
+    monkeypatch.setattr(shard_manager, "SHARD_STATE_ROOT", tmp_path / "state")
+    monkeypatch.setattr(shard_manager, "HEALTH_ROOT", tmp_path / "health")
+    monkeypatch.setattr(shard_manager, "EVENT_ROOT", tmp_path / "events")
+    monkeypatch.setenv("SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_PATH_CONTAINS", "")
+    monkeypatch.setenv("SQL_LINK_SERVICE_SHARD_TRADING_PATH_NOT_CONTAINS", "")
+
+    shards = shard_manager._build_shards(["trading", "crypto_trading"])
+    by_name = {str(row["name"]): row for row in shards}
+
+    assert "shadow_crypto/" in str(by_name["crypto_trading"]["path_contains"])
+    assert "default_crypto_schwab" in str(by_name["trading"]["path_not_contains"])
 
 
 def test_probe_shard_merge_state_detects_up_to_date_shard(tmp_path) -> None:

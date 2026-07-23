@@ -12,6 +12,10 @@ DEFAULT_DB = PROJECT_ROOT / "data" / "jsonl_link.sqlite3"
 DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "sqlite_maintenance_latest.json"
 
 
+class MaintenanceDeadlineExceeded(RuntimeError):
+    pass
+
+
 def _emit_progress(message: str, *, as_json: bool) -> None:
     stream = os.sys.stderr if as_json else os.sys.stdout
     print(message, file=stream, flush=True)
@@ -172,6 +176,37 @@ def _sqlite_exec_with_retry(
             attempt += 1
 
 
+def _raise_if_deadline_expired(deadline_monotonic: float | None) -> None:
+    if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+        raise MaintenanceDeadlineExceeded("sqlite_maintenance_runtime_exceeded")
+
+
+def _write_heartbeat(
+    payload: dict[str, Any],
+    out_path: Path,
+    *,
+    current_step: str,
+    started_monotonic: float,
+) -> None:
+    payload.update(
+        {
+            "running": True,
+            "current_step": str(current_step or ""),
+            "pid": os.getpid(),
+            "last_heartbeat_utc": datetime.now(timezone.utc).isoformat(),
+            "elapsed_seconds": round(max(time.monotonic() - started_monotonic, 0.0), 3),
+        }
+    )
+    heartbeat = dict(payload)
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out_path.with_suffix(out_path.suffix + ".tmp")
+        tmp.write_text(json.dumps(heartbeat, ensure_ascii=True, indent=2), encoding="utf-8")
+        tmp.replace(out_path)
+    except Exception:
+        pass
+
+
 def _sqlite_sidecar_path(db_path: Path, suffix: str) -> Path:
     return Path(f"{db_path}{suffix}")
 
@@ -230,11 +265,15 @@ def main() -> int:
     parser.add_argument("--sqlite-timeout-seconds", type=float, default=float(os.getenv("SQLITE_TIMEOUT_SECONDS", "60")))
     parser.add_argument("--sqlite-lock-retries", type=int, default=int(os.getenv("SQLITE_LOCK_RETRIES", "8")))
     parser.add_argument("--sqlite-lock-retry-delay-seconds", type=float, default=float(os.getenv("SQLITE_LOCK_RETRY_DELAY_SECONDS", "0.25")))
+    parser.add_argument("--max-runtime-seconds", type=float, default=float(os.getenv("SQLITE_MAINTENANCE_MAX_RUNTIME_SECONDS", "7200")))
     args = parser.parse_args()
 
     db_path = Path(args.db)
     out_path = Path(args.out_file)
     timestamp_utc = datetime.now(timezone.utc).isoformat()
+    started_monotonic = time.monotonic()
+    max_runtime_seconds = max(float(args.max_runtime_seconds), 0.0)
+    deadline_monotonic = started_monotonic + max_runtime_seconds if max_runtime_seconds > 0.0 else None
 
     if not db_path.exists():
         payload = {
@@ -249,6 +288,9 @@ def main() -> int:
             "size_gb_after": 0.0,
             "auto_vacuum_over_gb": float(args.auto_vacuum_over_gb),
             "vacuum_min_interval_hours": float(args.vacuum_min_interval_hours),
+            "running": False,
+            "timed_out": False,
+            "max_runtime_seconds": max_runtime_seconds,
         }
         return _emit(payload, out_path, args.json)
 
@@ -282,6 +324,13 @@ def main() -> int:
         "auto_vacuum_over_gb": float(args.auto_vacuum_over_gb),
         "no_auto_vacuum": bool(args.no_auto_vacuum),
         "vacuum_min_interval_hours": float(args.vacuum_min_interval_hours),
+        "max_runtime_seconds": max_runtime_seconds,
+        "running": True,
+        "pid": os.getpid(),
+        "current_step": "starting",
+        "last_heartbeat_utc": timestamp_utc,
+        "elapsed_seconds": 0.0,
+        "timed_out": False,
     }
     runtime_settings = resolve_runtime_settings(PROJECT_ROOT)
     payload["sqlite_runtime_settings"] = {
@@ -302,6 +351,7 @@ def main() -> int:
     }
 
     try:
+        _write_heartbeat(payload, out_path, current_step="starting", started_monotonic=started_monotonic)
         _emit_progress(
             f"sqlite_maintenance start db={db_path} size_gb={size_gb_before:.3f} "
             f"wal_gb={wal_size_gb_before:.3f} checkpoint_only={str(bool(args.checkpoint_only)).lower()} "
@@ -309,9 +359,20 @@ def main() -> int:
             as_json=args.json,
         )
         conn = sqlite3.connect(str(db_path), timeout=max(float(args.sqlite_timeout_seconds), 1.0))
+        deadline_state = {"expired": False}
+        if deadline_monotonic is not None:
+            def _progress_handler() -> int:
+                if time.monotonic() >= float(deadline_monotonic):
+                    deadline_state["expired"] = True
+                    return 1
+                return 0
+
+            conn.set_progress_handler(_progress_handler, 100000)
         _apply_runtime_pragmas(conn, runtime_settings, timeout_seconds=float(args.sqlite_timeout_seconds))
 
         if (not args.checkpoint_only) and _table_exists(conn, "jsonl_records"):
+            _raise_if_deadline_expired(deadline_monotonic)
+            _write_heartbeat(payload, out_path, current_step="index_jsonl_records", started_monotonic=started_monotonic)
             _emit_progress("sqlite_maintenance step=index_jsonl_records", as_json=args.json)
             idx_sql = [
                 "CREATE INDEX IF NOT EXISTS idx_jsonl_source_rel_ingested ON jsonl_records(source_rel, ingested_at)",
@@ -330,6 +391,8 @@ def main() -> int:
                 created_indexes += 1
 
         if (not args.checkpoint_only) and _table_exists(conn, "json_file_records"):
+            _raise_if_deadline_expired(deadline_monotonic)
+            _write_heartbeat(payload, out_path, current_step="index_json_file_records", started_monotonic=started_monotonic)
             _emit_progress("sqlite_maintenance step=index_json_file_records", as_json=args.json)
             idx_sql = [
                 "CREATE INDEX IF NOT EXISTS idx_json_file_source_rel_ingested ON json_file_records(source_rel, ingested_at)",
@@ -363,6 +426,8 @@ def main() -> int:
         analyze_ran = False
         optimize_ran = False
         if not args.checkpoint_only and (bool(runtime_settings.get("analyze_enabled", True)) or bool(runtime_settings.get("optimize_enabled", True))):
+            _raise_if_deadline_expired(deadline_monotonic)
+            _write_heartbeat(payload, out_path, current_step="analyze_optimize", started_monotonic=started_monotonic)
             _emit_progress("sqlite_maintenance step=analyze_optimize", as_json=args.json)
             if bool(runtime_settings.get("analyze_enabled", True)):
                 _sqlite_exec_with_retry(
@@ -390,6 +455,8 @@ def main() -> int:
         elif wal_size_gb_before < checkpoint_threshold_gb:
             payload["checkpoint_skipped_reason"] = "wal_below_threshold"
         else:
+            _raise_if_deadline_expired(deadline_monotonic)
+            _write_heartbeat(payload, out_path, current_step="wal_checkpoint", started_monotonic=started_monotonic)
             _emit_progress("sqlite_maintenance step=wal_checkpoint", as_json=args.json)
             checkpoint_mode_applied = _checkpoint_mode_for_wal(
                 wal_size_gb=wal_size_gb_before,
@@ -449,6 +516,8 @@ def main() -> int:
             payload["auto_vacuum_skipped_reason"] = "memory_pressure_red"
 
         if do_vacuum:
+            _raise_if_deadline_expired(deadline_monotonic)
+            _write_heartbeat(payload, out_path, current_step="vacuum", started_monotonic=started_monotonic)
             _emit_progress("sqlite_maintenance step=vacuum", as_json=args.json)
             _sqlite_exec_with_retry(
                 conn,
@@ -458,6 +527,8 @@ def main() -> int:
             )
 
         if _table_exists(conn, "jsonl_records"):
+            _raise_if_deadline_expired(deadline_monotonic)
+            _write_heartbeat(payload, out_path, current_step="count_jsonl_records", started_monotonic=started_monotonic)
             _emit_progress("sqlite_maintenance step=count_jsonl_records", as_json=args.json)
             row = _sqlite_exec_with_retry(
                 conn,
@@ -495,6 +566,10 @@ def main() -> int:
                 "size_gb_before": round(size_gb_before, 3),
                 "size_gb_after": round(size_gb_after, 3),
                 "wal_size_gb_after": round(wal_size_gb_after, 3),
+                "running": False,
+                "current_step": "complete",
+                "last_heartbeat_utc": datetime.now(timezone.utc).isoformat(),
+                "elapsed_seconds": round(max(time.monotonic() - started_monotonic, 0.0), 3),
             }
         )
         _emit_progress(
@@ -505,10 +580,15 @@ def main() -> int:
     except Exception as exc:
         size_gb_after = db_path.stat().st_size / (1024 ** 3) if db_path.exists() else 0.0
         wal_size_gb_after = _size_gb(wal_path)
+        deadline_expired = isinstance(exc, MaintenanceDeadlineExceeded) or (
+            "deadline_state" in locals()
+            and bool(deadline_state.get("expired", False))
+            and "interrupted" in str(exc).lower()
+        )
         payload.update(
             {
                 "ok": False,
-                "error": str(exc),
+                "error": "sqlite_maintenance_runtime_exceeded" if deadline_expired else str(exc),
                 "vacuum_ran": bool(do_vacuum),
                 "analyze_ran": bool(payload.get("analyze_ran", False)),
                 "optimize_ran": bool(payload.get("optimize_ran", False)),
@@ -516,6 +596,11 @@ def main() -> int:
                 "jsonl_records_rows": int(total_rows),
                 "size_gb_after": round(size_gb_after, 3),
                 "wal_size_gb_after": round(wal_size_gb_after, 3),
+                "running": False,
+                "timed_out": bool(deadline_expired),
+                "current_step": str(payload.get("current_step") or "error"),
+                "last_heartbeat_utc": datetime.now(timezone.utc).isoformat(),
+                "elapsed_seconds": round(max(time.monotonic() - started_monotonic, 0.0), 3),
             }
         )
         _emit_progress(f"sqlite_maintenance error={exc}", as_json=args.json)

@@ -14,7 +14,10 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Seque
 import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CORE_DIR = PROJECT_ROOT / "core"
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
+if str(CORE_DIR) not in sys.path:
+    sys.path.insert(0, str(CORE_DIR))
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
@@ -58,7 +61,9 @@ _DEFAULT_RUNTIME_LABEL_BALANCE_MAX_RATIO = 4.0
 _DEFAULT_RUNTIME_LABEL_BALANCE_MIN_MINORITY_SAMPLES = 6
 _DEFAULT_RUNTIME_LABEL_BALANCE_MIN_TOTAL_SAMPLES = 64
 _DEFAULT_RUNTIME_SNAPSHOT_HEALTH = "governance/health/runtime_training_snapshot_latest.json"
+_DEFAULT_HDF5_CACHE_HEALTH = "governance/health/hdf5_training_cache_latest.json"
 _DEFAULT_SQL_PROGRESS_HEALTH = "governance/health/sql_link_service_progress_latest.json"
+_HDF5_CACHE_SCHEMA_VERSION = 2
 
 _ROOT_STRATEGY_PRIORITY = {
     "grand_master_bot": 0,
@@ -355,6 +360,302 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     if not math.isfinite(out):
         return default
     return out
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    out = _safe_float(value, float(default))
+    try:
+        return int(out)
+    except Exception:
+        return int(default)
+
+
+def _runtime_row_metadata(row: Mapping[str, Any]) -> Mapping[str, Any]:
+    metadata = row.get("metadata") if isinstance(row, Mapping) else {}
+    if isinstance(metadata, Mapping):
+        return metadata
+    if str(row.get("channel") or "").strip().lower() == "decision" and isinstance(row.get("grand_master_meta"), Mapping):
+        return {
+            "layer": "grand_master",
+            "strategy": "grand_master_bot",
+            "mode": _runtime_row_mode(row, {}),
+            "snapshot_id": row.get("snapshot_id"),
+        }
+    return {}
+
+
+def _runtime_row_strategy(row: Mapping[str, Any], metadata: Mapping[str, Any] | None = None) -> str:
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    if str(row.get("channel") or "").strip().lower() == "decision" and isinstance(row.get("grand_master_meta"), Mapping):
+        return "grand_master_bot"
+    return str(row.get("strategy") or metadata.get("strategy") or "").strip().lower()
+
+
+def _runtime_strategy_priority(strategy: Any, metadata: Mapping[str, Any] | None = None) -> Optional[int]:
+    strategy_key = str(strategy or "").strip().lower()
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    layer = str(metadata.get("layer") or "").strip().lower()
+    if strategy_key in _ROOT_STRATEGY_PRIORITY:
+        return int(_ROOT_STRATEGY_PRIORITY[strategy_key])
+    if layer == "grand_master":
+        return 0
+    if "master" in layer:
+        return 20
+    if strategy_key:
+        return 50
+    return None
+
+
+def _runtime_row_mode(row: Mapping[str, Any], metadata: Mapping[str, Any] | None = None) -> str:
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    explicit = str(row.get("mode") or metadata.get("mode") or "").strip().lower()
+    if explicit:
+        return explicit
+    broker = str(row.get("broker") or "").strip().lower()
+    profile = str(row.get("shadow_profile") or "").strip().lower()
+    if broker == "coinbase":
+        if "future" in profile:
+            return "shadow_crypto_futures_crypto"
+        return "shadow_crypto"
+    return ""
+
+
+_CHANNEL_FEATURE_MAP_KEYS = (
+    "market",
+    "data_quality_features",
+    "flow_awareness_features",
+    "lead_lag_features",
+    "breadth_features",
+    "calendar_features",
+    "credit_context_features",
+    "bond_reference_features",
+    "market_micro_features",
+    "news_features",
+    "futures_features",
+    "options_chain_features",
+    "dividend_features",
+    "external_context_features",
+    "long_term_features",
+    "quant_model_features",
+    "lane_strategy_features",
+    "execution_lag_features",
+    "allocation_confidence",
+    "capital_flow",
+)
+
+
+def _set_missing_numeric_feature(features: Dict[str, Any], key: str, value: Any) -> None:
+    if key in features:
+        return
+    try:
+        numeric = float(value)
+    except Exception:
+        return
+    if math.isfinite(numeric):
+        features[key] = numeric
+
+
+def _derive_channel_features(row: Mapping[str, Any], features: Dict[str, Any]) -> None:
+    master_vote = _safe_float(row.get("master_vote"), _safe_float(row.get("master_score"), 0.5) - 0.5)
+    _set_missing_numeric_feature(features, "behavior_prior", max(min(master_vote, 1.0), -1.0))
+
+    queue_depth_norm = _safe_float(features.get("queue_depth_norm"), _safe_float(features.get("queue_depth"), 0.0) / 4.0)
+    spread_norm = _safe_float(features.get("futures_spread_bps_norm"), _safe_float(features.get("spread_bps"), 0.0) / 80.0)
+    liquidity = max(0.0, min(1.0, (0.72 * queue_depth_norm) + (0.28 * (1.0 - min(max(spread_norm, 0.0), 1.0)))))
+    _set_missing_numeric_feature(features, "crypto_exchange_liquidity_norm", liquidity)
+
+    symbol = str(row.get("symbol") or "").strip().upper()
+    if symbol.startswith("SOL"):
+        eth_strength = _safe_float(features.get("crypto_eth_btc_relative_strength_norm"), 0.5)
+        sol_strength = max(0.0, min(1.0, 0.5 + (_safe_float(features.get("mom_15m"), 0.0) * 120.0) + (_safe_float(features.get("mom_5m"), 0.0) * 80.0) - ((eth_strength - 0.5) * 0.25)))
+        _set_missing_numeric_feature(features, "crypto_solana_relative_strength_norm", sol_strength)
+    if symbol.startswith("ETH"):
+        eth_strength = max(0.0, min(1.0, 0.5 + (_safe_float(features.get("mom_15m"), 0.0) * 90.0) + (_safe_float(features.get("mom_5m"), 0.0) * 70.0)))
+        _set_missing_numeric_feature(features, "crypto_eth_btc_relative_strength_norm", eth_strength)
+
+    divergence = max(
+        0.0,
+        min(
+            1.0,
+            abs(1.0 - _safe_float(features.get("crypto_cross_provider_price_agreement_norm"), 1.0))
+            + (0.35 * min(max(spread_norm, 0.0), 1.0))
+            + (0.20 * abs(_safe_float(features.get("futures_order_book_imbalance_norm"), 0.5) - 0.5)),
+        ),
+    )
+    _set_missing_numeric_feature(features, "crypto_exchange_price_divergence_norm", divergence)
+    volume_dispersion = max(0.0, min(1.0, abs(_safe_float(features.get("volume_zscore"), 0.0)) / 3.0))
+    _set_missing_numeric_feature(features, "crypto_exchange_volume_dispersion_norm", volume_dispersion)
+
+    now_utc = _parse_ts(row.get("timestamp_utc"))
+    weekend = 1.0 if now_utc is not None and now_utc.weekday() >= 5 else 0.0
+    _set_missing_numeric_feature(features, "crypto_weekend_session_norm", weekend)
+    weekend_gap = max(0.0, min(1.0, abs(_safe_float(features.get("pct_from_close"), 0.0)) / 0.025))
+    _set_missing_numeric_feature(features, "crypto_weekend_gap_norm", weekend_gap if weekend > 0 else weekend_gap * 0.25)
+
+    _set_missing_numeric_feature(features, "crypto_liquidation_pressure_norm", _safe_float(features.get("futures_liquidation_risk_norm"), 0.0))
+    _set_missing_numeric_feature(features, "infra_risk_throttle_norm", _safe_float(features.get("risk_throttle_norm"), _safe_float(features.get("quant_model_resource_pressure_norm"), 0.0)))
+    _set_missing_numeric_feature(features, "fx_dollar_funding_stress_norm", _safe_float(features.get("fx_dollar_pressure_norm"), 0.0))
+    _set_missing_numeric_feature(features, "macro_event_proximity_norm", _safe_float(features.get("calendar_event_proximity_norm"), 0.0))
+
+
+def _runtime_row_features(row: Mapping[str, Any]) -> Dict[str, Any]:
+    features = row.get("features") if isinstance(row, Mapping) else {}
+    out = dict(features) if isinstance(features, Mapping) else {}
+    if str(row.get("channel") or "").strip().lower() == "decision":
+        for key in _CHANNEL_FEATURE_MAP_KEYS:
+            values = row.get(key)
+            if isinstance(values, Mapping):
+                for feature_key, feature_value in values.items():
+                    out.setdefault(str(feature_key), feature_value)
+        _derive_channel_features(row, out)
+    return out
+
+
+def _runtime_snapshot_id_candidates(row: Mapping[str, Any], metadata: Mapping[str, Any] | None = None) -> List[str]:
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    candidates = [
+        metadata.get("snapshot_id"),
+        row.get("snapshot_id"),
+        row.get("parent_decision_id"),
+        row.get("decision_id"),
+        row.get("iter_id"),
+        row.get("run_id"),
+    ]
+    out: List[str] = []
+    seen: set[str] = set()
+    for raw in candidates:
+        text = str(raw or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _runtime_row_price(row: Mapping[str, Any], features: Mapping[str, Any] | None = None) -> float:
+    features = features if isinstance(features, Mapping) else {}
+    market = row.get("market") if isinstance(row, Mapping) else {}
+    quote = row.get("quote") if isinstance(row, Mapping) else {}
+    for raw in (
+        row.get("price"),
+        row.get("last_price"),
+        features.get("last_price"),
+        features.get("price"),
+        market.get("last_price") if isinstance(market, Mapping) else None,
+        market.get("price") if isinstance(market, Mapping) else None,
+        quote.get("last_price") if isinstance(quote, Mapping) else None,
+        quote.get("price") if isinstance(quote, Mapping) else None,
+    ):
+        price = _safe_float(raw, 0.0)
+        if price > 0.0:
+            return price
+    return 0.0
+
+
+def _iter_runtime_price_sidecar_rows(paths: Sequence[Path], *, max_rows: int = 0) -> Iterable[Dict[str, Any]]:
+    yielded = 0
+    for raw_path in paths:
+        path = Path(raw_path)
+        try:
+            handle_cm = gzip.open(path, "rt", encoding="utf-8") if path.suffix == ".gz" else path.open("r", encoding="utf-8")
+            with handle_cm as handle:
+                for line in handle:
+                    if max_rows > 0 and yielded >= max_rows:
+                        return
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    if isinstance(row, dict):
+                        yielded += 1
+                        yield row
+        except Exception:
+            continue
+
+
+def _build_runtime_price_sidecar_from_rows(rows: Iterable[Mapping[str, Any]], *, max_rows: int = 0) -> Dict[str, Any]:
+    by_snapshot: Dict[str, Dict[str, Any]] = {}
+    by_symbol: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    consumed = 0
+    for row in rows:
+        if max_rows > 0 and consumed >= max_rows:
+            break
+        if not isinstance(row, Mapping):
+            continue
+        consumed += 1
+        metadata = _runtime_row_metadata(row)
+        symbol = str(row.get("symbol") or "").strip().upper()
+        ts = _parse_ts(row.get("timestamp_utc"))
+        snapshot_ids = _runtime_snapshot_id_candidates(row, metadata)
+        features = _runtime_row_features(row)
+        price = _runtime_row_price(row, features)
+        if price <= 0.0 or not symbol:
+            continue
+        entry = {
+            "symbol": symbol,
+            "timestamp_utc": ts.isoformat() if ts is not None else "",
+            "ts_epoch": float(ts.timestamp()) if ts is not None else 0.0,
+            "price": price,
+            "features": features,
+        }
+        for snapshot_id in snapshot_ids:
+            by_snapshot[snapshot_id] = entry
+        by_symbol[symbol].append(entry)
+    for entries in by_symbol.values():
+        entries.sort(key=lambda row: float(row.get("ts_epoch", 0.0)))
+    return {
+        "by_snapshot": by_snapshot,
+        "by_symbol": dict(by_symbol),
+        "row_count": consumed,
+    }
+
+
+def _lookup_runtime_sidecar_context(
+    sidecar: Mapping[str, Any],
+    *,
+    symbol: str,
+    snapshot_ids: Sequence[str],
+    ts: datetime | None = None,
+) -> Dict[str, Any]:
+    by_snapshot = sidecar.get("by_snapshot") if isinstance(sidecar, Mapping) else {}
+    if isinstance(by_snapshot, Mapping):
+        for snapshot_id in snapshot_ids:
+            entry = by_snapshot.get(str(snapshot_id))
+            if isinstance(entry, Mapping):
+                return dict(entry)
+    by_symbol = sidecar.get("by_symbol") if isinstance(sidecar, Mapping) else {}
+    entries = by_symbol.get(str(symbol or "").strip().upper()) if isinstance(by_symbol, Mapping) else None
+    if not isinstance(entries, Sequence):
+        return {}
+    candidates = [entry for entry in entries if isinstance(entry, Mapping)]
+    if not candidates:
+        return {}
+    if ts is None:
+        return dict(candidates[-1])
+    target = float(ts.timestamp())
+    return dict(min(candidates, key=lambda row: abs(_safe_float(row.get("ts_epoch"), target) - target)))
+
+
+def _runtime_sidecar_entry_price(entry: Mapping[str, Any] | None) -> float:
+    if not isinstance(entry, Mapping):
+        return 0.0
+    features = entry.get("features") if isinstance(entry.get("features"), Mapping) else {}
+    return _runtime_row_price(entry, features)
+
+
+def _runtime_features_with_sidecar_context(features: Mapping[str, Any], entry: Mapping[str, Any]) -> Dict[str, Any]:
+    merged = dict(features) if isinstance(features, Mapping) else {}
+    sidecar_features = entry.get("features") if isinstance(entry, Mapping) and isinstance(entry.get("features"), Mapping) else {}
+    for key, value in sidecar_features.items():
+        merged.setdefault(str(key), value)
+    sidecar_price = _runtime_sidecar_entry_price(entry)
+    if sidecar_price > 0.0 and _safe_float(merged.get("last_price"), 0.0) <= 0.0:
+        merged["last_price"] = sidecar_price
+        merged["price_recovered_from_sidecar"] = 1.0
+    return merged
 
 
 def _parse_ts(raw: Any) -> Optional[datetime]:
@@ -740,6 +1041,8 @@ def _recent_decision_paths(project_root: Path, *, lookback_days: int) -> List[Pa
         root / "decision_explanations" / "shadow*" / "decision_explanations_*.jsonl.gz",
         root / "decision_explanations" / "shadow*" / "latest_decisions.log",
         root / "decision_explanations" / "shadow*" / "latest_decisions.log.gz",
+        root / "governance" / "channels" / "decision" / "*" / "decision_*.jsonl",
+        root / "governance" / "channels" / "decision" / "*" / "decision_*.jsonl.gz",
     ]
     for pattern in patterns:
         for raw in glob.glob(str(pattern)):
@@ -795,6 +1098,88 @@ def _runtime_sqlite_read_allowed(project_root: Path) -> bool:
     if current_step in {"merge_primary", "merge_shards", "merge_shard", "hot_retention", "checkpoint_primary"}:
         return False
     return True
+
+
+def _load_hdf5_snapshot_rows(
+    project_root: Path,
+    *,
+    lookback_days: int,
+    mode_allowlist: Optional[Sequence[str]],
+    symbol_allowlist: Optional[Sequence[str]],
+) -> RuntimeSequenceMap:
+    root = Path(project_root).expanduser().resolve()
+    health_path = root / _DEFAULT_HDF5_CACHE_HEALTH
+    runtime_health_path = root / _DEFAULT_RUNTIME_SNAPSHOT_HEALTH
+    try:
+        cache_health = json.loads(health_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    try:
+        runtime_health = json.loads(runtime_health_path.read_text(encoding="utf-8"))
+    except Exception:
+        runtime_health = {}
+    if not isinstance(cache_health, dict):
+        return {}
+    if not isinstance(runtime_health, dict):
+        runtime_health = {}
+    if str(cache_health.get("overall_status") or "") != "ready":
+        return {}
+    freshness = cache_health.get("freshness_gate") if isinstance(cache_health.get("freshness_gate"), dict) else {}
+    schema = cache_health.get("schema_validation") if isinstance(cache_health.get("schema_validation"), dict) else {}
+    if not bool(freshness.get("fresh")) or not bool(schema.get("ok")):
+        return {}
+    source = cache_health.get("source_snapshot") if isinstance(cache_health.get("source_snapshot"), dict) else {}
+    runtime_rows_sha = str(runtime_health.get("rows_sha256") or "")
+    cache_rows_sha = str(source.get("rows_sha256") or "")
+    if runtime_rows_sha and cache_rows_sha and runtime_rows_sha != cache_rows_sha:
+        return {}
+    cache = cache_health.get("cache") if isinstance(cache_health.get("cache"), dict) else {}
+    h5_path = Path(str(cache.get("h5_path") or "")).expanduser()
+    if not h5_path.is_absolute():
+        h5_path = root / h5_path
+    if not h5_path.exists():
+        return {}
+    try:
+        import h5py  # type: ignore
+    except Exception:
+        return {}
+
+    since_utc = datetime.now(timezone.utc) - timedelta(days=max(int(lookback_days), 1))
+    mode_allow = {str(x).strip().lower() for x in (mode_allowlist or []) if str(x).strip()}
+    symbol_allow = {str(x).strip().upper() for x in (symbol_allowlist or []) if str(x).strip()}
+    grouped: RuntimeSequenceMap = defaultdict(list)
+    try:
+        with h5py.File(h5_path, "r") as h5:
+            if int(h5.attrs.get("schema_version", 0) or 0) < _HDF5_CACHE_SCHEMA_VERSION:
+                return {}
+            if str(h5.attrs.get("source_rows_sha256", "") or "") != cache_rows_sha:
+                return {}
+            if "immutable_research_snapshots/raw_rows_json" not in h5:
+                return {}
+            raw_rows = h5["immutable_research_snapshots/raw_rows_json"][:]
+            for raw in raw_rows:
+                text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+                try:
+                    row = json.loads(text)
+                except Exception:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                ts = _parse_ts(row.get("timestamp_utc"))
+                if ts is None or ts < since_utc:
+                    continue
+                mode = str(row.get("mode") or "").strip().lower()
+                symbol = str(row.get("symbol") or "").strip().upper()
+                if not mode or not symbol:
+                    continue
+                if mode_allow and mode not in mode_allow:
+                    continue
+                if symbol_allow and symbol not in symbol_allow:
+                    continue
+                grouped[(mode, symbol)].append(dict(row))
+    except Exception:
+        return {}
+    return grouped
 
 
 def _load_runtime_snapshot_rows(
@@ -856,9 +1241,13 @@ def _runtime_sqlite_like_patterns(*, lookback_days: int) -> List[str]:
     day_count = max(int(lookback_days), 1) + 2
     now_utc = datetime.now(timezone.utc)
     patterns = [
-        f"decision_explanations/%/decision_explanations_{(now_utc - timedelta(days=offset)).strftime('%Y%m%d')}.jsonl%"
+        f"governance/channels/decision/%/decision_{(now_utc - timedelta(days=offset)).strftime('%Y%m%d')}.jsonl%"
         for offset in range(day_count)
     ]
+    patterns.extend(
+        f"decision_explanations/%/decision_explanations_{(now_utc - timedelta(days=offset)).strftime('%Y%m%d')}.jsonl%"
+        for offset in range(day_count)
+    )
     patterns.append("decision_explanations/%/latest_decisions.log%")
     return patterns
 
@@ -1015,6 +1404,22 @@ def future_return(sequence: Sequence[RuntimeObservation], idx: int, horizon: int
     if curr_price <= 0.0 or fut_price <= 0.0:
         return 0.0
     return (fut_price / max(curr_price, 1e-8)) - 1.0
+
+
+def _label_repair_direction_label(
+    sequence: Sequence[RuntimeObservation],
+    idx: int,
+    horizon: int,
+    *,
+    min_abs_return: float,
+) -> Optional[float]:
+    fwd_ret = future_return(sequence, idx, horizon)
+    realized = future_realized_vol(sequence, idx, horizon)
+    drawdown = abs(future_max_drawdown(sequence, idx, horizon))
+    move_floor = max(float(min_abs_return), 0.00012)
+    if abs(fwd_ret) < move_floor and realized < (move_floor * 3.0) and drawdown < (move_floor * 4.0):
+        return None
+    return 1.0 if fwd_ret >= 0.0 else 0.0
 
 
 def future_max_drawdown(sequence: Sequence[RuntimeObservation], idx: int, horizon: int) -> float:
@@ -1500,6 +1905,7 @@ def load_runtime_observation_sequences(
     prefer_sqlite: Optional[bool] = None,
     allow_snapshot: bool = True,
     snapshot_file: Optional[Path] = None,
+    max_observation_rows: Optional[int] = None,
 ) -> RuntimeSequenceMap:
     root = Path(project_root).expanduser().resolve()
     since_utc = datetime.now(timezone.utc) - timedelta(days=max(int(lookback_days), 1))
@@ -1510,13 +1916,22 @@ def load_runtime_observation_sequences(
 
     if allow_snapshot and _env_flag("RUNTIME_TRAIN_USE_SNAPSHOT", False):
         env_snapshot_file = Path(str(os.getenv("RUNTIME_TRAIN_SNAPSHOT_FILE", "")).strip()).expanduser() if str(os.getenv("RUNTIME_TRAIN_SNAPSHOT_FILE", "")).strip() else None
-        snapshot_rows = _load_runtime_snapshot_rows(
-            root,
-            lookback_days=max(int(lookback_days), 1),
-            mode_allowlist=mode_allowlist,
-            symbol_allowlist=symbol_allowlist,
-            snapshot_file=snapshot_file or env_snapshot_file,
-        )
+        snapshot_rows: RuntimeSequenceMap = {}
+        if _env_flag("RUNTIME_TRAIN_USE_HDF5_CACHE", True):
+            snapshot_rows = _load_hdf5_snapshot_rows(
+                root,
+                lookback_days=max(int(lookback_days), 1),
+                mode_allowlist=mode_allowlist,
+                symbol_allowlist=symbol_allowlist,
+            )
+        if not snapshot_rows:
+            snapshot_rows = _load_runtime_snapshot_rows(
+                root,
+                lookback_days=max(int(lookback_days), 1),
+                mode_allowlist=mode_allowlist,
+                symbol_allowlist=symbol_allowlist,
+                snapshot_file=snapshot_file or env_snapshot_file,
+            )
         if snapshot_rows:
             out: RuntimeSequenceMap = {}
             for key, rows in snapshot_rows.items():
@@ -1556,20 +1971,29 @@ def load_runtime_observation_sequences(
                     out[key] = deduped
             if out:
                 return out
+        if _env_flag("RUNTIME_TRAIN_SNAPSHOT_ONLY", False):
+            return {}
 
+    max_source_rows = max(int(max_observation_rows or 0), 0)
+    source_rows_seen = 0
     best_by_snapshot: Dict[Tuple[str, str, str], RuntimeObservation] = {}
     for row in _iter_runtime_observation_rows(root, lookback_days=max(int(lookback_days), 1), prefer_sqlite=effective_prefer_sqlite):
+        source_rows_seen += 1
+        if max_source_rows and source_rows_seen > max_source_rows:
+            break
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        if not metadata:
+            metadata = dict(_runtime_row_metadata(row))
         if str(metadata.get("layer") or "").strip().lower() != "grand_master":
             continue
-        strategy = str(row.get("strategy") or "").strip().lower()
+        strategy = _runtime_row_strategy(row, metadata)
         if strategy not in _ROOT_STRATEGY_PRIORITY:
             continue
 
         ts = _parse_ts(row.get("timestamp_utc"))
         if ts is None or ts < since_utc:
             continue
-        mode = str(row.get("mode") or "").strip().lower()
+        mode = _runtime_row_mode(row, metadata)
         symbol = str(row.get("symbol") or "").strip().upper()
         if not mode or not symbol:
             continue
@@ -1582,12 +2006,15 @@ def load_runtime_observation_sequences(
         if ("market_data_ok" in gates) and (not bool(gates.get("market_data_ok"))):
             continue
 
-        features = row.get("features") if isinstance(row.get("features"), dict) else {}
+        features = _runtime_row_features(row)
         price = _safe_float(features.get("last_price"), 0.0)
+        if price <= 0.0:
+            price = _runtime_row_price(row, features)
         if price <= 0.0:
             continue
 
-        snapshot_id = str(metadata.get("snapshot_id") or row.get("snapshot_id") or row.get("parent_decision_id") or "").strip()
+        snapshot_ids = _runtime_snapshot_id_candidates(row, metadata)
+        snapshot_id = str(snapshot_ids[0] if snapshot_ids else "").strip()
         if not snapshot_id:
             snapshot_id = f"{symbol}:{ts.isoformat()}"
 
@@ -1852,6 +2279,9 @@ def make_runtime_windowed_dataset(
     min_confidence: float = 0.0,
     sample_stride: int = 1,
     max_samples: int = 0,
+    bypass_sample_filter: bool = False,
+    fallback_direction_label: bool = False,
+    fallback_min_abs_return: float = 0.00035,
     window: int,
     horizon: int,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
@@ -1872,6 +2302,7 @@ def make_runtime_windowed_dataset(
     skipped_labels = 0
     skipped_filtered = 0
     skipped_low_confidence = 0
+    repaired_labels = 0
     feature_dim = 0
 
     for (mode_key, symbol_key), rows in sequences.items():
@@ -1879,7 +2310,7 @@ def make_runtime_windowed_dataset(
             continue
         eligible_sequences += 1
         for idx in range(w - 1, len(rows) - h, stride):
-            if sample_filter is not None:
+            if sample_filter is not None and not bypass_sample_filter:
                 try:
                     include_sample = bool(sample_filter(rows, idx, h))
                 except Exception:
@@ -1914,8 +2345,18 @@ def make_runtime_windowed_dataset(
 
             label = label_builder(rows, idx, h)
             if label is None or (not math.isfinite(float(label))):
-                skipped_labels += 1
-                continue
+                if fallback_direction_label:
+                    label = _label_repair_direction_label(
+                        rows,
+                        idx,
+                        h,
+                        min_abs_return=fallback_min_abs_return,
+                    )
+                    if label is not None and math.isfinite(float(label)):
+                        repaired_labels += 1
+                if label is None or (not math.isfinite(float(label))):
+                    skipped_labels += 1
+                    continue
 
             sample = np.concatenate(per_step, axis=0)
             samples.append(sample.astype(np.float32))
@@ -1940,6 +2381,9 @@ def make_runtime_windowed_dataset(
             "skipped_labels": skipped_labels,
             "skipped_filtered": skipped_filtered,
             "skipped_low_confidence": skipped_low_confidence,
+            "label_repair_enabled": bool(fallback_direction_label),
+            "label_repair_bypassed_filter": bool(bypass_sample_filter),
+            "label_repaired": int(repaired_labels),
             "confidence_mean": 0.0,
             "confidence_min": 0.0,
             "confidence_max": 0.0,
@@ -2006,6 +2450,9 @@ def make_runtime_windowed_dataset(
         "skipped_labels": skipped_labels,
         "skipped_filtered": skipped_filtered,
         "skipped_low_confidence": skipped_low_confidence,
+        "label_repair_enabled": bool(fallback_direction_label),
+        "label_repair_bypassed_filter": bool(bypass_sample_filter),
+        "label_repaired": int(repaired_labels),
         "confidence_mean": float(np.mean(conf)) if conf.size else 0.0,
         "confidence_min": float(np.min(conf)) if conf.size else 0.0,
         "confidence_max": float(np.max(conf)) if conf.size else 0.0,

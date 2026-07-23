@@ -55,6 +55,39 @@ def test_counterfactual_replay_harness_builds_candidates(tmp_path) -> None:
     assert payload["processing"]["mode"] == "rebuild"
 
 
+def test_counterfactual_replay_prefers_event_pnl_over_cumulative_account_totals(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    log_dir = project_root / "exports" / "paper_broker_bridge" / "paper"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {
+            "timestamp_utc": f"2026-04-01T14:0{idx}:00+00:00",
+            "symbol": "AAPL",
+            "action": "BUY",
+            "strategy": "paper_mirror::alpha",
+            "metadata": {"source_profile": "intraday_aggressive"},
+            "model_score": 0.71,
+            "threshold": 0.60,
+            "tradeability_score": 0.60,
+            "allocation_conflict_norm": 0.10,
+            "realized_pnl": 0.25,
+            "unrealized_pnl": 0.0,
+            "realized_pnl_total": -100.0,
+            "unrealized_pnl_total": -25.0,
+        }
+        for idx in range(4)
+    ]
+    (log_dir / "paper_bridge_orders_20260401.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    payload = harness.build_counterfactual_report(project_root, max_rows=100)
+
+    assert payload["top_candidates"][0]["aggregate_net_pnl_total"] == 1.0
+    assert payload["top_candidates"][0]["win_rate"] == 1.0
+
+
 def test_counterfactual_replay_harness_reuses_state_incrementally(tmp_path) -> None:
     project_root = tmp_path / "project"
     log_dir = project_root / "exports" / "paper_broker_bridge" / "paper"
@@ -103,3 +136,58 @@ def test_counterfactual_replay_harness_reuses_state_incrementally(tmp_path) -> N
     assert second["processing"]["mode"] == "incremental"
     assert second["processing"]["incremental_files"] == 1
     assert second["processing"]["row_buffer_size"] == 2
+
+
+def test_counterfactual_replay_harness_uses_execution_result_fallback(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    lane_dir = project_root / "governance" / "execution_lanes"
+    lane_dir.mkdir(parents=True, exist_ok=True)
+    row = {
+        "mode": "paper",
+        "timestamp_utc": "2026-04-01T14:00:00+00:00",
+        "intent": {
+            "target_mode": "paper",
+            "timestamp_utc": "2026-04-01T14:00:00+00:00",
+            "symbol": "AAPL",
+            "action": "BUY",
+            "quantity": 1,
+            "model_score": 0.72,
+            "threshold": 0.60,
+            "strategy": "paper_mirror::alpha",
+            "metadata": {
+                "source_profile": "intraday_aggressive",
+                "tradeability_score": 0.70,
+                "allocation_conflict_norm": 0.10,
+            },
+        },
+        "result": {
+            "decision": {
+                "timestamp_utc": "2026-04-01T14:00:00+00:00",
+                "symbol": "AAPL",
+                "action": "BUY",
+                "quantity": 1,
+                "model_score": 0.72,
+                "threshold": 0.60,
+                "strategy": "paper_mirror::alpha",
+                "realized_pnl": 1.25,
+                "unrealized_pnl": 0.0,
+                "metadata": {
+                    "source_profile": "intraday_aggressive",
+                    "tradeability_score": 0.70,
+                    "allocation_conflict_norm": 0.10,
+                },
+            }
+        },
+    }
+    (lane_dir / "execution_results_20260401.jsonl").write_text(
+        json.dumps(row) + "\n",
+        encoding="utf-8",
+    )
+
+    payload = harness.build_counterfactual_report(project_root, max_rows=100)
+
+    assert payload["ok"] is True
+    assert payload["source_files"] == [str(lane_dir / "execution_results_20260401.jsonl")]
+    assert "intraday_aggressive" in payload["profiles_reviewed"]
+    assert payload["candidate_count"] > 0
+    assert payload["top_candidates"][0]["aggregate_net_pnl_total"] > 0

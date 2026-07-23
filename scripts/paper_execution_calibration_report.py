@@ -1,6 +1,7 @@
 import argparse
 import glob
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict
@@ -19,6 +20,23 @@ def _parse_ts(raw: Any) -> datetime | None:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _calibration_cutoff_utc() -> datetime | None:
+    raw = (
+        os.getenv("PAPER_EXECUTION_CALIBRATION_MIN_TIMESTAMP_UTC", "").strip()
+        or os.getenv("PAPER_EXECUTION_REALISTIC_FILL_CUTOFF_UTC", "").strip()
+    )
+    return _parse_ts(raw)
+
+
+def _is_synthetic_guard_row(row: Dict[str, Any]) -> bool:
+    strategy = str(row.get("strategy") or "").strip().lower()
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    bot_id = str(metadata.get("bot_id") or row.get("bot_id") or "").strip().lower()
+    if strategy.startswith(("paper_guard_test", "paper_guard_block_test")):
+        return True
+    return bot_id == "test_bot" and strategy.startswith("paper_")
 
 
 def _safe_float(raw: Any, default: float = 0.0) -> float:
@@ -105,10 +123,15 @@ def main() -> int:
     args = ap.parse_args()
 
     since = datetime.now(timezone.utc) - timedelta(hours=max(int(args.hours), 1))
+    cutoff_utc = _calibration_cutoff_utc()
+    if cutoff_utc is not None and cutoff_utc > since:
+        since = cutoff_utc
     vals: list[float] = []
     observed_vals: list[float] = []
     expected_vals: list[float] = []
     files_scanned = 0
+    skipped_before_cutoff = 0
+    skipped_synthetic_guard = 0
     by_market_kind: Dict[str, Dict[str, Any]] = {}
     by_profile: Dict[str, Dict[str, Any]] = {}
     by_symbol: Dict[str, Dict[str, Any]] = {}
@@ -130,6 +153,11 @@ def main() -> int:
                         continue
                     ts = _parse_ts(row.get("timestamp_utc"))
                     if ts is None or ts < since:
+                        if cutoff_utc is not None and ts is not None and ts < cutoff_utc:
+                            skipped_before_cutoff += 1
+                        continue
+                    if _is_synthetic_guard_row(row):
+                        skipped_synthetic_guard += 1
                         continue
                     action = row.get("action")
                     fill = float(row.get("fill_price", 0.0) or 0.0)
@@ -216,6 +244,13 @@ def main() -> int:
         "bucket_hours": max(int(args.bucket_hours), 1),
         "files_scanned": int(files_scanned),
         "samples": int(n),
+        "calibration_window": {
+            "cutoff_utc": cutoff_utc.isoformat() if cutoff_utc is not None else "",
+            "reset_active": cutoff_utc is not None,
+            "skipped_before_cutoff": int(skipped_before_cutoff),
+            "skipped_synthetic_guard_rows": int(skipped_synthetic_guard),
+            "policy": "when realistic paper fills are enabled, pre-fix perfect-fill samples are excluded from readiness blocking",
+        },
         "metrics": {
             "mae_bps": round(float(mae), 6),
             "p95_bps": round(float(p95), 6),

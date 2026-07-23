@@ -13,6 +13,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SQLITE_PATH = PROJECT_ROOT / "data" / "jsonl_link.sqlite3"
 
 
+def _connect_readonly(sqlite_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(sqlite_path), timeout=30.0)
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    return conn
+
+
 def _json_loads(raw: Any) -> Any:
     if _fast_json is not None:
         try:
@@ -63,6 +70,31 @@ def _chunked(items: Sequence[str], size: int = 500) -> Iterator[List[str]]:
         yield list(items[i : i + chunk_size])
 
 
+def _literal_like_prefix(pattern: str) -> str:
+    out: List[str] = []
+    escaped = False
+    for char in str(pattern or ""):
+        if escaped:
+            out.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char in {"%", "_"}:
+            break
+        out.append(char)
+    return "".join(out)
+
+
+def _prefix_upper_bound(prefix: str) -> str:
+    if not prefix:
+        return ""
+    chars = list(prefix)
+    chars[-1] = chr(ord(chars[-1]) + 1)
+    return "".join(chars)
+
+
 def source_rels_present_in_sqlite(
     *,
     sqlite_path: Path,
@@ -73,12 +105,18 @@ def source_rels_present_in_sqlite(
         return set()
 
     present: Set[str] = set()
-    conn = sqlite3.connect(str(sqlite_path))
     try:
-        for chunk in _chunked(list(source_rels)):
+        conn = _connect_readonly(sqlite_path)
+    except sqlite3.Error:
+        return present
+    try:
+        for chunk in _chunked(list(source_rels), size=100):
             placeholders = ",".join("?" for _ in chunk)
             query = f"SELECT DISTINCT source_rel FROM {table} WHERE source_rel IN ({placeholders})"
-            rows = conn.execute(query, chunk).fetchall()
+            try:
+                rows = conn.execute(query, chunk).fetchall()
+            except sqlite3.Error:
+                continue
             for row in rows:
                 if row and row[0]:
                     present.add(str(row[0]))
@@ -96,16 +134,23 @@ def iter_sqlite_jsonl_rows(
     if (not source_rels) or (not sqlite_path.exists()):
         return
 
-    conn = sqlite3.connect(str(sqlite_path))
     try:
-        for chunk in _chunked(list(source_rels)):
+        conn = _connect_readonly(sqlite_path)
+    except sqlite3.Error:
+        return
+    try:
+        for chunk in _chunked(list(source_rels), size=64):
             placeholders = ",".join("?" for _ in chunk)
             query = (
                 f"SELECT payload_json FROM {table} "
                 f"WHERE source_rel IN ({placeholders}) "
                 f"ORDER BY source_rel, line_no"
             )
-            for (payload_json,) in conn.execute(query, chunk):
+            try:
+                rows = conn.execute(query, chunk)
+            except sqlite3.Error:
+                continue
+            for (payload_json,) in rows:
                 try:
                     obj = _json_loads(payload_json)
                 except Exception:
@@ -129,7 +174,10 @@ def iter_sqlite_jsonl_rows_by_like_patterns(
     if not normalized:
         return
 
-    conn = sqlite3.connect(str(sqlite_path))
+    try:
+        conn = _connect_readonly(sqlite_path)
+    except sqlite3.Error:
+        return
     try:
         seen_patterns: Set[str] = set()
         for chunk in _chunked(normalized, size=24):
@@ -141,13 +189,37 @@ def iter_sqlite_jsonl_rows_by_like_patterns(
                 deduped_chunk.append(pattern)
             if not deduped_chunk:
                 continue
-            where = " OR ".join("source_rel LIKE ?" for _ in deduped_chunk)
+            clauses: List[str] = []
+            params: List[str] = []
+            for pattern in deduped_chunk:
+                prefix = _literal_like_prefix(pattern)
+                upper = _prefix_upper_bound(prefix)
+                if prefix and upper:
+                    clauses.append("(source_rel >= ? AND source_rel < ? AND source_rel LIKE ?)")
+                    params.extend([prefix, upper, pattern])
+                else:
+                    clauses.append("source_rel LIKE ?")
+                    params.append(pattern)
+            where = " OR ".join(clauses)
             query = (
-                f"SELECT payload_json FROM {table} "
+                f"SELECT payload_json FROM {table} INDEXED BY idx_jsonl_records_source_rel_line "
                 f"WHERE {where} "
                 f"ORDER BY source_rel, line_no"
             )
-            for (payload_json,) in conn.execute(query, deduped_chunk):
+            try:
+                rows = conn.execute(query, params)
+            except sqlite3.Error:
+                fallback_where = " OR ".join("source_rel LIKE ?" for _ in deduped_chunk)
+                fallback_query = (
+                    f"SELECT payload_json FROM {table} "
+                    f"WHERE {fallback_where} "
+                    f"ORDER BY source_rel, line_no"
+                )
+                try:
+                    rows = conn.execute(fallback_query, deduped_chunk)
+                except sqlite3.Error:
+                    continue
+            for (payload_json,) in rows:
                 try:
                     obj = _json_loads(payload_json)
                 except Exception:
@@ -172,7 +244,10 @@ def split_paths_by_sqlite_coverage(
     if not source_rels:
         return [], list(paths)
 
-    present = source_rels_present_in_sqlite(sqlite_path=sqlite_path, source_rels=source_rels, table=table)
+    try:
+        present = source_rels_present_in_sqlite(sqlite_path=sqlite_path, source_rels=source_rels, table=table)
+    except sqlite3.Error:
+        return [], list(paths)
     missing_paths: List[Path] = []
     sql_source_rels: List[str] = []
 

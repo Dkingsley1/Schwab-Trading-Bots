@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="/Users/dankingsley/PycharmProjects/schwab_trading_bot"
-PY="$ROOT/.venv312/bin/python"
+PY="$ROOT/.venv314/bin/python"
 
 if [[ ! -x "$PY" ]]; then
   echo "missing python: $PY" >&2

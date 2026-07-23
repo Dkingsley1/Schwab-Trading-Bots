@@ -238,6 +238,47 @@ def test_weekly_retrain_insufficient_data_retry_overrides_expand_scope() -> None
     assert int(second["RUNTIME_TRAIN_LOOKBACK_DAYS_OVERRIDE"]) >= int(first["RUNTIME_TRAIN_LOOKBACK_DAYS_OVERRIDE"])
 
 
+def test_weekly_retrain_runtime_snapshot_lookback_covers_explicit_runtime_targets(tmp_path: Path) -> None:
+    target = tmp_path / "core" / "brain_refinery_v105_feed_consensus_execution_guard.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        """
+from indicator_bot_common import train_runtime_indicator_bot
+
+train_runtime_indicator_bot(
+    run_tag="brain_refinery_v105_feed_consensus_execution_guard",
+    feature_names=[],
+    runtime_feature_builder=None,
+    runtime_label_builder=None,
+    lookback_days=75,
+)
+""",
+        encoding="utf-8",
+    )
+    registry_path = tmp_path / "master_bot_registry.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "sub_bots": [
+                    {
+                        "bot_id": "brain_refinery_v105_feed_consensus_execution_guard",
+                        "bot_role": "infrastructure_sub_bot",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    original_registry_path = weekly_retrain.REGISTRY_PATH
+    try:
+        weekly_retrain.REGISTRY_PATH = str(registry_path)
+        required = weekly_retrain._required_runtime_snapshot_lookback_days([str(target)], 14)
+    finally:
+        weekly_retrain.REGISTRY_PATH = original_registry_path
+
+    assert required == 89
+
+
 def test_weekly_retrain_auto_queue_dedupes_extra_pass_targets() -> None:
     v35 = "/tmp/core/brain_refinery_v35_dmi_state_machine.py"
     v56 = "/tmp/core/brain_refinery_v56_meta_ranker.py"
@@ -505,11 +546,12 @@ def test_weekly_retrain_coverage_canary_profile_clamps_runtime_inputs() -> None:
 
 
 def test_weekly_retrain_coverage_micro_and_small_canary_profiles_are_bounded() -> None:
-    for profile_name, timeout in (
-        ("coverage_micro_canary", 600),
-        ("coverage_small_canary", 720),
-        ("coverage_batch10_canary", 900),
-        ("coverage_batch20_canary", 1200),
+    for profile_name, timeout, fast_fail_attempts in (
+        ("coverage_micro_canary", 600, 2),
+        ("coverage_small_canary", 720, 2),
+        ("coverage_batch10_canary", 900, 2),
+        ("coverage_batch20_canary", 1200, 1),
+        ("coverage_batch30_canary", 900, 1),
     ):
         args = weekly_retrain.argparse.Namespace(
             retrain_profile=profile_name,
@@ -534,7 +576,7 @@ def test_weekly_retrain_coverage_micro_and_small_canary_profiles_are_bounded() -
         assert args.counterfactual_replay is False
         assert args.paper_hard_example_pack is False
         assert args.build_runtime_training_snapshot is False
-        assert args.runtime_train_fast_fail_zero_sample_attempts == 2
+        assert args.runtime_train_fast_fail_zero_sample_attempts == fast_fail_attempts
         assert args.target_timeout_seconds == timeout
         assert args.cold_lane_retrain_extras is False
         assert args.auto_insufficient_data_retry is False
@@ -595,11 +637,13 @@ def test_weekly_retrain_coverage_micro_and_small_canary_env_overrides_are_smalle
     small_env = {}
     batch10_env = {}
     batch20_env = {}
+    batch30_env = {}
 
     micro = weekly_retrain._apply_retrain_profile_env_overrides(micro_env, "coverage_micro_canary")
     small = weekly_retrain._apply_retrain_profile_env_overrides(small_env, "coverage_small_canary")
     batch10 = weekly_retrain._apply_retrain_profile_env_overrides(batch10_env, "coverage_batch10_canary")
     batch20 = weekly_retrain._apply_retrain_profile_env_overrides(batch20_env, "coverage_batch20_canary")
+    batch30 = weekly_retrain._apply_retrain_profile_env_overrides(batch30_env, "coverage_batch30_canary")
 
     assert micro["RUNTIME_TRAIN_LOOKBACK_DAYS_CAP"] == "14"
     assert micro["RUNTIME_TRAIN_SAMPLE_STRIDE_FLOOR"] == "2"
@@ -615,6 +659,9 @@ def test_weekly_retrain_coverage_micro_and_small_canary_env_overrides_are_smalle
     assert batch20["RUNTIME_TRAIN_LOOKBACK_DAYS_CAP"] == "60"
     assert batch20["RUNTIME_TRAIN_MAX_SAMPLES"] == "8000"
     assert batch20["RUNTIME_TRAIN_BATCH_SIZE_CAP"] == "64"
+    assert batch30["RUNTIME_TRAIN_LOOKBACK_DAYS_CAP"] == "60"
+    assert batch30["RUNTIME_TRAIN_MAX_SAMPLES"] == "9000"
+    assert batch30["RUNTIME_TRAIN_BATCH_SIZE_CAP"] == "64"
 
 
 def test_weekly_retrain_default_auto_promotes_small_explicit_target_set_to_canary() -> None:
@@ -783,6 +830,32 @@ def test_weekly_retrain_training_success_marker_distinguishes_trained_ok_but_not
         assert payload["trained_ok_but_not_promotable"] is True
         assert payload["promotion_status"] == "held_out"
         assert payload["reason"] == "trained_ok_but_not_promotable:skipped_by_flag"
+    finally:
+        weekly_retrain.PROJECT_ROOT = original_root
+
+
+def test_weekly_retrain_training_success_marker_treats_absent_data_quality_as_advisory(tmp_path) -> None:
+    original_root = weekly_retrain.PROJECT_ROOT
+    weekly_retrain.PROJECT_ROOT = str(tmp_path)
+    try:
+        marker_path = weekly_retrain._write_training_success_marker(
+            target_outcomes=[{"bot_id": "brain_refinery_v10_seasonal", "status": "trained"}],
+            failures=[],
+            failure_details=[],
+            skipped_by_memory=[],
+            master_update_status="updated_registry:1",
+            data_quality_summary={},
+            operator_notes=None,
+            lineage={"stage": "post_master_update"},
+        )
+
+        payload = json.loads(Path(marker_path).read_text(encoding="utf-8"))
+        assert payload["training_completed_ok"] is True
+        assert payload["promotion_applied"] is True
+        assert payload["confirmed_training_success"] is True
+        assert payload["data_quality_present"] is False
+        assert payload["data_quality_ok"] is True
+        assert payload["reason"] == "ok"
     finally:
         weekly_retrain.PROJECT_ROOT = original_root
 

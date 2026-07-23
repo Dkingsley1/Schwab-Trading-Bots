@@ -229,3 +229,59 @@ def test_graduation_gate_exempts_paper_live_data_rows_without_explicit_promotion
     assert payload["promotion_scope_active"] is False
     assert payload["graduation_scope_active_count"] == 0
     assert payload["coverage_exempt_examples"][0]["exempt_reason"] == "data_collection_only"
+
+
+def test_graduation_gate_exempts_guarded_paper_soak_rows_without_explicit_promotion(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    registry_path = tmp_path / "master_bot_registry.json"
+    walk_forward_path = tmp_path / "walk_forward_latest.json"
+    out_path = tmp_path / "new_bot_graduation_latest.json"
+
+    _write_json(
+        registry_path,
+        {
+            "sub_bots": [
+                {
+                    "bot_id": "brain_refinery_v36_guarded_paper",
+                    "active": True,
+                    "lifecycle_state": "active",
+                    "paper_live_data_enabled": True,
+                    "paper_trading_enabled": True,
+                    "paper_trade_lock_policy": "market_data_and_paper_only_until_explicit_graduation",
+                    "direct_execution_allowed": False,
+                    "trading_enabled": False,
+                    "live_trading_enabled": False,
+                    "execution_enabled": False,
+                    "allocation_enabled": False,
+                }
+            ]
+        },
+    )
+    _write_json(walk_forward_path, {"bots": {"brain_refinery_v36_guarded_paper": {"runs": 0}}})
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "new_bot_graduation_gate.py",
+            "--registry",
+            str(registry_path),
+            "--walk-forward-file",
+            str(walk_forward_path),
+            "--out-file",
+            str(out_path),
+            "--json",
+        ],
+    )
+
+    rc = graduation_gate.main()
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert payload["ok"] is True
+    assert payload["promotion_scope_active"] is False
+    assert payload["graduation_scope_active_count"] == 0
+    assert payload["coverage_exempt_examples"][0]["exempt_reason"] == "guarded_paper_soak"

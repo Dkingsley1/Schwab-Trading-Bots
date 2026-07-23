@@ -493,9 +493,32 @@ def _fresh_health_payload(payload: Dict[str, Any], *, max_age_hours: float) -> T
     return payload, age_hours <= max(max_age_hours, 0.0)
 
 
-def _iter_jsonl(paths: Iterable[Path]) -> Iterable[Dict[str, Any]]:
+def _iter_jsonl(paths: Iterable[Path], *, tail_bytes: int = 0) -> Iterable[Dict[str, Any]]:
     for p in paths:
         try:
+            tail_limit = max(int(tail_bytes or 0), 0)
+            if tail_limit > 0 and p.stat().st_size > tail_limit:
+                with p.open("rb") as f:
+                    start = max(p.stat().st_size - tail_limit, 0)
+                    f.seek(start)
+                    raw_lines = f.read().splitlines()
+                if start > 0 and raw_lines:
+                    raw_lines = raw_lines[1:]
+                for raw_line in raw_lines:
+                    try:
+                        line = raw_line.decode("utf-8", errors="ignore").strip()
+                    except Exception:
+                        continue
+                    if not line:
+                        continue
+                    try:
+                        obj = _json_loads(line)
+                    except Exception:
+                        continue
+                    if isinstance(obj, dict):
+                        yield obj
+                continue
+
             with p.open("r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
@@ -558,6 +581,135 @@ def _filter_recent_paths(paths: List[Path], since_utc: datetime) -> List[Path]:
         if mtime_utc is not None and mtime_utc >= (since_utc - timedelta(days=1)):
             out.append(path)
     return out
+
+
+def _limit_recent_paths(paths: List[Path], *, max_files: int) -> List[Path]:
+    if max_files <= 0 or len(paths) <= max_files:
+        return paths
+
+    def _mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except Exception:
+            return 0.0
+
+    return sorted(sorted(paths, key=_mtime, reverse=True)[:max_files])
+
+
+def _merge_dict_features(features: Dict[str, Any], payload: Any) -> None:
+    if not isinstance(payload, dict):
+        return
+    for key, value in payload.items():
+        if isinstance(value, (dict, list)):
+            continue
+        features[str(key)] = value
+
+
+def _mean_nested_float(rows: Iterable[Dict[str, Any]], key: str) -> float:
+    values: List[float] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        value = _to_float(row.get(key), float("nan"))
+        if math.isfinite(value):
+            values.append(value)
+    if not values:
+        return 0.0
+    return sum(values) / len(values)
+
+
+def _channel_paper_profitability_features(row: Dict[str, Any], features: Dict[str, Any]) -> None:
+    master_outputs = row.get("master_outputs") if isinstance(row.get("master_outputs"), dict) else {}
+    master_meta_rows: List[Dict[str, Any]] = []
+    for output in master_outputs.values():
+        if not isinstance(output, dict):
+            continue
+        meta = output.get("master_meta")
+        if isinstance(meta, dict):
+            master_meta_rows.append(meta)
+
+    master_awareness = _mean_nested_float(master_meta_rows, "paper_profitability_master_awareness")
+    master_profit = _mean_nested_float(master_meta_rows, "paper_profitability_master_profit_score")
+    master_drag = _mean_nested_float(master_meta_rows, "paper_profitability_master_drag")
+    master_risk = _mean_nested_float(master_meta_rows, "paper_profitability_master_risk")
+    master_size = _mean_nested_float(master_meta_rows, "paper_profitability_master_size_multiplier")
+
+    if master_meta_rows:
+        features["paper_profitability_master_awareness_active_norm"] = _clamp01(master_awareness)
+        features["paper_profitability_master_profit_score_norm"] = _clamp01(master_profit)
+        features["paper_profitability_master_drag_norm"] = _clamp01(master_drag)
+        features["paper_profitability_master_risk_norm"] = _clamp01(master_risk)
+        features["paper_profitability_master_size_multiplier_norm"] = _clamp01(master_size)
+        features["paper_profitability_master_training_weight_norm"] = _clamp01(master_profit * (1.0 - min(master_drag, 1.0)))
+
+    gm = row.get("grand_master_meta") if isinstance(row.get("grand_master_meta"), dict) else {}
+    if gm:
+        gm_awareness = _to_float(gm.get("paper_profitability_grandmaster_awareness"), 0.0)
+        gm_profit = _to_float(gm.get("paper_profitability_grandmaster_profit_score"), 0.0)
+        gm_drag = _to_float(gm.get("paper_profitability_grandmaster_drag"), 0.0)
+        features["paper_profitability_grandmaster_awareness_active_norm"] = _clamp01(gm_awareness)
+        features["paper_profitability_grandmaster_profit_score_norm"] = _clamp01(gm_profit)
+        features["paper_profitability_grandmaster_drag_norm"] = _clamp01(gm_drag)
+        features["paper_profitability_grandmaster_risk_norm"] = _clamp01(_to_float(gm.get("paper_profitability_grandmaster_risk"), 0.0))
+        features["paper_profitability_grandmaster_exit_pressure_norm"] = _clamp01(_to_float(gm.get("paper_profitability_grandmaster_exit_pressure"), 0.0))
+        features["paper_profitability_grandmaster_execution_discount_norm"] = _clamp01(_to_float(gm.get("paper_profitability_grandmaster_execution_discount"), 0.0))
+        features["paper_profitability_grandmaster_size_multiplier_norm"] = _clamp01(_to_float(gm.get("paper_profitability_grandmaster_size_multiplier"), 0.0))
+        features["paper_profitability_grandmaster_training_weight_norm"] = _clamp01(gm_profit * (1.0 - min(gm_drag, 1.0)))
+        features["paper_profitability_grandmaster_conflict_cap_norm"] = _clamp01(
+            _to_float(gm.get("paper_profitability_grandmaster_conflict_cap"), 1.0 - _to_float(gm.get("specialist_conflict"), 0.0))
+        )
+
+
+def _canonical_behavior_decision_row(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(row, dict):
+        return None
+    if str(row.get("strategy") or "") == "grand_master_bot":
+        return row
+    if not any(key in row for key in ("master_action", "master_intent_action", "grand_master_meta", "master_outputs")):
+        return None
+
+    features: Dict[str, Any] = {}
+    _merge_dict_features(features, row.get("features"))
+    for key in (
+        "market",
+        "data_quality_features",
+        "execution_lag_features",
+        "capital_flow",
+        "flow_awareness_features",
+        "lead_lag_features",
+        "allocation_confidence",
+        "lane_strategy_features",
+    ):
+        _merge_dict_features(features, row.get(key))
+    _channel_paper_profitability_features(row, features)
+
+    for key in ("active_sub_bots", "active_options_sub_bots", "active_futures_sub_bots"):
+        if key in row:
+            features[key] = row.get(key)
+
+    last_price = _to_float(features.get("last_price"), _to_float(row.get("last_price"), 0.0))
+    if last_price <= 0.0:
+        return None
+    features["last_price"] = last_price
+
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    snapshot_id = str(row.get("snapshot_id") or metadata.get("snapshot_id") or "").strip()
+    canonical_meta = dict(metadata)
+    if snapshot_id:
+        canonical_meta["snapshot_id"] = snapshot_id
+
+    portfolio = row.get("portfolio") if isinstance(row.get("portfolio"), dict) else {}
+    return {
+        "timestamp_utc": row.get("timestamp_utc"),
+        "symbol": row.get("symbol"),
+        "strategy": "grand_master_bot",
+        "action": row.get("master_action") or row.get("master_intent_action") or row.get("action") or "HOLD",
+        "quantity": row.get("quantity", portfolio.get("dispatch_qty", 0.0)),
+        "mode": row.get("mode") or row.get("shadow_profile") or row.get("profile") or row.get("broker") or "",
+        "features": features,
+        "gates": row.get("gates") or row.get("execution_guard") or {},
+        "metadata": canonical_meta,
+    }
 
 
 def _role_index(mode_label: str) -> float:
@@ -1890,6 +2042,7 @@ def _decision_feature_vector(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build leak-free behavior dataset from shadow decisions (forward-return labels + rich context).")
     parser.add_argument("--decision-glob", default=str(PROJECT_ROOT / "decision_explanations" / "shadow*" / "decision_explanations_*.jsonl"))
+    parser.add_argument("--channel-decision-glob", default=os.getenv("BEHAVIOR_DATASET_CHANNEL_DECISION_GLOB", str(PROJECT_ROOT / "governance" / "channels" / "decision" / "*" / "decision_*.jsonl")))
     parser.add_argument("--governance-glob", default=str(PROJECT_ROOT / "governance" / "shadow*" / "master_control_*.jsonl"))
     parser.add_argument("--pnl-attribution-glob", default=str(PROJECT_ROOT / "governance" / "shadow*" / "shadow_pnl_attribution_*.jsonl"))
     parser.add_argument("--paper-trades-glob", default=str(PROJECT_ROOT / "exports" / "trade_logs" / "**" / "paper_trades_*.jsonl"))
@@ -1903,6 +2056,9 @@ def main() -> int:
     parser.add_argument("--min-per-symbol", type=int, default=int(os.getenv("BEHAVIOR_DATASET_MIN_PER_SYMBOL", "8")))
     parser.add_argument("--max-per-symbol", type=int, default=int(os.getenv("BEHAVIOR_DATASET_MAX_PER_SYMBOL", "3000")))
     parser.add_argument("--max-per-symbol-regime", type=int, default=int(os.getenv("BEHAVIOR_DATASET_MAX_PER_SYMBOL_REGIME", "1200")))
+    parser.add_argument("--decision-tail-bytes", type=int, default=int(os.getenv("BEHAVIOR_DATASET_DECISION_TAIL_BYTES", str(16 * 1024 * 1024))))
+    parser.add_argument("--governance-tail-bytes", type=int, default=int(os.getenv("BEHAVIOR_DATASET_GOVERNANCE_TAIL_BYTES", str(8 * 1024 * 1024))))
+    parser.add_argument("--channel-decision-max-files", type=int, default=int(os.getenv("BEHAVIOR_DATASET_CHANNEL_DECISION_MAX_FILES", "96")))
     parser.add_argument("--sqlite-path", default=os.getenv("BEHAVIOR_DATASET_SQLITE_PATH", ""))
     parser.add_argument(
         "--prefer-sql",
@@ -1962,6 +2118,13 @@ def main() -> int:
         decision_paths = sorted(Path(p) for p in PROJECT_ROOT.glob("decision_explanations/shadow*/decision_explanations_*.jsonl"))
     decision_paths = _filter_recent_paths(decision_paths, since_utc)
 
+    channel_decision_paths = _resolve_glob_paths(args.channel_decision_glob, root=PROJECT_ROOT)
+    channel_decision_paths = _filter_recent_paths(channel_decision_paths, since_utc)
+    channel_decision_paths = _limit_recent_paths(channel_decision_paths, max_files=max(int(args.channel_decision_max_files), 0))
+    if channel_decision_paths:
+        decision_by_path = {str(path): path for path in [*decision_paths, *channel_decision_paths]}
+        decision_paths = [decision_by_path[key] for key in sorted(decision_by_path.keys())]
+
     governance_paths = _resolve_glob_paths(args.governance_glob, root=PROJECT_ROOT)
     if not governance_paths:
         governance_paths = sorted(Path(p) for p in PROJECT_ROOT.glob("governance/shadow*/master_control_*.jsonl"))
@@ -2008,7 +2171,7 @@ def main() -> int:
 
     governance_rows = chain(
         iter_sqlite_jsonl_rows(sqlite_path=sqlite_path, source_rels=governance_sql_rels) if governance_sql_rels else (),
-        _iter_jsonl(governance_file_fallbacks),
+        _iter_jsonl(governance_file_fallbacks, tail_bytes=max(int(args.governance_tail_bytes), 0)),
     )
     pnl_rows = chain(
         iter_sqlite_jsonl_rows(sqlite_path=sqlite_path, source_rels=pnl_sql_rels) if pnl_sql_rels else (),
@@ -2020,7 +2183,7 @@ def main() -> int:
     )
     decision_rows = chain(
         iter_sqlite_jsonl_rows(sqlite_path=sqlite_path, source_rels=decision_sql_rels) if decision_sql_rels else (),
-        _iter_jsonl(decision_file_fallbacks),
+        _iter_jsonl(decision_file_fallbacks, tail_bytes=max(int(args.decision_tail_bytes), 0)),
     )
 
     gov_by_snapshot = _load_governance_index(governance_rows, since_utc=since_utc)
@@ -2029,7 +2192,10 @@ def main() -> int:
 
     by_symbol: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     raw_rows = 0
-    for row in decision_rows:
+    for raw_row in decision_rows:
+        row = _canonical_behavior_decision_row(raw_row)
+        if row is None:
+            continue
         raw_rows += 1
         ts = _parse_ts(row.get("timestamp_utc"))
         if ts is None or ts < since_utc:
@@ -2244,9 +2410,13 @@ def main() -> int:
             "max_examples": int(args.max_examples),
             "max_per_symbol": int(args.max_per_symbol),
             "max_per_symbol_regime": int(args.max_per_symbol_regime),
+            "decision_tail_bytes": int(args.decision_tail_bytes),
+            "governance_tail_bytes": int(args.governance_tail_bytes),
+            "channel_decision_max_files": int(args.channel_decision_max_files),
         },
         "source": {
             "decision_files": len(decision_paths),
+            "channel_decision_files": len(channel_decision_paths),
             "governance_files": len(governance_paths),
             "pnl_attribution_files": len(pnl_paths),
             "since_utc": since_utc.isoformat(),
@@ -2289,6 +2459,7 @@ def main() -> int:
         "retention_model": {
             "primary_training_inputs": [
                 "decision_explanations",
+                "governance/channels/decision",
                 "governance/master_control",
                 "governance/shadow_pnl_attribution",
                 "exports/trade_logs/paper_trades",

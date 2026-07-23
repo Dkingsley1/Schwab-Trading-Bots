@@ -52,6 +52,22 @@ def _parse_bot_id_csv(value: str | None) -> set[str]:
 
 
 def _scope_exempt_reason(row: dict[str, Any]) -> str:
+    lifecycle_state = str(row.get("lifecycle_state") or "").strip().lower()
+    promotion_status = str(row.get("promotion_status") or "").strip().lower()
+    paper_trade_lock_policy = str(row.get("paper_trade_lock_policy") or "").strip().lower()
+    guarded_paper_soak = bool(
+        "until_explicit_graduation" in paper_trade_lock_policy
+        and _truthy_flag(row.get("paper_live_data_enabled"))
+        and not _truthy_flag(row.get("direct_execution_allowed"))
+        and not _truthy_flag(row.get("trading_enabled"))
+        and not _truthy_flag(row.get("live_trading_enabled"))
+        and not _truthy_flag(row.get("execution_enabled"))
+        and not _truthy_flag(row.get("allocation_enabled"))
+    )
+    if guarded_paper_soak and promotion_status not in PROMOTION_SCOPE_STATUSES:
+        return "guarded_paper_soak"
+    if lifecycle_state in COLLECTION_ONLY_STATES and promotion_status not in PROMOTION_SCOPE_STATUSES:
+        return "data_collection_only"
     tokens = " ".join(
         [
             str(row.get("reason", "") or ""),

@@ -198,6 +198,156 @@ def test_lane_gate_filters_same_registry_noise() -> None:
         assert payload["excluded_counts"] == {"deleted_from_rotation": 1}
 
 
+def test_walk_forward_gate_excludes_training_excluded_by_default() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        wf_file = td_path / "walk_forward.json"
+        registry_file = td_path / "registry.json"
+        out_file = td_path / "promotion_gate.json"
+
+        _write_json(
+            wf_file,
+            {
+                "bots": {
+                    "brain_refinery_v10_seasonal": {
+                        "runs": 19,
+                        "forward_mean": 0.92,
+                        "delta": 0.0,
+                        "trading_quality_score": 1.0,
+                        "overfit_gap": 0.0,
+                        "status": "pass",
+                    },
+                    "brain_refinery_v45_intraday_open_close_regimes": {
+                        "runs": 33,
+                        "forward_mean": 0.51,
+                        "delta": 0.0,
+                        "trading_quality_score": 0.70,
+                        "overfit_gap": 0.0,
+                        "status": "fail",
+                    },
+                }
+            },
+        )
+        _write_json(
+            registry_file,
+            {
+                "sub_bots": [
+                    {"bot_id": "brain_refinery_v10_seasonal", "active": True, "deleted_from_rotation": False, "bot_role": "signal_sub_bot"},
+                    {
+                        "bot_id": "brain_refinery_v45_intraday_open_close_regimes",
+                        "active": True,
+                        "deleted_from_rotation": False,
+                        "bot_role": "signal_sub_bot",
+                        "training_excluded": True,
+                    },
+                ]
+            },
+        )
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(PROJECT_ROOT / "scripts" / "walk_forward_promotion_gate.py"),
+                "--in-file",
+                str(wf_file),
+                "--registry-file",
+                str(registry_file),
+                "--out-file",
+                str(out_file),
+                "--min-considered-bots",
+                "1",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert proc.returncode == 0
+        payload = json.loads(out_file.read_text(encoding="utf-8"))
+        assert payload["considered_bots"] == 1
+        assert payload["promote_ok"] is True
+        assert payload["excluded_counts"] == {"training_excluded": 1}
+        assert payload["registry_filter"]["include_training_excluded"] is False
+        assert payload["effective_thresholds"]["min_considered_bots"] == 1
+        assert payload["considered_bot_ids"] == ["brain_refinery_v10_seasonal"]
+        assert payload["pass_examples"][0]["bot_id"] == "brain_refinery_v10_seasonal"
+
+
+def test_lane_gate_excludes_training_excluded_by_default() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        wf_file = td_path / "walk_forward_lane.json"
+        registry_file = td_path / "registry_lane.json"
+        out_file = td_path / "lane_gate.json"
+
+        _write_json(
+            wf_file,
+            {
+                "bots": {
+                    "brain_refinery_v10_seasonal": {
+                        "runs": 19,
+                        "forward_mean": 0.92,
+                        "delta": 0.0,
+                        "trading_quality_score": 1.0,
+                        "overfit_gap": 0.0,
+                        "status": "pass",
+                    },
+                    "brain_refinery_v45_intraday_open_close_regimes": {
+                        "runs": 33,
+                        "forward_mean": 0.51,
+                        "delta": 0.0,
+                        "trading_quality_score": 0.70,
+                        "overfit_gap": 0.0,
+                        "status": "fail",
+                    },
+                }
+            },
+        )
+        _write_json(
+            registry_file,
+            {
+                "sub_bots": [
+                    {"bot_id": "brain_refinery_v10_seasonal", "active": True, "deleted_from_rotation": False, "bot_role": "signal_sub_bot"},
+                    {
+                        "bot_id": "brain_refinery_v45_intraday_open_close_regimes",
+                        "active": True,
+                        "deleted_from_rotation": False,
+                        "bot_role": "signal_sub_bot",
+                        "training_excluded": True,
+                    },
+                ]
+            },
+        )
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(PROJECT_ROOT / "scripts" / "lane_promotion_gate.py"),
+                "--in-file",
+                str(wf_file),
+                "--registry-file",
+                str(registry_file),
+                "--out-file",
+                str(out_file),
+                "--min-considered-per-lane",
+                "1",
+                "--min-covered-lanes",
+                "1",
+                "--json",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert proc.returncode == 0
+        payload = json.loads(out_file.read_text(encoding="utf-8"))
+        assert payload["considered_bots"] == 1
+        assert payload["promote_ok"] is True
+        assert payload["excluded_counts"] == {"training_excluded": 1}
+        assert payload["registry_filter"]["include_training_excluded"] is False
+
+
 def test_walk_forward_gate_reclassifies_narrow_single_metric_misses_as_near_pass() -> None:
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
@@ -275,6 +425,12 @@ def test_walk_forward_gate_reclassifies_narrow_single_metric_misses_as_near_pass
                 str(registry_file),
                 "--out-file",
                 str(out_file),
+                "--near-pass-forward-slack",
+                "0.07",
+                "--near-pass-delta-slack",
+                "0.03",
+                "--near-pass-min-tq-cushion",
+                "0.0",
             ],
             check=False,
             capture_output=True,
@@ -370,6 +526,12 @@ def test_lane_gate_scales_coverage_to_observed_lanes_and_excludes_near_passes() 
                 str(registry_file),
                 "--out-file",
                 str(out_file),
+                "--near-pass-forward-slack",
+                "0.07",
+                "--near-pass-delta-slack",
+                "0.03",
+                "--near-pass-min-tq-cushion",
+                "0.0",
                 "--json",
             ],
             check=False,

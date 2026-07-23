@@ -82,6 +82,7 @@ def _registry_gate_allowed(
     *,
     require_active_registry: bool,
     include_infrastructure: bool,
+    include_training_excluded: bool,
 ) -> tuple[bool, str]:
     row = registry_rows.get(bot_id)
     if row is None:
@@ -90,6 +91,12 @@ def _registry_gate_allowed(
         return False, "deleted_from_rotation"
     if _manual_quarantine(row):
         return False, "manual_quarantine"
+    if (
+        not include_training_excluded
+        and bool(row.get("training_excluded", False) or row.get("exclude_from_training", False))
+        and not _coverage_candidate_active(row)
+    ):
+        return False, "training_excluded"
     if require_active_registry and (not bool(row.get("active", False))) and (not _coverage_candidate_active(row)):
         return False, "inactive"
     if (not include_infrastructure) and str(row.get("bot_role") or "") == "infrastructure_sub_bot":
@@ -210,6 +217,11 @@ def main() -> int:
         action=argparse.BooleanOptionalAction,
         default=os.getenv("LANE_PROMOTION_INCLUDE_INFRASTRUCTURE", "0").strip() == "1",
     )
+    parser.add_argument(
+        "--include-training-excluded",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("LANE_PROMOTION_INCLUDE_TRAINING_EXCLUDED", "0").strip() == "1",
+    )
     parser.add_argument("--out-file", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "lane_promotion_gate_latest.json"))
     parser.add_argument("--json", action="store_true", help="Print JSON payload.")
     args = parser.parse_args()
@@ -247,6 +259,7 @@ def main() -> int:
                 registry_rows,
                 require_active_registry=bool(args.require_active_registry),
                 include_infrastructure=bool(args.include_infrastructure),
+                include_training_excluded=bool(args.include_training_excluded),
             )
             if not eligible:
                 excluded_counts[exclude_reason] = excluded_counts.get(exclude_reason, 0) + 1
@@ -417,6 +430,7 @@ def main() -> int:
             "enabled": bool(registry_rows),
             "require_active_registry": bool(args.require_active_registry),
             "include_infrastructure": bool(args.include_infrastructure),
+            "include_training_excluded": bool(args.include_training_excluded),
             "coverage_candidate_active_enabled": True,
         },
         "excluded_counts": excluded_counts,

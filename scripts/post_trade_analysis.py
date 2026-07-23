@@ -24,7 +24,7 @@ DEFAULT_MD_PATH = PROJECT_ROOT / "exports" / "reports" / "post_trade_analysis_la
 
 
 def _python_bin(project_root: Path) -> str:
-    candidate = project_root / ".venv312" / "bin" / "python"
+    candidate = project_root / ".venv314" / "bin" / "python"
     if candidate.exists():
         return str(candidate)
     return str(Path(sys.executable))

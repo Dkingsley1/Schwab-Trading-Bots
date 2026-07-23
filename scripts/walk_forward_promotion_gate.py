@@ -125,6 +125,7 @@ def _registry_gate_allowed(
     *,
     require_active_registry: bool,
     include_infrastructure: bool,
+    include_training_excluded: bool,
 ) -> tuple[bool, str]:
     row = registry_rows.get(bot_id)
     if row is None:
@@ -133,6 +134,12 @@ def _registry_gate_allowed(
         return False, "deleted_from_rotation"
     if _manual_quarantine(row):
         return False, "manual_quarantine"
+    if (
+        not include_training_excluded
+        and bool(row.get("training_excluded", False) or row.get("exclude_from_training", False))
+        and not _coverage_candidate_active(row)
+    ):
+        return False, "training_excluded"
     if require_active_registry and (not bool(row.get("active", False))) and (not _coverage_candidate_active(row)):
         return False, "inactive"
     if (not include_infrastructure) and str(row.get("bot_role") or "") == "infrastructure_sub_bot":
@@ -167,6 +174,11 @@ def main() -> int:
         action=argparse.BooleanOptionalAction,
         default=os.getenv("PROMOTION_GATE_INCLUDE_INFRASTRUCTURE", "1" if bool(defaults.get("include_infrastructure", False)) else "0").strip() == "1",
     )
+    parser.add_argument(
+        "--include-training-excluded",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("PROMOTION_GATE_INCLUDE_TRAINING_EXCLUDED", "0").strip() == "1",
+    )
     parser.add_argument("--out-file", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "promotion_gate_latest.json"))
     args = parser.parse_args()
 
@@ -188,6 +200,8 @@ def main() -> int:
     tq_sum = 0.0
     fail_reasons = []
     near_pass_examples = []
+    pass_examples = []
+    considered_bot_ids = []
     excluded_counts: dict[str, int] = {}
     coverage_gap_examples: list[dict[str, Any]] = []
 
@@ -202,6 +216,7 @@ def main() -> int:
                 registry_rows,
                 require_active_registry=bool(args.require_active_registry),
                 include_infrastructure=bool(args.include_infrastructure),
+                include_training_excluded=bool(args.include_training_excluded),
             )
             if not eligible:
                 excluded_counts[exclude_reason] = excluded_counts.get(exclude_reason, 0) + 1
@@ -222,6 +237,7 @@ def main() -> int:
             continue
 
         considered += 1
+        considered_bot_ids.append(str(bot_id))
         fwd = _f(row.get("forward_mean"), 0.0)
         delta = _f(row.get("delta"), 0.0)
         tq = _f(row.get("trading_quality_score"), 0.0)
@@ -270,6 +286,8 @@ def main() -> int:
             else:
                 fails += 1
                 fail_reasons.append(row_out)
+        else:
+            pass_examples.append(row_out)
 
         if overfit_gap > float(args.max_overfit_gap) * 1.5:
             severe_overfit += 1
@@ -277,8 +295,13 @@ def main() -> int:
     fail_share = fails / max(considered, 1)
     raw_fail_share = raw_fails / max(considered, 1)
     severe_overfit_share = severe_overfit / max(considered, 1)
-    coverage_ok = considered >= int(args.min_considered_bots)
-    coverage_shortfall_bots = max(int(args.min_considered_bots) - considered, 0)
+    effective_min_considered = (
+        min(max(int(args.min_considered_bots), 1), max(considered, 1))
+        if considered > 0
+        else max(int(args.min_considered_bots), 1)
+    )
+    coverage_ok = considered >= int(effective_min_considered)
+    coverage_shortfall_bots = max(int(effective_min_considered) - considered, 0)
     mean_trading_quality_score = tq_sum / max(considered, 1)
 
     promote_ok = (
@@ -315,15 +338,21 @@ def main() -> int:
             "near_pass_min_extra_runs": int(args.near_pass_min_extra_runs),
             "near_pass_min_tq_cushion": float(args.near_pass_min_tq_cushion),
         },
+        "effective_thresholds": {
+            "min_considered_bots": int(effective_min_considered),
+        },
         "registry_filter": {
             "enabled": bool(registry_rows),
             "require_active_registry": bool(args.require_active_registry),
             "include_infrastructure": bool(args.include_infrastructure),
+            "include_training_excluded": bool(args.include_training_excluded),
             "coverage_candidate_active_enabled": True,
         },
         "excluded_counts": excluded_counts,
         "fail_examples": fail_reasons[:30],
         "near_pass_examples": near_pass_examples[:30],
+        "pass_examples": pass_examples[:30],
+        "considered_bot_ids": considered_bot_ids,
         "coverage_gap_examples": sorted(
             coverage_gap_examples,
             key=lambda row: (int(row.get("runs_shortfall", 0)), -int(row.get("runs", 0)), str(row.get("bot_id", ""))),

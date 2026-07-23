@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-05-26T14:52:40.204252+00:00",
+  "generated_at_utc": "2026-07-22T17:38:26.388933+00:00",
   "training_labeling_intelligence_version": "training_labeling_intelligence_v1",
   "universal_label_contract_version": "universal_training_label_contract_v1",
   "pack": {
@@ -11,30 +11,30 @@
     "system_count": 6,
     "bot_count": 24,
     "bot_ids": [
-      "brain_refinery_v1614_training_labeling_label_contract_normalizer_telemetry_collector_bot",
-      "brain_refinery_v1615_training_labeling_label_contract_normalizer_quality_scorer_bot",
-      "brain_refinery_v1616_training_labeling_label_contract_normalizer_policy_guard_bot",
-      "brain_refinery_v1617_training_labeling_label_contract_normalizer_training_bridge_bot",
-      "brain_refinery_v1618_training_labeling_point_in_time_label_guard_telemetry_collector_bot",
-      "brain_refinery_v1619_training_labeling_point_in_time_label_guard_quality_scorer_bot",
-      "brain_refinery_v1620_training_labeling_point_in_time_label_guard_policy_guard_bot",
-      "brain_refinery_v1621_training_labeling_point_in_time_label_guard_training_bridge_bot",
-      "brain_refinery_v1622_training_labeling_lane_balance_scheduler_telemetry_collector_bot",
-      "brain_refinery_v1623_training_labeling_lane_balance_scheduler_quality_scorer_bot",
-      "brain_refinery_v1624_training_labeling_lane_balance_scheduler_policy_guard_bot",
-      "brain_refinery_v1625_training_labeling_lane_balance_scheduler_training_bridge_bot",
-      "brain_refinery_v1626_training_labeling_coverage_repair_orchestrator_telemetry_collector_bot",
-      "brain_refinery_v1627_training_labeling_coverage_repair_orchestrator_quality_scorer_bot",
-      "brain_refinery_v1628_training_labeling_coverage_repair_orchestrator_policy_guard_bot",
-      "brain_refinery_v1629_training_labeling_coverage_repair_orchestrator_training_bridge_bot",
-      "brain_refinery_v1630_training_labeling_schema_lineage_gatekeeper_telemetry_collector_bot",
-      "brain_refinery_v1631_training_labeling_schema_lineage_gatekeeper_quality_scorer_bot",
-      "brain_refinery_v1632_training_labeling_schema_lineage_gatekeeper_policy_guard_bot",
-      "brain_refinery_v1633_training_labeling_schema_lineage_gatekeeper_training_bridge_bot",
-      "brain_refinery_v1634_training_labeling_retrain_outcome_memory_telemetry_collector_bot",
-      "brain_refinery_v1635_training_labeling_retrain_outcome_memory_quality_scorer_bot",
-      "brain_refinery_v1636_training_labeling_retrain_outcome_memory_policy_guard_bot",
-      "brain_refinery_v1637_training_labeling_retrain_outcome_memory_training_bridge_bot"
+      "brain_refinery_v1757_training_labeling_label_contract_normalizer_telemetry_collector_bot",
+      "brain_refinery_v1758_training_labeling_label_contract_normalizer_quality_scorer_bot",
+      "brain_refinery_v1759_training_labeling_label_contract_normalizer_policy_guard_bot",
+      "brain_refinery_v1760_training_labeling_label_contract_normalizer_training_bridge_bot",
+      "brain_refinery_v1761_training_labeling_point_in_time_label_guard_telemetry_collector_bot",
+      "brain_refinery_v1762_training_labeling_point_in_time_label_guard_quality_scorer_bot",
+      "brain_refinery_v1763_training_labeling_point_in_time_label_guard_policy_guard_bot",
+      "brain_refinery_v1764_training_labeling_point_in_time_label_guard_training_bridge_bot",
+      "brain_refinery_v1765_training_labeling_lane_balance_scheduler_telemetry_collector_bot",
+      "brain_refinery_v1766_training_labeling_lane_balance_scheduler_quality_scorer_bot",
+      "brain_refinery_v1767_training_labeling_lane_balance_scheduler_policy_guard_bot",
+      "brain_refinery_v1768_training_labeling_lane_balance_scheduler_training_bridge_bot",
+      "brain_refinery_v1769_training_labeling_coverage_repair_orchestrator_telemetry_collector_bot",
+      "brain_refinery_v1770_training_labeling_coverage_repair_orchestrator_quality_scorer_bot",
+      "brain_refinery_v1771_training_labeling_coverage_repair_orchestrator_policy_guard_bot",
+      "brain_refinery_v1772_training_labeling_coverage_repair_orchestrator_training_bridge_bot",
+      "brain_refinery_v1773_training_labeling_schema_lineage_gatekeeper_telemetry_collector_bot",
+      "brain_refinery_v1774_training_labeling_schema_lineage_gatekeeper_quality_scorer_bot",
+      "brain_refinery_v1775_training_labeling_schema_lineage_gatekeeper_policy_guard_bot",
+      "brain_refinery_v1776_training_labeling_schema_lineage_gatekeeper_training_bridge_bot",
+      "brain_refinery_v1777_training_labeling_retrain_outcome_memory_telemetry_collector_bot",
+      "brain_refinery_v1778_training_labeling_retrain_outcome_memory_quality_scorer_bot",
+      "brain_refinery_v1779_training_labeling_retrain_outcome_memory_policy_guard_bot",
+      "brain_refinery_v1780_training_labeling_retrain_outcome_memory_training_bridge_bot"
     ],
     "intelligence_systems": [
       {
@@ -143,12 +143,12 @@
       "graduation_requires_collection_days": 180
     },
     "anchor_bot_ids": {
-      "label_contract_normalizer": "brain_refinery_v1614_training_labeling_label_contract_normalizer_telemetry_collector_bot",
-      "point_in_time_label_guard": "brain_refinery_v1618_training_labeling_point_in_time_label_guard_telemetry_collector_bot",
-      "lane_balance_scheduler": "brain_refinery_v1622_training_labeling_lane_balance_scheduler_telemetry_collector_bot",
-      "coverage_repair_orchestrator": "brain_refinery_v1626_training_labeling_coverage_repair_orchestrator_telemetry_collector_bot",
-      "schema_lineage_gatekeeper": "brain_refinery_v1630_training_labeling_schema_lineage_gatekeeper_telemetry_collector_bot",
-      "retrain_outcome_memory": "brain_refinery_v1634_training_labeling_retrain_outcome_memory_telemetry_collector_bot"
+      "label_contract_normalizer": "brain_refinery_v1757_training_labeling_label_contract_normalizer_telemetry_collector_bot",
+      "point_in_time_label_guard": "brain_refinery_v1761_training_labeling_point_in_time_label_guard_telemetry_collector_bot",
+      "lane_balance_scheduler": "brain_refinery_v1765_training_labeling_lane_balance_scheduler_telemetry_collector_bot",
+      "coverage_repair_orchestrator": "brain_refinery_v1769_training_labeling_coverage_repair_orchestrator_telemetry_collector_bot",
+      "schema_lineage_gatekeeper": "brain_refinery_v1773_training_labeling_schema_lineage_gatekeeper_telemetry_collector_bot",
+      "retrain_outcome_memory": "brain_refinery_v1777_training_labeling_retrain_outcome_memory_telemetry_collector_bot"
     },
     "universal_label_contract_version": "universal_training_label_contract_v1"
   }

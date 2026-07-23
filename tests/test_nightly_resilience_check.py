@@ -1,96 +1,169 @@
-import importlib.util
-import tempfile
-import unittest
+import json
+import sys
 from pathlib import Path
-from unittest import mock
 
 
-SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "nightly_resilience_check.py"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+import scripts.nightly_resilience_check as nightly
 
 
-def _load_module():
-    spec = importlib.util.spec_from_file_location("nightly_resilience_check", SCRIPT_PATH)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("failed to load nightly_resilience_check module")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def test_resolves_launchd_watchdog_log_path(tmp_path: Path, monkeypatch) -> None:
+    fake_home = tmp_path / "home"
+    fake_project = tmp_path / "project"
+    log_path = fake_home / "Library" / "Logs" / "schwab_trading_bot" / "launchd_watchdog" / "shadow_watchdog.out.log"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text("watchdog check\n", encoding="utf-8")
+
+    monkeypatch.setattr(nightly.Path, "home", lambda: fake_home)
+    monkeypatch.setattr(nightly, "PROJECT_ROOT", fake_project)
+
+    assert nightly._resolve_watchdog_log() == log_path
 
 
-class NightlyResilienceCheckTests(unittest.TestCase):
-    def test_prefers_current_home_log_path(self) -> None:
-        module = _load_module()
-        with tempfile.TemporaryDirectory() as td:
-            home = Path(td)
-            log_dir = home / "Library" / "Logs" / "schwab_trading_bot"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            target = log_dir / "shadow_watchdog.out.log"
-            target.write_text("ok\n", encoding="utf-8")
+def test_process_backed_stale_logs_are_warnings(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(nightly, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(nightly, "_pgrep_count", lambda pattern: 1 if "shadow_watchdog" in pattern else 2)
+    monkeypatch.setattr(nightly, "_resolve_watchdog_log", lambda: None)
+    monkeypatch.setattr(nightly, "_resolve_all_sleeves_log", lambda: tmp_path / "old_all_sleeves.log")
+    monkeypatch.setattr(nightly, "_fresh_minutes", lambda path: 999.0)
+    monkeypatch.setattr(nightly, "_count_keyword", lambda path, keyword: 0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nightly_resilience_check.py",
+            "--out-file",
+            str(tmp_path / "nightly.json"),
+            "--event-file",
+            str(tmp_path / "nightly.jsonl"),
+            "--json",
+        ],
+    )
 
-            with mock.patch.object(module.Path, "home", return_value=home):
-                resolved = module._resolve_watchdog_log()
+    rc = nightly.main()
+    payload = json.loads(capsys.readouterr().out)
 
-            self.assertEqual(resolved, target)
+    assert rc == 0
+    assert payload["ok"] is True
+    assert payload["failed_checks"] == []
+    assert sorted(payload["warnings"]) == [
+        "all_sleeves_log_stale_loops_running",
+        "watchdog_log_stale_process_running",
+    ]
 
-    def test_does_not_require_all_sleeves_log_without_wrapper_process(self) -> None:
-        module = _load_module()
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            module.PROJECT_ROOT = root
-            (root / "governance" / "events").mkdir(parents=True, exist_ok=True)
-            out_file = root / "nightly.json"
-            event_file = root / "events.jsonl"
 
-            home = root / "fake_home"
-            log_dir = home / "Library" / "Logs" / "schwab_trading_bot"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            (log_dir / "shadow_watchdog.out.log").write_text("restart none\n", encoding="utf-8")
-
-            counts = {
-                "scripts/shadow_watchdog.py": 1,
-                "run_shadow_training_loop.py": 8,
-                "scripts/run_all_sleeves.py": 0,
+def test_process_watchdog_artifact_certifies_current_watchdog(tmp_path: Path, monkeypatch, capsys) -> None:
+    fake_project = tmp_path / "project"
+    health = fake_project / "governance" / "health"
+    health.mkdir(parents=True)
+    (health / "process_watchdog_latest.json").write_text(
+        json.dumps(
+            {
+                "overall_status": "ready",
+                "watchdog_intelligence": {
+                    "overall_status": "ready",
+                    "active_issue_count": 0,
+                    "restart_storm_count": 0,
+                    "alert_count": 0,
+                    "target_count": 2,
+                    "healthy_target_count": 2,
+                },
+                "status": [
+                    {"name": "all_sleeves", "process_live": True, "heartbeat_ok": True},
+                    {"name": "coinbase_loop", "process_live": True, "heartbeat_ok": True},
+                ],
             }
+        ),
+        encoding="utf-8",
+    )
 
-            argv = [
-                "nightly_resilience_check.py",
-                "--out-file",
-                str(out_file),
-                "--event-file",
-                str(event_file),
-                "--json",
-            ]
+    monkeypatch.setattr(nightly, "PROJECT_ROOT", fake_project)
+    monkeypatch.setattr(nightly, "_pgrep_count", lambda pattern: 0 if "shadow_watchdog" in pattern else 2)
+    monkeypatch.setattr(nightly, "_resolve_watchdog_log", lambda: None)
+    monkeypatch.setattr(nightly, "_resolve_all_sleeves_log", lambda: None)
+    monkeypatch.setattr(nightly, "_count_keyword", lambda path, keyword: 0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nightly_resilience_check.py",
+            "--out-file",
+            str(tmp_path / "nightly.json"),
+            "--event-file",
+            str(tmp_path / "nightly.jsonl"),
+            "--json",
+        ],
+    )
 
-            with mock.patch.object(module.Path, "home", return_value=home):
-                with mock.patch.object(module, "_pgrep_count", side_effect=lambda pattern: counts.get(pattern, 0)):
-                    with mock.patch("sys.argv", argv):
-                        rc = module.main()
+    rc = nightly.main()
+    payload = json.loads(capsys.readouterr().out)
 
-            self.assertEqual(rc, 0)
-
-    def test_count_keyword_reads_only_tail_lines_without_full_read(self) -> None:
-        module = _load_module()
-        with tempfile.TemporaryDirectory() as td:
-            log_path = Path(td) / "shadow_watchdog.out.log"
-            log_path.write_text(
-                "\n".join(
-                    [
-                        "restart old",
-                        "steady old",
-                        "steady recent",
-                        "restart recent one",
-                        "restart recent two",
-                    ]
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-
-            with mock.patch.object(module.Path, "read_text", side_effect=AssertionError("full read should not be used")):
-                count = module._count_keyword(log_path, "restart", tail_lines=3)
-
-            self.assertEqual(count, 2)
+    assert rc == 0
+    assert payload["ok"] is True
+    assert payload["failed_checks"] == []
+    assert payload["metrics"]["process_watchdog_certified"] is True
+    assert "watchdog_log_stale_process_watchdog_certified" in payload["warnings"]
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_process_watchdog_artifact_certifies_current_all_sleeves_when_wrapper_log_is_stale(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    fake_project = tmp_path / "project"
+    health = fake_project / "governance" / "health"
+    health.mkdir(parents=True)
+    (health / "process_watchdog_latest.json").write_text(
+        json.dumps(
+            {
+                "overall_status": "ready",
+                "watchdog_intelligence": {
+                    "overall_status": "ready",
+                    "active_issue_count": 0,
+                    "restart_storm_count": 0,
+                    "alert_count": 0,
+                    "target_count": 2,
+                    "healthy_target_count": 2,
+                },
+                "status": [
+                    {"name": "all_sleeves", "process_live": True, "heartbeat_ok": True},
+                    {"name": "coinbase_loop", "process_live": True, "heartbeat_ok": True},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(nightly, "PROJECT_ROOT", fake_project)
+    monkeypatch.setattr(nightly, "_pgrep_count", lambda pattern: 1 if "run_all_sleeves" in pattern else 0)
+    monkeypatch.setattr(nightly, "_resolve_watchdog_log", lambda: None)
+    monkeypatch.setattr(nightly, "_resolve_all_sleeves_log", lambda: tmp_path / "old_all_sleeves.log")
+    monkeypatch.setattr(
+        nightly,
+        "_fresh_minutes",
+        lambda path: 0.0 if str(path).endswith("process_watchdog_latest.json") else 999.0,
+    )
+    monkeypatch.setattr(nightly, "_count_keyword", lambda path, keyword: 0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nightly_resilience_check.py",
+            "--out-file",
+            str(tmp_path / "nightly.json"),
+            "--event-file",
+            str(tmp_path / "nightly.jsonl"),
+            "--json",
+        ],
+    )
+
+    rc = nightly.main()
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert payload["ok"] is True
+    assert payload["failed_checks"] == []
+    assert "all_sleeves_log_stale_process_watchdog_certified" in payload["warnings"]

@@ -23,6 +23,7 @@ def build_payload() -> dict:
         {"venue": "schwab_equities", "broker": "schwab", "market_kind": "equities", "session": "regular", "symbol": "SPY"},
         {"venue": "coinbase_crypto", "broker": "coinbase", "market_kind": "crypto", "session": "regular", "symbol": "BTC-USD"},
         {"venue": "coinbase_crypto", "broker": "coinbase", "market_kind": "crypto", "session": "overnight_gap", "symbol": "ETH-USD"},
+        {"venue": "schwab_options", "broker": "schwab", "market_kind": "options", "asset_class": "options", "session": "regular", "symbol": "NVDA_covered_call"},
     ]
     rows = []
     for scenario in scenarios:
@@ -43,6 +44,12 @@ def build_payload() -> dict:
                 session=scenario["session"],
                 order_type=order_type,
                 live_fill_slippage_bps=1.5,
+                asset_class=scenario.get("asset_class", ""),
+                sleeve="covered_call" if scenario.get("asset_class") == "options" else scenario["market_kind"],
+                quote_age_ms=3200.0 if scenario.get("asset_class") == "options" and order_type == "limit" else 250.0,
+                market_volume=35.0 if scenario.get("asset_class") == "options" else 25000.0,
+                avg_daily_volume=100.0 if scenario.get("asset_class") == "options" else 1000000.0,
+                open_interest=20.0 if scenario.get("asset_class") == "options" else 0.0,
             )
             rows.append(
                 {
@@ -51,13 +58,22 @@ def build_payload() -> dict:
                     "order_type": order_type,
                     "symbol": scenario["symbol"],
                     "slippage_bps": round(result.slippage_bps, 6),
+                    "effective_fill_ratio": round(result.effective_fill_ratio, 6),
+                    "paper_execution_status": result.paper_execution_status,
+                    "paper_execution_score": round(result.paper_execution_score, 6),
                     "cancel_probability": round(result.cancel_probability, 6),
                     "requote_probability": round(result.requote_probability, 6),
+                    "reject_probability": round(result.reject_probability, 6),
+                    "stale_quote_probability": round(result.stale_quote_probability, 6),
                     "queue_priority_score": round(result.queue_priority_score, 6),
+                    "queue_fill_probability": round(result.queue_fill_probability, 6),
                     "session_penalty_bps": round(result.session_penalty_bps, 6),
                     "crowding_penalty_bps": round(result.crowding_penalty_bps, 6),
+                    "market_impact_bps": round(result.market_impact_bps, 6),
+                    "option_liquidity_penalty_bps": round(result.option_liquidity_penalty_bps, 6),
                     "latency_bucket": result.latency_bucket,
                     "spread_regime": result.spread_regime,
+                    "asset_class": result.asset_class,
                 }
             )
     worst = sorted(rows, key=lambda row: float(row.get("slippage_bps", 0.0) or 0.0), reverse=True)[:6]
@@ -69,8 +85,16 @@ def build_payload() -> dict:
         "top_worst_case_scenarios": worst,
         "capabilities": {
             "venue_session_specific_latency": True,
+            "fee_spread_slippage_haircut": True,
+            "partial_fill_modeling": True,
             "queue_priority_modeling": True,
+            "market_impact_modeling": True,
             "requote_probability": True,
+            "reject_cancel_stale_quote_modeling": True,
+            "realistic_option_fills": True,
+            "execution_quality_scoring": True,
+            "sleeve_specific_friction": True,
+            "live_shadow_calibration_inputs": True,
             "short_borrow_stress": True,
             "spread_and_crowding_calibration": True,
         },

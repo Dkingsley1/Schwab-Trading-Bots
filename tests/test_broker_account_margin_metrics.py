@@ -39,6 +39,43 @@ def test_extract_account_metrics_prefers_current_balances_over_initial_day_tradi
     assert metrics["maintenance_margin_requirement"] == 39894.55
 
 
+def test_extract_account_metrics_sums_connected_accounts() -> None:
+    payload = {
+        "accounts": [
+            {
+                "securitiesAccount": {
+                    "currentBalances": {
+                        "liquidationValue": 10000.0,
+                        "cashBalance": 1000.0,
+                        "availableFunds": 800.0,
+                        "buyingPower": 1200.0,
+                        "maintenanceRequirement": 2000.0,
+                    }
+                }
+            },
+            {
+                "securitiesAccount": {
+                    "currentBalances": {
+                        "liquidationValue": 25000.0,
+                        "cashBalance": 1500.0,
+                        "availableFunds": 900.0,
+                        "buyingPower": 1800.0,
+                        "maintenanceRequirement": 3000.0,
+                    }
+                }
+            },
+        ]
+    }
+
+    metrics = loop._extract_account_metrics(payload)
+
+    assert metrics["equity"] == 35000.0
+    assert metrics["cash_balance"] == 2500.0
+    assert metrics["available_funds"] == 1700.0
+    assert metrics["buying_power"] == 3000.0
+    assert metrics["maintenance_margin_requirement"] == 5000.0
+
+
 def test_broker_margin_available_proxy_uses_available_funds_before_cash_or_large_buying_power() -> None:
     broker_truth = {
         "account_metrics": {

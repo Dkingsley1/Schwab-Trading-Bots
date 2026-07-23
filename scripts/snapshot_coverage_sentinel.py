@@ -1,6 +1,7 @@
 import argparse
 import json
 import re
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MASTER_CONTROL_DAY_RE = re.compile(r"master_control_(\d{8})\.jsonl$")
 REVERSE_SCAN_BLOCK_BYTES = 256 * 1024
 RUNTIME_TRAINING_SNAPSHOT_REL = Path("exports/training/runtime_training_snapshot_latest.jsonl")
+STALE_TAIL_ROW_LIMIT = 50
 
 
 def _parse_ts(raw: Any):
@@ -64,6 +66,7 @@ def _candidate_master_control_files(project_root: Path, since: datetime) -> list
     files = [
         path
         for path in (project_root / "governance").glob("shadow*/master_control_*.jsonl")
+        if ".__external_symlink_backup_" not in path.parent.name
         if _file_overlaps_window(path, since)
     ]
     files.sort(key=lambda path: (path.parent.name, path.name))
@@ -94,6 +97,7 @@ def _iter_recent_jsonl_rows(path: Path, since: datetime, *, block_bytes: int = R
                 return
             pending = b""
             seen_recent = False
+            stale_tail_rows = 0
             while position > 0:
                 size = min(max(int(block_bytes), 1024), position)
                 position -= size
@@ -123,11 +127,34 @@ def _iter_recent_jsonl_rows(path: Path, since: datetime, *, block_bytes: int = R
                     if ts < since:
                         if seen_recent:
                             return
+                        stale_tail_rows += 1
+                        if stale_tail_rows >= STALE_TAIL_ROW_LIMIT:
+                            return
                         continue
+                    stale_tail_rows = 0
                     seen_recent = True
                     yield row
     except FileNotFoundError:
         return
+
+
+def _iter_jsonl_tail_rows(path: Path, *, max_rows: int = 10000):
+    """Yield a bounded tail of JSONL rows without applying timestamp freshness."""
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            lines = deque(handle, maxlen=max(int(max_rows), 1))
+    except FileNotFoundError:
+        return
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(row, dict):
+            yield row
 
 
 def build_payload(
@@ -147,6 +174,11 @@ def build_payload(
     candidate_files = _candidate_master_control_files(project_root, since)
     fallback_sources: list[str] = []
     primary_sources: list[str] = []
+    required_unique_snapshots = max(1, int((expected_symbols * float(min_coverage_ratio)) + 0.999999))
+    stopped_after_reaching_floor = False
+
+    def _coverage_floor_reached() -> bool:
+        return total_rows > 0 and len(unique_snapshot_ids) >= required_unique_snapshots
 
     runtime_snapshot = _runtime_training_snapshot_file(project_root)
     scan_paths: list[Path] = []
@@ -163,16 +195,24 @@ def build_payload(
             if snapshot_id:
                 snapshot_rows += 1
                 unique_snapshot_ids.add(str(snapshot_id))
+            if _coverage_floor_reached():
+                stopped_after_reaching_floor = True
+                break
+        if stopped_after_reaching_floor:
+            break
 
     if total_rows <= 0:
-        if runtime_snapshot.exists() and runtime_snapshot not in scan_paths:
+        if runtime_snapshot.exists():
             fallback_sources.append(str(runtime_snapshot))
-            for row in _iter_recent_jsonl_rows(runtime_snapshot, since):
+            for row in _iter_jsonl_tail_rows(runtime_snapshot):
                 total_rows += 1
                 snapshot_id = row.get("snapshot_id")
                 if snapshot_id:
                     snapshot_rows += 1
                     unique_snapshot_ids.add(str(snapshot_id))
+                if _coverage_floor_reached():
+                    stopped_after_reaching_floor = True
+                    break
 
     unique_count = len(unique_snapshot_ids)
     expected_floor = max(expected_symbols, 1)
@@ -191,6 +231,8 @@ def build_payload(
         "rows_scanned": total_rows,
         "rows_with_snapshot_id": snapshot_rows,
         "unique_snapshot_ids": unique_count,
+        "required_unique_snapshot_floor": required_unique_snapshots,
+        "stopped_after_reaching_floor": bool(stopped_after_reaching_floor),
         "coverage_ratio": round(coverage_ratio, 6),
         "min_coverage_ratio": float(min_coverage_ratio),
     }

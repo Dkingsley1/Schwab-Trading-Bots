@@ -9,11 +9,75 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.ops import external_backlog_drain as src
+from scripts.ops import sql_link_shard_manager as shard_manager
 
 
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+def test_sql_link_shard_manager_can_ignore_stale_active_request(tmp_path: Path, monkeypatch) -> None:
+    request_path = tmp_path / "sql_link_service_request_latest.json"
+    _write_json(
+        request_path,
+        {
+            "active": True,
+            "request_kind": "backpressure_drainer_fleet",
+            "requested_at": "2026-05-28T00:03:19+00:00",
+            "expires_utc": "2099-01-01T00:00:00+00:00",
+            "reason": "runtime_channel_drainer",
+            "env_overrides": {"SQL_LINK_SERVICE_SHARDS": "runtime,crypto_runtime,health_fast"},
+        },
+    )
+
+    monkeypatch.delenv("SQL_LINK_SERVICE_IGNORE_ACTIVE_REQUEST", raising=False)
+    assert shard_manager._load_active_request(request_path)["env_overrides"]["SQL_LINK_SERVICE_SHARDS"] == "runtime,crypto_runtime,health_fast"
+
+    monkeypatch.setenv("SQL_LINK_SERVICE_IGNORE_ACTIVE_REQUEST", "1")
+    assert shard_manager._load_active_request(request_path) == {}
+
+
+def test_external_backlog_drain_drops_blank_shard_path_filters() -> None:
+    profile, env = src._drain_env(
+        {},
+        critical=True,
+        off_hours_active=True,
+        core_focus={
+            "concentrated": True,
+            "top3_pending_lines": 90000,
+            "top3_share": 0.95,
+            "hotspots": [
+                {
+                    "source_rel": "decisions/shadow_bond_equities/trade_decisions_20260612.jsonl",
+                    "pending_lines": 90000,
+                    "age_seconds": 1800.0,
+                }
+            ],
+        },
+        backpressure={
+            "top_deferred_pending_files": [
+                {
+                    "source_rel": "decision_explanations/shadow_bond_equities/decision_explanations_20260612.jsonl",
+                    "shard": "crypto_explanations",
+                    "pending_lines": 80000,
+                    "oldest_pending_age_seconds": 1800.0,
+                }
+            ],
+        },
+    )
+
+    assert profile == "offhours_external_backlog_drain"
+    assert env["SQL_LINK_SERVICE_SHARD_TRADING_PATH_CONTAINS"] == (
+        "decisions/shadow_bond_equities/trade_decisions_20260612.jsonl"
+    )
+    assert env["SQL_LINK_SERVICE_SHARD_EXPLANATIONS_PATH_CONTAINS"] == (
+        "decision_explanations/shadow_bond_equities/decision_explanations_20260612.jsonl"
+    )
+    assert "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_PATH_CONTAINS" not in env
+    assert "SQL_LINK_SERVICE_SHARD_CRYPTO_EXPLANATIONS_PATH_CONTAINS" not in env
+    assert "SQL_LINK_SERVICE_SHARD_GOVERNANCE_PATH_CONTAINS" not in env
+    assert all(value.strip() for key, value in env.items() if key.endswith("_PATH_CONTAINS"))
 
 
 def test_external_backlog_drain_builds_offhours_plan(tmp_path: Path) -> None:
@@ -83,6 +147,7 @@ def test_external_backlog_drain_builds_offhours_plan(tmp_path: Path) -> None:
     assert payload["drain_overrides"]["preferred_shards"] == ["governance", "health_fast", "support_watchdog"]
     assert payload["drain_overrides"]["governance_max_files"] == 14
     assert payload["drain_overrides"]["governance_max_lines_per_file"] == 64000
+    assert payload["drain_overrides"]["resource_guard_optional_max_load_per_core"] == 12.0
     assert payload["drain_overrides"]["governance_path_focus"] == [
         "governance/execution_lanes/execution_results_20260406.jsonl",
         "governance/execution_lanes/execution_promotions_20260406.jsonl",
@@ -426,6 +491,65 @@ def test_external_backlog_drain_uses_storage_overlay_leaders_for_focus(tmp_path:
     ]
     assert payload["drain_overrides"]["risk_support_max_lines_per_file"] == 800000
     assert any("risk-support shard pinned" in item for item in payload["top_actions"])
+
+
+def test_external_backlog_drain_routes_overlay_explanations_by_shard(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 2000,
+            "pending_lines_total": 2500,
+            "pending_lines_deferred": 500,
+            "pending_lines_cold": 0,
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "backpressure": {
+                "core_pending_lines": 2000,
+                "deferred_pending_lines": 500,
+                "cold_pending_lines": 90000,
+                "total_pending_lines": 92500,
+                "overlay_adjusted": True,
+                "oldest_pending_age_seconds": 36000.0,
+            },
+            "stale_pending_locator": {
+                "top_pending_sources": [
+                    {
+                        "source_rel": "decision_explanations/shadow_neural_operator_surrogates_equities/decision_explanations_20260525.jsonl",
+                        "shard": "crypto_explanations",
+                        "pressure_lane": "cold",
+                        "pending_lines": 64000,
+                        "oldest_pending_age_seconds": 36000.0,
+                    }
+                ],
+                "oldest_sources": [],
+            },
+        },
+    )
+    _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 20})
+    _write_json(health / "storage_mount_guard_latest.json", {"external_available": True, "storage_mode": "external"})
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    monkeypatch.setattr(
+        src.governor_src,
+        "build_payload",
+        lambda *args, **kwargs: {"profile": "critical_backpressure", "env_overrides": {}},
+    )
+
+    payload = src.build_payload(
+        project_root,
+        apply=False,
+        now_utc=datetime(2026, 5, 25, 13, 40, tzinfo=timezone.utc),
+    )
+
+    assert payload["drain_overrides"]["preferred_shards"][0] == "crypto_explanations"
+    assert payload["drain_overrides"]["crypto_explanations_path_focus"] == [
+        "decision_explanations/shadow_neural_operator_surrogates_equities/decision_explanations_20260525.jsonl",
+    ]
+    assert payload["drain_overrides"]["crypto_explanations_max_lines_per_file"] == 64000
 
 
 def test_external_backlog_drain_does_not_recommend_broad_sweep_for_tiny_hot_queue(tmp_path: Path) -> None:
@@ -779,6 +903,7 @@ def test_external_backlog_drain_apply_executes_and_refreshes_backlog(tmp_path: P
             assert env_overrides is not None
             assert env_overrides["INGEST_MAX_DEFERRED_FILES"] == "6"
             assert env_overrides["JSONL_SQL_MAX_COLD_LANE_FILES"] == "2"
+            assert env_overrides["SQL_LINK_SERVICE_IGNORE_ACTIVE_REQUEST"] == "1"
             assert env_overrides["SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB"] == "0.25"
             assert env_overrides["SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"] == "90"
             assert env_overrides["SQL_LINK_SERVICE_AUTO_HOT_RETENTION"] == "0"
@@ -895,6 +1020,92 @@ def test_external_backlog_drain_follow_through_retries_busy_writer(tmp_path: Pat
     assert payload["steps"]["sql_link_service_request"]["status"] == "ok"
     assert payload["service_request"]["request_kind"] == "external_backlog_drain"
     assert (project_root / "governance" / "health" / "sql_link_service_request_latest.json").exists()
+
+
+def test_external_backlog_drain_preserves_focused_drainer_handoff(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    request_path = health / "sql_link_service_request_latest.json"
+    _write_json(
+        request_path,
+        {
+            "timestamp_utc": "2026-04-06T20:59:00+00:00",
+            "active": True,
+            "request_kind": "backpressure_drainer_fleet",
+            "reason": "backpressure_drainer_fleet:stale_decision_log_drainer",
+            "requested_at": "2026-04-06T20:59:00+00:00",
+            "expires_utc": "2026-04-06T21:20:00+00:00",
+            "assigned_pressure_lane": "stale_decision_log_backpressure",
+            "env_overrides": {
+                "SQL_LINK_SERVICE_SHARDS": "trading,aggressive_trading,crypto_trading,health_fast",
+                "SQL_LINK_SERVICE_SHARD_TRADING_PATH_CONTAINS": "governance/channels/decision/conservative_equities_schwab/decision_20260406.jsonl",
+            },
+        },
+    )
+    _write_json(health / "ingestion_backpressure_latest.json", {"pending_lines": 50, "pending_lines_total": 100, "pending_lines_deferred": 40, "pending_lines_cold": 10})
+    _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 2})
+    _write_json(health / "storage_mount_guard_latest.json", {"external_available": True, "storage_mode": "external"})
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    lock_path = project_root / "governance" / "locks" / "jsonl_sql_writer.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("pid=4321 started=2026-04-06T20:00:00+00:00 cmd=sql_link_shard_manager", encoding="utf-8")
+
+    monkeypatch.setattr(src, "SQL_WRITER_LOCK_PATH", lock_path)
+    monkeypatch.setattr(
+        src.governor_src,
+        "build_payload",
+        lambda *args, **kwargs: {"profile": "critical_backpressure", "env_overrides": {}},
+    )
+    monkeypatch.setattr(src.time_mod, "sleep", lambda seconds: None)
+
+    def _fake_run(
+        cmd: list[str],
+        *,
+        cwd: Path,
+        payload_path: Path | None = None,
+        env_overrides: dict[str, str] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> dict:
+        joined = " ".join(cmd)
+        if "ingestion_backpressure_guard.py" in joined:
+            payload = {"pending_lines": 50, "pending_lines_total": 100, "pending_lines_deferred": 40, "pending_lines_cold": 10}
+        elif "ingestion_priority_queue.py" in joined:
+            payload = {"queue_depth": 2}
+        elif "resource_guard.py" in joined:
+            payload = {"ok": True}
+        elif "sql_link_shard_manager.py" in joined:
+            payload = {"ok": False, "reason": "writer_lock_busy", "busy": True}
+        elif "sqlite_performance_maintenance.py" in joined:
+            payload = {"ok": True}
+        elif "stale_artifact_sweeper_bot.py" in joined:
+            payload = {"ok": True, "summary": {"candidate_files": 0, "staged_files": 0}}
+        elif "stale_artifact_reaper_bot.py" in joined:
+            payload = {"ok": True, "summary": {"candidate_files": 0, "deleted_files": 0}}
+        elif "data_retention_policy.py" in joined:
+            payload = {"ok": True, "deleted": 0}
+        else:
+            raise AssertionError(f"unexpected command: {cmd}")
+        if payload_path is not None:
+            _write_json(payload_path, payload)
+        return {"cmd": cmd, "rc": 0, "duration_ms": 5.0, "payload": payload, "stdout_tail": "", "stderr_tail": "", "timed_out": False}
+
+    monkeypatch.setattr(src, "_run_json_command", _fake_run)
+
+    payload = src.build_payload(
+        project_root,
+        apply=True,
+        follow_through=True,
+        poll_seconds=0.1,
+        wait_timeout_seconds=1.0,
+        now_utc=datetime(2026, 4, 6, 21, 0, tzinfo=timezone.utc),
+    )
+
+    assert payload["follow_through"]["status"] == "handoff_requested"
+    assert payload["service_request"]["request_kind"] == "backpressure_drainer_fleet"
+    assert payload["service_request"]["preserved_existing_request"] is True
+    persisted = json.loads(request_path.read_text(encoding="utf-8"))
+    assert persisted["request_kind"] == "backpressure_drainer_fleet"
+    assert persisted["reason"] == "backpressure_drainer_fleet:stale_decision_log_drainer"
 
 
 def test_follow_through_retry_marks_progressing_timeout(tmp_path: Path, monkeypatch) -> None:

@@ -85,6 +85,7 @@ def test_training_data_intake_builds_focus_from_contract_and_needs(tmp_path: Pat
     assert "options_chain" in record["focus_context"]
     assert "greeks" in record["expanded_context"]
     assert "sample_starved" in record["weaknesses"]
+    assert "label_depth_gap" in record["weaknesses"]
     assert "label_imbalanced" in record["weaknesses"]
     assert "runtime_depth_debt" in record["weaknesses"]
     assert "label_outcome_join" in record["enrichment_context"]
@@ -93,8 +94,74 @@ def test_training_data_intake_builds_focus_from_contract_and_needs(tmp_path: Pat
     assert record["sample_enrichment_plan"]["intensity"] == "high"
     assert record["label_repair_plan"]["required_join_mode"] == "point_in_time_only"
     assert "label_outcome_join" in record["label_repair_plan"]["required_label_outputs"]
+    assert record["label_depth_bridge"]["status"] == "collect_and_materialize"
+    assert "sample_eligibility_reason" in record["label_depth_bridge"]["required_label_outputs"]
     assert record["label_repair_plan"]["balance_targets"]["positive_rate_min"] == 0.35
     assert payload["summaries"]["context_counts"]["options_chain"] == 1
+
+
+def test_training_data_intake_explicit_include_admits_active_training_repair_target(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v100_stock_crypto_overlap_context"
+    registry_path = project_root / "master_bot_registry.json"
+    needs_path = project_root / "governance" / "health" / "bot_needs_intelligence_latest.json"
+    quality_path = project_root / "governance" / "health" / "training_quality_control_latest.json"
+    _write_json(
+        registry_path,
+        {
+            "summary": {},
+            "sub_bots": [
+                {
+                    "bot_id": bot_id,
+                    "bot_role": "signal_sub_bot",
+                    "active": True,
+                    "data_collection_active": False,
+                    "lifecycle_state": "active",
+                    "minimum_training_observations": 0,
+                    "label_contract": {
+                        "label_family": "correlation_risk_effect",
+                        "required_context": ["cross_asset_correlation"],
+                    },
+                }
+            ],
+        },
+    )
+    _write_json(
+        needs_path,
+        {
+            "bot_needs": [
+                {
+                    "bot_id": bot_id,
+                    "primary_need": "targeted_quality_retrain",
+                    "priority": 84,
+                    "evidence": {
+                        "sample_count": 263,
+                        "observation_count": 263,
+                        "eligible_sequences": 22,
+                        "positive_rate": 0.43,
+                        "acted_coverage": 0.74,
+                        "quality_score": 0.0,
+                    },
+                }
+            ]
+        },
+    )
+    _write_json(quality_path, {"targeted_actions": {}})
+
+    payload = src.build_payload(
+        project_root=project_root,
+        registry_path=registry_path,
+        bot_needs_path=needs_path,
+        training_quality_path=quality_path,
+        include_bot_ids={bot_id},
+        apply=False,
+    )
+
+    assert payload["collector_count"] == 1
+    record = payload["focus_records"][0]
+    assert record["bot_id"] == bot_id
+    assert "overacting" in record["weaknesses"]
+    assert "cross_asset_correlation" in record["focus_context"]
 
 
 def test_training_data_intake_adds_advanced_quant_section_contract(tmp_path: Path) -> None:
@@ -238,6 +305,7 @@ def test_training_data_intake_apply_writes_registry_focus_metadata(tmp_path: Pat
     assert "runtime_health" in row["data_collection_enrichment_context"]
     assert row["data_collection_sample_enrichment_plan"]["usable_sample_goal"] == 200
     assert row["data_collection_label_repair_plan"]["plan_version"] == "label_repair_v1"
+    assert row["data_collection_label_depth_bridge"]["version"] == "label_depth_bridge_v1"
     assert "sample_eligibility_reason" in row["data_collection_label_repair_plan"]["required_label_outputs"]
 
 

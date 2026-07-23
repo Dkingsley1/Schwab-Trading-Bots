@@ -24,6 +24,30 @@ class _FailingTrader:
         raise AssertionError("shared broker truth snapshot should have been reused")
 
 
+class _SnapshotTrader:
+    client = object()
+
+    def __init__(self, fetched: dict):
+        self._fetched = dict(fetched)
+
+    def _live_fetch_accounts_payload(self):
+        return dict(self._fetched)
+
+    def _extract_all_positions_from_payload(self, payload):
+        rows = []
+        if isinstance(payload, dict):
+            sec = payload.get("securitiesAccount") if isinstance(payload.get("securitiesAccount"), dict) else payload
+            for row in sec.get("positions", []) if isinstance(sec, dict) else []:
+                inst = row.get("instrument") if isinstance(row, dict) and isinstance(row.get("instrument"), dict) else {}
+                symbol = str(inst.get("symbol") or "").strip().upper()
+                if symbol:
+                    rows.append({"symbol": symbol, "quantity": float(row.get("longQuantity", row.get("quantity", 0.0)) or 0.0)})
+        return rows
+
+    def _extract_open_order_ids_from_payload(self, payload):
+        return []
+
+
 def test_shared_broker_truth_snapshot_reuses_recent_cached_payload(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(loop, "PROJECT_ROOT", str(tmp_path))
     cache_path = loop._broker_truth_shared_snapshot_cache_path(str(tmp_path), "schwab")
@@ -92,3 +116,144 @@ def test_fetch_broker_truth_snapshot_suppresses_duplicate_soft_fail_alert_from_s
     assert snapshot["soft_failure"] is True
     assert snapshot["shared_snapshot_cache_hit"] is True
     assert snapshot["alert_suppressed"] is True
+
+
+def test_fetch_broker_truth_snapshot_rejects_empty_ok_snapshot(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(loop, "PROJECT_ROOT", str(tmp_path))
+
+    snapshot = loop._fetch_broker_truth_snapshot(
+        trader=_SnapshotTrader({"ok": True, "payload": {}}),
+        broker="schwab",
+        simulate=False,
+        iter_count=3,
+        manual_payload={},
+        manual_tolerance=1.0,
+        previous_state={},
+    )
+
+    assert snapshot["ok"] is False
+    assert snapshot["status"] == "empty_snapshot"
+    assert snapshot["error"] == "empty_or_unrecognized_accounts_snapshot"
+    assert snapshot["account_snapshot_proof"]["account_snapshot_proof_ok"] is False
+
+
+def test_fetch_broker_truth_snapshot_accepts_verified_empty_account(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(loop, "PROJECT_ROOT", str(tmp_path))
+
+    snapshot = loop._fetch_broker_truth_snapshot(
+        trader=_SnapshotTrader({"ok": True, "payload": {"securitiesAccount": {"positions": []}}}),
+        broker="schwab",
+        simulate=False,
+        iter_count=3,
+        manual_payload={},
+        manual_tolerance=1.0,
+        previous_state={},
+    )
+
+    assert snapshot["ok"] is True
+    assert snapshot["status"] == "ok"
+    assert snapshot["account_count"] == 1
+    assert snapshot["position_count"] == 0
+    assert snapshot["account_snapshot_proof"]["account_snapshot_proof_ok"] is True
+    assert snapshot["broker_truth_reconcile_v2"]["truth_grade"] in {"A", "B"}
+    assert snapshot["broker_truth_reconcile_v2"]["account_identity"]["account_count"] == 1
+
+
+def test_fetch_broker_truth_snapshot_v2_tracks_balance_orders_and_deltas(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(loop, "PROJECT_ROOT", str(tmp_path))
+    payload = {
+        "securitiesAccount": {
+            "accountNumber": "123456789",
+            "currentBalances": {
+                "cashBalance": 1000.0,
+                "buyingPower": 2500.0,
+                "liquidationValue": 5000.0,
+            },
+            "positions": [{"instrument": {"symbol": "AAPL"}, "longQuantity": 3}],
+            "orderStrategies": [
+                {"orderId": 1, "status": "FILLED"},
+                {"orderId": 2, "status": "WORKING"},
+            ],
+        }
+    }
+
+    snapshot = loop._fetch_broker_truth_snapshot(
+        trader=_SnapshotTrader({"ok": True, "payload": payload}),
+        broker="schwab",
+        simulate=False,
+        iter_count=4,
+        manual_payload={"symbols": {"AAPL": {"position_qty": 1}}},
+        manual_tolerance=0.1,
+        previous_state={},
+    )
+
+    v2 = snapshot["broker_truth_reconcile_v2"]
+    assert snapshot["status"] == "mismatch"
+    assert v2["truth_grade"] in {"A", "C"}
+    assert v2["balance_truth"]["has_balance_truth"] is True
+    assert v2["order_truth"]["filled_order_count"] == 1
+    assert v2["order_truth"]["pending_order_count"] == 1
+    assert v2["paper_ledger_delta"]["delta_symbol_count"] == 1
+
+
+def test_clear_critical_alert_latest_removes_matching_broker_truth_alert(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(loop, "PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SHADOW_PROFILE", "aggressive")
+    monkeypatch.setenv("SHADOW_DOMAIN", "equities")
+    alert_path = Path(loop._critical_alert_latest_path(str(tmp_path), "schwab"))
+    alert_path.parent.mkdir(parents=True, exist_ok=True)
+    alert_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "event": "broker_truth_reconcile",
+                "severity": "critical",
+                "message": "error",
+                "broker": "schwab",
+                "profile": "aggressive",
+                "domain": "equities",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = loop._clear_critical_alert_latest(
+        project_root=str(tmp_path),
+        broker="schwab",
+        event="broker_truth_reconcile",
+    )
+
+    assert result["cleared"] is True
+    assert not alert_path.exists()
+
+
+def test_clear_critical_alert_latest_keeps_unrelated_alert(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(loop, "PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SHADOW_PROFILE", "aggressive")
+    monkeypatch.setenv("SHADOW_DOMAIN", "equities")
+    alert_path = Path(loop._critical_alert_latest_path(str(tmp_path), "schwab"))
+    alert_path.parent.mkdir(parents=True, exist_ok=True)
+    alert_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "event": "options_margin_guard",
+                "severity": "critical",
+                "message": "blocked",
+                "broker": "schwab",
+                "profile": "aggressive",
+                "domain": "equities",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = loop._clear_critical_alert_latest(
+        project_root=str(tmp_path),
+        broker="schwab",
+        event="broker_truth_reconcile",
+    )
+
+    assert result["cleared"] is False
+    assert result["reason"] == "event_mismatch"
+    assert alert_path.exists()

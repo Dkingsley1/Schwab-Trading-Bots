@@ -173,6 +173,53 @@ def test_promotion_packet_builder_accepts_seed_ready_training_and_schema_contrac
     assert payload["gate_seed_results"]["training_success_seed_ready"] is True
 
 
+def test_promotion_packet_builder_scopes_new_bot_admission_to_trained_targets() -> None:
+    payload = src.build_payload(
+        retrain_scorecard={
+            "target_count": 1,
+            "failure_count": 0,
+            "master_update_status": "updated_registry:1",
+            "target_outcomes": [{"bot_id": "brain_refinery_v10_seasonal", "status": "trained"}],
+            "lineage": {"git_commit": "abc123", "weekly_retrain_script_sha256": "f" * 64},
+        },
+        training_success={"confirmed_training_success": True},
+        feature_store_manifest={
+            "strict_ok": True,
+            "dataset_contract": {"rows_path": "/tmp/runtime.jsonl", "rows_sha256": "rows-hash"},
+            "point_in_time_contract": {"dataset_join_keys": ["snapshot_id"], "event_join_keys": ["join_key"]},
+            "feature_contract": {"env_hash": "env-hash"},
+            "label_contract": {"feature_schema_version": "trade_behavior_features_v4", "horizons": {"primary_seconds": 300}},
+            "contract_hashes": {"dataset_manifest_sha256": "a" * 64, "point_in_time_contract_sha256": "b" * 64},
+        },
+        replay_hash_registry_guard={"ok": True, "details": {"paper": {}, "e2e": {}}},
+        bot_support_owner_guard={"ok": True},
+        new_bot_admission_guard={
+            "ok": False,
+            "blocking_candidates": [{"bot_id": "brain_refinery_v13_choppy"}],
+        },
+        schema_compatibility_guard={"ok": True},
+        golden_replay_regression_guard={"ok": True},
+        cohort_drift_baseline_guard={"ok": True},
+        probation_guard={"ok": True},
+        champion_registry={"champion": {"name": "alpha"}},
+        content_store={"manifest_hash": "c" * 64},
+        master_registry={
+            "sub_bots": [
+                {
+                    "bot_id": "brain_refinery_v10_seasonal",
+                    "active": True,
+                    "model_path": "/tmp/missing.npz",
+                }
+            ]
+        },
+        signing_key="test-signing-key",
+        signing_source="unit-test",
+    )
+
+    assert payload["gate_results"]["new_bot_admission_ok"] is True
+    assert payload["new_bot_admission_relevant_blocking_ids"] == []
+
+
 def test_promotion_packet_builder_allows_signed_idle_packets_with_replayability_contract(tmp_path: Path) -> None:
     payload = src.build_payload(
         retrain_scorecard={
@@ -287,3 +334,44 @@ def test_load_training_success_contract_ignores_stale_failed_run_when_newer_retr
     assert payload["provisional_training_success"] is True
     assert payload["source_contract"] == "training_success_stale_fallback"
     assert payload["stale_source_ignored"] is True
+
+
+def test_load_training_success_contract_repairs_legacy_absent_data_quality_marker(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+
+    (health / "training_success_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime(2026, 5, 30, 14, 14, tzinfo=timezone.utc).isoformat(),
+                "confirmed_training_success": False,
+                "training_completed_ok": True,
+                "promotion_applied": True,
+                "trained_count": 1,
+                "failure_count": 0,
+                "reason": "data_quality_not_ok",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (health / "training_quality_control_latest.json").write_text(
+        json.dumps({"overall_status": "needs_attention", "training_quality_score": 100.0}),
+        encoding="utf-8",
+    )
+    (health / "training_report_latest.json").write_text(
+        json.dumps({"overall_status": "ready"}),
+        encoding="utf-8",
+    )
+
+    old_root = src.PROJECT_ROOT
+    try:
+        src.PROJECT_ROOT = project_root
+        payload = src._load_training_success_contract(health / "training_success_latest.json")
+    finally:
+        src.PROJECT_ROOT = old_root
+
+    assert payload["confirmed_training_success"] is True
+    assert payload["provisional_training_success"] is True
+    assert payload["legacy_absent_data_quality_repaired"] is True
+    assert payload["source_contract"] == "training_success_absent_data_quality_repair"

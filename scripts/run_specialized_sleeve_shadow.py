@@ -14,6 +14,7 @@ from core.runtime_python import resolve_runtime_python
 from core.exotic_derivatives_plumbing import is_exotic_derivative_sleeve
 
 
+os.environ.setdefault("BOT_RUNTIME_LANE", os.getenv("BOT_SHADOW_RUNTIME_LANE", "canary314"))
 VENV_PY = resolve_runtime_python(PROJECT_ROOT)
 SHADOW_LOOP = PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py"
 LOAD_RUNTIME_ENV = PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh"
@@ -894,6 +895,18 @@ SLEEVE_DEFAULTS = {
         "correlation_peers": "alpha_research_os,feature_quality_data_confidence,model_risk_validation,runtime_capacity_governance,causal_regime_discovery",
         "source_gated": "0",
         "source_profile": "active_learning,causal_intervention,semantic_feature_ontology,bayesian_model_averaging,research_debt",
+    },
+    "cross_sleeve_evidence_court": {
+        "symbols": "SPY,QQQ,IWM,DIA,TLT,IEF,SHY,LQD,HYG,JNK,GLD,UUP,VIXY,UVXY,XLK,XLF,XLE,XLV,SMH,AAPL,MSFT,NVDA,JPM,XOM,BTC-USD,ETH-USD,IBIT,ETHA",
+        "context_symbols": "SPY,QQQ,IWM,TLT,IEF,LQD,HYG,JNK,GLD,UUP,VIXY,UVXY,XLK,XLF,XLE,XLV,SMH,BTC-USD,ETH-USD,IBIT,ETHA,/ES,/NQ,/RTY,/ZN,/CL,/GC",
+        "interval": "900",
+        "min_interval": "600",
+        "threshold_shift": "+0.26",
+        "domain": "quant_models",
+        "family": "cross_sleeve_evidence_court",
+        "correlation_peers": "alpha_research_os,research_meta_governance,signal_governance_integrity,feature_quality_data_confidence,model_risk_validation,portfolio_construction,broker_truth_reconcile",
+        "source_gated": "0",
+        "source_profile": "sleeve_disagreement,decision_provenance,label_provenance,paper_trade_attribution,broker_truth_reconcile,evidence_pack",
     },
 }
 

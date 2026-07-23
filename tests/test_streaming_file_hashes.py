@@ -173,6 +173,196 @@ def test_incremental_snapshot_sequences_merge_new_runtime_rows(tmp_path, monkeyp
     assert meta["incremental_row_count"] == 1
 
 
+def test_incremental_snapshot_sequences_marks_partial_when_candidate_row_budget_hits(tmp_path, monkeypatch) -> None:
+    base_ts = datetime.now(timezone.utc) - timedelta(minutes=30)
+    rows_path = tmp_path / "exports" / "training" / "runtime_training_snapshot_latest.jsonl"
+    rows_path.parent.mkdir(parents=True, exist_ok=True)
+    rows_path.write_text(
+        json.dumps(
+            {
+                "mode": "shadow_crypto",
+                "symbol": "BTC-USD",
+                "strategy": "grand_master_bot",
+                "strategy_priority": 0,
+                "snapshot_id": "snap-base",
+                "ts_epoch": float(base_ts.timestamp()),
+                "timestamp_utc": base_ts.isoformat(),
+                "price": 100.0,
+                "features": {"last_price": 100.0, "pct_from_close": 0.01},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    health_path = tmp_path / "governance" / "health" / "runtime_training_snapshot_latest.json"
+    health_path.parent.mkdir(parents=True, exist_ok=True)
+    summary = {
+        "timestamp_utc": base_ts.isoformat(),
+        "project_root": str(tmp_path),
+        "lookback_days": 14,
+        "mode_allowlist": [],
+        "symbol_allowlist": [],
+        "prefer_sqlite": True,
+        "rows_path": str(rows_path),
+        "sequence_count": 1,
+        "row_count": 1,
+    }
+    health_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    new_path = tmp_path / "decision_explanations" / "shadow_crypto" / "decision_explanations_20260413.jsonl"
+    new_path.parent.mkdir(parents=True, exist_ok=True)
+    new_ts = datetime.now(timezone.utc)
+    new_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp_utc": new_ts.isoformat(),
+                        "mode": "shadow_crypto",
+                        "symbol": "BTC-USD",
+                        "strategy": "grand_master_bot",
+                        "features": {"last_price": 101.0, "pct_from_close": 0.02},
+                        "metadata": {"layer": "grand_master", "snapshot_id": "snap-new-1"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp_utc": (new_ts + timedelta(seconds=1)).isoformat(),
+                        "mode": "shadow_crypto",
+                        "symbol": "BTC-USD",
+                        "strategy": "grand_master_bot",
+                        "features": {"last_price": 102.0, "pct_from_close": 0.03},
+                        "metadata": {"layer": "grand_master", "snapshot_id": "snap-new-2"},
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(snapshot_builder.rtc, "_recent_decision_paths", lambda *_args, **_kwargs: [new_path])
+    monkeypatch.setattr(snapshot_builder.rtc, "_load_runtime_gap_fill_context", lambda *_args, **_kwargs: {})
+
+    incremental = snapshot_builder._incremental_snapshot_sequences(
+        summary,
+        project_root=tmp_path,
+        health_path=health_path,
+        lookback_days=2,
+        mode_allowlist=[],
+        symbol_allowlist=[],
+        prefer_sqlite=True,
+        max_candidate_rows=1,
+    )
+
+    assert incremental is not None
+    sequences, meta = incremental
+    rows = sequences[("shadow_crypto", "BTC-USD")]
+    assert [row["snapshot_id"] for row in rows] == ["snap-base", "snap-new-1"]
+    assert meta["incremental_partial"] is True
+    assert meta["incremental_scan"]["candidate_scan_row_limit_hit"] is True
+    assert meta["incremental_scan"]["candidate_json_row_count"] == 1
+
+
+def test_incremental_snapshot_sequences_recovers_split_channel_price(tmp_path, monkeypatch) -> None:
+    base_ts = datetime.now(timezone.utc) - timedelta(minutes=30)
+    rows_path = tmp_path / "exports" / "training" / "runtime_training_snapshot_latest.jsonl"
+    rows_path.parent.mkdir(parents=True, exist_ok=True)
+    rows_path.write_text(
+        json.dumps(
+            {
+                "mode": "shadow_crypto",
+                "symbol": "BTC-USD",
+                "strategy": "grand_master_bot",
+                "strategy_priority": 0,
+                "snapshot_id": "snap-base",
+                "ts_epoch": float(base_ts.timestamp()),
+                "timestamp_utc": base_ts.isoformat(),
+                "price": 100.0,
+                "features": {"last_price": 100.0, "pct_from_close": 0.01},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    health_path = tmp_path / "governance" / "health" / "runtime_training_snapshot_latest.json"
+    health_path.parent.mkdir(parents=True, exist_ok=True)
+    summary = {
+        "timestamp_utc": base_ts.isoformat(),
+        "project_root": str(tmp_path),
+        "lookback_days": 14,
+        "mode_allowlist": [],
+        "symbol_allowlist": [],
+        "prefer_sqlite": True,
+        "rows_path": str(rows_path),
+        "sequence_count": 1,
+        "row_count": 1,
+    }
+    health_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    new_ts = datetime.now(timezone.utc)
+    day = new_ts.strftime("%Y%m%d")
+    market_path = (
+        tmp_path
+        / "governance"
+        / "channels"
+        / "decision"
+        / "crypto_shadow"
+        / f"decision_{day}.jsonl"
+    )
+    market_path.parent.mkdir(parents=True, exist_ok=True)
+    market_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": (new_ts - timedelta(seconds=10)).isoformat(),
+                "symbol": "BTC-USD",
+                "snapshot_id": "snap-new",
+                "market": {"last_price": 101.0},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    new_path = tmp_path / "decision_explanations" / "shadow_crypto" / f"decision_explanations_{day}.jsonl"
+    new_path.parent.mkdir(parents=True, exist_ok=True)
+    new_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": new_ts.isoformat(),
+                "mode": "shadow_crypto",
+                "symbol": "BTC-USD",
+                "strategy": "grand_master_bot",
+                "features": {"pct_from_close": 0.02},
+                "metadata": {"layer": "grand_master", "snapshot_id": "snap-new"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(snapshot_builder.rtc, "_recent_decision_paths", lambda *_args, **_kwargs: [new_path, market_path])
+    monkeypatch.setattr(snapshot_builder.rtc, "_load_runtime_gap_fill_context", lambda *_args, **_kwargs: {})
+
+    incremental = snapshot_builder._incremental_snapshot_sequences(
+        summary,
+        project_root=tmp_path,
+        health_path=health_path,
+        lookback_days=2,
+        mode_allowlist=[],
+        symbol_allowlist=[],
+        prefer_sqlite=True,
+    )
+
+    assert incremental is not None
+    sequences, meta = incremental
+    rows = sequences[("shadow_crypto", "BTC-USD")]
+    assert [row["snapshot_id"] for row in rows] == ["snap-base", "snap-new"]
+    assert rows[-1]["price"] == 101.0
+    assert rows[-1]["features"]["last_price"] == 101.0
+    assert rows[-1]["features"]["price_recovered_from_sidecar"] == 1.0
+    assert meta["incremental_row_count"] == 1
+
+
 def test_seeded_snapshot_sequences_backfills_older_rows_from_global_snapshot(tmp_path, monkeypatch) -> None:
     base_ts = datetime.now(timezone.utc) - timedelta(days=2)
     old_ts = datetime.now(timezone.utc) - timedelta(days=30)

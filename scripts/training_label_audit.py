@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +16,14 @@ DEFAULT_DIAGNOSTICS_DIR = PROJECT_ROOT / "governance" / "training_diagnostics"
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "governance" / "health" / "training_label_audit_latest.json"
 DEFAULT_MAX_DIAGNOSTIC_AGE_HOURS = 72.0
 DEFAULT_COLLECTION_TRAINING_THRESHOLD = 250
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+try:
+    from scripts.ops.training_labeling_intelligence import FREE_LABEL_CONTEXT_SOURCE_MAP
+except Exception:
+    FREE_LABEL_CONTEXT_SOURCE_MAP = {}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -49,6 +58,18 @@ def _int(raw: Any, default: int = 0) -> int:
         return int(float(raw))
     except Exception:
         return int(default)
+
+
+def _free_source_candidates_for_contexts(contexts: list[Any]) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for raw in contexts:
+        context = str(raw or "").strip()
+        if not context:
+            continue
+        mapped = FREE_LABEL_CONTEXT_SOURCE_MAP.get(context)
+        if mapped:
+            out[context] = list(mapped)
+    return out
 
 
 def _label_contract_for_row(registry_row: dict[str, Any]) -> dict[str, Any]:
@@ -253,6 +274,19 @@ def _recommendation(row: dict[str, Any]) -> str:
     long_precision = _float(row.get("long_precision"), 0.0)
     short_precision = _float(row.get("short_precision"), 0.0)
     label_balance = _float(row.get("label_balance_score"), 0.0)
+    label_depth_status = str(row.get("label_depth_status") or "").strip().lower()
+    if (
+        lifecycle_state in {"data_collection_only", "paper_live_data"}
+        and sample_count < DEFAULT_COLLECTION_TRAINING_THRESHOLD
+        and label_depth_status in {"materialize_label_depth", "collect_and_materialize_label_depth"}
+    ):
+        return "materialize_label_depth"
+    if (
+        lifecycle_state in {"data_collection_only", "paper_live_data"}
+        and sample_count < DEFAULT_COLLECTION_TRAINING_THRESHOLD
+        and label_depth_status == "label_depth_ready_for_real_diagnostic_refresh"
+    ):
+        return "refresh_training_diagnostics"
     if lifecycle_state == "data_collection_only" and sample_count < DEFAULT_COLLECTION_TRAINING_THRESHOLD:
         return "keep_collecting_until_threshold"
     if sample_count == 0 and sequence_count == 0:
@@ -285,8 +319,20 @@ def _audit_row(registry_row: dict[str, Any], diag_dir: Path, *, max_diagnostic_a
     metrics = diag.get("metrics") if isinstance(diag.get("metrics"), dict) else {}
     runtime_meta = diag.get("runtime_meta") if isinstance(diag.get("runtime_meta"), dict) else {}
     label_audit = runtime_meta.get("label_audit") if isinstance(runtime_meta.get("label_audit"), dict) else {}
+    label_depth_contract = (
+        runtime_meta.get("label_depth_contract")
+        if isinstance(runtime_meta.get("label_depth_contract"), dict)
+        else {}
+    )
     label_contract = _label_contract_for_row(registry_row)
     observed_contract = _diagnostic_label_contract(runtime_meta)
+    if (
+        not observed_contract
+        and str(label_contract.get("source") or "").strip().lower() == "registry"
+        and _label_contract_complete(label_contract, label_contract)
+    ):
+        observed_contract = dict(label_contract)
+        observed_contract["source"] = "registry_fallback_for_legacy_diagnostic"
     contract_complete = _label_contract_complete(label_contract, observed_contract)
     diagnostic_age_hours = None
     if diag_path and diag_path.exists():
@@ -300,6 +346,8 @@ def _audit_row(registry_row: dict[str, Any], diag_dir: Path, *, max_diagnostic_a
     skipped_low_confidence = _int(diag.get("skipped_low_confidence", runtime_meta.get("skipped_low_confidence", 0)))
     skipped_labels = _int(diag.get("skipped_labels", runtime_meta.get("skipped_labels", 0)))
     attempted = max(sample_count + skipped_filtered + skipped_low_confidence + skipped_labels, 0)
+    required_context = list(label_contract.get("required_context") or [])
+    free_source_candidates = _free_source_candidates_for_contexts(required_context)
     out = {
         "bot_id": bot_id,
         "bot_role": str(registry_row.get("bot_role") or ""),
@@ -334,12 +382,19 @@ def _audit_row(registry_row: dict[str, Any], diag_dir: Path, *, max_diagnostic_a
         "acceptance_rate": round((sample_count / attempted), 6) if attempted > 0 else 0.0,
         "attempted_candidate_count": attempted,
         "label_audit": label_audit,
+        "label_depth_status": str(diag.get("label_depth_status") or label_depth_contract.get("status") or ""),
+        "label_depth_contract": label_depth_contract,
+        "estimated_usable_sample_capacity": _int(label_depth_contract.get("estimated_usable_sample_capacity", 0)),
+        "usable_sample_gap": _int(label_depth_contract.get("usable_sample_gap", 0)),
+        "label_depth_next_action": str(label_depth_contract.get("next_action") or ""),
         "label_contract": label_contract,
         "observed_label_contract": observed_contract,
         "label_family": str(label_contract.get("label_family") or ""),
         "primary_label_horizon": str(label_contract.get("primary_horizon") or ""),
         "aux_label_horizons": list(label_contract.get("aux_horizons") or []),
-        "required_label_context": list(label_contract.get("required_context") or []),
+        "required_label_context": required_context,
+        "free_source_context_candidates": free_source_candidates,
+        "free_source_context_count": len(free_source_candidates),
         "label_contract_complete": contract_complete,
         "label_upgrade_needed": bool(diag_path and diag_path.exists()) and not contract_complete,
         "label_upgrade_reason": "" if contract_complete else "diagnostic_missing_expected_label_contract",
@@ -361,12 +416,21 @@ def build_label_audit_payload(
     ]
     active_rows = [row for row in rows if bool(row.get("active"))]
     recommendation_counts = Counter(str(row.get("recommendation") or "") for row in active_rows)
+    source_context_counts = Counter(
+        context
+        for row in active_rows
+        for context in (row.get("free_source_context_candidates") or {}).keys()
+    )
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "registry_path": str(registry_path),
         "diagnostics_dir": str(diagnostics_dir),
         "active_rows": len(active_rows),
         "recommendation_counts": dict(sorted(recommendation_counts.items())),
+        "free_source_context_counts": dict(sorted(source_context_counts.items())),
+        "free_source_context_active_bot_count": sum(
+            1 for row in active_rows if bool(row.get("free_source_context_candidates"))
+        ),
         "active_zero_sample": [row for row in active_rows if _int(row.get("sample_count")) == 0][:25],
         "active_overacting": [
             row for row in active_rows
@@ -389,6 +453,7 @@ def build_label_audit_payload(
     for name in [
         "create_collect_only_diagnostics",
         "upgrade_label_contract",
+        "materialize_label_depth",
         "keep_collecting_until_threshold",
         "refresh_training_diagnostics",
         "fix_shared_runtime_input",

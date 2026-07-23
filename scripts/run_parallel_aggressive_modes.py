@@ -326,7 +326,13 @@ def _resource_guard_ok() -> bool:
         return True
     if not RESOURCE_GUARD_SCRIPT.exists():
         return True
-    proc = subprocess.run([str(VENV_PY), str(RESOURCE_GUARD_SCRIPT)], capture_output=True, text=True, check=False)
+    profile = os.getenv("AGGRESSIVE_MODES_RESOURCE_GUARD_PROFILE", "collection").strip() or "collection"
+    proc = subprocess.run(
+        [str(VENV_PY), str(RESOURCE_GUARD_SCRIPT), "--profile", profile],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     out = (proc.stdout or "").strip()
     if out:
         print(f"[ResourceGuard] {out}")

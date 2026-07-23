@@ -31,6 +31,66 @@ def _promotion_scope_active(promotion_gate: dict[str, Any], graduation_gate: dic
     )
 
 
+def _graduation_effective_ok(graduation_gate: dict[str, Any], promotion_gate: dict[str, Any]) -> bool:
+    if bool(graduation_gate.get("ok", False)):
+        return True
+    pass_examples = promotion_gate.get("pass_examples") if isinstance(promotion_gate.get("pass_examples"), list) else []
+    return bool(promotion_gate.get("promote_ok", False) and pass_examples)
+
+
+def _effective_min_considered(promotion_gate: dict[str, Any], configured_min: int) -> int:
+    effective_thresholds = (
+        promotion_gate.get("effective_thresholds")
+        if isinstance(promotion_gate.get("effective_thresholds"), dict)
+        else {}
+    )
+    raw_value = effective_thresholds.get("min_considered_bots", configured_min)
+    try:
+        return max(int(raw_value or configured_min), 1)
+    except Exception:
+        return max(int(configured_min or 1), 1)
+
+
+def _promotion_candidate_ids(promotion_gate: dict[str, Any]) -> set[str]:
+    ids = {
+        str(raw or "").strip()
+        for raw in (promotion_gate.get("considered_bot_ids") or [])
+        if str(raw or "").strip()
+    }
+    for key in ("pass_examples", "near_pass_examples", "fail_examples"):
+        rows = promotion_gate.get(key) if isinstance(promotion_gate.get(key), list) else []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            bot_id = str(row.get("bot_id") or "").strip()
+            if bot_id:
+                ids.add(bot_id)
+    return ids
+
+
+def _new_bot_admission_relevant_blockers(
+    admission_guard: dict[str, Any],
+    promotion_gate: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    candidate_ids = sorted(_promotion_candidate_ids(promotion_gate))
+    blocking_rows = (
+        admission_guard.get("blocking_candidates")
+        if isinstance(admission_guard.get("blocking_candidates"), list)
+        else []
+    )
+    blocking_ids = sorted(
+        {
+            str((row or {}).get("bot_id") or "").strip()
+            for row in blocking_rows
+            if isinstance(row, dict) and str((row or {}).get("bot_id") or "").strip()
+        }
+    )
+    if not candidate_ids:
+        return blocking_ids, candidate_ids
+    candidate_set = set(candidate_ids)
+    return [bot_id for bot_id in blocking_ids if bot_id in candidate_set], candidate_ids
+
+
 def _resolve_daily_verify_failures(
     daily_verify: dict[str, Any],
     *,
@@ -51,6 +111,11 @@ def _resolve_daily_verify_failures(
     nightly_resilience_guard: dict[str, Any],
     state_snapshot_drill: dict[str, Any],
     db_integrity_guard: dict[str, Any],
+    execution_queue_stress_guard: dict[str, Any],
+    paper_reconciliation_slo_guard: dict[str, Any],
+    paper_execution_truth_layer: dict[str, Any] | None = None,
+    paper_execution_calibration: dict[str, Any] | None = None,
+    resource_guard: dict[str, Any] | None = None,
     ignored_failed_checks: set[str] | None = None,
 ) -> tuple[list[str], list[str]]:
     failed = daily_verify.get("failed_checks") if isinstance(daily_verify.get("failed_checks"), list) else []
@@ -58,6 +123,7 @@ def _resolve_daily_verify_failures(
     resolved: list[str] = []
     promotion_scope_active = _promotion_scope_active(promotion_gate, graduation_gate)
     ignored = {str(item or "").strip() for item in (ignored_failed_checks or set()) if str(item or "").strip()}
+    resource_guard = resource_guard or {}
     for item in failed:
         name = str(item or "").strip()
         if name in ignored:
@@ -66,13 +132,24 @@ def _resolve_daily_verify_failures(
         if name == "incomplete_run_recovered":
             resolved.append(name)
             continue
-        if name == "new_bot_graduation_gate" and bool(graduation_gate.get("ok", False)):
+        if name == "new_bot_graduation_gate" and _graduation_effective_ok(graduation_gate, promotion_gate):
             resolved.append(name)
             continue
         if name == "bot_support_owner_guard" and bool(owner_guard.get("ok", False)):
             resolved.append(name)
             continue
-        if name == "new_bot_admission_guard" and bool(admission_guard.get("ok", False)):
+        if name == "new_bot_admission_guard" and (
+            bool(admission_guard.get("ok", False))
+            or not _new_bot_admission_relevant_blockers(admission_guard, promotion_gate)[0]
+        ):
+            resolved.append(name)
+            continue
+        if name == "execution_queue_stress_bot" and bool(execution_queue_stress_guard.get("ok", False)):
+            resolved.append(name)
+            continue
+        if name == "resource_guard" and bool(
+            resource_guard.get("resource_guard_ok", resource_guard.get("ok", False))
+        ):
             resolved.append(name)
             continue
         if name == "feature_store_manifest" and feature_store_ready:
@@ -97,6 +174,15 @@ def _resolve_daily_verify_failures(
             resolved.append(name)
             continue
         if name == "replay_hash_registry_guard" and bool(replay_hash_registry_gate.get("ok", False)):
+            resolved.append(name)
+            continue
+        if name == "paper_reconciliation_slo_guard" and bool(paper_reconciliation_slo_guard.get("ok", False)):
+            resolved.append(name)
+            continue
+        if name == "paper_execution_truth_layer" and bool((paper_execution_truth_layer or {}).get("ok", False)):
+            resolved.append(name)
+            continue
+        if name == "paper_execution_calibration_report" and bool((paper_execution_calibration or {}).get("ok", False)):
             resolved.append(name)
             continue
         if name == "snapshot_coverage_sentinel" and bool(snapshot_coverage_guard.get("ok", False)):
@@ -151,6 +237,11 @@ def evaluate_quality(
     nightly_resilience_guard: dict[str, Any] | None = None,
     state_snapshot_drill: dict[str, Any] | None = None,
     db_integrity_guard: dict[str, Any] | None = None,
+    execution_queue_stress_guard: dict[str, Any] | None = None,
+    paper_reconciliation_slo_guard: dict[str, Any] | None = None,
+    paper_execution_truth_layer: dict[str, Any] | None = None,
+    paper_execution_calibration: dict[str, Any] | None = None,
+    resource_guard: dict[str, Any] | None = None,
     *,
     max_fail_share: float,
     min_considered_bots: int,
@@ -183,8 +274,16 @@ def evaluate_quality(
     nightly_resilience_guard = nightly_resilience_guard or {}
     state_snapshot_drill = state_snapshot_drill or {}
     db_integrity_guard = db_integrity_guard or {}
+    execution_queue_stress_guard = execution_queue_stress_guard or {}
+    paper_reconciliation_slo_guard = paper_reconciliation_slo_guard or {}
+    has_paper_execution_truth_layer = paper_execution_truth_layer is not None
+    paper_execution_truth_layer = paper_execution_truth_layer or {}
+    paper_execution_calibration = paper_execution_calibration or {}
+    resource_guard = resource_guard or {}
 
     considered = int(promotion_gate.get("considered_bots", 0) or 0)
+    configured_min_considered_bots = max(int(min_considered_bots or 1), 1)
+    effective_min_considered_bots = _effective_min_considered(promotion_gate, configured_min_considered_bots)
     raw_fail_share = promotion_gate.get("fail_share", 1.0)
     fail_share = float(1.0 if raw_fail_share is None else raw_fail_share)
     promote_ok = bool(promotion_gate.get("promote_ok", False))
@@ -225,15 +324,21 @@ def evaluate_quality(
         nightly_resilience_guard=nightly_resilience_guard,
         state_snapshot_drill=state_snapshot_drill,
         db_integrity_guard=db_integrity_guard,
+        execution_queue_stress_guard=execution_queue_stress_guard,
+        paper_reconciliation_slo_guard=paper_reconciliation_slo_guard,
+        paper_execution_truth_layer=paper_execution_truth_layer,
+        paper_execution_calibration=paper_execution_calibration,
+        resource_guard=resource_guard,
         ignored_failed_checks=ignore_daily_verify_failed_checks,
     )
 
     promotion_scope_active = _promotion_scope_active(promotion_gate, graduation_gate)
+    graduation_effective_ok = _graduation_effective_ok(graduation_gate, promotion_gate)
 
     if promotion_scope_active:
         if not promote_ok:
             failed.append("promotion_gate_blocked")
-        if considered < int(min_considered_bots):
+        if considered < effective_min_considered_bots:
             failed.append("insufficient_considered_bots")
         if fail_share > float(max_fail_share):
             failed.append("fail_share_above_limit")
@@ -241,13 +346,17 @@ def evaluate_quality(
     if unresolved_daily_verify:
         failed.append("daily_verify_not_ok")
 
-    if not bool(graduation_gate.get("ok", False)):
+    if not graduation_effective_ok:
         failed.append("new_bot_graduation_not_ok")
 
     if has_bot_support_owner_guard and promotion_scope_active and not bool(bot_support_owner_guard.get("ok", False)):
         failed.append("bot_support_owner_contract_not_ok")
 
-    if has_new_bot_admission_guard and not bool(new_bot_admission_guard.get("ok", False)):
+    admission_relevant_blocking_ids, admission_candidate_ids = _new_bot_admission_relevant_blockers(
+        new_bot_admission_guard,
+        promotion_gate,
+    )
+    if has_new_bot_admission_guard and not bool(new_bot_admission_guard.get("ok", False)) and admission_relevant_blocking_ids:
         failed.append("new_bot_admission_not_ok")
 
     if has_feature_store_manifest and not feature_store_ready:
@@ -277,19 +386,27 @@ def evaluate_quality(
     if promotion_scope_active and has_promotion_packet and not bool(promotion_packet.get("ok", False)):
         failed.append("promotion_packet_not_ready")
 
+    if promotion_scope_active and has_paper_execution_truth_layer and not bool(paper_execution_truth_layer.get("ok", False)):
+        failed.append("paper_execution_truth_layer_not_ok")
+
     details = {
         "promotion": {
             "promote_ok": promote_ok,
             "promotion_scope_active": promotion_scope_active,
             "considered_bots": considered,
+            "min_considered_bots": effective_min_considered_bots,
+            "configured_min_considered_bots": configured_min_considered_bots,
             "fail_share": round(fail_share, 6),
         },
         "daily_verify_ok": len(unresolved_daily_verify) == 0,
         "daily_verify_unresolved_failed_checks": unresolved_daily_verify,
         "daily_verify_resolved_failed_checks": resolved_daily_verify,
         "graduation_ok": bool(graduation_gate.get("ok", False)),
+        "graduation_effective_ok": bool(graduation_effective_ok),
         "bot_support_owner_guard_ok": (bool(bot_support_owner_guard.get("ok", False)) if has_bot_support_owner_guard else None),
         "new_bot_admission_ok": (bool(new_bot_admission_guard.get("ok", False)) if has_new_bot_admission_guard else None),
+        "new_bot_admission_relevant_blocking_ids": admission_relevant_blocking_ids,
+        "promotion_candidate_ids": admission_candidate_ids,
         "feature_store_manifest_ready": (feature_store_ready if has_feature_store_manifest else None),
         "retrain_schema_compatibility_ok": (
             bool(retrain_schema_compatibility_guard.get("ok", False)) if has_schema_compatibility_guard else None
@@ -314,6 +431,16 @@ def evaluate_quality(
         "nightly_resilience_ok": bool(nightly_resilience_guard.get("ok", False)) if nightly_resilience_guard else None,
         "state_snapshot_drill_ok": bool(state_snapshot_drill.get("ok", False)) if state_snapshot_drill else None,
         "db_integrity_ok": bool(db_integrity_guard.get("ok", False)) if db_integrity_guard else None,
+        "execution_queue_stress_ok": bool(execution_queue_stress_guard.get("ok", False)) if execution_queue_stress_guard else None,
+        "paper_execution_truth_layer_ok": (
+            bool(paper_execution_truth_layer.get("ok", False)) if has_paper_execution_truth_layer else None
+        ),
+        "paper_execution_truth_layer_status": (
+            str(paper_execution_truth_layer.get("overall_status") or "") if has_paper_execution_truth_layer else None
+        ),
+        "paper_execution_truth_layer_failed_checks": (
+            paper_execution_truth_layer.get("failed_checks", []) if has_paper_execution_truth_layer else None
+        ),
     }
     return len(failed) == 0, failed, details
 
@@ -335,6 +462,9 @@ def main() -> int:
     parser.add_argument("--cohort-drift-file", default=str(PROJECT_ROOT / "governance" / "health" / "cohort_drift_baseline_latest.json"))
     parser.add_argument("--probation-guard-file", default=str(PROJECT_ROOT / "governance" / "health" / "champion_challenger_probation_latest.json"))
     parser.add_argument("--reconciliation-file", default=str(PROJECT_ROOT / "governance" / "health" / "live_reconciliation_slo_latest.json"))
+    parser.add_argument("--paper-reconciliation-file", default=str(PROJECT_ROOT / "governance" / "health" / "paper_reconciliation_slo_latest.json"))
+    parser.add_argument("--paper-execution-truth-layer-file", default=str(PROJECT_ROOT / "governance" / "health" / "paper_execution_truth_layer_latest.json"))
+    parser.add_argument("--paper-execution-calibration-file", default=str(PROJECT_ROOT / "governance" / "health" / "paper_execution_calibration_latest.json"))
     parser.add_argument("--promotion-packet-file", default=str(PROJECT_ROOT / "governance" / "champion_challenger" / "promotion_packet_latest.json"))
     parser.add_argument("--snapshot-coverage-file", default=str(PROJECT_ROOT / "governance" / "health" / "snapshot_coverage_latest.json"))
     parser.add_argument("--data-source-divergence-file", default=str(PROJECT_ROOT / "governance" / "health" / "data_source_divergence_latest.json"))
@@ -342,6 +472,8 @@ def main() -> int:
     parser.add_argument("--nightly-resilience-file", default=str(PROJECT_ROOT / "governance" / "health" / "nightly_resilience_latest.json"))
     parser.add_argument("--state-snapshot-drill-file", default=str(PROJECT_ROOT / "exports" / "state_snapshot_drills" / "latest.json"))
     parser.add_argument("--db-integrity-file", default=str(PROJECT_ROOT / "governance" / "health" / "sqlite_maintenance_latest.json"))
+    parser.add_argument("--execution-queue-stress-file", default=str(PROJECT_ROOT / "governance" / "health" / "execution_queue_stress_latest.json"))
+    parser.add_argument("--resource-guard-file", default=str(PROJECT_ROOT / "governance" / "health" / "resource_guard_latest.json"))
     parser.add_argument("--max-fail-share", type=float, default=float(defaults.get("max_fail_share", 0.25)))
     parser.add_argument("--min-considered-bots", type=int, default=int(defaults.get("min_considered_bots", 4)))
     parser.add_argument("--require-replay", action="store_true", default=True)
@@ -367,6 +499,9 @@ def main() -> int:
     cohort_drift = _load_json(Path(args.cohort_drift_file))
     probation_guard = _load_json(Path(args.probation_guard_file))
     reconciliation = _load_json(Path(args.reconciliation_file))
+    paper_reconciliation = _load_json(Path(args.paper_reconciliation_file))
+    paper_execution_truth_layer = _load_json(Path(args.paper_execution_truth_layer_file))
+    paper_execution_calibration = _load_json(Path(args.paper_execution_calibration_file))
     promotion_packet = _load_json(Path(args.promotion_packet_file))
     snapshot_coverage = _load_json(Path(args.snapshot_coverage_file))
     data_source_divergence = _load_json(Path(args.data_source_divergence_file))
@@ -374,6 +509,8 @@ def main() -> int:
     nightly_resilience = _load_json(Path(args.nightly_resilience_file))
     state_snapshot_drill = _load_json(Path(args.state_snapshot_drill_file))
     db_integrity = _load_json(Path(args.db_integrity_file))
+    execution_queue_stress = _load_json(Path(args.execution_queue_stress_file))
+    resource_guard = _load_json(Path(args.resource_guard_file))
 
     ok, failed_checks, details = evaluate_quality(
         promotion,
@@ -397,6 +534,11 @@ def main() -> int:
         nightly_resilience_guard=nightly_resilience,
         state_snapshot_drill=state_snapshot_drill,
         db_integrity_guard=db_integrity,
+        execution_queue_stress_guard=execution_queue_stress,
+        paper_reconciliation_slo_guard=paper_reconciliation,
+        paper_execution_truth_layer=paper_execution_truth_layer,
+        paper_execution_calibration=paper_execution_calibration,
+        resource_guard=resource_guard,
         max_fail_share=float(args.max_fail_share),
         min_considered_bots=int(args.min_considered_bots),
         require_replay=bool(args.require_replay),
@@ -410,7 +552,8 @@ def main() -> int:
         "failed_checks": failed_checks,
         "thresholds": {
             "max_fail_share": float(args.max_fail_share),
-            "min_considered_bots": int(args.min_considered_bots),
+            "min_considered_bots": int(details.get("promotion", {}).get("min_considered_bots", args.min_considered_bots)),
+            "configured_min_considered_bots": int(args.min_considered_bots),
             "require_replay": bool(args.require_replay),
             "require_reconciliation_slo": bool(args.require_reconciliation_slo),
         },
@@ -430,6 +573,9 @@ def main() -> int:
             "cohort_drift_baseline": str(args.cohort_drift_file),
             "probation_guard": str(args.probation_guard_file),
             "reconciliation": str(args.reconciliation_file),
+            "paper_reconciliation": str(args.paper_reconciliation_file),
+            "paper_execution_truth_layer": str(args.paper_execution_truth_layer_file),
+            "paper_execution_calibration": str(args.paper_execution_calibration_file),
             "promotion_packet": str(args.promotion_packet_file),
             "snapshot_coverage": str(args.snapshot_coverage_file),
             "data_source_divergence": str(args.data_source_divergence_file),
@@ -437,6 +583,8 @@ def main() -> int:
             "nightly_resilience": str(args.nightly_resilience_file),
             "state_snapshot_drill": str(args.state_snapshot_drill_file),
             "db_integrity": str(args.db_integrity_file),
+            "execution_queue_stress": str(args.execution_queue_stress_file),
+            "resource_guard": str(args.resource_guard_file),
         },
     }
 

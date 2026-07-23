@@ -67,14 +67,48 @@ def _load_training_success_contract(path: Path) -> dict[str, Any]:
         and report_status not in {"critical", "failed"}
     )
     if payload:
+        clean_training_pending_promotion = bool(
+            provisional
+            and not bool(payload.get("confirmed_training_success", False))
+            and bool(payload.get("training_completed_ok", False))
+            and int(payload.get("trained_count", 0) or 0) > 0
+            and int(payload.get("failure_count", 0) or 0) == 0
+            and bool(payload.get("trained_ok_but_not_promotable", False))
+            and str(payload.get("reason") or "").strip().startswith("trained_ok_but_not_promotable:")
+        )
+        legacy_absent_data_quality_repair = bool(
+            provisional
+            and not bool(payload.get("confirmed_training_success", False))
+            and bool(payload.get("training_completed_ok", False))
+            and bool(payload.get("promotion_applied", False))
+            and int(payload.get("failure_count", 0) or 0) == 0
+            and str(payload.get("reason") or "").strip() == "data_quality_not_ok"
+            and not bool(payload.get("data_quality_present", False))
+        )
+        if legacy_absent_data_quality_repair:
+            payload["confirmed_training_success"] = True
+            payload["legacy_absent_data_quality_repaired"] = True
+            payload["source_training_quality_score"] = round(quality_score, 2)
+            payload["source_training_quality_index"] = round(quality_index, 2)
+            payload["source_quality_status"] = quality_status
+            payload["source_report_status"] = report_status
         payload["provisional_training_success"] = bool(
             payload.get("provisional_training_success", False)
             or payload.get("confirmed_training_success", False)
             or (stale_failed_payload and provisional)
+            or clean_training_pending_promotion
         )
         if stale_failed_payload and provisional:
             payload["source_contract"] = "training_success_stale_fallback"
             payload["stale_source_ignored"] = True
+            payload["source_training_quality_score"] = round(quality_score, 2)
+            payload["source_training_quality_index"] = round(quality_index, 2)
+            payload["source_quality_status"] = quality_status
+            payload["source_report_status"] = report_status
+        elif legacy_absent_data_quality_repair:
+            payload["source_contract"] = "training_success_absent_data_quality_repair"
+        elif clean_training_pending_promotion:
+            payload["source_contract"] = "training_success_pending_promotion_gate"
             payload["source_training_quality_score"] = round(quality_score, 2)
             payload["source_training_quality_index"] = round(quality_index, 2)
             payload["source_quality_status"] = quality_status
@@ -94,17 +128,73 @@ def _load_training_success_contract(path: Path) -> dict[str, Any]:
 
 
 def _sha256_file(path_text: Any) -> str:
-    text = str(path_text or "").strip()
-    if not text:
-        return ""
-    path = Path(text)
-    if not path.exists() or not path.is_file():
+    path = _resolve_file_path(path_text)
+    if path is None:
         return ""
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _resolve_file_path(path_text: Any) -> Path | None:
+    text = str(path_text or "").strip()
+    if not text:
+        return None
+    path = Path(text).expanduser()
+    candidates = [path]
+    if not path.is_absolute():
+        candidates.append(PROJECT_ROOT / path)
+    for candidate in candidates:
+        try:
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def _latest_matching_file(directory: Path, pattern: str) -> Path | None:
+    try:
+        matches = [path for path in directory.glob(pattern) if path.is_file()]
+    except OSError:
+        return None
+    if not matches:
+        return None
+
+    def _sort_key(path: Path) -> tuple[int, str]:
+        try:
+            mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = 0
+        return mtime_ns, str(path)
+
+    return max(matches, key=_sort_key)
+
+
+def _latest_training_log_for_model(bot_id: str, model_path: str) -> Path | None:
+    model = Path(str(model_path or "").strip())
+    if model.name.endswith(".npz"):
+        paired_log = PROJECT_ROOT / "logs" / f"{model.stem}.json"
+        if paired_log.exists() and paired_log.is_file():
+            return paired_log
+    return _latest_matching_file(PROJECT_ROOT / "logs", f"{bot_id}_*.json")
+
+
+def _log_test_accuracy(log_path: Any) -> Any:
+    path = _resolve_file_path(log_path)
+    if path is None:
+        return None
+    payload = _load_json(path)
+    metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+    for source in (payload, metrics):
+        if not isinstance(source, dict):
+            continue
+        value = source.get("test_accuracy")
+        if value is not None:
+            return value
+    return None
 
 
 def _sha256_json(payload: Any) -> str:
@@ -184,6 +274,39 @@ def _registry_model_rows(registry: dict[str, Any], target_ids: list[str]) -> lis
         return []
     rows = registry.get("sub_bots") if isinstance(registry.get("sub_bots"), list) else []
     out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _model_row(bot_id: str, row: dict[str, Any]) -> dict[str, Any]:
+        model_path = str(row.get("model_path") or "").strip()
+        log_path = str(row.get("log_file") or "").strip()
+        model_sha256 = _sha256_file(model_path)
+        used_model_fallback = False
+        if not model_sha256:
+            latest_model = _latest_matching_file(PROJECT_ROOT / "models", f"{bot_id}_*.npz")
+            if latest_model is not None:
+                model_path = str(latest_model)
+                model_sha256 = _sha256_file(latest_model)
+                used_model_fallback = True
+        log_sha256 = _sha256_file(log_path)
+        if used_model_fallback or not log_sha256:
+            latest_log = _latest_training_log_for_model(bot_id, model_path)
+            if latest_log is not None:
+                log_path = str(latest_log)
+                log_sha256 = _sha256_file(latest_log)
+        test_accuracy = row.get("test_accuracy")
+        if test_accuracy is None:
+            test_accuracy = _log_test_accuracy(log_path)
+        return {
+            "bot_id": bot_id,
+            "lifecycle_state": str(row.get("lifecycle_state") or "").strip().lower(),
+            "active": bool(row.get("active", False)),
+            "model_path": model_path,
+            "model_sha256": model_sha256,
+            "log_path": log_path,
+            "log_sha256": log_sha256,
+            "test_accuracy": test_accuracy,
+        }
+
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -192,20 +315,13 @@ def _registry_model_rows(registry: dict[str, Any], target_ids: list[str]) -> lis
             continue
         if wanted and bot_id.lower() not in wanted:
             continue
-        model_path = str(row.get("model_path") or "").strip()
-        log_path = str(row.get("log_file") or "").strip()
-        out.append(
-            {
-                "bot_id": bot_id,
-                "lifecycle_state": str(row.get("lifecycle_state") or "").strip().lower(),
-                "active": bool(row.get("active", False)),
-                "model_path": model_path,
-                "model_sha256": _sha256_file(model_path),
-                "log_path": log_path,
-                "log_sha256": _sha256_file(log_path),
-                "test_accuracy": row.get("test_accuracy"),
-            }
-        )
+        out.append(_model_row(bot_id, row))
+        seen.add(bot_id.lower())
+    for target_id in target_ids:
+        bot_id = str(target_id or "").strip()
+        if not bot_id or bot_id.lower() in seen:
+            continue
+        out.append(_model_row(bot_id, {"bot_id": bot_id}))
     out.sort(key=lambda item: item["bot_id"])
     return out
 
@@ -218,6 +334,28 @@ def _idle_promotion_scope(packet: dict[str, Any]) -> bool:
     scope = packet.get("promotion_scope") if isinstance(packet.get("promotion_scope"), dict) else {}
     trained_bot_ids = scope.get("trained_bot_ids") if isinstance(scope.get("trained_bot_ids"), list) else []
     return len([str(bot_id).strip() for bot_id in trained_bot_ids if str(bot_id).strip()]) == 0
+
+
+def _new_bot_admission_ok_for_scope(
+    guard: dict[str, Any],
+    *,
+    trained_bot_ids: list[str],
+    promotion_scope_active: bool,
+) -> tuple[bool, list[str]]:
+    if not promotion_scope_active:
+        return True, []
+    if bool(guard.get("ok", False)):
+        return True, []
+
+    target_ids = {str(bot_id or "").strip() for bot_id in trained_bot_ids if str(bot_id or "").strip()}
+    blocking_rows = guard.get("blocking_candidates") if isinstance(guard.get("blocking_candidates"), list) else []
+    blocking_ids = {
+        str((row or {}).get("bot_id") or "").strip()
+        for row in blocking_rows
+        if isinstance(row, dict) and str((row or {}).get("bot_id") or "").strip()
+    }
+    relevant = sorted(target_ids & blocking_ids)
+    return not bool(relevant), relevant
 
 
 def build_payload(
@@ -282,12 +420,17 @@ def build_payload(
         golden_replay_regression_guard.get("ok", False)
         or golden_replay_regression_guard.get("seed_ready", False)
     )
+    new_bot_admission_ok, new_bot_admission_relevant_blocking_ids = _new_bot_admission_ok_for_scope(
+        new_bot_admission_guard,
+        trained_bot_ids=trained_bot_ids,
+        promotion_scope_active=promotion_scope_active,
+    )
 
     gate_results = {
         "training_success_confirmed": training_success_seed_ready,
         "feature_store_manifest_strict_ok": feature_store_strict_ready,
         "bot_support_owner_guard_ok": bool(bot_support_owner_guard.get("ok", False) or not promotion_scope_active),
-        "new_bot_admission_ok": bool(new_bot_admission_guard.get("ok", False)),
+        "new_bot_admission_ok": bool(new_bot_admission_ok),
         "retrain_schema_compatibility_ok": schema_compatibility_ready,
         "golden_replay_regression_ok": golden_replay_ready,
         "cohort_drift_baseline_ok": bool(cohort_drift_baseline_guard.get("ok", False)),
@@ -383,6 +526,7 @@ def build_payload(
             "trained_models_contract_ready": trained_models_contract_ready,
         },
         "gate_results": gate_results,
+        "new_bot_admission_relevant_blocking_ids": new_bot_admission_relevant_blocking_ids,
         "gate_seed_results": {
             "training_success_seed_ready": training_success_seed_ready and not training_success_confirmed,
             "feature_store_seed_ready": feature_store_strict_ready and not bool(feature_store_manifest.get("strict_ok", False)),

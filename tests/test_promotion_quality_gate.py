@@ -13,12 +13,21 @@ import scripts.promotion_quality_gate as promotion_quality_gate
 def test_promotion_quality_gate_resolves_stale_daily_verify_failures_from_fresher_artifacts() -> None:
     ok, failed_checks, details = promotion_quality_gate.evaluate_quality(
         {"promote_ok": True, "considered_bots": 5, "fail_share": 0.2},
-        {"ok": False, "failed_checks": ["new_bot_graduation_gate", "replay_hash_registry_guard", "promotion_quality_gate"]},
+        {
+            "ok": False,
+            "failed_checks": [
+                "new_bot_graduation_gate",
+                "paper_reconciliation_slo_guard",
+                "replay_hash_registry_guard",
+                "promotion_quality_gate",
+            ],
+        },
         {"ok": True},
         {"ok": True},
         {"ok": True},
         {"ok": True},
         {"ok": True},
+        paper_reconciliation_slo_guard={"ok": True},
         max_fail_share=0.25,
         min_considered_bots=4,
         require_replay=True,
@@ -31,6 +40,7 @@ def test_promotion_quality_gate_resolves_stale_daily_verify_failures_from_freshe
     assert details["daily_verify_unresolved_failed_checks"] == []
     assert sorted(details["daily_verify_resolved_failed_checks"]) == [
         "new_bot_graduation_gate",
+        "paper_reconciliation_slo_guard",
         "promotion_quality_gate",
         "replay_hash_registry_guard",
     ]
@@ -116,6 +126,108 @@ def test_promotion_quality_gate_accepts_seed_ready_feature_store_contract() -> N
     assert ok is True
     assert failed_checks == []
     assert details["feature_store_manifest_ready"] is True
+
+
+def test_promotion_quality_gate_uses_effective_considered_floor() -> None:
+    ok, failed_checks, details = promotion_quality_gate.evaluate_quality(
+        {
+            "promote_ok": True,
+            "considered_bots": 2,
+            "fail_share": 0.0,
+            "effective_thresholds": {"min_considered_bots": 2},
+        },
+        {"ok": True, "failed_checks": []},
+        {"ok": True},
+        {"ok": True},
+        {"ok": True},
+        {"ok": True},
+        {"ok": True},
+        feature_store_manifest={
+            "ok": True,
+            "strict_ok": True,
+            "point_in_time_contract": {"complete": True},
+            "contract_hashes": {"dataset_manifest_sha256": "a" * 64},
+        },
+        new_bot_admission_guard={"ok": True},
+        champion_challenger_probation_guard={"ok": True},
+        promotion_packet={"ok": True},
+        max_fail_share=0.25,
+        min_considered_bots=4,
+        require_replay=True,
+        require_reconciliation_slo=True,
+    )
+
+    assert ok is True
+    assert failed_checks == []
+    assert details["promotion"]["min_considered_bots"] == 2
+    assert details["promotion"]["configured_min_considered_bots"] == 4
+
+
+def test_promotion_quality_gate_scopes_new_bot_admission_to_promotion_candidates() -> None:
+    ok, failed_checks, details = promotion_quality_gate.evaluate_quality(
+        {
+            "promote_ok": True,
+            "considered_bots": 1,
+            "fail_share": 0.0,
+            "effective_thresholds": {"min_considered_bots": 1},
+            "considered_bot_ids": ["brain_refinery_v10_seasonal"],
+            "pass_examples": [{"bot_id": "brain_refinery_v10_seasonal"}],
+        },
+        {"ok": False, "failed_checks": ["new_bot_admission_guard", "execution_queue_stress_bot"]},
+        {"ok": True},
+        {"ok": True},
+        {"ok": True},
+        {"ok": True},
+        {"ok": True},
+        new_bot_admission_guard={
+            "ok": False,
+            "blocking_candidates": [{"bot_id": "brain_refinery_v13_choppy"}],
+        },
+        execution_queue_stress_guard={"ok": True},
+        max_fail_share=0.25,
+        min_considered_bots=4,
+        require_replay=True,
+        require_reconciliation_slo=False,
+    )
+
+    assert ok is True
+    assert failed_checks == []
+    assert details["daily_verify_unresolved_failed_checks"] == []
+    assert details["new_bot_admission_relevant_blocking_ids"] == []
+
+
+def test_promotion_quality_gate_allows_targeted_pass_when_global_graduation_floor_is_behind() -> None:
+    ok, failed_checks, details = promotion_quality_gate.evaluate_quality(
+        {
+            "promote_ok": True,
+            "considered_bots": 2,
+            "fail_share": 0.0,
+            "effective_thresholds": {"min_considered_bots": 2},
+            "considered_bot_ids": ["brain_refinery_v10_seasonal", "brain_refinery_v17_mixed_regime"],
+            "pass_examples": [{"bot_id": "brain_refinery_v10_seasonal"}],
+        },
+        {"ok": False, "failed_checks": ["new_bot_graduation_gate"]},
+        {
+            "ok": False,
+            "maturity": {"mature_bots": 8, "mature_pass_bots": 1, "mature_pass_rate": 0.125},
+        },
+        {"ok": True},
+        {"ok": True},
+        {"ok": True},
+        {"ok": True},
+        new_bot_admission_guard={"ok": True},
+        promotion_packet={"ok": True},
+        max_fail_share=0.25,
+        min_considered_bots=4,
+        require_replay=True,
+        require_reconciliation_slo=False,
+    )
+
+    assert ok is True
+    assert failed_checks == []
+    assert details["graduation_ok"] is False
+    assert details["graduation_effective_ok"] is True
+    assert details["daily_verify_resolved_failed_checks"] == ["new_bot_graduation_gate"]
 
 
 def test_promotion_quality_gate_treats_owner_replay_and_reconciliation_as_advisory_when_scope_is_idle() -> None:
@@ -315,6 +427,37 @@ def test_promotion_quality_gate_resolves_idle_promotion_packet_failure() -> None
     assert failed_checks == []
     assert details["daily_verify_unresolved_failed_checks"] == []
     assert details["daily_verify_resolved_failed_checks"] == ["promotion_packet_builder"]
+
+
+def test_promotion_quality_gate_resolves_resource_guard_when_current_guard_is_clean() -> None:
+    ok, failed_checks, details = promotion_quality_gate.evaluate_quality(
+        {"promote_ok": True, "considered_bots": 5, "fail_share": 0.2},
+        {"ok": False, "failed_checks": ["resource_guard"]},
+        {"ok": True},
+        {"ok": True},
+        {"ok": True},
+        {"ok": True},
+        {"ok": True},
+        feature_store_manifest={
+            "ok": True,
+            "strict_ok": True,
+            "point_in_time_contract": {"complete": True},
+            "contract_hashes": {"dataset_manifest_sha256": "a" * 64},
+        },
+        new_bot_admission_guard={"ok": True},
+        champion_challenger_probation_guard={"ok": True},
+        promotion_packet={"ok": True},
+        resource_guard={"resource_guard_ok": True},
+        max_fail_share=0.25,
+        min_considered_bots=4,
+        require_replay=True,
+        require_reconciliation_slo=True,
+    )
+
+    assert ok is True
+    assert failed_checks == []
+    assert details["daily_verify_unresolved_failed_checks"] == []
+    assert details["daily_verify_resolved_failed_checks"] == ["resource_guard"]
 
 
 def test_promotion_quality_gate_resolves_fresh_snapshot_and_freshness_failures() -> None:

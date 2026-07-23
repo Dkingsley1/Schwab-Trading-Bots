@@ -318,6 +318,42 @@ def build_audit_payload(
     active_rows = [row for row in audits if bool(row.get("active"))]
     collection_only_active_rows = [row for row in active_rows if bool(row.get("collection_only_active", False))]
     supportability_active_rows = [row for row in active_rows if not bool(row.get("collection_only_active", False))]
+    active_sample_starved_rows = [
+        row
+        for row in supportability_active_rows
+        if str(row.get("status")) == "deferred_sample_starved"
+        and not str(row.get("supportability_status") or "").startswith("isolated_")
+    ]
+    active_sample_starved_isolated_rows = [
+        row
+        for row in supportability_active_rows
+        if str(row.get("status")) == "deferred_sample_starved"
+        and str(row.get("supportability_status") or "").startswith("isolated_")
+    ]
+    active_quality_failed_rows = [
+        row
+        for row in supportability_active_rows
+        if str(row.get("inferred_cause")) == "quality_guard_failure"
+        and str(row.get("supportability_status") or "") != "isolated_quality_probation"
+    ]
+    active_quality_probation_isolated_rows = [
+        row
+        for row in supportability_active_rows
+        if str(row.get("supportability_status") or "") == "isolated_quality_probation"
+    ]
+    active_stale_diagnostics_rows = [
+        row for row in supportability_active_rows if not bool(row.get("diagnostic_fresh", False))
+    ]
+    active_registry_seeded_rows = [
+        row for row in supportability_active_rows if str(row.get("supportability_status") or "") == "registry_seeded_active"
+    ]
+    active_staged_support_recovery_rows = [
+        row for row in supportability_active_rows if str(row.get("supportability_status") or "") == "staged_support_recovery"
+    ]
+
+    def _ids(rows: list[dict[str, Any]]) -> list[str]:
+        return [str(row.get("bot_id") or "").strip().lower() for row in rows if str(row.get("bot_id") or "").strip()]
+
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "registry_path": str(registry_path),
@@ -335,39 +371,28 @@ def build_audit_payload(
         "tier_counts": dict(sorted(tier_counts.items())),
         "supportability_counts": dict(sorted(supportability_counts.items())),
         "runtime_snapshot": snapshot,
-        "active_sample_starved": [
-            row
-            for row in supportability_active_rows
-            if str(row.get("status")) == "deferred_sample_starved"
-            and not str(row.get("supportability_status") or "").startswith("isolated_")
-        ][:25],
-        "active_sample_starved_isolated": [
-            row
-            for row in supportability_active_rows
-            if str(row.get("status")) == "deferred_sample_starved"
-            and str(row.get("supportability_status") or "").startswith("isolated_")
-        ][:25],
-        "active_quality_failed": [
-            row
-            for row in supportability_active_rows
-            if str(row.get("inferred_cause")) == "quality_guard_failure"
-            and str(row.get("supportability_status") or "") != "isolated_quality_probation"
-        ][:25],
-        "active_quality_probation_isolated": [
-            row
-            for row in supportability_active_rows
-            if str(row.get("supportability_status") or "") == "isolated_quality_probation"
-        ][:25],
-        "active_stale_diagnostics": [
-            row for row in supportability_active_rows if not bool(row.get("diagnostic_fresh", False))
-        ][:25],
+        "active_sample_starved_count": len(active_sample_starved_rows),
+        "active_sample_starved_bot_ids": _ids(active_sample_starved_rows),
+        "active_sample_starved": active_sample_starved_rows[:25],
+        "active_sample_starved_isolated_count": len(active_sample_starved_isolated_rows),
+        "active_sample_starved_isolated_bot_ids": _ids(active_sample_starved_isolated_rows),
+        "active_sample_starved_isolated": active_sample_starved_isolated_rows[:25],
+        "active_quality_failed_count": len(active_quality_failed_rows),
+        "active_quality_failed_bot_ids": _ids(active_quality_failed_rows),
+        "active_quality_failed": active_quality_failed_rows[:25],
+        "active_quality_probation_isolated_count": len(active_quality_probation_isolated_rows),
+        "active_quality_probation_isolated_bot_ids": _ids(active_quality_probation_isolated_rows),
+        "active_quality_probation_isolated": active_quality_probation_isolated_rows[:25],
+        "active_stale_diagnostics_count": len(active_stale_diagnostics_rows),
+        "active_stale_diagnostics_bot_ids": _ids(active_stale_diagnostics_rows),
+        "active_stale_diagnostics": active_stale_diagnostics_rows[:25],
         "active_collection_only": collection_only_active_rows[:25],
-        "active_registry_seeded": [
-            row for row in supportability_active_rows if str(row.get("supportability_status") or "") == "registry_seeded_active"
-        ][:25],
-        "active_staged_support_recovery": [
-            row for row in supportability_active_rows if str(row.get("supportability_status") or "") == "staged_support_recovery"
-        ][:25],
+        "active_registry_seeded_count": len(active_registry_seeded_rows),
+        "active_registry_seeded_bot_ids": _ids(active_registry_seeded_rows),
+        "active_registry_seeded": active_registry_seeded_rows[:25],
+        "active_staged_support_recovery_count": len(active_staged_support_recovery_rows),
+        "active_staged_support_recovery_bot_ids": _ids(active_staged_support_recovery_rows),
+        "active_staged_support_recovery": active_staged_support_recovery_rows[:25],
         "tiers": {
             "active_production": [row for row in audits if str(row.get("tier")) == "active_production"][:25],
             "active_probation": [row for row in audits if str(row.get("tier")) == "active_probation"][:25],

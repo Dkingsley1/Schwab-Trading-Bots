@@ -157,6 +157,97 @@ def test_training_requalification_lane_promotes_regime_fit_bootstrap_candidates(
     assert payload["top_candidates"][0]["actions"] == ["rebuild_model_artifact", "repair_runtime_inputs", "seed_walk_forward_coverage"]
 
 
+def test_training_requalification_lane_can_surface_deleted_sample_starved_collection_candidate(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write_json(
+        project_root / "master_bot_registry.json",
+        {
+            "sub_bots": [
+                {
+                    "bot_id": "brain_refinery_v23_atr_adx_regime",
+                    "active": False,
+                    "deleted_from_rotation": True,
+                    "lifecycle_state": "deleted",
+                    "quality_score": 0.25,
+                    "bot_role": "signal_sub_bot",
+                }
+            ]
+        },
+    )
+    _write_json(
+        project_root / "governance" / "training_diagnostics" / "brain_refinery_v23_atr_adx_regime_latest.json",
+        {
+            "status": "deferred_sample_starved",
+            "sample_count": 0,
+            "eligible_sequences": 0,
+            "observation_count": 6,
+            "sequence_count": 3,
+        },
+    )
+
+    default_payload = requal_src.build_payload(project_root)
+    payload = requal_src.build_payload(project_root, include_sample_starved_deleted=True)
+
+    assert default_payload["candidate_count"] == 0
+    assert payload["sample_starved_collection_candidate_count"] == 1
+    assert payload["top_candidates"][0]["bot_id"] == "brain_refinery_v23_atr_adx_regime"
+    assert payload["top_candidates"][0]["sample_starved_requalification_candidate"] is True
+    assert "reactivate_collection_only" in payload["top_candidates"][0]["actions"]
+    assert "repair_runtime_inputs" in payload["top_candidates"][0]["actions"]
+
+
+def test_training_requalification_apply_repair_reactivates_deleted_sample_starved_as_collect_only(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write_json(
+        project_root / "master_bot_registry.json",
+        {
+            "sub_bots": [
+                {
+                    "bot_id": "brain_refinery_v37_order_flow_proxy",
+                    "active": False,
+                    "deleted_from_rotation": True,
+                    "lifecycle_state": "deleted",
+                    "quality_score": 0.49,
+                    "bot_role": "signal_sub_bot",
+                    "weight": 0.3,
+                }
+            ]
+        },
+    )
+    _write_json(
+        project_root / "governance" / "training_diagnostics" / "brain_refinery_v37_order_flow_proxy_latest.json",
+        {
+            "status": "deferred_sample_starved",
+            "sample_count": 0,
+            "eligible_sequences": 0,
+            "observation_count": 220,
+            "sequence_count": 47,
+        },
+    )
+
+    repair = requal_src.apply_repairs(
+        project_root,
+        include_bot_ids=["brain_refinery_v37_order_flow_proxy"],
+        include_sample_starved_deleted=True,
+    )
+    registry = json.loads((project_root / "master_bot_registry.json").read_text(encoding="utf-8"))
+    row = registry["sub_bots"][0]
+
+    assert repair["collection_requalification_count"] == 1
+    assert repair["unresolved_count"] == 0
+    assert row["active"] is True
+    assert row["deleted_from_rotation"] is False
+    assert row["lifecycle_state"] == "data_collection_only"
+    assert row["data_collection_active"] is True
+    assert row["training_excluded"] is True
+    assert row["exclude_from_training"] is True
+    assert row["trading_enabled"] is False
+    assert row["execution_enabled"] is False
+    assert row["paper_execution_allowed"] is False
+    assert row["weight"] == 0.0
+    assert row["minimum_training_observations"] >= 200
+
+
 def test_training_requalification_apply_repair_restores_registry_and_diagnostic(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     _write_json(
@@ -727,6 +818,82 @@ def test_coverage_gap_closer_surfaces_launch_ready_autopilot_when_runtime_is_cle
     assert payload["autopilot_contract"]["launch_state"] == "ready_to_launch"
     assert payload["autopilot_contract"]["can_launch_now"] is True
     assert payload["recommended_command"][1] == "retrain-force-targeted"
+
+
+def test_coverage_gap_closer_respects_training_launch_contract_budget_block(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    _write_json(
+        project_root / "governance" / "walk_forward" / "coverage_seed_latest.json",
+        {
+            "seed_queue": [
+                {
+                    "bot_id": "brain_refinery_v10_seasonal",
+                    "bot_role": "signal_sub_bot",
+                    "priority": 100.0,
+                    "current_runs": 4,
+                    "runs_remaining": 8,
+                    "needs_runtime_input_repair": False,
+                }
+            ]
+        },
+    )
+    _write_json(
+        project_root / "governance" / "walk_forward" / "promotion_readiness_latest.json",
+        {"coverage_shortfall_bots": 1, "considered_bots": 3, "thresholds": {"min_considered_bots": 4}},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "training_runtime_control_latest.json",
+        {
+            "overall_status": "constrained",
+            "snapshot_ready": True,
+            "coverage_repair_ready": True,
+            "training_quality": {"overall_status": "needs_attention", "training_quality_score": 98.0},
+            "training_launch_contract": {
+                "launch_allowed": False,
+                "prep_allowed": True,
+                "launch_blockers": ["autonomic_training_budget_closed"],
+                "recommended_batch_size": 0,
+            },
+        },
+    )
+    _write_json(project_root / "governance" / "health" / "resource_guard_latest.json", {"swap_used_gb": 1.0})
+    _write_json(
+        project_root / "governance" / "health" / "live_runtime_separation_control_latest.json",
+        {"overall_status": "ready", "release_contract": {"live_lane_should_be_read_only": False}},
+    )
+    monkeypatch.setattr(gap_closer_src, "_refresh_artifacts", lambda *args, **kwargs: [])
+
+    def _fail_run_json(*args, **kwargs):  # pragma: no cover - assertion helper
+        raise AssertionError("coverage gap closer must not launch when training budget is closed")
+
+    monkeypatch.setattr(gap_closer_src, "_run_json", _fail_run_json)
+
+    payload = gap_closer_src.run_gap_closer(
+        project_root,
+        candidate_limit=4,
+        stage_count=1,
+        max_cycles=1,
+        retrain_timeout_sec=1,
+        refresh_timeout_sec=1,
+        wait_for_idle_timeout_sec=1,
+        poll_sec=1,
+        stall_limit=1,
+        retrain_profile="coverage_canary",
+        apply_stage=False,
+        launch=True,
+        auto_launch_off_hours=False,
+        clear_other_candidates=True,
+        out_path=project_root / "governance" / "walk_forward" / "coverage_gap_closer_latest.json",
+        queue_out_path=project_root / "governance" / "walk_forward" / "coverage_gap_closer_queue.jsonl",
+    )
+
+    assert payload["autopilot_contract"]["launch_state"] == "stage_only_training_blocked"
+    assert payload["autopilot_contract"]["can_launch_now"] is False
+    assert "training_launch_contract_blocked" in payload["autopilot_contract"]["blocking_reasons"]
+    assert "autonomic_training_budget_closed" in payload["autopilot_contract"]["blocking_reasons"]
+    assert payload["recommended_command"][1] == "coverage-gap-closer"
+    assert payload["recommended_retrain_command"] == []
+    assert payload["cycle_records"] == []
 
 
 def test_coverage_gap_closer_opens_off_hours_auto_launch_window_when_live_lane_is_read_only(tmp_path: Path, monkeypatch) -> None:

@@ -115,6 +115,260 @@ def test_data_plane_recovery_controller_flags_write_failures_and_snapshot_failur
     ]
 
 
+def test_data_plane_recovery_controller_treats_old_write_failures_as_recovered_after_steady_storage(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "incident_timeline_latest.json",
+        {
+            "recent_incidents": [
+                {"summary": "write_failure", "timestamp_utc": "2026-06-05T13:47:22+00:00"},
+                {"summary": "write_failure", "timestamp_utc": "2026-06-05T13:47:23+00:00"},
+            ]
+        },
+    )
+    _write_json(health / "external_backlog_drain_latest.json", {"overall_status": "blocked", "blocked_reasons": ["market_hours_guard"]})
+    _write_json(health / "ingestion_priority_queue_latest.json", {"lane_counts": {"core": {"pending_lines": 374}}})
+    _write_json(health / "storage_tier_policy_latest.json", {"pressure": {"hot_path_over_budget_bytes": 0}})
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "backpressure_quality_score": 100,
+            "recovery_quality_score": 96,
+            "steady_state": {"target_status": {"steady_state_ready": True}},
+            "external_route_verification": {"verification_state": "active_local_ready"},
+        },
+    )
+    _write_json(health / "sql_link_service_progress_latest.json", {"status": "ok", "current_step": "complete"})
+    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "ready"}})
+
+    payload = data_plane_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["recovery_state"] == "stable"
+    assert payload["raw_write_failure_count"] == 2
+    assert payload["write_failure_count"] == 0
+    assert payload["write_path_recovered_by_storage"] is True
+    assert payload["storage_steady_state_ready"] is True
+
+
+def test_data_plane_recovery_controller_recovers_write_failures_from_current_storage_truth(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "incident_timeline_latest.json",
+        {
+            "recent_incidents": [
+                {"summary": "write_failure", "timestamp_utc": f"2026-06-05T13:47:2{i}+00:00"}
+                for i in range(6)
+            ]
+        },
+    )
+    _write_json(health / "external_backlog_drain_latest.json", {"overall_status": "blocked", "blocked_reasons": ["external_storage_unavailable"]})
+    _write_json(health / "ingestion_priority_queue_latest.json", {"lane_counts": {"core": {"pending_lines": 2172}}})
+    _write_json(health / "storage_tier_policy_latest.json", {"pressure": {"hot_path_over_budget_bytes": 319843803301}})
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "backpressure_quality_score": 100,
+            "recovery_quality_score": 82,
+            "steady_state": {"target_status": {"steady_state_ready": True}},
+            "external_route_verification": {"verification_state": "active_local_ready"},
+            "backpressure": {
+                "raw_live": {
+                    "core_pending_lines": 2059,
+                    "total_pending_lines": 2172,
+                    "oldest_pending_age_seconds": 23.5,
+                }
+            },
+            "data_integrity": {"sql_overlay_ops_write_failures": 0},
+        },
+    )
+    _write_json(health / "sql_link_service_progress_latest.json", {"status": "running", "current_step": "shard_linking"})
+    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "awaiting_coverage_cycles"}})
+
+    payload = data_plane_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["recovery_state"] == "stable"
+    assert payload["raw_write_failure_count"] == 6
+    assert payload["write_failure_count"] == 0
+    assert payload["storage_steady_state_ready"] is False
+    assert payload["current_storage_write_ready"] is True
+    assert payload["write_path_recovered_by_storage"] is True
+    assert payload["hot_path_over_budget_bytes"] == 0
+    assert payload["raw_hot_path_over_budget_bytes"] == 319843803301
+
+
+def test_data_plane_recovery_controller_uses_bounded_storage_pressure_relief(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "incident_timeline_latest.json",
+        {
+            "recent_incidents": [
+                {"summary": "write_failure", "timestamp_utc": f"2026-06-05T13:48:2{i}+00:00"}
+                for i in range(6)
+            ]
+        },
+    )
+    _write_json(health / "external_backlog_drain_latest.json", {"overall_status": "blocked", "blocked_reasons": ["external_storage_unavailable"]})
+    _write_json(health / "ingestion_priority_queue_latest.json", {"lane_counts": {"core": {"pending_lines": 1938}}})
+    _write_json(health / "storage_tier_policy_latest.json", {"pressure": {"hot_path_over_budget_bytes": 319843803301}})
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.334,
+            "backpressure_quality_score": 97,
+            "recovery_quality_score": 82,
+            "steady_state": {"target_status": {"steady_state_ready": False, "target_breaches": ["pressure_index"]}},
+            "external_route_verification": {"verification_state": "active_local_ready"},
+            "backpressure": {
+                "raw_live": {
+                    "core_pending_lines": 2059,
+                    "total_pending_lines": 2172,
+                    "oldest_pending_age_seconds": 23.5,
+                }
+            },
+            "data_integrity": {"sql_overlay_ops_write_failures": 0},
+        },
+    )
+    _write_json(health / "sql_link_service_progress_latest.json", {"status": "ok", "current_step": "complete"})
+    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "awaiting_coverage_cycles"}})
+
+    payload = data_plane_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["raw_write_failure_count"] == 6
+    assert payload["write_failure_count"] == 0
+    assert payload["storage_steady_state_ready"] is False
+    assert payload["current_storage_write_ready"] is True
+    assert payload["write_path_recovery_evidence"]["bounded_target_relief"] is True
+    assert payload["write_path_recovered_by_storage"] is True
+    assert payload["hot_path_over_budget_bytes"] == 0
+
+
+def test_data_plane_recovery_controller_recovers_during_overlay_only_storage_cleanup(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "incident_timeline_latest.json",
+        {"recent_incidents": [{"summary": "write_failure", "timestamp_utc": "2026-06-05T13:48:20+00:00"} for _ in range(6)]},
+    )
+    _write_json(health / "external_backlog_drain_latest.json", {"overall_status": "blocked", "blocked_reasons": ["external_storage_unavailable"]})
+    _write_json(health / "ingestion_priority_queue_latest.json", {"lane_counts": {"core": {"pending_lines": 1938}}})
+    _write_json(health / "storage_tier_policy_latest.json", {"pressure": {"hot_path_over_budget_bytes": 319843803301}})
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "severity": "critical",
+            "pressure_index": 22.88,
+            "backpressure_quality_score": 40,
+            "steady_state": {"target_status": {"steady_state_ready": False, "target_breaches": ["pressure_index"]}},
+            "external_route_verification": {"verification_state": "active_local_ready"},
+            "backpressure": {
+                "core_pending_lines": 2577,
+                "total_pending_lines": 2717,
+                "overlay_adjusted": True,
+                "oldest_pending_age_seconds": 5491.09,
+                "raw_live": {
+                    "core_pending_lines": 2059,
+                    "total_pending_lines": 2172,
+                    "oldest_pending_age_seconds": 23.5,
+                },
+            },
+            "data_integrity": {"sql_overlay_ops_write_failures": 0},
+        },
+    )
+    _write_json(health / "sql_link_service_progress_latest.json", {"status": "ok", "current_step": "complete"})
+    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "awaiting_coverage_cycles"}})
+
+    payload = data_plane_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["write_failure_count"] == 0
+    assert payload["current_storage_write_ready"] is True
+    assert payload["write_path_recovery_evidence"]["overlay_only_write_relief"] is True
+    assert payload["write_path_recovered_by_storage"] is True
+    assert payload["hot_path_over_budget_bytes"] == 0
+
+
+def test_data_plane_recovery_controller_uses_effective_raw_live_when_fresh_empty_overlay_clears_stale_raw_live(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "incident_timeline_latest.json",
+        {"recent_incidents": [{"summary": "write_failure", "timestamp_utc": "2026-06-24T14:48:20+00:00"} for _ in range(3)]},
+    )
+    _write_json(health / "external_backlog_drain_latest.json", {"overall_status": "blocked", "blocked_reasons": ["external_storage_unavailable", "market_hours_guard"]})
+    _write_json(health / "ingestion_priority_queue_latest.json", {"lane_counts": {"core": {"pending_lines": 954}}})
+    _write_json(health / "storage_tier_policy_latest.json", {"pressure": {"hot_path_over_budget_bytes": 319843803301}})
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "needs_work",
+            "severity": "stable",
+            "pressure_index": 0.0,
+            "backpressure_quality_score": 100,
+            "recovery_quality_score": 82,
+            "steady_state": {"target_status": {"steady_state_ready": False}},
+            "external_route_verification": {"verification_state": "active_local_ready"},
+            "backpressure": {
+                "core_pending_lines": 0,
+                "total_pending_lines": 0,
+                "overlay_adjusted": True,
+                "overlay_pressure_clear": True,
+                "oldest_pending_age_seconds": 0.0,
+                "raw_live": {
+                    "core_pending_lines": 954,
+                    "total_pending_lines": 15195,
+                    "oldest_pending_age_seconds": 20197.0,
+                },
+                "effective_raw_live": {
+                    "core_pending_lines": 0,
+                    "total_pending_lines": 0,
+                    "oldest_pending_age_seconds": 0.0,
+                    "source": "fresh_empty_sql_ingestion_overlay",
+                    "reconciled_from_raw_live": True,
+                    "raw_live_estimate": {
+                        "core_pending_lines": 954,
+                        "total_pending_lines": 15195,
+                        "oldest_pending_age_seconds": 20197.0,
+                    },
+                },
+                "effective_raw_live_source": "fresh_empty_sql_ingestion_overlay",
+            },
+            "data_integrity": {
+                "sql_overlay_invalid_lines": 0,
+                "sql_overlay_oversize_payloads": 0,
+                "sql_overlay_ops_write_failures": 0,
+            },
+        },
+    )
+    _write_json(health / "sql_link_service_progress_latest.json", {"status": "running", "current_step": "shard_linking"})
+    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "awaiting_coverage_cycles"}})
+
+    payload = data_plane_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["queue_depth"] == 0
+    assert payload["queue_depth_source"] == "fresh_empty_sql_ingestion_overlay"
+    assert payload["current_storage_write_ready"] is True
+    assert payload["write_path_recovery_evidence"]["raw_live_clear"] is True
+    assert payload["write_path_recovery_evidence"]["raw_live"]["total_pending_lines"] == 0
+    assert payload["write_path_recovery_evidence"]["effective_backpressure"]["raw_live_estimate"]["total_pending_lines"] == 15195
+    assert payload["write_path_recovery_evidence"]["overlay_only_write_relief"] is True
+    assert payload["write_path_recovered_by_storage"] is True
+    assert payload["hot_path_over_budget_bytes"] == 0
+
+
 def test_data_plane_recovery_controller_clears_snapshot_failures_after_fresh_cache(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

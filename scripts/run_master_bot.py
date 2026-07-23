@@ -19,8 +19,18 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
+def _effective_min_considered(gate: dict, thresholds: dict) -> int:
+    effective_thresholds = gate.get("effective_thresholds") if isinstance(gate.get("effective_thresholds"), dict) else {}
+    raw_value = effective_thresholds.get("min_considered_bots", thresholds.get("min_considered_bots", 4))
+    try:
+        return max(int(raw_value or 4), 1)
+    except Exception:
+        return 4
+
+
 def _build_gate_debug(gate: dict) -> dict:
     thresholds = gate.get("thresholds") if isinstance(gate.get("thresholds"), dict) else {}
+    min_considered_bots = _effective_min_considered(gate, thresholds)
     fail_examples = gate.get("fail_examples") if isinstance(gate.get("fail_examples"), list) else []
     return {
         "promote_ok": bool(gate.get("promote_ok", False)),
@@ -36,7 +46,8 @@ def _build_gate_debug(gate: dict) -> dict:
             "max_fail_share": thresholds.get("max_fail_share"),
             "max_severe_overfit_share": thresholds.get("max_severe_overfit_share"),
             "min_runs_per_bot": thresholds.get("min_runs_per_bot"),
-            "min_considered_bots": thresholds.get("min_considered_bots"),
+            "min_considered_bots": min_considered_bots,
+            "configured_min_considered_bots": thresholds.get("min_considered_bots"),
         },
         "top_fail_examples": fail_examples[:5],
     }
@@ -151,7 +162,7 @@ def _promotion_readiness_ok(path: Path) -> tuple[bool, str, dict]:
     promote_ok = bool(gate.get("promote_ok", False))
     coverage_ok = bool(gate.get("coverage_ok", promote_ok))
     considered_bots = int(gate.get("considered_bots", 0) or 0)
-    min_considered_bots = max(int(thresholds.get("min_considered_bots", 4) or 4), 1)
+    min_considered_bots = _effective_min_considered(gate, thresholds)
     if promote_ok and coverage_ok and considered_bots >= min_considered_bots:
         return True, "ok", {}
 
@@ -161,6 +172,7 @@ def _promotion_readiness_ok(path: Path) -> tuple[bool, str, dict]:
         "coverage_ok": coverage_ok,
         "considered_bots": considered_bots,
         "min_considered_bots": min_considered_bots,
+        "configured_min_considered_bots": thresholds.get("min_considered_bots"),
         "thresholds": thresholds,
         "fail_examples": (gate.get("fail_examples", []) if isinstance(gate.get("fail_examples"), list) else [])[:5],
     }
@@ -235,6 +247,13 @@ def main() -> None:
 
     parser.add_argument("--require-paper-feedback-floor", action="store_true", default=os.getenv("MASTER_PROMOTION_REQUIRE_PAPER_FEEDBACK_FLOOR", "1") == "1")
     parser.add_argument("--no-require-paper-feedback-floor", dest="require_paper_feedback_floor", action="store_false")
+    parser.add_argument(
+        "--promote-held-champion",
+        action="store_true",
+        default=os.getenv("MASTER_PROMOTE_HELD_CHAMPION_WHEN_GATE_GREEN", "0") == "1",
+        help="Allow a current champion to become promoted when it beats the fresh challenger and all gates are green.",
+    )
+    parser.add_argument("--no-promote-held-champion", dest="promote_held_champion", action="store_false")
 
     parser.add_argument("--promotion-gate-file", default=str(Path(PROJECT_ROOT) / "governance" / "walk_forward" / "promotion_gate_latest.json"))
     parser.add_argument("--lane-promotion-gate-file", default=str(Path(PROJECT_ROOT) / "governance" / "walk_forward" / "lane_promotion_gate_latest.json"))
@@ -248,6 +267,7 @@ def main() -> None:
 
     parser.add_argument("--print-full", action="store_true")
     args = parser.parse_args()
+    os.environ["MASTER_PROMOTE_HELD_CHAMPION_WHEN_GATE_GREEN"] = "1" if args.promote_held_champion else "0"
 
     if args.require_health_gate_clear:
         ok, reason, detail = _health_gate_ok(Path(args.health_gates_file))

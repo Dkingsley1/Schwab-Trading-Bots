@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import gzip
 import json
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -32,18 +33,87 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    out: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path.resolve(strict=False))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
+
+
+def _execution_lane_paths(project_root: Path, stem: str) -> list[Path]:
+    pattern_groups = [
+        [
+            str(project_root / "governance" / "execution_lanes" / f"{stem}_*.jsonl"),
+            str(project_root / "governance" / "execution_lanes" / f"{stem}_*.jsonl.gz"),
+        ],
+        [
+            str(project_root / "local_fallback_storage" / "governance" / "execution_lanes" / f"{stem}_*.jsonl"),
+            str(project_root / "local_fallback_storage" / "governance" / "execution_lanes" / f"{stem}_*.jsonl.gz"),
+        ],
+        [
+            str(Path("/Volumes/BOT_LOGS/schwab_trading_bot/governance/execution_lanes") / f"{stem}_*.jsonl"),
+            str(Path("/Volumes/BOT_LOGS/schwab_trading_bot/governance/execution_lanes") / f"{stem}_*.jsonl.gz"),
+        ],
+    ]
+    for patterns in pattern_groups:
+        paths: list[Path] = []
+        for pattern in patterns:
+            paths.extend(Path(path) for path in sorted(glob.glob(pattern)))
+        if paths:
+            return _dedupe_paths(paths)
+    return []
+
+
 def _glob_source_paths(project_root: Path) -> list[Path]:
-    return [
+    bridge_paths = [
         Path(path)
         for path in sorted(
             glob.glob(str(project_root / "exports" / "paper_broker_bridge" / "paper" / "paper_bridge_orders_*.jsonl"))
         )[-2:]
     ]
+    if bridge_paths:
+        return bridge_paths
+
+    result_paths = _execution_lane_paths(project_root, "execution_results")[-4:]
+    if result_paths:
+        return result_paths
+
+    return _execution_lane_paths(project_root, "execution_intents")[-4:]
+
+
+def _source_kind(path: Path) -> str:
+    name = path.name
+    if name.startswith("execution_results_"):
+        return "execution_result"
+    if name.startswith("execution_intents_"):
+        return "execution_intent"
+    return "paper_bridge"
 
 
 def _iter_jsonl_rows(path: Path, *, offset_bytes: int = 0) -> tuple[list[dict[str, Any]], int]:
     rows: list[dict[str, Any]] = []
     try:
+        if path.suffix == ".gz":
+            if int(offset_bytes or 0) > 0:
+                return [], int(offset_bytes)
+            with gzip.open(path, "rt", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    if isinstance(row, dict):
+                        rows.append(row)
+            return rows, int(path.stat().st_size)
+
         with path.open("rb") as handle:
             handle.seek(max(int(offset_bytes), 0))
             for raw in handle:
@@ -59,6 +129,136 @@ def _iter_jsonl_rows(path: Path, *, offset_bytes: int = 0) -> tuple[list[dict[st
             return rows, int(handle.tell())
     except Exception:
         return [], max(int(offset_bytes), 0)
+
+
+def _payload_context(row: dict[str, Any], source_kind: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    if source_kind == "execution_result":
+        intent = row.get("intent") if isinstance(row.get("intent"), dict) else {}
+        result = row.get("result") if isinstance(row.get("result"), dict) else {}
+        decision = result.get("decision") if isinstance(result.get("decision"), dict) else {}
+        return (decision or intent), intent, row
+    if source_kind == "execution_intent":
+        return row, row, row
+    return row, {}, row
+
+
+def _first_number(*values: Any, default: float) -> float:
+    for value in values:
+        try:
+            return float(value)
+        except Exception:
+            continue
+    return float(default)
+
+
+def _normalize_execution_result_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    intent = row.get("intent") if isinstance(row.get("intent"), dict) else {}
+    result = row.get("result") if isinstance(row.get("result"), dict) else {}
+    decision = result.get("decision") if isinstance(result.get("decision"), dict) else {}
+    payload = decision or intent
+    if not payload:
+        return None
+    mode = str(row.get("mode") or intent.get("target_mode") or payload.get("mode") or "").strip().lower()
+    if mode != "paper":
+        return None
+    timestamp = (
+        str(payload.get("timestamp_utc") or "").strip()
+        or str(row.get("timestamp_utc") or "").strip()
+        or str(intent.get("timestamp_utc") or "").strip()
+        or str(row.get("intent_created_at") or "").strip()
+    )
+    if not timestamp:
+        return None
+    return {
+        "timestamp_utc": timestamp,
+        "symbol": str(payload.get("symbol") or intent.get("symbol") or "").upper(),
+        "action": str(payload.get("action") or intent.get("action") or "").upper(),
+        "quantity": _first_number(payload.get("quantity"), intent.get("quantity"), default=0.0),
+        "model_score": _first_number(payload.get("model_score"), intent.get("model_score"), default=0.0),
+        "threshold": _first_number(payload.get("threshold"), intent.get("threshold"), default=0.0),
+        "strategy": str(payload.get("strategy") or intent.get("strategy") or ""),
+        "realized_pnl": _first_number(payload.get("realized_pnl"), intent.get("realized_pnl"), default=0.0),
+        "unrealized_pnl": _first_number(payload.get("unrealized_pnl"), intent.get("unrealized_pnl"), default=0.0),
+        "mode": "paper",
+    }
+
+
+def _normalize_execution_intent_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    if str(row.get("target_mode") or row.get("mode") or "").strip().lower() != "paper":
+        return None
+    timestamp = str(row.get("timestamp_utc") or "").strip()
+    if not timestamp:
+        return None
+    return {
+        "timestamp_utc": timestamp,
+        "symbol": str(row.get("symbol") or "").upper(),
+        "action": str(row.get("action") or "").upper(),
+        "quantity": _first_number(row.get("quantity"), default=0.0),
+        "model_score": _first_number(row.get("model_score"), default=0.0),
+        "threshold": _first_number(row.get("threshold"), default=0.0),
+        "strategy": str(row.get("strategy") or ""),
+        "realized_pnl": 0.0,
+        "unrealized_pnl": 0.0,
+        "mode": "paper",
+    }
+
+
+def _merge_source_context(row: dict[str, Any], original: dict[str, Any], source_kind: str) -> dict[str, Any]:
+    payload, intent, envelope = _payload_context(original, source_kind)
+    merged = dict(row)
+    metadata: dict[str, Any] = {}
+    for candidate in (envelope.get("metadata"), intent.get("metadata"), payload.get("metadata")):
+        if isinstance(candidate, dict):
+            metadata.update(candidate)
+    if metadata:
+        merged["metadata"] = metadata
+    profile = str(
+        metadata.get("source_profile")
+        or payload.get("profile")
+        or intent.get("profile")
+        or envelope.get("profile")
+        or ""
+    ).strip()
+    if profile:
+        merged["profile"] = profile
+    merged["tradeability_score"] = _first_number(
+        payload.get("tradeability_score"),
+        payload.get("tradeability_norm"),
+        intent.get("tradeability_score"),
+        intent.get("tradeability_norm"),
+        metadata.get("tradeability_score"),
+        metadata.get("tradeability_norm"),
+        envelope.get("tradeability_score"),
+        envelope.get("tradeability_norm"),
+        default=1.0,
+    )
+    merged["allocation_conflict_norm"] = _first_number(
+        payload.get("allocation_conflict_norm"),
+        intent.get("allocation_conflict_norm"),
+        metadata.get("allocation_conflict_norm"),
+        envelope.get("allocation_conflict_norm"),
+        default=0.0,
+    )
+    return merged
+
+
+def _normalize_source_rows(rows: list[dict[str, Any]], source_kind: str) -> list[dict[str, Any]]:
+    if source_kind == "paper_bridge":
+        return [dict(row) for row in rows if isinstance(row, dict)]
+
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if source_kind == "execution_result":
+            replay_row = _normalize_execution_result_row(row)
+        elif source_kind == "execution_intent":
+            replay_row = _normalize_execution_intent_row(row)
+        else:
+            replay_row = None
+        if replay_row:
+            normalized.append(_merge_source_context(replay_row, row, source_kind))
+    return normalized
 
 
 def _empty_runtime(max_rows: int) -> dict[str, Any]:
@@ -147,8 +347,11 @@ def _profile_of(row: dict[str, Any]) -> str:
 
 
 def _net_total(row: dict[str, Any]) -> float:
-    realized = _safe_float(row.get("realized_pnl_total"), _safe_float(row.get("realized_pnl")))
-    unrealized = _safe_float(row.get("unrealized_pnl_total"), _safe_float(row.get("unrealized_pnl")))
+    realized = _safe_float(row.get("realized_pnl"), _safe_float(row.get("realized"), _safe_float(row.get("realized_pnl_total"))))
+    unrealized = _safe_float(
+        row.get("unrealized_pnl"),
+        _safe_float(row.get("unrealized"), _safe_float(row.get("unrealized_pnl_total"))),
+    )
     return float(realized + unrealized)
 
 
@@ -193,7 +396,8 @@ def build_counterfactual_report(
         meta = tracked.get(str(path)) if isinstance(tracked, dict) else None
         offset = int(meta.get("offset_bytes", 0) or 0) if isinstance(meta, dict) else 0
         rows, final_offset = _iter_jsonl_rows(path, offset_bytes=offset)
-        _update_runtime(runtime, rows)
+        source_kind = _source_kind(path)
+        _update_runtime(runtime, _normalize_source_rows(rows, source_kind))
         if isinstance(meta, dict):
             if final_offset > offset:
                 file_scan_counts["incremental_files"] += 1
@@ -207,12 +411,14 @@ def build_counterfactual_report(
                 "inode": int(st.st_ino),
                 "offset_bytes": int(final_offset if final_offset > 0 else st.st_size),
                 "mtime": float(st.st_mtime),
+                "source_kind": source_kind,
             }
         except Exception:
             next_source_files[str(path)] = {
                 "inode": 0,
                 "offset_bytes": int(final_offset),
                 "mtime": 0.0,
+                "source_kind": source_kind,
             }
 
     _write_json(

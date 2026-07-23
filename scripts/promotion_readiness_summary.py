@@ -53,6 +53,12 @@ def _read_recent_jsonl(path: Path, limit: int) -> list[dict]:
     return rows[-max(limit, 1) :]
 
 
+def _effective_min_considered(gate: dict, thresholds: dict) -> int:
+    effective_thresholds = gate.get("effective_thresholds") if isinstance(gate.get("effective_thresholds"), dict) else {}
+    raw_value = effective_thresholds.get("min_considered_bots", thresholds.get("min_considered_bots", 0))
+    return int(raw_value or 0)
+
+
 def _fail_priority(row: dict) -> tuple[float, float, str]:
     bot_id = str((row or {}).get("bot_id", "")).strip()
     failed = (row or {}).get("failed_gates", {}) if isinstance((row or {}).get("failed_gates"), dict) else {}
@@ -126,7 +132,7 @@ def main() -> int:
     raw_fail_share = gate.get("fail_share", 1.0)
     fail_share = float(1.0 if raw_fail_share is None else raw_fail_share)
     max_fail_share = float(thresholds.get("max_fail_share", 0.25) or 0.25)
-    min_considered_bots = int(thresholds.get("min_considered_bots", 0) or 0)
+    min_considered_bots = _effective_min_considered(gate, thresholds)
     considered_bots = int(gate.get("considered_bots", 0) or 0)
     coverage_shortfall = max(min_considered_bots - considered_bots, 0)
     readiness_margin = round(max_fail_share - fail_share, 6)

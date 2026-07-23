@@ -63,6 +63,17 @@ def _load_json(path: Path) -> dict:
         return {}
 
 
+def _safe_log_paths(logs_dir: Path, max_log_files: int) -> list[Path]:
+    try:
+        paths = list(logs_dir.glob("brain_refinery_*.json"))
+    except Exception:
+        return []
+    paths.sort(key=lambda p: timestamp_from_log_name(p.name), reverse=True)
+    if max_log_files > 0:
+        return paths[:max_log_files]
+    return paths
+
+
 def _registry_repair_boundaries(registry_path: Path) -> dict[str, datetime]:
     payload = _load_json(registry_path)
     rows = payload.get("sub_bots") if isinstance(payload.get("sub_bots"), list) else []
@@ -90,6 +101,7 @@ def main() -> int:
     parser.add_argument("--pass-delta-threshold", type=float, default=float(os.getenv("WALK_FORWARD_PASS_DELTA_THRESHOLD", "-0.02")))
     parser.add_argument("--min-trading-quality-score", type=float, default=float(os.getenv("WALK_FORWARD_MIN_TRADING_QUALITY_SCORE", "0.48")))
     parser.add_argument("--max-overfit-gap", type=float, default=float(os.getenv("WALK_FORWARD_MAX_OVERFIT_GAP", "0.10")))
+    parser.add_argument("--max-log-files", type=int, default=int(os.getenv("WALK_FORWARD_MAX_LOG_FILES", "0")))
     parser.add_argument("--registry-file", default=str(PROJECT_ROOT / "master_bot_registry.json"))
     parser.add_argument("--out", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "walk_forward_latest.json"))
     args = parser.parse_args()
@@ -97,7 +109,7 @@ def main() -> int:
     logs_dir = PROJECT_ROOT / "logs"
     groups = defaultdict(list)
 
-    for p in logs_dir.glob("brain_refinery_*.json"):
+    for p in _safe_log_paths(logs_dir, max(int(args.max_log_files), 0)):
         try:
             obj = json.loads(p.read_text(encoding="utf-8"))
         except Exception:

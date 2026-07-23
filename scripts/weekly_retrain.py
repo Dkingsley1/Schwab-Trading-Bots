@@ -1,4 +1,5 @@
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 import fcntl
 import hashlib
@@ -84,6 +85,9 @@ RETRAIN_OPERATOR_NOTES_PATH = os.path.join(PROJECT_ROOT, "governance", "health",
 PAPER_PERFORMANCE_PATH = os.path.join(PROJECT_ROOT, "governance", "health", "paper_performance_latest.json")
 PAPER_HARD_EXAMPLES_PATH = os.path.join(PROJECT_ROOT, "governance", "training_diagnostics", "paper_hard_examples_latest.json")
 TRAINING_DIAGNOSTICS_DIR = os.path.join(PROJECT_ROOT, "governance", "training_diagnostics")
+TRAINING_SAMPLE_STARVED_QUEUE_LATEST = os.path.join(TRAINING_DIAGNOSTICS_DIR, "training_sample_starved_queue_latest.json")
+TRAINING_QUALITY_REPAIR_QUEUE_LATEST = os.path.join(TRAINING_DIAGNOSTICS_DIR, "training_quality_repair_queue_latest.json")
+TRAINING_TIMEOUT_QUEUE_LATEST = os.path.join(TRAINING_DIAGNOSTICS_DIR, "training_timeout_queue_latest.json")
 RETRAIN_INPUT_FEATURE_DIAGNOSTICS_LATEST = os.path.join(TRAINING_DIAGNOSTICS_DIR, "retrain_input_feature_diagnostics_latest.json")
 RETRAIN_REPLAY_SUMMARY_LATEST = os.path.join(TRAINING_DIAGNOSTICS_DIR, "retrain_replay_summary_latest.json")
 RUNTIME_TRAINING_SNAPSHOT_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "build_runtime_training_snapshot.py")
@@ -93,6 +97,9 @@ STORAGE_TIER_POLICY_LATEST = os.path.join(PROJECT_ROOT, "governance", "health", 
 JSONL_DISCOVERY_MANIFEST_LATEST = os.path.join(PROJECT_ROOT, "governance", "health", "jsonl_discovery_manifest_latest.json")
 RETRAIN_RETRY_PACK_LATEST = os.path.join(PROJECT_ROOT, "governance", "health", "retrain_retry_pack_latest.json")
 WALK_FORWARD_LATEST = os.path.join(PROJECT_ROOT, "governance", "walk_forward", "walk_forward_latest.json")
+
+_BOT_NEEDS_EVIDENCE_CACHE: dict[str, dict[str, Any]] | None = None
+_BOT_NEEDS_EVIDENCE_CACHE_SOURCE = ""
 
 ADVANCED_RETRAIN_DIAGNOSTIC_FEATURES = (
     "core_cross_sectional_rank_norm",
@@ -163,6 +170,15 @@ def _safe_json_load(path: str) -> dict[str, Any]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _effective_min_considered(gate: Mapping[str, Any], thresholds: Mapping[str, Any]) -> int:
+    effective_thresholds = gate.get("effective_thresholds") if isinstance(gate.get("effective_thresholds"), Mapping) else {}
+    raw_value = effective_thresholds.get("min_considered_bots", thresholds.get("min_considered_bots", 4))
+    try:
+        return max(int(float(raw_value or 4)), 1)
+    except Exception:
+        return 4
 
 
 def _parse_json_output(text: str) -> dict[str, Any]:
@@ -437,7 +453,7 @@ def _promotion_state_precheck_failures(
             promote_ok = bool(readiness.get("promote_ok", False))
             coverage_ok = bool(readiness.get("coverage_ok", promote_ok))
             considered_bots = int(float(readiness.get("considered_bots", 0) or 0))
-            min_considered_bots = max(int(float(thresholds.get("min_considered_bots", 4) or 4)), 1)
+            min_considered_bots = _effective_min_considered(readiness, thresholds)
             if not promote_ok:
                 failures.append("promotion_readiness:promote_ok=false")
             if not coverage_ok:
@@ -648,6 +664,171 @@ def _parse_ts(raw: str) -> datetime | None:
         return None
 
 
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except Exception:
+        return int(default)
+
+
+def _coerce_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _latest_training_diagnostic_path(bot_id: str) -> str:
+    safe_bot_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(bot_id or "").strip())
+    return os.path.join(TRAINING_DIAGNOSTICS_DIR, f"{safe_bot_id}_latest.json")
+
+
+def _training_diagnostic_state(bot_id: str) -> dict[str, Any]:
+    path = _latest_training_diagnostic_path(bot_id)
+    payload = _load_json_file(path)
+    if not payload:
+        return {}
+    attempts = payload.get("autofix_attempts") if isinstance(payload.get("autofix_attempts"), list) else []
+    attempt_rows = [row for row in attempts if isinstance(row, dict)]
+    sample_count = _coerce_int(payload.get("sample_count"), 0)
+    eligible_sequences = _coerce_int(payload.get("eligible_sequences"), 0)
+    observation_count = _coerce_int(payload.get("observation_count"), 0)
+    sequence_count = _coerce_int(payload.get("sequence_count"), 0)
+    insufficiency_reason = str(payload.get("insufficiency_reason") or "").strip()
+    for row in attempt_rows:
+        sample_count = max(sample_count, _coerce_int(row.get("samples"), 0), _coerce_int(row.get("sample_count"), 0))
+        eligible_sequences = max(eligible_sequences, _coerce_int(row.get("eligible_sequences"), 0))
+        observation_count = max(observation_count, _coerce_int(row.get("observation_count"), 0))
+        sequence_count = max(sequence_count, _coerce_int(row.get("sequence_count"), 0))
+        if not insufficiency_reason:
+            insufficiency_reason = str(row.get("insufficiency_reason") or "").strip()
+
+    ts = _parse_ts(str(payload.get("timestamp_utc") or ""))
+    age_minutes = None
+    if ts is not None:
+        age_minutes = max((datetime.now(timezone.utc) - ts).total_seconds() / 60.0, 0.0)
+    return {
+        "bot_id": str(bot_id or "").strip().lower(),
+        "diagnostics_path": path,
+        "timestamp_utc": str(payload.get("timestamp_utc") or ""),
+        "status": str(payload.get("status") or ""),
+        "quality_deferred": bool(payload.get("quality_deferred", False)),
+        "age_minutes": round(float(age_minutes), 3) if age_minutes is not None else None,
+        "sample_count": int(sample_count),
+        "eligible_sequences": int(eligible_sequences),
+        "observation_count": int(observation_count),
+        "sequence_count": int(sequence_count),
+        "positive_rate": _coerce_float(payload.get("positive_rate"), 0.0),
+        "insufficiency_reason": insufficiency_reason,
+        "quality_failures": payload.get("quality_failures") if isinstance(payload.get("quality_failures"), list) else [],
+        "failure_categories": payload.get("failure_categories") if isinstance(payload.get("failure_categories"), list) else [],
+    }
+
+
+def _batch_readiness_prefilter_enabled(retrain_profile: str) -> bool:
+    raw = str(os.getenv("RETRAIN_BATCH_READINESS_PREFILTER", "") or "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return str(retrain_profile or "").strip().lower() in {
+        "coverage_batch10_canary",
+        "coverage_batch20_canary",
+        "coverage_batch30_canary",
+    }
+
+
+def _latest_bot_needs_training_evidence(bot_id: str) -> dict[str, Any]:
+    global _BOT_NEEDS_EVIDENCE_CACHE, _BOT_NEEDS_EVIDENCE_CACHE_SOURCE
+    clean_bot_id = str(bot_id or "").strip().lower()
+    if not clean_bot_id:
+        return {}
+    path = os.path.join(PROJECT_ROOT, "governance", "health", "bot_needs_intelligence_latest.json")
+    if _BOT_NEEDS_EVIDENCE_CACHE is None or _BOT_NEEDS_EVIDENCE_CACHE_SOURCE != path:
+        _BOT_NEEDS_EVIDENCE_CACHE = {}
+        _BOT_NEEDS_EVIDENCE_CACHE_SOURCE = path
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh) or {}
+        except Exception:
+            payload = {}
+        ts = _parse_ts(str((payload or {}).get("timestamp_utc") or ""))
+        age_minutes = None
+        if ts is not None:
+            age_minutes = max((datetime.now(timezone.utc) - ts).total_seconds() / 60.0, 0.0)
+        max_age_minutes = max(
+            _coerce_float(os.getenv("RETRAIN_BATCH_PREFILTER_BOT_NEEDS_MAX_AGE_MINUTES", "720"), 720.0),
+            1.0,
+        )
+        if age_minutes is not None and age_minutes <= max_age_minutes:
+            for row in payload.get("bot_needs") or []:
+                if not isinstance(row, dict):
+                    continue
+                row_bot_id = str(row.get("bot_id") or "").strip().lower()
+                if not row_bot_id:
+                    continue
+                evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+                _BOT_NEEDS_EVIDENCE_CACHE[row_bot_id] = {
+                    "bot_id": row_bot_id,
+                    "primary_need": str(row.get("primary_need") or ""),
+                    "sample_count": _coerce_int(evidence.get("sample_count"), 0),
+                    "eligible_sequences": _coerce_int(evidence.get("eligible_sequences"), 0),
+                    "observation_count": _coerce_int(evidence.get("observation_count"), 0),
+                    "diagnostic_age_hours": _coerce_float(evidence.get("diagnostic_age_hours"), 0.0),
+                    "source_path": path,
+                    "source_age_minutes": round(float(age_minutes), 3) if age_minutes is not None else None,
+                }
+    return dict((_BOT_NEEDS_EVIDENCE_CACHE or {}).get(clean_bot_id) or {})
+
+
+def _sample_starved_prefilter_decision(target: str, retrain_profile: str) -> dict[str, Any] | None:
+    if not _batch_readiness_prefilter_enabled(retrain_profile):
+        return None
+    if os.getenv("RETRAIN_BATCH_PREFILTER_ALLOW_SNAPSHOT_REPAIR", "").strip().lower() in {"1", "true", "yes", "on"}:
+        snapshot_file = str(os.getenv("RUNTIME_TRAIN_SNAPSHOT_FILE", "") or "").strip()
+        if snapshot_file and os.path.exists(snapshot_file):
+            return None
+    bot_id = _normalized_bot_id_from_script(target)
+    try:
+        with open(target, "r", encoding="utf-8") as fh:
+            target_source = fh.read()
+        if "custom_label_builder=" in target_source or "custom_sample_filter=" in target_source:
+            return None
+    except Exception:
+        pass
+    state = _training_diagnostic_state(bot_id)
+    if not state:
+        return None
+    max_age_minutes = max(_coerce_float(os.getenv("RETRAIN_BATCH_PREFILTER_MAX_AGE_MINUTES", "360"), 360.0), 1.0)
+    age = state.get("age_minutes")
+    if age is None or float(age) > max_age_minutes:
+        return None
+    sample_count = _coerce_int(state.get("sample_count"), 0)
+    eligible_sequences = _coerce_int(state.get("eligible_sequences"), 0)
+    insufficiency_reason = str(state.get("insufficiency_reason") or "").strip().lower()
+    if sample_count <= 0 and eligible_sequences <= 0 and insufficiency_reason in {"", "sample_count", "sample_count_fast_fail_zero_sample"}:
+        needs_evidence = _latest_bot_needs_training_evidence(bot_id)
+        if (
+            _coerce_int(needs_evidence.get("sample_count"), 0) > 0
+            or _coerce_int(needs_evidence.get("eligible_sequences"), 0) > 0
+        ):
+            return None
+        return {
+            "bot_id": bot_id,
+            "target": target,
+            "status": "prefiltered_sample_starved",
+            "reason": "fresh_zero_sample_diagnostic",
+            "sample_count": int(sample_count),
+            "eligible_sequences": int(eligible_sequences),
+            "observation_count": _coerce_int(state.get("observation_count"), 0),
+            "sequence_count": _coerce_int(state.get("sequence_count"), 0),
+            "age_minutes": age,
+            "diagnostics_path": state.get("diagnostics_path"),
+            "recommended_next_step": "repair labels/sample eligibility or collect more targeted observations before retraining this bot",
+        }
+    return None
+
+
 def _fresh_health_payload(payload: dict, *, max_age_hours: float) -> tuple[dict, bool]:
     if not isinstance(payload, dict) or not payload:
         return {}, False
@@ -838,6 +1019,32 @@ def _failure_is_deferred_sample_starved(reason: str) -> bool:
     return "defer_runtime_training_until_more_data" in text
 
 
+def _failure_is_deferred_quality_guard(reason: str) -> bool:
+    text = str(reason or "").strip().lower()
+    return (
+        "defer_training_quality_guard" in text
+        or "deferred_quality_guard" in text
+        or "runtime_training_quality_guard_failed" in text
+        or "synthetic_training_quality_guard_failed" in text
+    )
+
+
+def _failure_is_target_timeout(rc: int, reason: str) -> bool:
+    text = str(reason or "").strip().lower()
+    return int(rc) == 124 or "[timeout] command exceeded" in text or "timeoutexpired" in text
+
+
+def _diagnostic_state_is_deferred_quality_guard(state: dict[str, Any]) -> bool:
+    status = str((state or {}).get("status") or "").strip().lower()
+    categories = (state or {}).get("failure_categories")
+    category_set = {str(item or "").strip().lower() for item in categories} if isinstance(categories, list) else set()
+    return (
+        status == "deferred_quality_guard"
+        or bool((state or {}).get("quality_deferred", False))
+        or "quality_guard_failure" in category_set
+    )
+
+
 def _insufficient_data_retry_overrides(target: str, attempt_index: int) -> dict[str, str]:
     bot_id = _normalized_bot_id_from_script(target)
     base_lookback = 28 if any(token in bot_id for token in ("intraday", "proxy", "simple", "dmi", "choppy")) else 45
@@ -853,6 +1060,68 @@ def _insufficient_data_retry_overrides(target: str, attempt_index: int) -> dict[
     if attempt_index >= 1:
         overrides["RUNTIME_TRAIN_AUTOFIX_MIN_CONFIDENCE_FLOOR"] = "0.0"
     return overrides
+
+
+def _runtime_snapshot_family_floor(bot_id: str) -> int:
+    text = str(bot_id or "").strip().lower()
+    if any(tok in text for tok in ("dividend", "yield_trap", "compounder")):
+        return 90
+    if any(tok in text for tok in ("long_interval", "long_term", "core_etf", "quality_compound")):
+        return 120
+    if any(tok in text for tok in ("bond", "rates", "treasury", "duration")):
+        return 90
+    if any(tok in text for tok in ("futures", "order_book", "followthrough", "curve", "basis")):
+        return 75
+    if any(tok in text for tok in ("options", "iv_", "put_call", "vol_surface", "gamma")):
+        return 60
+    if any(tok in text for tok in ("intraday", "ultrafast", "proxy", "simple", "dmi", "choppy", "news_shocks", "flash")):
+        return 60
+    return 75
+
+
+def _registry_bot_role(bot_id: str) -> str:
+    payload = _load_json_file(REGISTRY_PATH)
+    rows = payload.get("sub_bots") if isinstance(payload.get("sub_bots"), list) else []
+    wanted = str(bot_id or "").strip().lower()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("bot_id") or "").strip().lower() == wanted:
+            return str(row.get("bot_role") or "").strip().lower()
+    return ""
+
+
+def _runtime_snapshot_role_bonus(bot_role: str) -> int:
+    role = str(bot_role or "").strip().lower()
+    if role == "infrastructure_sub_bot":
+        return 14
+    if role in {"options_sub_bot", "futures_sub_bot"}:
+        return 7
+    return 0
+
+
+def _target_runtime_snapshot_lookback_days(target: str) -> int:
+    try:
+        source = open(target, "r", encoding="utf-8").read()
+    except Exception:
+        return 0
+    if "train_runtime_indicator_bot" not in source and "train_crypto_runtime_bot" not in source:
+        return 0
+    bot_id = _normalized_bot_id_from_script(target)
+    declared = 14
+    match = re.search(r"\blookback_days\s*=\s*(\d+)", source)
+    if match:
+        declared = int(match.group(1))
+    role = _registry_bot_role(bot_id)
+    profile_floor = _runtime_snapshot_family_floor(bot_id) + _runtime_snapshot_role_bonus(role)
+    return max(int(declared), int(profile_floor), 1)
+
+
+def _required_runtime_snapshot_lookback_days(targets: list[str], configured_lookback_days: int) -> int:
+    required = max(int(configured_lookback_days), 1)
+    for target in targets:
+        required = max(required, _target_runtime_snapshot_lookback_days(target))
+    return int(required)
 
 
 def _write_paper_hard_example_pack(
@@ -1114,6 +1383,7 @@ def _apply_retrain_profile_defaults(args: argparse.Namespace) -> str:
         "coverage_canary",
         "coverage_batch10_canary",
         "coverage_batch20_canary",
+        "coverage_batch30_canary",
     }
 
     if profile in coverage_profiles:
@@ -1126,6 +1396,8 @@ def _apply_retrain_profile_defaults(args: argparse.Namespace) -> str:
         args.runtime_train_use_snapshot = bool(coverage_canary_snapshot_available)
         args.runtime_train_prefer_sqlite = bool(coverage_canary_snapshot_available)
         args.runtime_train_fast_fail_zero_sample_attempts = max(int(args.runtime_train_fast_fail_zero_sample_attempts), 2)
+        if profile in {"coverage_batch20_canary", "coverage_batch30_canary"}:
+            args.runtime_train_fast_fail_zero_sample_attempts = 1
         target_timeout = (
             600
             if profile == "coverage_micro_canary"
@@ -1136,6 +1408,8 @@ def _apply_retrain_profile_defaults(args: argparse.Namespace) -> str:
             else 900
             if profile == "coverage_batch10_canary"
             else 1200
+            if profile == "coverage_batch20_canary"
+            else 900
         )
         if int(args.target_timeout_seconds) <= 0 or int(args.target_timeout_seconds) > target_timeout:
             args.target_timeout_seconds = target_timeout
@@ -1546,7 +1820,8 @@ def _write_training_success_marker(
     trained_count = sum(1 for row in target_outcomes if str((row or {}).get("status", "")) == "trained")
     failure_count = len(failures)
     precheck_ok = str(master_update_status).startswith("updated")
-    data_quality_ok = bool((data_quality_summary or {}).get("ok", False))
+    data_quality_present = bool(data_quality_summary)
+    data_quality_ok = True if not data_quality_present else bool((data_quality_summary or {}).get("ok", False))
     training_completed_ok = (failure_count == 0) and (trained_count > 0)
     trained_ok_but_not_promotable = bool(training_completed_ok and (not precheck_ok))
 
@@ -1556,7 +1831,7 @@ def _write_training_success_marker(
         reason = "no_trained_targets"
     elif not precheck_ok:
         reason = f"trained_ok_but_not_promotable:{master_update_status}"
-    elif not data_quality_ok:
+    elif data_quality_present and not data_quality_ok:
         reason = "data_quality_not_ok"
     else:
         reason = "ok"
@@ -1573,6 +1848,7 @@ def _write_training_success_marker(
         "promotion_applied": bool(precheck_ok),
         "trained_ok_but_not_promotable": bool(trained_ok_but_not_promotable),
         "promotion_status": ("promoted" if precheck_ok else "held_out"),
+        "data_quality_present": bool(data_quality_present),
         "data_quality_ok": bool(data_quality_ok),
         "reason": reason,
         "trained_count": int(trained_count),
@@ -1580,7 +1856,6 @@ def _write_training_success_marker(
         "failure_details": list(failure_details or []),
         "skipped_by_memory_count": int(len(skipped_by_memory)),
         "master_update_status": str(master_update_status),
-        "data_quality_ok": bool(data_quality_ok),
     }
     if operator_notes:
         payload["operator_notes"] = operator_notes
@@ -1685,6 +1960,265 @@ def _write_retry_pack(
     with open(latest_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=True, indent=2)
     payload["path"] = retry_path
+    return payload
+
+
+def _write_sample_starved_queue(*, target_outcomes: list[dict], dry_run: bool = False) -> dict | None:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in target_outcomes or []:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "").strip()
+        if status not in {"deferred_sample_starved", "prefiltered_sample_starved"}:
+            continue
+        bot_id = str(row.get("bot_id") or "").strip().lower()
+        if not bot_id or bot_id in seen:
+            continue
+        seen.add(bot_id)
+        rows.append(
+            {
+                "bot_id": bot_id,
+                "status": status,
+                "sample_count": _coerce_int(row.get("sample_count"), 0),
+                "eligible_sequences": _coerce_int(row.get("eligible_sequences"), 0),
+                "observation_count": _coerce_int(row.get("observation_count"), 0),
+                "sequence_count": _coerce_int(row.get("sequence_count"), 0),
+                "diagnostics_path": str(row.get("diagnostics_path") or ""),
+                "reason": str(row.get("reason") or ""),
+                "recommended_next_step": str(
+                    row.get("recommended_next_step")
+                    or "repair labels/sample eligibility or collect more targeted observations before retraining this bot"
+                ),
+            }
+        )
+    bot_ids = [row["bot_id"] for row in rows]
+    payload = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "queue_type": "sample_starved_training_repair",
+        "sample_starved_count": len(rows),
+        "bot_ids": bot_ids,
+        "rows": rows,
+        "recommended_commands": {
+            "inspect_needs": [
+                "./scripts/ops/opsctl.sh",
+                "bot-needs",
+                "--include-bot-ids",
+                ",".join(bot_ids),
+                "--json",
+            ]
+            if bot_ids
+            else [],
+            "refresh_labeling_intelligence": [
+                "./scripts/ops/opsctl.sh",
+                "training-labeling-intelligence",
+                "--apply",
+                "--json",
+            ],
+        },
+        "scaling_contract": {
+            "batch20_skips_known_zero_sample_bots": True,
+            "zero_sample_fast_fail_attempts": 1,
+            "keeps_quality_guard_intact": True,
+        },
+    }
+    if dry_run:
+        latest_path = os.path.join(TRAINING_DIAGNOSTICS_DIR, "training_sample_starved_queue_dry_run_latest.json")
+    else:
+        latest_path = TRAINING_SAMPLE_STARVED_QUEUE_LATEST
+    _safe_write_json(latest_path, payload)
+    payload["path"] = latest_path
+    return payload
+
+
+def _quality_repair_axes(row: dict[str, Any]) -> list[str]:
+    quality_failures = row.get("quality_failures") if isinstance(row.get("quality_failures"), list) else []
+    text = " ".join([str(row.get("reason") or ""), *(str(item or "") for item in quality_failures)]).lower()
+    categories = {str(item or "").strip().lower() for item in row.get("failure_categories") or [] if str(item or "").strip()}
+    axes: list[str] = []
+    if any(token in text for token in ("long_precision", "long_acted_count", "short_precision", "short_acted_count", "require_both_sides_precision", "precision_balance_score")):
+        axes.append("side_balanced_label_depth")
+    if any(token in text for token in ("acted_accuracy", "accuracy_lift_over_majority")):
+        axes.append("threshold_calibration")
+    if "acted_coverage" in text or "acted_coverage_tuning" in categories:
+        axes.append("acted_coverage_tuning")
+    if any(token in text for token in ("best_val_loss", "final_val_loss")) or "symbol_narrowing" in categories:
+        axes.append("symbol_scope_or_feature_narrowing")
+    if "defer_runtime_training_until_more_data" in text or "defer_until_more_data" in categories:
+        axes.append("collect_representative_observations")
+    if "family_guard_review" in categories:
+        axes.append("family_guard_review")
+    if not axes:
+        axes.append("quality_guard_review")
+    return list(dict.fromkeys(axes))
+
+
+def _write_quality_repair_queue(*, target_outcomes: list[dict], dry_run: bool = False) -> dict | None:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in target_outcomes or []:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "").strip()
+        failure_categories = {
+            str(item or "").strip().lower()
+            for item in row.get("failure_categories") or []
+            if str(item or "").strip()
+        }
+        reason_text = str(row.get("reason") or "")
+        if status not in {"deferred_quality_guard", "failed_quality_guard"} and not _failure_is_deferred_quality_guard(reason_text):
+            if "quality_guard_failure" not in failure_categories:
+                continue
+        bot_id = str(row.get("bot_id") or "").strip().lower()
+        if not bot_id or bot_id in seen:
+            continue
+        seen.add(bot_id)
+        rows.append(
+            {
+                "bot_id": bot_id,
+                "target": str(row.get("target") or ""),
+                "status": status or "deferred_quality_guard",
+                "sample_count": _coerce_int(row.get("sample_count"), 0),
+                "eligible_sequences": _coerce_int(row.get("eligible_sequences"), 0),
+                "observation_count": _coerce_int(row.get("observation_count"), 0),
+                "sequence_count": _coerce_int(row.get("sequence_count"), 0),
+                "repair_axes": _quality_repair_axes(row),
+                "quality_failures": row.get("quality_failures") if isinstance(row.get("quality_failures"), list) else [],
+                "failure_categories": sorted(failure_categories),
+                "diagnostics_path": str(row.get("diagnostics_path") or ""),
+                "reason": reason_text,
+                "recommended_next_step": str(
+                    row.get("recommended_next_step")
+                    or "refresh label/depth focus, calibrate thresholds, then retry as a guarded targeted canary"
+                ),
+            }
+        )
+    if not rows:
+        return None
+    bot_ids = [row["bot_id"] for row in rows]
+    axis_counts = Counter(axis for row in rows for axis in row.get("repair_axes", []))
+    payload = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "queue_type": "quality_guard_training_repair",
+        "quality_repair_count": len(rows),
+        "bot_ids": bot_ids,
+        "axis_counts": dict(sorted(axis_counts.items())),
+        "rows": rows,
+        "recommended_commands": {
+            "inspect_needs": [
+                "./scripts/ops/opsctl.sh",
+                "bot-needs",
+                "--include-bot-ids",
+                ",".join(bot_ids),
+                "--json",
+            ],
+            "targeted_data_intake": [
+                "./scripts/ops/opsctl.sh",
+                "training-data-intake",
+                "--apply",
+                "--include-bot-ids",
+                ",".join(bot_ids),
+                "--json",
+            ],
+            "refresh_labeling_intelligence": [
+                "./scripts/ops/opsctl.sh",
+                "training-labeling-intelligence",
+                "--apply",
+                "--json",
+            ],
+            "guarded_retry": [
+                "./scripts/ops/opsctl.sh",
+                "retrain-force-targeted",
+                "--include-bot-ids",
+                ",".join(bot_ids),
+                "--retrain-profile",
+                "coverage_batch30_canary",
+                "--skip-master-update",
+                "--runtime-train-use-snapshot",
+                "--thread-cap",
+                "1",
+                "--memory-guard",
+            ],
+        },
+        "scaling_contract": {
+            "quality_gates_remain_authoritative": True,
+            "repair_before_retry": True,
+            "retry_is_targeted": True,
+            "side_balance_and_coverage_failures_are_explicit": True,
+        },
+    }
+    if dry_run:
+        latest_path = os.path.join(TRAINING_DIAGNOSTICS_DIR, "training_quality_repair_queue_dry_run_latest.json")
+    else:
+        latest_path = TRAINING_QUALITY_REPAIR_QUEUE_LATEST
+    _safe_write_json(latest_path, payload)
+    payload["path"] = latest_path
+    return payload
+
+
+def _write_training_timeout_queue(*, target_outcomes: list[dict], dry_run: bool = False) -> dict | None:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in target_outcomes or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("status") or "").strip() != "deferred_timeout":
+            continue
+        bot_id = str(row.get("bot_id") or "").strip().lower()
+        if not bot_id or bot_id in seen:
+            continue
+        seen.add(bot_id)
+        rows.append(
+            {
+                "bot_id": bot_id,
+                "target": str(row.get("target") or ""),
+                "status": "deferred_timeout",
+                "rc": _coerce_int(row.get("rc"), 124),
+                "reason": str(row.get("reason") or ""),
+                "recommended_next_step": str(
+                    row.get("recommended_next_step")
+                    or "rerun targeted with a wider timeout or optimize this bot's runtime training path"
+                ),
+            }
+        )
+    if not rows:
+        return None
+    bot_ids = [row["bot_id"] for row in rows]
+    payload = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "queue_type": "runtime_training_timeout_retry",
+        "timeout_count": len(rows),
+        "bot_ids": bot_ids,
+        "rows": rows,
+        "recommended_commands": {
+            "targeted_retry_wider_timeout": [
+                "./scripts/ops/opsctl.sh",
+                "retrain-force-targeted",
+                "--include-bot-ids",
+                ",".join(bot_ids),
+                "--skip-master-update",
+                "--retrain-profile",
+                "full_overnight",
+                "--target-timeout-seconds",
+                "3600",
+                "--thread-cap",
+                "1",
+                "--target-workers",
+                "2",
+            ]
+        },
+        "scaling_contract": {
+            "timeouts_are_deferred_not_fleet_failures": True,
+            "keeps_quality_guard_intact": True,
+            "retry_is_targeted": True,
+        },
+    }
+    if dry_run:
+        latest_path = os.path.join(TRAINING_DIAGNOSTICS_DIR, "training_timeout_queue_dry_run_latest.json")
+    else:
+        latest_path = TRAINING_TIMEOUT_QUEUE_LATEST
+    _safe_write_json(latest_path, payload)
+    payload["path"] = latest_path
     return payload
 
 
@@ -2040,6 +2574,7 @@ def _apply_retrain_profile_env_overrides(env: dict[str, str], retrain_profile: s
         "coverage_canary",
         "coverage_batch10_canary",
         "coverage_batch20_canary",
+        "coverage_batch30_canary",
     }:
         return {}
 
@@ -2063,6 +2598,11 @@ def _apply_retrain_profile_env_overrides(env: dict[str, str], retrain_profile: s
         default_lookback = 60
         default_stride = 1
         default_samples = 8000
+        default_batch_cap = 64
+    elif profile == "coverage_batch30_canary":
+        default_lookback = 60
+        default_stride = 1
+        default_samples = 9000
         default_batch_cap = 64
     else:
         default_lookback = 45
@@ -2107,6 +2647,15 @@ def _apply_nice(nice_value: int) -> None:
         print(f"WARN: could not apply nice={nice_value}: {exc}")
 
 
+def _child_output_quiet(env: dict[str, str]) -> bool:
+    return str((env or {}).get("RETRAIN_QUIET_CHILD_OUTPUT", os.getenv("RETRAIN_QUIET_CHILD_OUTPUT", "0"))).strip() == "1"
+
+
+def _quiet_tail(text: str, max_lines: int = 40) -> str:
+    lines = str(text or "").splitlines()
+    return "\n".join(lines[-max_lines:])
+
+
 def run_cmd(cmd: list[str], dry_run: bool, env: dict[str, str], extra_nice: int = 0) -> int:
     full_cmd = cmd
     if extra_nice > 0:
@@ -2114,6 +2663,16 @@ def run_cmd(cmd: list[str], dry_run: bool, env: dict[str, str], extra_nice: int 
     print("$ " + " ".join(full_cmd))
     if dry_run:
         return 0
+    if _child_output_quiet(env):
+        proc = subprocess.run(full_cmd, cwd=PROJECT_ROOT, env=env, capture_output=True, text=True)
+        if proc.returncode != 0:
+            stdout_text = _quiet_tail(proc.stdout)
+            stderr_text = _quiet_tail(proc.stderr)
+            if stdout_text:
+                print(stdout_text, end="\n")
+            if stderr_text:
+                print(stderr_text, end="\n", file=sys.stderr)
+        return proc.returncode
     proc = subprocess.run(full_cmd, cwd=PROJECT_ROOT, env=env)
     return proc.returncode
 
@@ -2142,10 +2701,19 @@ def run_cmd_capture(
         )
         stdout_text = str(proc.stdout or "")
         stderr_text = str(proc.stderr or "")
-        if stdout_text:
-            print(stdout_text, end="")
-        if stderr_text:
-            print(stderr_text, end="", file=sys.stderr)
+        if _child_output_quiet(env):
+            if proc.returncode != 0:
+                stdout_tail = _quiet_tail(stdout_text)
+                stderr_tail = _quiet_tail(stderr_text)
+                if stdout_tail:
+                    print(stdout_tail, end="\n")
+                if stderr_tail:
+                    print(stderr_tail, end="\n", file=sys.stderr)
+        else:
+            if stdout_text:
+                print(stdout_text, end="")
+            if stderr_text:
+                print(stderr_text, end="", file=sys.stderr)
         return proc.returncode, stdout_text, stderr_text
     except subprocess.TimeoutExpired as exc:
         stdout_text = str(exc.stdout or "")
@@ -2189,7 +2757,7 @@ def _launch_optional_json_artifact(
         stderr=subprocess.PIPE,
         text=True,
     )
-    return {"cmd": list(full_cmd), "proc": proc}
+    return {"cmd": list(full_cmd), "proc": proc, "quiet": _child_output_quiet(env)}
 
 
 def _finish_optional_json_artifact(handle: dict[str, Any] | None) -> tuple[int, dict[str, Any]]:
@@ -2203,10 +2771,19 @@ def _finish_optional_json_artifact(handle: dict[str, Any] | None) -> tuple[int, 
     stdout_text, stderr_text = proc.communicate()
     stdout_text = str(stdout_text or "")
     stderr_text = str(stderr_text or "")
-    if stdout_text:
-        print(stdout_text, end="")
-    if stderr_text:
-        print(stderr_text, end="", file=sys.stderr)
+    if bool(handle.get("quiet")):
+        if int(proc.returncode or 0) != 0:
+            stdout_tail = _quiet_tail(stdout_text)
+            stderr_tail = _quiet_tail(stderr_text)
+            if stdout_tail:
+                print(stdout_tail, end="\n")
+            if stderr_tail:
+                print(stderr_tail, end="\n", file=sys.stderr)
+    else:
+        if stdout_text:
+            print(stdout_text, end="")
+        if stderr_text:
+            print(stderr_text, end="", file=sys.stderr)
     try:
         payload = json.loads(stdout_text.strip()) if stdout_text.strip() else {}
     except Exception:
@@ -2277,6 +2854,267 @@ def _extract_failure_reason(stdout_text: str, stderr_text: str) -> str:
                 continue
             return line
     return "command_failed_without_output"
+
+
+def _target_training_env(
+    *,
+    args: argparse.Namespace,
+    target: str,
+    child_env: dict[str, str],
+    new_bot_ids: set[str],
+    distill_assign_map: dict[str, dict],
+) -> tuple[str, dict[str, str]]:
+    target_env = dict(child_env)
+    bot_id = _normalized_bot_id_from_script(target)
+    is_new_bot = bool(getattr(args, "new_bot_boost", False)) and bot_id in new_bot_ids
+    if is_new_bot:
+        target_env["FEATURE_FRESHNESS_GUARD_ENABLED"] = "1"
+        target_env["FEATURE_FRESHNESS_MAX_AGE_SECONDS"] = f"{float(args.new_bot_feature_freshness_max_age_seconds):.4f}"
+        target_env["RETRAIN_NEW_BOT_MODE"] = "1"
+
+    dist_row = distill_assign_map.get(bot_id, {}) if getattr(args, "distillation_priority", False) else {}
+    if dist_row:
+        teacher_ids = [
+            str((t or {}).get("bot_id", "")).strip()
+            for t in (dist_row.get("teachers", []) or [])
+            if str((t or {}).get("bot_id", "")).strip()
+        ]
+        target_env["DISTILLATION_STUDENT"] = "1"
+        target_env["DISTILLATION_TEACHERS"] = ",".join(teacher_ids)
+        base_tw = float(dist_row.get("teacher_blend_weight", 0.30) or 0.30)
+        if is_new_bot:
+            base_tw = max(base_tw, float(args.new_bot_distillation_weight))
+        target_env["DISTILLATION_TEACHER_WEIGHT"] = str(base_tw)
+    else:
+        target_env["DISTILLATION_STUDENT"] = "0"
+
+    return bot_id, target_env
+
+
+def _run_retrain_target(
+    *,
+    target: str,
+    args: argparse.Namespace,
+    child_env: dict[str, str],
+    effective_retrain_profile: str,
+    new_bot_ids: set[str],
+    distill_assign_map: dict[str, dict],
+    dynamic_max_swap_gb: float,
+) -> dict[str, Any]:
+    target_name = os.path.basename(target)
+    bot_id = _normalized_bot_id_from_script(target)
+    base_result: dict[str, Any] = {
+        "bot_id": bot_id,
+        "target": target,
+        "failure": "",
+        "failure_detail": None,
+        "skipped_by_memory": "",
+        "stop": False,
+        "dynamic_max_swap_gb": float(dynamic_max_swap_gb),
+    }
+
+    readiness_skip = _sample_starved_prefilter_decision(target, effective_retrain_profile)
+    if readiness_skip:
+        print(
+            "[BatchReadinessPrefilter] skipped "
+            f"bot_id={readiness_skip.get('bot_id')} "
+            f"status={readiness_skip.get('status')} "
+            f"samples={readiness_skip.get('sample_count')} "
+            f"eligible_sequences={readiness_skip.get('eligible_sequences')}"
+        )
+        return {**base_result, "status": readiness_skip.get("status"), "outcome": readiness_skip}
+
+    allowed = _wait_for_memory_gate(
+        enabled=args.memory_guard,
+        min_free_pct=args.min_free_pct,
+        max_swap_gb=dynamic_max_swap_gb,
+        poll_seconds=args.memory_poll_seconds,
+        max_wait_seconds=args.memory_max_wait_seconds,
+        label=target_name,
+        dry_run=args.dry_run,
+    )
+    if (not allowed) and args.adaptive_swap_gate and (not args.dry_run):
+        ok_now, reason_now, snap_now = _memory_ready(min_free_pct=args.min_free_pct, max_swap_gb=dynamic_max_swap_gb)
+        swap_now = float(snap_now.get("swap_used_gb", 0.0) or 0.0)
+        free_now = float(snap_now.get("free_pct", 0.0) or 0.0)
+        if (not ok_now) and ("swap" in reason_now) and (swap_now > dynamic_max_swap_gb) and (free_now >= args.min_free_pct):
+            next_swap = min(
+                float(args.adaptive_swap_max_gb),
+                max(dynamic_max_swap_gb + float(args.adaptive_swap_step_gb), swap_now + 0.10),
+            )
+            if next_swap > dynamic_max_swap_gb:
+                print(
+                    f"[AdaptiveSwapGate] raise label={target_name} "
+                    f"from={dynamic_max_swap_gb:.2f} to={next_swap:.2f} "
+                    f"reason={reason_now}"
+                )
+                dynamic_max_swap_gb = next_swap
+                base_result["dynamic_max_swap_gb"] = float(dynamic_max_swap_gb)
+                allowed = _wait_for_memory_gate(
+                    enabled=args.memory_guard,
+                    min_free_pct=args.min_free_pct,
+                    max_swap_gb=dynamic_max_swap_gb,
+                    poll_seconds=args.memory_poll_seconds,
+                    max_wait_seconds=max(int(args.memory_max_wait_seconds / 2), 120),
+                    label=target_name,
+                    dry_run=args.dry_run,
+                )
+    if not allowed:
+        outcome = {"bot_id": bot_id, "target": target, "status": "skipped_memory"}
+        return {**base_result, "status": "skipped_memory", "outcome": outcome, "skipped_by_memory": target}
+
+    thermal_ok = _wait_for_thermal_gate(
+        enabled=args.thermal_guard,
+        min_cpu_speed_limit=args.thermal_min_cpu_speed_limit,
+        min_scheduler_limit=args.thermal_min_scheduler_limit,
+        poll_seconds=args.memory_poll_seconds,
+        max_wait_seconds=args.memory_max_wait_seconds,
+        label=target_name,
+        dry_run=args.dry_run,
+    )
+    if not thermal_ok:
+        outcome = {"bot_id": bot_id, "target": target, "status": "skipped_thermal"}
+        return {**base_result, "status": "skipped_thermal", "outcome": outcome, "skipped_by_memory": target}
+
+    bot_id, target_env = _target_training_env(
+        args=args,
+        target=target,
+        child_env=child_env,
+        new_bot_ids=new_bot_ids,
+        distill_assign_map=distill_assign_map,
+    )
+
+    rc, captured_stdout, captured_stderr = run_cmd_capture(
+        [VENV_PY, target],
+        args.dry_run,
+        target_env,
+        timeout_seconds=max(int(args.target_timeout_seconds), 0),
+    )
+    retry_attempts: list[dict[str, object]] = []
+    failure_reason = _extract_failure_reason(captured_stdout, captured_stderr)
+    if rc != 0 and args.auto_insufficient_data_retry and _failure_is_insufficient_data(failure_reason):
+        for retry_index in range(2):
+            retry_env = dict(target_env)
+            overrides = _insufficient_data_retry_overrides(target, retry_index)
+            retry_env.update(overrides)
+            retry_attempts.append(
+                {
+                    "attempt_index": int(retry_index),
+                    "reason": "insufficient_data_retry",
+                    "overrides": dict(overrides),
+                }
+            )
+            print(
+                "[InsufficientDataRetry] "
+                f"bot_id={bot_id} attempt={retry_index} "
+                f"lookback_override={overrides.get('RUNTIME_TRAIN_LOOKBACK_DAYS_OVERRIDE')} "
+                f"stride_override={overrides.get('RUNTIME_TRAIN_SAMPLE_STRIDE_OVERRIDE')}"
+            )
+            rc, captured_stdout, captured_stderr = run_cmd_capture(
+                [VENV_PY, target],
+                args.dry_run,
+                retry_env,
+                timeout_seconds=max(int(args.target_timeout_seconds), 0),
+            )
+            failure_reason = _extract_failure_reason(captured_stdout, captured_stderr)
+            if rc == 0 or (not _failure_is_insufficient_data(failure_reason)):
+                break
+
+    if rc != 0 and _failure_is_deferred_sample_starved(failure_reason):
+        deferred_state = _training_diagnostic_state(bot_id)
+        if _diagnostic_state_is_deferred_quality_guard(deferred_state):
+            outcome = {
+                "bot_id": bot_id,
+                "target": target,
+                "status": "deferred_quality_guard",
+                "reason": failure_reason,
+                "sample_count": _coerce_int(deferred_state.get("sample_count"), 0),
+                "eligible_sequences": _coerce_int(deferred_state.get("eligible_sequences"), 0),
+                "observation_count": _coerce_int(deferred_state.get("observation_count"), 0),
+                "sequence_count": _coerce_int(deferred_state.get("sequence_count"), 0),
+                "quality_failures": deferred_state.get("quality_failures", []),
+                "failure_categories": deferred_state.get("failure_categories", []),
+                "diagnostics_path": str(deferred_state.get("diagnostics_path") or ""),
+                "recommended_next_step": "calibrate thresholds or collect more representative observations before retraining this bot",
+                "retry_attempts": retry_attempts,
+            }
+            print(f"DEFERRED: {target} (quality-guard)")
+            return {**base_result, "status": "deferred_quality_guard", "outcome": outcome}
+        outcome = {
+            "bot_id": bot_id,
+            "target": target,
+            "status": "deferred_sample_starved",
+            "reason": failure_reason,
+            "sample_count": _coerce_int(deferred_state.get("sample_count"), 0),
+            "eligible_sequences": _coerce_int(deferred_state.get("eligible_sequences"), 0),
+            "observation_count": _coerce_int(deferred_state.get("observation_count"), 0),
+            "sequence_count": _coerce_int(deferred_state.get("sequence_count"), 0),
+            "diagnostics_path": str(deferred_state.get("diagnostics_path") or ""),
+            "recommended_next_step": "repair labels/sample eligibility or collect more targeted observations before retraining this bot",
+            "retry_attempts": retry_attempts,
+        }
+        print(f"DEFERRED: {target} (sample-starved)")
+        return {**base_result, "status": "deferred_sample_starved", "outcome": outcome}
+
+    if rc != 0 and _failure_is_deferred_quality_guard(failure_reason):
+        deferred_state = _training_diagnostic_state(bot_id)
+        outcome = {
+            "bot_id": bot_id,
+            "target": target,
+            "status": "deferred_quality_guard",
+            "reason": failure_reason,
+            "quality_failures": deferred_state.get("quality_failures", []),
+            "failure_categories": deferred_state.get("failure_categories", []),
+            "diagnostics_path": str(deferred_state.get("diagnostics_path") or ""),
+            "recommended_next_step": "calibrate thresholds or family guard before retraining this bot",
+            "retry_attempts": retry_attempts,
+        }
+        print(f"DEFERRED: {target} (quality-guard)")
+        return {**base_result, "status": "deferred_quality_guard", "outcome": outcome}
+
+    if rc != 0 and _failure_is_target_timeout(rc, failure_reason):
+        outcome = {
+            "bot_id": bot_id,
+            "target": target,
+            "status": "deferred_timeout",
+            "rc": rc,
+            "reason": failure_reason,
+            "stdout_tail": _tail_text(captured_stdout),
+            "stderr_tail": _tail_text(captured_stderr),
+            "recommended_next_step": "rerun targeted with a wider timeout or optimize this bot's runtime training path",
+            "retry_attempts": retry_attempts,
+        }
+        print(f"DEFERRED: {target} (timeout)")
+        return {**base_result, "status": "deferred_timeout", "outcome": outcome}
+
+    if rc != 0:
+        failure_detail = {
+            "bot_id": bot_id,
+            "target": target,
+            "status": "failed",
+            "rc": rc,
+            "reason": failure_reason,
+            "stdout_tail": _tail_text(captured_stdout),
+            "stderr_tail": _tail_text(captured_stderr),
+            "retry_attempts": retry_attempts,
+        }
+        print(f"FAIL: {target} (exit={rc})")
+        return {
+            **base_result,
+            "status": "failed",
+            "outcome": dict(failure_detail),
+            "failure": target,
+            "failure_detail": failure_detail,
+            "stop": not bool(args.continue_on_error),
+        }
+
+    outcome = {
+        "bot_id": bot_id,
+        "target": target,
+        "status": "trained",
+        "retry_attempts": retry_attempts,
+    }
+    return {**base_result, "status": "trained", "outcome": outcome}
 
 
 
@@ -2625,6 +3463,12 @@ def main() -> int:
         type=int,
         default=int(os.getenv("RETRAIN_THREAD_CAP", "2")),
         help="Cap BLAS/OpenMP threads per training process (default: RETRAIN_THREAD_CAP or 2).",
+    )
+    parser.add_argument(
+        "--target-workers",
+        type=int,
+        default=int(os.getenv("RETRAIN_TARGET_WORKERS", "1")),
+        help="Number of bot target training subprocesses to run concurrently (default: RETRAIN_TARGET_WORKERS or 1).",
     )
     parser.add_argument(
         "--nice",
@@ -3059,7 +3903,7 @@ def main() -> int:
     parser.add_argument(
         "--retrain-profile",
         default=os.getenv("RETRAIN_PROFILE", "default"),
-        help="Named retrain profile for future-run defaults (default, canary, coverage_micro_canary, coverage_small_canary, coverage_canary, coverage_batch10_canary, coverage_batch20_canary, fast_daytime, full_overnight).",
+        help="Named retrain profile for future-run defaults (default, canary, coverage_micro_canary, coverage_small_canary, coverage_canary, coverage_batch10_canary, coverage_batch20_canary, coverage_batch30_canary, fast_daytime, full_overnight).",
     )
     parser.add_argument(
         "--build-runtime-training-snapshot",
@@ -3125,6 +3969,8 @@ def main() -> int:
         dry_run=args.dry_run,
     )
     retry_pack_path = ""
+    sample_starved_queue_path = ""
+    timeout_queue_path = ""
     master_update_status = ""
 
     def finish(code: int, final_status: str, *, scorecard_path: str = "", failure_count: int | None = None) -> int:
@@ -3219,7 +4065,7 @@ def main() -> int:
         guard_cmd = [VENV_PY, script_path, "--json"]
         if script_path == NEW_BOT_ADMISSION_GUARD_SCRIPT and explicit_include_requested:
             guard_cmd += ["--include-bot-ids", str(args.include_bot_ids or "")]
-            if args.skip_master_update:
+            if args.skip_master_update or args.allow_precheck_failures:
                 guard_cmd.append("--advisory-only")
         rc_guard = run_cmd(
             guard_cmd,
@@ -3389,6 +4235,54 @@ def main() -> int:
         new_bot_targets=new_bot_targets,
         new_bot_extra_pass=int(args.new_bot_extra_pass),
     )
+    runtime_snapshot_target_count = sum(1 for target in targets if _target_runtime_snapshot_lookback_days(target) > 0)
+    required_runtime_snapshot_lookback_days = _required_runtime_snapshot_lookback_days(
+        targets,
+        int(args.runtime_training_snapshot_lookback_days),
+    )
+    direct_runtime_without_snapshot = str(
+        os.getenv("RETRAIN_DIRECT_RUNTIME_WITHOUT_SNAPSHOT", "")
+        or os.getenv("RETRAIN_DIRECT_RUNTIME_NO_SNAPSHOT", "")
+        or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    runtime_snapshot_no_build = str(
+        os.getenv("RETRAIN_RUNTIME_SNAPSHOT_NO_BUILD", "")
+        or os.getenv("RETRAIN_SKIP_RUNTIME_SNAPSHOT_BUILD", "")
+        or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if explicit_include_requested and runtime_snapshot_target_count > 0 and (
+        not bool(args.runtime_train_use_snapshot)
+        or not bool(args.build_runtime_training_snapshot)
+        or int(args.runtime_training_snapshot_lookback_days) < int(required_runtime_snapshot_lookback_days)
+    ) and not direct_runtime_without_snapshot and not runtime_snapshot_no_build:
+        args.runtime_training_snapshot_lookback_days = int(required_runtime_snapshot_lookback_days)
+        args.build_runtime_training_snapshot = True
+        args.runtime_training_snapshot_prefer_sqlite = True
+        args.runtime_train_use_snapshot = True
+        args.runtime_train_prefer_sqlite = True
+        print(
+            "Runtime snapshot scope: "
+            f"explicit_runtime_targets={runtime_snapshot_target_count} "
+            f"lookback_days={int(required_runtime_snapshot_lookback_days)} "
+            "snapshot_reuse_enabled=1"
+        )
+    elif explicit_include_requested and runtime_snapshot_target_count > 0 and direct_runtime_without_snapshot:
+        args.build_runtime_training_snapshot = False
+        args.runtime_train_use_snapshot = False
+        print(
+            "Runtime snapshot scope: "
+            f"explicit_runtime_targets={runtime_snapshot_target_count} "
+            "direct_runtime_without_snapshot=1"
+        )
+    elif explicit_include_requested and runtime_snapshot_target_count > 0 and runtime_snapshot_no_build:
+        args.build_runtime_training_snapshot = False
+        args.runtime_train_use_snapshot = True
+        args.runtime_train_prefer_sqlite = True
+        print(
+            "Runtime snapshot scope: "
+            f"explicit_runtime_targets={runtime_snapshot_target_count} "
+            "reuse_existing_snapshot_without_build=1"
+        )
 
     child_env = _build_child_env(args.thread_cap)
     child_env["DISTILLATION_ENABLED"] = "1" if args.distillation_priority else "0"
@@ -3398,6 +4292,8 @@ def main() -> int:
     child_env["RETRAIN_COLD_LANE_EXTRAS"] = "1" if args.cold_lane_retrain_extras else "0"
     child_env["RUNTIME_TRAIN_PREFER_SQLITE"] = "1" if args.runtime_train_prefer_sqlite else "0"
     child_env["RUNTIME_TRAIN_USE_SNAPSHOT"] = "1" if args.runtime_train_use_snapshot else "0"
+    if runtime_snapshot_no_build and args.runtime_train_use_snapshot:
+        child_env["RUNTIME_TRAIN_SNAPSHOT_ONLY"] = "1"
     child_env["RUNTIME_TRAIN_FAST_FAIL_ZERO_SAMPLE_ATTEMPTS"] = str(
         max(int(args.runtime_train_fast_fail_zero_sample_attempts), 0)
     )
@@ -3467,7 +4363,7 @@ def main() -> int:
         else:
             child_env["RUNTIME_TRAIN_SNAPSHOT_FILE"] = RUNTIME_TRAINING_SNAPSHOT_LATEST
             runtime_training_snapshot_summary = _safe_json_load(RUNTIME_TRAINING_SNAPSHOT_LATEST)
-    if args.runtime_train_use_snapshot:
+    if args.runtime_train_use_snapshot and runtime_snapshot_target_count > 0:
         snapshot_failure = _runtime_training_snapshot_preflight_failure(
             runtime_training_snapshot_summary,
             min_sequences=max(int(args.runtime_training_snapshot_min_sequences), 0),
@@ -3522,9 +4418,15 @@ def main() -> int:
         if refreshed_bottleneck:
             bottleneck_profile = refreshed_bottleneck
 
+    target_workers = max(int(getattr(args, "target_workers", 1) or 1), 1)
+    if target_workers > 1 and not args.continue_on_error:
+        print("WARN: target_workers>1 requires --continue-on-error; falling back to serial target execution.")
+        target_workers = 1
+
     print(
         "Resource limits: "
         f"thread_cap={args.thread_cap} "
+        f"target_workers={target_workers} "
         f"OMP={child_env.get('OMP_NUM_THREADS')} "
         f"OPENBLAS={child_env.get('OPENBLAS_NUM_THREADS')} "
         f"VECLIB={child_env.get('VECLIB_MAXIMUM_THREADS')}"
@@ -3568,6 +4470,7 @@ def main() -> int:
         f"profile={effective_retrain_profile} "
         f"cold_lane_extras={args.cold_lane_retrain_extras} "
         f"parallel_sidecars={args.parallel_sidecars} "
+        f"target_workers={target_workers} "
         f"target_timeout_seconds={int(args.target_timeout_seconds)} "
         f"snapshot_reuse_minutes={int(args.runtime_training_snapshot_reuse_if_fresh_minutes)}"
     )
@@ -3629,8 +4532,107 @@ def main() -> int:
     skipped_by_memory: list[str] = []
     target_outcomes: list[dict] = []
     dynamic_max_swap_gb = float(args.max_swap_gb)
-    for target in targets:
+
+    def _apply_target_result(result: dict[str, Any]) -> bool:
+        nonlocal dynamic_max_swap_gb
+        try:
+            dynamic_max_swap_gb = max(dynamic_max_swap_gb, float(result.get("dynamic_max_swap_gb", dynamic_max_swap_gb)))
+        except (TypeError, ValueError):
+            pass
+
+        outcome = result.get("outcome")
+        if isinstance(outcome, dict):
+            target_outcomes.append(outcome)
+
+        skipped_target = str(result.get("skipped_by_memory") or "").strip()
+        if skipped_target:
+            skipped_by_memory.append(skipped_target)
+
+        failure = str(result.get("failure") or "").strip()
+        if failure:
+            failures.append(failure)
+
+        failure_detail = result.get("failure_detail")
+        if isinstance(failure_detail, dict):
+            failure_details.append(failure_detail)
+
+        return bool(result.get("stop"))
+
+    if target_workers > 1:
+        print(
+            "Target execution: "
+            f"workers={target_workers} "
+            f"per_process_thread_cap={args.thread_cap} "
+            f"planned_targets={len(targets)}"
+        )
+        indexed_results: list[tuple[int, dict[str, Any]]] = []
+        with ThreadPoolExecutor(max_workers=target_workers) as executor:
+            future_map = {
+                executor.submit(
+                    _run_retrain_target,
+                    target=target,
+                    args=args,
+                    child_env=child_env,
+                    effective_retrain_profile=effective_retrain_profile,
+                    new_bot_ids=new_bot_ids,
+                    distill_assign_map=distill_assign_map,
+                    dynamic_max_swap_gb=dynamic_max_swap_gb,
+                ): (idx, target)
+                for idx, target in enumerate(targets)
+            }
+            for future in as_completed(future_map):
+                idx, target = future_map[future]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    bot_id = _normalized_bot_id_from_script(target)
+                    failure_detail = {
+                        "bot_id": bot_id,
+                        "target": target,
+                        "status": "failed",
+                        "rc": 1,
+                        "reason": f"target_worker_exception:{type(exc).__name__}:{exc}",
+                        "stdout_tail": "",
+                        "stderr_tail": "",
+                        "retry_attempts": [],
+                    }
+                    result = {
+                        "bot_id": bot_id,
+                        "target": target,
+                        "status": "failed",
+                        "outcome": dict(failure_detail),
+                        "failure": target,
+                        "failure_detail": failure_detail,
+                        "skipped_by_memory": "",
+                        "stop": False,
+                        "dynamic_max_swap_gb": dynamic_max_swap_gb,
+                    }
+                indexed_results.append((idx, result))
+                print(
+                    "[TargetWorker] done "
+                    f"index={idx + 1}/{len(targets)} "
+                    f"bot_id={result.get('bot_id')} "
+                    f"status={result.get('status')}"
+                )
+        for _idx, result in sorted(indexed_results, key=lambda item: item[0]):
+            _apply_target_result(result)
+        if not args.dry_run:
+            gc.collect()
+
+    for target in ([] if target_workers > 1 else targets):
         target_name = os.path.basename(target)
+        readiness_skip = _sample_starved_prefilter_decision(target, effective_retrain_profile)
+        if readiness_skip:
+            target_outcomes.append(readiness_skip)
+            print(
+                "[BatchReadinessPrefilter] skipped "
+                f"bot_id={readiness_skip.get('bot_id')} "
+                f"status={readiness_skip.get('status')} "
+                f"samples={readiness_skip.get('sample_count')} "
+                f"eligible_sequences={readiness_skip.get('eligible_sequences')}"
+            )
+            continue
+
         allowed = _wait_for_memory_gate(
             enabled=args.memory_guard,
             min_free_pct=args.min_free_pct,
@@ -3736,16 +4738,87 @@ def main() -> int:
                 if rc == 0 or (not _failure_is_insufficient_data(failure_reason)):
                     break
         if rc != 0 and _failure_is_deferred_sample_starved(failure_reason):
+            deferred_bot_id = _normalized_bot_id_from_script(target)
+            deferred_state = _training_diagnostic_state(deferred_bot_id)
+            if _diagnostic_state_is_deferred_quality_guard(deferred_state):
+                target_outcomes.append(
+                    {
+                        "bot_id": deferred_bot_id,
+                        "target": target,
+                        "status": "deferred_quality_guard",
+                        "reason": failure_reason,
+                        "sample_count": _coerce_int(deferred_state.get("sample_count"), 0),
+                        "eligible_sequences": _coerce_int(deferred_state.get("eligible_sequences"), 0),
+                        "observation_count": _coerce_int(deferred_state.get("observation_count"), 0),
+                        "sequence_count": _coerce_int(deferred_state.get("sequence_count"), 0),
+                        "quality_failures": deferred_state.get("quality_failures", []),
+                        "failure_categories": deferred_state.get("failure_categories", []),
+                        "diagnostics_path": str(deferred_state.get("diagnostics_path") or ""),
+                        "recommended_next_step": "calibrate thresholds or collect more representative observations before retraining this bot",
+                        "retry_attempts": retry_attempts,
+                    }
+                )
+                print(f"DEFERRED: {target} (quality-guard)")
+                if not args.dry_run:
+                    gc.collect()
+                    time.sleep(max(args.between_target_sleep_seconds, 0))
+                continue
             target_outcomes.append(
                 {
-                    "bot_id": _normalized_bot_id_from_script(target),
+                    "bot_id": deferred_bot_id,
                     "target": target,
                     "status": "deferred_sample_starved",
                     "reason": failure_reason,
+                    "sample_count": _coerce_int(deferred_state.get("sample_count"), 0),
+                    "eligible_sequences": _coerce_int(deferred_state.get("eligible_sequences"), 0),
+                    "observation_count": _coerce_int(deferred_state.get("observation_count"), 0),
+                    "sequence_count": _coerce_int(deferred_state.get("sequence_count"), 0),
+                    "diagnostics_path": str(deferred_state.get("diagnostics_path") or ""),
+                    "recommended_next_step": "repair labels/sample eligibility or collect more targeted observations before retraining this bot",
                     "retry_attempts": retry_attempts,
                 }
             )
             print(f"DEFERRED: {target} (sample-starved)")
+            if not args.dry_run:
+                gc.collect()
+                time.sleep(max(args.between_target_sleep_seconds, 0))
+            continue
+        if rc != 0 and _failure_is_deferred_quality_guard(failure_reason):
+            deferred_bot_id = _normalized_bot_id_from_script(target)
+            deferred_state = _training_diagnostic_state(deferred_bot_id)
+            target_outcomes.append(
+                {
+                    "bot_id": deferred_bot_id,
+                    "target": target,
+                    "status": "deferred_quality_guard",
+                    "reason": failure_reason,
+                    "quality_failures": deferred_state.get("quality_failures", []),
+                    "failure_categories": deferred_state.get("failure_categories", []),
+                    "diagnostics_path": str(deferred_state.get("diagnostics_path") or ""),
+                    "recommended_next_step": "calibrate thresholds or family guard before retraining this bot",
+                    "retry_attempts": retry_attempts,
+                }
+            )
+            print(f"DEFERRED: {target} (quality-guard)")
+            if not args.dry_run:
+                gc.collect()
+                time.sleep(max(args.between_target_sleep_seconds, 0))
+            continue
+        if rc != 0 and _failure_is_target_timeout(rc, failure_reason):
+            target_outcomes.append(
+                {
+                    "bot_id": _normalized_bot_id_from_script(target),
+                    "target": target,
+                    "status": "deferred_timeout",
+                    "rc": rc,
+                    "reason": failure_reason,
+                    "stdout_tail": _tail_text(captured_stdout),
+                    "stderr_tail": _tail_text(captured_stderr),
+                    "recommended_next_step": "rerun targeted with a wider timeout or optimize this bot's runtime training path",
+                    "retry_attempts": retry_attempts,
+                }
+            )
+            print(f"DEFERRED: {target} (timeout)")
             if not args.dry_run:
                 gc.collect()
                 time.sleep(max(args.between_target_sleep_seconds, 0))
@@ -3883,6 +4956,7 @@ def main() -> int:
                     "--no-require-canary-gate",
                     "--no-require-graduation-gate",
                     "--no-require-leak-overfit-gate",
+                    "--no-require-lane-promotion-gate",
                     "--no-require-promotion-quality-gate",
                     "--no-require-health-gate-clear",
                     "--no-require-promotion-readiness",
@@ -3990,6 +5064,31 @@ def main() -> int:
             retry_pack_path = str(retry_pack.get("path") or "")
             print(f"Retry pack written: {retry_pack.get('path')}")
 
+    sample_starved_queue = _write_sample_starved_queue(
+        target_outcomes=target_outcomes,
+        dry_run=args.dry_run,
+    )
+    if sample_starved_queue:
+        sample_starved_queue_path = str(sample_starved_queue.get("path") or "")
+        print(f"Sample-starved training queue written: {sample_starved_queue_path}")
+
+    quality_repair_queue_path = ""
+    quality_repair_queue = _write_quality_repair_queue(
+        target_outcomes=target_outcomes,
+        dry_run=args.dry_run,
+    )
+    if quality_repair_queue:
+        quality_repair_queue_path = str(quality_repair_queue.get("path") or "")
+        print(f"Quality repair training queue written: {quality_repair_queue_path}")
+
+    timeout_queue = _write_training_timeout_queue(
+        target_outcomes=target_outcomes,
+        dry_run=args.dry_run,
+    )
+    if timeout_queue:
+        timeout_queue_path = str(timeout_queue.get("path") or "")
+        print(f"Training timeout queue written: {timeout_queue_path}")
+
     if failures:
         print(f"Completed with {len(failures)} failures.")
         for f in failures:
@@ -4026,6 +5125,9 @@ def main() -> int:
                 **launch_record,
                 "master_update_status": master_update_status,
                 "retry_pack_path": retry_pack_path,
+                "sample_starved_queue_path": sample_starved_queue_path,
+                "quality_repair_queue_path": quality_repair_queue_path,
+                "timeout_queue_path": timeout_queue_path,
             },
             dry_run=args.dry_run,
         )
@@ -4246,6 +5348,9 @@ def main() -> int:
             **launch_record,
             "master_update_status": master_update_status,
             "retry_pack_path": retry_pack_path,
+            "sample_starved_queue_path": sample_starved_queue_path,
+            "quality_repair_queue_path": quality_repair_queue_path,
+            "timeout_queue_path": timeout_queue_path,
         },
         dry_run=args.dry_run,
     )

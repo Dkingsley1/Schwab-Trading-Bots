@@ -53,3 +53,44 @@ def test_paper_execution_calibration_report_emits_grouped_recommendations(tmp_pa
     assert payload["top_symbols"][0]["symbol"] == "BTC-USD"
     assert payload["drift_series"][0]["bucket_start_utc"].endswith("+00:00")
     assert payload["line_graph"]["series"][0]["key"] == "mean_observed_slippage_bps"
+
+
+def test_paper_execution_calibration_report_respects_reset_cutoff(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    log_dir = project_root / "exports" / "trade_logs" / "paper"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    out_file = project_root / "governance" / "health" / "paper_execution_calibration_latest.json"
+    row = {
+        "timestamp_utc": "2026-06-25T14:00:00+00:00",
+        "symbol": "AAPL",
+        "action": "BUY",
+        "reference_price": 100.0,
+        "fill_price": 100.0,
+        "expected_fill_price": 102.0,
+        "expected_slippage_bps": 200.0,
+        "metadata": {"source_profile": "default"},
+    }
+    (log_dir / "paper_trades_paper.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(report, "PROJECT_ROOT", project_root)
+    monkeypatch.setenv("PAPER_EXECUTION_CALIBRATION_MIN_TIMESTAMP_UTC", "2026-06-25T14:30:00+00:00")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "paper_execution_calibration_report.py",
+            "--hours",
+            "24",
+            "--out-file",
+            str(out_file),
+        ],
+    )
+
+    rc = report.main()
+    payload = json.loads(out_file.read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert payload["samples"] == 0
+    assert payload["ok"] is True
+    assert payload["calibration_window"]["reset_active"] is True
+    assert payload["calibration_window"]["skipped_before_cutoff"] == 1

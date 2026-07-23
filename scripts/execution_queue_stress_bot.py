@@ -16,11 +16,25 @@ def _parse_ts(raw):
         return None
 
 
+def _iter_recent_lines(path: Path, *, tail_bytes: int):
+    try:
+        size = path.stat().st_size
+    except Exception:
+        size = 0
+    with path.open('rb') as f:
+        if tail_bytes > 0 and size > tail_bytes:
+            f.seek(max(size - tail_bytes, 0))
+            f.readline()
+        for raw in f:
+            yield raw.decode('utf-8', errors='ignore')
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description='Execution queue stress bot.')
     parser.add_argument('--hours', type=int, default=4)
     parser.add_argument('--max-queue-depth', type=int, default=2000)
     parser.add_argument('--max-queue-breach-rate', type=float, default=0.25)
+    parser.add_argument('--tail-bytes', type=int, default=16 * 1024 * 1024)
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args()
 
@@ -28,25 +42,30 @@ def main() -> int:
     rows = 0
     breaches = 0
     max_depth_seen = 0
+    scanned_files = 0
+    skipped_old_files = 0
 
     for p in (PROJECT_ROOT / 'governance').glob('shadow*/master_control_*.jsonl'):
         try:
-            with p.open('r', encoding='utf-8') as f:
-                for line in f:
-                    try:
-                        row = json.loads(line)
-                    except Exception:
-                        continue
-                    ts = _parse_ts(row.get('timestamp_utc'))
-                    if ts is None or ts < since:
-                        continue
-                    rows += 1
-                    portfolio = row.get('portfolio', {}) if isinstance(row.get('portfolio', {}), dict) else {}
-                    depth = int(portfolio.get('queue_depth', 0) or 0)
-                    if depth > max_depth_seen:
-                        max_depth_seen = depth
-                    if depth > int(args.max_queue_depth):
-                        breaches += 1
+            if datetime.fromtimestamp(p.stat().st_mtime, timezone.utc) < since:
+                skipped_old_files += 1
+                continue
+            scanned_files += 1
+            for line in _iter_recent_lines(p, tail_bytes=max(int(args.tail_bytes), 0)):
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                ts = _parse_ts(row.get('timestamp_utc'))
+                if ts is None or ts < since:
+                    continue
+                rows += 1
+                portfolio = row.get('portfolio', {}) if isinstance(row.get('portfolio', {}), dict) else {}
+                depth = int(portfolio.get('queue_depth', 0) or 0)
+                if depth > max_depth_seen:
+                    max_depth_seen = depth
+                if depth > int(args.max_queue_depth):
+                    breaches += 1
         except Exception:
             continue
 
@@ -63,6 +82,10 @@ def main() -> int:
         'queue_breach_rate': round(breach_rate, 6),
         'max_queue_depth': int(args.max_queue_depth),
         'max_queue_breach_rate': float(args.max_queue_breach_rate),
+        'tail_bytes': int(args.tail_bytes),
+        'scanned_files': int(scanned_files),
+        'skipped_old_files': int(skipped_old_files),
+        'scan_policy': 'mtime_prefilter_then_tail_window',
     }
 
     out = PROJECT_ROOT / 'governance' / 'health' / 'execution_queue_stress_latest.json'
