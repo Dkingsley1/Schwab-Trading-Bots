@@ -91,6 +91,7 @@ jobs:
             --in-file /tmp/walk_forward_fixture.json \
             --out-file /tmp/promotion_gate_fixture.json \
             --min-runs-per-bot 6 \
+            --min-considered-bots 2 \
             --min-forward-mean 0.50 \
             --min-delta -0.05 \
             --min-trading-quality-score 0.40 \
